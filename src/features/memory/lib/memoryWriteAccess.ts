@@ -25,6 +25,7 @@
  */
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { SessionNode } from "@/features/conductor/types";
 
@@ -33,6 +34,7 @@ import { messageIdSet } from "./transcriptScan";
 
 /** Why a session's fence is not applied. Enumerated for notices and tests. */
 export type MemoryWriteDenial =
+  | "benchmark"
   /** A wave-engine child, whatever role it was spawned with. */
   | "wave-child"
   /** A worker-layer node outside the wave engine (legacy trees, agent-cli). */
@@ -134,6 +136,8 @@ export function sessionMemoryWriteAccess(
   sessionId: string | null | undefined,
 ): MemoryWriteDecision {
   if (!sessionId) return ALLOWED;
+  if (isBenchmarkSession(sessionId))
+    return { allowed: false, denial: "benchmark" };
   return decideMemoryWrite(
     useConductorGraphStore.getState().nodesById[sessionId],
     personaGrantsMemoryWrite,
@@ -147,6 +151,8 @@ export function sessionMemoryWriteAccess(
  */
 export function memoryWriteDenialText(denial: MemoryWriteDenial): string {
   switch (denial) {
+    case "benchmark":
+      return "benchmark evidence cannot write to the operator's memory";
     case "wave-child":
       return "a wave child cannot write to the operator's memory; its findings belong in its report";
     case "worker":

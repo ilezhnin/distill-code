@@ -28,6 +28,7 @@ import {
   SidebarNavHomeIcon,
   SidebarNavSettingsIcon,
   SidebarNavSkillsIcon,
+  SidebarNavBenchmarksIcon,
 } from "./sidebarNavIcons";
 import { SidebarPinnedSection } from "./SidebarPinnedSection";
 
@@ -102,6 +103,11 @@ export const PrimaryNavigationSurface = forwardRef<
   }[] = [
     { id: "agents", label: t("navigation.agents"), icon: SidebarNavAgentsIcon },
     { id: "skills", label: t("navigation.skills"), icon: SidebarNavSkillsIcon },
+    {
+      id: "benchmarks",
+      label: t("navigation.benchmarks"),
+      icon: SidebarNavBenchmarksIcon,
+    },
   ];
 
   return (

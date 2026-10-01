@@ -35,7 +35,7 @@ function Invoke-CargoCheck {
         [Parameter(Mandatory = $true)][string]$Label
     )
     Write-WindowsDevInfo $Label
-    & cargo @ArgumentList
+    & (Join-Path $PSScriptRoot "Invoke-Tauri-Cargo-Windows.ps1") @ArgumentList
     if ($LASTEXITCODE -ne 0) {
         throw "$Label failed with exit code $LASTEXITCODE."
     }

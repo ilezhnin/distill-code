@@ -1,0 +1,12 @@
+CREATE TABLE benchmark_definitions (id TEXT PRIMARY KEY, draft_json TEXT NOT NULL, revision INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE benchmark_versions (id TEXT PRIMARY KEY, definition_id TEXT NOT NULL REFERENCES benchmark_definitions(id), content_hash TEXT NOT NULL, manifest_json TEXT NOT NULL, published_at INTEGER NOT NULL, UNIQUE(definition_id,content_hash));
+CREATE TABLE run_plans (id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, request_json TEXT NOT NULL);
+CREATE TABLE attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES run_plans(id), version_id TEXT NOT NULL REFERENCES benchmark_versions(id), configuration_id TEXT NOT NULL, repetition INTEGER NOT NULL, phase TEXT NOT NULL, data_json TEXT NOT NULL, UNIQUE(run_id,version_id,configuration_id,repetition));
+CREATE INDEX attempts_run_phase ON attempts(run_id,phase);
+CREATE INDEX attempts_case_configuration ON attempts(version_id,configuration_id);
+CREATE TABLE benchmark_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, entity_id TEXT NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE baselines (id TEXT PRIMARY KEY, data_json TEXT NOT NULL);
+CREATE TABLE usage_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES run_plans(id), data_json TEXT NOT NULL);
+CREATE TABLE schedules (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL, next_due_at INTEGER NOT NULL, data_json TEXT NOT NULL);
+CREATE TABLE exports (id TEXT PRIMARY KEY, data_json TEXT NOT NULL);
+CREATE TABLE run_measurements (run_id TEXT PRIMARY KEY REFERENCES run_plans(id), group_id TEXT NOT NULL, before_json TEXT NOT NULL, activity_generation INTEGER NOT NULL, attempt_ids_json TEXT NOT NULL, started_at INTEGER NOT NULL, finished INTEGER NOT NULL DEFAULT 0);

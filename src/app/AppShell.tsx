@@ -1,3 +1,6 @@
+import type { BenchmarkLocation } from "@/features/benchmarks/lib/benchmarkNavigation";
+import { useBenchmarkViewStore } from "@/features/benchmarks/stores/benchmarkViewStore";
+import { useBenchmarkRuntime } from "@/features/benchmarks/hooks/useBenchmarks";
 import {
   useCallback,
   useEffect,
@@ -560,6 +563,7 @@ function getTopBarChromeInsets(
 }
 
 export function AppShell({ children }: { children?: React.ReactNode }) {
+  useBenchmarkRuntime();
   const { t } = useTranslation([
     "chat",
     "common",
@@ -568,6 +572,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     "search",
     "home",
     "sidebar",
+    "benchmarks",
   ]);
   const {
     expandSidebar,
@@ -623,6 +628,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const sidebarIsResizing = isResizing;
   const sidebarDockedPanelOuterWidth = sidebarPanelOuterWidth;
   const sidebarDockedOuterWidth = sidebarCollapsed ? 0 : sidebarPanelOuterWidth;
+  const [benchmarkLocation, setBenchmarkLocation] = useState<BenchmarkLocation>(
+    { section: "leaderboard" },
+  );
   const [skillsSkillId, setSkillsSkillId] = useState<string | null>(null);
   const [agentsPersonaId, setAgentsPersonaId] = useState<string | null>(null);
   const [globalComposerFocusRequest, setGlobalComposerFocusRequest] =
@@ -990,6 +998,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         skillsSkillId,
         agentsPersonaId,
         activeDesignSystemSection,
+        benchmarkLocation,
       ),
     [
       activeDesignSystemSection,
@@ -997,6 +1006,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       activeSettingsSection,
       activeView,
       agentsPersonaId,
+      benchmarkLocation,
       skillsSkillId,
     ],
   );
@@ -2019,7 +2029,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const guardAppNavigation = useCallback(
     (next: () => void, onCancel?: () => void) => {
-      agentBuilder.guardNavigation(next, onCancel);
+      useBenchmarkViewStore.getState().guardNavigation(() => {
+        agentBuilder.guardNavigation(next, onCancel);
+      }, onCancel);
     },
     [agentBuilder.guardNavigation],
   );
@@ -3303,6 +3315,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         if (view !== "chat" && view !== "search") {
           setActiveSession(null);
         }
+        if (view === "benchmarks") {
+          setBenchmarkLocation({ section: "leaderboard" });
+        }
         if (view === "skills") {
           setSkillsSkillId(null);
         }
@@ -3350,6 +3365,19 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     },
     activeView,
   });
+
+  const navigateBenchmarks = useCallback(
+    (location: BenchmarkLocation, options?: AppNavigationUpdateOptions) => {
+      guardAppNavigation(() => {
+        replaceNextNavigationEntryRef.current = Boolean(options?.replace);
+        setBenchmarkLocation(location);
+        setActiveSession(null);
+        clearSettingsSectionUrl();
+        setActiveView("benchmarks");
+      });
+    },
+    [guardAppNavigation, setActiveSession],
+  );
 
   const navigateSkills = useCallback(
     (skillId: string | null, options?: AppNavigationUpdateOptions) => {
@@ -3417,6 +3445,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       }
 
       clearSettingsSectionUrl();
+
+      if (location.view === "benchmarks") {
+        setActiveSession(null);
+        setBenchmarkLocation(location);
+        setActiveView("benchmarks");
+        return;
+      }
 
       if (location.view === "skills") {
         setActiveSession(null);
@@ -3605,6 +3640,16 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               current("chat-session", activeSession.title),
             ];
       }
+      case "benchmarks":
+        return [
+          parent("benchmarks", t("sidebar:navigation.benchmarks"), () =>
+            handleNavigate("benchmarks"),
+          ),
+          current(
+            "benchmark-section",
+            t(`benchmarks:sections.${benchmarkLocation.section}`),
+          ),
+        ];
       case "skills":
         return skillsSkillId && skillsBreadcrumbLabel
           ? [
@@ -3689,6 +3734,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     projects,
     skillsBreadcrumbLabel,
     skillsSkillId,
+    benchmarkLocation.section,
     t,
   ]);
 
@@ -4012,6 +4058,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               chatViewportLeftOcclusionPx={
                 renderedLocation.view === "chat" ? sidebarDockedOuterWidth : 0
               }
+              onNavigateBenchmarks={navigateBenchmarks}
               onNavigateSkills={navigateSkills}
               onNavigateAgents={navigateAgents}
               onSkillsBreadcrumbLabelChange={setSkillsBreadcrumbLabel}

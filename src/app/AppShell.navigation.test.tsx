@@ -216,6 +216,9 @@ vi.mock("@/app/views/NavigationPanesView", () => ({
       <button type="button" onClick={() => onNewChatInProject?.("project-2")}>
         Sidebar new project 2 chat
       </button>
+      <button type="button" onClick={() => onNavigate?.("benchmarks")}>
+        Sidebar benchmarks
+      </button>
       <button type="button" onClick={() => onNavigate?.("skills")}>
         Sidebar skills
       </button>
@@ -393,6 +396,7 @@ vi.mock("./ui/AppShellContent", () => ({
     isPreparingContent,
     renderedSession,
     onCloseDesignSystem,
+    onNavigateBenchmarks,
     onNavigateSkills,
     onNavigateAgents,
     onSkillsBreadcrumbLabelChange,
@@ -423,6 +427,24 @@ vi.mock("./ui/AppShellContent", () => ({
           {renderedSession?.id ?? "none"}
         </div>
         <div data-testid="settings-section">{activeSettingsSection}</div>
+        <div data-testid="benchmark-route">
+          {targetLocation.view === "benchmarks"
+            ? JSON.stringify(targetLocation)
+            : "none"}
+        </div>
+        <button
+          type="button"
+          onClick={() =>
+            onNavigateBenchmarks({
+              section: "development",
+              benchmarkId: "test-1",
+              runId: "run-1",
+              attemptId: "attempt-1",
+            })
+          }
+        >
+          Open benchmark evidence
+        </button>
         <div data-testid="skill-route">{activeSkillsSkillId ?? "list"}</div>
         <div data-testid="agent-route">{activeAgentsPersonaId ?? "list"}</div>
         <button
@@ -641,6 +663,39 @@ describe("AppShell global navigation", () => {
     });
     useProviderCatalogStore.getState().reset();
     setReadyRuntimeConfig();
+  });
+
+  it("restores benchmark section and evidence selection through Back and Forward", async () => {
+    const user = userEvent.setup();
+    renderAppShell();
+    await user.click(
+      screen.getByRole("button", { name: "Sidebar benchmarks" }),
+    );
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"section":"leaderboard"',
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Open benchmark evidence" }),
+    );
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"attemptId":"attempt-1"',
+    );
+    await user.click(screen.getByRole("button", { name: "Sidebar skills" }));
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"benchmarkId":"test-1"',
+    );
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"attemptId":"attempt-1"',
+    );
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"section":"leaderboard"',
+    );
+    await user.click(screen.getByRole("button", { name: "Forward" }));
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"attemptId":"attempt-1"',
+    );
   });
 
   it("keeps archive UI active until the backend succeeds and rolls back archivedAt on failure", async () => {

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ExecutionOwner } from "@/features/chat/lib/executionOwnership";
 import { noteSessionWorkState } from "@/features/stats/lib/usageLedger";
 import { acpCreateSession, acpListSessionsPage } from "@/shared/api/acp";
 import type {
@@ -61,6 +62,7 @@ export class SessionNotFoundError extends Error {
 }
 
 export interface ChatSession {
+  executionOwner?: ExecutionOwner | null;
   id: string;
   title: string;
   projectId?: string | null;
@@ -197,14 +199,20 @@ export function hasSessionStarted(
 export function getVisibleSessions<
   T extends Pick<
     ChatSession,
-    "id" | "messageCount" | "intent" | "targetAgentDraftSaved"
+    | "id"
+    | "messageCount"
+    | "intent"
+    | "targetAgentDraftSaved"
+    | "executionOwner"
   >,
 >(
   sessions: T[],
   messagesBySession: Record<string, ArrayLike<unknown> | number | undefined>,
 ): T[] {
-  return sessions.filter((session) =>
-    hasSessionStarted(session, messagesBySession[session.id]),
+  return sessions.filter(
+    (session) =>
+      !session.executionOwner &&
+      hasSessionStarted(session, messagesBySession[session.id]),
   );
 }
 

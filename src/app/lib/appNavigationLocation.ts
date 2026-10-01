@@ -1,6 +1,7 @@
 import type { DesignSystemSection } from "@/features/design-system/ui/designSystemSections";
 import type { SectionId } from "@/features/settings/ui/settingsSections";
 import type { AppNavigationLocation, AppView } from "../types/appNavigation";
+import type { BenchmarkLocation } from "@/features/benchmarks/lib/benchmarkNavigation";
 
 export function getAppNavigationLocation(
   view: AppView,
@@ -9,6 +10,7 @@ export function getAppNavigationLocation(
   skillsSkillId: string | null,
   agentsPersonaId: string | null,
   designSystemSection: DesignSystemSection,
+  benchmarkLocation: BenchmarkLocation = { section: "leaderboard" },
 ): AppNavigationLocation {
   switch (view) {
     case "chat":
@@ -17,6 +19,8 @@ export function getAppNavigationLocation(
       return { view, designSystemSection };
     case "skills":
       return { view, skillId: skillsSkillId };
+    case "benchmarks":
+      return { view, ...benchmarkLocation };
     case "agents":
       return { view, personaId: agentsPersonaId };
     case "settings":

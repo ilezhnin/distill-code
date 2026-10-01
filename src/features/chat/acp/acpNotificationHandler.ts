@@ -91,6 +91,10 @@ import { addSessionWorkedMs } from "@/features/stats/lib/usageLedger";
 import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
 import { isRecord } from "@/shared/lib/isRecord";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
+import {
+  observeExecutionOwner,
+  isBenchmarkSession,
+} from "@/features/chat/lib/executionOwnership";
 import { handleSessionEvent } from "./acpSessionEvents";
 import {
   appendTerminalOutput,
@@ -333,6 +337,11 @@ function toolCallUpdatePatchFor(
 export async function handleSessionNotification(
   notification: SessionNotification,
 ): Promise<void> {
+  observeExecutionOwner(
+    notification.sessionId,
+    notification._meta?.executionOwner ??
+      notification.update._meta?.executionOwner,
+  );
   const sessionId = notification.sessionId;
   const { update } = notification;
   const isReplay = useChatStore.getState().loadingSessionIds.has(sessionId);
@@ -1084,7 +1093,8 @@ function recordUsageNotification(
     turnsDelta: 1,
   });
   if (elapsedMs && elapsedMs > 0) {
-    addSessionWorkedMs(sessionId, elapsedMs);
+    if (!isBenchmarkSession(sessionId))
+      addSessionWorkedMs(sessionId, elapsedMs);
   }
 }
 

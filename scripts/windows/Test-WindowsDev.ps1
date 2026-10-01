@@ -87,8 +87,10 @@ try {
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true
     foreach ($recipe in @("_tauri-cargo-windows", "clean")) {
         $escapedRecipe = [regex]::Escape($recipe)
-        Assert-Equal "$recipe selects PowerShell locally" ($justfile -match "(?m)^\[windows\]\r?\n\[script\(`"powershell\.exe`"[^\]]*\]\r?\n${escapedRecipe}[^:]*:") $true
+        Assert-Equal "$recipe selects PowerShell locally" ($justfile -match "(?m)^\[windows\]\r?\n(?:\[positional-arguments\]\r?\n)?\[script\(`"powershell\.exe`"[^\]]*\]\r?\n${escapedRecipe}[^:]*:") $true
     }
+    Assert-Equal "Cargo wrapper uses positional argv transport" `
+        ($justfile -match '(?m)^\[windows\]\r?\n\[positional-arguments\]\r?\n\[script\("powershell\.exe"[^\]]*\]\r?\n_tauri-cargo-windows[^:]*:') $true
     Assert-Equal "stage-sidecar dispatches through its native wrapper" `
         ($justfile -match '(?m)^\[windows\]\r?\nstage\-sidecar:\r?\n\s+powershell\.exe .* -File scripts/windows/Invoke-Stage-Sidecar-Windows\.ps1\r?$') $true
     $just = Get-CommandSource "just"

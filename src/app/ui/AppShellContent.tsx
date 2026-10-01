@@ -2,6 +2,8 @@ import { useEffect, type ReactNode } from "react";
 import { HomeScreen } from "@/features/chat/ui/home/HomeScreen";
 import { WelcomeView } from "@/features/chat/ui/home/WelcomeView";
 import { ChatView } from "@/features/chat/ui/ChatView";
+import { BenchmarksView } from "@/features/benchmarks/ui/BenchmarksView";
+import type { BenchmarkLocation } from "@/features/benchmarks/lib/benchmarkNavigation";
 import { SkillsView } from "@/features/skills/ui/SkillsView";
 import { AgentsView } from "@/features/agents/ui/AgentsView";
 import { ProjectsView } from "@/features/projects/ui/ProjectsView";
@@ -47,6 +49,10 @@ interface AppShellContentProps {
   onChatComposerHandoffTarget?: (rect: GlobalComposerHandoffRect) => void;
   onWorkspaceNameRequest?: (request: WorkspaceNameRequest) => void;
   chatViewportLeftOcclusionPx?: number;
+  onNavigateBenchmarks: (
+    location: BenchmarkLocation,
+    options?: AppNavigationUpdateOptions,
+  ) => void;
   onNavigateSkills: (
     skillId: string | null,
     options?: AppNavigationUpdateOptions,
@@ -103,6 +109,7 @@ export function AppShellContent({
   onChatComposerHandoffTarget,
   onWorkspaceNameRequest,
   chatViewportLeftOcclusionPx = 0,
+  onNavigateBenchmarks,
   onNavigateSkills,
   onNavigateAgents,
   onSkillsBreadcrumbLabelChange,
@@ -168,6 +175,7 @@ export function AppShellContent({
     onCreateProject,
     onExitSearch,
     onNavigateAgents,
+    onNavigateBenchmarks,
     onNavigateSkills,
     onOpenAgent,
     onOpenExtension,
@@ -219,6 +227,10 @@ interface RenderRouteContentOptions {
   onCloseDesignSystem?: () => void;
   onDesignSystemInspectorVisibleChange?: (visible: boolean) => void;
   onDesignSystemSectionChange?: (section: DesignSystemSection) => void;
+  onNavigateBenchmarks: (
+    location: BenchmarkLocation,
+    options?: AppNavigationUpdateOptions,
+  ) => void;
   onNavigateSkills: (
     skillId: string | null,
     options?: AppNavigationUpdateOptions,
@@ -284,6 +296,7 @@ function renderRouteContent({
   onDesignSystemSectionChange,
   onExitSearch,
   onNavigateAgents,
+  onNavigateBenchmarks,
   onNavigateSkills,
   onOpenAgent,
   onOpenExtension,
@@ -316,6 +329,14 @@ function renderRouteContent({
         <SettingsView
           activeSection={location.settingsSection}
           onStartTroubleshootingChat={onStartProviderTroubleshootingChat}
+        />
+      );
+    case "benchmarks":
+      return (
+        <BenchmarksView
+          location={location}
+          onNavigate={onNavigateBenchmarks}
+          onSelectSession={onSelectSession}
         />
       );
     case "skills":

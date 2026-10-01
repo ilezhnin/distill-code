@@ -8,6 +8,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Row, SqlitePool};
 use std::path::Path;
 
+use super::execution::{ExecutionDispatch, OwnedEvent, OwnedEventPage, OwnedSessionRequest};
 use super::protocol::now_iso;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,6 +429,16 @@ impl SessionStore {
 
     fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
         let snapshot: Option<String> = row.get("snapshot_json");
+        let snapshot = snapshot
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .map(|mut snapshot| {
+                // Ownership comes only from its dedicated host table, never from
+                // native metadata or a copied/forked snapshot.
+                if let Some(meta) = snapshot.get_mut("_meta").and_then(Value::as_object_mut) {
+                    meta.remove("executionOwner");
+                }
+                snapshot
+            });
         SessionRecord {
             id: row.get("id"),
             harness: row.get("harness"),
@@ -448,7 +459,7 @@ impl SessionStore {
             archived_at: row.get("archived_at"),
             message_count: row.get("message_count"),
             last_snippet: row.get("last_snippet"),
-            snapshot: snapshot.and_then(|raw| serde_json::from_str(&raw).ok()),
+            snapshot,
         }
     }
 
@@ -529,7 +540,218 @@ impl SessionStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(|error| db_error("failed to read session", error))?;
-        Ok(row.as_ref().map(Self::row_to_session))
+        let mut record = row.as_ref().map(Self::row_to_session);
+        if let Some(record) = record.as_mut() {
+            if let Some((owner, _)) = self.execution_owner(id).await? {
+                let snapshot = record.snapshot.get_or_insert_with(|| serde_json::json!({}));
+                snapshot["_meta"]["executionOwner"] =
+                    serde_json::json!({"kind":"benchmark","id":owner.owner_id});
+            }
+        }
+        Ok(record)
+    }
+
+    pub async fn insert_owned_session(
+        &self,
+        record: &SessionRecord,
+        owner: &OwnedSessionRequest,
+        policy_hash: &str,
+    ) -> Result<(), String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| db_error("begin owned session", e))?;
+        Self::insert_session_query(record)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| db_error("insert owned session", e))?;
+        sqlx::query("INSERT INTO session_execution_owners(session_id,owner_kind,owner_id,policy_json,policy_hash) VALUES (?,'benchmark',?,?,?)")
+            .bind(&record.id).bind(&owner.owner_id).bind(serde_json::to_string(owner).map_err(|e| e.to_string())?).bind(policy_hash)
+            .execute(&mut *tx).await.map_err(|e| db_error("insert execution owner", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| db_error("commit owned session", e))
+    }
+
+    pub async fn execution_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(OwnedSessionRequest, String)>, String> {
+        let row = sqlx::query(
+            "SELECT policy_json,policy_hash FROM session_execution_owners WHERE session_id=?",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| db_error("read execution owner", e))?;
+        row.map(|row| {
+            Ok((
+                serde_json::from_str(&row.get::<String, _>("policy_json"))
+                    .map_err(|e| format!("invalid execution policy: {e}"))?,
+                row.get("policy_hash"),
+            ))
+        })
+        .transpose()
+    }
+
+    pub async fn owned_session_id(&self, owner_id: &str) -> Result<Option<String>, String> {
+        sqlx::query_scalar("SELECT session_id FROM session_execution_owners WHERE owner_id=?")
+            .bind(owner_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| db_error("read owner session", e))
+    }
+
+    pub async fn reserve_dispatch(
+        &self,
+        dispatch: &ExecutionDispatch,
+        prompt_hash: &str,
+    ) -> Result<bool, String> {
+        let now = now_iso();
+        let result = sqlx::query("INSERT INTO execution_dispatches(request_key,session_id,prompt_hash,run_id,user_message_id,phase,created_at,updated_at) VALUES (?,?,?,?,?,'reserved',?,?) ON CONFLICT DO NOTHING")
+            .bind(&dispatch.request_key).bind(&dispatch.session_id).bind(prompt_hash).bind(&dispatch.run_id).bind(&dispatch.user_message_id).bind(&now).bind(&now)
+            .execute(&self.pool).await.map_err(|e| db_error("reserve execution dispatch", e))?;
+        if result.rows_affected() == 0 {
+            let row = sqlx::query(
+                "SELECT session_id,prompt_hash FROM execution_dispatches WHERE request_key=?",
+            )
+            .bind(&dispatch.request_key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| db_error("validate duplicate dispatch", e))?;
+            if row.as_ref().is_none_or(|row| {
+                row.get::<String, _>("session_id") != dispatch.session_id
+                    || row.get::<String, _>("prompt_hash") != prompt_hash
+            }) {
+                return Err(
+                    "validation: dispatch key or owned turn already used with a different request"
+                        .into(),
+                );
+            }
+        }
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn execution_dispatch(
+        &self,
+        request_key: &str,
+    ) -> Result<Option<ExecutionDispatch>, String> {
+        let row = sqlx::query("SELECT execution_dispatches.*, (SELECT COALESCE(MAX(id),0) FROM session_events WHERE session_id=execution_dispatches.session_id) AS event_cursor FROM execution_dispatches WHERE request_key=?")
+            .bind(request_key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| db_error("read execution dispatch", e))?;
+        row.map(|row| {
+            let outcome = row
+                .get::<Option<String>, _>("outcome_json")
+                .map(|raw| serde_json::from_str::<Value>(&raw))
+                .transpose()
+                .map_err(|e| e.to_string())?;
+            Ok(ExecutionDispatch {
+                request_key: row.get("request_key"),
+                session_id: row.get("session_id"),
+                run_id: row.get("run_id"),
+                user_message_id: row.get("user_message_id"),
+                phase: row.get("phase"),
+                event_cursor: row.get("event_cursor"),
+                result: outcome
+                    .as_ref()
+                    .and_then(|v| v.get("result"))
+                    .filter(|v| !v.is_null())
+                    .cloned(),
+                error: outcome
+                    .as_ref()
+                    .and_then(|v| v.get("error"))
+                    .filter(|v| !v.is_null())
+                    .cloned(),
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn settle_dispatch(
+        &self,
+        request_key: &str,
+        phase: &str,
+        result: Option<&Value>,
+        error: Option<&Value>,
+    ) -> Result<(), String> {
+        sqlx::query("UPDATE execution_dispatches SET phase=?,outcome_json=?,updated_at=? WHERE request_key=?")
+            .bind(phase).bind(serde_json::json!({"result":result,"error":error}).to_string()).bind(now_iso()).bind(request_key)
+            .execute(&self.pool).await.map_err(|e| db_error("settle execution dispatch", e))?;
+        Ok(())
+    }
+
+    pub async fn reconcile_execution_dispatches(&self) -> Result<(), String> {
+        sqlx::query("UPDATE execution_dispatches SET phase='uncertain',outcome_json=?,updated_at=? WHERE phase IN ('reserved','running')")
+            .bind(serde_json::json!({"error":{"kind":"dispatch_uncertain","message":"Host restarted before a terminal outcome was committed"}}).to_string())
+            .bind(now_iso()).execute(&self.pool).await.map_err(|e| db_error("reconcile owned executions", e))?;
+        Ok(())
+    }
+
+    pub async fn owned_events(
+        &self,
+        session_id: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<OwnedEventPage, String> {
+        if self.execution_owner(session_id).await?.is_none() {
+            return Err("validation: session is not owned".into());
+        }
+        let limit = limit.clamp(1, 256);
+        let rows = sqlx::query("SELECT id,payload_json FROM session_events WHERE session_id=? AND id>? ORDER BY id ASC LIMIT ?")
+            .bind(session_id).bind(after.max(0)).bind(i64::from(limit)+1).fetch_all(&self.pool).await.map_err(|e| db_error("read execution evidence", e))?;
+        let has_more = rows.len() > limit as usize;
+        let events = rows
+            .into_iter()
+            .take(limit as usize)
+            .map(|row| {
+                Ok(OwnedEvent {
+                    event_id: row.get("id"),
+                    payload: serde_json::from_str(&row.get::<String, _>("payload_json"))
+                        .map_err(|e| e.to_string())?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let cursor = events.last().map_or(after, |event| event.event_id);
+        Ok(OwnedEventPage {
+            events,
+            cursor,
+            has_more,
+        })
+    }
+
+    pub async fn execution_policy_violation(&self, session_id: &str) -> Result<bool, String> {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id=? AND json_extract(payload_json,'$.update._meta.executionViolation') IS NOT NULL)")
+            .bind(session_id).fetch_one(&self.pool).await.map_err(|e|db_error("read execution policy violations",e))
+    }
+
+    pub async fn request_execution_cancel(&self, key: &str) -> Result<(), String> {
+        sqlx::query("UPDATE execution_dispatches SET cancel_requested=1,updated_at=? WHERE request_key=? AND phase!='terminal'")
+            .bind(now_iso()).bind(key).execute(&self.pool).await.map_err(|e|db_error("request execution cancel",e))?;
+        Ok(())
+    }
+
+    pub async fn execution_cancel_requested(&self, key: &str) -> Result<bool, String> {
+        sqlx::query_scalar("SELECT cancel_requested FROM execution_dispatches WHERE request_key=?")
+            .bind(key)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| db_error("read execution cancellation", e))
+    }
+
+    pub async fn session_execution_cancelled(&self, id: &str) -> Result<bool, String> {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_dispatches WHERE session_id=? AND cancel_requested=1)")
+            .bind(id).fetch_one(&self.pool).await.map_err(|e|db_error("read owned admission cancellation",e))
+    }
+
+    pub async fn session_has_execution_dispatch(&self, id: &str) -> Result<bool, String> {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_dispatches WHERE session_id=?)")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| db_error("read execution reservation", e))
     }
 
     /// Sessions ordered by most recent activity. Hidden sessions (private
@@ -1065,6 +1287,15 @@ impl SessionStore {
             if let Some(object) = event.as_object_mut() {
                 object.insert("sessionId".to_string(), Value::String(to.to_string()));
             }
+            if let Some(meta) = event
+                .pointer_mut("/update/_meta")
+                .and_then(Value::as_object_mut)
+            {
+                // A fork is a new ordinary conversation. The source's sealed
+                // evidence remains owned, while copied text is free to continue.
+                meta.remove("executionOwner");
+                meta.remove("executionViolation");
+            }
             sqlx::query(
                 "INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, ?, ?)",
             )
@@ -1405,6 +1636,152 @@ fn recorded_before(created_at: &str, cutoff: i64) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn owned_session_and_dispatch_survive_restart_without_duplicate_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("owned.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        let owner = OwnedSessionRequest {
+            owner_id: "attempt-1".into(),
+            provider_id: "claude-acp".into(),
+            account_id: "account-1".into(),
+            model_id: "model-1".into(),
+            reasoning_effort: Some("high".into()),
+            fast_mode: Some(false),
+            cwd: "C:\\fixture".into(),
+            title: "Benchmark".into(),
+            profile: super::super::execution::ExecutionProfile::NativeTextV1,
+        };
+        store
+            .insert_owned_session(&record("owned"), &owner, "policy")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .owned_session_id("attempt-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("owned")
+        );
+        assert_eq!(
+            store
+                .get_session("owned")
+                .await
+                .unwrap()
+                .unwrap()
+                .snapshot
+                .unwrap()["_meta"]["executionOwner"]["id"],
+            "attempt-1"
+        );
+        // The unique owner and session row commit as one transaction.
+        assert!(store
+            .insert_owned_session(&record("duplicate"), &owner, "policy")
+            .await
+            .is_err());
+        assert!(store.get_session("duplicate").await.unwrap().is_none());
+        let dispatch = ExecutionDispatch {
+            request_key: "request-1".into(),
+            session_id: "owned".into(),
+            run_id: "run-1".into(),
+            user_message_id: "message-1".into(),
+            phase: "reserved".into(),
+            event_cursor: 0,
+            result: None,
+            error: None,
+        };
+        assert!(store.reserve_dispatch(&dispatch, "prompt").await.unwrap());
+        assert!(!store.reserve_dispatch(&dispatch, "prompt").await.unwrap());
+        assert!(store
+            .reserve_dispatch(&dispatch, "different")
+            .await
+            .is_err());
+        let mut second = dispatch.clone();
+        second.request_key = "request-2".into();
+        second.run_id = "run-2".into();
+        second.user_message_id = "message-2".into();
+        assert!(store.reserve_dispatch(&second, "prompt").await.is_err());
+        store.pool.close().await;
+        let restarted = SessionStore::open(&path).await.unwrap();
+        restarted.reconcile_execution_dispatches().await.unwrap();
+        assert_eq!(
+            restarted
+                .execution_dispatch("request-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            "uncertain"
+        );
+        assert!(!restarted
+            .reserve_dispatch(&dispatch, "prompt")
+            .await
+            .unwrap());
+        restarted
+            .settle_dispatch(
+                "request-1",
+                "terminal",
+                Some(&json!({"stopReason":"end_turn"})),
+                None,
+            )
+            .await
+            .unwrap();
+        restarted.reconcile_execution_dispatches().await.unwrap();
+        assert_eq!(
+            restarted
+                .execution_dispatch("request-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            "terminal"
+        );
+    }
+
+    #[tokio::test]
+    async fn owned_evidence_pages_preserve_unknown_usage_and_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::open(&dir.path().join("host.db"))
+            .await
+            .unwrap();
+        let owner = OwnedSessionRequest {
+            owner_id: "attempt".into(),
+            provider_id: "claude-acp".into(),
+            account_id: "account".into(),
+            model_id: "model".into(),
+            reasoning_effort: None,
+            fast_mode: None,
+            cwd: "C:\\fixture".into(),
+            title: "Benchmark".into(),
+            profile: super::super::execution::ExecutionProfile::NativeTextV1,
+        };
+        store
+            .insert_owned_session(&record("a"), &owner, "policy")
+            .await
+            .unwrap();
+        store.append_events("a",&[event("one"),json!({"sessionId":"a","update":{"sessionUpdate":"usage_update","inputTokens":10,"_meta":{"benchmarkRawUsage":{"inputTokens":10}}}}),event("three")]).await.unwrap();
+        let page = store.owned_events("a", 0, 2).await.unwrap();
+        assert!(page.has_more);
+        assert_eq!(page.events.len(), 2);
+        assert!(page.events[1].payload["update"]
+            .get("outputTokens")
+            .is_none());
+        let next = store.owned_events("a", page.cursor, 2).await.unwrap();
+        assert!(!next.has_more);
+        assert_eq!(next.events.len(), 1);
+        assert!(next.cursor > page.cursor);
+        assert!(store.owned_events("ordinary", 0, 2).await.is_err());
+        assert!(!store.execution_policy_violation("a").await.unwrap());
+        store
+            .append_events(
+                "a",
+                &[json!({"update":{"_meta":{"executionViolation":"tool"}}})],
+            )
+            .await
+            .unwrap();
+        assert!(store.execution_policy_violation("a").await.unwrap());
+    }
 
     fn record(id: &str) -> SessionRecord {
         SessionRecord {

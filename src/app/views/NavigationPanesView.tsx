@@ -87,6 +87,7 @@ const MAIN_NAV_SCROLL_TARGETS: ReadonlySet<AppView> = new Set([
   "home",
   "agents",
   "skills",
+  "benchmarks",
   "session-history",
 ]);
 

@@ -63,6 +63,7 @@
       "icons/icon.ico"
     ],
     "resources": {
+      "../node_modules/playwright-core/": "benchmark-worker/node_modules/playwright-core/",
       "../distro": "distro",
       "resources/runtime-config.json": "runtime-config.json",
       "../resources/distill-sounds-0.mp3": "distill-sounds-0.mp3",

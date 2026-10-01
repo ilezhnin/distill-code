@@ -74,6 +74,8 @@ function renderLocationPlaceholder(location: AppNavigationLocation): ReactNode {
       ) : (
         <SkillsPlaceholder />
       );
+    case "benchmarks":
+      return <DetailPlaceholder tone="workbench" />;
     case "agents":
       return location.personaId ? (
         <DetailPlaceholder tone="profile" />

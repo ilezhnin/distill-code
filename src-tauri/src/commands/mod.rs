@@ -3,6 +3,7 @@ pub mod agent_setup;
 pub mod agent_skills;
 pub mod agents;
 pub mod avatars;
+pub mod benchmarks;
 pub mod cache;
 pub mod diagnostics;
 pub mod distill_store;

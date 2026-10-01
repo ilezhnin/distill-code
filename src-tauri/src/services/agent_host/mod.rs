@@ -4,6 +4,7 @@
 //! defaults, MCP configuration, and skill/agent/project files itself.
 
 pub mod bridge;
+pub mod execution;
 mod ext;
 pub mod harness;
 mod harness_env;

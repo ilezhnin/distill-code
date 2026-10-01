@@ -50,6 +50,7 @@
     "noProject": "No project"
   },
   "navigation": {
+    "benchmarks": "Benchmarks",
     "agents": "Agents",
     "automations": "Automations",
     "builderbot": "Builderbot",

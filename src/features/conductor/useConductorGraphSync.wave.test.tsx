@@ -108,6 +108,44 @@ describe("useConductorGraphSync wave bridge", () => {
     vi.useRealTimers();
   });
 
+  it("cannot start a wave from an owned benchmark transcript", async () => {
+    const {
+      useConductorGraphSync,
+      useConductorGraphStore,
+      useChatStore,
+      useChatSessionStore,
+      waveStore,
+    } = await loadModules();
+    useChatSessionStore.setState({
+      hasHydratedSessions: true,
+      sessions: [
+        {
+          id: CONDUCTOR_ID,
+          title: "Benchmark evidence",
+          createdAt: "2026-09-30",
+          updatedAt: "2026-09-30",
+          messageCount: 2,
+          executionOwner: { kind: "benchmark", id: "wave-injection-attempt" },
+        },
+      ],
+    });
+    useChatStore.setState({
+      hasHydratedMessageQueues: true,
+      messagesBySession: {
+        [CONDUCTOR_ID]: [assistant("benchmark-plan", PLAN)],
+      },
+      sessionStateById: {},
+    });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    renderHook(() => useConductorGraphSync());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+    expect(waveStore.getWaveEngineState().waves).toHaveLength(0);
+  });
+
   it("runs a whole wave and delivers one digest envelope for it", async () => {
     const modules = await loadModules();
     const {

@@ -26,6 +26,7 @@
  */
 
 import { useEffect } from "react";
+import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -105,6 +106,7 @@ function drainRecallFences(): void {
       isAnswered: (messageId) => answered.has(messageId),
     });
     for (const candidate of candidates) {
+      if (isBenchmarkSession(candidate.sessionId)) continue;
       // Tombstoned before anything else happens: delivery is asynchronous and
       // itself changes the transcript this drain listens to, so a question
       // still marked unanswered when the next pass runs is a question asked

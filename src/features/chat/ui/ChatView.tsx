@@ -1047,7 +1047,11 @@ export function ChatView({
       ? state.nodesById[conductorNode.parentSessionId]
       : undefined,
   );
-  const composerFooter = (
+  const composerFooter = effectiveSession?.executionOwner ? (
+    <div className="p-4 text-sm text-muted-foreground" role="status">
+      {t("benchmarks:readOnlyTranscript")}
+    </div>
+  ) : (
     <div className="px-[var(--spacing-app-panel-gutter-inline)] pb-[var(--spacing-app-panel-gutter-inline)]">
       <div
         ref={composerShellRef}
@@ -1269,8 +1273,12 @@ export function ChatView({
       onChangeFolder={onTimelineChangeFolder}
       onOpenContextPanel={handleOpenContextPanel}
       onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
-      onEditMessage={handleEditMessage}
-      onEditMessagePart={handleEditMessagePart}
+      onEditMessage={
+        effectiveSession?.executionOwner ? undefined : handleEditMessage
+      }
+      onEditMessagePart={
+        effectiveSession?.executionOwner ? undefined : handleEditMessagePart
+      }
       onRemoveMessagePart={handleRemoveMessagePart}
       showPlaceholder={showTimelineLoading}
       placeholder={conversationPlaceholder}

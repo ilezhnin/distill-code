@@ -8,6 +8,7 @@
  */
 
 import { useEffect } from "react";
+import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -116,6 +117,7 @@ function drainMemoryFences(): void {
     if (candidates.length === 0) return;
     const sessions = useChatSessionStore.getState();
     for (const candidate of candidates) {
+      if (isBenchmarkSession(candidate.sessionId)) continue;
       // The memory ACL: a conductor-graph session only writes when its layer
       // allows it. Refused fences are tombstoned — not applied — and said out
       // loud, in the spirit of the digest's "[protocol block removed]": a

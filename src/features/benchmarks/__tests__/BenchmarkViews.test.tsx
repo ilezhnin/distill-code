@@ -1,0 +1,474 @@
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState, type ReactNode } from "react";
+import { benchmarkApi } from "../api/benchmarks";
+import { BenchmarkEditor } from "../ui/BenchmarkEditor";
+import { BenchmarksView } from "../ui/BenchmarksView";
+import { LeaderboardView } from "../ui/LeaderboardView";
+import { BenchmarkRoutingDialog } from "../ui/BenchmarkRoutingDialog";
+import {
+  BenchmarkExportDialog,
+  BenchmarkSchedulesDialog,
+} from "../ui/BenchmarkManagementDialogs";
+import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
+import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
+import {
+  attempt,
+  configuration,
+  definition,
+  draft,
+  run,
+  runSummary,
+} from "./fixtures";
+
+vi.mock("../api/benchmarks", () => ({
+  benchmarkErrorMessage: (error: unknown) =>
+    error && typeof error === "object" && "message" in error
+      ? String(error.message)
+      : String(error),
+  benchmarkApi: {
+    listDefinitions: vi.fn(),
+    listRuns: vi.fn(),
+    listAttempts: vi.fn(),
+    getRun: vi.fn(),
+    getEvidence: vi.fn(),
+    listBaselines: vi.fn(),
+    getLeaderboard: vi.fn(),
+    getRoutingEvidence: vi.fn(),
+    getUsageSeries: vi.fn(),
+    getComparisons: vi.fn(),
+    getUsageComparisons: vi.fn(),
+    listSchedules: vi.fn(),
+    saveSchedule: vi.fn(),
+    saveDraft: vi.fn(),
+    validateDraft: vi.fn(),
+    publishVersion: vi.fn(),
+    getInventory: vi.fn(),
+    getCapabilities: vi.fn(),
+    startRun: vi.fn(),
+    previewRun: vi.fn(),
+    eventsSince: vi.fn(),
+    listen: vi.fn(),
+    exportDataset: vi.fn(),
+  },
+}));
+vi.mock("@/features/stats/lib/usageLedger", () => ({
+  projectBenchmarkUsage: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  convertFileSrc: (path: string) => path,
+}));
+
+function wrap(content: ReactNode) {
+  return render(
+    <QueryClientProvider
+      client={
+        new QueryClient({
+          defaultOptions: {
+            queries: { retry: false },
+            mutations: { retry: false },
+          },
+        })
+      }
+    >
+      {content}
+    </QueryClientProvider>,
+  );
+}
+
+describe("benchmark authoring and saved evidence", () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    HTMLElement.prototype.hasPointerCapture = () => false;
+    HTMLElement.prototype.setPointerCapture = () => {};
+    HTMLElement.prototype.releasePointerCapture = () => {};
+    HTMLElement.prototype.scrollIntoView = () => {};
+    useBenchmarkViewStore.setState({ dirty: false, pending: null });
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([definition]);
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([runSummary]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getRun).mockResolvedValue(run);
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
+    vi.mocked(benchmarkApi.listBaselines).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getUsageSeries).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listSchedules).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.eventsSince).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listen).mockResolvedValue(() => {});
+  });
+  it("saves the current revision before immutable publication", async () => {
+    const user = userEvent.setup();
+    const saved = {
+      ...definition,
+      draftRevision: 2,
+      draft: { ...draft, name: "Revised extraction" },
+    };
+    vi.mocked(benchmarkApi.saveDraft).mockResolvedValue(saved);
+    vi.mocked(benchmarkApi.publishVersion).mockResolvedValue(
+      definition.versions[0],
+    );
+    wrap(
+      <BenchmarkEditor
+        definition={definition}
+        onSaved={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+    await user.clear(screen.getByRole("textbox", { name: "Name" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Name" }),
+      "Revised extraction",
+    );
+    expect(useBenchmarkViewStore.getState().dirty).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Publish version" }));
+    await waitFor(() =>
+      expect(benchmarkApi.publishVersion).toHaveBeenCalledWith(
+        "definition-1",
+        2,
+      ),
+    );
+    expect(benchmarkApi.saveDraft).toHaveBeenCalledWith(
+      "definition-1",
+      1,
+      expect.objectContaining({ name: "Revised extraction" }),
+    );
+    expect(useBenchmarkViewStore.getState().dirty).toBe(false);
+  });
+  it("retains dirty text after an optimistic conflict", async () => {
+    vi.mocked(benchmarkApi.saveDraft).mockRejectedValue({
+      code: "revision_conflict",
+      message: "A newer draft exists",
+    });
+    wrap(
+      <BenchmarkEditor
+        definition={definition}
+        onSaved={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Prompt" }), {
+      target: { value: "new prompt" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A newer draft exists",
+    );
+    expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveValue(
+      "new prompt",
+    );
+    expect(useBenchmarkViewStore.getState().dirty).toBe(true);
+  });
+  it("rejects malformed fixture JSON before IPC", async () => {
+    wrap(
+      <BenchmarkEditor
+        definition={definition}
+        onSaved={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Fixture files (JSON)" }),
+      { target: { value: "invalid" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await screen.findByRole("alert");
+    expect(benchmarkApi.saveDraft).not.toHaveBeenCalled();
+  });
+  it("opens all four views without probing inventory or starting inference", async () => {
+    function Workspace() {
+      const [location, setLocation] = useState<BenchmarkLocation>({
+        section: "leaderboard",
+      });
+      return (
+        <BenchmarksView
+          location={location}
+          onNavigate={setLocation}
+          onSelectSession={vi.fn()}
+        />
+      );
+    }
+    wrap(<Workspace />);
+    await screen.findByText(
+      "No results match this selection. Publish and run a benchmark to collect evidence.",
+    );
+    for (const label of [
+      "Bench development",
+      "Nerf Bench",
+      "Usage Bench",
+      "Leaderboard",
+    ]) {
+      await userEvent.click(screen.getByRole("tab", { name: label }));
+    }
+    expect(benchmarkApi.getInventory).not.toHaveBeenCalled();
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("replaces the run drawer with captured evidence when Inspect is clicked", async () => {
+    function Workspace() {
+      const [location, setLocation] = useState<BenchmarkLocation>({
+        section: "leaderboard",
+        runId: run.id,
+      });
+      return (
+        <BenchmarksView
+          location={location}
+          onNavigate={setLocation}
+          onSelectSession={vi.fn()}
+        />
+      );
+    }
+    wrap(<Workspace />);
+    const drawer = await screen.findByRole("dialog", {
+      name: "Runs and history",
+    });
+    await userEvent.click(
+      await within(drawer).findByRole("button", { name: "Inspect" }),
+    );
+    const evidence = await screen.findByRole("dialog", { name: "Evidence" });
+    expect(
+      await within(evidence).findByText("Captured output"),
+    ).toBeInTheDocument();
+    expect(
+      within(evidence).getByText("4", { selector: "pre" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("dialog", { name: "Runs and history" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+  it("shows missing cost and coverage without inventing a comparable score", async () => {
+    const inspect = vi.fn();
+    wrap(
+      <LeaderboardView
+        rows={[
+          {
+            configuration,
+            passed: 0,
+            attempted: 0,
+            planned: 4,
+            quality: null,
+            medianDurationMs: null,
+            cost: null,
+            status: "preliminary",
+            reason: "No valid evidence",
+            attemptIds: ["attempt-1"],
+          },
+        ]}
+        onEvidence={inspect}
+      />,
+    );
+    const row = screen.getByRole("row", { name: /model-1/ });
+    expect(within(row).getAllByText("Not reported")).toHaveLength(3);
+    expect(row).toHaveTextContent("0 / 4");
+    expect(row).not.toHaveTextContent("0.0%");
+    await userEvent.click(within(row).getByRole("button", { name: "1" }));
+    expect(inspect).toHaveBeenCalledWith("attempt-1");
+  });
+  it("defaults dataset export to exclude held-out outcomes", async () => {
+    vi.mocked(benchmarkApi.exportDataset).mockResolvedValue({
+      id: "export",
+      path: "results.jsonl",
+      manifestPath: "manifest.json",
+      rowCount: 1,
+      contentHash: "hash",
+    });
+    wrap(<BenchmarkExportDialog onClose={vi.fn()} />);
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Export dataset" }),
+    );
+    await waitFor(() =>
+      expect(benchmarkApi.exportDataset).toHaveBeenCalledWith(false),
+    );
+  });
+  it("never enables automatic retesting on mount", async () => {
+    wrap(<BenchmarkSchedulesDialog runs={[runSummary]} onClose={vi.fn()} />);
+    await act(async () => {});
+    expect(
+      screen.getByRole("checkbox", { name: /explicitly enable/ }),
+    ).not.toBeChecked();
+    expect(benchmarkApi.saveSchedule).not.toHaveBeenCalled();
+  });
+  it("saves declared role context and a bounded workflow before any run", async () => {
+    vi.mocked(benchmarkApi.saveDraft).mockResolvedValue(definition);
+    wrap(
+      <BenchmarkEditor
+        definition={definition}
+        onSaved={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Role ID (optional)" }),
+      { target: { value: "reviewer" } },
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Frozen role instructions" }),
+      { target: { value: "Report verified errors only." } },
+    );
+    const workflow = {
+      schemaVersion: 1,
+      driverRevision: "1",
+      steps: [
+        {
+          id: "analyze",
+          prompt: "Extract the integer.",
+          includePreviousOutput: false,
+        },
+        { id: "answer", prompt: "Return it.", includePreviousOutput: true },
+      ],
+    };
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Bounded workflow (JSON or null)" }),
+      { target: { value: JSON.stringify(workflow) } },
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() =>
+      expect(benchmarkApi.saveDraft).toHaveBeenCalledWith(
+        "definition-1",
+        1,
+        expect.objectContaining({
+          roleId: "reviewer",
+          rolePrompt: "Report verified errors only.",
+          workflow,
+        }),
+      ),
+    );
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("requires explicit discovery and keeps new campaigns disabled", async () => {
+    const user = userEvent.setup();
+    wrap(<BenchmarkSchedulesDialog runs={[runSummary]} onClose={vi.fn()} />);
+    await user.type(
+      screen.getByRole("textbox", { name: "Name" }),
+      "Calibration",
+    );
+    await user.click(
+      screen.getByRole("combobox", { name: "Frozen plan and per-run budget" }),
+    );
+    await user.click(screen.getByRole("option", { name: /run-1/ }));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Refresh models within a declared discovery scope",
+      }),
+    );
+    expect(
+      screen.getByRole("checkbox", { name: /Allow calibration/ }),
+    ).not.toBeChecked();
+    await user.click(
+      screen.getByRole("checkbox", { name: /Allow calibration/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() =>
+      expect(benchmarkApi.saveSchedule).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enabled: false,
+          maxRuns: 20,
+          maxTotalExecutions: 100,
+          discovery: {
+            providerId: "claude-acp",
+            accountId: "account-1",
+            includeNewModels: true,
+            modelIds: [],
+            maxCandidates: 4,
+          },
+        }),
+      ),
+    );
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("reads selector evidence only on request and leaves availability unknown", async () => {
+    vi.mocked(benchmarkApi.getRoutingEvidence).mockResolvedValue({
+      schemaVersion: 1,
+      generatedAt: 10,
+      queryHash: "query-hash",
+      mode: "exact",
+      candidates: [],
+    });
+    wrap(
+      <BenchmarkRoutingDialog
+        versions={definition.versions}
+        runs={[runSummary]}
+        onClose={vi.fn()}
+        onEvidence={vi.fn()}
+      />,
+    );
+    expect(benchmarkApi.getRoutingEvidence).not.toHaveBeenCalled();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Read evidence" }),
+    );
+    await waitFor(() =>
+      expect(benchmarkApi.getRoutingEvidence).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "exact",
+          purpose: "analysis",
+          targetVersionId: "version-1",
+          candidates: [
+            expect.objectContaining({ available: false, configuration }),
+          ],
+        }),
+      ),
+    );
+    expect(
+      await screen.findByText("No candidates were supplied."),
+    ).toBeInTheDocument();
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("loads saved-test results only on opening the tab and requests bounded historical pages", async () => {
+    vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>
+      Array.from({ length: query.offset === 0 ? 50 : 1 }, (_, index) => ({
+        id: `saved-attempt-${(query.offset ?? 0) + index}`,
+        runId: "older-run",
+        versionId: "version-1",
+        modelId: query.offset === 0 ? "first-page-model" : "older-page-model",
+        phase: "terminal",
+        outcome: "pass",
+      })),
+    );
+    const onNavigate = vi.fn();
+    wrap(
+      <BenchmarksView
+        location={{ section: "development", benchmarkId: definition.id }}
+        onNavigate={onNavigate}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    await screen.findByRole("textbox", { name: "Name" });
+    expect(benchmarkApi.listAttempts).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("tab", { name: "Results" }));
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
+        versionIds: ["version-1"],
+        offset: 0,
+        limit: 50,
+      }),
+    );
+    expect(await screen.findAllByText("first-page-model")).toHaveLength(50);
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(await screen.findByText("older-page-model")).toBeInTheDocument();
+    expect(screen.queryByText("first-page-model")).not.toBeInTheDocument();
+    expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+      versionIds: ["version-1"],
+      offset: 50,
+      limit: 50,
+    });
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(onNavigate).toHaveBeenCalledWith({
+      section: "development",
+      benchmarkId: definition.id,
+      attemptId: "saved-attempt-50",
+    });
+  });
+});
