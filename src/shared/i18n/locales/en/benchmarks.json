@@ -289,6 +289,7 @@
     "file": "Definition JSON file",
     "content": "Definition JSON",
     "selected": "{{count}} files selected",
+    "publish": "Publish definitions that validate (verifies evaluators against their references; never calls a model)",
     "tooLarge": "Choose a definition smaller than 8 MiB."
   },
   "export": {

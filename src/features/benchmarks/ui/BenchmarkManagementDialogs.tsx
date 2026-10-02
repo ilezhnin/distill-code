@@ -67,23 +67,43 @@ export function BenchmarkImportDialog({
   const client = useQueryClient();
   const [content, setContent] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [publish, setPublish] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Importing never runs anything; publishing only verifies the evaluator
+  // against its own references, so a prepared set can be loaded ready to run.
+  const importOne = async (draft: BenchmarkDraft) => {
+    const definition = await benchmarkApi.importDefinition(draft);
+    if (publish) {
+      await benchmarkApi.publishVersion(
+        definition.id,
+        definition.draftRevision,
+      );
+    }
+    return definition;
+  };
   const importDraft = async () => {
     setBusy(true);
     setError(null);
     try {
       if (files.length > 1) {
+        const failures: string[] = [];
         for (const file of files) {
-          const draft: BenchmarkDraft = JSON.parse(await file.text());
-          await benchmarkApi.importDefinition(draft);
+          try {
+            await importOne(JSON.parse(await file.text()));
+          } catch (failure) {
+            failures.push(`${file.name}: ${benchmarkErrorMessage(failure)}`);
+          }
         }
         await client.invalidateQueries({ queryKey: benchmarkKeys });
+        if (failures.length) {
+          setError(failures.join("\n"));
+          return;
+        }
         onImported();
         return;
       }
-      const draft: BenchmarkDraft = JSON.parse(content);
-      const definition = await benchmarkApi.importDefinition(draft);
+      const definition = await importOne(JSON.parse(content));
       await client.invalidateQueries({ queryKey: benchmarkKeys });
       onImported(definition.id);
     } catch (failure) {
@@ -128,6 +148,13 @@ export function BenchmarkImportDialog({
               }
             }}
           />
+          <Label className="flex items-start gap-2 text-sm">
+            <Checkbox
+              checked={publish}
+              onCheckedChange={(checked) => setPublish(checked === true)}
+            />
+            {t("import.publish")}
+          </Label>
           {files.length > 1 ? (
             <p className="text-sm text-muted-foreground">
               {t("import.selected", { count: files.length })}
