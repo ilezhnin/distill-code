@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   Attempt,
   AttemptSummary,
+  DesignEntry,
   BenchmarkDefinition,
   BenchmarkDraft,
   BenchmarkEvent,
@@ -75,6 +76,8 @@ export const benchmarkApi = {
   listRuns: () => invoke<RunSummary[]>("benchmark_list_runs"),
   listAttempts: (query: ResultQuery) =>
     invoke<AttemptSummary[]>("benchmark_list_attempts", { query }),
+  listDesigns: (query: ResultQuery) =>
+    invoke<DesignEntry[]>("benchmark_list_designs", { query }),
   getRun: (id: string) => invoke<BenchmarkRun>("benchmark_get_run", { id }),
   pauseRun: (id: string) => invoke<BenchmarkRun>("benchmark_pause_run", { id }),
   resumeRun: (id: string) =>

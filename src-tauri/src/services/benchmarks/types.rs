@@ -244,6 +244,38 @@ pub struct AttemptSummary {
     pub output_tokens: Option<u64>,
     pub cost: Option<f64>,
 }
+/// The human verdict behind a creative rendering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignReview {
+    pub score: f64,
+    pub reason: String,
+    pub details: Option<serde_json::Value>,
+    pub created_at: i64,
+}
+/// The newest rendering of one creative brief by one configuration, with
+/// the markup to show and the review if one was recorded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignEntry {
+    pub attempt_id: String,
+    pub run_id: String,
+    pub run_created_at: i64,
+    pub version_id: String,
+    pub name: String,
+    pub task_family: String,
+    pub difficulty: Option<String>,
+    pub output_format: Option<String>,
+    pub configuration: Configuration,
+    pub phase: String,
+    pub outcome: Option<String>,
+    pub output: Option<String>,
+    pub finished_at: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost: Option<f64>,
+    pub review: Option<DesignReview>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {

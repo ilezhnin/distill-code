@@ -1,12 +1,10 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "@/shared/ui/button";
 import {
   Dialog,
   DialogBody,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
@@ -82,17 +80,6 @@ export function BenchmarkAttemptsDialog({
             )}
           </section>
         </DialogBody>
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            flush
-            className="sm:mr-auto"
-            onClick={onClose}
-          >
-            {t("actions.close")}
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

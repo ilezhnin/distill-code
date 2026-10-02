@@ -230,6 +230,77 @@ impl Store {
             })
             .collect())
     }
+    /// The newest rendering per creative brief and configuration, newest
+    /// run first, with the markup and any recorded review.
+    pub async fn list_designs(&self, q: &ResultQuery) -> Result<Vec<DesignEntry>> {
+        let versions = q
+            .version_ids
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let rows = sqlx::query(
+            "SELECT a.data_json,v.manifest_json,r.created_at
+             FROM attempts a
+             JOIN benchmark_versions v ON v.id=a.version_id
+             JOIN run_plans r ON r.id=a.run_id
+             WHERE json_extract(v.manifest_json,'$.workClassId')='creative'
+                AND COALESCE(json_extract(r.request_json,'$.preview'),0)=0
+                AND (? IS NULL OR a.run_id=?)
+                AND (? IS NULL OR a.version_id IN (SELECT value FROM json_each(?)))
+             ORDER BY r.created_at DESC,r.id,a.rowid DESC",
+        )
+        .bind(&q.run_id)
+        .bind(&q.run_id)
+        .bind(&versions)
+        .bind(&versions)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for row in rows {
+            let attempt: Attempt = serde_json::from_str(&row.get::<String, _>(0))?;
+            let manifest: BenchmarkDraft = serde_json::from_str(&row.get::<String, _>(1))?;
+            let configuration = super::analysis::execution_configuration(&attempt).clone();
+            let key = (
+                attempt.version_id.clone(),
+                super::analysis::configuration_key(&configuration),
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            let review = attempt
+                .evaluations
+                .iter()
+                .rev()
+                .find(|e| e.provenance == "human" && e.score.is_some())
+                .map(|e| DesignReview {
+                    score: e.score.unwrap_or_default(),
+                    reason: e.reason.clone(),
+                    details: e.details.clone(),
+                    created_at: e.created_at,
+                });
+            out.push(DesignEntry {
+                attempt_id: attempt.id.clone(),
+                run_id: attempt.run_id.clone(),
+                run_created_at: row.get(2),
+                version_id: attempt.version_id.clone(),
+                name: manifest.name.clone(),
+                task_family: manifest.task_family.clone(),
+                difficulty: manifest.facets.difficulty.clone(),
+                output_format: manifest.facets.output_format.clone(),
+                configuration,
+                phase: attempt.phase.clone(),
+                outcome: attempt.outcome.clone(),
+                output: attempt.output.clone(),
+                finished_at: attempt.finished_at,
+                duration_ms: attempt.duration_ms,
+                output_tokens: attempt.usage.output,
+                cost: attempt.usage.cost,
+                review,
+            });
+        }
+        Ok(out)
+    }
     pub async fn active_runs(&self) -> Result<Vec<BenchmarkRun>> {
         let ids=sqlx::query_scalar::<_,String>("SELECT id FROM run_plans WHERE state NOT IN ('completed','cancelled') ORDER BY created_at").fetch_all(&self.pool).await?;
         let mut out = Vec::new();
@@ -467,6 +538,67 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn the_design_gallery_keeps_the_newest_rendering_per_brief_and_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = json!({"id":"candidate","providerId":"provider","accountId":null,"modelId":"native-model","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let mut tx = store.pool.begin().await.unwrap();
+        for (run, created_at, preview) in
+            [("run-1", 1, false), ("run-2", 2, false), ("run-3", 3, true)]
+        {
+            let request = json!({"requestKey":run,"versionIds":[version.id],"configurations":[configuration],"repetitions":1,"timeoutSeconds":600,"maxExecutions":1,"preview":preview});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'completed',1,?,?,?)")
+                .bind(run).bind(run).bind(created_at).bind(created_at).bind(request.to_string())
+                .execute(&mut *tx).await.unwrap();
+            let evaluations = if run == "run-2" {
+                json!([{"id":"objective","evaluatorRevision":"1","verdict":"pending_review","score":null,"reason":"waiting","createdAt":5,"provenance":"objective","artifacts":[]},{"id":"review","evaluatorRevision":"1","verdict":"fail","score":0.7,"reason":"Lighthouse present","createdAt":6,"provenance":"human","artifacts":[],"details":{"adherence":0.8,"craft":0.6}}])
+            } else {
+                json!([{"id":"objective","evaluatorRevision":"1","verdict":"pending_review","score":null,"reason":"waiting","createdAt":5,"provenance":"objective","artifacts":[]}])
+            };
+            let attempt = json!({"id":format!("attempt-{run}"),"runId":run,"versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":null,"output":format!("<svg data-run='{run}'/>"),"usage":{"schema":"native","output":120,"cost":0.05},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'candidate',0,'terminal',?)")
+                .bind(format!("attempt-{run}")).bind(run).bind(&version.id).bind(attempt.to_string())
+                .execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        // The preview run never shows; the newest real run wins and carries its review.
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].attempt_id, "attempt-run-2");
+        assert_eq!(
+            entries[0].output.as_deref(),
+            Some("<svg data-run='run-2'/>")
+        );
+        assert_eq!(entries[0].output_format.as_deref(), Some("svg"));
+        let review = entries[0].review.as_ref().unwrap();
+        assert_eq!(review.score, 0.7);
+        assert_eq!(review.details.as_ref().unwrap()["craft"], json!(0.6));
+        // One run on request: its own rendering, not yet reviewed.
+        let older = store
+            .list_designs(&ResultQuery {
+                run_id: Some("run-1".into()),
+                ..ResultQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(older[0].attempt_id, "attempt-run-1");
+        assert!(older[0].review.is_none());
+        let none = store
+            .list_designs(&ResultQuery {
+                version_ids: Some(vec![]),
+                ..ResultQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(none.is_empty());
+    }
     #[tokio::test]
     async fn history_summaries_and_result_pages_do_not_load_attempt_evidence() {
         let directory = tempfile::tempdir().unwrap();

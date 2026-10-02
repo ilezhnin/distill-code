@@ -94,6 +94,13 @@ pub async fn benchmark_list_attempts(
     service(&app).await?.store.list_attempts(&query).await
 }
 #[tauri::command]
+pub async fn benchmark_list_designs(
+    app: AppHandle,
+    query: ResultQuery,
+) -> Result<Vec<DesignEntry>> {
+    service(&app).await?.store.list_designs(&query).await
+}
+#[tauri::command]
 pub async fn benchmark_get_run(app: AppHandle, id: String) -> Result<BenchmarkRun> {
     service(&app).await?.store.run(&id).await
 }

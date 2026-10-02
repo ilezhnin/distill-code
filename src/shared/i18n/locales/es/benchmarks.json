@@ -10,6 +10,7 @@
   "percentagePoints": "{{value}} pp",
   "sections": {
     "leaderboard": "Clasificación",
+    "design": "Design Bench",
     "development": "Desarrollo de pruebas",
     "nerf": "Nerf Bench",
     "usage": "Usage Bench"
@@ -269,10 +270,6 @@
     "weighted": "Puntuación ponderada {{points}} de 1000"
   },
   "leaderboard": {
-    "description": "Las filas comparten un conjunto y un presupuesto congelados. Las mediciones ausentes se mantienen desconocidas; la cobertura incompleta no recibe posición.",
-    "summary": "{{scored}} puntuadas · {{cases}} casos · {{repetitions}} repeticiones · {{seconds}} s por intento",
-    "measuredOn": "medido el {{date}}",
-    "shown": "{{count}} configuraciones mostradas",
     "boards": {
       "overall": "General",
       "efficiency": "Eficiencia",
@@ -286,7 +283,6 @@
       "speed": "Duración mediana del intento. La configuración más rápida obtiene 1000, las demás en proporción.",
       "cost": "Coste medido del conjunto en USD, tal como lo informó el proveedor. La configuración más barata obtiene 1000, las demás en proporción."
     },
-    "tableHint": "Todas las mediciones a la vez. Haz clic en una columna para reordenar.",
     "allAxes": "Todos los tableros",
     "measured": "{{scored}} / {{planned}} medidas",
     "open": "Abrir {{model}}",
@@ -298,8 +294,18 @@
     "hideUnranked": "Ocultar configuraciones sin posición",
     "price": "API entrada / salida por 1M",
     "context": "Contexto",
-    "pricesChecked": "precios comprobados el {{date}}",
     "priceShort": "Precio API"
+  },
+  "design": {
+    "brief": "Encargo",
+    "allBriefs": "Todos los encargos",
+    "designs_one": "{{count}} diseño",
+    "designs_other": "{{count}} diseños",
+    "entry": "Entrada {{number}}",
+    "awaitingReview": "Pendiente de revisión a ciegas",
+    "open": "Abrir diseño {{number}}",
+    "empty": "Aún no hay diseños.",
+    "emptyHint": "Ejecuta un encargo creativo; cada resultado aparece aquí para su revisión a ciegas."
   },
   "nerf": {
     "description": "Cambios respecto a una línea base congelada de Distill. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
@@ -520,15 +526,12 @@
     "cachedInput": "Entrada en caché",
     "output": "Salida",
     "cacheWrites": "Escrituras de caché {{price}}",
-    "source": "Fuente: {{source}} · comprobado el {{date}}"
+    "source": "Fuente: {{source}} · comprobado el {{date}}",
+    "back": "Clasificación",
+    "missing": "Esta configuración no está en la selección actual."
   },
   "history": {
-    "title": "Puntos a lo largo del tiempo",
-    "showing_one": "Mostrando la medición del {{date}} · ejecución {{run}} · {{count}} caso",
-    "showing_other": "Mostrando la medición del {{date}} · ejecución {{run}} · {{count}} casos",
     "chartLabel": "Puntos generales por medición",
-    "pointLabel": "{{date}}: {{points}} puntos",
-    "hint_one": "{{count}} medición. Haz clic en un punto para ver la página tal como estaba entonces.",
-    "hint_other": "{{count}} mediciones. Haz clic en un punto para ver la página tal como estaba entonces."
+    "pointLabel": "{{date}}: {{points}} puntos"
   }
 }

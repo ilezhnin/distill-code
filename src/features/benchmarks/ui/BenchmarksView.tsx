@@ -47,7 +47,15 @@ import {
   BenchmarkImportDialog,
   BenchmarkSchedulesDialog,
 } from "./BenchmarkManagementDialogs";
-import { BenchmarkAlert, type Option } from "./BenchmarkPrimitives";
+import { Button } from "@/shared/ui/button";
+import { rowKey } from "../lib/benchmarkBoards";
+import { BenchmarkConfigurationPage } from "./BenchmarkConfigurationPage";
+import { DesignBenchView } from "./DesignBenchView";
+import {
+  BenchmarkAlert,
+  BenchmarkEmpty,
+  type Option,
+} from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
 import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
 import { BenchmarkRunDrawer } from "./BenchmarkRunDrawer";
@@ -125,6 +133,12 @@ export function BenchmarksView({
     queryFn: () => benchmarkApi.getUsageSeries(query),
     enabled: location.section === "usage",
   });
+  const designs = useQuery({
+    queryKey: [...benchmarkKeys, "designs", query.runId],
+    queryFn: () =>
+      benchmarkApi.listDesigns({ runId: query.runId, versionIds: null }),
+    enabled: location.section === "design",
+  });
   const baselines = useQuery({
     queryKey: [...benchmarkKeys, "baselines"],
     queryFn: benchmarkApi.listBaselines,
@@ -142,6 +156,11 @@ export function BenchmarksView({
   });
   const guarded = (action: () => void) =>
     useBenchmarkViewStore.getState().guardNavigation(action);
+  const openedRow = location.configurationId
+    ? (leaderboard.data?.rows.find(
+        (row) => rowKey(row) === location.configurationId,
+      ) ?? null)
+    : null;
   const openEvidence = (attemptId: string) =>
     onNavigate({ ...location, attemptId });
   const openRun = (id: string) => {
@@ -163,6 +182,7 @@ export function BenchmarksView({
         definitions.error,
         runs.error,
         leaderboard.error,
+        designs.error,
         usage.error,
         baselines.error,
         comparisons.error,
@@ -303,7 +323,42 @@ export function BenchmarksView({
             onEvidence={openEvidence}
           />
         ) : null}
-        {location.section === "leaderboard" ? (
+        {location.section === "leaderboard" && location.configurationId ? (
+          openedRow && leaderboard.data ? (
+            <BenchmarkConfigurationPage
+              key={location.configurationId}
+              row={openedRow}
+              report={leaderboard.data}
+              runs={runs.data ?? []}
+              versions={versions}
+              onEvidence={openEvidence}
+              onBack={() => onNavigate({ section: "leaderboard" })}
+            />
+          ) : leaderboard.isPending ? (
+            <BenchmarkEmpty title={t("loading")} compact />
+          ) : (
+            <BenchmarkEmpty
+              title={t("configuration.missing")}
+              action={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => onNavigate({ section: "leaderboard" })}
+                >
+                  {t("configuration.back")}
+                </Button>
+              }
+            />
+          )
+        ) : null}
+        {location.section === "design" ? (
+          <DesignBenchView
+            entries={designs.data ?? []}
+            loading={designs.isPending}
+            onEvidence={openEvidence}
+          />
+        ) : null}
+        {location.section === "leaderboard" && !location.configurationId ? (
           <LeaderboardView
             report={leaderboard.data}
             loading={leaderboard.isPending}
@@ -311,12 +366,12 @@ export function BenchmarksView({
             onScopeChange={changeScope}
             suiteOptions={suiteOptions}
             runOptions={runOptions}
-            versions={versions}
-            runs={runs.data ?? []}
             page={page}
             pageSize={PAGE_SIZE}
             onPageChange={setPage}
-            onEvidence={openEvidence}
+            onOpen={(key) =>
+              onNavigate({ section: "leaderboard", configurationId: key })
+            }
           />
         ) : null}
         {location.section === "nerf" ? (

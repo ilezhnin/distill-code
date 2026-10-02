@@ -10,6 +10,7 @@
   "percentagePoints": "{{value}} pp",
   "sections": {
     "leaderboard": "Leaderboard",
+    "design": "Design Bench",
     "development": "Bench development",
     "nerf": "Nerf Bench",
     "usage": "Usage Bench"
@@ -269,10 +270,6 @@
     "weighted": "Weighted score {{points}} of 1000"
   },
   "leaderboard": {
-    "description": "Rows share one frozen suite and budget. Missing measurements stay unknown; incomplete coverage receives no rank.",
-    "summary": "{{scored}} scored · {{cases}} cases · {{repetitions}} repetitions · {{seconds}} s per attempt",
-    "measuredOn": "measured {{date}}",
-    "shown": "{{count}} configurations shown",
     "boards": {
       "overall": "Overall",
       "efficiency": "Efficiency",
@@ -286,7 +283,6 @@
       "speed": "Median attempt duration. The fastest configuration scores 1000, the others in proportion.",
       "cost": "Measured cost of the suite in USD, as the provider reported it. The cheapest configuration scores 1000, the others in proportion."
     },
-    "tableHint": "Every measurement at once. Click a column to re-rank.",
     "allAxes": "All boards",
     "measured": "{{scored}} / {{planned}} measured",
     "open": "Open {{model}}",
@@ -298,8 +294,18 @@
     "hideUnranked": "Hide unranked configurations",
     "price": "API in / out per 1M",
     "context": "Context",
-    "pricesChecked": "prices checked {{date}}",
     "priceShort": "API price"
+  },
+  "design": {
+    "brief": "Brief",
+    "allBriefs": "All briefs",
+    "designs_one": "{{count}} design",
+    "designs_other": "{{count}} designs",
+    "entry": "Entry {{number}}",
+    "awaitingReview": "Awaiting blind review",
+    "open": "Open design {{number}}",
+    "empty": "No designs yet.",
+    "emptyHint": "Run a creative brief; every rendering lands here for its blind review."
   },
   "nerf": {
     "description": "Changes from a frozen Distill baseline. Quality, duration and output tokens stay separate measurements.",
@@ -520,15 +526,12 @@
     "cachedInput": "Cached input",
     "output": "Output",
     "cacheWrites": "Cache writes {{price}}",
-    "source": "Source: {{source}} · checked {{date}}"
+    "source": "Source: {{source}} · checked {{date}}",
+    "back": "Leaderboard",
+    "missing": "This configuration is not in the current selection."
   },
   "history": {
-    "title": "Points over time",
-    "showing_one": "Showing the measurement of {{date}} · run {{run}} · {{count}} case",
-    "showing_other": "Showing the measurement of {{date}} · run {{run}} · {{count}} cases",
     "chartLabel": "Overall points per measurement",
-    "pointLabel": "{{date}}: {{points}} points",
-    "hint_one": "{{count}} measurement. Click a point to see the page as it stood then.",
-    "hint_other": "{{count}} measurements. Click a point to see the page as it stood then."
+    "pointLabel": "{{date}}: {{points}} points"
   }
 }

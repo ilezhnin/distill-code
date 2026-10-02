@@ -15,6 +15,8 @@ import { benchmarkApi } from "../api/benchmarks";
 import { BenchmarkEditor } from "../ui/BenchmarkEditor";
 import { BenchmarksView } from "../ui/BenchmarksView";
 import { LeaderboardView } from "../ui/LeaderboardView";
+import { BenchmarkConfigurationPage } from "../ui/BenchmarkConfigurationPage";
+import { rowKey } from "../lib/benchmarkBoards";
 import { NerfBenchView } from "../ui/NerfBenchView";
 import { BenchmarkRoutingDialog } from "../ui/BenchmarkRoutingDialog";
 import {
@@ -49,6 +51,7 @@ vi.mock("../api/benchmarks", () => ({
     getEvidence: vi.fn(),
     listBaselines: vi.fn(),
     getLeaderboard: vi.fn(),
+    listDesigns: vi.fn(),
     getRoutingEvidence: vi.fn(),
     getUsageSeries: vi.fn(),
     getComparisons: vi.fn(),
@@ -124,6 +127,7 @@ describe("benchmark authoring and saved evidence", () => {
     vi.mocked(benchmarkApi.listBaselines).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getCandidateObservations).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listCatalog).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listDesigns).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
       cohort: null,
       rows: [],
@@ -229,7 +233,7 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByRole("spinbutton", { name: "Time limit (seconds)" }),
     ).toHaveValue(120);
   });
-  it("opens all four views without probing inventory or starting inference", async () => {
+  it("opens every view without probing inventory or starting inference", async () => {
     function Workspace() {
       const [location, setLocation] = useState<BenchmarkLocation>({
         section: "leaderboard",
@@ -245,6 +249,7 @@ describe("benchmark authoring and saved evidence", () => {
     wrap(<Workspace />);
     await screen.findByText("No results for this selection.");
     for (const label of [
+      "Design Bench",
       "Bench development",
       "Nerf Bench",
       "Usage Bench",
@@ -288,43 +293,29 @@ describe("benchmark authoring and saved evidence", () => {
     ).not.toBeInTheDocument();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
-  it("shows an unfinished configuration without a rank and opens its attempts", async () => {
+  it("shows an unfinished configuration without a rank and opens its page", async () => {
     const inspect = vi.fn();
+    const open = vi.fn();
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
-    wrap(
-      <LeaderboardView
-        {...scopeProps}
-        versions={definition.versions}
-        report={{
-          cohort,
-          rows: [
-            leaderboardRow({
-              passed: 0,
-              scored: 0,
-              attempted: 0,
-              planned: 4,
-              quality: null,
-              medianDurationMs: null,
-              medianOutputTokens: null,
-              cost: null,
-              measuredAt: null,
-              points: null,
-              efficiencyPoints: null,
-              speedPoints: null,
-              costPoints: null,
-              status: "preliminary",
-              reason: "No valid evidence",
-            }),
-          ],
-        }}
-        onEvidence={inspect}
-      />,
-    );
-    expect(
-      screen.getByText(
-        "0 scored · 1 cases · 1 repetitions · 120 s per attempt",
-      ),
-    ).toBeInTheDocument();
+    const unfinished = leaderboardRow({
+      passed: 0,
+      scored: 0,
+      attempted: 0,
+      planned: 4,
+      quality: null,
+      medianDurationMs: null,
+      medianOutputTokens: null,
+      cost: null,
+      measuredAt: null,
+      points: null,
+      efficiencyPoints: null,
+      speedPoints: null,
+      costPoints: null,
+      status: "preliminary",
+      reason: "No valid evidence",
+    });
+    const report = { cohort, rows: [unfinished] };
+    wrap(<LeaderboardView {...scopeProps} report={report} onOpen={open} />);
     const row = screen.getByRole("row", { name: /model-1/ });
     expect(within(row).getAllByRole("cell")[0]).toHaveTextContent("–");
     expect(within(row).getByText("Preliminary")).toBeInTheDocument();
@@ -332,17 +323,35 @@ describe("benchmark authoring and saved evidence", () => {
     // Rank, points, price and context all stay unknown.
     expect(within(row).getAllByText("–")).toHaveLength(4);
     expect(row).not.toHaveTextContent("0.0%");
+    // Nothing explains itself in prose above the rows.
+    expect(screen.queryByText(/scored ·/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/configurations shown/)).not.toBeInTheDocument();
     await userEvent.click(
       within(row).getByRole("button", { name: "Open model-1" }),
     );
-    const dialog = await screen.findByRole("dialog", { name: "model-1" });
-    expect(within(dialog).getByText("No valid evidence")).toBeInTheDocument();
-    expect(
-      await within(dialog).findByText("Integer transformation"),
-    ).toBeInTheDocument();
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Inspect" }),
+    expect(open).toHaveBeenCalledWith(rowKey(unfinished));
+    cleanup();
+    wrap(
+      <BenchmarkConfigurationPage
+        row={unfinished}
+        report={report}
+        runs={[]}
+        versions={definition.versions}
+        onEvidence={inspect}
+        onBack={vi.fn()}
+      />,
     );
+    expect(
+      screen.getByRole("heading", { name: "model-1" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No valid evidence")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("Integer transformation"),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Inspect" }));
     expect(inspect).toHaveBeenCalledWith("attempt-1");
     expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
       attemptIds: ["attempt-1"],
@@ -384,9 +393,8 @@ describe("benchmark authoring and saved evidence", () => {
     wrap(
       <LeaderboardView
         {...scopeProps}
-        versions={[]}
+        onOpen={vi.fn()}
         report={{ cohort, rows }}
-        onEvidence={vi.fn()}
       />,
     );
     const order = () =>
@@ -397,11 +405,6 @@ describe("benchmark authoring and saved evidence", () => {
           const cells = within(row).getAllByRole("cell");
           return `${cells[0].textContent} ${cells[1].querySelector(".font-medium")?.textContent}`;
         });
-    expect(
-      screen.getByText(
-        /^3 scored · 1 cases · 1 repetitions · 120 s per attempt · measured /,
-      ),
-    ).toBeInTheDocument();
     expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta"]);
     // Rows without a rank stay out of the way until asked for.
     expect(screen.queryByText("delta")).not.toBeInTheDocument();
@@ -416,16 +419,8 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByRole("tab", { name: "Simple coding" }),
     ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "Speed" }));
-    expect(
-      screen.getByText(
-        "Median attempt duration. The fastest configuration scores 1000, the others in proportion.",
-      ),
-    ).toBeInTheDocument();
     expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma"]);
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
-    expect(
-      screen.getByText("Every measurement at once. Click a column to re-rank."),
-    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Cost" }));
     expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma"]);
     expect(screen.getByRole("button", { name: "Cost" })).toHaveAttribute(
@@ -455,7 +450,7 @@ describe("benchmark authoring and saved evidence", () => {
     wrap(
       <LeaderboardView
         {...scopeProps}
-        versions={[]}
+        onOpen={vi.fn()}
         report={{
           cohort: null,
           rows: ["budget_reached", "selection_changed", "confirmed_change"].map(
@@ -474,7 +469,6 @@ describe("benchmark authoring and saved evidence", () => {
               }),
           ),
         }}
-        onEvidence={vi.fn()}
       />,
     );
     expect(screen.getByText("Artifact budget exceeded")).toBeInTheDocument();
@@ -869,39 +863,30 @@ describe("configuration history", () => {
     );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     wrap(
-      <LeaderboardView
-        {...scopeProps}
-        versions={definition.versions}
-        runs={[runSummary, older]}
+      <BenchmarkConfigurationPage
+        row={latestRow}
         report={{ cohort, rows: [latestRow] }}
+        runs={[runSummary, older]}
+        versions={definition.versions}
         onEvidence={vi.fn()}
+        onBack={vi.fn()}
       />,
     );
-    await userEvent.click(screen.getByRole("button", { name: "Open model-1" }));
-    const dialog = await screen.findByRole("dialog", { name: "model-1" });
     const rating = () =>
-      within(dialog).getByText("Overall rating").nextElementSibling
-        ?.textContent;
+      screen.getByText("Overall rating").nextElementSibling?.textContent;
     expect(rating()).toBe("900");
-    const oldPoint = await within(dialog).findByRole("button", {
+    const oldPoint = await screen.findByRole("button", {
       name: /: 600 points$/,
     });
     expect(
-      within(dialog).getByRole("button", { name: /: 900 points$/ }),
+      screen.getByRole("button", { name: /: 900 points$/ }),
     ).toHaveAttribute("aria-pressed", "true");
-    expect(
-      within(dialog).getByText(
-        /^Showing the measurement of .* · run run-1 · 1 case$/,
-      ),
-    ).toBeInTheDocument();
     await userEvent.click(oldPoint);
     expect(rating()).toBe("600");
     expect(oldPoint).toHaveAttribute("aria-pressed", "true");
     expect(
-      within(dialog).getByText(
-        /^Showing the measurement of .* · run run-0 · 1 case$/,
-      ),
-    ).toBeInTheDocument();
+      screen.getByText("Measured").nextElementSibling?.textContent,
+    ).toMatch(/1969|1970/);
     expect(benchmarkApi.getLeaderboard).toHaveBeenCalledWith({
       runId: "run-0",
       versionIds: null,
