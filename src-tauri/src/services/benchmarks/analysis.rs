@@ -72,13 +72,35 @@ fn selected_runs<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benchm
                     .is_none_or(|ids| ids.iter().all(|id| run.request.version_ids.contains(id)))
         })
         .collect();
-    // Default view is one frozen suite, never a blend of easy and hard cohorts.
-    let latest = runs
+    // Default view is one frozen suite, never a blend of easy and hard cohorts:
+    // the broadest suite still made of live cases, the newest among equals, so a
+    // narrow follow-up run never shrinks the board and a retired case stops
+    // counting once its definition is archived.
+    let archived: BTreeSet<&str> = data
+        .definitions
         .iter()
-        .max_by_key(|run| run.created_at)
+        .filter(|definition| definition.archived)
+        .map(|definition| definition.id.as_str())
+        .collect();
+    let live: BTreeSet<&str> = data
+        .versions
+        .iter()
+        .filter(|version| !archived.contains(version.definition_id.as_str()))
+        .map(|version| version.id.as_str())
+        .collect();
+    let breadth = |run: &BenchmarkRun| {
+        run.request
+            .version_ids
+            .iter()
+            .filter(|id| live.contains(id.as_str()))
+            .count()
+    };
+    let chosen = runs
+        .iter()
+        .max_by_key(|run| (breadth(run), run.created_at))
         .map(|run| cohort(run));
     runs.into_iter()
-        .filter(|run| latest.as_ref().is_some_and(|key| cohort(run) == *key))
+        .filter(|run| chosen.as_ref().is_some_and(|key| cohort(run) == *key))
         .collect()
 }
 
@@ -696,6 +718,48 @@ pub(super) mod tests {
         data.attempts[0].usage.cost = Some(0.5);
         assert_eq!(leaderboard(&data, &query).rows[0].cost, None);
         assert_eq!(row.axes.iter().map(|axis| axis.planned).sum::<u32>(), 6);
+    }
+    #[test]
+    fn a_narrow_follow_up_run_never_shrinks_the_board() {
+        let (mut data, _) = dataset();
+        // One case re-run later with its own budget: a follow-up, not a new suite.
+        let mut follow_up = data.runs[1].clone();
+        follow_up.id = "follow-up".into();
+        follow_up.created_at = 9;
+        follow_up.request.version_ids.truncate(1);
+        follow_up.request.timeout_seconds = 600;
+        follow_up.request.max_executions = 1;
+        data.runs.push(follow_up);
+        let query = ResultQuery::default();
+        let cohort = leaderboard(&data, &query).cohort.unwrap();
+        assert_eq!(cohort.version_ids.len(), 6);
+        assert!(!cohort.run_ids.iter().any(|id| id == "follow-up"));
+        // Asking for that run still shows its own narrow suite.
+        let narrow = ResultQuery {
+            run_id: Some("follow-up".into()),
+            ..ResultQuery::default()
+        };
+        assert_eq!(
+            leaderboard(&data, &narrow)
+                .cohort
+                .unwrap()
+                .version_ids
+                .len(),
+            1
+        );
+        // Retired cases stop counting: with five of six archived, the follow-up is the broadest live suite.
+        for version in data.versions.iter().skip(1) {
+            data.definitions.push(BenchmarkDefinition {
+                id: version.definition_id.clone(),
+                draft_revision: 1,
+                archived: true,
+                draft: version.manifest.clone(),
+                versions: vec![],
+            });
+        }
+        let cohort = leaderboard(&data, &query).cohort.unwrap();
+        assert_eq!(cohort.run_ids, vec!["follow-up".to_string()]);
+        assert_eq!(cohort.timeout_seconds, 600);
     }
     #[test]
     fn matched_families_detect_change_but_changed_budgets_do_not() {
