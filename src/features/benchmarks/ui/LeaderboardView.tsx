@@ -17,7 +17,11 @@ import {
 } from "@/shared/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
-import { modelNameKey, useModelNames } from "../hooks/useBenchmarks";
+import {
+  modelNameKey,
+  useModelCatalog,
+  useModelNames,
+} from "../hooks/useBenchmarks";
 import {
   boardsFor,
   rankRows,
@@ -27,16 +31,19 @@ import {
   type RankedRow,
 } from "../lib/benchmarkBoards";
 import {
-  configurationOrigin,
-  formatQuality,
-  formatSeconds,
-  formatTokens,
-  formatUsd,
   modelDisplayName,
+  providerVendor,
   workClassLabel,
 } from "../lib/benchmarkLabels";
+import {
+  formatContext,
+  formatPrice,
+  latestCheckedAt,
+  resolveCatalogEntry,
+} from "../lib/modelCatalog";
 import type {
   BenchmarkVersion,
+  CatalogEntry,
   Configuration,
   LeaderboardReport,
   LeaderboardRow,
@@ -101,6 +108,7 @@ export function LeaderboardView({
   const { formatDate } = useLocaleFormatting();
   const reduceMotion = useReducedMotion();
   const names = useModelNames();
+  const catalog = useModelCatalog();
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState("all");
   const [effort, setEffort] = useState("all");
@@ -114,16 +122,38 @@ export function LeaderboardView({
   const cohort = report?.cohort;
   const boards = useMemo(() => boardsFor(cohort), [cohort]);
   const board = boards.find((entry) => entry.id === boardId) ?? boards[0];
+  // Vendor facts as they stood when each row was measured.
+  const facts = useMemo(
+    () =>
+      new Map(
+        rows.map((row) => [
+          rowKey(row),
+          resolveCatalogEntry(
+            catalog,
+            row.configuration,
+            row.configuration.modelName ??
+              names.get(modelNameKey(row.configuration)),
+            row.measuredAt ?? cohort?.newestRunAt,
+          ),
+        ]),
+      ),
+    [rows, catalog, names, cohort],
+  );
+  const factOf = (row: LeaderboardRow): CatalogEntry | null =>
+    facts.get(rowKey(row)) ?? null;
   const nameOf = (row: LeaderboardRow) =>
+    factOf(row)?.displayName ??
     modelDisplayName(
       row.configuration,
       names.get(modelNameKey(row.configuration)),
     );
+  const vendorOf = (row: LeaderboardRow) =>
+    factOf(row)?.vendor ?? providerVendor(row.configuration.providerId);
   const visible = useMemo(
     () =>
       rows.filter(
         (row) =>
-          `${modelDisplayName(row.configuration, names.get(modelNameKey(row.configuration)))} ${row.configuration.modelId} ${configurationOrigin(row.configuration)}`
+          `${facts.get(rowKey(row))?.displayName ?? ""} ${modelDisplayName(row.configuration, names.get(modelNameKey(row.configuration)))} ${row.configuration.modelId} ${row.configuration.providerId}`
             .toLowerCase()
             .includes(query.trim().toLowerCase()) &&
           (provider === "all" || row.configuration.providerId === provider) &&
@@ -131,7 +161,7 @@ export function LeaderboardView({
           (fast === "all" || String(row.configuration.fastMode) === fast) &&
           (track === "all" || row.configuration.executionProfile === track),
       ),
-    [rows, names, query, provider, effort, fast, track],
+    [rows, facts, names, query, provider, effort, fast, track],
   );
   const ranked = useMemo(() => rankRows(visible, board), [visible, board]);
   const rankedRows = useMemo(
@@ -142,8 +172,8 @@ export function LeaderboardView({
   // Nothing ranked yet means nothing to hide behind.
   const showUnranked = unrankedOpen || rankedRows.length === 0;
   const shown = showUnranked ? ranked : rankedRows;
-  // Every board's share per row feeds the small profile bars.
-  const shares = useMemo(
+  // Every board's points per row feed the small profile bars.
+  const pointsByBoard = useMemo(
     () =>
       new Map(
         boards.map((entry) => [
@@ -151,7 +181,7 @@ export function LeaderboardView({
           new Map(
             rankRows(visible, entry).map((result) => [
               rowKey(result.row),
-              result.share,
+              result.points,
             ]),
           ),
         ]),
@@ -175,6 +205,7 @@ export function LeaderboardView({
         : latest,
     null,
   );
+  const checkedAt = latestCheckedAt(catalog);
   const transition = reduceMotion
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 420, damping: 38 };
@@ -188,13 +219,6 @@ export function LeaderboardView({
           label: workClassLabel(t, entry.workClass),
         })
       : t(`leaderboard.boardDescriptions.${entry.id}`);
-  const formatValue = (entry: Board, value: number | null) => {
-    if (value == null) return "–";
-    if (entry.id === "efficiency") return formatTokens(t, value);
-    if (entry.id === "speed") return formatSeconds(t, value);
-    if (entry.id === "cost") return formatUsd(t, value);
-    return formatQuality(t, value);
-  };
   const facet = (
     label: string,
     value: string,
@@ -216,7 +240,7 @@ export function LeaderboardView({
   const rankCell = (entry: RankedRow) => (
     <TableCell
       className={cn(
-        "w-10 font-display text-lg tabular-nums",
+        "w-8 px-1 font-display text-lg tabular-nums",
         entry.rank === 1
           ? "text-chart-1"
           : entry.rank == null && "text-muted-foreground",
@@ -230,6 +254,7 @@ export function LeaderboardView({
       <ModelIdentity
         configuration={entry.row.configuration}
         name={nameOf(entry.row)}
+        vendor={vendorOf(entry.row)}
         showRuntime={(twins.get(twinKey(entry.row.configuration)) ?? 0) > 1}
       >
         {view === "table" && entry.row.status !== "comparable" ? (
@@ -240,8 +265,22 @@ export function LeaderboardView({
       </ModelIdentity>
     </TableCell>
   );
+  const factCells = (entry: RankedRow) => {
+    const fact = factOf(entry.row);
+    const compact = view === "table" && "px-1 text-xs";
+    return (
+      <>
+        <TableCell className={cn("text-right tabular-nums", compact)}>
+          {formatPrice(fact) ?? "–"}
+        </TableCell>
+        <TableCell className={cn("text-right tabular-nums", compact)}>
+          {formatContext(fact?.contextTokens) ?? "–"}
+        </TableCell>
+      </>
+    );
+  };
   const detailsCell = (entry: RankedRow) => (
-    <TableCell className="w-10 text-right">
+    <TableCell className="w-8 px-1 text-right">
       <Button
         type="button"
         variant="ghost"
@@ -267,6 +306,7 @@ export function LeaderboardView({
       {rankCell(entry)}
       {modelCell(entry)}
       {cells}
+      {factCells(entry)}
       {detailsCell(entry)}
     </MotionRow>
   );
@@ -371,6 +411,11 @@ export function LeaderboardView({
                 : t("leaderboard.measuredOn", {
                     date: formatDate(measuredAt, { dateStyle: "medium" }),
                   }),
+              checkedAt == null
+                ? null
+                : t("leaderboard.pricesChecked", {
+                    date: formatDate(checkedAt, { dateStyle: "medium" }),
+                  }),
             ]
               .filter(Boolean)
               .join(" · ")
@@ -414,9 +459,15 @@ export function LeaderboardView({
             <TableRow>
               <TableHead>{t("fields.rank")}</TableHead>
               <TableHead>{t("fields.model")}</TableHead>
-              <TableHead className="w-[38%]">{boardLabel(board)}</TableHead>
+              <TableHead className="w-[34%]">{boardLabel(board)}</TableHead>
               <TableHead className="text-right" />
               <TableHead>{t("leaderboard.allAxes")}</TableHead>
+              <TableHead className="text-right">
+                {t("leaderboard.price")}
+              </TableHead>
+              <TableHead className="text-right">
+                {t("leaderboard.context")}
+              </TableHead>
               <TableHead />
             </TableRow>
           </TableHeader>
@@ -432,7 +483,7 @@ export function LeaderboardView({
                         leading={entry.rank === 1}
                         label={t("leaderboard.chartLabel", {
                           model: nameOf(entry.row),
-                          value: formatValue(board, entry.value),
+                          value: entry.points ?? "–",
                         })}
                       />
                     ) : (
@@ -447,23 +498,26 @@ export function LeaderboardView({
                       </div>
                     )}
                   </TableCell>
-                  <TableCell
-                    className={cn(
-                      "text-right font-display text-lg font-semibold tabular-nums",
-                      entry.rank === 1 && "text-chart-1",
-                      entry.value == null && "text-muted-foreground",
-                    )}
-                  >
-                    {formatValue(board, entry.value)}
+                  <TableCell className="text-right">
+                    <div
+                      className={cn(
+                        "font-display text-lg font-semibold tabular-nums",
+                        entry.rank === 1 && "text-chart-1",
+                        entry.points == null && "text-muted-foreground",
+                      )}
+                    >
+                      {entry.points ?? "–"}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <AxisBars
                       muted={entry.rank == null}
                       items={boards.map((axis) => ({
                         id: axis.id,
-                        label: `${boardLabel(axis)}: ${formatValue(axis, axis.value(entry.row))}`,
-                        share:
-                          shares.get(axis.id)?.get(rowKey(entry.row)) ?? null,
+                        label: boardLabel(axis),
+                        points:
+                          pointsByBoard.get(axis.id)?.get(rowKey(entry.row)) ??
+                          null,
                       }))}
                     />
                   </TableCell>
@@ -477,14 +531,14 @@ export function LeaderboardView({
           <TableHeader>
             <TableRow>
               <TableHead>{t("fields.rank")}</TableHead>
-              <TableHead className="min-w-44">{t("fields.model")}</TableHead>
+              <TableHead className="min-w-40">{t("fields.model")}</TableHead>
               {boards.map((entry) => (
                 <TableHead key={entry.id} className="px-1 text-right">
                   <Button
                     type="button"
                     variant="ghost"
                     size="xs"
-                    className="h-auto max-w-28 whitespace-normal text-right leading-tight"
+                    className="h-auto max-w-20 whitespace-normal text-right leading-tight"
                     aria-pressed={entry.id === board.id}
                     rightIcon={
                       entry.id === board.id ? <IconChevronDown /> : undefined
@@ -495,8 +549,11 @@ export function LeaderboardView({
                   </Button>
                 </TableHead>
               ))}
-              <TableHead className="px-1 text-right">
-                {t("fields.measuredAt")}
+              <TableHead className="px-1 text-right text-xs">
+                {t("leaderboard.priceShort")}
+              </TableHead>
+              <TableHead className="px-1 text-right text-xs">
+                {t("leaderboard.context")}
               </TableHead>
               <TableHead />
             </TableRow>
@@ -507,7 +564,9 @@ export function LeaderboardView({
                 entry,
                 <>
                   {boards.map((axis) => {
-                    const value = axis.value(entry.row);
+                    const points =
+                      pointsByBoard.get(axis.id)?.get(rowKey(entry.row)) ??
+                      null;
                     return (
                       <TableCell
                         key={axis.id}
@@ -517,16 +576,13 @@ export function LeaderboardView({
                           axis.id === board.id &&
                             entry.rank === 1 &&
                             "text-chart-1",
-                          value == null && "text-muted-foreground",
+                          points == null && "text-muted-foreground",
                         )}
                       >
-                        {formatValue(axis, value)}
+                        {points ?? "–"}
                       </TableCell>
                     );
                   })}
-                  <TableCell className="px-1 text-right text-xs tabular-nums">
-                    {entry.row.scored} / {entry.row.planned}
-                  </TableCell>
                 </>,
               ),
             )}

@@ -61,6 +61,7 @@ vi.mock("../api/benchmarks", () => ({
     getInventory: vi.fn(),
     getCapabilities: vi.fn(),
     getCandidateObservations: vi.fn(),
+    listCatalog: vi.fn(),
     startRun: vi.fn(),
     previewRun: vi.fn(),
     eventsSince: vi.fn(),
@@ -122,6 +123,7 @@ describe("benchmark authoring and saved evidence", () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
     vi.mocked(benchmarkApi.listBaselines).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getCandidateObservations).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listCatalog).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
       cohort: null,
       rows: [],
@@ -323,7 +325,8 @@ describe("benchmark authoring and saved evidence", () => {
     expect(within(row).getAllByRole("cell")[0]).toHaveTextContent("–");
     expect(within(row).getByText("Preliminary")).toBeInTheDocument();
     expect(within(row).getByText("0 / 4 measured")).toBeInTheDocument();
-    expect(within(row).getAllByText("–")).toHaveLength(2);
+    // Rank, points, price and context all stay unknown.
+    expect(within(row).getAllByText("–")).toHaveLength(4);
     expect(row).not.toHaveTextContent("0.0%");
     await userEvent.click(
       within(row).getByRole("button", { name: "Open model-1" }),
@@ -410,7 +413,9 @@ describe("benchmark authoring and saved evidence", () => {
     ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "Speed" }));
     expect(
-      screen.getByText("Median attempt duration. Lower is better."),
+      screen.getByText(
+        "Median attempt duration. The fastest configuration scores 1000, the others in proportion.",
+      ),
     ).toBeInTheDocument();
     expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma"]);
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
@@ -431,13 +436,14 @@ describe("benchmark authoring and saved evidence", () => {
     ).toEqual([
       "1",
       // The vendor icon carries its own title text.
-      "ClaudebetahighAnthropic · claude-acp",
-      "50.0%",
+      "ClaudebetahighAnthropic",
+      "500",
       "–",
-      "100 tokens",
-      "2.00 s",
-      "$0.1",
-      "1 / 1",
+      "1000",
+      "1000",
+      "1000",
+      "–",
+      "–",
       "",
     ]);
   });

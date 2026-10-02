@@ -393,6 +393,29 @@ pub struct LeaderboardAxis {
     pub scored: u32,
     pub planned: u32,
 }
+/// One effective-dated fact about a model: list prices, context size, display
+/// overrides. Reports resolve the entry that applied at measurement time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogEntry {
+    pub id: String,
+    pub kind: String,
+    /// Restricts the entry to one provider; None matches every provider.
+    pub provider_id: Option<String>,
+    /// Lowercase substring matched against the model's display name and id.
+    pub needle: String,
+    pub display_name: Option<String>,
+    pub vendor: Option<String>,
+    pub input_per_million: Option<f64>,
+    pub output_per_million: Option<f64>,
+    pub cache_read_per_million: Option<f64>,
+    pub cache_write_per_million: Option<f64>,
+    pub context_tokens: Option<u64>,
+    pub effective_from: i64,
+    pub checked_at: i64,
+    pub source: String,
+    pub created_at: i64,
+}
 /// The newest frozen suite the leaderboard compares: every row shares these conditions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

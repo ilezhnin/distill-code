@@ -48,7 +48,8 @@
     "import": "Import definition",
     "export": "Export dataset",
     "schedules": "Automatic retesting",
-    "routing": "Selector evidence"
+    "routing": "Selector evidence",
+    "catalog": "Model catalog"
   },
   "filters": {
     "suite": "Suite",
@@ -276,11 +277,11 @@
       "cost": "Cost"
     },
     "boardDescriptions": {
-      "overall": "Measured success across every case in the frozen suite. Higher is better.",
-      "class": "Measured success on {{label}} cases. Higher is better.",
-      "efficiency": "Median output tokens per scored attempt. Lower is better.",
-      "speed": "Median attempt duration. Lower is better.",
-      "cost": "Measured cost of the suite in USD, as the provider reported it. Lower is better."
+      "overall": "Measured success as points out of 1000, equal case weights. Higher is better.",
+      "class": "Measured success on {{label}} cases as points out of 1000. Higher is better.",
+      "efficiency": "Median output tokens per scored attempt. The leanest configuration scores 1000, the others in proportion.",
+      "speed": "Median attempt duration. The fastest configuration scores 1000, the others in proportion.",
+      "cost": "Measured cost of the suite in USD, as the provider reported it. The cheapest configuration scores 1000, the others in proportion."
     },
     "tableHint": "Every measurement at once. Click a column to re-rank.",
     "allAxes": "All boards",
@@ -292,7 +293,11 @@
     "runtime": "runtime {{id}}",
     "chartLabel": "{{model}}: {{value}}",
     "showUnranked": "Show {{count}} unranked configurations",
-    "hideUnranked": "Hide unranked configurations"
+    "hideUnranked": "Hide unranked configurations",
+    "price": "API in / out per 1M",
+    "context": "Context",
+    "pricesChecked": "prices checked {{date}}",
+    "priceShort": "API price"
   },
   "nerf": {
     "description": "Changes from a frozen Distill baseline. Quality, duration and output tokens stay separate measurements.",
@@ -456,5 +461,39 @@
   "fastMode": "fast",
   "attempts": {
     "title": "Attempts ({{count}})"
+  },
+  "catalog": {
+    "title": "Model catalog",
+    "description": "Vendor list prices, context windows and display names, each dated. Boards show the entry that applied when a row was measured.",
+    "history": "A changed price or limit is a new entry with its own effective date; older measurements keep the entry that applied when they ran.",
+    "empty": "No catalog entries.",
+    "newEntry": "New entry",
+    "editing": "Editing {{name}}",
+    "startNew": "New entry",
+    "save": "Save entry",
+    "edit": "Edit",
+    "anyProvider": "any provider",
+    "columns": {
+      "price": "In / out per 1M",
+      "cache": "Cache read / write",
+      "effective": "Effective from",
+      "checked": "Checked"
+    },
+    "fields": {
+      "needle": "Model needle",
+      "needleHint": "Lowercase text found in the bridge's model name or id, for example \"opus 5.5\".",
+      "provider": "Provider",
+      "providerHint": "Leave empty to match the model on every provider.",
+      "displayName": "Display name",
+      "vendor": "Vendor",
+      "input": "Input per 1M tokens (USD)",
+      "output": "Output per 1M tokens (USD)",
+      "cacheRead": "Cache read per 1M tokens (USD)",
+      "cacheWrite": "Cache write per 1M tokens (USD)",
+      "context": "Context window (tokens)",
+      "effectiveFrom": "Effective from",
+      "source": "Source",
+      "sourceHint": "Where the figures were read, for example the vendor's pricing page."
+    }
   }
 }

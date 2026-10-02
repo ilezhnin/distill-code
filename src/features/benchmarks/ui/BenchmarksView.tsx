@@ -2,6 +2,7 @@ import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
+  IconCoin,
   IconDots,
   IconFileExport,
   IconFileImport,
@@ -38,6 +39,7 @@ import {
 } from "../lib/benchmarkNavigation";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import { BenchDevelopmentView } from "./BenchDevelopmentView";
+import { BenchmarkCatalogDialog } from "./BenchmarkCatalogDialog";
 import { BenchmarkEvidenceView } from "./BenchmarkEvidenceView";
 import {
   BenchmarkBaselineDialog,
@@ -76,7 +78,8 @@ type DialogKind =
   | "export"
   | "baseline"
   | "schedules"
-  | "routing";
+  | "routing"
+  | "catalog";
 
 export function BenchmarksView({
   location,
@@ -209,6 +212,7 @@ export function BenchmarksView({
     { kind: "export", label: t("toolbar.export"), icon: <IconFileExport /> },
     { kind: "schedules", label: t("toolbar.schedules"), icon: <IconRepeat /> },
     { kind: "routing", label: t("toolbar.routing"), icon: <IconRoute /> },
+    { kind: "catalog", label: t("toolbar.catalog"), icon: <IconCoin /> },
   ];
   return (
     <PageShell contentWidth="full">
@@ -401,6 +405,9 @@ export function BenchmarksView({
       ) : null}
       {dialog === "export" ? (
         <BenchmarkExportDialog onClose={() => setDialog(null)} />
+      ) : null}
+      {dialog === "catalog" ? (
+        <BenchmarkCatalogDialog onClose={() => setDialog(null)} />
       ) : null}
       {dialog === "baseline" ? (
         <BenchmarkBaselineDialog

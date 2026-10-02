@@ -48,7 +48,8 @@
     "import": "Importar definición",
     "export": "Exportar conjunto de datos",
     "schedules": "Repetición automática",
-    "routing": "Evidencia del selector"
+    "routing": "Evidencia del selector",
+    "catalog": "Catálogo de modelos"
   },
   "filters": {
     "suite": "Conjunto",
@@ -276,11 +277,11 @@
       "cost": "Coste"
     },
     "boardDescriptions": {
-      "overall": "Éxito medido en todos los casos del conjunto congelado. Más alto es mejor.",
-      "class": "Éxito medido en los casos de {{label}}. Más alto es mejor.",
-      "efficiency": "Mediana de tokens de salida por intento puntuado. Más bajo es mejor.",
-      "speed": "Duración mediana del intento. Más bajo es mejor.",
-      "cost": "Coste medido del conjunto en USD, tal como lo informó el proveedor. Más bajo es mejor."
+      "overall": "Éxito medido en puntos sobre 1000, con pesos iguales por caso. Más alto es mejor.",
+      "class": "Éxito medido en los casos de {{label}} en puntos sobre 1000. Más alto es mejor.",
+      "efficiency": "Mediana de tokens de salida por intento puntuado. La configuración más frugal obtiene 1000, las demás en proporción.",
+      "speed": "Duración mediana del intento. La configuración más rápida obtiene 1000, las demás en proporción.",
+      "cost": "Coste medido del conjunto en USD, tal como lo informó el proveedor. La configuración más barata obtiene 1000, las demás en proporción."
     },
     "tableHint": "Todas las mediciones a la vez. Haz clic en una columna para reordenar.",
     "allAxes": "Todos los tableros",
@@ -292,7 +293,11 @@
     "runtime": "runtime {{id}}",
     "chartLabel": "{{model}}: {{value}}",
     "showUnranked": "Mostrar {{count}} configuraciones sin posición",
-    "hideUnranked": "Ocultar configuraciones sin posición"
+    "hideUnranked": "Ocultar configuraciones sin posición",
+    "price": "API entrada / salida por 1M",
+    "context": "Contexto",
+    "pricesChecked": "precios comprobados el {{date}}",
+    "priceShort": "Precio API"
   },
   "nerf": {
     "description": "Cambios respecto a una línea base congelada de Distill. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
@@ -456,5 +461,39 @@
   "fastMode": "rápido",
   "attempts": {
     "title": "Intentos ({{count}})"
+  },
+  "catalog": {
+    "title": "Catálogo de modelos",
+    "description": "Precios de lista del proveedor, ventanas de contexto y nombres, cada uno con fecha. Los tableros muestran la entrada vigente cuando se midió la fila.",
+    "history": "Un precio o límite cambiado es una entrada nueva con su propia fecha de vigencia; las mediciones anteriores conservan la entrada vigente cuando se ejecutaron.",
+    "empty": "No hay entradas en el catálogo.",
+    "newEntry": "Nueva entrada",
+    "editing": "Editando {{name}}",
+    "startNew": "Nueva entrada",
+    "save": "Guardar entrada",
+    "edit": "Editar",
+    "anyProvider": "cualquier proveedor",
+    "columns": {
+      "price": "Entrada / salida por 1M",
+      "cache": "Caché lectura / escritura",
+      "effective": "Vigente desde",
+      "checked": "Comprobado"
+    },
+    "fields": {
+      "needle": "Texto del modelo",
+      "needleHint": "Texto en minúsculas presente en el nombre o id del modelo del puente, por ejemplo \"opus 5.5\".",
+      "provider": "Proveedor",
+      "providerHint": "Déjalo vacío para que coincida con el modelo en todos los proveedores.",
+      "displayName": "Nombre mostrado",
+      "vendor": "Fabricante",
+      "input": "Entrada por 1M de tokens (USD)",
+      "output": "Salida por 1M de tokens (USD)",
+      "cacheRead": "Lectura de caché por 1M de tokens (USD)",
+      "cacheWrite": "Escritura de caché por 1M de tokens (USD)",
+      "context": "Ventana de contexto (tokens)",
+      "effectiveFrom": "Vigente desde",
+      "source": "Fuente",
+      "sourceHint": "Dónde se leyeron las cifras, por ejemplo la página de precios del fabricante."
+    }
   }
 }

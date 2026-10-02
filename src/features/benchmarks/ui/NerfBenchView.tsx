@@ -13,7 +13,11 @@ import {
   TableRow,
 } from "@/shared/ui/table";
 import { modelNameKey, useModelNames } from "../hooks/useBenchmarks";
-import { formatChange, modelDisplayName } from "../lib/benchmarkLabels";
+import {
+  formatChange,
+  modelDisplayName,
+  providerVendor,
+} from "../lib/benchmarkLabels";
 import type { Baseline, BenchmarkVersion, Comparison } from "../types";
 import { BenchmarkAttemptsDialog } from "./BenchmarkAttemptsDialog";
 import {
@@ -163,6 +167,7 @@ export function NerfBenchView({
                   <ModelIdentity
                     configuration={row.configuration}
                     name={nameOf(row)}
+                    vendor={providerVendor(row.configuration.providerId)}
                     showRuntime
                   />
                 </TableCell>
