@@ -1,12 +1,17 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { IconChevronLeft } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
+import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import {
-  historyKey,
   type HistorySnapshot,
+  historyKey,
+  modelNameKey,
   useConfigurationHistory,
+  useModelCatalog,
+  useModelNames,
 } from "../hooks/useBenchmarks";
 import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
 import {
@@ -14,17 +19,18 @@ import {
   boardTitle,
   formatTokens,
   formatUsd,
+  modelDisplayName,
+  providerVendor,
   shortId,
 } from "../lib/benchmarkLabels";
-import { formatContext } from "../lib/modelCatalog";
+import { formatContext, resolveCatalogEntry } from "../lib/modelCatalog";
 import type {
   BenchmarkVersion,
-  CatalogEntry,
   LeaderboardReport,
   LeaderboardRow,
   RunSummary,
 } from "../types";
-import { BenchmarkAttemptsDialog } from "./BenchmarkAttemptsDialog";
+import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import {
   BoardIcon,
   ScoreBar,
@@ -59,34 +65,29 @@ function money(value: number | null | undefined): string {
 }
 
 /**
- * A model page in a dialog: rank and overall rating in the header, the
- * points history with every measurement selectable, every board with its
- * place and points, the facts behind the row, the vendor's list prices,
- * then the attempts as evidence.
+ * A model page: the rank and overall rating, the points over time with
+ * every measurement selectable, every board with its place and points, the
+ * facts behind the row, the vendor's list prices, then the attempts.
  */
-export function BenchmarkConfigurationDialog({
+export function BenchmarkConfigurationPage({
   row,
   report,
   runs,
-  name,
-  vendor,
-  fact,
   versions,
   onEvidence,
-  onClose,
+  onBack,
 }: {
   row: LeaderboardRow;
   report: LeaderboardReport;
   runs: RunSummary[];
-  name: string;
-  vendor: string;
-  fact: CatalogEntry | null;
   versions: BenchmarkVersion[];
   onEvidence: (id: string) => void;
-  onClose: () => void;
+  onBack: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
+  const names = useModelNames();
+  const catalog = useModelCatalog();
   const key = historyKey(row.configuration);
   const history = useConfigurationHistory(runs);
   const measurements = useMemo(
@@ -135,6 +136,19 @@ export function BenchmarkConfigurationDialog({
     board?.rank == null
       ? t("configuration.notRanked")
       : t("configuration.rank", { rank: board.rank, of: board.of });
+  const modelName =
+    shownRow.configuration.modelName ??
+    names.get(modelNameKey(shownRow.configuration));
+  const fact = resolveCatalogEntry(
+    catalog,
+    shownRow.configuration,
+    modelName,
+    shownRow.measuredAt ?? report.cohort?.newestRunAt,
+  );
+  const name =
+    fact?.displayName ?? modelDisplayName(shownRow.configuration, modelName);
+  const vendor =
+    fact?.vendor ?? providerVendor(shownRow.configuration.providerId);
   const specs: [string, string][] = [
     [t("configuration.apiModelId"), shownRow.configuration.modelId],
     [t("fields.provider"), shownRow.configuration.providerId],
@@ -174,11 +188,28 @@ export function BenchmarkConfigurationDialog({
     ],
   ];
   return (
-    <BenchmarkAttemptsDialog
-      title={name}
-      description={vendor}
-      icon={getProviderIcon(shownRow.configuration.providerId, "size-6")}
-      aside={
+    <div className="space-y-8">
+      <Button
+        type="button"
+        variant="ghost"
+        flush
+        leftIcon={<IconChevronLeft />}
+        onClick={onBack}
+      >
+        {t("configuration.back")}
+      </Button>
+      <header className="flex flex-wrap items-start justify-between gap-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex size-12 shrink-0 items-center justify-center rounded-md bg-muted">
+            {getProviderIcon(shownRow.configuration.providerId, "size-6")}
+          </span>
+          <div className="min-w-0">
+            <h2 className="font-display text-2xl font-medium tracking-tight">
+              {name}
+            </h2>
+            <p className="text-sm text-muted-foreground">{vendor}</p>
+          </div>
+        </div>
         <dl className="flex shrink-0 gap-8 text-right">
           <div>
             <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -208,42 +239,17 @@ export function BenchmarkConfigurationDialog({
             </dd>
           </div>
         </dl>
-      }
-      attemptIds={shownRow.attemptIds}
-      versions={versions}
-      onEvidence={onEvidence}
-      onClose={onClose}
-    >
+      </header>
       {measurements.length > 0 ? (
-        <section className="space-y-3">
-          <div className="flex items-baseline justify-between gap-4">
-            <SectionHeading title={t("history.title")} />
-            {selected ? (
-              <span className="text-xs text-muted-foreground">
-                {t("history.showing", {
-                  date: formatDate(
-                    selected.row.measuredAt ?? selected.snapshot.createdAt,
-                    {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    },
-                  ),
-                  run: shortId(selected.snapshot.runId),
-                  count: selected.row.scored,
-                })}
-              </span>
-            ) : null}
-          </div>
-          <PointsHistoryChart
-            points={measurements.map((entry) => ({
-              id: entry.snapshot.runId,
-              at: entry.row.measuredAt ?? entry.snapshot.createdAt,
-              points: entry.row.points,
-            }))}
-            selectedId={selected?.snapshot.runId ?? null}
-            onSelect={setSelectedRunId}
-          />
-        </section>
+        <PointsHistoryChart
+          points={measurements.map((entry) => ({
+            id: entry.snapshot.runId,
+            at: entry.row.measuredAt ?? entry.snapshot.createdAt,
+            points: entry.row.points,
+          }))}
+          selectedId={selected?.snapshot.runId ?? null}
+          onSelect={setSelectedRunId}
+        />
       ) : null}
       {shownRow.status !== "comparable" ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -253,7 +259,7 @@ export function BenchmarkConfigurationDialog({
           </span>
         </div>
       ) : null}
-      <div className="grid gap-8 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <div className="grid gap-10 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <section className="space-y-4">
           <div className="flex items-baseline justify-between gap-4">
             <SectionHeading title={t("configuration.ratings")} />
@@ -263,7 +269,7 @@ export function BenchmarkConfigurationDialog({
           </div>
           <ul className="divide-y divide-border">
             {axes.map((board) => (
-              <li key={board.id} className="space-y-1.5 py-3">
+              <li key={board.id} className="py-3">
                 <div className="flex items-center gap-4">
                   <div className="flex w-52 shrink-0 items-center gap-2">
                     <BoardIcon
@@ -298,9 +304,6 @@ export function BenchmarkConfigurationDialog({
                     {board.points ?? "–"}
                   </span>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {board.description}
-                </p>
               </li>
             ))}
           </ul>
@@ -355,6 +358,20 @@ export function BenchmarkConfigurationDialog({
           </p>
         </section>
       ) : null}
-    </BenchmarkAttemptsDialog>
+      <section className="space-y-3">
+        <SectionHeading
+          title={t("attempts.title", { count: shownRow.attemptIds.length })}
+        />
+        {shownRow.attemptIds.length === 0 ? (
+          <p className="text-xs text-muted-foreground">{t("results.empty")}</p>
+        ) : (
+          <BenchmarkAttemptList
+            query={{ attemptIds: shownRow.attemptIds }}
+            versions={versions}
+            onEvidence={onEvidence}
+          />
+        )}
+      </section>
+    </div>
   );
 }

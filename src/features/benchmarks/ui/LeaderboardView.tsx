@@ -2,7 +2,6 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
 import { motion, useReducedMotion } from "motion/react";
-import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { DisclosureButton } from "@/shared/ui/disclosure-button";
@@ -41,18 +40,14 @@ import {
 import {
   formatContext,
   formatPrice,
-  latestCheckedAt,
   resolveCatalogEntry,
 } from "../lib/modelCatalog";
 import type {
-  BenchmarkVersion,
   CatalogEntry,
   Configuration,
   LeaderboardReport,
   LeaderboardRow,
-  RunSummary,
 } from "../types";
-import { BenchmarkConfigurationDialog } from "./BenchmarkConfigurationDialog";
 import {
   AxisBars,
   BenchmarkEmpty,
@@ -73,13 +68,11 @@ interface Props {
   onScopeChange: (scope: ResultScope) => void;
   suiteOptions: Option[];
   runOptions: Option[];
-  versions: BenchmarkVersion[];
-  /** Completed runs, so a model page can chart its points over time. */
-  runs?: RunSummary[];
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
-  onEvidence: (id: string) => void;
+  /** A row opened as its own page, by row key. */
+  onOpen: (key: string) => void;
 }
 
 const MotionRow = motion.create(TableRow);
@@ -105,15 +98,12 @@ export function LeaderboardView({
   onScopeChange,
   suiteOptions,
   runOptions,
-  versions,
-  runs = [],
   page,
   pageSize,
   onPageChange,
-  onEvidence,
+  onOpen,
 }: Props) {
   const { t } = useTranslation("benchmarks");
-  const { formatDate } = useLocaleFormatting();
   const reduceMotion = useReducedMotion();
   const names = useModelNames();
   const catalog = useModelCatalog();
@@ -125,7 +115,6 @@ export function LeaderboardView({
   const [view, setView] = useState<"chart" | "table">("chart");
   const [boardId, setBoardId] = useState<BoardId>("overall");
   const [unrankedOpen, setUnrankedOpen] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
   const rows = useMemo(() => report?.rows ?? [], [report]);
   const cohort = report?.cohort;
   const boards = useMemo(() => boardsFor(cohort), [cohort]);
@@ -207,16 +196,6 @@ export function LeaderboardView({
     }
     return counts;
   }, [shown]);
-  const selectedRow = rows.find((row) => rowKey(row) === selected) ?? null;
-  const scored = rows.filter((row) => row.status === "comparable").length;
-  const measuredAt = rows.reduce<number | null>(
-    (latest, row) =>
-      row.measuredAt != null && (latest == null || row.measuredAt > latest)
-        ? row.measuredAt
-        : latest,
-    null,
-  );
-  const checkedAt = latestCheckedAt(catalog);
   const transition = reduceMotion
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 420, damping: 38 };
@@ -294,7 +273,7 @@ export function LeaderboardView({
         aria-label={t("leaderboard.open", { model: nameOf(entry.row) })}
         onClick={(event) => {
           event.stopPropagation();
-          setSelected(rowKey(entry.row));
+          onOpen(rowKey(entry.row));
         }}
       >
         <IconChevronRight />
@@ -307,7 +286,7 @@ export function LeaderboardView({
       layout="position"
       transition={transition}
       className="cursor-pointer"
-      onClick={() => setSelected(rowKey(entry.row))}
+      onClick={() => onOpen(rowKey(entry.row))}
     >
       {rankCell(entry)}
       {modelCell(entry)}
@@ -403,30 +382,6 @@ export function LeaderboardView({
           </ToggleGroup>
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        {cohort
-          ? [
-              t("leaderboard.summary", {
-                scored,
-                cases: cohort.versionIds.length,
-                repetitions: cohort.repetitions,
-                seconds: cohort.timeoutSeconds,
-              }),
-              measuredAt == null
-                ? null
-                : t("leaderboard.measuredOn", {
-                    date: formatDate(measuredAt, { dateStyle: "medium" }),
-                  }),
-              checkedAt == null
-                ? null
-                : t("leaderboard.pricesChecked", {
-                    date: formatDate(checkedAt, { dateStyle: "medium" }),
-                  }),
-            ]
-              .filter(Boolean)
-              .join(" · ")
-          : t("leaderboard.description")}
-      </p>
       <Tabs
         value={board.id}
         onValueChange={(value) => setBoardId(value as BoardId)}
@@ -452,21 +407,6 @@ export function LeaderboardView({
           ))}
         </TabsList>
       </Tabs>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span className="flex flex-wrap items-center gap-x-2">
-          {view === "table" ? (
-            <span>{t("leaderboard.tableHint")}</span>
-          ) : (
-            <>
-              <span className="font-medium text-foreground">
-                {boardLabel(board)}
-              </span>
-              <span>{boardDescription(t, board)}</span>
-            </>
-          )}
-        </span>
-        <span>{t("leaderboard.shown", { count: shown.length })}</span>
-      </div>
       {loading ? (
         <BenchmarkEmpty title={t("loading")} compact />
       ) : visible.length === 0 ? (
@@ -619,19 +559,6 @@ export function LeaderboardView({
         count={rows.length}
         onPageChange={onPageChange}
       />
-      {selectedRow && report ? (
-        <BenchmarkConfigurationDialog
-          row={selectedRow}
-          report={report}
-          runs={runs}
-          name={nameOf(selectedRow)}
-          vendor={vendorOf(selectedRow)}
-          fact={factOf(selectedRow)}
-          versions={versions}
-          onEvidence={onEvidence}
-          onClose={() => setSelected(null)}
-        />
-      ) : null}
     </section>
   );
 }

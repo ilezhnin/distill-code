@@ -68,7 +68,7 @@ export function PointsHistoryChart({
       ? formatDate(at, { hour: "numeric", minute: "2-digit" })
       : formatDate(at, { month: "short", day: "numeric" });
   return (
-    <figure className="space-y-1">
+    <figure>
       <svg viewBox={`0 0 ${width} ${height}`} className="h-44 w-full">
         <title>{t("history.chartLabel")}</title>
         <defs>
@@ -174,9 +174,6 @@ export function PointsHistoryChart({
           );
         })}
       </svg>
-      <figcaption className="text-xs text-muted-foreground">
-        {t("history.hint", { count: measured.length })}
-      </figcaption>
     </figure>
   );
 }

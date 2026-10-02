@@ -875,6 +875,14 @@ BuseyBench's method (a panel of vision judges, per-dimension scores, a weighted 
 - A rubric task with declared criteria shows one 0 to 10 slider per criterion instead of the single score field; the weighted mean becomes the review score the leaderboard reads (700 of 1000 for 8, 7, 6, 8, 5 at those weights) and the per-criterion shares are stored on the evaluation (`details`), shown in the evaluation history and exported with it. `benchmark_submit_review` validates that every criterion score is a number from 0 to 1.
 - A rubric attempt stays `pending_review` until a human scores it, so a creative board reads preliminary until the blind review is recorded. One reviewer scoring blind is the honest form of a one-person workbench; a judge panel would need vision models, which would reintroduce model authorship into the rating.
 
+### Design Bench and the model page as a page (October 2, 2026, evening)
+
+The operator's second look found three faults: prose everywhere (the cohort summary line, the board description under the icons, the "N configurations shown" count, the chart heading, its caption and hint, a Close button under a dialog that already has an X), dialogs stacked on dialogs (the model page opened as a dialog, the review on top of it), and no place where the creative renderings could be seen at all.
+
+- The leaderboard shows filters, the icon row and the table; every explanation lives in the icon tooltips or on the model page.
+- The model page is a page inside the Leaderboard section (`location.configurationId`, a row key), reached from a row and left through "Leaderboard" at the top, so the review dialog is the only modal. The chart has no heading or caption; the selected point carries its date and the Specs block its full timestamp.
+- Design Bench is the fifth section: every creative brief with the newest rendering per configuration side by side (`benchmark_list_designs`: newest attempt per brief and configuration, preview runs excluded, the markup and any review included). SVG renders as an image from a data URL, HTML in a scaled script-free frame. A card stays "Entry N · Awaiting blind review" until its review is recorded, then shows the model and its points; opening a card opens the review. A rendering that never arrived shows its outcome chip instead of a picture.
+
 ### Icon boards
 
 The board tabs are icon-only with one glyph per board (trophy for Overall, a feather for Efficiency, a bolt for Speed, a coin for Cost, and one per work class: layout, palette, code, braces, target, route, message, notebook, test pipe, shield), the same glyphs on the model page's ratings. A tooltip with the board's name and description opens after a held hover of three seconds (`TOOLTIP_DELAY.held`); the active board's name and description sit on the line under the tabs, so the selected board is always named without the two rows of text buttons. Tabs keep their names for the accessibility tree and for the tests.

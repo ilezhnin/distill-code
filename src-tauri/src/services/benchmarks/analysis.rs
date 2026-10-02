@@ -24,7 +24,7 @@ pub(super) fn score(attempt: &Attempt) -> Option<f64> {
     }
 }
 
-fn configuration_key(configuration: &Configuration) -> String {
+pub(crate) fn configuration_key(configuration: &Configuration) -> String {
     // IDs are UI labels, not evidence of equivalent execution conditions.
     serde_json::to_string(&(
         &configuration.provider_id,
@@ -39,7 +39,7 @@ fn configuration_key(configuration: &Configuration) -> String {
     .unwrap_or_default()
 }
 
-fn execution_configuration(attempt: &Attempt) -> &Configuration {
+pub(crate) fn execution_configuration(attempt: &Attempt) -> &Configuration {
     attempt.observed.as_ref().unwrap_or(&attempt.configuration)
 }
 

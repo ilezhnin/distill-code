@@ -495,15 +495,6 @@ export function BenchmarkEvidenceView({
           ) : null}
         </DialogBody>
         <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            flush
-            className="sm:mr-auto"
-            onClick={onClose}
-          >
-            {t("actions.close")}
-          </Button>
           {attempt &&
           !blind &&
           attempt.phase === "terminal" &&

@@ -130,6 +130,33 @@ export interface RunSummary {
   attemptCount: number;
   settledCount: number;
 }
+/** The human verdict behind a creative rendering. */
+export interface DesignReview {
+  score: number;
+  reason: string;
+  details: Record<string, number> | null;
+  createdAt: number;
+}
+/** The newest rendering of one creative brief by one configuration. */
+export interface DesignEntry {
+  attemptId: string;
+  runId: string;
+  runCreatedAt: number;
+  versionId: string;
+  name: string;
+  taskFamily: string;
+  difficulty: string | null;
+  outputFormat: string | null;
+  configuration: Configuration;
+  phase: string;
+  outcome: string | null;
+  output: string | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  outputTokens: number | null;
+  cost: number | null;
+  review: DesignReview | null;
+}
 export interface AttemptSummary {
   id: string;
   runId: string;
