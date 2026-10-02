@@ -287,7 +287,6 @@
     "allAxes": "All boards",
     "measured": "{{scored}} / {{planned}} measured",
     "open": "Open {{model}}",
-    "axesTitle": "Success by work class",
     "empty": "No results for this selection.",
     "emptyHint": "Publish a test and run it to collect evidence.",
     "runtime": "runtime {{id}}",
@@ -495,5 +494,29 @@
       "source": "Source",
       "sourceHint": "Where the figures were read, for example the vendor's pricing page."
     }
+  },
+  "configuration": {
+    "rankLabel": "Rank",
+    "ratingLabel": "Overall rating",
+    "rank": "{{rank}} of {{of}}",
+    "of": "of {{of}}",
+    "notRanked": "Not ranked",
+    "ratings": "Ratings",
+    "higherIsBetter": "Higher is better on every board",
+    "specs": "Specs",
+    "apiModelId": "API model ID",
+    "runtime": "Runtime revision",
+    "context": "Context window",
+    "cases": "Cases scored",
+    "measured": "Measured",
+    "spend": "Measured suite spend",
+    "outputTokens": "Median output tokens",
+    "pricing": "Pricing",
+    "perMillion": "USD per million tokens",
+    "input": "Input",
+    "cachedInput": "Cached input",
+    "output": "Output",
+    "cacheWrites": "Cache writes {{price}}",
+    "source": "Source: {{source}} · checked {{date}}"
   }
 }

@@ -266,6 +266,11 @@ export interface LeaderboardRow {
   medianOutputTokens: number | null;
   cost: number | null;
   measuredAt: number | null;
+  /** One scale for every board: points out of 1000, computed by the service. */
+  points: number | null;
+  efficiencyPoints: number | null;
+  speedPoints: number | null;
+  costPoints: number | null;
   status: string;
   reason: string;
   attemptIds: string[];
@@ -275,6 +280,7 @@ export interface LeaderboardRow {
 export interface LeaderboardAxis {
   id: string;
   quality: number | null;
+  points: number | null;
   passed: number;
   scored: number;
   planned: number;

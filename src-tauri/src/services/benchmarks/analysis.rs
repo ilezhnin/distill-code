@@ -95,6 +95,21 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     })
 }
 
+/// A measured share as points out of 1000.
+pub fn share_points(share: f64) -> u32 {
+    (share * 1000.0).round().clamp(0.0, 1000.0) as u32
+}
+
+/// Points for a lower-is-better measurement: the best value scores 1000, the
+/// rest in proportion to it.
+pub fn relative_points(value: f64, best: f64) -> u32 {
+    if value <= 0.0 {
+        1000
+    } else {
+        share_points(best / value)
+    }
+}
+
 /// Passed and scored cells plus the mean of per-case means.
 fn cell_stats(attempts: &[&Attempt]) -> (u32, u32, Option<f64>) {
     let mut cases: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
@@ -183,6 +198,7 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
             return LeaderboardRow {
                 configuration, passed: 0, scored: 0, attempted: 0, planned: 0, quality: None,
                 median_duration_ms: None, median_output_tokens: None, cost: None, measured_at: None,
+                points: None, efficiency_points: None, speed_points: None, cost_points: None,
                 status: "excluded".into(),
                 reason: format!("{excluded} cells excluded: this candidate helped author every case in the suite"),
                 attempt_ids: Vec::new(),
@@ -209,7 +225,7 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
                 let subset: Vec<&Attempt> = attempts.iter().copied().filter(|a| work_class(&a.version_id) == class).collect();
                 let cases = eligible.iter().filter(|v| v.manifest.work_class_id == *class).count() as u32;
                 let (passed, scored, quality) = cell_stats(&subset);
-                LeaderboardAxis { id: class.clone(), quality, passed, scored, planned: (subset.len() as u32).max(cases * repetitions) }
+                LeaderboardAxis { id: class.clone(), quality, points: quality.map(share_points), passed, scored, planned: (subset.len() as u32).max(cases * repetitions) }
             })
             .collect();
         LeaderboardRow {
@@ -218,6 +234,10 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
             median_output_tokens: median(scored_attempts.iter().filter_map(|a| a.usage.output.map(|v| v as f64)).collect()),
             cost,
             measured_at: attempts.iter().filter_map(|a| a.finished_at).max(),
+            points: quality.map(share_points),
+            efficiency_points: None,
+            speed_points: None,
+            cost_points: None,
             status: if attempted == 0 { "untested" } else if scored == planned { "comparable" } else { "preliminary" }.into(),
             reason: format!(
                 "{scored}/{planned} scored cells in the same frozen suite; equal case weights, observed repetitions retained{}",
@@ -227,6 +247,29 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
             axes,
         }
     }).collect();
+    // Lower-is-better boards score against the best comparable configuration in the cohort.
+    let best = |pick: fn(&LeaderboardRow) -> Option<f64>| {
+        rows.iter()
+            .filter(|row| row.status == "comparable")
+            .filter_map(pick)
+            .fold(None, |best: Option<f64>, value| {
+                Some(best.map_or(value, |b| b.min(value)))
+            })
+    };
+    let best_tokens = best(|row| row.median_output_tokens);
+    let best_duration = best(|row| row.median_duration_ms);
+    let best_cost = best(|row| row.cost);
+    for row in &mut rows {
+        row.efficiency_points = row
+            .median_output_tokens
+            .zip(best_tokens)
+            .map(|(v, b)| relative_points(v, b));
+        row.speed_points = row
+            .median_duration_ms
+            .zip(best_duration)
+            .map(|(v, b)| relative_points(v, b));
+        row.cost_points = row.cost.zip(best_cost).map(|(v, b)| relative_points(v, b));
+    }
     rows.sort_by(|a, b| {
         (b.status == "comparable")
             .cmp(&(a.status == "comparable"))
@@ -479,6 +522,14 @@ pub(super) mod tests {
         assert!(sign_probability(&[0.0; 8], 0.1) > 0.99);
     }
     #[test]
+    fn points_share_one_scale() {
+        assert_eq!(share_points(0.929), 929);
+        assert_eq!(share_points(1.2), 1000);
+        assert_eq!(relative_points(2000.0, 2000.0), 1000);
+        assert_eq!(relative_points(10_000.0, 2000.0), 200);
+        assert_eq!(relative_points(0.0, 2000.0), 1000);
+    }
+    #[test]
     fn null_cost_is_not_free() {
         let costs = [Some(1.0), None];
         assert_eq!(
@@ -631,6 +682,10 @@ pub(super) mod tests {
         assert_eq!((planning.scored, planning.planned), (4, 4));
         // v0 and v1 passed before and failed after: half of the planning cells.
         assert_eq!(planning.quality, Some(0.5));
+        assert_eq!((row.points, planning.points), (Some(500), Some(500)));
+        // Every attempt took 100 ms, so the only comparable row is its own best.
+        assert_eq!(row.speed_points, Some(1000));
+        assert_eq!((row.efficiency_points, row.cost_points), (None, None));
         assert_eq!(row.measured_at, Some(2));
         // One lonely cell cannot be comparable while the suite has six cases.
         data.attempts.truncate(1);

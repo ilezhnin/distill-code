@@ -1,38 +1,52 @@
 import { describe, expect, it } from "vitest";
-import { boardsFor, rankRows, shareOfBest } from "../lib/benchmarkBoards";
+import { boardsFor, rankRows } from "../lib/benchmarkBoards";
 import { cohort, configuration, leaderboardRow } from "./fixtures";
 
 const rows = [
   leaderboardRow({
     configuration: { ...configuration, id: "a", modelId: "alpha" },
-    quality: 1,
-    medianDurationMs: 10_000,
-    medianOutputTokens: 500,
-    cost: 1,
+    points: 1000,
+    speedPoints: 200,
+    efficiencyPoints: 200,
+    costPoints: 100,
     axes: [
-      { id: "coding-simple", quality: 0.5, passed: 1, scored: 2, planned: 2 },
+      {
+        id: "coding-simple",
+        quality: 0.5,
+        points: 500,
+        passed: 1,
+        scored: 2,
+        planned: 2,
+      },
     ],
   }),
   leaderboardRow({
     configuration: { ...configuration, id: "b", modelId: "beta" },
-    quality: 0.5,
-    medianDurationMs: 2_000,
-    medianOutputTokens: 100,
-    cost: 0.1,
+    points: 500,
+    speedPoints: 1000,
+    efficiencyPoints: 1000,
+    costPoints: 1000,
     axes: [
-      { id: "coding-simple", quality: 1, passed: 2, scored: 2, planned: 2 },
+      {
+        id: "coding-simple",
+        quality: 1,
+        points: 1000,
+        passed: 2,
+        scored: 2,
+        planned: 2,
+      },
     ],
   }),
   leaderboardRow({
     configuration: { ...configuration, id: "c", modelId: "gamma" },
-    quality: 1,
-    medianDurationMs: 30_000,
-    medianOutputTokens: null,
-    cost: 3,
+    points: 1000,
+    speedPoints: 67,
+    efficiencyPoints: null,
+    costPoints: 33,
   }),
   leaderboardRow({
     configuration: { ...configuration, id: "d", modelId: "delta" },
-    quality: 0.9,
+    points: 900,
     status: "preliminary",
     scored: 1,
     planned: 4,
@@ -67,13 +81,12 @@ describe("leaderboard boards", () => {
       ["beta", 3],
       ["delta", null],
     ]);
-    // The unranked row still shows how far it is from the leader.
+    // The unranked row keeps its points and bar, just no place.
+    expect(ranked[3].points).toBe(900);
     expect(ranked[3].share).toBe(90);
-    // Success boards score the measurement itself, out of 1000.
-    expect(ranked.map((entry) => entry.points)).toEqual([1000, 1000, 500, 900]);
   });
 
-  it("ranks lower-is-better boards ascending and fills the leader's bar", () => {
+  it("orders every board by its own points and leaves missing ones unranked", () => {
     const boards = boardsFor(cohort);
     const speed = rankRows(rows, boards[3]);
     expect(speed.map((entry) => entry.row.configuration.modelId)).toEqual([
@@ -84,9 +97,6 @@ describe("leaderboard boards", () => {
     ]);
     expect(speed[0].share).toBe(100);
     expect(speed[1].share).toBe(20);
-    // Points follow the share of the best on a lower-is-better board.
-    // The unranked row keeps its points too; a share above the leader clamps.
-    expect(speed.map((entry) => entry.points)).toEqual([1000, 200, 67, 1000]);
     const efficiency = rankRows(rows, boards[2]);
     // A row without a measurement cannot rank, even when it is comparable.
     expect(
@@ -97,13 +107,5 @@ describe("leaderboard boards", () => {
     expect(
       workClass.slice(0, 2).map((entry) => entry.row.configuration.modelId),
     ).toEqual(["beta", "alpha"]);
-  });
-
-  it("clamps shares and treats a zero best honestly", () => {
-    expect(shareOfBest(2, 1, true)).toBe(100);
-    expect(shareOfBest(0.5, 1, true)).toBe(50);
-    expect(shareOfBest(1, 0, true)).toBe(0);
-    expect(shareOfBest(0, 1, false)).toBe(100);
-    expect(shareOfBest(4, 1, false)).toBe(25);
   });
 });

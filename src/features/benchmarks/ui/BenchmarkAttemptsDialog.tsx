@@ -18,6 +18,8 @@ import { SectionHeading } from "./BenchmarkPrimitives";
 export function BenchmarkAttemptsDialog({
   title,
   description,
+  icon,
+  aside,
   attemptIds,
   versions,
   children,
@@ -26,6 +28,10 @@ export function BenchmarkAttemptsDialog({
 }: {
   title: string;
   description: string;
+  /** Vendor icon beside the title. */
+  icon?: ReactNode;
+  /** Figures at the right edge of the header, such as rank and rating. */
+  aside?: ReactNode;
   attemptIds: string[];
   versions: BenchmarkVersion[];
   children?: ReactNode;
@@ -42,10 +48,22 @@ export function BenchmarkAttemptsDialog({
     >
       <DialogContent size="xl">
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
+          <div className="flex items-start justify-between gap-6 pr-6">
+            <div className="flex min-w-0 items-center gap-3">
+              {icon ? (
+                <span className="flex size-11 shrink-0 items-center justify-center rounded-md bg-muted">
+                  {icon}
+                </span>
+              ) : null}
+              <div className="min-w-0 space-y-1">
+                <DialogTitle>{title}</DialogTitle>
+                <DialogDescription>{description}</DialogDescription>
+              </div>
+            </div>
+            {aside}
+          </div>
         </DialogHeader>
-        <DialogBody className="space-y-6">
+        <DialogBody className="space-y-8">
           {children}
           <section className="space-y-3">
             <SectionHeading

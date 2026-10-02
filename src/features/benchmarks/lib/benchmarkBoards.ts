@@ -1,5 +1,6 @@
-// One leaderboard, several boards: every measurement ranks on its own axis
-// instead of being folded into one score with hidden weights.
+// One leaderboard, several boards. The service scores every board on the same
+// scale (points out of 1000, see analysis.rs), so the operator and the selector
+// read identical numbers; this module only orders and labels them.
 import type { LeaderboardCohort, LeaderboardRow } from "../types";
 
 export const CLASS_BOARD_PREFIX = "class:";
@@ -15,58 +16,39 @@ export interface Board {
   id: BoardId;
   /** Work class id for a class board; null for the shared measurements. */
   workClass: string | null;
-  higherIsBetter: boolean;
-  value: (row: LeaderboardRow) => number | null;
+  /** Points out of 1000 on this board. */
+  points: (row: LeaderboardRow) => number | null;
 }
 
 export function boardsFor(
   cohort: LeaderboardCohort | null | undefined,
 ): Board[] {
   return [
-    {
-      id: "overall",
-      workClass: null,
-      higherIsBetter: true,
-      value: (row) => row.quality,
-    },
+    { id: "overall", workClass: null, points: (row) => row.points },
     ...(cohort?.workClasses ?? []).map(
       (workClass): Board => ({
         id: `${CLASS_BOARD_PREFIX}${workClass}`,
         workClass,
-        higherIsBetter: true,
-        value: (row) =>
-          row.axes.find((axis) => axis.id === workClass)?.quality ?? null,
+        points: (row) =>
+          row.axes.find((axis) => axis.id === workClass)?.points ?? null,
       }),
     ),
     {
       id: "efficiency",
       workClass: null,
-      higherIsBetter: false,
-      value: (row) => row.medianOutputTokens,
+      points: (row) => row.efficiencyPoints,
     },
-    {
-      id: "speed",
-      workClass: null,
-      higherIsBetter: false,
-      value: (row) => row.medianDurationMs,
-    },
-    {
-      id: "cost",
-      workClass: null,
-      higherIsBetter: false,
-      value: (row) => row.cost,
-    },
+    { id: "speed", workClass: null, points: (row) => row.speedPoints },
+    { id: "cost", workClass: null, points: (row) => row.costPoints },
   ];
 }
 
 export interface RankedRow {
   row: LeaderboardRow;
-  value: number | null;
-  /** Points out of 1000: success boards scale the measurement, the others the share of the best. */
   points: number | null;
-  /** 1-based; tied values share a rank and the next rank skips. Null when unranked. */
+  /** 1-based; tied points share a rank and the next rank skips. Null when unranked. */
   rank: number | null;
-  /** 0–100 share of the best ranked value; null without a value or a ranked best. */
+  /** 0–100 bar length: points over ten. */
   share: number | null;
 }
 
@@ -74,70 +56,30 @@ export function rowKey(row: LeaderboardRow): string {
   return JSON.stringify(row.configuration);
 }
 
-/** Share of the best value: the leader fills the bar on every board. */
-export function shareOfBest(
-  value: number,
-  best: number,
-  higherIsBetter: boolean,
-): number {
-  const ratio = higherIsBetter
-    ? best <= 0
-      ? 0
-      : value / best
-    : value <= 0
-      ? 1
-      : best / value;
-  return Math.max(0, Math.min(100, 100 * ratio));
-}
-
-/** Points out of 1000, the way the reference scores a board. */
-export function boardPoints(
-  board: Board,
-  value: number | null,
-  best: number | null,
-): number | null {
-  if (value == null) return null;
-  if (board.higherIsBetter) return Math.round(value * 1000);
-  if (best == null) return null;
-  return Math.round(shareOfBest(value, best, false) * 10);
-}
-
 /**
  * Only comparable rows receive a rank; incomplete and excluded rows keep their
- * values but sink below the ranked rows in their original order.
+ * points but sink below the ranked rows in their original order.
  */
 export function rankRows(rows: LeaderboardRow[], board: Board): RankedRow[] {
-  const entries = rows.map((row) => ({ row, value: board.value(row) }));
+  const entries = rows.map((row) => ({ row, points: board.points(row) }));
   const ranked = entries
     .filter(
-      (entry): entry is { row: LeaderboardRow; value: number } =>
-        entry.row.status === "comparable" && entry.value != null,
+      (entry): entry is { row: LeaderboardRow; points: number } =>
+        entry.row.status === "comparable" && entry.points != null,
     )
-    .sort((a, b) =>
-      board.higherIsBetter ? b.value - a.value : a.value - b.value,
-    );
-  const best = ranked[0]?.value;
+    .sort((a, b) => b.points - a.points);
   const rest = entries.filter((entry) => !ranked.includes(entry as never));
   let rank = 0;
   return [
     ...ranked.map((entry, index) => {
-      if (index === 0 || entry.value !== ranked[index - 1].value)
+      if (index === 0 || entry.points !== ranked[index - 1].points)
         rank = index + 1;
-      return {
-        ...entry,
-        rank,
-        points: boardPoints(board, entry.value, best ?? null),
-        share: shareOfBest(entry.value, best as number, board.higherIsBetter),
-      };
+      return { ...entry, rank, share: entry.points / 10 };
     }),
     ...rest.map((entry) => ({
       ...entry,
       rank: null,
-      points: boardPoints(board, entry.value, best ?? null),
-      share:
-        best == null || entry.value == null
-          ? null
-          : shareOfBest(entry.value, best, board.higherIsBetter),
+      share: entry.points == null ? null : entry.points / 10,
     })),
   ];
 }
