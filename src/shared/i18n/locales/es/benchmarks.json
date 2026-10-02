@@ -17,6 +17,7 @@
   "actions": {
     "new": "Nueva prueba",
     "run": "Ejecutar pruebas",
+    "newVariant": "Nueva variante",
     "runLatest": "Ejecutar la última versión",
     "preview": "Vista previa de esta versión",
     "validate": "Validar",
@@ -175,6 +176,8 @@
       "executionHint": "Se ejecuta en una sesión nueva con contexto limpio, sin herramientas ni red. Publicar congela el prompt, los fixtures, el evaluador y el entorno; las ediciones posteriores crean una nueva versión.",
       "advanced": "Avanzado: contexto de rol, continuación y flujo de trabajo"
     },
+    "authoredBy": "Autoría",
+    "authoredByHint": "Fragmentos separados por comas que se comparan con los IDs de modelo y proveedor del candidato. Un candidato que ayudó a escribir la prueba queda excluido de sus puntuaciones.",
     "roleId": "ID de rol",
     "rolePrompt": "Instrucciones de rol congeladas",
     "language": "Lenguaje",
@@ -285,6 +288,7 @@
     "description": "El contenido importado se convierte en un borrador editable. Importar nunca ejecuta comandos de configuración.",
     "file": "Archivo JSON de definición",
     "content": "JSON de definición",
+    "selected": "{{count}} archivos seleccionados",
     "tooLarge": "Elige una definición menor de 8 MiB."
   },
   "export": {

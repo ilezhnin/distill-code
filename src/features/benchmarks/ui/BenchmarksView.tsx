@@ -384,7 +384,11 @@ export function BenchmarksView({
           onClose={() => setDialog(null)}
           onImported={(id) => {
             setDialog(null);
-            onNavigate({ section: "development", benchmarkId: id });
+            onNavigate(
+              id
+                ? { section: "development", benchmarkId: id }
+                : { section: "development" },
+            );
           }}
         />
       ) : null}

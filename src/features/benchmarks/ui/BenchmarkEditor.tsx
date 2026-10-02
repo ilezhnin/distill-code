@@ -63,15 +63,27 @@ function rowsFrom(fixtures: BenchmarkDraft["fixtures"]): FixtureRow[] {
   return fixtures.map((fixture) => ({ key: crypto.randomUUID(), ...fixture }));
 }
 
-function readVisualRubric(environment: string): string | null {
+/** Reads one key of the environment JSON text; null when the text is invalid. */
+function readEnvironmentField(environment: string, key: string): unknown {
   try {
     const parsed: unknown = JSON.parse(environment);
-    return parsed && typeof parsed === "object" && "visualRubric" in parsed
-      ? String((parsed as { visualRubric: unknown }).visualRubric ?? "")
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? ((parsed as Record<string, unknown>)[key] ?? "")
       : "";
   } catch {
     return null;
   }
+}
+
+function readVisualRubric(environment: string): string | null {
+  const value = readEnvironmentField(environment, "visualRubric");
+  return value === null ? null : String(value);
+}
+
+function readAuthoredBy(environment: string): string | null {
+  const value = readEnvironmentField(environment, "authoredBy");
+  if (value === null) return null;
+  return Array.isArray(value) ? value.map(String).join(", ") : "";
 }
 
 export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
@@ -137,20 +149,31 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
     () => readVisualRubric(environment),
     [environment],
   );
-  const setVisualRubric = (value: string) => {
+  const setEnvironmentField = (key: string, value: unknown) => {
     try {
       const parsed = JSON.parse(environment);
       const next =
         parsed && typeof parsed === "object" && !Array.isArray(parsed)
           ? { ...(parsed as Record<string, unknown>) }
           : {};
-      if (value.trim()) next.visualRubric = value;
-      else delete next.visualRubric;
+      if (value === undefined) delete next[key];
+      else next[key] = value;
       setEnvironment(pretty(next));
       setValidation(null);
     } catch {
       // The raw JSON is shown in the advanced section; the save reports it.
     }
+  };
+  const setVisualRubric = (value: string) =>
+    setEnvironmentField("visualRubric", value.trim() ? value : undefined);
+  const authoredBy = useMemo(() => readAuthoredBy(environment), [environment]);
+  const [authoredByText, setAuthoredByText] = useState(authoredBy ?? "");
+  const commitAuthoredBy = (value: string) => {
+    const needles = value
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+    setEnvironmentField("authoredBy", needles.length ? needles : undefined);
   };
   const execute = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -675,6 +698,22 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
             {facet("language")}
             {facet("domain")}
             {facet("outputFormat")}
+            {authoredBy !== null ? (
+              <Field
+                label={t("benchmarks:editor.authoredBy")}
+                className="md:col-span-2"
+                hint={t("benchmarks:editor.authoredByHint")}
+              >
+                {(id) => (
+                  <Input
+                    id={id}
+                    value={authoredByText}
+                    onChange={(event) => setAuthoredByText(event.target.value)}
+                    onBlur={() => commitAuthoredBy(authoredByText)}
+                  />
+                )}
+              </Field>
+            ) : null}
             <Field
               label={t("benchmarks:editor.rolePrompt")}
               className="md:col-span-2"

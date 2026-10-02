@@ -62,6 +62,8 @@ export const benchmarkApi = {
       id,
       archived,
     }),
+  generateVariant: (family: string, seed: number) =>
+    invoke<BenchmarkDraft>("benchmark_generate_variant", { family, seed }),
   importDefinition: (draft: BenchmarkDraft) =>
     invoke<BenchmarkDefinition>("benchmark_import_definition", { draft }),
   previewRun: (request: RunRequest) =>

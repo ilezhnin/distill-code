@@ -8,6 +8,7 @@ import {
   IconCopy,
   IconDots,
   IconPlayerPlay,
+  IconRefresh,
 } from "@tabler/icons-react";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -41,6 +42,20 @@ import {
 } from "./BenchmarkPrimitives";
 
 const RESULTS_PAGE = 50;
+
+/** Family name when the definition carries a deterministic variant generator. */
+function generatorFamily(draft: BenchmarkDefinition["draft"]): string | null {
+  const environment = draft.environment;
+  if (!environment || typeof environment !== "object") return null;
+  const generator = (environment as { generator?: unknown }).generator;
+  if (!generator || typeof generator !== "object") return null;
+  const family = (generator as { family?: unknown }).family;
+  return typeof family === "string" && family ? family : null;
+}
+
+function randomSeed(): number {
+  return (crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000) + 1;
+}
 
 export function BenchDevelopmentView({
   definitions,
@@ -266,6 +281,27 @@ export function BenchDevelopmentView({
                           <IconPlayerPlay className="size-3.5" />
                           {t("benchmarks:actions.runLatest")}
                         </DropdownMenuItem>
+                        {generatorFamily(entry.draft) ? (
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              void operate(async () => {
+                                const family = generatorFamily(entry.draft);
+                                if (!family) return;
+                                const variant =
+                                  await benchmarkApi.generateVariant(
+                                    family,
+                                    randomSeed(),
+                                  );
+                                const created =
+                                  await benchmarkApi.importDefinition(variant);
+                                onEdit(created.id);
+                              })
+                            }
+                          >
+                            <IconRefresh className="size-3.5" />
+                            {t("benchmarks:actions.newVariant")}
+                          </DropdownMenuItem>
+                        ) : null}
                         <DropdownMenuItem
                           onSelect={() =>
                             void operate(async () => {

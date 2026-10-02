@@ -423,7 +423,10 @@ pub fn definitions() -> Vec<BenchmarkDraft> {
     seeds()
         .into_iter()
         .map(|seed| {
-            let mut environment = json!({"track":"native_agent","context":"clean","cachePolicy":"provider_default"});
+            let mut environment = json!({"track":"native_agent","context":"clean","cachePolicy":"provider_default","authoredBy":["fable"]});
+            if super::generated::FAMILIES.contains(&seed.family) {
+                environment["generator"] = json!({"family": seed.family, "seed": 0});
+            }
             if seed.execution_profile == "isolated_ui" {
                 environment["visualRubric"] = json!("visual-v1: legible labels, visible focus, clear output and consistent spacing; scored separately from the functional checks");
             }
@@ -523,6 +526,7 @@ mod tests {
             );
             assert!(d.task_family.starts_with("seed-"), "{}", d.task_family);
             assert!(d.description.contains("not evidence for a model ranking"));
+            assert_eq!(d.environment["authoredBy"], serde_json::json!(["fable"]));
             let report = super::super::catalog::validate(d);
             assert!(report.valid, "{}: {:?}", d.name, report.issues);
         }

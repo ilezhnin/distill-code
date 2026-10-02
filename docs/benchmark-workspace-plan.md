@@ -790,3 +790,19 @@ The seeds validate the pipeline and give each class a smoke signal. They remain 
 - Rust: `cargo fmt --check`, `cargo clippy --all-targets --features distillctl,app-test-driver -D warnings` and the 58 benchmark module tests passed, including two new seed tests (two families per class, no answer or reference solution inside any public prompt or fixture).
 - Live check: the isolated E2E build was rebuilt and driven over CDP; screenshots of every section, the editor, the run, status, evidence, selector and campaign dialogs are under `E:/Unity/distill_code/benchmark-review-qa/`.
 
+## Anti-benchmaxing controls and the private task set (October 1, 2026)
+
+The review above left one open problem: every seed was written by a model, so the catalog could not rank the models that wrote it. The following controls close that gap in code and establish a closed task set outside the repository.
+
+### Controls in code
+
+- **Author exclusion.** A definition declares its authors as lowercase needles in `environment.authoredBy` (for example `["fable"]`), editable in the Advanced section of the editor. A candidate whose model or provider ID contains a needle is excluded from that case everywhere: the leaderboard drops the cell and says how many were excluded (a row with nothing left reads `Excluded`), Nerf comparisons ignore it, selector evidence neither counts nor owes it (status `excluded` when nothing remains), and the export marks the observation `excluded: "authored_by_candidate"` with a null reward. All bundled seeds now carry `authoredBy: ["fable"]`.
+- **Parametrized variants.** Three seed families (`seed-rule-ordered-classification`, `seed-constrained-option-choice`, `seed-two-worker-schedule`) have deterministic generators (`services/benchmarks/generated.rs`): a numeric seed derives new fixture data and the expected answer is computed, not recalled. The library row menu offers "New variant"; the generated draft keeps the family, so leakage grouping and split consistency still hold. Tests check determinism, validity for forty seeds per family, a brute-force cross-check for option choice and dependency/worker invariants for schedules.
+- **Bulk import.** The import dialog accepts several definition files at once so a closed task set can be loaded in one step.
+
+### Private task set
+
+Definitions live in `C:/Users/User/.distill/benchmark-tasks/` (never in a repository, so an agent working on a project does not read answers): `drafts/` holds candidates with their provenance notes, `tools/verify-all.mjs` applies the same structural and evaluator checks the app applies before publication (browser checks run through the real worker with `--browser`), and `tools/assign-splits.mjs` assigns `train`/`held_out` by a salted hash of the family before any run and writes `published/`. Sources: Distill git history for code repair (buggy pre-fix module as fixture, the fix's tests as protected checks), audit and handoff records for planning and verification, engineering docs and laws for extraction, and real component behaviors for UI checks. Every private task also carries `authoredBy`, so the models that formatted it are excluded from its scores.
+
+A held-out family is retired after it decides a role assignment. Tasks that a human writes without any model in the loop are the only ones on which every candidate can be ranked; the private set is model-formatted, so the author model is excluded by construction.
+
