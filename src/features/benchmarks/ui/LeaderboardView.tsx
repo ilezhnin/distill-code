@@ -172,19 +172,22 @@ export function LeaderboardView({
   // Nothing ranked yet means nothing to hide behind.
   const showUnranked = unrankedOpen || rankedRows.length === 0;
   const shown = showUnranked ? ranked : rankedRows;
-  // Every board's points per row feed the small profile bars.
-  const pointsByBoard = useMemo(
+  // Every board's standing per row: points for the profile bars, place for the dialog.
+  const standings = useMemo(
     () =>
       new Map(
-        boards.map((entry) => [
-          entry.id,
-          new Map(
-            rankRows(visible, entry).map((result) => [
-              rowKey(result.row),
-              result.points,
-            ]),
-          ),
-        ]),
+        boards.map((entry) => {
+          const results = rankRows(visible, entry);
+          return [
+            entry.id,
+            {
+              of: results.filter((result) => result.rank != null).length,
+              rows: new Map(
+                results.map((result) => [rowKey(result.row), result]),
+              ),
+            },
+          ] as const;
+        }),
       ),
     [boards, visible],
   );
@@ -237,10 +240,14 @@ export function LeaderboardView({
         ]}
       />
     ) : null;
+  // In table mode the rank and model stay put while the boards scroll.
+  const pinned = (offset: string) =>
+    view === "table" && `sticky ${offset} z-10 bg-background`;
   const rankCell = (entry: RankedRow) => (
     <TableCell
       className={cn(
         "w-8 px-1 font-display text-lg tabular-nums",
+        pinned("left-0"),
         entry.rank === 1
           ? "text-chart-1"
           : entry.rank == null && "text-muted-foreground",
@@ -250,7 +257,7 @@ export function LeaderboardView({
     </TableCell>
   );
   const modelCell = (entry: RankedRow) => (
-    <TableCell>
+    <TableCell className={cn(pinned("left-10"))}>
       <ModelIdentity
         configuration={entry.row.configuration}
         name={nameOf(entry.row)}
@@ -516,8 +523,8 @@ export function LeaderboardView({
                         id: axis.id,
                         label: boardLabel(axis),
                         points:
-                          pointsByBoard.get(axis.id)?.get(rowKey(entry.row)) ??
-                          null,
+                          standings.get(axis.id)?.rows.get(rowKey(entry.row))
+                            ?.points ?? null,
                       }))}
                     />
                   </TableCell>
@@ -530,8 +537,12 @@ export function LeaderboardView({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>{t("fields.rank")}</TableHead>
-              <TableHead className="min-w-40">{t("fields.model")}</TableHead>
+              <TableHead className="sticky left-0 z-10 bg-background">
+                {t("fields.rank")}
+              </TableHead>
+              <TableHead className="sticky left-10 z-10 min-w-40 bg-background">
+                {t("fields.model")}
+              </TableHead>
               {boards.map((entry) => (
                 <TableHead key={entry.id} className="px-1 text-right">
                   <Button
@@ -565,8 +576,8 @@ export function LeaderboardView({
                 <>
                   {boards.map((axis) => {
                     const points =
-                      pointsByBoard.get(axis.id)?.get(rowKey(entry.row)) ??
-                      null;
+                      standings.get(axis.id)?.rows.get(rowKey(entry.row))
+                        ?.points ?? null;
                     return (
                       <TableCell
                         key={axis.id}
@@ -600,6 +611,21 @@ export function LeaderboardView({
         <BenchmarkConfigurationDialog
           row={selectedRow}
           name={nameOf(selectedRow)}
+          vendor={vendorOf(selectedRow)}
+          fact={factOf(selectedRow)}
+          standings={boards.map((entry) => {
+            const standing = standings.get(entry.id);
+            const result = standing?.rows.get(rowKey(selectedRow));
+            return {
+              id: entry.id,
+              label: boardLabel(entry),
+              description: boardDescription(entry),
+              points: result?.points ?? null,
+              rank: result?.rank ?? null,
+              of: standing?.of ?? 0,
+              share: result?.share ?? null,
+            };
+          })}
           versions={versions}
           onEvidence={onEvidence}
           onClose={() => setSelected(null)}

@@ -287,7 +287,6 @@
     "allAxes": "Todos los tableros",
     "measured": "{{scored}} / {{planned}} medidas",
     "open": "Abrir {{model}}",
-    "axesTitle": "Éxito por clase de trabajo",
     "empty": "No hay resultados para esta selección.",
     "emptyHint": "Publica una prueba y ejecútala para recopilar evidencia.",
     "runtime": "runtime {{id}}",
@@ -495,5 +494,29 @@
       "source": "Fuente",
       "sourceHint": "Dónde se leyeron las cifras, por ejemplo la página de precios del fabricante."
     }
+  },
+  "configuration": {
+    "rankLabel": "Posición",
+    "ratingLabel": "Puntuación general",
+    "rank": "{{rank}} de {{of}}",
+    "of": "de {{of}}",
+    "notRanked": "Sin posición",
+    "ratings": "Puntuaciones",
+    "higherIsBetter": "Más alto es mejor en todos los tableros",
+    "specs": "Especificaciones",
+    "apiModelId": "ID de modelo de la API",
+    "runtime": "Revisión del runtime",
+    "context": "Ventana de contexto",
+    "cases": "Casos puntuados",
+    "measured": "Medido",
+    "spend": "Gasto medido del conjunto",
+    "outputTokens": "Mediana de tokens de salida",
+    "pricing": "Precios",
+    "perMillion": "USD por millón de tokens",
+    "input": "Entrada",
+    "cachedInput": "Entrada en caché",
+    "output": "Salida",
+    "cacheWrites": "Escrituras de caché {{price}}",
+    "source": "Fuente: {{source}} · comprobado el {{date}}"
   }
 }

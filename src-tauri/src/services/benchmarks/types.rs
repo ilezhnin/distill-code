@@ -378,6 +378,14 @@ pub struct LeaderboardRow {
     pub median_output_tokens: Option<f64>,
     pub cost: Option<f64>,
     pub measured_at: Option<i64>,
+    /// One scale for every board, so the selector reads the same numbers the
+    /// operator sees: success scales to points out of 1000; on efficiency,
+    /// speed and cost the best comparable configuration scores 1000 and the
+    /// others in proportion.
+    pub points: Option<u32>,
+    pub efficiency_points: Option<u32>,
+    pub speed_points: Option<u32>,
+    pub cost_points: Option<u32>,
     pub status: String,
     pub reason: String,
     pub attempt_ids: Vec<String>,
@@ -389,6 +397,8 @@ pub struct LeaderboardRow {
 pub struct LeaderboardAxis {
     pub id: String,
     pub quality: Option<f64>,
+    /// Measured success as points out of 1000.
+    pub points: Option<u32>,
     pub passed: u32,
     pub scored: u32,
     pub planned: u32,
