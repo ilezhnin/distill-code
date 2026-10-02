@@ -129,6 +129,7 @@
     "reviewScore": "Puntuación de revisión (0–1)",
     "reviewReason": "Evidencia de la revisión",
     "tokens": "Tokens",
+    "tokensCache": "caché: {{write}} escritos / {{read}} leídos",
     "tokensValue": "{{input}} entrada / {{output}} salida"
   },
   "split": {
@@ -261,6 +262,7 @@
     "cohort": "Conjunto congelado más reciente: {{runs}} ejecuciones · {{cases}} casos · {{repetitions}} repeticiones · {{seconds}} s por intento",
     "empty": "No hay resultados para esta selección.",
     "emptyHint": "Publica una prueba y ejecútala para recopilar evidencia.",
+    "runtime": "runtime {{id}}",
     "chartLabel": "Éxito medido de {{model}}: {{value}} por ciento"
   },
   "nerf": {

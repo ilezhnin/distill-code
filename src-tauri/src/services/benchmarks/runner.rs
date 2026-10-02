@@ -749,8 +749,27 @@ async fn inventory_fingerprint(inventory: &Value) -> Result<String> {
     hash.update(include_bytes!("../../../../acp-tools.lock.json"));
     hash.update(NATIVE_TEXT_POLICY_REVISION.as_bytes());
     hash.update(NATIVE_TEXT_ADAPTER.as_bytes());
-    hash.update(serde_json::to_vec(&inventory["models"])?);
+    hash.update(serde_json::to_vec(&model_identity(inventory))?);
     Ok(hex::encode(hash.finalize()))
+}
+/// The installed model set. Effort and fast-mode details are learned lazily by
+/// the host probe, so they are not part of the runtime identity; the acknowledged
+/// selection check guards the actual effort and fast mode of every attempt.
+fn model_identity(inventory: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = inventory["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            row.get("modelId")
+                .or_else(|| row.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 fn matches_selection(requested: &Configuration, observed: &Configuration) -> bool {
     requested.model_id == observed.model_id
@@ -1756,6 +1775,23 @@ mod tests {
         let prompt = prompt_with_fixtures(&draft).unwrap();
         assert!(prompt.contains("visible fixture"));
         assert!(!prompt.contains(&draft.evaluator.known_good));
+    }
+    #[tokio::test]
+    async fn runtime_identity_ignores_lazily_learned_efforts_but_not_the_model_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("bridge.js");
+        tokio::fs::write(&executable, "bridge").await.unwrap();
+        let path = executable.to_string_lossy().into_owned();
+        let before = json!({"executable":{"path":path},"models":[{"modelId":"sonnet","reasoningEfforts":[]},{"modelId":"opus","reasoningEfforts":["low"]}]});
+        let learned = json!({"executable":{"path":path},"models":[{"modelId":"opus","reasoningEfforts":["low","high"],"supportsFast":true},{"modelId":"sonnet","reasoningEfforts":["low"]}]});
+        let grown = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus"},{"modelId":"haiku"}]});
+        let first = inventory_fingerprint(&before).await.unwrap();
+        assert_eq!(first, inventory_fingerprint(&learned).await.unwrap());
+        assert_ne!(first, inventory_fingerprint(&grown).await.unwrap());
+        tokio::fs::write(&executable, "updated bridge")
+            .await
+            .unwrap();
+        assert_ne!(first, inventory_fingerprint(&before).await.unwrap());
     }
     #[test]
     fn exact_selection_accepts_only_unspecified_native_defaults() {

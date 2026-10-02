@@ -129,6 +129,7 @@
     "reviewScore": "Review score (0–1)",
     "reviewReason": "Review evidence",
     "tokens": "Tokens",
+    "tokensCache": "cache: {{write}} written / {{read}} read",
     "tokensValue": "{{input}} in / {{output}} out"
   },
   "split": {
@@ -261,6 +262,7 @@
     "cohort": "Newest frozen suite: {{runs}} runs · {{cases}} cases · {{repetitions}} repetitions · {{seconds}} s per attempt",
     "empty": "No results for this selection.",
     "emptyHint": "Publish a test and run it to collect evidence.",
+    "runtime": "runtime {{id}}",
     "chartLabel": "{{model}} measured success: {{value}} percent"
   },
   "nerf": {
