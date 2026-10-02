@@ -76,3 +76,72 @@ export function formatCost(
 ): string {
   return cost == null ? t("unknown") : cost.toFixed(digits);
 }
+
+export function formatTokens(
+  t: Translate,
+  tokens: number | null | undefined,
+): string {
+  return tokens == null
+    ? t("unknown")
+    : t("tokens", { value: Math.round(tokens).toLocaleString("en-US") });
+}
+
+/** Measured USD with three significant digits: $0.386, $0.0078, $12.3. */
+export function formatUsd(
+  t: Translate,
+  cost: number | null | undefined,
+): string {
+  if (cost == null) return t("unknown");
+  return `$${Number(cost.toPrecision(3)).toString()}`;
+}
+
+/** Signed percent change, for example +12.3% or −4.0%. */
+export function formatChange(
+  t: Translate,
+  percent: number | null | undefined,
+): string {
+  if (percent == null) return t("unknown");
+  const sign = percent > 0 ? "+" : percent < 0 ? "−" : "";
+  return t("percent", { value: `${sign}${Math.abs(percent).toFixed(1)}` });
+}
+
+export function workClassLabel(t: Translate, workClass: string): string {
+  return t(`settings:routing.classes.${workClass}`, {
+    defaultValue: workClass,
+  });
+}
+
+export function quotaWindowLabel(t: Translate, windowId: string): string {
+  if (windowId === "five_hour") return t("usage.windows.fiveHour");
+  if (windowId === "seven_day") return t("usage.windows.weekly");
+  if (windowId.startsWith("seven_day_"))
+    return t("usage.windows.weeklyModel", {
+      model: windowId.slice("seven_day_".length),
+    });
+  if (windowId === "unreported") return t("unknown");
+  return windowId;
+}
+
+/** Everything but the model: provider, effort, fast mode and runtime revision. */
+export function configurationDetails(
+  t: Translate,
+  configuration: {
+    providerId: string;
+    effort: string | null;
+    fastMode: boolean | null;
+    inventoryRevision: string | null;
+  },
+): string {
+  return [
+    configuration.providerId,
+    configuration.effort,
+    configuration.fastMode === true ? t("fastMode") : null,
+    configuration.inventoryRevision
+      ? t("leaderboard.runtime", {
+          id: shortId(configuration.inventoryRevision),
+        })
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}

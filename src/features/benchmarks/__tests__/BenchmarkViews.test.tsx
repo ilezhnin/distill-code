@@ -15,6 +15,7 @@ import { benchmarkApi } from "../api/benchmarks";
 import { BenchmarkEditor } from "../ui/BenchmarkEditor";
 import { BenchmarksView } from "../ui/BenchmarksView";
 import { LeaderboardView } from "../ui/LeaderboardView";
+import { NerfBenchView } from "../ui/NerfBenchView";
 import { BenchmarkRoutingDialog } from "../ui/BenchmarkRoutingDialog";
 import {
   BenchmarkExportDialog,
@@ -25,9 +26,12 @@ import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
 import {
   attempt,
+  attemptSummary,
+  cohort,
   configuration,
   definition,
   draft,
+  leaderboardRow,
   run,
   runSummary,
 } from "./fixtures";
@@ -280,33 +284,29 @@ describe("benchmark authoring and saved evidence", () => {
     ).not.toBeInTheDocument();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
-  it("shows missing cost and coverage without inventing a comparable score", async () => {
+  it("shows an unfinished configuration without a rank and opens its attempts", async () => {
     const inspect = vi.fn();
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
     wrap(
       <LeaderboardView
         {...scopeProps}
+        versions={definition.versions}
         report={{
-          cohort: {
-            runIds: ["run-1"],
-            versionIds: ["version-1"],
-            repetitions: 1,
-            timeoutSeconds: 120,
-            maxExecutions: 2,
-            newestRunAt: 1000,
-          },
+          cohort,
           rows: [
-            {
-              configuration,
+            leaderboardRow({
               passed: 0,
+              scored: 0,
               attempted: 0,
               planned: 4,
               quality: null,
               medianDurationMs: null,
+              medianOutputTokens: null,
               cost: null,
+              measuredAt: null,
               status: "preliminary",
               reason: "No valid evidence",
-              attemptIds: ["attempt-1"],
-            },
+            }),
           ],
         }}
         onEvidence={inspect}
@@ -314,35 +314,135 @@ describe("benchmark authoring and saved evidence", () => {
     );
     expect(
       screen.getByText(
-        "Newest frozen suite: 1 runs · 1 cases · 1 repetitions · 120 s per attempt",
+        "0 scored · 1 cases · 1 repetitions · 120 s per attempt",
       ),
     ).toBeInTheDocument();
     const row = screen.getByRole("row", { name: /model-1/ });
-    expect(within(row).getAllByText("Not reported")).toHaveLength(3);
-    expect(row).toHaveTextContent("0 / 4");
+    expect(within(row).getAllByRole("cell")[0]).toHaveTextContent("–");
+    expect(within(row).getByText("Preliminary")).toBeInTheDocument();
+    expect(within(row).getByText("0 / 4 measured")).toBeInTheDocument();
+    expect(within(row).getAllByText("–")).toHaveLength(2);
     expect(row).not.toHaveTextContent("0.0%");
-    await userEvent.click(within(row).getByRole("button", { name: "1" }));
+    await userEvent.click(
+      within(row).getByRole("button", { name: "Open model-1" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "model-1" });
+    expect(within(dialog).getByText("No valid evidence")).toBeInTheDocument();
+    expect(
+      await within(dialog).findByText("Integer transformation"),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Inspect" }),
+    );
     expect(inspect).toHaveBeenCalledWith("attempt-1");
+    expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
+      attemptIds: ["attempt-1"],
+      offset: 0,
+      limit: 50,
+    });
+  });
+  it("ranks every board on its own and re-ranks from a table column", async () => {
+    const rows = [
+      leaderboardRow({
+        configuration: { ...configuration, id: "a", modelId: "alpha" },
+        quality: 1,
+        medianDurationMs: 10_000,
+        medianOutputTokens: 500,
+        cost: 1,
+      }),
+      leaderboardRow({
+        configuration: { ...configuration, id: "b", modelId: "beta" },
+        quality: 0.5,
+        medianDurationMs: 2_000,
+        medianOutputTokens: 100,
+        cost: 0.1,
+      }),
+      leaderboardRow({
+        configuration: { ...configuration, id: "c", modelId: "gamma" },
+        quality: 1,
+        medianDurationMs: 30_000,
+        medianOutputTokens: 900,
+        cost: 3,
+      }),
+    ];
+    wrap(
+      <LeaderboardView
+        {...scopeProps}
+        versions={[]}
+        report={{ cohort, rows }}
+        onEvidence={vi.fn()}
+      />,
+    );
+    const order = () =>
+      screen
+        .getAllByRole("row")
+        .slice(1)
+        .map((row) => {
+          const cells = within(row).getAllByRole("cell");
+          return `${cells[0].textContent} ${cells[1].querySelector("div")?.textContent}`;
+        });
+    expect(
+      screen.getByText(
+        /^3 scored · 1 cases · 1 repetitions · 120 s per attempt · measured /,
+      ),
+    ).toBeInTheDocument();
+    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta"]);
+    expect(
+      screen.getByRole("tab", { name: "Simple coding" }),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Speed" }));
+    expect(
+      screen.getByText("Median attempt duration. Lower is better."),
+    ).toBeInTheDocument();
+    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma"]);
+    await userEvent.click(screen.getByRole("radio", { name: "Table" }));
+    expect(
+      screen.getByText("Every measurement at once. Click a column to re-rank."),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Cost" }));
+    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma"]);
+    expect(screen.getByRole("button", { name: "Cost" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const first = screen.getAllByRole("row")[1];
+    expect(
+      within(first)
+        .getAllByRole("cell")
+        .map((cell) => cell.textContent),
+    ).toEqual([
+      "1",
+      "betaclaude-acp · high · runtime inventor",
+      "50.0%",
+      "–",
+      "100 tokens",
+      "2.00 s",
+      "$0.1",
+      "1 / 1",
+      "",
+    ]);
   });
   it("labels every outcome the service emits instead of showing raw keys", () => {
     wrap(
       <LeaderboardView
         {...scopeProps}
+        versions={[]}
         report={{
           cohort: null,
           rows: ["budget_reached", "selection_changed", "confirmed_change"].map(
-            (status) => ({
-              configuration: { ...configuration, id: status, modelId: status },
-              passed: 0,
-              attempted: 1,
-              planned: 1,
-              quality: 0,
-              medianDurationMs: null,
-              cost: null,
-              status,
-              reason: "",
-              attemptIds: [],
-            }),
+            (status) =>
+              leaderboardRow({
+                configuration: {
+                  ...configuration,
+                  id: status,
+                  modelId: status,
+                },
+                passed: 0,
+                quality: 0,
+                status,
+                reason: "",
+                attemptIds: [],
+              }),
           ),
         }}
         onEvidence={vi.fn()}
@@ -351,6 +451,56 @@ describe("benchmark authoring and saved evidence", () => {
     expect(screen.getByText("Artifact budget exceeded")).toBeInTheDocument();
     expect(screen.getByText("Selection changed")).toBeInTheDocument();
     expect(screen.getByText("Confirmed change")).toBeInTheDocument();
+  });
+  it("opens the attempts behind a Nerf comparison", async () => {
+    const onEvidence = vi.fn();
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
+    wrap(
+      <NerfBenchView
+        {...scopeProps}
+        versions={definition.versions}
+        baseline={null}
+        baselineId="baseline"
+        baselineOptions={[{ value: "baseline", label: "Frozen" }]}
+        onBaselineChange={vi.fn()}
+        onCreateBaseline={vi.fn()}
+        comparisons={[
+          {
+            baselineId: "baseline",
+            configurationId: "model-1",
+            qualityChange: -0.1,
+            retainedQualityPercent: 90,
+            intervalLow: -0.2,
+            intervalHigh: 0,
+            status: "preliminary",
+            reason: "Synthetic",
+            attemptIds: ["attempt-7", "attempt-8"],
+            durationChangePercent: 12.34,
+            tokenChangePercent: null,
+            method: "paired",
+            measuredAt: null,
+          },
+        ]}
+        onEvidence={onEvidence}
+      />,
+    );
+    const row = screen.getByRole("row", { name: /model-1/ });
+    expect(row).toHaveTextContent("90.0%");
+    expect(row).toHaveTextContent("−10.0 pp");
+    expect(row).toHaveTextContent("+12.3%");
+    await userEvent.click(
+      within(row).getByRole("button", { name: "Open model-1" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "model-1" });
+    await userEvent.click(
+      await within(dialog).findByRole("button", { name: "Inspect" }),
+    );
+    expect(onEvidence).toHaveBeenCalledWith("attempt-1");
+    expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
+      attemptIds: ["attempt-7", "attempt-8"],
+      offset: 0,
+      limit: 50,
+    });
   });
   it("defaults dataset export to exclude held-out outcomes", async () => {
     vi.mocked(benchmarkApi.exportDataset).mockResolvedValue({
@@ -615,8 +765,13 @@ describe("benchmark authoring and saved evidence", () => {
         runId: "older-run",
         versionId: "version-1",
         modelId: query.offset === 0 ? "first-page-model" : "older-page-model",
+        repetition: 0,
         phase: "terminal",
         outcome: "pass",
+        finishedAt: null,
+        durationMs: null,
+        outputTokens: null,
+        cost: null,
       })),
     );
     const onNavigate = vi.fn();

@@ -130,7 +130,15 @@
     "reviewReason": "Review evidence",
     "tokens": "Tokens",
     "tokensCache": "cache: {{write}} written / {{read}} read",
-    "tokensValue": "{{input}} in / {{output}} out"
+    "tokensValue": "{{input}} in / {{output}} out",
+    "rank": "#",
+    "case": "Case",
+    "durationShort": "Duration",
+    "costShort": "Cost",
+    "tokensOut": "Output tokens",
+    "measuredAt": "Measured",
+    "repetitionValue": "repetition {{value}}",
+    "usedRange": "Used before → after"
   },
   "split": {
     "development": "Development",
@@ -247,7 +255,6 @@
     "anonymousArtifact": "Artifact {{number}}",
     "blindReview": "Model identity, measurements and transcript stay hidden until the rubric review is recorded.",
     "rubric": "Published review rubric",
-    "range": "{{start}}–{{end}} of {{total}} attempts",
     "output": "Captured output",
     "noOutput": "No captured output.",
     "evaluations": "Evaluation history",
@@ -258,20 +265,49 @@
     "rescore": "Evaluate again"
   },
   "leaderboard": {
-    "description": "Rows share one frozen suite and budget. Missing measurements stay unknown; incomplete coverage receives no comparable rank.",
-    "cohort": "Newest frozen suite: {{runs}} runs · {{cases}} cases · {{repetitions}} repetitions · {{seconds}} s per attempt",
+    "description": "Rows share one frozen suite and budget. Missing measurements stay unknown; incomplete coverage receives no rank.",
+    "summary": "{{scored}} scored · {{cases}} cases · {{repetitions}} repetitions · {{seconds}} s per attempt",
+    "measuredOn": "measured {{date}}",
+    "shown": "{{count}} configurations shown",
+    "boards": {
+      "overall": "Overall",
+      "efficiency": "Efficiency",
+      "speed": "Speed",
+      "cost": "Cost"
+    },
+    "boardDescriptions": {
+      "overall": "Measured success across every case in the frozen suite. Higher is better.",
+      "class": "Measured success on {{label}} cases. Higher is better.",
+      "efficiency": "Median output tokens per scored attempt. Lower is better.",
+      "speed": "Median attempt duration. Lower is better.",
+      "cost": "Measured cost of the suite in USD, as the provider reported it. Lower is better."
+    },
+    "tableHint": "Every measurement at once. Click a column to re-rank.",
+    "allAxes": "All boards",
+    "measured": "{{scored}} / {{planned}} measured",
+    "open": "Open {{model}}",
+    "axesTitle": "Success by work class",
     "empty": "No results for this selection.",
     "emptyHint": "Publish a test and run it to collect evidence.",
     "runtime": "runtime {{id}}",
-    "chartLabel": "{{model}} measured success: {{value}} percent"
+    "chartLabel": "{{model}}: {{value}}"
   },
   "nerf": {
-    "description": "Changes from the selected Distill baseline. Quality, duration and output tokens remain separate measurements.",
+    "description": "Changes from a frozen Distill baseline. Quality, duration and output tokens stay separate measurements.",
+    "summary": "Baseline {{name}} · frozen {{date}} · practical threshold {{threshold}} pp. Quality, duration and output tokens stay separate measurements.",
     "empty": "Choose a baseline to compare.",
     "emptyHint": "Freeze a completed run as a baseline, then collect matched later runs."
   },
   "usage": {
     "description": "Measured work per subscription allowance, by workload and quota window. Opening this view never starts a measurement.",
+    "summary": "Baseline {{name}} · day one {{date}}. Every window is compared with its own first measurement.",
+    "latestMeasurement": "latest measurement {{date}}",
+    "noMeasurement": "no measurement yet",
+    "windows": {
+      "fiveHour": "5-hour limit",
+      "weekly": "Weekly limit",
+      "weeklyModel": "Weekly limit · {{model}}"
+    },
     "attribution": "Quota belongs to the whole controlled batch. Mixed account activity cannot establish a task-specific charge; missing telemetry is unknown and an unreached limit is only a lower bound.",
     "empty": "No quota samples for this selection.",
     "emptyHint": "Run a published controlled-quota or capacity test to collect samples.",
@@ -355,7 +391,9 @@
     "empty": "No candidates were supplied.",
     "coverage": "{{samples}} samples across {{families}} families · quality {{quality}}",
     "protocol": "{{missing}} missing outcomes · shared time limit {{seconds}} s",
-    "queryHash": "Query hash"
+    "queryHash": "Query hash",
+    "showAttempts": "Show {{count}} attempts",
+    "hideAttempts": "Hide attempts"
   },
   "attribution": {
     "provider_reported": "Provider-reported",
@@ -411,5 +449,10 @@
     "mixed": "Mixed",
     "controlled_batch": "Controlled batch",
     "unknown": "Unknown"
+  },
+  "tokens": "{{value}} tokens",
+  "fastMode": "fast",
+  "attempts": {
+    "title": "Attempts ({{count}})"
   }
 }

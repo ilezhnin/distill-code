@@ -1,10 +1,13 @@
 import { createBenchmarkDraft } from "../lib/benchmarkDraft";
 import type {
   Attempt,
+  AttemptSummary,
   BenchmarkDefinition,
   BenchmarkDraft,
   BenchmarkRun,
   Configuration,
+  LeaderboardCohort,
+  LeaderboardRow,
   TokenUsage,
   RunSummary,
 } from "../types";
@@ -122,3 +125,47 @@ export const runSummary: RunSummary = {
   attemptCount: 1,
   settledCount: 1,
 };
+
+export const attemptSummary: AttemptSummary = {
+  id: attempt.id,
+  runId: attempt.runId,
+  versionId: attempt.versionId,
+  modelId: configuration.modelId,
+  repetition: 0,
+  phase: "terminal",
+  outcome: "pass",
+  finishedAt: 2000,
+  durationMs: 1000,
+  outputTokens: 12,
+  cost: 0.01,
+};
+export const cohort: LeaderboardCohort = {
+  runIds: ["run-1"],
+  versionIds: ["version-1"],
+  repetitions: 1,
+  timeoutSeconds: 120,
+  maxExecutions: 2,
+  newestRunAt: 1000,
+  workClasses: ["coding-simple"],
+};
+export function leaderboardRow(
+  overrides: Partial<LeaderboardRow> = {},
+): LeaderboardRow {
+  return {
+    configuration,
+    passed: 1,
+    scored: 1,
+    attempted: 1,
+    planned: 1,
+    quality: 1,
+    medianDurationMs: 1000,
+    medianOutputTokens: 12,
+    cost: 0.01,
+    measuredAt: 2000,
+    status: "comparable",
+    reason: "1/1 scored cells in the same frozen suite",
+    attemptIds: [attempt.id],
+    axes: [],
+    ...overrides,
+  };
+}

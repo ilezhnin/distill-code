@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   IconArchive,
@@ -31,17 +31,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
-import type { BenchmarkDefinition } from "../types";
+import type { BenchmarkDefinition, BenchmarkVersion } from "../types";
+import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import { BenchmarkEditor } from "./BenchmarkEditor";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
-  BenchmarkPager,
   FilterMenu,
-  StateBadge,
 } from "./BenchmarkPrimitives";
-
-const RESULTS_PAGE = 50;
 
 /** Family name when the definition carries a deterministic variant generator. */
 function generatorFamily(draft: BenchmarkDefinition["draft"]): string | null {
@@ -140,9 +137,7 @@ export function BenchDevelopmentView({
           <TabsContent value="results">
             <BenchmarkResults
               key={benchmarkId}
-              versionIds={
-                definition?.versions.map((version) => version.id) ?? []
-              }
+              versions={definition?.versions ?? []}
               onEvidence={onEvidence}
             />
           </TabsContent>
@@ -358,64 +353,21 @@ export function BenchDevelopmentView({
 }
 
 function BenchmarkResults({
-  versionIds,
+  versions,
   onEvidence,
 }: {
-  versionIds: string[];
+  versions: BenchmarkVersion[];
   onEvidence: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
-  const [page, setPage] = useState(0);
-  const query = {
-    versionIds,
-    offset: page * RESULTS_PAGE,
-    limit: RESULTS_PAGE,
-  };
-  const attempts = useQuery({
-    queryKey: [...benchmarkKeys, "attempts", query],
-    queryFn: () => benchmarkApi.listAttempts(query),
-    enabled: versionIds.length > 0,
-  });
-  const rows = attempts.data ?? [];
+  if (versions.length === 0)
+    return <BenchmarkEmpty title={t("results.empty")} compact />;
   return (
-    <div className="space-y-3">
-      {attempts.error ? (
-        <BenchmarkAlert>{benchmarkErrorMessage(attempts.error)}</BenchmarkAlert>
-      ) : null}
-      {attempts.isFetching ? (
-        <BenchmarkEmpty title={t("loading")} compact />
-      ) : rows.length === 0 ? (
-        <BenchmarkEmpty title={t("results.empty")} compact />
-      ) : (
-        <ul className="divide-y divide-border">
-          {rows.map((attempt) => (
-            <li
-              key={attempt.id}
-              className="flex items-center justify-between gap-3 py-2 text-sm"
-            >
-              <span className="min-w-0 truncate">{attempt.modelId}</span>
-              <div className="flex items-center gap-2">
-                <StateBadge state={attempt.outcome ?? attempt.phase} />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => onEvidence(attempt.id)}
-                >
-                  {t("actions.inspect")}
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      <BenchmarkPager
-        page={page}
-        pageSize={RESULTS_PAGE}
-        count={rows.length}
-        busy={attempts.isFetching}
-        onPageChange={setPage}
-      />
-    </div>
+    <BenchmarkAttemptList
+      query={{ versionIds: versions.map((version) => version.id) }}
+      versions={versions}
+      showModel
+      onEvidence={onEvidence}
+    />
   );
 }

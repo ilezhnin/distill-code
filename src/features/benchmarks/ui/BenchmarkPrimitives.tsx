@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import { Label } from "@/shared/ui/label";
+import { Progress } from "@/shared/ui/progress";
 import {
   Select,
   SelectContent,
@@ -245,6 +246,71 @@ export function SectionHeading({
       {description ? (
         <p className="text-xs text-muted-foreground">{description}</p>
       ) : null}
+    </div>
+  );
+}
+
+/** One board value as a bar: the leader fills it, the others follow in a quieter tone. */
+export function ScoreBar({
+  share,
+  leading,
+  label,
+}: {
+  share: number;
+  leading: boolean;
+  label: string;
+}) {
+  return (
+    <Progress
+      value={share}
+      aria-label={label}
+      className="h-1.5 bg-muted"
+      indicatorClassName={leading ? undefined : "bg-foreground/35"}
+    />
+  );
+}
+
+/** Tiny bars, one per board, so a row's whole profile reads at a glance. */
+export function AxisBars({
+  items,
+  muted = false,
+}: {
+  items: { id: string; label: string; share: number | null }[];
+  muted?: boolean;
+}) {
+  return (
+    <div
+      className="flex h-5 items-end gap-0.5"
+      role="img"
+      aria-label={items.map((item) => item.label).join(", ")}
+    >
+      {items.map((item) => (
+        <span
+          key={item.id}
+          title={item.label}
+          className={cn(
+            "w-1.5 rounded-xs",
+            item.share == null
+              ? "bg-muted"
+              : muted
+                ? "bg-foreground/20"
+                : "bg-foreground/50",
+          )}
+          style={{
+            height: item.share == null ? "100%" : `${Math.max(8, item.share)}%`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Label over value, for the summary grid at the top of a report dialog. */
+export function Metric({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="space-y-0.5">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="font-display text-base tabular-nums">{value}</dd>
     </div>
   );
 }

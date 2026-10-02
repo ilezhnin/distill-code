@@ -133,8 +133,13 @@ export interface AttemptSummary {
   runId: string;
   versionId: string;
   modelId: string;
+  repetition: number;
   phase: string;
   outcome: string | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  outputTokens: number | null;
+  cost: number | null;
 }
 export interface TokenUsage {
   input: number | null;
@@ -217,20 +222,33 @@ export interface InventoryModel {
 export interface ResultQuery {
   runId?: string | null;
   versionIds?: string[] | null;
+  attemptIds?: string[] | null;
   offset?: number | null;
   limit?: number | null;
 }
 export interface LeaderboardRow {
   configuration: Configuration;
   passed: number;
+  scored: number;
   attempted: number;
   planned: number;
   quality: number | null;
   medianDurationMs: number | null;
+  medianOutputTokens: number | null;
   cost: number | null;
+  measuredAt: number | null;
   status: string;
   reason: string;
   attemptIds: string[];
+  /** Success per work class of the suite, in the cohort's class order. */
+  axes: LeaderboardAxis[];
+}
+export interface LeaderboardAxis {
+  id: string;
+  quality: number | null;
+  passed: number;
+  scored: number;
+  planned: number;
 }
 /** The newest frozen suite the leaderboard compares; every row shares it. */
 export interface LeaderboardCohort {
@@ -240,6 +258,7 @@ export interface LeaderboardCohort {
   timeoutSeconds: number;
   maxExecutions: number;
   newestRunAt: number;
+  workClasses: string[];
 }
 export interface LeaderboardReport {
   cohort: LeaderboardCohort | null;
@@ -266,6 +285,7 @@ export interface Comparison {
   durationChangePercent: number | null;
   tokenChangePercent: number | null;
   method: string;
+  measuredAt: number | null;
 }
 export interface UsageComparison {
   accountScope: string;
