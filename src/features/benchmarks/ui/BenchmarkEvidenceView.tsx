@@ -188,6 +188,14 @@ export function BenchmarkEvidenceView({
                         input: attempt.usage.input ?? t("unknown"),
                         output: attempt.usage.output ?? t("unknown"),
                       })}
+                  {attempt.usage.cacheWrite || attempt.usage.cacheRead ? (
+                    <div className="text-xs text-muted-foreground">
+                      {t("fields.tokensCache", {
+                        write: attempt.usage.cacheWrite ?? 0,
+                        read: attempt.usage.cacheRead ?? 0,
+                      })}
+                    </div>
+                  ) : null}
                 </dd>
               </div>
               <div>

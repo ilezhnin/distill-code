@@ -85,6 +85,12 @@ pub async fn evaluate_with_runtime(
     draft: &BenchmarkDraft,
     output: &str,
 ) -> Result<Evaluation> {
+    let (output, fence_stripped) = super::evaluation::strip_markdown_fence(output);
+    let (output, export_stripped) = if draft.evaluator.kind == "javascript" {
+        super::evaluation::strip_module_export(output)
+    } else {
+        (output, false)
+    };
     if output.len() > draft.limits.max_artifact_bytes.min(2 * 1024 * 1024) as usize {
         return Ok(failed_artifact(
             draft,
@@ -218,9 +224,15 @@ pub async fn evaluate_with_runtime(
         verdict: if pass { "pass" } else { "fail" }.into(),
         score: Some(if pass { 1.0 } else { 0.0 }),
         reason: format!(
-            "Protected {} checks; Chromium {}; isolated-artifact-v1",
+            "Protected {} checks; Chromium {}; isolated-artifact-v1{}",
             result["checks"].as_array().map_or(0, Vec::len),
-            result["browserVersion"].as_str().unwrap_or("unknown")
+            result["browserVersion"].as_str().unwrap_or("unknown"),
+            match (fence_stripped, export_stripped) {
+                (true, true) => "; Markdown fence and module export stripped",
+                (true, false) => "; Markdown fence stripped",
+                (false, true) => "; module export stripped",
+                (false, false) => "",
+            }
         ),
         created_at: now(),
         provenance: "protected_browser".into(),

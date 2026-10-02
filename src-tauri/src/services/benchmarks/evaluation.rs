@@ -1,9 +1,39 @@
 use super::{store::now, types::*};
 
+/// Answers are compared without a single Markdown fence around the whole
+/// output: the fence is a formatting habit, not a wrong answer, and every
+/// candidate is treated the same way. Returns the inner text and whether a
+/// fence was removed.
+pub fn strip_markdown_fence(output: &str) -> (&str, bool) {
+    let trimmed = output.trim();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return (trimmed, false);
+    };
+    let Some(body) = rest.strip_suffix("```") else {
+        return (trimmed, false);
+    };
+    let inner = body.split_once('\n').map_or("", |(_, inner)| inner);
+    (inner.trim(), true)
+}
+
+/// A function returned as a module export is still the requested function;
+/// the protected realm cannot load module syntax, so the keyword is removed
+/// and the removal is recorded.
+pub fn strip_module_export(source: &str) -> (&str, bool) {
+    let trimmed = source.trim();
+    for prefix in ["export default ", "export "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return (rest.trim_start(), true);
+        }
+    }
+    (trimmed, false)
+}
+
 pub fn evaluate(evaluator: &Evaluator, output: &str) -> Result<Evaluation> {
+    let (output, stripped) = strip_markdown_fence(output);
     let (verdict, score, reason) = match evaluator.kind.as_str() {
         "exact" => {
-            let pass = output.trim() == evaluator.expected.trim();
+            let pass = output == evaluator.expected.trim();
             (
                 if pass { "pass" } else { "fail" },
                 Some(if pass { 1.0 } else { 0.0 }),
@@ -12,7 +42,7 @@ pub fn evaluate(evaluator: &Evaluator, output: &str) -> Result<Evaluation> {
         }
         "json" => {
             let expected: serde_json::Value = serde_json::from_str(&evaluator.expected)?;
-            let actual = serde_json::from_str::<serde_json::Value>(output.trim());
+            let actual = serde_json::from_str::<serde_json::Value>(output);
             let pass = actual.is_ok_and(|v| v == expected);
             (
                 if pass { "pass" } else { "fail" },
@@ -33,7 +63,11 @@ pub fn evaluate(evaluator: &Evaluator, output: &str) -> Result<Evaluation> {
         evaluator_revision: evaluator.revision.clone(),
         verdict: verdict.into(),
         score,
-        reason: reason.into(),
+        reason: if stripped {
+            format!("{reason}; Markdown fence stripped")
+        } else {
+            reason.into()
+        },
         created_at: now(),
         provenance: "objective".into(),
         artifacts: Vec::new(),
@@ -73,6 +107,48 @@ pub fn validate(e: &Evaluator) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_single_fence_around_the_answer_is_not_a_wrong_answer() {
+        assert_eq!(
+            strip_markdown_fence("```json\n{\"a\":1}\n```"),
+            ("{\"a\":1}", true)
+        );
+        assert_eq!(strip_markdown_fence("  READY "), ("READY", false));
+        assert_eq!(
+            strip_markdown_fence("```\nunterminated"),
+            ("```\nunterminated", false)
+        );
+        let e = Evaluator {
+            kind: "exact".into(),
+            expected: "READY".into(),
+            rubric: String::new(),
+            revision: "1".into(),
+            known_good: "READY".into(),
+            known_bad: "NOT READY".into(),
+        };
+        let fenced = evaluate(&e, "```text\nREADY\n```").unwrap();
+        assert_eq!(fenced.verdict, "pass");
+        assert!(fenced.reason.contains("fence stripped"));
+        assert_eq!(
+            evaluate(&e, "```\nREADY\n```\nand more").unwrap().verdict,
+            "fail"
+        );
+    }
+    #[test]
+    fn a_leading_module_export_is_removed_before_the_protected_realm() {
+        assert_eq!(
+            strip_module_export("export function f() {}"),
+            ("function f() {}", true)
+        );
+        assert_eq!(
+            strip_module_export("export default function f() {}"),
+            ("function f() {}", true)
+        );
+        assert_eq!(
+            strip_module_export("function exportAll() {}"),
+            ("function exportAll() {}", false)
+        );
+    }
     #[test]
     fn structured_checks_are_semantic_not_just_json() {
         let e = Evaluator {

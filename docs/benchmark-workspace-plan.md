@@ -808,6 +808,14 @@ The first private set holds 28 definitions, verified by the app at publication a
 
 A held-out family is retired after it decides a role assignment. Tasks that a human writes without any model in the loop are the only ones on which every candidate can be ranked; the private set is model-formatted, so the author model is excluded by construction.
 
+### Pilot result (October 2, 2026)
+
+The train split ran twice on the operator's managed Claude account, Sonnet at the provider default effort, one repetition, 180 s per attempt.
+
+- The first run (`05b1aef0`) exposed a runner defect: the runtime fingerprint hashed the whole model inventory, and the host learns effort lists lazily, so the inventory changed after the first attempt and the remaining thirteen were refused as `selection_changed` before dispatch. The fingerprint now covers the executable, the pinned lock and policy and the sorted model set; the acknowledged-selection check still guards effort and fast mode. That run stays in history as a runner failure, not a model result; filter the leaderboard by run to exclude it.
+- The second run (`6693f89e`) completed 14/14: 13 pass, 1 fail. Reported usage: 17,839 output tokens, 1,916 billed input tokens plus about 1,500 cache-write tokens per prompt (the bridge reports the prompt as a cache write), USD 0.289 as the SDK estimate, 176 s of model time. The failure returned an `export function`, which the protected realm cannot load; the evaluator now strips a single Markdown fence and a leading module export keyword before checking and records that it did. Rescoring appends an evaluation without rewriting the observed outcome.
+- Sonnet at default effort therefore scores 13/14 on the train split. One configuration on one split is a spend and pipeline measurement, not a ranking.
+
 ### Pilot procedure
 
 Restart the dev app so the backend carries these changes, open Benchmarks, choose More actions, Import definition, select every file under `published/train/`, tick "Publish definitions that validate" and import. Then Run tests: select the 14 train tests, one managed Claude account, one model and effort, one repetition, and check the plan before starting. The run dialog shows the execution count; the evidence dialog shows the reported tokens and cost per attempt. Repeat the same batch on a second configuration only after the first has settled, so quota attribution stays clean. Held-out tasks are reserved for the role decision itself.

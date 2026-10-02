@@ -17,6 +17,7 @@ import {
   formatCost,
   formatQuality,
   formatSeconds,
+  shortId,
 } from "../lib/benchmarkLabels";
 import type { LeaderboardReport, LeaderboardRow } from "../types";
 import { BenchmarkEvidenceLinks } from "./BenchmarkEvidenceLinks";
@@ -214,6 +215,9 @@ export function LeaderboardView({
                   <div>{row.configuration.modelId}</div>
                   <p className="text-xs text-muted-foreground">
                     {configurationLabel(row.configuration)}
+                    {row.configuration.inventoryRevision
+                      ? ` · ${t("leaderboard.runtime", { id: shortId(row.configuration.inventoryRevision) })}`
+                      : ""}
                   </p>
                 </TableCell>
                 <TableCell>
