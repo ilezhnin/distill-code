@@ -13,6 +13,11 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import { Label } from "@/shared/ui/label";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/shared/ui/hover-card";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import {
@@ -22,12 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/shared/ui/select";
-import {
-  configurationOrigin,
-  shortId,
-  stateLabel,
-  stateTone,
-} from "../lib/benchmarkLabels";
+import { shortId, stateLabel, stateTone } from "../lib/benchmarkLabels";
 import type { Configuration } from "../types";
 
 export interface Option {
@@ -277,38 +277,61 @@ export function ScoreBar({
   );
 }
 
-/** Tiny bars, one per board, so a row's whole profile reads at a glance. */
+/** Tiny bars, one per board; hovering lists every board with its points. */
 export function AxisBars({
   items,
   muted = false,
 }: {
-  items: { id: string; label: string; share: number | null }[];
+  items: { id: string; label: string; points: number | null }[];
   muted?: boolean;
 }) {
   return (
-    <div
-      className="flex h-5 items-end gap-0.5"
-      role="img"
-      aria-label={items.map((item) => item.label).join(", ")}
-    >
-      {items.map((item) => (
-        <span
-          key={item.id}
-          title={item.label}
-          className={cn(
-            "w-1.5 rounded-xs",
-            item.share == null
-              ? "bg-muted"
-              : muted
-                ? "bg-foreground/20"
-                : "bg-foreground/50",
-          )}
-          style={{
-            height: item.share == null ? "100%" : `${Math.max(8, item.share)}%`,
-          }}
-        />
-      ))}
-    </div>
+    <HoverCard openDelay={150} closeDelay={80}>
+      <HoverCardTrigger asChild>
+        <div
+          className="flex h-5 w-fit cursor-default items-end gap-0.5"
+          role="img"
+          aria-label={items
+            .map((item) => `${item.label}: ${item.points ?? "–"}`)
+            .join(", ")}
+        >
+          {items.map((item) => (
+            <span
+              key={item.id}
+              className={cn(
+                "w-1.5 rounded-xs",
+                item.points == null
+                  ? "bg-muted"
+                  : muted
+                    ? "bg-foreground/20"
+                    : "bg-foreground/50",
+              )}
+              style={{
+                height:
+                  item.points == null
+                    ? "100%"
+                    : `${Math.max(8, item.points / 10)}%`,
+              }}
+            />
+          ))}
+        </div>
+      </HoverCardTrigger>
+      <HoverCardContent align="end" className="w-56 p-3">
+        <dl className="space-y-1 text-xs">
+          {items.map((item) => (
+            <div
+              key={item.id}
+              className="flex items-baseline justify-between gap-3"
+            >
+              <dt className="text-muted-foreground">{item.label}</dt>
+              <dd className="text-right font-semibold tabular-nums">
+                {item.points ?? "–"}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -323,17 +346,20 @@ export function Metric({ label, value }: { label: string; value: ReactNode }) {
 }
 
 /**
- * A model the way the reference names one: vendor icon, display name, the
- * selection that differs from the default as chips, vendor and provider below.
+ * A model the way the reference names one: vendor icon beside both lines,
+ * display name with the selection that differs from the default as chips,
+ * and the vendor underneath.
  */
 export function ModelIdentity({
   configuration,
   name,
+  vendor,
   showRuntime = false,
   children,
 }: {
   configuration: Configuration;
   name: string;
+  vendor: string;
   showRuntime?: boolean;
   children?: ReactNode;
 }) {
@@ -343,28 +369,28 @@ export function ModelIdentity({
       ? configuration.effort
       : null;
   return (
-    <div className="min-w-0">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="flex items-center gap-2 whitespace-nowrap">
-          {getProviderIcon(configuration.providerId, "size-4 shrink-0")}
+    <div className="flex min-w-0 items-center gap-3">
+      <span className="shrink-0">
+        {getProviderIcon(configuration.providerId, "size-6")}
+      </span>
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span className="font-medium">{name}</span>
-        </span>
-        {effort ? <Badge variant="outline">{effort}</Badge> : null}
-        {configuration.fastMode ? (
-          <Badge variant="outline">{t("fastMode")}</Badge>
-        ) : null}
-        {showRuntime && configuration.inventoryRevision ? (
-          <Badge variant="outline" className="text-muted-foreground">
-            {t("leaderboard.runtime", {
-              id: shortId(configuration.inventoryRevision),
-            })}
-          </Badge>
-        ) : null}
+          {effort ? <Badge variant="outline">{effort}</Badge> : null}
+          {configuration.fastMode ? (
+            <Badge variant="outline">{t("fastMode")}</Badge>
+          ) : null}
+          {showRuntime && configuration.inventoryRevision ? (
+            <Badge variant="outline" className="text-muted-foreground">
+              {t("leaderboard.runtime", {
+                id: shortId(configuration.inventoryRevision),
+              })}
+            </Badge>
+          ) : null}
+        </div>
+        <p className="text-xs text-muted-foreground">{vendor}</p>
+        {children}
       </div>
-      <p className="text-xs text-muted-foreground">
-        {configurationOrigin(configuration)}
-      </p>
-      {children}
     </div>
   );
 }

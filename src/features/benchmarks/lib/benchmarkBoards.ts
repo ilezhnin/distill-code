@@ -62,6 +62,8 @@ export function boardsFor(
 export interface RankedRow {
   row: LeaderboardRow;
   value: number | null;
+  /** Points out of 1000: success boards scale the measurement, the others the share of the best. */
+  points: number | null;
   /** 1-based; tied values share a rank and the next rank skips. Null when unranked. */
   rank: number | null;
   /** 0–100 share of the best ranked value; null without a value or a ranked best. */
@@ -88,6 +90,18 @@ export function shareOfBest(
   return Math.max(0, Math.min(100, 100 * ratio));
 }
 
+/** Points out of 1000, the way the reference scores a board. */
+export function boardPoints(
+  board: Board,
+  value: number | null,
+  best: number | null,
+): number | null {
+  if (value == null) return null;
+  if (board.higherIsBetter) return Math.round(value * 1000);
+  if (best == null) return null;
+  return Math.round(shareOfBest(value, best, false) * 10);
+}
+
 /**
  * Only comparable rows receive a rank; incomplete and excluded rows keep their
  * values but sink below the ranked rows in their original order.
@@ -112,12 +126,14 @@ export function rankRows(rows: LeaderboardRow[], board: Board): RankedRow[] {
       return {
         ...entry,
         rank,
+        points: boardPoints(board, entry.value, best ?? null),
         share: shareOfBest(entry.value, best as number, board.higherIsBetter),
       };
     }),
     ...rest.map((entry) => ({
       ...entry,
       rank: null,
+      points: boardPoints(board, entry.value, best ?? null),
       share:
         best == null || entry.value == null
           ? null

@@ -10,6 +10,7 @@ import type {
   BenchmarkVersion,
   CandidateObservation,
   Capability,
+  CatalogEntry,
   InventoryModel,
   RunPreview,
   RunRequest,
@@ -87,6 +88,11 @@ export const benchmarkApi = {
   getCapabilities: () => invoke<Capability[]>("benchmark_get_capabilities"),
   getCandidateObservations: () =>
     invoke<CandidateObservation[]>("benchmark_get_candidate_observations"),
+  listCatalog: () => invoke<CatalogEntry[]>("benchmark_list_catalog"),
+  saveCatalogEntry: (entry: CatalogEntry) =>
+    invoke<CatalogEntry>("benchmark_save_catalog_entry", { entry }),
+  deleteCatalogEntry: (id: string) =>
+    invoke<void>("benchmark_delete_catalog_entry", { id }),
   getLeaderboard: (query: ResultQuery) =>
     invoke<LeaderboardReport>("benchmark_get_leaderboard", { query }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>

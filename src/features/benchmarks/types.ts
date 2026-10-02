@@ -213,6 +213,24 @@ export interface Capability {
   supported: boolean;
   reason: string;
 }
+/** One effective-dated fact about a model: list prices, context size, display overrides. */
+export interface CatalogEntry {
+  id: string;
+  kind: string;
+  providerId: string | null;
+  needle: string;
+  displayName: string | null;
+  vendor: string | null;
+  inputPerMillion: number | null;
+  outputPerMillion: number | null;
+  cacheReadPerMillion: number | null;
+  cacheWritePerMillion: number | null;
+  contextTokens: number | null;
+  effectiveFrom: number;
+  checkedAt: number;
+  source: string;
+  createdAt: number;
+}
 /** One recorded inventory probe: which models a provider listed, and how it named them. */
 export interface CandidateObservation {
   id: string;

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
+import type { CatalogEntry } from "../types";
 
 export const benchmarkKeys = ["benchmarks"] as const;
 
@@ -79,6 +80,16 @@ export const useBenchmarkRuns = () =>
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
   });
+
+/** Dated vendor facts; an empty catalog is seeded by the service on first read. */
+export function useModelCatalog() {
+  const catalog = useQuery({
+    queryKey: [...benchmarkKeys, "catalog"],
+    queryFn: benchmarkApi.listCatalog,
+  });
+  return catalog.data ?? EMPTY_CATALOG;
+}
+const EMPTY_CATALOG: CatalogEntry[] = [];
 
 export const modelNameKey = (configuration: {
   providerId: string;

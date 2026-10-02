@@ -69,6 +69,8 @@ describe("leaderboard boards", () => {
     ]);
     // The unranked row still shows how far it is from the leader.
     expect(ranked[3].share).toBe(90);
+    // Success boards score the measurement itself, out of 1000.
+    expect(ranked.map((entry) => entry.points)).toEqual([1000, 1000, 500, 900]);
   });
 
   it("ranks lower-is-better boards ascending and fills the leader's bar", () => {
@@ -82,6 +84,9 @@ describe("leaderboard boards", () => {
     ]);
     expect(speed[0].share).toBe(100);
     expect(speed[1].share).toBe(20);
+    // Points follow the share of the best on a lower-is-better board.
+    // The unranked row keeps its points too; a share above the leader clamps.
+    expect(speed.map((entry) => entry.points)).toEqual([1000, 200, 67, 1000]);
     const efficiency = rankRows(rows, boards[2]);
     // A row without a measurement cannot rank, even when it is comparable.
     expect(

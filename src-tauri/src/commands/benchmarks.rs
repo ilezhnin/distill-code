@@ -221,6 +221,38 @@ pub async fn benchmark_get_usage_comparisons(
     ))
 }
 #[tauri::command]
+pub async fn benchmark_list_catalog(app: AppHandle) -> Result<Vec<CatalogEntry>> {
+    service(&app).await?.store.catalog_entries().await
+}
+#[tauri::command]
+pub async fn benchmark_save_catalog_entry(
+    app: AppHandle,
+    mut entry: CatalogEntry,
+) -> Result<CatalogEntry> {
+    benchmarks::model_catalog::validate(&entry)
+        .map_err(|message| BenchmarkError::new("validation", message))?;
+    if entry.id.trim().is_empty() {
+        entry.id = uuid::Uuid::new_v4().to_string();
+    }
+    if entry.created_at <= 0 {
+        entry.created_at = benchmarks::store::now();
+    }
+    if entry.checked_at <= 0 {
+        entry.checked_at = entry.created_at;
+    }
+    entry.needle = entry.needle.trim().to_lowercase();
+    service(&app)
+        .await?
+        .store
+        .save_catalog_entry(&entry)
+        .await?;
+    Ok(entry)
+}
+#[tauri::command]
+pub async fn benchmark_delete_catalog_entry(app: AppHandle, id: String) -> Result<()> {
+    service(&app).await?.store.delete_catalog_entry(&id).await
+}
+#[tauri::command]
 pub async fn benchmark_list_baselines(app: AppHandle) -> Result<Vec<Baseline>> {
     service(&app).await?.store.baselines().await
 }

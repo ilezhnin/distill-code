@@ -364,6 +364,38 @@ impl Store {
         self.json_rows("SELECT data_json FROM baselines ORDER BY rowid DESC")
             .await
     }
+    /// Every catalog entry, newest effective date first; an empty catalog is
+    /// seeded once from the published vendor rates.
+    pub async fn catalog_entries(&self) -> Result<Vec<CatalogEntry>> {
+        const LIST: &str =
+            "SELECT data_json FROM catalog_entries ORDER BY effective_from DESC, created_at DESC";
+        let entries: Vec<CatalogEntry> = self.json_rows(LIST).await?;
+        if !entries.is_empty() {
+            return Ok(entries);
+        }
+        for entry in super::model_catalog::seeds() {
+            self.save_catalog_entry(&entry).await?;
+        }
+        self.json_rows(LIST).await
+    }
+    pub async fn save_catalog_entry(&self, entry: &CatalogEntry) -> Result<()> {
+        sqlx::query("INSERT INTO catalog_entries(id,kind,effective_from,created_at,data_json) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,effective_from=excluded.effective_from,data_json=excluded.data_json")
+            .bind(&entry.id)
+            .bind(&entry.kind)
+            .bind(entry.effective_from)
+            .bind(entry.created_at)
+            .bind(serde_json::to_string(entry)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+    pub async fn delete_catalog_entry(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM catalog_entries WHERE id=?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
     pub async fn schedules(&self) -> Result<Vec<Schedule>> {
         self.json_rows("SELECT data_json FROM schedules ORDER BY rowid DESC")
             .await
