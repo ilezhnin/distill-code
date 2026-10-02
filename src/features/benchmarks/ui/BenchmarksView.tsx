@@ -312,6 +312,7 @@ export function BenchmarksView({
             suiteOptions={suiteOptions}
             runOptions={runOptions}
             versions={versions}
+            runs={runs.data ?? []}
             page={page}
             pageSize={PAGE_SIZE}
             onPageChange={setPage}

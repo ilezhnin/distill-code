@@ -27,6 +27,7 @@ import type { ModelOption, ModelPickerGroup } from "@/features/chat/types";
 
 export type ModelPreferenceClassId =
   | "frontend-ui"
+  | "creative"
   | "coding-simple"
   | "coding-complex"
   | "one-shot"
@@ -168,6 +169,7 @@ export const MODEL_PREFERENCE_CLASSES: Record<
   ModelPreferenceClass
 > = {
   "frontend-ui": { id: "frontend-ui", ranking: [...DESIGN_PROFILE] },
+  creative: { id: "creative", ranking: [...DESIGN_PROFILE] },
   "coding-simple": { id: "coding-simple", ranking: [...ENGINEERING_MEDIUM] },
   "coding-complex": { id: "coding-complex", ranking: [...ENGINEERING_HEAVY] },
   "one-shot": { id: "one-shot", ranking: [...ENGINEERING_HEAVY] },

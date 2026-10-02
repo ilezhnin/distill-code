@@ -371,6 +371,46 @@ fn seeds() -> Vec<Seed> {
                 "function dependencies(graph,start){return graph[start]||[];}",
             ),
         ),
+        Seed {
+            class: "creative",
+            family: "seed-creative-lighthouse-svg",
+            name: "Lighthouse at dusk in SVG",
+            description: "Asks for one self-contained SVG illustration under stated constraints; reviewed against a weighted creative rubric.",
+            difficulty: "medium",
+            prompt: "Draw a lighthouse on a rocky cliff at dusk as one standalone SVG with a 1024 by 768 viewBox. Use only vector shapes: layered paths, gradients for the sky and sea, and at least one light beam. No text, no raster images, no scripts, no external references. Return only the SVG markup, without Markdown.",
+            fixtures: vec![],
+            evaluator: Evaluator {
+                kind: "rubric".into(),
+                expected: String::new(),
+                rubric: "Score each criterion from 0 to 10 against the rendered image: adherence (a lighthouse, a cliff, dusk, a light beam, no text), aesthetics (composition, colour, light), craft (clean shapes, gradients used well, no broken geometry), consistency (one coherent style throughout), originality (an idea beyond the obvious).".into(),
+                revision: "1".into(),
+                known_good: "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 768'><rect width='1024' height='768' fill='#2b1b4d'/><circle cx='512' cy='300' r='30' fill='#ffd27a'/></svg>".into(),
+                known_bad: "I cannot draw.".into(),
+            },
+            category: "creative",
+            execution_profile: "native_text",
+            workflow: None,
+        },
+        Seed {
+            class: "creative",
+            family: "seed-creative-icon-set-svg",
+            name: "Six consistent icons in SVG",
+            description: "Asks for a six-icon set that must share one visual language; reviewed against a weighted creative rubric with consistency weighted up.",
+            difficulty: "medium",
+            prompt: "Design a set of six icons (folder, chat bubble, gear, play, warning triangle, magnifier) as one standalone SVG with a 1200 by 200 viewBox, each icon in its own 200 by 200 cell from left to right. All six must share one stroke width, one corner radius language and one two-colour palette. No text, no raster images, no scripts, no external references. Return only the SVG markup, without Markdown.",
+            fixtures: vec![],
+            evaluator: Evaluator {
+                kind: "rubric".into(),
+                expected: String::new(),
+                rubric: "Score each criterion from 0 to 10 against the rendered image: adherence (six named icons in order, one per cell), aesthetics (balance, legibility at small size), craft (clean geometry, aligned optical sizes), consistency (one stroke width, one corner language, one palette), originality (a distinct voice without hurting recognisability).".into(),
+                revision: "1".into(),
+                known_good: "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 200'><rect x='40' y='60' width='120' height='90' rx='12' fill='none' stroke='#1b1f24' stroke-width='8'/></svg>".into(),
+                known_bad: "Here are some icons.".into(),
+            },
+            category: "creative",
+            execution_profile: "native_text",
+            workflow: None,
+        },
         ui(
             "seed-greeting-form",
             "Accessible greeting form",
@@ -430,13 +470,24 @@ pub fn definitions() -> Vec<BenchmarkDraft> {
             if seed.execution_profile == "isolated_ui" {
                 environment["visualRubric"] = json!("visual-v1: legible labels, visible focus, clear output and consistent spacing; scored separately from the functional checks");
             }
+            if seed.class == "creative" {
+                environment["rubricCriteria"] = json!([
+                    {"id": "adherence", "label": "Prompt adherence", "weight": 25},
+                    {"id": "aesthetics", "label": "Aesthetics", "weight": 25},
+                    {"id": "craft", "label": "Craft", "weight": 20},
+                    {"id": "consistency", "label": "Consistency", "weight": 15},
+                    {"id": "originality", "label": "Originality", "weight": 15}
+                ]);
+            }
             let output_format = match seed.evaluator.kind.as_str() {
+                "rubric" => "svg",
                 "browser" => "html",
                 "javascript" => "javascript",
                 "exact" => "text",
                 _ => "json",
             };
             let language = match seed.evaluator.kind.as_str() {
+                "rubric" => Some("svg".to_string()),
                 "browser" => Some("html".to_string()),
                 "javascript" => Some("javascript".to_string()),
                 _ => None,

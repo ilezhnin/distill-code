@@ -167,6 +167,8 @@ export interface Evaluation {
   createdAt: number;
   provenance: string;
   artifacts: Artifact[];
+  /** Per-criterion scores (0 to 1) behind a rubric review, keyed by criterion id. */
+  details?: Record<string, number> | null;
 }
 export interface Attempt {
   id: string;

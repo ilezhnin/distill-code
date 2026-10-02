@@ -421,7 +421,28 @@ impl BenchmarkService {
         tx.commit().await?;
         Ok(baseline)
     }
-    pub async fn review(&self, id: &str, score: f64, reason: String) -> Result<Attempt> {
+    pub async fn review(
+        &self,
+        id: &str,
+        score: f64,
+        reason: String,
+        details: Option<serde_json::Value>,
+    ) -> Result<Attempt> {
+        if let Some(details) = &details {
+            let valid = details.as_object().is_some_and(|map| {
+                !map.is_empty()
+                    && map.values().all(|v| {
+                        v.as_f64()
+                            .is_some_and(|n| n.is_finite() && (0.0..=1.0).contains(&n))
+                    })
+            });
+            if !valid {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    "Criterion scores must be numbers from 0 to 1",
+                ));
+            }
+        }
         if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workflow_steps WHERE attempt_id=?")
             .bind(id)
             .fetch_one(&self.store.pool)
@@ -468,6 +489,7 @@ impl BenchmarkService {
             created_at: now(),
             provenance: if visual { "human_visual" } else { "human" }.into(),
             artifacts: Vec::new(),
+            details,
         });
         if !visual {
             a.outcome = Some(if score == 1.0 { "pass" } else { "fail" }.into());

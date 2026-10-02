@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
-import type { CatalogEntry } from "../types";
+import type {
+  CatalogEntry,
+  Configuration,
+  LeaderboardReport,
+  RunSummary,
+} from "../types";
 
 export const benchmarkKeys = ["benchmarks"] as const;
 
@@ -117,4 +122,65 @@ export function useModelNames(): Map<string, string> {
     }
     return names;
   }, [observations.data]);
+}
+
+/** The identity a history follows: provider, account, model, effort and fast mode; not the runtime revision. */
+export function historyKey(configuration: Configuration): string {
+  return [
+    configuration.providerId,
+    configuration.accountId ?? "",
+    configuration.modelId,
+    configuration.effort ?? "",
+    String(configuration.fastMode),
+  ].join("/");
+}
+
+export interface HistorySnapshot {
+  runId: string;
+  createdAt: number;
+  report: LeaderboardReport;
+}
+
+const HISTORY_RUNS = 24;
+
+/**
+ * One leaderboard snapshot per completed run, oldest first, so a model page
+ * can chart a configuration's points over time and open any measurement.
+ */
+export function useConfigurationHistory(runs: RunSummary[]): {
+  snapshots: HistorySnapshot[];
+  loading: boolean;
+} {
+  const chosen = runs
+    .filter((run) => run.state === "completed" && !run.request.preview)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, HISTORY_RUNS);
+  const results = useQueries({
+    queries: chosen.map((run) => ({
+      queryKey: [
+        ...benchmarkKeys,
+        "leaderboard",
+        { runId: run.id, versionIds: null, offset: 0, limit: 500 },
+      ],
+      queryFn: () =>
+        benchmarkApi.getLeaderboard({
+          runId: run.id,
+          versionIds: null,
+          offset: 0,
+          limit: 500,
+        }),
+      staleTime: 60_000,
+    })),
+  });
+  const snapshots: HistorySnapshot[] = [];
+  results.forEach((result, index) => {
+    if (result.data)
+      snapshots.push({
+        runId: chosen[index].id,
+        createdAt: chosen[index].createdAt,
+        report: result.data,
+      });
+  });
+  snapshots.sort((a, b) => a.createdAt - b.createdAt);
+  return { snapshots, loading: results.some((result) => result.isPending) };
 }

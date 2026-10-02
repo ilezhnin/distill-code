@@ -281,6 +281,9 @@ pub struct Evaluation {
     pub provenance: String,
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
+    /// Per-criterion scores (0 to 1) behind a rubric review, keyed by criterion id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

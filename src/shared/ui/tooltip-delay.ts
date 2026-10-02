@@ -5,4 +5,6 @@ export const TOOLTIP_DELAY = {
   skip: 300,
   /** Optional supporting information that should appear only after deliberate hover. */
   restedHover: 1_000,
+  /** Icon-only controls whose meaning the tooltip spells out after a held hover. */
+  held: 3_000,
 } as const;

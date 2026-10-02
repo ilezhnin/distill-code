@@ -67,6 +67,7 @@ fn failed_artifact(draft: &BenchmarkDraft, reason: &str) -> Evaluation {
         created_at: now(),
         provenance: "protected_browser".into(),
         artifacts: Vec::new(),
+        details: None,
     }
 }
 
@@ -237,5 +238,6 @@ pub async fn evaluate_with_runtime(
         created_at: now(),
         provenance: "protected_browser".into(),
         artifacts,
+        details: None,
     })
 }

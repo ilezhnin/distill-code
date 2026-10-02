@@ -263,7 +263,10 @@
     "notEvaluated": "Todavía no hay evaluación disponible.",
     "metadata": "Selección, uso y procedencia",
     "review": "Registrar revisión con rúbrica",
-    "rescore": "Evaluar de nuevo"
+    "rescore": "Evaluar de nuevo",
+    "preview": "Salida renderizada",
+    "criterion": "{{label}} · peso {{weight}}",
+    "weighted": "Puntuación ponderada {{points}} de 1000"
   },
   "leaderboard": {
     "description": "Las filas comparten un conjunto y un presupuesto congelados. Las mediciones ausentes se mantienen desconocidas; la cobertura incompleta no recibe posición.",
@@ -518,5 +521,14 @@
     "output": "Salida",
     "cacheWrites": "Escrituras de caché {{price}}",
     "source": "Fuente: {{source}} · comprobado el {{date}}"
+  },
+  "history": {
+    "title": "Puntos a lo largo del tiempo",
+    "showing_one": "Mostrando la medición del {{date}} · ejecución {{run}} · {{count}} caso",
+    "showing_other": "Mostrando la medición del {{date}} · ejecución {{run}} · {{count}} casos",
+    "chartLabel": "Puntos generales por medición",
+    "pointLabel": "{{date}}: {{points}} puntos",
+    "hint_one": "{{count}} medición. Haz clic en un punto para ver la página tal como estaba entonces.",
+    "hint_other": "{{count}} mediciones. Haz clic en un punto para ver la página tal como estaba entonces."
   }
 }

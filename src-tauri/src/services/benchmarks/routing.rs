@@ -7,8 +7,9 @@ use super::{
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const WORK_CLASSES: [&str; 9] = [
+pub const WORK_CLASSES: [&str; 10] = [
     "frontend-ui",
+    "creative",
     "coding-simple",
     "coding-complex",
     "one-shot",
@@ -721,6 +722,7 @@ mod tests {
                             created_at: 1000,
                             provenance: "objective".into(),
                             artifacts: vec![],
+                            details: None,
                         }],
                         event_cursor: 1,
                         workflow_steps: vec![],
@@ -912,6 +914,7 @@ mod tests {
             created_at: 1500,
             provenance: "human".into(),
             artifacts: vec![],
+            details: None,
         });
         assert_eq!(score_at(&data.attempts[2], 2000), Some(0.5));
         assert_eq!(score_at(&data.attempts[2], 1200), Some(1.0));

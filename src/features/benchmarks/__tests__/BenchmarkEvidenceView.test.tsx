@@ -183,6 +183,7 @@ describe("blind benchmark review", () => {
         attempt.id,
         0.4,
         "Labels are clear but contrast is weak.",
+        null,
       ),
     );
     await screen.findByRole("button", { name: "Open transcript" });
@@ -205,5 +206,94 @@ describe("blind benchmark review", () => {
       screen.queryByRole("button", { name: "Record rubric review" }),
     ).not.toBeInTheDocument();
     expect(benchmarkApi.submitReview).not.toHaveBeenCalled();
+  });
+});
+
+describe("creative rubric review", () => {
+  afterEach(cleanup);
+  const creativeDefinition: BenchmarkDefinition = {
+    ...definition,
+    versions: [
+      {
+        ...definition.versions[0],
+        manifest: {
+          ...definition.versions[0].manifest,
+          evaluator: {
+            ...definition.draft.evaluator,
+            kind: "rubric",
+            rubric: "Score the drawing against the brief.",
+          },
+          facets: {
+            ...definition.versions[0].manifest.facets,
+            outputFormat: "svg",
+          },
+          environment: {
+            rubricCriteria: [
+              { id: "adherence", label: "Prompt adherence", weight: 50 },
+              { id: "craft", label: "Craft", weight: 50 },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  const drawing: Attempt = {
+    ...attempt,
+    outcome: null,
+    output: [
+      "```svg",
+      "<svg xmlns='http://www.w3.org/2000/svg'><rect width='4' height='4'/></svg>",
+      "```",
+    ].join("\n"),
+    evaluations: [
+      {
+        ...attempt.evaluations[0],
+        verdict: "pending_review",
+        score: null,
+        reason: "Human rubric review is required",
+      },
+    ],
+  };
+
+  it("renders the drawing without scripts and records every criterion behind the weighted score", async () => {
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(drawing);
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    vi.mocked(benchmarkApi.submitReview).mockResolvedValue(drawing);
+    showEvidence();
+    await screen.findByText("Score the drawing against the brief.");
+    const frame = screen.getByTitle("Rendered output");
+    expect(frame).toHaveAttribute("sandbox", "");
+    expect(frame.getAttribute("srcdoc")).toContain(
+      "<rect width='4' height='4'/>",
+    );
+    expect(frame.getAttribute("srcdoc")).toContain("default-src 'none'");
+    expect(frame.getAttribute("srcdoc")).not.toContain("```");
+    fireEvent.change(
+      screen.getByRole("slider", { name: "Prompt adherence · weight 50" }),
+      { target: { value: "8" } },
+    );
+    fireEvent.change(
+      screen.getByRole("slider", { name: "Craft · weight 50" }),
+      { target: { value: "6" } },
+    );
+    expect(screen.getByText("Weighted score 700 of 1000")).toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Review evidence" }),
+      "Lighthouse present, the beam is flat.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Record rubric review" }),
+    );
+    await waitFor(() =>
+      expect(benchmarkApi.submitReview).toHaveBeenCalledWith(
+        attempt.id,
+        0.7,
+        "Lighthouse present, the beam is flat.",
+        { adherence: 0.8, craft: 0.6 },
+      ),
+    );
   });
 });

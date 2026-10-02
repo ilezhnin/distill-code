@@ -263,7 +263,10 @@
     "notEvaluated": "No evaluation is available yet.",
     "metadata": "Selection, usage and provenance",
     "review": "Record rubric review",
-    "rescore": "Evaluate again"
+    "rescore": "Evaluate again",
+    "preview": "Rendered output",
+    "criterion": "{{label}} · weight {{weight}}",
+    "weighted": "Weighted score {{points}} of 1000"
   },
   "leaderboard": {
     "description": "Rows share one frozen suite and budget. Missing measurements stay unknown; incomplete coverage receives no rank.",
@@ -518,5 +521,14 @@
     "output": "Output",
     "cacheWrites": "Cache writes {{price}}",
     "source": "Source: {{source}} · checked {{date}}"
+  },
+  "history": {
+    "title": "Points over time",
+    "showing_one": "Showing the measurement of {{date}} · run {{run}} · {{count}} case",
+    "showing_other": "Showing the measurement of {{date}} · run {{run}} · {{count}} cases",
+    "chartLabel": "Overall points per measurement",
+    "pointLabel": "{{date}}: {{points}} points",
+    "hint_one": "{{count}} measurement. Click a point to see the page as it stood then.",
+    "hint_other": "{{count}} measurements. Click a point to see the page as it stood then."
   }
 }

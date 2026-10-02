@@ -110,8 +110,13 @@ export const benchmarkApi = {
     invoke<Baseline>("benchmark_create_baseline", { name, runIds, threshold }),
   getComparisons: (baselineId: string, query: ResultQuery) =>
     invoke<Comparison[]>("benchmark_get_comparisons", { baselineId, query }),
-  submitReview: (id: string, score: number, reason: string) =>
-    invoke<Attempt>("benchmark_submit_review", { id, score, reason }),
+  submitReview: (
+    id: string,
+    score: number,
+    reason: string,
+    criteria: Record<string, number> | null = null,
+  ) =>
+    invoke<Attempt>("benchmark_submit_review", { id, score, reason, criteria }),
   rescore: (id: string) => invoke<Attempt>("benchmark_rescore", { id }),
   exportDataset: (includeHeldOut: boolean) =>
     invoke<ExportResult>("benchmark_export_dataset", { includeHeldOut }),

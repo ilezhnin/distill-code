@@ -16,6 +16,8 @@ import {
   TableRow,
 } from "@/shared/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import {
   modelNameKey,
@@ -31,9 +33,10 @@ import {
   type RankedRow,
 } from "../lib/benchmarkBoards";
 import {
+  boardDescription,
+  boardTitle,
   modelDisplayName,
   providerVendor,
-  workClassLabel,
 } from "../lib/benchmarkLabels";
 import {
   formatContext,
@@ -47,12 +50,14 @@ import type {
   Configuration,
   LeaderboardReport,
   LeaderboardRow,
+  RunSummary,
 } from "../types";
 import { BenchmarkConfigurationDialog } from "./BenchmarkConfigurationDialog";
 import {
   AxisBars,
   BenchmarkEmpty,
   BenchmarkPager,
+  BoardIcon,
   FilterMenu,
   ModelIdentity,
   ScoreBar,
@@ -69,6 +74,8 @@ interface Props {
   suiteOptions: Option[];
   runOptions: Option[];
   versions: BenchmarkVersion[];
+  /** Completed runs, so a model page can chart its points over time. */
+  runs?: RunSummary[];
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
@@ -99,6 +106,7 @@ export function LeaderboardView({
   suiteOptions,
   runOptions,
   versions,
+  runs = [],
   page,
   pageSize,
   onPageChange,
@@ -212,16 +220,7 @@ export function LeaderboardView({
   const transition = reduceMotion
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 420, damping: 38 };
-  const boardLabel = (entry: Board) =>
-    entry.workClass
-      ? workClassLabel(t, entry.workClass)
-      : t(`leaderboard.boards.${entry.id}`);
-  const boardDescription = (entry: Board) =>
-    entry.workClass
-      ? t("leaderboard.boardDescriptions.class", {
-          label: workClassLabel(t, entry.workClass),
-        })
-      : t(`leaderboard.boardDescriptions.${entry.id}`);
+  const boardLabel = (entry: Board) => boardTitle(t, entry);
   const facet = (
     label: string,
     value: string,
@@ -434,22 +433,37 @@ export function LeaderboardView({
       >
         <TabsList variant="buttons" className="flex-wrap justify-start">
           {boards.map((entry) => (
-            <TabsTrigger
-              key={entry.id}
-              value={entry.id}
-              variant="buttons"
-              className="flex-none"
-            >
-              {boardLabel(entry)}
-            </TabsTrigger>
+            <Tooltip key={entry.id} delayDuration={TOOLTIP_DELAY.held}>
+              <TooltipTrigger asChild>
+                <TabsTrigger
+                  value={entry.id}
+                  variant="buttons"
+                  className="size-8 flex-none px-0"
+                  aria-label={boardLabel(entry)}
+                >
+                  <BoardIcon board={entry} className="size-4" />
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-64">
+                <p className="font-medium">{boardLabel(entry)}</p>
+                <p className="opacity-80">{boardDescription(t, entry)}</p>
+              </TooltipContent>
+            </Tooltip>
           ))}
         </TabsList>
       </Tabs>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>
-          {view === "table"
-            ? t("leaderboard.tableHint")
-            : boardDescription(board)}
+        <span className="flex flex-wrap items-center gap-x-2">
+          {view === "table" ? (
+            <span>{t("leaderboard.tableHint")}</span>
+          ) : (
+            <>
+              <span className="font-medium text-foreground">
+                {boardLabel(board)}
+              </span>
+              <span>{boardDescription(t, board)}</span>
+            </>
+          )}
         </span>
         <span>{t("leaderboard.shown", { count: shown.length })}</span>
       </div>
@@ -573,28 +587,26 @@ export function LeaderboardView({
             {shown.map((entry) =>
               row(
                 entry,
-                <>
-                  {boards.map((axis) => {
-                    const points =
-                      standings.get(axis.id)?.rows.get(rowKey(entry.row))
-                        ?.points ?? null;
-                    return (
-                      <TableCell
-                        key={axis.id}
-                        className={cn(
-                          "px-1 text-right text-xs tabular-nums",
-                          axis.id === board.id && "font-semibold",
-                          axis.id === board.id &&
-                            entry.rank === 1 &&
-                            "text-chart-1",
-                          points == null && "text-muted-foreground",
-                        )}
-                      >
-                        {points ?? "–"}
-                      </TableCell>
-                    );
-                  })}
-                </>,
+                boards.map((axis) => {
+                  const points =
+                    standings.get(axis.id)?.rows.get(rowKey(entry.row))
+                      ?.points ?? null;
+                  return (
+                    <TableCell
+                      key={axis.id}
+                      className={cn(
+                        "px-1 text-right text-xs tabular-nums",
+                        axis.id === board.id && "font-semibold",
+                        axis.id === board.id &&
+                          entry.rank === 1 &&
+                          "text-chart-1",
+                        points == null && "text-muted-foreground",
+                      )}
+                    >
+                      {points ?? "–"}
+                    </TableCell>
+                  );
+                }),
               ),
             )}
           </TableBody>
@@ -607,25 +619,14 @@ export function LeaderboardView({
         count={rows.length}
         onPageChange={onPageChange}
       />
-      {selectedRow ? (
+      {selectedRow && report ? (
         <BenchmarkConfigurationDialog
           row={selectedRow}
+          report={report}
+          runs={runs}
           name={nameOf(selectedRow)}
           vendor={vendorOf(selectedRow)}
           fact={factOf(selectedRow)}
-          standings={boards.map((entry) => {
-            const standing = standings.get(entry.id);
-            const result = standing?.rows.get(rowKey(selectedRow));
-            return {
-              id: entry.id,
-              label: boardLabel(entry),
-              description: boardDescription(entry),
-              points: result?.points ?? null,
-              rank: result?.rank ?? null,
-              of: standing?.of ?? 0,
-              share: result?.share ?? null,
-            };
-          })}
           versions={versions}
           onEvidence={onEvidence}
           onClose={() => setSelected(null)}

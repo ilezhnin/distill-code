@@ -1,23 +1,57 @@
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
-import { formatTokens, formatUsd, shortId } from "../lib/benchmarkLabels";
+import {
+  historyKey,
+  type HistorySnapshot,
+  useConfigurationHistory,
+} from "../hooks/useBenchmarks";
+import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
+import {
+  boardDescription,
+  boardTitle,
+  formatTokens,
+  formatUsd,
+  shortId,
+} from "../lib/benchmarkLabels";
 import { formatContext } from "../lib/modelCatalog";
-import type { BenchmarkVersion, CatalogEntry, LeaderboardRow } from "../types";
+import type {
+  BenchmarkVersion,
+  CatalogEntry,
+  LeaderboardReport,
+  LeaderboardRow,
+  RunSummary,
+} from "../types";
 import { BenchmarkAttemptsDialog } from "./BenchmarkAttemptsDialog";
-import { ScoreBar, SectionHeading, StateBadge } from "./BenchmarkPrimitives";
+import {
+  BoardIcon,
+  ScoreBar,
+  SectionHeading,
+  StateBadge,
+} from "./BenchmarkPrimitives";
+import { PointsHistoryChart } from "./PointsHistoryChart";
 
-/** One board as it stands for the opened configuration. */
-export interface BoardStanding {
+/** One board as it stands for the opened configuration in one measurement. */
+interface BoardStanding {
   id: string;
+  workClass: string | null;
   label: string;
   description: string;
   points: number | null;
   rank: number | null;
-  /** Ranked configurations on that board. */
   of: number;
   share: number | null;
+}
+
+/** The row of a configuration inside a report: the best-covered one when runtimes differ. */
+function rowOf(report: LeaderboardReport, key: string): LeaderboardRow | null {
+  return (
+    report.rows
+      .filter((row) => historyKey(row.configuration) === key)
+      .sort((a, b) => b.scored - a.scored)[0] ?? null
+  );
 }
 
 function money(value: number | null | undefined): string {
@@ -25,31 +59,76 @@ function money(value: number | null | undefined): string {
 }
 
 /**
- * A model page in a dialog: rank and overall rating in the header, every
- * board with its place and points, the facts behind the row, the vendor's
- * list prices, then the attempts as evidence.
+ * A model page in a dialog: rank and overall rating in the header, the
+ * points history with every measurement selectable, every board with its
+ * place and points, the facts behind the row, the vendor's list prices,
+ * then the attempts as evidence.
  */
 export function BenchmarkConfigurationDialog({
   row,
+  report,
+  runs,
   name,
   vendor,
   fact,
-  standings,
   versions,
   onEvidence,
   onClose,
 }: {
   row: LeaderboardRow;
+  report: LeaderboardReport;
+  runs: RunSummary[];
   name: string;
   vendor: string;
   fact: CatalogEntry | null;
-  standings: BoardStanding[];
   versions: BenchmarkVersion[];
   onEvidence: (id: string) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
+  const key = historyKey(row.configuration);
+  const history = useConfigurationHistory(runs);
+  const measurements = useMemo(
+    () =>
+      history.snapshots
+        .map((snapshot) => ({ snapshot, row: rowOf(snapshot.report, key) }))
+        .filter(
+          (
+            entry,
+          ): entry is { snapshot: HistorySnapshot; row: LeaderboardRow } =>
+            entry.row?.status === "comparable",
+        ),
+    [history.snapshots, key],
+  );
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const selected =
+    measurements.find((entry) => entry.snapshot.runId === selectedRunId) ??
+    (row.status === "comparable" ? measurements.at(-1) : null) ??
+    null;
+  // The chosen measurement drives everything below the chart; the cohort row
+  // stands in until the history has loaded.
+  const shownReport = selected?.snapshot.report ?? report;
+  const shownRow = selected?.row ?? rowOf(report, key) ?? row;
+  const standings: BoardStanding[] = useMemo(() => {
+    const boards = boardsFor(shownReport.cohort);
+    return boards.map((board) => {
+      const ranked = rankRows(shownReport.rows, board);
+      const entry = ranked.find(
+        (result) => rowKey(result.row) === rowKey(shownRow),
+      );
+      return {
+        id: board.id,
+        workClass: board.workClass,
+        label: boardTitle(t, board),
+        description: boardDescription(t, board),
+        points: entry?.points ?? null,
+        rank: entry?.rank ?? null,
+        of: ranked.filter((result) => result.rank != null).length,
+        share: entry?.share ?? null,
+      };
+    });
+  }, [shownReport, shownRow, t]);
   const overall = standings.find((board) => board.id === "overall");
   const axes = standings.filter((board) => board.id !== "overall");
   const place = (board: BoardStanding | undefined) =>
@@ -57,45 +136,48 @@ export function BenchmarkConfigurationDialog({
       ? t("configuration.notRanked")
       : t("configuration.rank", { rank: board.rank, of: board.of });
   const specs: [string, string][] = [
-    [t("configuration.apiModelId"), row.configuration.modelId],
-    [t("fields.provider"), row.configuration.providerId],
-    [t("fields.effort"), row.configuration.effort ?? t("unknown")],
+    [t("configuration.apiModelId"), shownRow.configuration.modelId],
+    [t("fields.provider"), shownRow.configuration.providerId],
+    [t("fields.effort"), shownRow.configuration.effort ?? t("unknown")],
     [
       t("fields.fastMode"),
-      row.configuration.fastMode == null
+      shownRow.configuration.fastMode == null
         ? t("unknown")
-        : row.configuration.fastMode
+        : shownRow.configuration.fastMode
           ? t("enabled")
           : t("disabled"),
     ],
     [
       t("configuration.runtime"),
-      row.configuration.inventoryRevision
-        ? shortId(row.configuration.inventoryRevision)
+      shownRow.configuration.inventoryRevision
+        ? shortId(shownRow.configuration.inventoryRevision)
         : t("unknown"),
     ],
     [
       t("configuration.context"),
       formatContext(fact?.contextTokens) ?? t("unknown"),
     ],
-    [t("configuration.cases"), `${row.scored} / ${row.planned}`],
+    [t("configuration.cases"), `${shownRow.scored} / ${shownRow.planned}`],
     [
       t("configuration.measured"),
-      row.measuredAt == null
+      shownRow.measuredAt == null
         ? t("unknown")
-        : formatDate(row.measuredAt, {
+        : formatDate(shownRow.measuredAt, {
             dateStyle: "medium",
             timeStyle: "short",
           }),
     ],
-    [t("configuration.spend"), formatUsd(t, row.cost)],
-    [t("configuration.outputTokens"), formatTokens(t, row.medianOutputTokens)],
+    [t("configuration.spend"), formatUsd(t, shownRow.cost)],
+    [
+      t("configuration.outputTokens"),
+      formatTokens(t, shownRow.medianOutputTokens),
+    ],
   ];
   return (
     <BenchmarkAttemptsDialog
       title={name}
       description={vendor}
-      icon={getProviderIcon(row.configuration.providerId, "size-6")}
+      icon={getProviderIcon(shownRow.configuration.providerId, "size-6")}
       aside={
         <dl className="flex shrink-0 gap-8 text-right">
           <div>
@@ -127,15 +209,48 @@ export function BenchmarkConfigurationDialog({
           </div>
         </dl>
       }
-      attemptIds={row.attemptIds}
+      attemptIds={shownRow.attemptIds}
       versions={versions}
       onEvidence={onEvidence}
       onClose={onClose}
     >
-      {row.status !== "comparable" ? (
+      {measurements.length > 0 ? (
+        <section className="space-y-3">
+          <div className="flex items-baseline justify-between gap-4">
+            <SectionHeading title={t("history.title")} />
+            {selected ? (
+              <span className="text-xs text-muted-foreground">
+                {t("history.showing", {
+                  date: formatDate(
+                    selected.row.measuredAt ?? selected.snapshot.createdAt,
+                    {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    },
+                  ),
+                  run: shortId(selected.snapshot.runId),
+                  count: selected.row.scored,
+                })}
+              </span>
+            ) : null}
+          </div>
+          <PointsHistoryChart
+            points={measurements.map((entry) => ({
+              id: entry.snapshot.runId,
+              at: entry.row.measuredAt ?? entry.snapshot.createdAt,
+              points: entry.row.points,
+            }))}
+            selectedId={selected?.snapshot.runId ?? null}
+            onSelect={setSelectedRunId}
+          />
+        </section>
+      ) : null}
+      {shownRow.status !== "comparable" ? (
         <div className="flex flex-wrap items-center gap-2">
-          <StateBadge state={row.status} />
-          <span className="text-xs text-muted-foreground">{row.reason}</span>
+          <StateBadge state={shownRow.status} />
+          <span className="text-xs text-muted-foreground">
+            {shownRow.reason}
+          </span>
         </div>
       ) : null}
       <div className="grid gap-8 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
@@ -150,11 +265,19 @@ export function BenchmarkConfigurationDialog({
             {axes.map((board) => (
               <li key={board.id} className="space-y-1.5 py-3">
                 <div className="flex items-center gap-4">
-                  <div className="w-44 shrink-0">
-                    <span className="font-medium">{board.label}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {place(board)}
-                    </span>
+                  <div className="flex w-52 shrink-0 items-center gap-2">
+                    <BoardIcon
+                      board={board}
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-medium leading-tight">
+                        {board.label}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {place(board)}
+                      </div>
+                    </div>
                   </div>
                   <div className="min-w-0 flex-1">
                     {board.share != null ? (

@@ -1,6 +1,23 @@
 import { useId, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { IconFilter } from "@tabler/icons-react";
+import {
+  IconBolt,
+  IconBraces,
+  IconCode,
+  IconCoin,
+  IconFeather,
+  IconFilter,
+  IconLayout,
+  IconMessage,
+  IconNotebook,
+  IconPalette,
+  IconRoute,
+  IconShieldCheck,
+  IconSparkles,
+  IconTarget,
+  IconTestPipe,
+  IconTrophy,
+} from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
 import { Alert, AlertDescription } from "@/shared/ui/alert";
 import { Badge } from "@/shared/ui/badge";
@@ -336,6 +353,35 @@ export function AxisBars({
 }
 
 /** Label over value, for the summary grid at the top of a report dialog. */
+const BOARD_ICONS: Record<string, typeof IconTrophy> = {
+  overall: IconTrophy,
+  efficiency: IconFeather,
+  speed: IconBolt,
+  cost: IconCoin,
+  "frontend-ui": IconLayout,
+  creative: IconPalette,
+  "coding-simple": IconCode,
+  "coding-complex": IconBraces,
+  "one-shot": IconTarget,
+  planning: IconRoute,
+  "general-light": IconMessage,
+  "general-medium": IconNotebook,
+  "testing-light": IconTestPipe,
+  "testing-heavy": IconShieldCheck,
+};
+
+/** The glyph a board goes by wherever it is named: a work class or a shared measurement. */
+export function BoardIcon({
+  board,
+  className,
+}: {
+  board: { id: string; workClass: string | null };
+  className?: string;
+}) {
+  const Icon = BOARD_ICONS[board.workClass ?? board.id] ?? IconSparkles;
+  return <Icon className={className} aria-hidden />;
+}
+
 export function Metric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="space-y-0.5">
