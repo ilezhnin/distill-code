@@ -110,17 +110,35 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
             newest_run_at: newest.created_at,
         }
     });
-    let mut groups: BTreeMap<String, Vec<&Attempt>> = BTreeMap::new();
+    let versions: BTreeMap<_, _> = data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
+    let authored = |attempt: &Attempt| {
+        versions.get(attempt.version_id.as_str()).is_some_and(|v| {
+            super::routing::authored_by_candidate(&v.manifest, execution_configuration(attempt))
+        })
+    };
+    // Scored cells plus the count of cells this candidate helped author.
+    let mut groups: BTreeMap<String, (Configuration, Vec<&Attempt>, u32)> = BTreeMap::new();
     for attempt in &data.attempts {
         if ids.contains(attempt.run_id.as_str()) {
-            groups
+            let group = groups
                 .entry(configuration_key(execution_configuration(attempt)))
-                .or_default()
-                .push(attempt);
+                .or_insert_with(|| (execution_configuration(attempt).clone(), Vec::new(), 0));
+            if authored(attempt) {
+                group.2 += 1;
+            } else {
+                group.1.push(attempt);
+            }
         }
     }
-    let mut rows: Vec<_> = groups.into_values().map(|attempts| {
-        let configuration = execution_configuration(attempts[0]).clone();
+    let mut rows: Vec<_> = groups.into_values().map(|(configuration, attempts, excluded)| {
+        if attempts.is_empty() {
+            return LeaderboardRow {
+                configuration, passed: 0, attempted: 0, planned: 0, quality: None, median_duration_ms: None, cost: None,
+                status: "excluded".into(),
+                reason: format!("{excluded} cells excluded: this candidate helped author every case in the suite"),
+                attempt_ids: Vec::new(),
+            };
+        }
         let planned = attempts.len() as u32;
         let attempted = attempts.iter().filter(|a| a.started_at.is_some()).count() as u32;
         let passed = attempts.iter().filter(|a| score(a) == Some(1.0)).count() as u32;
@@ -136,7 +154,10 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
             configuration, passed, attempted, planned, quality,
             median_duration_ms: median(attempts.iter().filter_map(|a| a.duration_ms.map(|v| v as f64)).collect()),
             cost, status: if attempted == 0 { "untested" } else if complete { "comparable" } else { "preliminary" }.into(),
-            reason: format!("{scored}/{planned} scored cells in the same frozen suite; equal case weights, observed repetitions retained"),
+            reason: format!(
+                "{scored}/{planned} scored cells in the same frozen suite; equal case weights, observed repetitions retained{}",
+                if excluded > 0 { format!("; {excluded} cells authored by this candidate excluded") } else { String::new() }
+            ),
             attempt_ids: attempts.iter().map(|a| a.id.clone()).collect(),
         }
     }).collect();
@@ -240,11 +261,19 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
         );
     }
     let mut results = Vec::new();
+    let authored = |attempt: &Attempt| {
+        data.versions
+            .iter()
+            .find(|v| v.id == attempt.version_id)
+            .is_some_and(|v| {
+                super::routing::authored_by_candidate(&v.manifest, execution_configuration(attempt))
+            })
+    };
     for (key, id) in configurations {
         let before: Vec<_> = baseline
             .snapshots
             .iter()
-            .filter(|a| configuration_key(execution_configuration(a)) == key)
+            .filter(|a| configuration_key(execution_configuration(a)) == key && !authored(a))
             .collect();
         let after: Vec<_> = data
             .attempts
@@ -252,6 +281,7 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
             .filter(|a| {
                 current_ids.contains(a.run_id.as_str())
                     && configuration_key(execution_configuration(a)) == key
+                    && !authored(a)
             })
             .collect();
         let before_cases: BTreeSet<_> = before.iter().map(|a| &a.version_id).collect();
@@ -487,6 +517,30 @@ pub(super) mod tests {
             },
             baseline,
         )
+    }
+    #[test]
+    fn authored_cases_are_excluded_from_rows_and_comparisons() {
+        let (mut data, baseline) = dataset();
+        let query = ResultQuery::default();
+        assert_eq!(leaderboard(&data, &query).rows[0].status, "comparable");
+        data.versions[0].manifest.environment["authoredBy"] = serde_json::json!(["model"]);
+        // Both frozen runs share the suite, so the authored case drops one cell each.
+        let row = &leaderboard(&data, &query).rows[0];
+        assert_eq!(row.planned, 10);
+        assert!(row
+            .reason
+            .contains("2 cells authored by this candidate excluded"));
+        assert!(!row.attempt_ids.contains(&"after-v0".to_string()));
+        for version in &mut data.versions {
+            version.manifest.environment["authoredBy"] = serde_json::json!(["claude"]);
+        }
+        let report = leaderboard(&data, &query);
+        assert_eq!(report.rows[0].status, "excluded");
+        assert_eq!(report.rows[0].quality, None);
+        assert!(report.cohort.is_some());
+        let comparison = compare(&data, &baseline, &query);
+        assert_eq!(comparison[0].status, "insufficient_evidence");
+        assert!(comparison[0].attempt_ids.is_empty());
     }
     #[test]
     fn matched_families_detect_change_but_changed_budgets_do_not() {

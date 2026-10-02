@@ -17,6 +17,7 @@
   "actions": {
     "new": "New test",
     "run": "Run tests",
+    "newVariant": "New variant",
     "runLatest": "Run latest version",
     "preview": "Preview this version",
     "validate": "Validate",
@@ -175,6 +176,8 @@
       "executionHint": "Runs in a fresh session with a clean context, no tools and no network. Publishing freezes the prompt, fixtures, evaluator and environment; later edits create a new version.",
       "advanced": "Advanced: role context, continuation and workflow"
     },
+    "authoredBy": "Authored by",
+    "authoredByHint": "Comma-separated needles matched against candidate model and provider IDs. A candidate that helped write the test is excluded from its scores.",
     "roleId": "Role ID",
     "rolePrompt": "Frozen role instructions",
     "language": "Language",
@@ -285,6 +288,7 @@
     "description": "Imported content becomes an editable draft. Import never runs setup commands.",
     "file": "Definition JSON file",
     "content": "Definition JSON",
+    "selected": "{{count}} files selected",
     "tooLarge": "Choose a definition smaller than 8 MiB."
   },
   "export": {

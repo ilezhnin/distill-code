@@ -61,17 +61,27 @@ export function BenchmarkImportDialog({
   onImported,
 }: {
   onClose: () => void;
-  onImported: (id: string) => void;
+  onImported: (id?: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
   const client = useQueryClient();
   const [content, setContent] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const importDraft = async () => {
     setBusy(true);
     setError(null);
     try {
+      if (files.length > 1) {
+        for (const file of files) {
+          const draft: BenchmarkDraft = JSON.parse(await file.text());
+          await benchmarkApi.importDefinition(draft);
+        }
+        await client.invalidateQueries({ queryKey: benchmarkKeys });
+        onImported();
+        return;
+      }
       const draft: BenchmarkDraft = JSON.parse(content);
       const definition = await benchmarkApi.importDefinition(draft);
       await client.invalidateQueries({ queryKey: benchmarkKeys });
@@ -98,35 +108,46 @@ export function BenchmarkImportDialog({
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
           <Input
             type="file"
+            multiple
             accept=".json,application/json"
             aria-label={t("import.file")}
             onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (!file) return;
-              if (file.size > 8 * 1024 * 1024) {
+              const chosen = [...(event.target.files ?? [])];
+              setError(null);
+              if (chosen.some((file) => file.size > 8 * 1024 * 1024)) {
                 setError(t("import.tooLarge"));
+                setFiles([]);
                 return;
               }
-              void file
-                .text()
-                .then(setContent)
-                .catch((failure) => setError(benchmarkErrorMessage(failure)));
+              setFiles(chosen);
+              if (chosen.length === 1) {
+                void chosen[0]
+                  .text()
+                  .then(setContent)
+                  .catch((failure) => setError(benchmarkErrorMessage(failure)));
+              }
             }}
           />
-          <Textarea
-            rows={14}
-            variant="code"
-            aria-label={t("import.content")}
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-          />
+          {files.length > 1 ? (
+            <p className="text-sm text-muted-foreground">
+              {t("import.selected", { count: files.length })}
+            </p>
+          ) : (
+            <Textarea
+              rows={14}
+              variant="code"
+              aria-label={t("import.content")}
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+            />
+          )}
         </DialogBody>
         <DialogFooter>
           <CloseButton onClose={onClose} disabled={busy} />
           <Button
             type="button"
             variant="primary"
-            disabled={busy || !content.trim()}
+            disabled={busy || (files.length <= 1 && !content.trim())}
             onClick={() => void importDraft()}
           >
             {t("actions.import")}

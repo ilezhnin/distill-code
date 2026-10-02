@@ -54,10 +54,12 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                             && a.configuration.id == config.id
                     })
                     .collect();
+                let authored = super::routing::authored_by_candidate(&version.manifest, config);
                 let observations:Vec<_>=(0..run.request.repetitions).map(|repetition|{
                     let attempt=attempts.iter().find(|a|a.repetition==repetition);
-                    let reward=attempt.and_then(|a|super::analysis::score(a));
+                    let reward=if authored { None } else { attempt.and_then(|a|super::analysis::score(a)) };
                     json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
+                        "excluded":authored.then_some("authored_by_candidate"),
                         "outcome":attempt.and_then(|a|a.outcome.as_deref()),"phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),
                         "usage":attempt.map(|a|&a.usage),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
                         "observedConfiguration":attempt.and_then(|a|a.observed.as_ref()).map(|c|public_configuration(c,salt)),

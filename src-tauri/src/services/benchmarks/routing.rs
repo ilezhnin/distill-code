@@ -31,6 +31,26 @@ pub fn candidate_key(c: &Configuration) -> String {
         .as_bytes(),
     )
 }
+/// A candidate that helped write a test must not be scored on it. Authors are
+/// declared as lowercase needles in `environment.authoredBy`; a needle matches
+/// when it appears in the model or provider ID of the candidate.
+pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configuration) -> bool {
+    let model = configuration.model_id.to_lowercase();
+    let provider = configuration.provider_id.to_lowercase();
+    draft
+        .environment
+        .get("authoredBy")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|authors| {
+            authors
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|needle| {
+                    let needle = needle.trim().to_lowercase();
+                    !needle.is_empty() && (model.contains(&needle) || provider.contains(&needle))
+                })
+        })
+}
 pub fn context_hash(d: &BenchmarkDraft) -> String {
     if d.role_id.is_none() && d.role_prompt.is_empty() {
         default_context_hash()
@@ -371,6 +391,7 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
         let key = candidate_key(&candidate.configuration);
         let mut samples = Vec::new();
         let mut stale_seen = false;
+        let mut authored_seen = false;
         for a in &data.attempts {
             let Some(run) = runs.get(a.run_id.as_str()) else {
                 continue;
@@ -405,6 +426,10 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             if candidate_key(config) != key {
                 continue;
             }
+            if authored_by_candidate(d, &candidate.configuration) {
+                authored_seen = true;
+                continue;
+            }
             if candidate
                 .configuration
                 .inventory_revision
@@ -419,11 +444,21 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             samples.push((a, *v));
         }
         let covered_cases: BTreeSet<_> = samples.iter().map(|(_, v)| v.id.as_str()).collect();
+        // Cases this candidate helped author are neither owed nor counted.
+        let owed_cases: BTreeSet<_> = expected_cases
+            .iter()
+            .copied()
+            .filter(|id| {
+                versions
+                    .get(id)
+                    .is_none_or(|v| !authored_by_candidate(&v.manifest, &candidate.configuration))
+            })
+            .collect();
         let missing_count = samples
             .iter()
             .filter(|(a, _)| score_at(a, q.cutoff_at).is_none())
             .count() as u32
-            + expected_cases.difference(&covered_cases).count() as u32;
+            + owed_cases.difference(&covered_cases).count() as u32;
         samples.retain(|(a, _)| score_at(a, q.cutoff_at).is_some());
         let mut cases: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
         let mut families = BTreeSet::new();
@@ -496,6 +531,12 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             Some((
                 "excluded",
                 "Candidate violates a hard identity or provider constraint".into(),
+            ))
+        } else if quality.is_none() && authored_seen && owed_cases.is_empty() {
+            Some((
+                "excluded",
+                "Candidate helped author every compatible case; its own answers cannot count"
+                    .into(),
             ))
         } else if quality.is_none() {
             Some((
@@ -895,6 +936,41 @@ mod tests {
             candidate_key(&reloaded.candidates[0].configuration),
             candidate_key(&decision.candidates[0].configuration)
         );
+    }
+    #[test]
+    fn a_candidate_that_authored_the_cases_is_excluded_not_scored() {
+        let (mut data, mut q) = matrix();
+        for version in &mut data.versions {
+            version.manifest.environment["authoredBy"] = serde_json::json!(["model-native"]);
+        }
+        let evidence = get_evidence(&data, &q).unwrap();
+        assert!(evidence
+            .candidates
+            .iter()
+            .all(|c| c.status == "excluded" && !c.eligible && c.sample_count == 0));
+        for version in &mut data.versions {
+            version.manifest.environment["authoredBy"] = serde_json::json!(["provider-native"]);
+        }
+        assert_eq!(
+            get_evidence(&data, &q).unwrap().candidates[0].status,
+            "excluded"
+        );
+        for version in &mut data.versions {
+            version.manifest.environment["authoredBy"] = serde_json::json!(["someone-else"]);
+        }
+        q.facets.difficulty = Some("easy".into());
+        assert_eq!(
+            get_evidence(&data, &q).unwrap().candidates[0].status,
+            "preliminary"
+        );
+        let mut other = config("low");
+        other.model_id = "Model-Native".into();
+        assert!(!authored_by_candidate(
+            &data.versions[0].manifest,
+            &config("low")
+        ));
+        data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([" native "]);
+        assert!(authored_by_candidate(&data.versions[0].manifest, &other));
     }
     #[test]
     fn partial_case_coverage_cannot_win_a_comparable_class_cohort() {

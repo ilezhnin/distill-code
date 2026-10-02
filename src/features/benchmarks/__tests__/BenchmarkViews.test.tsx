@@ -18,6 +18,7 @@ import { LeaderboardView } from "../ui/LeaderboardView";
 import { BenchmarkRoutingDialog } from "../ui/BenchmarkRoutingDialog";
 import {
   BenchmarkExportDialog,
+  BenchmarkImportDialog,
   BenchmarkSchedulesDialog,
 } from "../ui/BenchmarkManagementDialogs";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
@@ -60,6 +61,8 @@ vi.mock("../api/benchmarks", () => ({
     eventsSince: vi.fn(),
     listen: vi.fn(),
     exportDataset: vi.fn(),
+    generateVariant: vi.fn(),
+    importDefinition: vi.fn(),
   },
 }));
 vi.mock("@/features/stats/lib/usageLedger", () => ({
@@ -500,6 +503,99 @@ describe("benchmark authoring and saved evidence", () => {
       await screen.findByText("No candidates were supplied."),
     ).toBeInTheDocument();
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("derives a fresh variant of a generated family and opens it as a draft", async () => {
+    const generated = {
+      ...definition,
+      id: "generated-1",
+      draft: {
+        ...draft,
+        name: "Two-worker list schedule",
+        taskFamily: "seed-two-worker-schedule",
+        environment: {
+          generator: { family: "seed-two-worker-schedule", seed: 0 },
+        },
+      },
+    };
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([generated]);
+    vi.mocked(benchmarkApi.generateVariant).mockResolvedValue({
+      ...generated.draft,
+      name: "Two-worker list schedule (variant 7)",
+    });
+    vi.mocked(benchmarkApi.importDefinition).mockResolvedValue({
+      ...generated,
+      id: "variant-1",
+    });
+    const onNavigate = vi.fn();
+    wrap(
+      <BenchmarksView
+        location={{ section: "development" }}
+        onNavigate={onNavigate}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Actions for Two-worker list schedule",
+      }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "New variant" }),
+    );
+    await waitFor(() =>
+      expect(benchmarkApi.generateVariant).toHaveBeenCalledWith(
+        "seed-two-worker-schedule",
+        expect.any(Number),
+      ),
+    );
+    const seed = vi.mocked(benchmarkApi.generateVariant).mock.calls[0][1];
+    expect(seed).toBeGreaterThan(0);
+    expect(benchmarkApi.importDefinition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Two-worker list schedule (variant 7)",
+      }),
+    );
+    await waitFor(() =>
+      expect(onNavigate).toHaveBeenCalledWith(
+        { section: "development", benchmarkId: "variant-1" },
+        expect.anything(),
+      ),
+    );
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("imports several definition files in one step and returns to the library", async () => {
+    if (!File.prototype.text) {
+      File.prototype.text = function text() {
+        return new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsText(this);
+        });
+      };
+    }
+    vi.mocked(benchmarkApi.importDefinition).mockResolvedValue(definition);
+    const onImported = vi.fn();
+    wrap(<BenchmarkImportDialog onClose={vi.fn()} onImported={onImported} />);
+    const files = ["first", "second"].map(
+      (name) =>
+        new File([JSON.stringify({ ...draft, name })], `${name}.json`, {
+          type: "application/json",
+        }),
+    );
+    fireEvent.change(screen.getByLabelText("Definition JSON file"), {
+      target: { files },
+    });
+    expect(await screen.findByText("2 files selected")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() =>
+      expect(benchmarkApi.importDefinition).toHaveBeenCalledTimes(2),
+    );
+    expect(benchmarkApi.importDefinition).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ name: "second" }),
+    );
+    expect(onImported).toHaveBeenCalledWith();
   });
   it("loads saved-test results only on opening the tab and requests bounded historical pages", async () => {
     vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>

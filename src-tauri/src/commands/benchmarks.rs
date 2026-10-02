@@ -71,6 +71,10 @@ pub async fn benchmark_import_definition(
     Ok(value)
 }
 #[tauri::command]
+pub fn benchmark_generate_variant(family: String, seed: u64) -> Result<BenchmarkDraft> {
+    benchmarks::generated::generate(&family, seed)
+}
+#[tauri::command]
 pub async fn benchmark_preview_run(app: AppHandle, request: RunRequest) -> Result<RunPreview> {
     service(&app).await?.preview_run(&request).await
 }

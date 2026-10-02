@@ -306,6 +306,7 @@ pub fn run() {
             commands::benchmarks::benchmark_duplicate_definition,
             commands::benchmarks::benchmark_archive_definition,
             commands::benchmarks::benchmark_import_definition,
+            commands::benchmarks::benchmark_generate_variant,
             commands::benchmarks::benchmark_preview_run,
             commands::benchmarks::benchmark_start_run,
             commands::benchmarks::benchmark_list_runs,
