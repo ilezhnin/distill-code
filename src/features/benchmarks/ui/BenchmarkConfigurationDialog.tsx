@@ -23,11 +23,13 @@ import { Metric, SectionHeading, StateBadge } from "./BenchmarkPrimitives";
 /** One leaderboard row opened: every measurement, the per-class split and the attempts. */
 export function BenchmarkConfigurationDialog({
   row,
+  name,
   versions,
   onEvidence,
   onClose,
 }: {
   row: LeaderboardRow;
+  name: string;
   versions: BenchmarkVersion[];
   onEvidence: (id: string) => void;
   onClose: () => void;
@@ -36,7 +38,7 @@ export function BenchmarkConfigurationDialog({
   const { formatDate } = useLocaleFormatting();
   return (
     <BenchmarkAttemptsDialog
-      title={row.configuration.modelId}
+      title={name}
       description={configurationDetails(t, row.configuration)}
       attemptIds={row.attemptIds}
       versions={versions}

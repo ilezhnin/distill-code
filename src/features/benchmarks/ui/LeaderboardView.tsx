@@ -5,6 +5,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import { DisclosureButton } from "@/shared/ui/disclosure-button";
 import { SearchBar } from "@/shared/ui/SearchBar";
 import {
   Table,
@@ -16,6 +17,7 @@ import {
 } from "@/shared/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
+import { modelNameKey, useModelNames } from "../hooks/useBenchmarks";
 import {
   boardsFor,
   rankRows,
@@ -25,20 +27,27 @@ import {
   type RankedRow,
 } from "../lib/benchmarkBoards";
 import {
-  configurationDetails,
+  configurationOrigin,
   formatQuality,
   formatSeconds,
   formatTokens,
   formatUsd,
+  modelDisplayName,
   workClassLabel,
 } from "../lib/benchmarkLabels";
-import type { BenchmarkVersion, LeaderboardReport } from "../types";
+import type {
+  BenchmarkVersion,
+  Configuration,
+  LeaderboardReport,
+  LeaderboardRow,
+} from "../types";
 import { BenchmarkConfigurationDialog } from "./BenchmarkConfigurationDialog";
 import {
   AxisBars,
   BenchmarkEmpty,
   BenchmarkPager,
   FilterMenu,
+  ModelIdentity,
   ScoreBar,
   StateBadge,
   type Option,
@@ -65,6 +74,16 @@ function distinct(values: (string | null | undefined)[]): string[] {
   return [...new Set(values.filter((value): value is string => !!value))];
 }
 
+/** Rows that differ only by runtime revision need the revision to tell them apart. */
+function twinKey(configuration: Configuration): string {
+  return [
+    configuration.providerId,
+    configuration.modelId,
+    configuration.effort ?? "",
+    String(configuration.fastMode),
+  ].join("/");
+}
+
 export function LeaderboardView({
   report,
   loading,
@@ -81,6 +100,7 @@ export function LeaderboardView({
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
   const reduceMotion = useReducedMotion();
+  const names = useModelNames();
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState("all");
   const [effort, setEffort] = useState("all");
@@ -88,16 +108,22 @@ export function LeaderboardView({
   const [track, setTrack] = useState("all");
   const [view, setView] = useState<"chart" | "table">("chart");
   const [boardId, setBoardId] = useState<BoardId>("overall");
+  const [unrankedOpen, setUnrankedOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const rows = useMemo(() => report?.rows ?? [], [report]);
   const cohort = report?.cohort;
   const boards = useMemo(() => boardsFor(cohort), [cohort]);
   const board = boards.find((entry) => entry.id === boardId) ?? boards[0];
+  const nameOf = (row: LeaderboardRow) =>
+    modelDisplayName(
+      row.configuration,
+      names.get(modelNameKey(row.configuration)),
+    );
   const visible = useMemo(
     () =>
       rows.filter(
         (row) =>
-          `${row.configuration.modelId} ${configurationDetails(t, row.configuration)}`
+          `${modelDisplayName(row.configuration, names.get(modelNameKey(row.configuration)))} ${row.configuration.modelId} ${configurationOrigin(row.configuration)}`
             .toLowerCase()
             .includes(query.trim().toLowerCase()) &&
           (provider === "all" || row.configuration.providerId === provider) &&
@@ -105,9 +131,17 @@ export function LeaderboardView({
           (fast === "all" || String(row.configuration.fastMode) === fast) &&
           (track === "all" || row.configuration.executionProfile === track),
       ),
-    [rows, query, provider, effort, fast, track, t],
+    [rows, names, query, provider, effort, fast, track],
   );
   const ranked = useMemo(() => rankRows(visible, board), [visible, board]);
+  const rankedRows = useMemo(
+    () => ranked.filter((entry) => entry.rank != null),
+    [ranked],
+  );
+  const unranked = ranked.filter((entry) => entry.rank == null);
+  // Nothing ranked yet means nothing to hide behind.
+  const showUnranked = unrankedOpen || rankedRows.length === 0;
+  const shown = showUnranked ? ranked : rankedRows;
   // Every board's share per row feeds the small profile bars.
   const shares = useMemo(
     () =>
@@ -124,6 +158,14 @@ export function LeaderboardView({
       ),
     [boards, visible],
   );
+  const twins = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of shown) {
+      const key = twinKey(entry.row.configuration);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [shown]);
   const selectedRow = rows.find((row) => rowKey(row) === selected) ?? null;
   const scored = rows.filter((row) => row.status === "comparable").length;
   const measuredAt = rows.reduce<number | null>(
@@ -174,9 +216,9 @@ export function LeaderboardView({
   const rankCell = (entry: RankedRow) => (
     <TableCell
       className={cn(
-        "w-10 font-display text-base tabular-nums",
+        "w-10 font-display text-lg tabular-nums",
         entry.rank === 1
-          ? "text-primary"
+          ? "text-chart-1"
           : entry.rank == null && "text-muted-foreground",
       )}
     >
@@ -185,20 +227,17 @@ export function LeaderboardView({
   );
   const modelCell = (entry: RankedRow) => (
     <TableCell>
-      <div className="font-medium">{entry.row.configuration.modelId}</div>
-      <p
-        className={cn(
-          "text-xs text-muted-foreground",
-          view === "table" && "max-w-52 whitespace-normal",
-        )}
+      <ModelIdentity
+        configuration={entry.row.configuration}
+        name={nameOf(entry.row)}
+        showRuntime={(twins.get(twinKey(entry.row.configuration)) ?? 0) > 1}
       >
-        {configurationDetails(t, entry.row.configuration)}
-      </p>
-      {view === "table" && entry.row.status !== "comparable" ? (
-        <div className="mt-1">
-          <StateBadge state={entry.row.status} />
-        </div>
-      ) : null}
+        {view === "table" && entry.row.status !== "comparable" ? (
+          <div className="mt-1">
+            <StateBadge state={entry.row.status} />
+          </div>
+        ) : null}
+      </ModelIdentity>
     </TableCell>
   );
   const detailsCell = (entry: RankedRow) => (
@@ -207,9 +246,7 @@ export function LeaderboardView({
         type="button"
         variant="ghost"
         size="icon-xs"
-        aria-label={t("leaderboard.open", {
-          model: entry.row.configuration.modelId,
-        })}
+        aria-label={t("leaderboard.open", { model: nameOf(entry.row) })}
         onClick={(event) => {
           event.stopPropagation();
           setSelected(rowKey(entry.row));
@@ -233,6 +270,18 @@ export function LeaderboardView({
       {detailsCell(entry)}
     </MotionRow>
   );
+  const unrankedDisclosure =
+    unranked.length > 0 && rankedRows.length > 0 ? (
+      <DisclosureButton
+        type="button"
+        aria-expanded={unrankedOpen}
+        onClick={() => setUnrankedOpen((open) => !open)}
+      >
+        {unrankedOpen
+          ? t("leaderboard.hideUnranked")
+          : t("leaderboard.showUnranked", { count: unranked.length })}
+      </DisclosureButton>
+    ) : null;
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -350,7 +399,7 @@ export function LeaderboardView({
             ? t("leaderboard.tableHint")
             : boardDescription(board)}
         </span>
-        <span>{t("leaderboard.shown", { count: visible.length })}</span>
+        <span>{t("leaderboard.shown", { count: shown.length })}</span>
       </div>
       {loading ? (
         <BenchmarkEmpty title={t("loading")} compact />
@@ -372,7 +421,7 @@ export function LeaderboardView({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {ranked.map((entry) =>
+            {shown.map((entry) =>
               row(
                 entry,
                 <>
@@ -382,7 +431,7 @@ export function LeaderboardView({
                         share={entry.share}
                         leading={entry.rank === 1}
                         label={t("leaderboard.chartLabel", {
-                          model: entry.row.configuration.modelId,
+                          model: nameOf(entry.row),
                           value: formatValue(board, entry.value),
                         })}
                       />
@@ -400,8 +449,8 @@ export function LeaderboardView({
                   </TableCell>
                   <TableCell
                     className={cn(
-                      "text-right font-display text-base tabular-nums",
-                      entry.rank === 1 && "text-primary",
+                      "text-right font-display text-lg font-semibold tabular-nums",
+                      entry.rank === 1 && "text-chart-1",
                       entry.value == null && "text-muted-foreground",
                     )}
                   >
@@ -428,7 +477,7 @@ export function LeaderboardView({
           <TableHeader>
             <TableRow>
               <TableHead>{t("fields.rank")}</TableHead>
-              <TableHead>{t("fields.model")}</TableHead>
+              <TableHead className="min-w-44">{t("fields.model")}</TableHead>
               {boards.map((entry) => (
                 <TableHead key={entry.id} className="px-1 text-right">
                   <Button
@@ -453,7 +502,7 @@ export function LeaderboardView({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {ranked.map((entry) =>
+            {shown.map((entry) =>
               row(
                 entry,
                 <>
@@ -463,11 +512,11 @@ export function LeaderboardView({
                       <TableCell
                         key={axis.id}
                         className={cn(
-                          "px-1.5 text-right tabular-nums",
-                          axis.id === board.id && "font-medium",
+                          "px-1 text-right text-xs tabular-nums",
+                          axis.id === board.id && "font-semibold",
                           axis.id === board.id &&
                             entry.rank === 1 &&
-                            "text-primary",
+                            "text-chart-1",
                           value == null && "text-muted-foreground",
                         )}
                       >
@@ -475,7 +524,7 @@ export function LeaderboardView({
                       </TableCell>
                     );
                   })}
-                  <TableCell className="px-1.5 text-right tabular-nums">
+                  <TableCell className="px-1 text-right text-xs tabular-nums">
                     {entry.row.scored} / {entry.row.planned}
                   </TableCell>
                 </>,
@@ -484,6 +533,7 @@ export function LeaderboardView({
           </TableBody>
         </Table>
       )}
+      {unrankedDisclosure}
       <BenchmarkPager
         page={page}
         pageSize={pageSize}
@@ -493,6 +543,7 @@ export function LeaderboardView({
       {selectedRow ? (
         <BenchmarkConfigurationDialog
           row={selectedRow}
+          name={nameOf(selectedRow)}
           versions={versions}
           onEvidence={onEvidence}
           onClose={() => setSelected(null)}

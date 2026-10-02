@@ -1,5 +1,6 @@
 // Every status string the Rust service emits is labelled here. Unknown
 // values fall back to a readable form instead of a raw key.
+import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
 export type StateTone = "positive" | "negative" | "neutral";
 
 const POSITIVE = new Set([
@@ -122,7 +123,56 @@ export function quotaWindowLabel(t: Translate, windowId: string): string {
   return windowId;
 }
 
-/** Everything but the model: provider, effort, fast mode and runtime revision. */
+const VENDORS: [RegExp, string][] = [
+  [/claude|anthropic/, "Anthropic"],
+  [/codex|openai|chatgpt/, "OpenAI"],
+  [/grok|xai/, "xAI"],
+  [/kimi|moonshot/, "Moonshot AI"],
+  [/gemini|google/, "Google"],
+  [/copilot/, "GitHub"],
+  [/cursor/, "Cursor"],
+  [/amp/, "Sourcegraph"],
+];
+
+/** The lab behind a provider id, the way the reference labels a row. */
+export function providerVendor(providerId: string): string {
+  const id = providerId.toLowerCase();
+  return (
+    VENDORS.find(([pattern]) => pattern.test(id))?.[1] ??
+    formatProviderLabel(providerId)
+  );
+}
+
+/**
+ * The bridge's display name with the vendor in front where the bridge omits
+ * it (Claude Code lists "Opus 5.5"); the raw id when nothing names it.
+ */
+export function modelDisplayName(
+  configuration: {
+    providerId: string;
+    modelId: string;
+    modelName?: string | null;
+  },
+  fallback?: string | null,
+): string {
+  const raw =
+    (configuration.modelName ?? fallback ?? "").trim() || configuration.modelId;
+  if (
+    providerVendor(configuration.providerId) === "Anthropic" &&
+    /^(opus|sonnet|haiku|fable)\b/i.test(raw)
+  )
+    return `Claude ${raw}`;
+  return raw;
+}
+
+/** Vendor and provider: the quiet line under a model name. */
+export function configurationOrigin(configuration: {
+  providerId: string;
+}): string {
+  return `${providerVendor(configuration.providerId)} · ${configuration.providerId}`;
+}
+
+/** Origin plus effort, fast mode and runtime revision, for dialog subtitles. */
 export function configurationDetails(
   t: Translate,
   configuration: {
@@ -133,7 +183,7 @@ export function configurationDetails(
   },
 ): string {
   return [
-    configuration.providerId,
+    configurationOrigin(configuration),
     configuration.effort,
     configuration.fastMode === true ? t("fastMode") : null,
     configuration.inventoryRevision

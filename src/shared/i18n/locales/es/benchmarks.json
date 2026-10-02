@@ -290,7 +290,9 @@
     "empty": "No hay resultados para esta selección.",
     "emptyHint": "Publica una prueba y ejecútala para recopilar evidencia.",
     "runtime": "runtime {{id}}",
-    "chartLabel": "{{model}}: {{value}}"
+    "chartLabel": "{{model}}: {{value}}",
+    "showUnranked": "Mostrar {{count}} configuraciones sin posición",
+    "hideUnranked": "Ocultar configuraciones sin posición"
   },
   "nerf": {
     "description": "Cambios respecto a una línea base congelada de Distill. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",

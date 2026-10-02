@@ -615,6 +615,7 @@ mod tests {
                 billing_mode: "simulated".into(),
                 execution_profile: "native_text".into(),
                 inventory_revision: Some("fake-v1".into()),
+                model_name: None,
             }],
             repetitions: 1,
             timeout_seconds: 30,

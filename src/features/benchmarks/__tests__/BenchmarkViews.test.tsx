@@ -60,6 +60,7 @@ vi.mock("../api/benchmarks", () => ({
     publishVersion: vi.fn(),
     getInventory: vi.fn(),
     getCapabilities: vi.fn(),
+    getCandidateObservations: vi.fn(),
     startRun: vi.fn(),
     previewRun: vi.fn(),
     eventsSince: vi.fn(),
@@ -120,6 +121,7 @@ describe("benchmark authoring and saved evidence", () => {
     vi.mocked(benchmarkApi.getRun).mockResolvedValue(run);
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
     vi.mocked(benchmarkApi.listBaselines).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getCandidateObservations).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
       cohort: null,
       rows: [],
@@ -364,6 +366,13 @@ describe("benchmark authoring and saved evidence", () => {
         medianOutputTokens: 900,
         cost: 3,
       }),
+      leaderboardRow({
+        configuration: { ...configuration, id: "d", modelId: "delta" },
+        quality: 0.9,
+        status: "preliminary",
+        scored: 1,
+        planned: 4,
+      }),
     ];
     wrap(
       <LeaderboardView
@@ -379,7 +388,7 @@ describe("benchmark authoring and saved evidence", () => {
         .slice(1)
         .map((row) => {
           const cells = within(row).getAllByRole("cell");
-          return `${cells[0].textContent} ${cells[1].querySelector("div")?.textContent}`;
+          return `${cells[0].textContent} ${cells[1].querySelector(".font-medium")?.textContent}`;
         });
     expect(
       screen.getByText(
@@ -387,6 +396,15 @@ describe("benchmark authoring and saved evidence", () => {
       ),
     ).toBeInTheDocument();
     expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta"]);
+    // Rows without a rank stay out of the way until asked for.
+    expect(screen.queryByText("delta")).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show 1 unranked configurations" }),
+    );
+    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hide unranked configurations" }),
+    );
     expect(
       screen.getByRole("tab", { name: "Simple coding" }),
     ).toBeInTheDocument();
@@ -412,7 +430,8 @@ describe("benchmark authoring and saved evidence", () => {
         .map((cell) => cell.textContent),
     ).toEqual([
       "1",
-      "betaclaude-acp · high · runtime inventor",
+      // The vendor icon carries its own title text.
+      "ClaudebetahighAnthropic · claude-acp",
       "50.0%",
       "–",
       "100 tokens",
@@ -468,6 +487,7 @@ describe("benchmark authoring and saved evidence", () => {
           {
             baselineId: "baseline",
             configurationId: "model-1",
+            configuration,
             qualityChange: -0.1,
             retainedQualityPercent: 90,
             intervalLow: -0.2,

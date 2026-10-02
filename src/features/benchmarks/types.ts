@@ -92,6 +92,8 @@ export interface Configuration {
   billingMode: string;
   executionProfile: string;
   inventoryRevision: string | null;
+  /** Display name the bridge reported for the model id, for example "Opus 5.5". */
+  modelName?: string | null;
 }
 export interface RunRequest {
   requestKey: string;
@@ -211,6 +213,15 @@ export interface Capability {
   supported: boolean;
   reason: string;
 }
+/** One recorded inventory probe: which models a provider listed, and how it named them. */
+export interface CandidateObservation {
+  id: string;
+  capturedAt: number;
+  providerId: string;
+  accountId: string | null;
+  models: InventoryModel[];
+  authoritative: boolean;
+}
 export interface InventoryModel {
   configuration: Configuration;
   name: string;
@@ -275,6 +286,7 @@ export interface Baseline {
 export interface Comparison {
   baselineId: string;
   configurationId: string;
+  configuration: Configuration;
   qualityChange: number | null;
   retainedQualityPercent: number | null;
   intervalLow: number | null;

@@ -181,6 +181,9 @@ pub struct Configuration {
     pub billing_mode: String,
     pub execution_profile: String,
     pub inventory_revision: Option<String>,
+    /// Display name the bridge reported for the model id, for example "Opus 5.5".
+    #[serde(default)]
+    pub model_name: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -426,6 +429,7 @@ pub struct Baseline {
 pub struct Comparison {
     pub baseline_id: String,
     pub configuration_id: String,
+    pub configuration: Configuration,
     pub quality_change: Option<f64>,
     pub retained_quality_percent: Option<f64>,
     pub interval_low: Option<f64>,

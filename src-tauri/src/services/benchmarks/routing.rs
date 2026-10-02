@@ -636,6 +636,7 @@ mod tests {
             billing_mode: "subscription".into(),
             execution_profile: "native_text".into(),
             inventory_revision: Some("runtime-v1".into()),
+            model_name: None,
         }
     }
     fn request(configurations: Vec<Configuration>) -> RunRequest {

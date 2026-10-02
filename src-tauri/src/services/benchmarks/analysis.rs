@@ -319,11 +319,14 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
         .filter(|r| !baseline.run_ids.contains(&r.id) && r.created_at > baseline.created_at)
         .map(|r| r.id.as_str())
         .collect();
-    let mut configurations: BTreeMap<String, String> = BTreeMap::new();
+    let mut configurations: BTreeMap<String, (String, Configuration)> = BTreeMap::new();
     for attempt in &baseline.snapshots {
         configurations.insert(
             configuration_key(execution_configuration(attempt)),
-            attempt.configuration.id.clone(),
+            (
+                attempt.configuration.id.clone(),
+                execution_configuration(attempt).clone(),
+            ),
         );
     }
     let mut results = Vec::new();
@@ -335,7 +338,7 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
                 super::routing::authored_by_candidate(&v.manifest, execution_configuration(attempt))
             })
     };
-    for (key, id) in configurations {
+    for (key, (id, configuration)) in configurations {
         let before: Vec<_> = baseline
             .snapshots
             .iter()
@@ -387,6 +390,7 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
         let mut result = Comparison {
             baseline_id: baseline.id.clone(),
             configuration_id: id,
+            configuration,
             quality_change: None,
             retained_quality_percent: None,
             interval_low: None,
@@ -494,6 +498,7 @@ pub(super) mod tests {
             billing_mode: "subscription".into(),
             execution_profile: "native_text".into(),
             inventory_revision: Some("runtime-hash".into()),
+            model_name: None,
         };
         let versions = (0..6)
             .map(|index| {

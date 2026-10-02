@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
@@ -79,3 +79,31 @@ export const useBenchmarkRuns = () =>
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
   });
+
+export const modelNameKey = (configuration: {
+  providerId: string;
+  modelId: string;
+}) => `${configuration.providerId}/${configuration.modelId}`;
+
+/**
+ * Display names from recorded inventory probes, newest probe winning, so rows
+ * from runs that predate the stored name still read as the bridge names them.
+ */
+export function useModelNames(): Map<string, string> {
+  const observations = useQuery({
+    queryKey: [...benchmarkKeys, "observations"],
+    queryFn: benchmarkApi.getCandidateObservations,
+  });
+  return useMemo(() => {
+    const names = new Map<string, string>();
+    for (const observation of [...(observations.data ?? [])].sort(
+      (a, b) => a.capturedAt - b.capturedAt,
+    )) {
+      for (const model of observation.models) {
+        if (model.name && model.name !== model.configuration.modelId)
+          names.set(modelNameKey(model.configuration), model.name);
+      }
+    }
+    return names;
+  }, [observations.data]);
+}
