@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import { Label } from "@/shared/ui/label";
+import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import {
   Select,
@@ -21,7 +22,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/shared/ui/select";
-import { stateLabel, stateTone } from "../lib/benchmarkLabels";
+import {
+  configurationOrigin,
+  shortId,
+  stateLabel,
+  stateTone,
+} from "../lib/benchmarkLabels";
+import type { Configuration } from "../types";
 
 export interface Option {
   value: string;
@@ -264,8 +271,8 @@ export function ScoreBar({
     <Progress
       value={share}
       aria-label={label}
-      className="h-1.5 bg-muted"
-      indicatorClassName={leading ? undefined : "bg-foreground/35"}
+      className="h-2 bg-muted"
+      indicatorClassName={leading ? "bg-chart-1" : "bg-foreground/30"}
     />
   );
 }
@@ -311,6 +318,53 @@ export function Metric({ label, value }: { label: string; value: ReactNode }) {
     <div className="space-y-0.5">
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="font-display text-base tabular-nums">{value}</dd>
+    </div>
+  );
+}
+
+/**
+ * A model the way the reference names one: vendor icon, display name, the
+ * selection that differs from the default as chips, vendor and provider below.
+ */
+export function ModelIdentity({
+  configuration,
+  name,
+  showRuntime = false,
+  children,
+}: {
+  configuration: Configuration;
+  name: string;
+  showRuntime?: boolean;
+  children?: ReactNode;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const effort =
+    configuration.effort && configuration.effort !== "default"
+      ? configuration.effort
+      : null;
+  return (
+    <div className="min-w-0">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="flex items-center gap-2 whitespace-nowrap">
+          {getProviderIcon(configuration.providerId, "size-4 shrink-0")}
+          <span className="font-medium">{name}</span>
+        </span>
+        {effort ? <Badge variant="outline">{effort}</Badge> : null}
+        {configuration.fastMode ? (
+          <Badge variant="outline">{t("fastMode")}</Badge>
+        ) : null}
+        {showRuntime && configuration.inventoryRevision ? (
+          <Badge variant="outline" className="text-muted-foreground">
+            {t("leaderboard.runtime", {
+              id: shortId(configuration.inventoryRevision),
+            })}
+          </Badge>
+        ) : null}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {configurationOrigin(configuration)}
+      </p>
+      {children}
     </div>
   );
 }

@@ -54,6 +54,7 @@ export const configuration: Configuration = {
   billingMode: "subscription",
   executionProfile: "native_text",
   inventoryRevision: "inventory-1",
+  modelName: null,
 };
 export const usage: TokenUsage = {
   input: null,

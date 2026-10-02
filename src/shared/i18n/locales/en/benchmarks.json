@@ -290,7 +290,9 @@
     "empty": "No results for this selection.",
     "emptyHint": "Publish a test and run it to collect evidence.",
     "runtime": "runtime {{id}}",
-    "chartLabel": "{{model}}: {{value}}"
+    "chartLabel": "{{model}}: {{value}}",
+    "showUnranked": "Show {{count}} unranked configurations",
+    "hideUnranked": "Hide unranked configurations"
   },
   "nerf": {
     "description": "Changes from a frozen Distill baseline. Quality, duration and output tokens stay separate measurements.",

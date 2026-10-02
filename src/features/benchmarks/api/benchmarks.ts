@@ -8,6 +8,7 @@ import type {
   BenchmarkEvent,
   BenchmarkRun,
   BenchmarkVersion,
+  CandidateObservation,
   Capability,
   InventoryModel,
   RunPreview,
@@ -84,6 +85,8 @@ export const benchmarkApi = {
   eventsSince: (afterSequence: number) =>
     invoke<BenchmarkEvent[]>("benchmark_events_since", { afterSequence }),
   getCapabilities: () => invoke<Capability[]>("benchmark_get_capabilities"),
+  getCandidateObservations: () =>
+    invoke<CandidateObservation[]>("benchmark_get_candidate_observations"),
   getLeaderboard: (query: ResultQuery) =>
     invoke<LeaderboardReport>("benchmark_get_leaderboard", { query }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>

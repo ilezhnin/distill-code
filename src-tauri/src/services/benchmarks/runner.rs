@@ -195,6 +195,7 @@ impl ExecutionBackend for NativeBackend {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    let name = row["name"].as_str().unwrap_or(id);
                     Some(InventoryModel {
                         configuration: Configuration {
                             id: format!("{provider}:{account}:{id}"),
@@ -213,8 +214,9 @@ impl ExecutionBackend for NativeBackend {
                             .into(),
                             execution_profile: "native_text".into(),
                             inventory_revision: revision.clone(),
+                            model_name: (name != id).then(|| name.to_string()),
                         },
-                        name: row["name"].as_str().unwrap_or(id).into(),
+                        name: name.into(),
                         efforts,
                         supports_fast_mode: row["supportsFast"].as_bool().unwrap_or(false),
                         available: unavailable.is_none(),
@@ -1192,6 +1194,7 @@ impl ExecutionBackend for FakeBackend {
                         billing_mode: "simulated".into(),
                         execution_profile: "native_text".into(),
                         inventory_revision: Some("fake-v1".into()),
+                        model_name: None,
                     },
                     name: id.into(),
                     efforts: vec!["default".into()],
@@ -1293,6 +1296,7 @@ mod tests {
                 billing_mode: "simulated".into(),
                 execution_profile: "native_text".into(),
                 inventory_revision: Some("fake-v1".into()),
+                model_name: None,
             }],
             repetitions: 2,
             timeout_seconds: 10,
@@ -1805,6 +1809,7 @@ mod tests {
             billing_mode: "simulated".into(),
             execution_profile: "native_text".into(),
             inventory_revision: None,
+            model_name: None,
         };
         let mut observed = c.clone();
         observed.effort = Some("high".into());

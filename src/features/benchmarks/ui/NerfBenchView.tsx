@@ -12,13 +12,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/shared/ui/table";
-import { formatChange } from "../lib/benchmarkLabels";
+import { modelNameKey, useModelNames } from "../hooks/useBenchmarks";
+import { formatChange, modelDisplayName } from "../lib/benchmarkLabels";
 import type { Baseline, BenchmarkVersion, Comparison } from "../types";
 import { BenchmarkAttemptsDialog } from "./BenchmarkAttemptsDialog";
 import {
   BenchmarkEmpty,
   BenchmarkPager,
   FilterMenu,
+  ModelIdentity,
   StateBadge,
   type Option,
 } from "./BenchmarkPrimitives";
@@ -64,6 +66,12 @@ export function NerfBenchView({
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
   const [selected, setSelected] = useState<Comparison | null>(null);
+  const names = useModelNames();
+  const nameOf = (row: Comparison) =>
+    modelDisplayName(
+      row.configuration,
+      names.get(modelNameKey(row.configuration)),
+    );
   const points = (value: number) => {
     const sign = value > 0 ? "+" : value < 0 ? "−" : "";
     return t("percentagePoints", {
@@ -151,8 +159,12 @@ export function NerfBenchView({
                 className="cursor-pointer"
                 onClick={() => setSelected(row)}
               >
-                <TableCell className="font-medium">
-                  {row.configurationId}
+                <TableCell>
+                  <ModelIdentity
+                    configuration={row.configuration}
+                    name={nameOf(row)}
+                    showRuntime
+                  />
                 </TableCell>
                 <TableCell className="whitespace-normal">
                   {row.retainedQualityPercent != null &&
@@ -203,7 +215,7 @@ export function NerfBenchView({
                     variant="ghost"
                     size="icon-xs"
                     aria-label={t("leaderboard.open", {
-                      model: row.configurationId,
+                      model: nameOf(row),
                     })}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -226,7 +238,7 @@ export function NerfBenchView({
       />
       {selected ? (
         <BenchmarkAttemptsDialog
-          title={selected.configurationId}
+          title={nameOf(selected)}
           description={`${selected.reason} · ${selected.method}`}
           attemptIds={selected.attemptIds}
           versions={versions}
