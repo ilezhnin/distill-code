@@ -289,6 +289,7 @@
     "file": "Archivo JSON de definición",
     "content": "JSON de definición",
     "selected": "{{count}} archivos seleccionados",
+    "publish": "Publicar las definiciones que validen (verifica los evaluadores con sus referencias; nunca llama a un modelo)",
     "tooLarge": "Elige una definición menor de 8 MiB."
   },
   "export": {

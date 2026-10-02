@@ -587,6 +587,12 @@ describe("benchmark authoring and saved evidence", () => {
       target: { files },
     });
     expect(await screen.findByText("2 files selected")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: /Publish definitions/ }),
+    );
+    vi.mocked(benchmarkApi.publishVersion).mockResolvedValue(
+      definition.versions[0],
+    );
     await userEvent.click(screen.getByRole("button", { name: "Import" }));
     await waitFor(() =>
       expect(benchmarkApi.importDefinition).toHaveBeenCalledTimes(2),
@@ -594,6 +600,11 @@ describe("benchmark authoring and saved evidence", () => {
     expect(benchmarkApi.importDefinition).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ name: "second" }),
+    );
+    expect(benchmarkApi.publishVersion).toHaveBeenCalledTimes(2);
+    expect(benchmarkApi.publishVersion).toHaveBeenCalledWith(
+      definition.id,
+      definition.draftRevision,
     );
     expect(onImported).toHaveBeenCalledWith();
   });
