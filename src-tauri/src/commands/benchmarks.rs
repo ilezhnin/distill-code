@@ -294,9 +294,10 @@ pub async fn benchmark_submit_review(
     id: String,
     score: f64,
     reason: String,
+    criteria: Option<serde_json::Value>,
 ) -> Result<Attempt> {
     let s = service(&app).await?;
-    let value = s.review(&id, score, reason).await?;
+    let value = s.review(&id, score, reason, criteria).await?;
     s.changed().await;
     Ok(value)
 }

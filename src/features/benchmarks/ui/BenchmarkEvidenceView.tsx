@@ -27,6 +27,11 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import {
+  previewDocument,
+  rubricCriteriaOf,
+  weightedShare,
+} from "../lib/benchmarkPreview";
+import {
   formatCost,
   formatSeconds,
   shortId,
@@ -61,6 +66,9 @@ export function BenchmarkEvidenceView({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reviewScore, setReviewScore] = useState(1);
+  const [criterionScores, setCriterionScores] = useState<
+    Record<string, number>
+  >({});
   const [reviewReason, setReviewReason] = useState("");
   const attempt = evidence.data;
   const manifest = definitions.data
@@ -82,6 +90,17 @@ export function BenchmarkEvidenceView({
     : manifest?.evaluator.kind === "rubric"
       ? manifest.evaluator.rubric
       : "";
+  // Weighted criteria turn one judgement into comparable parts; the score
+  // the leaderboard reads is their weighted mean.
+  const criteria = rubricCriteriaOf(environment);
+  const score =
+    criteria.length > 0
+      ? weightedShare(criteria, criterionScores)
+      : reviewScore;
+  const preview = previewDocument(
+    attempt?.output,
+    manifest?.facets.outputFormat,
+  );
   const reviewed = attempt?.evaluations.some(
     (evaluation) =>
       evaluation.provenance === (visual ? "human_visual" : "human") &&
@@ -100,7 +119,19 @@ export function BenchmarkEvidenceView({
     setError(null);
     try {
       const result = review
-        ? await benchmarkApi.submitReview(attemptId, reviewScore, reviewReason)
+        ? await benchmarkApi.submitReview(
+            attemptId,
+            score,
+            reviewReason,
+            criteria.length > 0
+              ? Object.fromEntries(
+                  criteria.map((criterion) => [
+                    criterion.id,
+                    (criterionScores[criterion.id] ?? 0) / 10,
+                  ]),
+                )
+              : null,
+          )
         : await benchmarkApi.rescore(attemptId);
       client.setQueryData([...benchmarkKeys, "evidence", attemptId], result);
       await client.invalidateQueries({ queryKey: benchmarkKeys });
@@ -217,6 +248,17 @@ export function BenchmarkEvidenceView({
               <p className="whitespace-pre-wrap text-sm">{rubric}</p>
             </section>
           ) : null}
+          {preview ? (
+            <section className="space-y-2">
+              <SectionHeading title={t("evidence.preview")} />
+              <iframe
+                sandbox=""
+                srcDoc={preview}
+                title={t("evidence.preview")}
+                className="h-96 w-full rounded-md border border-border bg-white"
+              />
+            </section>
+          ) : null}
           {attempt ? (
             <section className="space-y-2">
               <SectionHeading title={t("evidence.output")} />
@@ -298,6 +340,24 @@ export function BenchmarkEvidenceView({
                             : ""}
                         </span>
                       </div>
+                      {evaluation.details ? (
+                        <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                          {Object.entries(evaluation.details).map(
+                            ([id, value]) => (
+                              <div key={id}>
+                                <dt className="inline">
+                                  {criteria.find((c) => c.id === id)?.label ??
+                                    id}
+                                </dt>
+                                <dd className="inline tabular-nums">
+                                  {" "}
+                                  {Math.round(value * 10)}
+                                </dd>
+                              </div>
+                            ),
+                          )}
+                        </dl>
+                      ) : null}
                       <p className="text-xs text-muted-foreground">
                         {evaluation.reason}
                       </p>
@@ -310,22 +370,71 @@ export function BenchmarkEvidenceView({
           {canReview ? (
             <section className="space-y-3">
               <SectionHeading title={t("evidence.review")} />
-              <div className="grid gap-4 md:grid-cols-[8rem_1fr]">
-                <Field label={t("fields.reviewScore")}>
-                  {(id) => (
-                    <Input
-                      id={id}
-                      type="number"
-                      min={0}
-                      max={1}
-                      step={0.1}
-                      value={reviewScore}
-                      onChange={(event) =>
-                        setReviewScore(Number(event.target.value))
-                      }
-                    />
-                  )}
-                </Field>
+              {criteria.length > 0 ? (
+                <div className="space-y-3">
+                  {criteria.map((criterion) => (
+                    <Field
+                      key={criterion.id}
+                      label={t("evidence.criterion", {
+                        label: criterion.label,
+                        weight: criterion.weight,
+                      })}
+                    >
+                      {(id) => (
+                        <div className="flex items-center gap-3">
+                          <input
+                            id={id}
+                            type="range"
+                            min={0}
+                            max={10}
+                            step={1}
+                            value={criterionScores[criterion.id] ?? 0}
+                            onChange={(event) =>
+                              setCriterionScores((scores) => ({
+                                ...scores,
+                                [criterion.id]: Number(event.target.value),
+                              }))
+                            }
+                            className="flex-1 accent-chart-1"
+                          />
+                          <span className="w-6 text-right text-sm tabular-nums">
+                            {criterionScores[criterion.id] ?? 0}
+                          </span>
+                        </div>
+                      )}
+                    </Field>
+                  ))}
+                  <p className="text-xs text-muted-foreground">
+                    {t("evidence.weighted", {
+                      points: Math.round(score * 1000),
+                    })}
+                  </p>
+                </div>
+              ) : null}
+              <div
+                className={
+                  criteria.length > 0
+                    ? "grid gap-4"
+                    : "grid gap-4 md:grid-cols-[8rem_1fr]"
+                }
+              >
+                {criteria.length === 0 ? (
+                  <Field label={t("fields.reviewScore")}>
+                    {(id) => (
+                      <Input
+                        id={id}
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.1}
+                        value={reviewScore}
+                        onChange={(event) =>
+                          setReviewScore(Number(event.target.value))
+                        }
+                      />
+                    )}
+                  </Field>
+                ) : null}
                 <Field label={t("fields.reviewReason")}>
                   {(id) => (
                     <Textarea
@@ -342,9 +451,9 @@ export function BenchmarkEvidenceView({
                 disabled={
                   busy ||
                   !reviewReason.trim() ||
-                  reviewScore < 0 ||
-                  reviewScore > 1 ||
-                  !Number.isFinite(reviewScore)
+                  score < 0 ||
+                  score > 1 ||
+                  !Number.isFinite(score)
                 }
                 onClick={() => void evaluate(true)}
               >

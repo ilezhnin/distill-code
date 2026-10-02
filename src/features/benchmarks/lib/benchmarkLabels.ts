@@ -106,6 +106,27 @@ export function formatChange(
   return t("percent", { value: `${sign}${Math.abs(percent).toFixed(1)}` });
 }
 
+/** A board's name: the work class, or the shared measurement. */
+export function boardTitle(
+  t: Translate,
+  board: { id: string; workClass: string | null },
+): string {
+  return board.workClass
+    ? workClassLabel(t, board.workClass)
+    : t(`leaderboard.boards.${board.id}`);
+}
+
+export function boardDescription(
+  t: Translate,
+  board: { id: string; workClass: string | null },
+): string {
+  return board.workClass
+    ? t("leaderboard.boardDescriptions.class", {
+        label: workClassLabel(t, board.workClass),
+      })
+    : t(`leaderboard.boardDescriptions.${board.id}`);
+}
+
 export function workClassLabel(t: Translate, workClass: string): string {
   return t(`settings:routing.classes.${workClass}`, {
     defaultValue: workClass,

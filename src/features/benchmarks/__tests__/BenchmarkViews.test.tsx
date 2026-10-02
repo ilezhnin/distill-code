@@ -840,3 +840,73 @@ describe("benchmark authoring and saved evidence", () => {
     });
   });
 });
+
+describe("configuration history", () => {
+  afterEach(cleanup);
+
+  it("charts points per measurement and shows the page as it stood at an older one", async () => {
+    const older = {
+      ...runSummary,
+      id: "run-0",
+      createdAt: 500,
+      updatedAt: 600,
+    };
+    const olderRow = leaderboardRow({
+      points: 600,
+      quality: 0.6,
+      measuredAt: 550,
+    });
+    const latestRow = leaderboardRow({
+      points: 900,
+      quality: 0.9,
+      measuredAt: 2000,
+    });
+    vi.mocked(benchmarkApi.getLeaderboard).mockImplementation(
+      async (query) => ({
+        cohort: { ...cohort, runIds: [query.runId ?? "run-1"] },
+        rows: [query.runId === "run-0" ? olderRow : latestRow],
+      }),
+    );
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    wrap(
+      <LeaderboardView
+        {...scopeProps}
+        versions={definition.versions}
+        runs={[runSummary, older]}
+        report={{ cohort, rows: [latestRow] }}
+        onEvidence={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Open model-1" }));
+    const dialog = await screen.findByRole("dialog", { name: "model-1" });
+    const rating = () =>
+      within(dialog).getByText("Overall rating").nextElementSibling
+        ?.textContent;
+    expect(rating()).toBe("900");
+    const oldPoint = await within(dialog).findByRole("button", {
+      name: /: 600 points$/,
+    });
+    expect(
+      within(dialog).getByRole("button", { name: /: 900 points$/ }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      within(dialog).getByText(
+        /^Showing the measurement of .* · run run-1 · 1 case$/,
+      ),
+    ).toBeInTheDocument();
+    await userEvent.click(oldPoint);
+    expect(rating()).toBe("600");
+    expect(oldPoint).toHaveAttribute("aria-pressed", "true");
+    expect(
+      within(dialog).getByText(
+        /^Showing the measurement of .* · run run-0 · 1 case$/,
+      ),
+    ).toBeInTheDocument();
+    expect(benchmarkApi.getLeaderboard).toHaveBeenCalledWith({
+      runId: "run-0",
+      versionIds: null,
+      offset: 0,
+      limit: 500,
+    });
+  });
+});

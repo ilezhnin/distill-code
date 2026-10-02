@@ -741,6 +741,7 @@ pub(super) mod tests {
             created_at: 7,
             provenance: "human".into(),
             artifacts: vec![],
+            details: None,
         });
         assert_eq!(score(attempt), Some(0.8));
         attempt.evaluations.push(Evaluation {

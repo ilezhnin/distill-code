@@ -1706,7 +1706,7 @@ mod tests {
         let a = s.store.attempt(&run.attempts[0].id).await.unwrap();
         assert_eq!(a.outcome.as_deref(), Some("pending_review"));
         let a = s
-            .review(&a.id, 1.0, "Meets the declared rubric".into())
+            .review(&a.id, 1.0, "Meets the declared rubric".into(), None)
             .await
             .unwrap();
         assert_eq!(a.outcome.as_deref(), Some("pass"));
