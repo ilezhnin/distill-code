@@ -23,7 +23,8 @@ import type {
   RoutingEvidenceQuery,
   RunSummary,
 } from "../types";
-import { BenchmarkEvidenceLinks } from "./BenchmarkEvidenceLinks";
+import { DisclosureButton } from "@/shared/ui/disclosure-button";
+import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -70,6 +71,7 @@ export function BenchmarkRoutingDialog({
 }) {
   const { t } = useTranslation("benchmarks");
   const [versionId, setVersionId] = useState(versions[0]?.id ?? "none");
+  const [unfolded, setUnfolded] = useState<string | null>(null);
   const [mode, setMode] = useState<"exact" | "class">("exact");
   const [purpose, setPurpose] = useState<"analysis" | "selector">("analysis");
   const [objective, setObjective] = useState<"quality" | "latency" | "cost">(
@@ -324,10 +326,32 @@ export function BenchmarkRoutingDialog({
                           seconds: row.protocolTimeoutSeconds ?? t("unknown"),
                         })}
                       </p>
-                      <BenchmarkEvidenceLinks
-                        attemptIds={row.attemptIds}
-                        onEvidence={onEvidence}
-                      />
+                      {row.attemptIds.length > 0 ? (
+                        <DisclosureButton
+                          type="button"
+                          aria-expanded={unfolded === row.candidateKey}
+                          onClick={() =>
+                            setUnfolded((current) =>
+                              current === row.candidateKey
+                                ? null
+                                : row.candidateKey,
+                            )
+                          }
+                        >
+                          {unfolded === row.candidateKey
+                            ? t("routing.hideAttempts")
+                            : t("routing.showAttempts", {
+                                count: row.attemptIds.length,
+                              })}
+                        </DisclosureButton>
+                      ) : null}
+                      {unfolded === row.candidateKey ? (
+                        <BenchmarkAttemptList
+                          query={{ attemptIds: row.attemptIds }}
+                          versions={versions}
+                          onEvidence={onEvidence}
+                        />
+                      ) : null}
                     </li>
                   ))}
                 </ul>

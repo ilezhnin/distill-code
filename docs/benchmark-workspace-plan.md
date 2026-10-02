@@ -815,6 +815,35 @@ The train split ran twice on the operator's managed Claude account, Sonnet at th
 - The first run (`05b1aef0`) exposed a runner defect: the runtime fingerprint hashed the whole model inventory, and the host learns effort lists lazily, so the inventory changed after the first attempt and the remaining thirteen were refused as `selection_changed` before dispatch. The fingerprint now covers the executable, the pinned lock and policy and the sorted model set; the acknowledged-selection check still guards effort and fast mode. That run stays in history as a runner failure, not a model result; filter the leaderboard by run to exclude it.
 - The second run (`6693f89e`) completed 14/14: 13 pass, 1 fail. Reported usage: 17,839 output tokens, 1,916 billed input tokens plus about 1,500 cache-write tokens per prompt (the bridge reports the prompt as a cache write), USD 0.289 as the SDK estimate, 176 s of model time. The failure returned an `export function`, which the protected realm cannot load; the evaluator now strips a single Markdown fence and a leading module export keyword before checking and records that it did. Rescoring appends an evaluation without rewriting the observed outcome.
 - Sonnet at default effort therefore scores 13/14 on the train split. One configuration on one split is a spend and pipeline measurement, not a ranking.
+- The third run (`de95fa5e`) took Opus at default effort through the same split: 14/14 pass, 8,204 output tokens, USD 0.386 as the SDK estimate, 95 s of model time. Two configurations now share the frozen suite: Opus 100% and Sonnet 92.9% on the overall board, Opus ahead on speed (5.95 s against 11.55 s median) and efficiency (415 against 1,161 median output tokens), Sonnet ahead on cost (USD 0.289 against 0.386). One repetition on one split still separates models only where the gap is large; the held-out split stays reserved for the role decision.
+
+## Report boards and BridgeBench coverage (October 2, 2026)
+
+The operator compared the first report pages with bridgebench.ai and found them hard to use: methodology text in every row, five-at-a-time evidence links, duplicated configuration labels, and speed and cost folded into one table. The reports now follow the reference layout with our own measurements behind it.
+
+### Boards
+
+- The leaderboard is a set of boards, one per measurement: Overall, one board per work class present in the frozen suite, Efficiency (median output tokens per scored attempt), Speed (median attempt duration) and Cost (measured USD for the suite, as the provider reported it). Each board ranks on its own; nothing is folded into a single score with hidden weights.
+- Chart mode shows rank, model, a bar relative to the board leader, the value and a small profile of every board. Table mode shows every board at once and re-ranks on a column click; rows move to their new position with a layout animation. Only comparable rows receive a rank; tied values share one rank and the next rank skips. Incomplete, untested and excluded rows keep their values but sink below the ranked rows with a status chip and their coverage.
+- A row opens the configuration dialog: status and reason, the six headline measurements, the success split by work class and every attempt with outcome, duration, tokens, cost and the evidence link. Nerf and Usage rows open the same attempt list behind their numbers.
+- `planned` now floors at the suite's eligible cases times repetitions, so a lone observed cell is preliminary rather than comparable; `scored`, `medianOutputTokens`, `measuredAt` and `axes` were added to the leaderboard row, `workClasses` to the cohort, `measuredAt` to comparisons, and `ResultQuery.attemptIds` lets any report list the exact attempts it counted. Attempt summaries carry repetition, duration, output tokens and cost.
+- No share links, community prompt list, Discord or online counter: the workbench is local, the task set is private, and export already produces a JSONL dataset with a manifest.
+
+### What BridgeBench shows and where Distill stands
+
+| BridgeBench | Distill | Status |
+| --- | --- | --- |
+| Leaderboard axes: Overall, Reasoning, Front End, Back End, One Shot, Security, Trust, Efficiency, Speed, Cost | Overall, one board per work class in the suite, Efficiency, Speed, Cost | Covered; axes follow the suite's work classes, so a security or trust board appears once such cases exist |
+| Comparative ratings with a proprietary method | Measured success with equal case weights and a published method; every number opens its attempts | Covered differently, on purpose |
+| Tied ranks share a rank; models awaiting a rating appear without a score | Shared ranks; preliminary, untested and excluded rows unranked with coverage | Covered |
+| Chart and Table modes; click a column to re-rank | Same | Covered |
+| Model filter and share | Search plus provider, effort, fast-mode and profile facets; JSONL export instead of share links | Covered; sharing deliberately absent |
+| Vendor API prices with check dates and context size | Measured cost per suite and per attempt from the provider's own usage report | Gap, deliberate: ACP exposes no list prices and a hand-kept price table is not evidence |
+| Model page with strengths, tradeoffs and specifications | Configuration dialog with the per-class split and every attempt | Covered in our form |
+| Design Bench: per-scene qualified, DQ and not attempted; replay, side-by-side, video; cost and time per output | Results tab per test with every model's outcome, duration, tokens and cost; the evidence dialog holds the captured output and artifacts | Partial: no replay gallery or video, not needed for a local workbench |
+| Nerf Bench: power relative to launch day, 90–110% normal band, history per model, continuous follow-ups | Operator-frozen baseline as day one; quality change in points with a bootstrap interval and a sign test; duration and token changes kept separate; measured date; schedules with discovery rules for follow-ups | Partial: no merged power number by design; a history timeline per configuration is still missing (the Run filter isolates one follow-up at a time) |
+| Usage Bench: 5-hour and weekly windows, day one at 100%, not-reported windows, latest measurement date, change since day one | Windows labelled and compared separately, retained allowance with an envelope and status, latest measurement date, unreported windows named as such; the measurement is the observed quota delta, not a published claim | Covered |
+| Community prompts | None: public prompts are training data; the private set lives outside every repository | Deliberately absent |
 
 ### Pilot procedure
 

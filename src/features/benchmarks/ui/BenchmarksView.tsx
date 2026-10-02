@@ -194,6 +194,8 @@ export function BenchmarksView({
         }),
       })),
   ];
+  const baseline =
+    baselines.data?.find((entry) => entry.id === baselineId) ?? null;
   const baselineOptions: Option[] = [
     { value: "none", label: t("filters.noBaseline") },
     ...(baselines.data ?? []).map((baseline) => ({
@@ -305,6 +307,7 @@ export function BenchmarksView({
             onScopeChange={changeScope}
             suiteOptions={suiteOptions}
             runOptions={runOptions}
+            versions={versions}
             page={page}
             pageSize={PAGE_SIZE}
             onPageChange={setPage}
@@ -319,10 +322,12 @@ export function BenchmarksView({
             onScopeChange={changeScope}
             suiteOptions={suiteOptions}
             runOptions={runOptions}
+            baseline={baseline}
             baselineId={baselineId}
             baselineOptions={baselineOptions}
             onBaselineChange={setBaselineId}
             onCreateBaseline={() => setDialog("baseline")}
+            versions={versions}
             page={page}
             pageSize={PAGE_SIZE}
             onPageChange={setPage}
@@ -337,10 +342,12 @@ export function BenchmarksView({
             scope={scope}
             onScopeChange={changeScope}
             runOptions={runOptions}
+            baseline={baseline}
             baselineId={baselineId}
             baselineOptions={baselineOptions}
             onBaselineChange={setBaselineId}
             onCreateBaseline={() => setDialog("baseline")}
+            versions={versions}
             page={page}
             pageSize={PAGE_SIZE}
             onPageChange={setPage}

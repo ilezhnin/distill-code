@@ -178,17 +178,28 @@ impl Store {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let attempts = q
+            .attempt_ids
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let rows = sqlx::query(
             "WITH selected AS MATERIALIZED (
                 SELECT a.rowid AS attempt_rowid,r.created_at,r.id AS run_id
                 FROM attempts a JOIN run_plans r ON r.id=a.run_id
                 WHERE (? IS NULL OR a.run_id=?)
                     AND (? IS NULL OR a.version_id IN (SELECT value FROM json_each(?)))
+                    AND (? IS NULL OR a.id IN (SELECT value FROM json_each(?)))
                 ORDER BY r.created_at DESC,r.id,a.rowid LIMIT ? OFFSET ?
              )
              SELECT a.id,a.run_id,a.version_id,
                 json_extract(a.data_json,'$.configuration.modelId'),a.phase,
-                json_extract(a.data_json,'$.outcome')
+                json_extract(a.data_json,'$.outcome'),
+                json_extract(a.data_json,'$.repetition'),
+                json_extract(a.data_json,'$.finishedAt'),
+                json_extract(a.data_json,'$.durationMs'),
+                json_extract(a.data_json,'$.usage.output'),
+                json_extract(a.data_json,'$.usage.cost')
              FROM selected p JOIN attempts a ON a.rowid=p.attempt_rowid
              ORDER BY p.created_at DESC,p.run_id,p.attempt_rowid",
         )
@@ -196,6 +207,8 @@ impl Store {
         .bind(&q.run_id)
         .bind(&versions)
         .bind(&versions)
+        .bind(&attempts)
+        .bind(&attempts)
         .bind(q.limit.unwrap_or(50).min(100))
         .bind(q.offset.unwrap_or(0))
         .fetch_all(&self.pool)
@@ -209,6 +222,11 @@ impl Store {
                 model_id: r.get(3),
                 phase: r.get(4),
                 outcome: r.get(5),
+                repetition: r.get::<Option<u32>, _>(6).unwrap_or(0),
+                finished_at: r.get(7),
+                duration_ms: r.get(8),
+                output_tokens: r.get(9),
+                cost: r.get(10),
             })
             .collect())
     }
@@ -481,7 +499,7 @@ mod tests {
         assert_eq!(first_page[0].id, "attempt-0");
         assert_eq!(first_page[0].model_id, "native-model");
         let projection = serde_json::to_value(&first_page[0]).unwrap();
-        assert_eq!(projection.as_object().unwrap().len(), 6);
+        assert_eq!(projection.as_object().unwrap().len(), 11);
         assert!(projection.get("output").is_none());
         assert!(projection.get("evaluations").is_none());
         assert_eq!(
@@ -498,6 +516,7 @@ mod tests {
         let query = ResultQuery {
             run_id: Some("run-104".into()),
             version_ids: Some(vec![first.id.clone()]),
+            attempt_ids: None,
             offset: Some(50),
             limit: Some(50),
         };
@@ -538,6 +557,18 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+        // Reports hand exact attempt ids to the evidence dialog.
+        let picked = store
+            .list_attempts(&ResultQuery {
+                attempt_ids: Some(vec!["attempt-125".into(), "attempt-3".into()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            picked.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["attempt-3", "attempt-125"]
+        );
 
         // Full internal records and direct evidence remain independently available.
         assert_eq!(store.all_runs().await.unwrap().len(), 105);

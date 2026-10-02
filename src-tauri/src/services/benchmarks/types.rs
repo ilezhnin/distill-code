@@ -233,8 +233,13 @@ pub struct AttemptSummary {
     pub run_id: String,
     pub version_id: String,
     pub model_id: String,
+    pub repetition: u32,
     pub phase: String,
     pub outcome: Option<String>,
+    pub finished_at: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost: Option<f64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -351,6 +356,9 @@ pub struct InventoryModel {
 pub struct ResultQuery {
     pub run_id: Option<String>,
     pub version_ids: Option<Vec<String>>,
+    /// Exact attempts to list; reports hand these to the evidence dialog.
+    #[serde(default)]
+    pub attempt_ids: Option<Vec<String>>,
     pub offset: Option<u32>,
     pub limit: Option<u32>,
 }
@@ -359,14 +367,28 @@ pub struct ResultQuery {
 pub struct LeaderboardRow {
     pub configuration: Configuration,
     pub passed: u32,
+    pub scored: u32,
     pub attempted: u32,
     pub planned: u32,
     pub quality: Option<f64>,
     pub median_duration_ms: Option<f64>,
+    pub median_output_tokens: Option<f64>,
     pub cost: Option<f64>,
+    pub measured_at: Option<i64>,
     pub status: String,
     pub reason: String,
     pub attempt_ids: Vec<String>,
+    /// Success per work class of the suite, in the cohort's class order.
+    pub axes: Vec<LeaderboardAxis>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardAxis {
+    pub id: String,
+    pub quality: Option<f64>,
+    pub passed: u32,
+    pub scored: u32,
+    pub planned: u32,
 }
 /// The newest frozen suite the leaderboard compares: every row shares these conditions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,6 +400,7 @@ pub struct LeaderboardCohort {
     pub timeout_seconds: u32,
     pub max_executions: u32,
     pub newest_run_at: i64,
+    pub work_classes: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -413,6 +436,7 @@ pub struct Comparison {
     pub duration_change_percent: Option<f64>,
     pub token_change_percent: Option<f64>,
     pub method: String,
+    pub measured_at: Option<i64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

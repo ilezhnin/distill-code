@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconPlus } from "@tabler/icons-react";
+import { IconChevronRight, IconPlus } from "@tabler/icons-react";
+import { useLocaleFormatting } from "@/shared/i18n";
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import {
   Table,
@@ -9,8 +12,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/shared/ui/table";
-import type { Comparison } from "../types";
-import { BenchmarkEvidenceLinks } from "./BenchmarkEvidenceLinks";
+import { formatChange } from "../lib/benchmarkLabels";
+import type { Baseline, BenchmarkVersion, Comparison } from "../types";
+import { BenchmarkAttemptsDialog } from "./BenchmarkAttemptsDialog";
 import {
   BenchmarkEmpty,
   BenchmarkPager,
@@ -27,10 +31,12 @@ interface Props {
   onScopeChange: (scope: ResultScope) => void;
   suiteOptions: Option[];
   runOptions: Option[];
+  baseline: Baseline | null;
   baselineId: string;
   baselineOptions: Option[];
   onBaselineChange: (id: string) => void;
   onCreateBaseline: () => void;
+  versions: BenchmarkVersion[];
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
@@ -44,20 +50,30 @@ export function NerfBenchView({
   onScopeChange,
   suiteOptions,
   runOptions,
+  baseline,
   baselineId,
   baselineOptions,
   onBaselineChange,
   onCreateBaseline,
+  versions,
   page,
   pageSize,
   onPageChange,
   onEvidence,
 }: Props) {
   const { t } = useTranslation("benchmarks");
-  const percent = (value: number | null, digits = 1) =>
+  const { formatDate } = useLocaleFormatting();
+  const [selected, setSelected] = useState<Comparison | null>(null);
+  const points = (value: number) => {
+    const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+    return t("percentagePoints", {
+      value: `${sign}${Math.abs(value * 100).toFixed(1)}`,
+    });
+  };
+  const date = (value: number | null) =>
     value == null
       ? t("unknown")
-      : t("percent", { value: value.toFixed(digits) });
+      : formatDate(value, { dateStyle: "medium", timeStyle: "short" });
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -93,7 +109,15 @@ export function NerfBenchView({
           />
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">{t("nerf.description")}</p>
+      <p className="text-xs text-muted-foreground">
+        {baseline
+          ? t("nerf.summary", {
+              name: baseline.name,
+              date: formatDate(baseline.createdAt, { dateStyle: "medium" }),
+              threshold: (baseline.threshold * 100).toFixed(0),
+            })
+          : t("nerf.description")}
+      </p>
       {baselineId === "none" ? (
         <BenchmarkEmpty
           title={t("nerf.empty")}
@@ -108,56 +132,86 @@ export function NerfBenchView({
           <TableHeader>
             <TableRow>
               <TableHead>{t("fields.configuration")}</TableHead>
-              <TableHead>{t("fields.qualityChange")}</TableHead>
-              <TableHead>{t("fields.durationChange")}</TableHead>
-              <TableHead>{t("fields.tokenChange")}</TableHead>
-              <TableHead>{t("fields.interval")}</TableHead>
+              <TableHead>{t("fields.retainedQuality")}</TableHead>
+              <TableHead className="text-right">
+                {t("fields.durationChange")}
+              </TableHead>
+              <TableHead className="text-right">
+                {t("fields.tokenChange")}
+              </TableHead>
               <TableHead>{t("fields.status")}</TableHead>
-              <TableHead>{t("evidence.title")}</TableHead>
+              <TableHead>{t("fields.measuredAt")}</TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
             {comparisons.map((row) => (
-              <TableRow key={`${row.baselineId}-${row.configurationId}`}>
-                <TableCell>{row.configurationId}</TableCell>
-                <TableCell>
-                  {row.qualityChange == null
-                    ? t("unknown")
-                    : t("percentagePoints", {
-                        value: (row.qualityChange * 100).toFixed(1),
-                      })}
-                  {row.retainedQualityPercent != null ? (
-                    <div className="text-xs text-muted-foreground">
-                      {t("fields.retainedQualityValue", {
-                        value: row.retainedQualityPercent.toFixed(1),
-                      })}
-                    </div>
-                  ) : null}
-                </TableCell>
-                <TableCell>{percent(row.durationChangePercent)}</TableCell>
-                <TableCell>{percent(row.tokenChangePercent)}</TableCell>
-                <TableCell>
-                  {row.intervalLow == null || row.intervalHigh == null
-                    ? t("unknown")
-                    : t("fields.intervalValue", {
-                        low: (row.intervalLow * 100).toFixed(1),
-                        high: (row.intervalHigh * 100).toFixed(1),
-                      })}
+              <TableRow
+                key={`${row.baselineId}-${row.configurationId}`}
+                className="cursor-pointer"
+                onClick={() => setSelected(row)}
+              >
+                <TableCell className="font-medium">
+                  {row.configurationId}
                 </TableCell>
                 <TableCell className="whitespace-normal">
+                  {row.retainedQualityPercent != null &&
+                  row.qualityChange != null ? (
+                    <>
+                      <div
+                        className={cn(
+                          "font-display text-base tabular-nums",
+                          row.status === "confirmed_change" &&
+                            "text-destructive",
+                        )}
+                      >
+                        {t("percent", {
+                          value: row.retainedQualityPercent.toFixed(1),
+                        })}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {points(row.qualityChange)}
+                        {row.intervalLow != null && row.intervalHigh != null
+                          ? ` · ${t("fields.intervalValue", {
+                              low: (row.intervalLow * 100).toFixed(1),
+                              high: (row.intervalHigh * 100).toFixed(1),
+                            })}`
+                          : ""}
+                      </p>
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">
+                      {row.reason}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatChange(t, row.durationChangePercent)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatChange(t, row.tokenChangePercent)}
+                </TableCell>
+                <TableCell>
                   <StateBadge state={row.status} />
-                  <p
-                    className="mt-1 max-w-56 text-xs text-muted-foreground"
-                    title={row.method}
-                  >
-                    {row.reason}
-                  </p>
                 </TableCell>
-                <TableCell className="whitespace-normal">
-                  <BenchmarkEvidenceLinks
-                    attemptIds={row.attemptIds}
-                    onEvidence={onEvidence}
-                  />
+                <TableCell className="text-xs text-muted-foreground">
+                  {date(row.measuredAt)}
+                </TableCell>
+                <TableCell className="w-10 text-right">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={t("leaderboard.open", {
+                      model: row.configurationId,
+                    })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelected(row);
+                    }}
+                  >
+                    <IconChevronRight />
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -170,6 +224,16 @@ export function NerfBenchView({
         count={comparisons.length}
         onPageChange={onPageChange}
       />
+      {selected ? (
+        <BenchmarkAttemptsDialog
+          title={selected.configurationId}
+          description={`${selected.reason} · ${selected.method}`}
+          attemptIds={selected.attemptIds}
+          versions={versions}
+          onEvidence={onEvidence}
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
     </section>
   );
 }

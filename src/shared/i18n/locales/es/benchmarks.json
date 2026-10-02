@@ -130,7 +130,15 @@
     "reviewReason": "Evidencia de la revisión",
     "tokens": "Tokens",
     "tokensCache": "caché: {{write}} escritos / {{read}} leídos",
-    "tokensValue": "{{input}} entrada / {{output}} salida"
+    "tokensValue": "{{input}} entrada / {{output}} salida",
+    "rank": "#",
+    "case": "Caso",
+    "durationShort": "Duración",
+    "costShort": "Coste",
+    "tokensOut": "Tokens de salida",
+    "measuredAt": "Medido",
+    "repetitionValue": "repetición {{value}}",
+    "usedRange": "Usado antes → después"
   },
   "split": {
     "development": "Desarrollo",
@@ -247,7 +255,6 @@
     "anonymousArtifact": "Artefacto {{number}}",
     "blindReview": "La identidad del modelo, las mediciones y la transcripción permanecen ocultas hasta registrar la revisión con rúbrica.",
     "rubric": "Rúbrica de revisión publicada",
-    "range": "{{start}}–{{end}} de {{total}} intentos",
     "output": "Salida capturada",
     "noOutput": "Sin salida capturada.",
     "evaluations": "Historial de evaluación",
@@ -258,20 +265,49 @@
     "rescore": "Evaluar de nuevo"
   },
   "leaderboard": {
-    "description": "Las filas comparten un conjunto y un presupuesto congelados. Las mediciones ausentes se mantienen desconocidas; la cobertura incompleta no recibe una posición comparable.",
-    "cohort": "Conjunto congelado más reciente: {{runs}} ejecuciones · {{cases}} casos · {{repetitions}} repeticiones · {{seconds}} s por intento",
+    "description": "Las filas comparten un conjunto y un presupuesto congelados. Las mediciones ausentes se mantienen desconocidas; la cobertura incompleta no recibe posición.",
+    "summary": "{{scored}} puntuadas · {{cases}} casos · {{repetitions}} repeticiones · {{seconds}} s por intento",
+    "measuredOn": "medido el {{date}}",
+    "shown": "{{count}} configuraciones mostradas",
+    "boards": {
+      "overall": "General",
+      "efficiency": "Eficiencia",
+      "speed": "Velocidad",
+      "cost": "Coste"
+    },
+    "boardDescriptions": {
+      "overall": "Éxito medido en todos los casos del conjunto congelado. Más alto es mejor.",
+      "class": "Éxito medido en los casos de {{label}}. Más alto es mejor.",
+      "efficiency": "Mediana de tokens de salida por intento puntuado. Más bajo es mejor.",
+      "speed": "Duración mediana del intento. Más bajo es mejor.",
+      "cost": "Coste medido del conjunto en USD, tal como lo informó el proveedor. Más bajo es mejor."
+    },
+    "tableHint": "Todas las mediciones a la vez. Haz clic en una columna para reordenar.",
+    "allAxes": "Todos los tableros",
+    "measured": "{{scored}} / {{planned}} medidas",
+    "open": "Abrir {{model}}",
+    "axesTitle": "Éxito por clase de trabajo",
     "empty": "No hay resultados para esta selección.",
     "emptyHint": "Publica una prueba y ejecútala para recopilar evidencia.",
     "runtime": "runtime {{id}}",
-    "chartLabel": "Éxito medido de {{model}}: {{value}} por ciento"
+    "chartLabel": "{{model}}: {{value}}"
   },
   "nerf": {
-    "description": "Cambios respecto a la línea base de Distill seleccionada. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
+    "description": "Cambios respecto a una línea base congelada de Distill. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
+    "summary": "Línea base {{name}} · congelada el {{date}} · umbral práctico {{threshold}} pp. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
     "empty": "Elige una línea base para comparar.",
     "emptyHint": "Congela una ejecución completada como línea base y luego recopila ejecuciones posteriores comparables."
   },
   "usage": {
     "description": "Trabajo medido por asignación de suscripción, por carga de trabajo y ventana de cuota. Abrir esta vista nunca inicia una medición.",
+    "summary": "Línea base {{name}} · día uno {{date}}. Cada ventana se compara con su propia primera medición.",
+    "latestMeasurement": "última medición {{date}}",
+    "noMeasurement": "todavía sin medición",
+    "windows": {
+      "fiveHour": "Límite de 5 horas",
+      "weekly": "Límite semanal",
+      "weeklyModel": "Límite semanal · {{model}}"
+    },
     "attribution": "La cuota pertenece al lote controlado completo. La actividad mixta de la cuenta no puede establecer un cargo por tarea; la telemetría ausente es desconocida y un límite no alcanzado es solo una cota inferior.",
     "empty": "No hay muestras de cuota para esta selección.",
     "emptyHint": "Ejecuta una prueba publicada de cuota controlada o de capacidad para recopilar muestras.",
@@ -355,7 +391,9 @@
     "empty": "No se proporcionaron candidatos.",
     "coverage": "{{samples}} muestras en {{families}} familias · calidad {{quality}}",
     "protocol": "{{missing}} resultados ausentes · límite de tiempo compartido {{seconds}} s",
-    "queryHash": "Hash de la consulta"
+    "queryHash": "Hash de la consulta",
+    "showAttempts": "Mostrar {{count}} intentos",
+    "hideAttempts": "Ocultar intentos"
   },
   "attribution": {
     "provider_reported": "Informado por el proveedor",
@@ -411,5 +449,10 @@
     "mixed": "Mixto",
     "controlled_batch": "Lote controlado",
     "unknown": "Desconocido"
+  },
+  "tokens": "{{value}} tokens",
+  "fastMode": "rápido",
+  "attempts": {
+    "title": "Intentos ({{count}})"
   }
 }
