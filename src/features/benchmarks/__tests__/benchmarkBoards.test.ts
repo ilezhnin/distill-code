@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardsFor, rankRows } from "../lib/benchmarkBoards";
+import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
 import { cohort, configuration, leaderboardRow } from "./fixtures";
 
 const rows = [
@@ -54,6 +54,37 @@ const rows = [
 ];
 
 describe("leaderboard boards", () => {
+  it("keeps model navigation stable across runtime updates and implicit defaults", () => {
+    const before = leaderboardRow({
+      configuration: { ...configuration, effort: null, fastMode: null },
+    });
+    const after = leaderboardRow({
+      configuration: {
+        ...configuration,
+        id: "new-probe",
+        effort: "default",
+        fastMode: false,
+        inventoryRevision: "new-runtime",
+        modelName: "New display name",
+      },
+    });
+    expect(rowKey(after)).toBe(rowKey(before));
+    expect(
+      rowKey(
+        leaderboardRow({
+          configuration: { ...after.configuration, effort: "high" },
+        }),
+      ),
+    ).not.toBe(rowKey(before));
+    expect(
+      rowKey(
+        leaderboardRow({
+          configuration: { ...after.configuration, fastMode: true },
+        }),
+      ),
+    ).not.toBe(rowKey(before));
+  });
+
   it("builds one board per shared measurement plus one per work class", () => {
     expect(boardsFor(cohort).map((board) => board.id)).toEqual([
       "overall",

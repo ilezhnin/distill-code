@@ -53,6 +53,24 @@ pub(crate) fn configuration_key(configuration: &Configuration) -> String {
     .unwrap_or_default()
 }
 
+/// Runtime probes and omitted defaults do not create new leaderboard candidates.
+fn leaderboard_key(configuration: &Configuration) -> String {
+    serde_json::to_string(&(
+        &configuration.provider_id,
+        &configuration.account_id,
+        &configuration.model_id,
+        configuration
+            .effort
+            .as_deref()
+            .filter(|effort| !effort.is_empty())
+            .unwrap_or("default"),
+        configuration.fast_mode.unwrap_or(false),
+        &configuration.billing_mode,
+        &configuration.execution_profile,
+    ))
+    .unwrap_or_default()
+}
+
 pub(crate) fn execution_configuration(attempt: &Attempt) -> &Configuration {
     attempt.observed.as_ref().unwrap_or(&attempt.configuration)
 }
@@ -265,7 +283,7 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
         }
         let configuration = execution_configuration(attempt);
         let entry = cells
-            .entry(configuration_key(configuration))
+            .entry(leaderboard_key(configuration))
             .or_insert_with(|| (configuration.clone(), BTreeMap::new()));
         entry
             .1
@@ -276,7 +294,7 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
     let mut contributing: BTreeSet<&str> = BTreeSet::new();
     let mut rows: Vec<LeaderboardRow> = cells
         .into_values()
-        .map(|(configuration, by_case)| {
+        .map(|(mut configuration, by_case)| {
             // Per case, the newest run's attempts stand; older measurements are superseded.
             let mut attempts: Vec<&Attempt> = Vec::new();
             for (_, mut list) in by_case {
@@ -286,6 +304,13 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
                     .max();
                 list.retain(|a| Some(runs[a.run_id.as_str()].created_at) == newest);
                 attempts.extend(list);
+            }
+            // Keep the newest concrete configuration for catch-up execution;
+            // each attempt retains its original runtime and account evidence.
+            if let Some(latest) = attempts.iter().max_by_key(|attempt| {
+                (runs[attempt.run_id.as_str()].created_at, attempt.started_at, &attempt.id)
+            }) {
+                configuration = execution_configuration(latest).clone();
             }
             let eligible: Vec<&BenchmarkVersion> = pool
                 .iter()
@@ -987,6 +1012,57 @@ pub(super) mod tests {
         assert_eq!(judged.scored, 6);
         assert_eq!(judged.points, Some(900));
         assert_eq!(at(10).points, Some(1000));
+    }
+
+    #[test]
+    fn runtime_updates_and_implicit_defaults_share_one_ledger() {
+        let (mut data, _) = dataset();
+        for attempt in &mut data.attempts {
+            let observed = attempt.observed.as_mut().unwrap();
+            if attempt.run_id == "before" {
+                observed.effort = None;
+                observed.fast_mode = None;
+                observed.inventory_revision = Some("old-runtime".into());
+            } else {
+                observed.effort = Some("default".into());
+                observed.fast_mode = Some(false);
+                observed.inventory_revision = Some("new-runtime".into());
+            }
+        }
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].scored, 6);
+        assert_eq!(report.rows[0].points, Some(0));
+        assert_eq!(
+            report.rows[0].configuration.inventory_revision.as_deref(),
+            Some("new-runtime")
+        );
+        let early = leaderboard(
+            &data,
+            &ResultQuery {
+                as_of: Some(3),
+                ..ResultQuery::default()
+            },
+        );
+        assert_eq!(early.rows.len(), 1);
+        assert_eq!(early.rows[0].points, Some(1000));
+        assert_eq!(
+            leaderboard_key(&early.rows[0].configuration),
+            leaderboard_key(&report.rows[0].configuration)
+        );
+        // Paired regressions still require the original frozen runtime conditions.
+        assert_ne!(
+            configuration_key(&early.rows[0].configuration),
+            configuration_key(&report.rows[0].configuration)
+        );
+        data.attempts
+            .last_mut()
+            .unwrap()
+            .observed
+            .as_mut()
+            .unwrap()
+            .effort = Some("high".into());
+        assert_eq!(leaderboard(&data, &ResultQuery::default()).rows.len(), 2);
     }
 
     #[test]

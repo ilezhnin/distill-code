@@ -1,7 +1,11 @@
 // One leaderboard, several boards. The service scores every board on the same
 // scale (points out of 1000, see analysis.rs), so the operator and the selector
 // read identical numbers; this module only orders and labels them.
-import type { LeaderboardCohort, LeaderboardRow } from "../types";
+import type {
+  Configuration,
+  LeaderboardCohort,
+  LeaderboardRow,
+} from "../types";
 
 export const CLASS_BOARD_PREFIX = "class:";
 
@@ -53,7 +57,20 @@ export interface RankedRow {
 }
 
 export function rowKey(row: LeaderboardRow): string {
-  return JSON.stringify(row.configuration);
+  return configurationKey(row.configuration);
+}
+
+/** Matches the service's leaderboard identity, independent of runtime probes. */
+export function configurationKey(configuration: Configuration): string {
+  return JSON.stringify([
+    configuration.providerId,
+    configuration.accountId ?? null,
+    configuration.modelId,
+    configuration.effort || "default",
+    configuration.fastMode ?? false,
+    configuration.billingMode,
+    configuration.executionProfile,
+  ]);
 }
 
 /**
