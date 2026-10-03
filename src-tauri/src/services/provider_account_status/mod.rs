@@ -78,8 +78,12 @@ impl ProviderAccountStatusState {
         {
             let cache = self.cache.lock().await;
             if let Some(status) = cache.get(&account.id).filter(|status| {
-                !refresh_needed(status, account, now_ms())
-                    && (!force || slot.completed.load(Ordering::SeqCst) != completed)
+                // Even manual refresh must wait before starting another CLI.
+                let cooling_down =
+                    account.enabled && status.usage_retry_at.is_some_and(|until| until > now_ms());
+                cooling_down
+                    || (!refresh_needed(status, account, now_ms())
+                        && (!force || slot.completed.load(Ordering::SeqCst) != completed))
             }) {
                 return status.clone();
             }
@@ -241,8 +245,8 @@ fn merge_refresh(
         if let Some(old) = old.filter(|old| {
             old.state != AccountState::NeedsAuth && old.state != AccountState::Disabled
         }) {
-            status.subscription = old.subscription.clone();
-            status.account_label = old.account_label.clone();
+            status.subscription = status.subscription.or_else(|| old.subscription.clone());
+            status.account_label = status.account_label.or_else(|| old.account_label.clone());
             status.limits = old.limits.clone();
             status.reset_tokens = old.reset_tokens.clone();
             status.credits = old.credits.clone();

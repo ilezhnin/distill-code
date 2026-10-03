@@ -75,6 +75,59 @@ function status(
 }
 
 describe("account plan and credit display", () => {
+  it("shows a telemetry pause with a live countdown while keeping plan and quota", () => {
+    const snapshot: ProviderAccountStatus = {
+      ...status("personal"),
+      state: "error",
+      stale: true,
+      error:
+        "Claude usage is temporarily rate limited. Try again in 2067 seconds.",
+      usageRetryAt: now + 2_067_000,
+      limits: [
+        {
+          id: "five_hour",
+          label: "5 hours",
+          usedPercent: 59,
+          remaining: null,
+          resetsAt: now + 5_000_000,
+          windowMinutes: 300,
+          modelId: null,
+        },
+      ],
+    };
+    const { rerender } = render(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={snapshot}
+        now={now}
+      />,
+    );
+    expect(screen.getByText("Plan: Pro")).toBeInTheDocument();
+    expect(screen.getByText("59% used")).toBeInTheDocument();
+    expect(screen.getByText("Usage updates paused")).toBeInTheDocument();
+    expect(screen.getByText(/Retry in 34:27/)).toBeInTheDocument();
+    expect(screen.queryByText("Usage unavailable")).toBeNull();
+    expect(screen.queryByText(snapshot.error!)).toBeNull();
+    rerender(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={snapshot}
+        now={now + 60_000}
+      />,
+    );
+    expect(screen.getByText(/Retry in 33:27/)).toBeInTheDocument();
+    rerender(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={snapshot}
+        now={now + 2_067_000}
+      />,
+    );
+    expect(
+      screen.getByText("Waiting for the next usage update."),
+    ).toBeInTheDocument();
+  });
+
   it.each([
     ["USD", "58", "$58.00", "$100.00"],
     ["JPY", "58", "¥58", "¥100"],
@@ -214,6 +267,25 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("account surfaces", () => {
+  it("disables the account refresh during a usage cooldown without requiring sign-in", () => {
+    useProviderAccountsStore.setState({
+      statuses: {
+        personal: {
+          ...status("personal"),
+          state: "error",
+          stale: true,
+          usageRetryAt: Date.now() + 120_000,
+          error: "Usage requests paused",
+        },
+      },
+    });
+    render(<ProviderAccountsPanel />);
+    const card = within(screen.getByRole("article", { name: "Personal" }));
+    expect(card.getByRole("button", { name: "Refresh" })).toBeDisabled();
+    expect(card.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    expect(card.queryByRole("button", { name: "Sign in" })).toBeNull();
+  });
+
   it.each([
     "Codex",
     "Claude Code",

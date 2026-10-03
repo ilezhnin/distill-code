@@ -62,6 +62,9 @@ pub struct ProviderAccountStatus {
     pub last_attempt_at: i64,
     pub stale: bool,
     pub error: Option<String>,
+    /// Usage endpoint cooldown, independent of the account's message allowance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_retry_at: Option<i64>,
 }
 
 impl ProviderAccountStatus {
@@ -79,6 +82,7 @@ impl ProviderAccountStatus {
             last_attempt_at: now,
             stale: false,
             error: None,
+            usage_retry_at: None,
         }
     }
 }

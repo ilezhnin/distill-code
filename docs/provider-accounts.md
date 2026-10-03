@@ -54,6 +54,10 @@ and expiry; missing telemetry stays unknown. Failed reads retain the last known
 values as stale. A 429 pauses usage requests for at least one minute, increasing
 to five minutes on repeated failures, or longer if requested by Retry-After.
 Manual refresh respects this pause.
+During the pause, the monitor also skips native CLI probes and shows a countdown
+instead of a red usage error. The native account identity and plan survive a
+failed usage read, including the first read after startup. Saved quota values
+remain explicitly stale until a successful update.
 Telemetry failures do not change a connected account into a signed-out account.
 
 Plan labels use public product names instead of internal provider codes. Codex
