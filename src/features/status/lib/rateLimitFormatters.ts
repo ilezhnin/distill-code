@@ -33,9 +33,18 @@ export function updatedAgoParts(
   return { kind: "hours", count: Math.floor(minutes / 60) };
 }
 
+/** Whole seconds until a provider-imposed usage pause ends, or null when none is set. */
+export function usageRetrySeconds(
+  provider: Pick<ProviderRateLimits, "usageRetryAt">,
+  now: number,
+): number | null {
+  if (provider.usageRetryAt == null) return null;
+  return Math.max(0, Math.ceil((provider.usageRetryAt - now) / 1000));
+}
+
 export function getProviderUsageStatusKind(
   provider: ProviderRateLimits,
-): "ok" | "refresh-failed" | "sign-in" | "limited" | "fetching" {
+): "ok" | "refresh-failed" | "sign-in" | "limited" | "fetching" | "paused" {
   if (provider.accountLimited) return "limited";
   if (provider.status === "idle" || provider.status === "fetching") {
     return "fetching";
@@ -47,6 +56,9 @@ export function getProviderUsageStatusKind(
   ) {
     return "sign-in";
   }
+  // The provider asked us to wait (429 Retry-After): nothing failed, the next
+  // read is scheduled.
+  if (provider.usageRetryAt != null) return "paused";
   if (provider.status === "error" && getUsageSections(provider).length === 0) {
     return "refresh-failed";
   }

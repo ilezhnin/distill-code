@@ -80,8 +80,7 @@ describe("account plan and credit display", () => {
       ...status("personal"),
       state: "error",
       stale: true,
-      error:
-        "Claude usage is temporarily rate limited. Try again in 2067 seconds.",
+      error: "Claude usage requests are paused by the provider.",
       usageRetryAt: now + 2_067_000,
       limits: [
         {

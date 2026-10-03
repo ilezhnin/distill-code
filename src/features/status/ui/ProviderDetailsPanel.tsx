@@ -6,6 +6,7 @@ import { getUsageSections } from "../lib/rateLimitWindows";
 import {
   getProviderUsageStatusKind,
   updatedAgoParts,
+  usageRetrySeconds,
 } from "../lib/rateLimitFormatters";
 import { useProviderRateLimitsStore } from "../stores/providerRateLimitsStore";
 import { UsageLimits } from "./UsageLimits";
@@ -21,6 +22,23 @@ export function ProviderDetailsPanel({
   const name = providerDisplayName(provider.provider);
   const sections = getUsageSections(provider);
   const statusKind = getProviderUsageStatusKind(provider);
+  const retrySeconds = usageRetrySeconds(provider, now);
+  const pause =
+    statusKind === "paused" ? (
+      <div className="space-y-0.5" role="status">
+        <div className="text-[11px] font-medium text-foreground/85">
+          {t("roster.usagePaused")}
+        </div>
+        <div className="text-muted-foreground tabular-nums">
+          {retrySeconds
+            ? t("roster.usageRetryIn", {
+                minutes: Math.floor(retrySeconds / 60),
+                seconds: String(retrySeconds % 60).padStart(2, "0"),
+              })
+            : t("roster.usageRetryPending")}
+        </div>
+      </div>
+    ) : null;
   // A poll that brings back the same usage keeps the provider object it had,
   // so the latest fetch time is read from the store.
   const fetchedAt =
@@ -73,6 +91,8 @@ export function ProviderDetailsPanel({
         </div>
       ) : null}
 
+      {sections.length === 0 ? pause : null}
+
       {statusKind === "ok" && sections.length === 0 ? (
         <div className="text-muted-foreground">
           {t("roster.limitsUnavailable")}
@@ -85,7 +105,9 @@ export function ProviderDetailsPanel({
 
       <UsageLimits provider={provider} now={now} />
 
-      {provider.error && sections.length > 0 ? (
+      {pause && sections.length > 0 ? pause : null}
+
+      {!pause && provider.error && sections.length > 0 ? (
         <div className="space-y-0.5">
           <div className="text-[11px] font-medium text-foreground/85">
             {t("roster.refreshFailedCached")}

@@ -105,13 +105,15 @@ function UsageRow({
         {sections.length === 0 ? (
           <>
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">
-              {statusKind === "refresh-failed"
-                ? t("bar.refreshFailed")
-                : statusKind === "sign-in"
-                  ? t("roster.signInExpired")
-                  : statusKind === "fetching"
-                    ? t("roster.checking")
-                    : t("roster.limitsUnavailable")}
+              {statusKind === "paused"
+                ? t("roster.usagePaused")
+                : statusKind === "refresh-failed"
+                  ? t("bar.refreshFailed")
+                  : statusKind === "sign-in"
+                    ? t("roster.signInExpired")
+                    : statusKind === "fetching"
+                      ? t("roster.checking")
+                      : t("roster.limitsUnavailable")}
             </span>
             {showSignIn ? (
               <span className="ml-auto shrink-0 rounded-md border border-border bg-secondary px-2.5 py-0.5 text-xs text-foreground">

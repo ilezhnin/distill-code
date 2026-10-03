@@ -177,6 +177,49 @@ async fn usage_cooldown_blocks_cli_refresh_until_the_deadline_even_when_forced()
     assert_eq!(refreshed.usage_retry_at, None);
 }
 
+#[tokio::test]
+async fn expired_authorization_releases_the_usage_pause() {
+    let state = ProviderAccountStatusState::default();
+    let target = account("a");
+    let mut paused = fresh_status("a");
+    paused.state = AccountState::Error;
+    paused.stale = true;
+    paused.usage_retry_at = Some(now_ms() + 60_000);
+    state.cache.lock().await.insert("a".into(), paused.clone());
+    state
+        .release_cooldown_for_expired_authorization("a", false)
+        .await;
+    let cached = state
+        .refresh(&target, true, async {
+            panic!("a live authorization keeps the pause")
+        })
+        .await;
+    assert_eq!(cached, paused);
+    state
+        .release_cooldown_for_expired_authorization("a", true)
+        .await;
+    let refreshed = state
+        .refresh(&target, false, async { fresh_status("a") })
+        .await;
+    assert_eq!(refreshed.state, AccountState::Ready);
+    assert_eq!(refreshed.usage_retry_at, None);
+}
+
+#[tokio::test]
+async fn an_account_change_forgets_its_status_and_usage_pause() {
+    let state = ProviderAccountStatusState::default();
+    let id = "account-change-forgets";
+    let _ = claude_resets::record_usage_result(
+        id,
+        now_ms(),
+        Err(claude_resets::RequestError::RateLimited(600)),
+    );
+    state.cache.lock().await.insert(id.into(), fresh_status(id));
+    state.forget_account(id).await;
+    assert!(!state.cache.lock().await.contains_key(id));
+    assert_eq!(claude_resets::usage_backoff_remaining(id, now_ms()), None);
+}
+
 #[test]
 fn failed_usage_keeps_the_new_identity_and_previous_quota() {
     let mut old = status("a", 59.0, 5000);

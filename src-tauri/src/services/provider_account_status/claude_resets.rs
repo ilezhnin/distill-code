@@ -77,6 +77,41 @@ pub(super) fn clear_backoff(account_id: &str) {
     }
 }
 
+/// Seconds left in this account's usage pause, if one is active.
+pub(super) fn usage_backoff_remaining(account_id: &str, now: i64) -> Option<u64> {
+    USAGE_BACKOFF
+        .get()?
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(account_id)?
+        .remaining(now)
+}
+
+/// A 429 extends the pause; only a successful read ends it early.
+pub(super) fn record_usage_result(
+    account_id: &str,
+    now: i64,
+    result: Result<Value, RequestError>,
+) -> Result<Value, RequestError> {
+    let mut backoff = USAGE_BACKOFF
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match result {
+        Err(RequestError::RateLimited(seconds)) => Err(RequestError::RateLimited(
+            backoff
+                .entry(account_id.into())
+                .or_default()
+                .defer(now, seconds),
+        )),
+        Ok(usage) => {
+            backoff.remove(account_id);
+            Ok(usage)
+        }
+        error => error,
+    }
+}
+
 struct Client {
     http: reqwest::Client,
     token: String,
@@ -200,40 +235,14 @@ pub(super) async fn fetch_usage(
     account: &ProviderAccount,
     version: Option<&str>,
 ) -> Result<Value, RequestError> {
-    {
-        let backoff = USAGE_BACKOFF
-            .get_or_init(Mutex::default)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(seconds) = backoff
-            .get(&account.id)
-            .and_then(|state| state.remaining(now_ms()))
-        {
-            return Err(RequestError::RateLimited(seconds));
-        }
+    if let Some(seconds) = usage_backoff_remaining(&account.id, now_ms()) {
+        return Err(RequestError::RateLimited(seconds));
     }
     let client = Client::for_account(app, account, version)?;
     let result = client
         .send(client.http.get(format!("{ORIGIN}{USAGE_PATH}")))
         .await;
-    let mut backoff = USAGE_BACKOFF
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    match result {
-        Err(RequestError::RateLimited(seconds)) => {
-            let seconds = backoff
-                .entry(account.id.clone())
-                .or_default()
-                .defer(now_ms(), seconds);
-            Err(RequestError::RateLimited(seconds))
-        }
-        Ok(usage) => {
-            backoff.remove(&account.id);
-            Ok(usage)
-        }
-        error => error,
-    }
+    record_usage_result(&account.id, now_ms(), result)
 }
 
 pub(super) async fn consume(
@@ -392,6 +401,38 @@ mod tests {
         assert_eq!(state.defer(61_000, 0), 120);
         assert_eq!(state.defer(181_000, 900), 900);
         assert_eq!(state.remaining(181_001), Some(900));
+    }
+
+    #[test]
+    fn clearing_a_usage_pause_affects_only_that_account() {
+        let (cleared, kept) = ("backoff-clear-target", "backoff-clear-other");
+        for id in [cleared, kept] {
+            assert!(matches!(
+                record_usage_result(id, 1000, Err(RequestError::RateLimited(2067))),
+                Err(RequestError::RateLimited(2067))
+            ));
+        }
+        clear_backoff(cleared);
+        assert_eq!(usage_backoff_remaining(cleared, 1001), None);
+        assert_eq!(usage_backoff_remaining(kept, 1001), Some(2067));
+    }
+
+    #[test]
+    fn a_usage_pause_escalates_until_a_successful_read() {
+        let id = "backoff-escalation";
+        let limited = |now| record_usage_result(id, now, Err(RequestError::RateLimited(0)));
+        assert!(matches!(limited(1000), Err(RequestError::RateLimited(60))));
+        assert_eq!(usage_backoff_remaining(id, 31_000), Some(30));
+        assert!(matches!(
+            limited(61_000),
+            Err(RequestError::RateLimited(120))
+        ));
+        assert!(record_usage_result(id, 200_000, Ok(json!({}))).is_ok());
+        assert_eq!(usage_backoff_remaining(id, 200_001), None);
+        assert!(matches!(
+            limited(201_000),
+            Err(RequestError::RateLimited(60))
+        ));
     }
 
     #[test]

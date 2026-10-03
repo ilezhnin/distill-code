@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderAccountStatus } from "@/features/providers/api/providerAccounts";
 import { accountUsage } from "./accountUsage";
-import { getProviderUsageStatusKind } from "./rateLimitFormatters";
+import {
+  getProviderUsageStatusKind,
+  usageRetrySeconds,
+} from "./rateLimitFormatters";
 import { getUsageSections, platformLimitState } from "./rateLimitWindows";
 
 function project(patch: Partial<ProviderAccountStatus> = {}) {
@@ -100,6 +103,21 @@ describe("account usage projection", () => {
     expect(usage.session?.usedPercent).toBe(10);
     expect(usage.weekly?.usedPercent).toBe(30);
     expect(getProviderUsageStatusKind(usage)).toBe("refresh-failed");
+    expect(platformLimitState([usage], "claude-acp")).not.toBe("at-limit");
+  });
+
+  it("reports a provider pause as paused with a live countdown, not a failed refresh", () => {
+    const [usage] = project({
+      state: "error",
+      stale: true,
+      error: "Claude usage requests are paused by the provider.",
+      usageRetryAt: 100_000,
+    });
+    expect(getProviderUsageStatusKind(usage)).toBe("paused");
+    expect(usageRetrySeconds(usage, 10_000)).toBe(90);
+    expect(usageRetrySeconds(usage, 99_001)).toBe(1);
+    expect(usageRetrySeconds(usage, 200_000)).toBe(0);
+    expect(usageRetrySeconds({ usageRetryAt: null }, 0)).toBeNull();
     expect(platformLimitState([usage], "claude-acp")).not.toBe("at-limit");
   });
 

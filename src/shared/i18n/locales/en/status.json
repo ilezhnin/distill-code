@@ -13,7 +13,8 @@
     "supports": "Supports",
     "configureUsage": "Configure usage tracking",
     "hide": "Hide from status bar",
-    "agentLimits": "Agent usage limits"
+    "agentLimits": "Agent usage limits",
+    "paused": "Paused"
   },
   "roster": {
     "title": "Usage",
@@ -47,6 +48,9 @@
     "usedWindow": "{{percent}} used {{window}}",
     "usedFable": "{{percent}} used Fable",
     "usedCodingMonthly": "{{percent}} used coding/mo",
-    "percentUsed": "{{percent}} used"
+    "percentUsed": "{{percent}} used",
+    "usagePaused": "Usage requests paused",
+    "usageRetryIn": "Retry in {{minutes}}:{{seconds}}",
+    "usageRetryPending": "Waiting for the next usage update"
   }
 }

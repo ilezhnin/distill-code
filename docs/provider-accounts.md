@@ -55,10 +55,14 @@ values as stale. A 429 pauses usage requests for at least one minute, increasing
 to five minutes on repeated failures, or longer if requested by Retry-After.
 One Refresh action at the top updates the panel; account cards have no duplicate.
 Manual refresh respects this pause. Expired or removed OAuth authorization
-invalidates the cached pause so it cannot hide the need to sign in.
-During a valid authorization's pause, the monitor skips native CLI probes and shows a countdown
-instead of a red usage error. The native account identity and plan survive a
-failed usage read, including the first read after startup. Saved quota values
+invalidates the cached pause so it cannot hide the need to sign in; once the
+CLI restores the token, the provider's pause and its escalation still apply.
+During a valid authorization's pause, the monitor skips native CLI probes. The
+account card shows a countdown instead of a red usage error; the stored error
+carries no countdown, so no view shows a number frozen at the time of the 429.
+The native account identity and plan survive a failed usage read, including the
+first read after startup and a reply without quota. A malformed reset inventory
+leaves reset credits unknown without discarding valid quota. Saved quota values
 remain explicitly stale until a successful update.
 Telemetry failures do not change a connected account into a signed-out account.
 
@@ -147,9 +151,15 @@ status uses the pinned CLI's `initialize` control request with
 hooks, tools, MCP and session persistence disabled. Neither telemetry adapter
 sends prompts or starts model inference. The CLI determines effective billing
 and refreshes expired or rejected OAuth credentials through `get_usage`, including
-accounts idle between uses. The token is checked before a usage request; if the
-CLI cannot restore it, the account requires sign-in. Reauthorization clears the
-previous usage cooldown. Normal polls make a single usage request, avoiding a second
+accounts idle between uses. Distill asks for that refresh within the CLI's own
+five-minute margin before expiry, so a token cannot lapse during the probe, and
+checks the token before a usage request. The account requires sign-in only on
+positive evidence: no saved refresh token, the CLI reporting it signed out, or
+a second rejection after the refresh. A refresh that fails for a passing reason,
+such as a network that is not back after wake, is a telemetry failure: the
+account stays connected with its last known values and the next poll retries.
+Signing in again clears the previous usage cooldown; a routine token refresh
+does not. Normal polls make a single usage request, avoiding a second
 read of the same endpoint for reset inventory. Claude requests read only the
 selected account's credentials in the backend and use the native CLI's reported
 version for eligibility. Credentials never enter the renderer. Redirects are disabled;

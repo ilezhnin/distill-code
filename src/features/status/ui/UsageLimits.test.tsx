@@ -140,3 +140,33 @@ it("labels a model-specific monthly window without losing its scope", () => {
     getByRole("progressbar", { name: "Test model · Monthly" }),
   ).toHaveAttribute("aria-valuenow", "72");
 });
+
+it("shows a provider pause as a live countdown instead of a failed refresh", () => {
+  const [usage] = accountUsage({
+    accounts: [account],
+    defaults: { [account.providerId]: account.id },
+    automaticSwitching: {},
+    statuses: {
+      [account.id]: {
+        ...status,
+        state: "error",
+        stale: true,
+        error: "Claude usage requests are paused by the provider.",
+        usageRetryAt: now + 90_000,
+      },
+    },
+  });
+  const paused = render(<ProviderDetailsPanel provider={usage} now={now} />);
+  expect(paused.getByText("Usage requests paused")).toBeInTheDocument();
+  expect(paused.getByText("Retry in 1:30")).toBeInTheDocument();
+  expect(paused.queryByText(/Refresh failed/)).not.toBeInTheDocument();
+  expect(
+    paused.queryByText("Claude usage requests are paused by the provider."),
+  ).not.toBeInTheDocument();
+  paused.rerender(
+    <ProviderDetailsPanel provider={usage} now={now + 120_000} />,
+  );
+  expect(
+    paused.getByText("Waiting for the next usage update"),
+  ).toBeInTheDocument();
+});

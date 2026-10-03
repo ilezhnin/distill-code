@@ -64,14 +64,17 @@ export function ProviderSegment({
   }
   // An expired sign-in arrives as an error, but it needs a sign-in, not a
   // refresh; say so in the bar as the roster does.
+  const statusKind = getProviderUsageStatusKind(provider);
   const statusLabel =
-    getProviderUsageStatusKind(provider) === "sign-in"
+    statusKind === "sign-in"
       ? t("bar.signIn")
-      : provider.status === "error"
-        ? t("bar.refreshFailed")
-        : provider.status === "unavailable"
-          ? t("bar.unavailable")
-          : "";
+      : statusKind === "paused"
+        ? t("bar.paused")
+        : provider.status === "error"
+          ? t("bar.refreshFailed")
+          : provider.status === "unavailable"
+            ? t("bar.unavailable")
+            : "";
 
   if (
     provider.status === "idle" ||

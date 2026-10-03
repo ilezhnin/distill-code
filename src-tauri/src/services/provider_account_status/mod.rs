@@ -110,6 +110,27 @@ impl ProviderAccountStatusState {
         slot.completed.fetch_add(1, Ordering::SeqCst);
         status
     }
+
+    /// A telemetry cooldown must not conceal expired or removed authorization.
+    async fn release_cooldown_for_expired_authorization(&self, account_id: &str, expired: bool) {
+        if !expired {
+            return;
+        }
+        if let Some(status) = self.cache.lock().await.get_mut(account_id) {
+            if status.usage_retry_at.take().is_some() {
+                status.last_attempt_at = 0;
+            }
+        }
+    }
+
+    /// Credentials are about to change: forget the old status and usage pause.
+    async fn forget_account(&self, account_id: &str) {
+        let slot = self.refresh_slot(account_id).await;
+        let _guard = slot.gate.lock().await;
+        self.cache.lock().await.remove(account_id);
+        claude_resets::clear_backoff(account_id);
+        slot.observations.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 fn refresh_needed(status: &ProviderAccountStatus, account: &ProviderAccount, now: i64) -> bool {
@@ -153,11 +174,7 @@ pub async fn invalidate(app: &AppHandle, account_id: &str) {
 /// Wait for the old telemetry process to exit before its credentials move.
 pub async fn prepare_account_change(app: &AppHandle, account_id: &str) {
     if let Some(state) = app.try_state::<ProviderAccountStatusState>() {
-        let slot = state.refresh_slot(account_id).await;
-        let _guard = slot.gate.lock().await;
-        state.cache.lock().await.remove(account_id);
-        claude_resets::clear_backoff(account_id);
-        slot.observations.fetch_add(1, Ordering::SeqCst);
+        state.forget_account(account_id).await;
     }
 }
 
@@ -190,24 +207,16 @@ async fn refresh_account(
     account: &ProviderAccount,
     force: bool,
 ) -> ProviderAccountStatus {
-    // A telemetry cooldown must not conceal expired or removed authorization.
-    if account.provider_id == "claude-acp"
-        && account.auth_method == provider_accounts::AuthMethod::OAuth
-        && claude::authorization_needs_refresh(app, account).unwrap_or(false)
-    {
-        if let Some(status) = app
-            .state::<ProviderAccountStatusState>()
-            .cache
-            .lock()
-            .await
-            .get_mut(&account.id)
-        {
-            if status.usage_retry_at.take().is_some() {
-                status.last_attempt_at = 0;
-            }
-        }
-    }
-    app.state::<ProviderAccountStatusState>()
+    let state = app.state::<ProviderAccountStatusState>();
+    state
+        .release_cooldown_for_expired_authorization(
+            &account.id,
+            account.provider_id == "claude-acp"
+                && account.auth_method == provider_accounts::AuthMethod::OAuth
+                && claude::authorization_needs_refresh(app, account).unwrap_or(false),
+        )
+        .await;
+    state
         .refresh(account, force, async {
             // A queued refresh must observe changes made while its account
             // gate was held, including account removal or disabling.

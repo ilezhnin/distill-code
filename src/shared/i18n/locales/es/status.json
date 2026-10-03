@@ -13,7 +13,8 @@
     "supports": "Compatible con",
     "configureUsage": "Configurar el seguimiento de uso",
     "hide": "Ocultar de la barra de estado",
-    "agentLimits": "Límites de uso del agente"
+    "agentLimits": "Límites de uso del agente",
+    "paused": "En pausa"
   },
   "roster": {
     "title": "Uso",
@@ -47,6 +48,9 @@
     "usedWindow": "{{percent}} usado {{window}}",
     "usedFable": "{{percent}} usado Fable",
     "usedCodingMonthly": "{{percent}} usado programación/mes",
-    "percentUsed": "{{percent}} usado"
+    "percentUsed": "{{percent}} usado",
+    "usagePaused": "Consultas de uso en pausa",
+    "usageRetryIn": "Reintento en {{minutes}}:{{seconds}}",
+    "usageRetryPending": "Esperando la próxima actualización de uso"
   }
 }
