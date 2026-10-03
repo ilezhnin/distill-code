@@ -267,7 +267,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("account surfaces", () => {
-  it("disables the account refresh during a usage cooldown without requiring sign-in", () => {
+  it("keeps one panel refresh during a usage cooldown without requiring sign-in", () => {
     useProviderAccountsStore.setState({
       statuses: {
         personal: {
@@ -281,7 +281,8 @@ describe("account surfaces", () => {
     });
     render(<ProviderAccountsPanel />);
     const card = within(screen.getByRole("article", { name: "Personal" }));
-    expect(card.getByRole("button", { name: "Refresh" })).toBeDisabled();
+    expect(card.queryByRole("button", { name: "Refresh" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Refresh" })).toHaveLength(1);
     expect(card.getByRole("button", { name: "Sign out" })).toBeEnabled();
     expect(card.queryByRole("button", { name: "Sign in" })).toBeNull();
   });
@@ -411,7 +412,8 @@ describe("account surfaces", () => {
     expect(
       within(card).queryByRole("button", { name: "Sign in" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(within(card).getByRole("button", { name: "Refresh" }));
+    expect(within(card).queryByRole("button", { name: "Refresh" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(mocks.refresh).toHaveBeenCalledWith(true);
     expect(mocks.authenticate).not.toHaveBeenCalled();
   });

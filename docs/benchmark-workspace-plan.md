@@ -905,7 +905,11 @@ remove work-class boards. Nerf comparisons retain their frozen-run conditions.
   either pool. Archiving a definition removes it from the default pool.
 - For each configuration and case, the newest run's attempts supersede older
   attempts. Repetitions average within a case, and cases have equal weight.
-  Configuration identity still includes the recorded execution conditions.
+  Leaderboard identity includes provider, account, model, effort, fast mode,
+  billing mode and execution profile. Omitted effort means `default`; omitted
+  fast mode means off. Runtime inventory revisions remain attempt evidence and
+  do not split a model into separate rows. Paired Nerf comparisons still use
+  the complete frozen configuration, including its runtime revision.
 - `scored` counts cases with a score; `planned` counts eligible pool cases.
   `missingVersionIds` lists cases without a score. Only complete coverage is
   `comparable`; partial coverage remains `preliminary` and has no overall rank.

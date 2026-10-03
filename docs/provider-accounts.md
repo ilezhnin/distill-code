@@ -53,8 +53,10 @@ first-party usage endpoint. Full and five-hour grants show their availability
 and expiry; missing telemetry stays unknown. Failed reads retain the last known
 values as stale. A 429 pauses usage requests for at least one minute, increasing
 to five minutes on repeated failures, or longer if requested by Retry-After.
-Manual refresh respects this pause.
-During the pause, the monitor also skips native CLI probes and shows a countdown
+One Refresh action at the top updates the panel; account cards have no duplicate.
+Manual refresh respects this pause. Expired or removed OAuth authorization
+invalidates the cached pause so it cannot hide the need to sign in.
+During a valid authorization's pause, the monitor skips native CLI probes and shows a countdown
 instead of a red usage error. The native account identity and plan survive a
 failed usage read, including the first read after startup. Saved quota values
 remain explicitly stale until a successful update.
@@ -144,8 +146,10 @@ Codex status and manual reset use its native app-server account APIs. Claude
 status uses the pinned CLI's `initialize` control request with
 hooks, tools, MCP and session persistence disabled. Neither telemetry adapter
 sends prompts or starts model inference. The CLI determines effective billing
-and refreshes rejected OAuth credentials through `get_usage`, including accounts
-idle between uses. Normal polls make a single usage request, avoiding a second
+and refreshes expired or rejected OAuth credentials through `get_usage`, including
+accounts idle between uses. The token is checked before a usage request; if the
+CLI cannot restore it, the account requires sign-in. Reauthorization clears the
+previous usage cooldown. Normal polls make a single usage request, avoiding a second
 read of the same endpoint for reset inventory. Claude requests read only the
 selected account's credentials in the backend and use the native CLI's reported
 version for eligibility. Credentials never enter the renderer. Redirects are disabled;

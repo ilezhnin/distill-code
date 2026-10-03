@@ -152,7 +152,8 @@ pub(super) async fn fetch(
     app: &AppHandle,
     account: &ProviderAccount,
 ) -> Result<ProviderAccountStatus, String> {
-    let (identity, _, version) = read_usage(app, account, false).await?;
+    let refresh_oauth = authorization_needs_refresh(app, account)?;
+    let (identity, _, version) = read_usage(app, account, refresh_oauth).await?;
     let mut status = ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms());
     status.account_label = identity["email"].as_str().map(str::to_owned);
     status.subscription = account_plan(app, account, &identity);
@@ -160,6 +161,17 @@ pub(super) async fn fetch(
         status.subscription = Some("API".into());
         status.state = AccountState::Ready;
         return Ok(status);
+    }
+    // initialize can return a cached profile while its OAuth token has expired.
+    // get_usage lets the native CLI refresh it without starting a model turn.
+    // Never send expired credentials to the usage endpoint: its 429 can hide
+    // an authorization failure behind a long telemetry cooldown.
+    if authorization_needs_refresh(app, account)? {
+        status.state = AccountState::NeedsAuth;
+        return Ok(status);
+    }
+    if refresh_oauth {
+        claude_resets::clear_backoff(&account.id);
     }
     if status.subscription.is_none() {
         status.state = if crate::commands::provider_accounts::probe_account_auth(app, account)
@@ -179,6 +191,10 @@ pub(super) async fn fetch(
         // OAuth refresh remains owned by the native CLI. Retry a rejected read
         // once after that refresh; a 429 never triggers another request here.
         let (_, _, version) = read_usage(app, account, true).await?;
+        if authorization_needs_refresh(app, account)? {
+            status.state = AccountState::NeedsAuth;
+            return Ok(status);
+        }
         usage = claude_resets::fetch_usage(app, account, version.as_deref()).await;
     }
     let usage = match usage {
@@ -198,6 +214,29 @@ pub(super) async fn fetch(
     map_usage(&mut status, &usage);
     status.reset_tokens = claude_resets::map_inventory(&usage, now_ms())?;
     Ok(status)
+}
+
+pub(super) fn authorization_needs_refresh(
+    app: &AppHandle,
+    account: &ProviderAccount,
+) -> Result<bool, String> {
+    let root = distill_root::app_root(app)?;
+    let path = provider_accounts::account_home(app, account)?.join(".credentials.json");
+    distill_root::reject_document_links(&root, &path)?;
+    let value = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+            .map_err(|_| "Cannot read Claude authorization".to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(_) => return Err("Cannot read Claude authorization".into()),
+    };
+    Ok(oauth_needs_refresh(&value["claudeAiOauth"], now_ms()))
+}
+
+fn oauth_needs_refresh(oauth: &Value, now: i64) -> bool {
+    oauth["accessToken"].as_str().is_none_or(str::is_empty)
+        || oauth["expiresAt"]
+            .as_i64()
+            .is_none_or(|expires| expires <= now)
 }
 
 fn usage_failure(
@@ -463,6 +502,22 @@ mod tests {
         assert!(failed.stale);
         assert!(failed.usage_retry_at.unwrap() >= before + 2_067_000);
         assert!(failed.limits.is_empty());
+    }
+
+    #[test]
+    fn expired_or_missing_oauth_is_refreshed_before_requesting_usage() {
+        let oauth = json!({"accessToken":"fixture", "expiresAt":2000});
+        assert!(!super::oauth_needs_refresh(&oauth, 1999));
+        assert!(super::oauth_needs_refresh(&oauth, 2000));
+        assert!(super::oauth_needs_refresh(
+            &json!({"accessToken":"fixture", "expiresAt":0}),
+            1
+        ));
+        assert!(super::oauth_needs_refresh(
+            &json!({"accessToken":"", "expiresAt":2000}),
+            1
+        ));
+        assert!(super::oauth_needs_refresh(&Value::Null, 1));
     }
 
     use super::*;

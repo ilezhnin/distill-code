@@ -68,6 +68,15 @@ impl UsageBackoff {
 
 static USAGE_BACKOFF: OnceLock<Mutex<HashMap<String, UsageBackoff>>> = OnceLock::new();
 
+pub(super) fn clear_backoff(account_id: &str) {
+    if let Some(backoff) = USAGE_BACKOFF.get() {
+        backoff
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(account_id);
+    }
+}
+
 struct Client {
     http: reqwest::Client,
     token: String,

@@ -1,14 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
+import { configurationKey } from "../lib/benchmarkBoards";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
-import type {
-  CatalogEntry,
-  Configuration,
-  LeaderboardReport,
-  RunSummary,
-} from "../types";
+import type { CatalogEntry, LeaderboardReport, RunSummary } from "../types";
 
 export const benchmarkKeys = ["benchmarks"] as const;
 
@@ -124,16 +120,7 @@ export function useModelNames(): Map<string, string> {
   }, [observations.data]);
 }
 
-/** The identity a history follows: provider, account, model, effort and fast mode; not the runtime revision. */
-export function historyKey(configuration: Configuration): string {
-  return [
-    configuration.providerId,
-    configuration.accountId ?? "",
-    configuration.modelId,
-    configuration.effort ?? "",
-    String(configuration.fastMode),
-  ].join("/");
-}
+export const historyKey = configurationKey;
 
 export interface HistorySnapshot {
   runId: string;

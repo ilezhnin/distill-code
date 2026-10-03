@@ -366,10 +366,6 @@ function AccountCard({
     account.enabled &&
     canUseAccountReset(status, now);
   const showDefaultReset = canReset && !status?.resetTokens?.credits?.length;
-  const showRefresh =
-    !authenticating &&
-    !needsSignIn &&
-    (status?.error || status?.stale || status?.state === "error");
   const displayName = status?.accountLabel || account.label;
   return (
     <article className="space-y-3 py-4" aria-label={displayName}>
@@ -482,23 +478,8 @@ function AccountCard({
           }}
         />
       ) : null}
-      {showRefresh || showDefaultReset ? (
+      {showDefaultReset ? (
         <div className="flex flex-wrap items-center gap-2">
-          {showRefresh ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              disabled={busy || (status?.usageRetryAt ?? 0) > now}
-              onClick={() =>
-                void run(() =>
-                  useProviderAccountsStore.getState().refresh(true),
-                )
-              }
-            >
-              {t("accounts.refresh")}
-            </Button>
-          ) : null}
           {showDefaultReset ? (
             <Button
               type="button"

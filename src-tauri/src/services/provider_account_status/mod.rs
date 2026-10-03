@@ -156,6 +156,7 @@ pub async fn prepare_account_change(app: &AppHandle, account_id: &str) {
         let slot = state.refresh_slot(account_id).await;
         let _guard = slot.gate.lock().await;
         state.cache.lock().await.remove(account_id);
+        claude_resets::clear_backoff(account_id);
         slot.observations.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -189,6 +190,23 @@ async fn refresh_account(
     account: &ProviderAccount,
     force: bool,
 ) -> ProviderAccountStatus {
+    // A telemetry cooldown must not conceal expired or removed authorization.
+    if account.provider_id == "claude-acp"
+        && account.auth_method == provider_accounts::AuthMethod::OAuth
+        && claude::authorization_needs_refresh(app, account).unwrap_or(false)
+    {
+        if let Some(status) = app
+            .state::<ProviderAccountStatusState>()
+            .cache
+            .lock()
+            .await
+            .get_mut(&account.id)
+        {
+            if status.usage_retry_at.take().is_some() {
+                status.last_attempt_at = 0;
+            }
+        }
+    }
     app.state::<ProviderAccountStatusState>()
         .refresh(account, force, async {
             // A queued refresh must observe changes made while its account
