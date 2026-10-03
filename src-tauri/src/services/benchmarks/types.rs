@@ -253,6 +253,15 @@ pub struct DesignReview {
     pub details: Option<serde_json::Value>,
     pub created_at: i64,
 }
+/// One panel member's verdict on a rendering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignJudge {
+    pub configuration: Configuration,
+    pub score: f64,
+    pub reason: String,
+    pub details: Option<serde_json::Value>,
+}
 /// The newest rendering of one creative brief by one configuration, with
 /// the markup to show and the review if one was recorded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +284,9 @@ pub struct DesignEntry {
     pub output_tokens: Option<u64>,
     pub cost: Option<f64>,
     pub review: Option<DesignReview>,
+    pub judges: Vec<DesignJudge>,
+    /// The score the leaderboard reads: the human review, else the judges' median.
+    pub score: Option<f64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -316,6 +328,9 @@ pub struct Evaluation {
     /// Per-criterion scores (0 to 1) behind a rubric review, keyed by criterion id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+    /// The panel member behind a judge verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<Configuration>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

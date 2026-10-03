@@ -68,6 +68,7 @@ fn failed_artifact(draft: &BenchmarkDraft, reason: &str) -> Evaluation {
         provenance: "protected_browser".into(),
         artifacts: Vec::new(),
         details: None,
+        judge: None,
     }
 }
 
@@ -79,6 +80,98 @@ pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation
         )
     })?;
     evaluate_with_runtime(runtime, draft, output).await
+}
+
+/// A screenshot of a standalone document, for a judge that scores what it sees.
+pub async fn render(html: &str, width: u32, height: u32) -> Result<Vec<u8>> {
+    let runtime = RUNTIME.get().ok_or_else(|| {
+        BenchmarkError::new(
+            "capability_missing",
+            "Isolated browser evaluator runtime is unavailable",
+        )
+    })?;
+    if html.len() > 2 * 1024 * 1024 {
+        return Err(BenchmarkError::new(
+            "budget_reached",
+            "Rendering exceeds the artifact cap",
+        ));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let directory = runtime.root.join("renderings").join(&id);
+    tokio::fs::create_dir_all(&directory).await?;
+    let script = directory.join("worker.mjs");
+    tokio::fs::write(
+        &script,
+        include_str!("../../../resources/benchmark-browser-worker.mjs"),
+    )
+    .await?;
+    let screenshot = directory.join("rendering.png");
+    let request = serde_json::to_vec(&json!({
+        "kind": "render",
+        "spec": {"viewport": {"width": width.clamp(320, 1600), "height": height.clamp(320, 1600)}},
+        "output": html,
+        "screenshotPath": &screenshot
+    }))?;
+    let mut command = tokio::process::Command::new(&runtime.node);
+    command
+        .arg(&script)
+        .arg(&runtime.module)
+        .arg(&runtime.browser)
+        .current_dir(&directory)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    for key in ["SystemRoot", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    crate::services::process::apply_no_window_async(&mut command);
+    let mut child = command.spawn()?;
+    let tree = crate::services::process::ProcessTree::contain(&child);
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| BenchmarkError::new("infrastructure_failure", "Worker stdin unavailable"))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        BenchmarkError::new("infrastructure_failure", "Worker stdout unavailable")
+    })?;
+    let run = async {
+        stdin.write_all(&request).await?;
+        stdin.shutdown().await?;
+        drop(stdin);
+        let mut bytes = Vec::new();
+        stdout.take(262_145).read_to_end(&mut bytes).await?;
+        let status = child.wait().await?;
+        let result: Value = serde_json::from_slice(&bytes)?;
+        if !status.success() || result.get("error").is_some() {
+            return Err(BenchmarkError::new(
+                "evaluation_error",
+                result["error"]
+                    .as_str()
+                    .unwrap_or("Browser renderer failed"),
+            ));
+        }
+        Ok(())
+    };
+    match tokio::time::timeout(Duration::from_secs(45), run).await {
+        Ok(result) => result?,
+        Err(_) => {
+            if let Some(tree) = &tree {
+                tree.kill();
+            }
+            let _ = child.kill().await;
+            return Err(BenchmarkError::new(
+                "evaluation_error",
+                "Rendering exceeded its time budget",
+            ));
+        }
+    }
+    let bytes = tokio::fs::read(&screenshot).await?;
+    let _ = tokio::fs::remove_dir_all(&directory).await;
+    Ok(bytes)
 }
 
 pub async fn evaluate_with_runtime(
@@ -239,5 +332,6 @@ pub async fn evaluate_with_runtime(
         provenance: "protected_browser".into(),
         artifacts,
         details: None,
+        judge: None,
     })
 }

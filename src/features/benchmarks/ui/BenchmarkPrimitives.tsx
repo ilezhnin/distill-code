@@ -298,9 +298,12 @@ export function ScoreBar({
 export function AxisBars({
   items,
   muted = false,
+  activeId,
 }: {
   items: { id: string; label: string; points: number | null }[];
   muted?: boolean;
+  /** The board on screen: its bar carries the accent. */
+  activeId?: string;
 }) {
   return (
     <HoverCard openDelay={150} closeDelay={80}>
@@ -319,9 +322,11 @@ export function AxisBars({
                 "w-1.5 rounded-xs",
                 item.points == null
                   ? "bg-muted"
-                  : muted
-                    ? "bg-foreground/20"
-                    : "bg-foreground/50",
+                  : item.id === activeId
+                    ? "bg-chart-1"
+                    : muted
+                      ? "bg-foreground/20"
+                      : "bg-foreground/50",
               )}
               style={{
                 height:
@@ -340,8 +345,20 @@ export function AxisBars({
               key={item.id}
               className="flex items-baseline justify-between gap-3"
             >
-              <dt className="text-muted-foreground">{item.label}</dt>
-              <dd className="text-right font-semibold tabular-nums">
+              <dt
+                className={cn(
+                  "text-muted-foreground",
+                  item.id === activeId && "text-chart-1",
+                )}
+              >
+                {item.label}
+              </dt>
+              <dd
+                className={cn(
+                  "text-right font-semibold tabular-nums",
+                  item.id === activeId && "text-chart-1",
+                )}
+              >
                 {item.points ?? "–"}
               </dd>
             </div>

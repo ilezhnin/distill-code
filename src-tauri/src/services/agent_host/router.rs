@@ -5560,6 +5560,12 @@ impl Inner {
         if request.request_key.trim().is_empty()
             || request.request_key.len() > 256
             || request.prompt.len() > 1024 * 1024
+            || request
+                .images
+                .iter()
+                .map(|image| image.data.len())
+                .sum::<usize>()
+                > 6 * 1024 * 1024
             || request.timeout_ms == 0
             || request.timeout_ms > 3_600_000
         {
@@ -5636,7 +5642,12 @@ impl Inner {
                     .await;
                 return;
             }
-            let prompt = json!({"sessionId":request.session_id,"prompt":[{"type":"text","text":format!("Benchmark task:\n{}",request.prompt)}],"_meta":{"executionOwner":{"kind":"benchmark","id":owner.owner_id}}});
+            let mut blocks =
+                vec![json!({"type":"text","text":format!("Benchmark task:\n{}",request.prompt)})];
+            for image in &request.images {
+                blocks.push(json!({"type":"image","data":image.data,"mimeType":image.mime_type}));
+            }
+            let prompt = json!({"sessionId":request.session_id,"prompt":blocks,"_meta":{"executionOwner":{"kind":"benchmark","id":owner.owner_id}}});
             let task = host.start_turn(prompt, ids, false);
             tokio::pin!(task);
             let mut timed_out = false;

@@ -609,7 +609,7 @@ fn score_at(attempt: &Attempt, cutoff: i64) -> Option<f64> {
     }
     if !matches!(
         attempt.outcome.as_deref(),
-        Some("pass" | "fail" | "pending_review")
+        Some("pass" | "fail" | "pending_review" | "judged")
     ) {
         return None;
     }
@@ -723,6 +723,7 @@ mod tests {
                             provenance: "objective".into(),
                             artifacts: vec![],
                             details: None,
+                            judge: None,
                         }],
                         event_cursor: 1,
                         workflow_steps: vec![],
@@ -915,6 +916,7 @@ mod tests {
             provenance: "human".into(),
             artifacts: vec![],
             details: None,
+            judge: None,
         });
         assert_eq!(score_at(&data.attempts[2], 2000), Some(0.5));
         assert_eq!(score_at(&data.attempts[2], 1200), Some(1.0));

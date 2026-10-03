@@ -147,7 +147,7 @@ function DesignCard({
 }) {
   const { t } = useTranslation("benchmarks");
   const markup = renderable(entry.output, entry.outputFormat);
-  const points = entry.review ? Math.round(entry.review.score * 1000) : null;
+  const points = entry.score == null ? null : Math.round(entry.score * 1000);
   const state =
     entry.phase === "terminal"
       ? (entry.outcome ?? "pending_review")
@@ -170,7 +170,7 @@ function DesignCard({
           )}
         </div>
         <div className="flex items-center justify-between gap-3 p-3">
-          {entry.review ? (
+          {points != null ? (
             <ModelIdentity
               configuration={entry.configuration}
               name={name}
@@ -184,14 +184,21 @@ function DesignCard({
               </div>
             </div>
           )}
-          <span
-            className={cn(
-              "shrink-0 font-display text-xl font-semibold tabular-nums",
-              points == null && "text-muted-foreground",
-            )}
-          >
-            {points ?? "–"}
-          </span>
+          <div className="shrink-0 text-right">
+            <div
+              className={cn(
+                "font-display text-xl font-semibold tabular-nums",
+                points == null && "text-muted-foreground",
+              )}
+            >
+              {points ?? "–"}
+            </div>
+            {entry.judges.length > 0 ? (
+              <div className="text-xs text-muted-foreground">
+                {t("design.judges", { count: entry.judges.length })}
+              </div>
+            ) : null}
+          </div>
         </div>
       </button>
     </li>

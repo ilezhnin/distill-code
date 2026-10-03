@@ -279,6 +279,20 @@ impl Store {
                     details: e.details.clone(),
                     created_at: e.created_at,
                 });
+            let judges = attempt
+                .evaluations
+                .iter()
+                .filter(|e| e.provenance == "judge")
+                .filter_map(|e| {
+                    Some(DesignJudge {
+                        configuration: e.judge.clone()?,
+                        score: e.score?,
+                        reason: e.reason.clone(),
+                        details: e.details.clone(),
+                    })
+                })
+                .collect();
+            let score = super::analysis::score(&attempt);
             out.push(DesignEntry {
                 attempt_id: attempt.id.clone(),
                 run_id: attempt.run_id.clone(),
@@ -297,6 +311,8 @@ impl Store {
                 output_tokens: attempt.usage.output,
                 cost: attempt.usage.cost,
                 review,
+                judges,
+                score,
             });
         }
         Ok(out)
@@ -579,6 +595,7 @@ mod tests {
         assert_eq!(entries[0].output_format.as_deref(), Some("svg"));
         let review = entries[0].review.as_ref().unwrap();
         assert_eq!(review.score, 0.7);
+        assert!(entries[0].judges.is_empty());
         assert_eq!(review.details.as_ref().unwrap()["craft"], json!(0.6));
         // One run on request: its own rendering, not yet reviewed.
         let older = store

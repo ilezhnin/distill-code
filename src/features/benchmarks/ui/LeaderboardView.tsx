@@ -393,7 +393,7 @@ export function LeaderboardView({
                 <TabsTrigger
                   value={entry.id}
                   variant="buttons"
-                  className="size-8 flex-none px-0"
+                  className="size-8 flex-none px-0 data-[state=active]:bg-chart-1/15 data-[state=active]:text-chart-1"
                   aria-label={boardLabel(entry)}
                 >
                   <BoardIcon board={entry} className="size-4" />
@@ -473,6 +473,7 @@ export function LeaderboardView({
                   <TableCell>
                     <AxisBars
                       muted={entry.rank == null}
+                      activeId={board.id}
                       items={boards.map((axis) => ({
                         id: axis.id,
                         label: boardLabel(axis),

@@ -34,6 +34,8 @@ const entry = (overrides: Partial<DesignEntry>): DesignEntry => ({
   outputTokens: 500,
   cost: 0.02,
   review: null,
+  judges: [],
+  score: null,
   ...overrides,
 });
 
@@ -73,6 +75,7 @@ describe("design gallery", () => {
           details: { adherence: 0.8, craft: 0.6 },
           createdAt: 3000,
         },
+        score: 0.7,
       }),
       entry({
         attemptId: "attempt-2",
@@ -84,9 +87,29 @@ describe("design gallery", () => {
         output: null,
         outcome: "budget_timeout",
       }),
+      entry({
+        attemptId: "attempt-4",
+        configuration: { ...configuration, id: "d", modelId: "delta" },
+        outcome: "judged",
+        score: 0.65,
+        judges: [
+          {
+            configuration: { ...configuration, id: "j1", modelId: "judge-one" },
+            score: 0.7,
+            reason: "Strong composition",
+            details: { adherence: 0.8, craft: 0.6 },
+          },
+          {
+            configuration: { ...configuration, id: "j2", modelId: "judge-two" },
+            score: 0.6,
+            reason: "Flat beam",
+            details: { adherence: 0.7, craft: 0.5 },
+          },
+        ],
+      }),
     ]);
     expect(screen.getByText("Signal tower at dusk")).toBeInTheDocument();
-    expect(screen.getByText("3 designs")).toBeInTheDocument();
+    expect(screen.getByText("4 designs")).toBeInTheDocument();
     const reviewed = screen.getByRole("button", { name: "Open design 1" });
     expect(within(reviewed).getByText("alpha")).toBeInTheDocument();
     expect(within(reviewed).getByText("700")).toBeInTheDocument();
@@ -97,7 +120,7 @@ describe("design gallery", () => {
     const pending = screen.getByRole("button", { name: "Open design 2" });
     expect(within(pending).getByText("Entry 2")).toBeInTheDocument();
     expect(
-      within(pending).getByText("Awaiting blind review"),
+      within(pending).getByText("Awaiting the judge panel"),
     ).toBeInTheDocument();
     expect(screen.queryByText("beta")).not.toBeInTheDocument();
     const failed = screen.getByRole("button", { name: "Open design 3" });
@@ -105,6 +128,10 @@ describe("design gallery", () => {
       within(failed).getByText("Time budget exceeded"),
     ).toBeInTheDocument();
     expect(screen.queryByText("gamma")).not.toBeInTheDocument();
+    const judged = screen.getByRole("button", { name: "Open design 4" });
+    expect(within(judged).getByText("delta")).toBeInTheDocument();
+    expect(within(judged).getByText("650")).toBeInTheDocument();
+    expect(within(judged).getByText("2 judges")).toBeInTheDocument();
     await userEvent.click(pending);
     expect(onEvidence).toHaveBeenCalledWith("attempt-2");
   });

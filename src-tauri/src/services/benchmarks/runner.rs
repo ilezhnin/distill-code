@@ -8,6 +8,7 @@ use crate::services::agent_host::{execution::*, AgentHost};
 use crate::services::provider_account_status::benchmark_sampling::{self, AccountMeasurement};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -17,6 +18,16 @@ use tokio::sync::watch;
 
 pub trait ExecutionBackend: Send + Sync {
     fn unsupported(&self, configuration: &Configuration, draft: &BenchmarkDraft) -> Option<String>;
+    /// Scores a creative rendering with a panel of other models; nothing happens
+    /// where no panel can be assembled.
+    fn judge<'a>(
+        &'a self,
+        _store: &'a Store,
+        attempt: Attempt,
+        _version: &'a BenchmarkVersion,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move { Ok(attempt) })
+    }
     fn execute<'a>(
         &'a self,
         store: &'a Store,
@@ -69,7 +80,239 @@ pub fn host_error(message: String) -> BenchmarkError {
     BenchmarkError::new(code, reason.trim())
 }
 
+impl NativeBackend {
+    /// Up to three available models that are not the candidate, other providers first.
+    async fn judge_panel(&self, candidate: &Configuration) -> Result<Vec<Configuration>> {
+        let snapshot =
+            crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
+        let mut panel: Vec<Configuration> = Vec::new();
+        for account in snapshot.accounts.iter().filter(|account| account.enabled) {
+            let Ok(models) = self
+                .inventory(&account.provider_id, Some(&account.id), false)
+                .await
+            else {
+                continue;
+            };
+            for model in models.into_iter().filter(|model| model.available) {
+                let configuration = model.configuration;
+                let id = configuration.model_id.to_lowercase();
+                if id == "default"
+                    || id == candidate.model_id.to_lowercase()
+                    || panel.iter().any(|judge| {
+                        judge.provider_id == configuration.provider_id
+                            && judge.model_id == configuration.model_id
+                    })
+                {
+                    continue;
+                }
+                panel.push(configuration);
+            }
+        }
+        panel.sort_by_key(|judge| judge.provider_id == candidate.provider_id);
+        panel.truncate(3);
+        Ok(panel)
+    }
+
+    /// One judge's verdict, or nothing when the judge is busy, silent or off form.
+    #[allow(clippy::too_many_arguments)]
+    async fn ask_judge(
+        &self,
+        store: &Store,
+        attempt: &Attempt,
+        version: &BenchmarkVersion,
+        judge: &Configuration,
+        index: usize,
+        prompt: &str,
+        image: &OwnedTurnImage,
+        criteria: &[RubricCriterion],
+    ) -> Result<Option<Evaluation>> {
+        let host = self
+            .app
+            .state::<AgentHost>()
+            .get_or_start(&self.app)
+            .await
+            .map_err(host_error)?;
+        let Some(account) = judge.account_id.clone() else {
+            return Ok(None);
+        };
+        let activity = host
+            .account_activity(&judge.provider_id, &account)
+            .await
+            .map_err(host_error)?;
+        if !activity.active_sessions.is_empty() {
+            return Ok(None);
+        }
+        let cwd = store
+            .root
+            .join("runs")
+            .join(&attempt.run_id)
+            .join(&attempt.id)
+            .join(format!("judge-{index}"));
+        tokio::fs::create_dir_all(&cwd).await?;
+        let session = host
+            .create_owned_session(OwnedSessionRequest {
+                owner_id: format!("{}:judge:{index}", attempt.id),
+                provider_id: judge.provider_id.clone(),
+                account_id: account,
+                model_id: judge.model_id.clone(),
+                reasoning_effort: None,
+                fast_mode: None,
+                cwd: cwd.to_string_lossy().into_owned(),
+                title: format!("Benchmark judge: {}", version.manifest.name),
+                profile: ExecutionProfile::NativeTextV1,
+            })
+            .await
+            .map_err(host_error)?;
+        let key = format!("benchmark:{}:judge:{index}", attempt.id);
+        let timeout = Duration::from_secs(180);
+        host.dispatch_owned_turn(OwnedTurnRequest {
+            session_id: session.session_id.clone(),
+            request_key: key.clone(),
+            prompt: prompt.to_string(),
+            policy_hash: session.policy_hash,
+            timeout_ms: timeout.as_millis() as u64,
+            images: vec![image.clone()],
+        })
+        .await
+        .map_err(host_error)?;
+        let started = Instant::now();
+        let mut cursor = 0i64;
+        let mut reply = String::new();
+        let mut usage = TokenUsage::default();
+        loop {
+            if started.elapsed() > timeout + Duration::from_secs(15) {
+                let _ = host.cancel_owned_turn(&key).await;
+                return Ok(None);
+            }
+            let page = host
+                .read_owned_events(&session.session_id, cursor, 200)
+                .await
+                .map_err(host_error)?;
+            for event in page.events {
+                consume_event(&event.payload, &mut reply, &mut usage);
+            }
+            cursor = page.cursor;
+            let status = host.execution_status(&key).await.map_err(host_error)?;
+            match status {
+                Some(status)
+                    if status.phase == "terminal"
+                        && !page.has_more
+                        && cursor >= status.event_cursor =>
+                {
+                    break
+                }
+                None => return Ok(None),
+                _ => {}
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        let Some((shares, notes)) = parse_judge_reply(&reply, criteria) else {
+            return Ok(None);
+        };
+        let score = weighted_share(&shares, criteria);
+        Ok(Some(Evaluation {
+            id: uuid::Uuid::new_v4().to_string(),
+            evaluator_revision: version.manifest.evaluator.revision.clone(),
+            verdict: "judged".into(),
+            score: Some(score),
+            reason: if notes.is_empty() {
+                "Scored by the judge panel".into()
+            } else {
+                notes
+            },
+            created_at: now(),
+            provenance: "judge".into(),
+            artifacts: Vec::new(),
+            details: Some(Value::Object(shares)),
+            judge: Some(judge.clone()),
+        }))
+    }
+}
+
 impl ExecutionBackend for NativeBackend {
+    fn judge<'a>(
+        &'a self,
+        store: &'a Store,
+        mut attempt: Attempt,
+        version: &'a BenchmarkVersion,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move {
+            let criteria = rubric_criteria(&version.manifest);
+            let Some(document) = render_document(
+                attempt.output.as_deref().unwrap_or_default(),
+                version.manifest.facets.output_format.as_deref(),
+            ) else {
+                return Ok(attempt);
+            };
+            if criteria.is_empty() {
+                return Ok(attempt);
+            }
+            let png = match super::worker::render(&document, 1024, 768).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    attempt.reason = Some(format!("Rendering failed: {}", error.message));
+                    return Ok(attempt);
+                }
+            };
+            let directory = store
+                .root
+                .join("runs")
+                .join(&attempt.run_id)
+                .join(&attempt.id);
+            tokio::fs::create_dir_all(&directory).await?;
+            let path = directory.join("rendering.png");
+            tokio::fs::write(&path, &png).await?;
+            attempt.evaluations.push(Evaluation {
+                id: uuid::Uuid::new_v4().to_string(),
+                evaluator_revision: version.manifest.evaluator.revision.clone(),
+                verdict: "rendered".into(),
+                score: None,
+                reason: "Rendered for the judge panel".into(),
+                created_at: now(),
+                provenance: "render".into(),
+                artifacts: vec![Artifact {
+                    kind: "screenshot".into(),
+                    path: path.to_string_lossy().into_owned(),
+                    hash: hex::encode(Sha256::digest(&png)),
+                    label: "Rendering".into(),
+                }],
+                details: None,
+                judge: None,
+            });
+            let panel = self.judge_panel(&attempt.configuration).await?;
+            if panel.is_empty() {
+                attempt.reason = Some("No judge panel: no other model is signed in".into());
+                return Ok(attempt);
+            }
+            let prompt = judge_prompt(&version.manifest, &criteria);
+            let image = OwnedTurnImage {
+                data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png),
+                mime_type: "image/png".into(),
+            };
+            for (index, judge) in panel.iter().enumerate() {
+                match self
+                    .ask_judge(
+                        store, &attempt, version, judge, index, &prompt, &image, &criteria,
+                    )
+                    .await
+                {
+                    Ok(Some(evaluation)) => attempt.evaluations.push(evaluation),
+                    Ok(None) => {}
+                    Err(error) => log::warn!(
+                        "[benchmarks] judge {} failed: {}",
+                        judge.model_id,
+                        error.message
+                    ),
+                }
+            }
+            if attempt.evaluations.iter().any(|e| e.provenance == "judge") {
+                attempt.outcome = Some("judged".into());
+            } else {
+                attempt.reason = Some("The judge panel returned no complete score sheet".into());
+            }
+            Ok(attempt)
+        })
+    }
     fn unsupported(&self, c: &Configuration, d: &BenchmarkDraft) -> Option<String> {
         if c.provider_id != "claude-acp" || c.account_id.as_deref().is_none_or(str::is_empty) {
             return Some(
@@ -342,6 +585,7 @@ impl ExecutionBackend for NativeBackend {
                     prompt: prompt_with_fixtures(&version.manifest)?,
                     policy_hash: session.policy_hash,
                     timeout_ms: u64::from(timeout_seconds) * 1000,
+                    images: Vec::new(),
                 })
                 .await
                 .map_err(host_error)?;
@@ -806,6 +1050,120 @@ fn terminal_error_outcome(error: &Value) -> &'static str {
         _ => "infrastructure_failure",
     }
 }
+/// A weighted criterion of a creative rubric, as the brief declares it.
+#[derive(Debug, Clone)]
+pub(crate) struct RubricCriterion {
+    pub id: String,
+    pub label: String,
+    pub weight: f64,
+}
+
+pub(crate) fn rubric_criteria(draft: &BenchmarkDraft) -> Vec<RubricCriterion> {
+    draft.environment["rubricCriteria"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry["id"].as_str()?.trim();
+            let weight = entry["weight"].as_f64()?;
+            (!id.is_empty() && weight > 0.0).then(|| RubricCriterion {
+                id: id.to_string(),
+                label: entry["label"].as_str().unwrap_or(id).to_string(),
+                weight,
+            })
+        })
+        .collect()
+}
+
+/// The markup without a Markdown fence on either side; a lone opening fence counts too.
+fn unfence_markup(output: &str) -> &str {
+    let mut body = output.trim();
+    if body.starts_with("```") {
+        body = body.split_once('\n').map_or("", |(_, rest)| rest);
+    }
+    if let Some(rest) = body.trim_end().strip_suffix("```") {
+        body = rest;
+    }
+    body.trim()
+}
+
+/// A standalone document that shows a drawing or a page, or nothing when the
+/// output is neither.
+pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<String> {
+    let body = unfence_markup(output);
+    let lowered: String = body.chars().take(200).collect::<String>().to_lowercase();
+    if lowered.starts_with("<svg") || (format == Some("svg") && lowered.contains("<svg")) {
+        return Some(format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><style>html,body{{margin:0;height:100%;display:grid;place-items:center;background:#fff}}svg{{width:100%;height:auto;max-height:100%}}</style></head><body>{body}</body></html>"
+        ));
+    }
+    if lowered.starts_with("<!doctype html")
+        || lowered.starts_with("<html")
+        || (format == Some("html") && lowered.contains('<'))
+    {
+        return Some(body.to_string());
+    }
+    None
+}
+
+fn judge_prompt(draft: &BenchmarkDraft, criteria: &[RubricCriterion]) -> String {
+    let mut prompt = String::from(
+        "You are one judge on a design panel. The attached image is a candidate's rendering of the brief below. Score what you see, not what is described. Reply with JSON only, no prose and no Markdown fence, of the form {\"scores\": {\"<criterion id>\": <0-10>, ...}, \"notes\": \"<two sentences at most>\"}.\n\nBrief:\n",
+    );
+    prompt.push_str(&draft.prompt);
+    prompt.push_str("\n\nRubric:\n");
+    prompt.push_str(&draft.evaluator.rubric);
+    prompt.push_str("\n\nCriteria (id, label, weight):\n");
+    for criterion in criteria {
+        prompt.push_str(&format!(
+            "- {} ({}), weight {}\n",
+            criterion.id, criterion.label, criterion.weight
+        ));
+    }
+    prompt.push_str("\nScore every criterion from 0 to 10.");
+    prompt
+}
+
+/// Per-criterion shares (0 to 1) and the judge's notes from a reply, or
+/// nothing when the reply is not a complete score sheet.
+pub(crate) fn parse_judge_reply(
+    reply: &str,
+    criteria: &[RubricCriterion],
+) -> Option<(serde_json::Map<String, Value>, String)> {
+    let start = reply.find('{')?;
+    let end = reply.rfind('}')?;
+    let value: Value = serde_json::from_str(&reply[start..=end]).ok()?;
+    let scores = value.get("scores")?.as_object()?;
+    let mut shares = serde_json::Map::new();
+    for criterion in criteria {
+        let raw = scores.get(&criterion.id)?.as_f64()?;
+        if !raw.is_finite() {
+            return None;
+        }
+        shares.insert(criterion.id.clone(), json!((raw / 10.0).clamp(0.0, 1.0)));
+    }
+    let notes = value["notes"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(500)
+        .collect();
+    Some((shares, notes))
+}
+
+fn weighted_share(shares: &serde_json::Map<String, Value>, criteria: &[RubricCriterion]) -> f64 {
+    let total: f64 = criteria.iter().map(|c| c.weight).sum();
+    if total <= 0.0 {
+        return 0.0;
+    }
+    let weighted: f64 = criteria
+        .iter()
+        .map(|c| shares.get(&c.id).and_then(Value::as_f64).unwrap_or(0.0) * c.weight)
+        .sum();
+    ((weighted / total) * 1000.0).round() / 1000.0
+}
+
 fn prompt_with_fixtures(draft: &BenchmarkDraft) -> Result<String> {
     let mut prompt = String::new();
     if !draft.role_prompt.is_empty() {
@@ -988,6 +1346,12 @@ impl BenchmarkService {
                             Ok(e) => {
                                 completed.outcome = Some(e.verdict.clone());
                                 completed.evaluations.push(e);
+                                if version.manifest.evaluator.kind == "rubric" {
+                                    completed = self
+                                        .backend
+                                        .judge(&self.store, completed, &version)
+                                        .await?;
+                                }
                             }
                             Err(e) => {
                                 completed.outcome = Some("evaluation_error".into());
@@ -1260,6 +1624,34 @@ pub fn seed_definitions() -> Vec<BenchmarkDraft> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn judge_replies_become_weighted_shares_and_unfenced_markup_renders() {
+        let criteria = vec![
+            super::RubricCriterion {
+                id: "adherence".into(),
+                label: "Adherence".into(),
+                weight: 50.0,
+            },
+            super::RubricCriterion {
+                id: "craft".into(),
+                label: "Craft".into(),
+                weight: 50.0,
+            },
+        ];
+        let (shares, notes) = super::parse_judge_reply(
+            "Sure. {\"scores\": {\"adherence\": 8, \"craft\": 6}, \"notes\": \"Tower present.\"}",
+            &criteria,
+        )
+        .unwrap();
+        assert_eq!(shares["adherence"], serde_json::json!(0.8));
+        assert_eq!(notes, "Tower present.");
+        assert_eq!(super::weighted_share(&shares, &criteria), 0.7);
+        // A sheet missing a criterion is no verdict at all.
+        assert!(super::parse_judge_reply("{\"scores\": {\"craft\": 6}}", &criteria).is_none());
+        let document = super::render_document("```svg\n<svg xmlns='x'/>", Some("svg")).unwrap();
+        assert!(document.contains("<body><svg xmlns='x'/></body>"));
+        assert!(super::render_document("42", Some("text")).is_none());
+    }
     use super::*;
     use std::sync::atomic::Ordering;
     use tokio::sync::{Mutex, Notify};

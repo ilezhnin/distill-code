@@ -137,6 +137,13 @@ export interface DesignReview {
   details: Record<string, number> | null;
   createdAt: number;
 }
+/** One panel member's verdict on a rendering. */
+export interface DesignJudge {
+  configuration: Configuration;
+  score: number;
+  reason: string;
+  details: Record<string, number> | null;
+}
 /** The newest rendering of one creative brief by one configuration. */
 export interface DesignEntry {
   attemptId: string;
@@ -156,6 +163,9 @@ export interface DesignEntry {
   outputTokens: number | null;
   cost: number | null;
   review: DesignReview | null;
+  judges: DesignJudge[];
+  /** The score the leaderboard reads: the human review, else the judges' median. */
+  score: number | null;
 }
 export interface AttemptSummary {
   id: string;
@@ -196,6 +206,8 @@ export interface Evaluation {
   artifacts: Artifact[];
   /** Per-criterion scores (0 to 1) behind a rubric review, keyed by criterion id. */
   details?: Record<string, number> | null;
+  /** The panel member behind a judge verdict. */
+  judge?: Configuration | null;
 }
 export interface Attempt {
   id: string;
