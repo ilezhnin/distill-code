@@ -61,6 +61,30 @@ export function formatQuality(
     : t("percent", { value: (quality * 100).toFixed(1) });
 }
 
+/** How long something took, in the largest unit that still reads well. */
+export function formatElapsed(
+  t: Translate,
+  milliseconds: number | null | undefined,
+): string {
+  if (milliseconds == null) return t("unknown");
+  const seconds = Math.round(milliseconds / 1000);
+  if (seconds < 60) return t("elapsed.seconds", { count: seconds });
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return seconds % 60 === 0
+      ? t("elapsed.minutes", { count: minutes })
+      : `${t("elapsed.minutes", { count: minutes })} ${t("elapsed.seconds", { count: seconds % 60 })}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)
+    return minutes % 60 === 0
+      ? t("elapsed.hours", { count: hours })
+      : `${t("elapsed.hours", { count: hours })} ${t("elapsed.minutes", { count: minutes % 60 })}`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0
+    ? t("elapsed.days", { count: days })
+    : `${t("elapsed.days", { count: days })} ${t("elapsed.hours", { count: hours % 24 })}`;
+}
+
 export function formatSeconds(
   t: Translate,
   milliseconds: number | null | undefined,

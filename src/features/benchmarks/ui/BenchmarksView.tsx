@@ -123,9 +123,18 @@ export function BenchmarksView({
     }),
     [scope, page],
   );
+  const leaderboardQuery = useMemo(
+    () => ({
+      runId: null,
+      versionIds: null,
+      offset: page * PAGE_SIZE,
+      limit: PAGE_SIZE,
+    }),
+    [page],
+  );
   const leaderboard = useQuery({
-    queryKey: [...benchmarkKeys, "leaderboard", query],
-    queryFn: () => benchmarkApi.getLeaderboard(query),
+    queryKey: [...benchmarkKeys, "leaderboard", leaderboardQuery],
+    queryFn: () => benchmarkApi.getLeaderboard(leaderboardQuery),
     enabled: location.section === "leaderboard",
   });
   const usage = useQuery({
@@ -362,10 +371,6 @@ export function BenchmarksView({
           <LeaderboardView
             report={leaderboard.data}
             loading={leaderboard.isPending}
-            scope={scope}
-            onScopeChange={changeScope}
-            suiteOptions={suiteOptions}
-            runOptions={runOptions}
             page={page}
             pageSize={PAGE_SIZE}
             onPageChange={setPage}

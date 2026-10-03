@@ -1,12 +1,18 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { IconClock, IconCoin } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
 import {
   modelNameKey,
   useModelCatalog,
   useModelNames,
 } from "../hooks/useBenchmarks";
-import { modelDisplayName, providerVendor } from "../lib/benchmarkLabels";
+import {
+  formatElapsed,
+  formatUsd,
+  modelDisplayName,
+  providerVendor,
+} from "../lib/benchmarkLabels";
 import {
   previewDocument,
   renderable,
@@ -200,6 +206,25 @@ function DesignCard({
             ) : null}
           </div>
         </div>
+        <dl className="flex items-center gap-4 px-3 pb-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1">
+            <dt>
+              <IconCoin className="size-3.5" aria-label={t("fields.cost")} />
+            </dt>
+            <dd className="tabular-nums">{formatUsd(t, entry.cost)}</dd>
+          </div>
+          <div className="flex items-center gap-1">
+            <dt>
+              <IconClock
+                className="size-3.5"
+                aria-label={t("fields.elapsed")}
+              />
+            </dt>
+            <dd className="tabular-nums">
+              {formatElapsed(t, entry.durationMs)}
+            </dd>
+          </div>
+        </dl>
       </button>
     </li>
   );

@@ -895,3 +895,48 @@ describe("configuration history", () => {
     });
   });
 });
+
+describe("model filter", () => {
+  afterEach(cleanup);
+
+  it("narrows the board to the chosen models and shows all again on request", async () => {
+    const rows = ["alpha", "beta", "gamma"].map((modelId, index) =>
+      leaderboardRow({
+        configuration: { ...configuration, id: modelId, modelId },
+        points: 1000 - index * 100,
+      }),
+    );
+    wrap(
+      <LeaderboardView
+        {...scopeProps}
+        onOpen={vi.fn()}
+        report={{ cohort, rows }}
+      />,
+    );
+    const names = () =>
+      screen
+        .getAllByRole("row")
+        .slice(1)
+        .map(
+          (row) =>
+            within(row).getAllByRole("cell")[1].querySelector(".font-medium")
+              ?.textContent,
+        );
+    expect(names()).toEqual(["alpha", "beta", "gamma"]);
+    // No filter by test or run is offered: the whole cohort is the board.
+    expect(
+      screen.queryByText("All published versions"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("All runs")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Models" }));
+    const list = await screen.findByRole("listbox");
+    await userEvent.click(within(list).getByText("alpha"));
+    await userEvent.click(within(list).getByText("gamma"));
+    expect(names()).toEqual(["alpha", "gamma"]);
+    expect(screen.getByRole("button", { name: "Models" })).toHaveTextContent(
+      "2",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(names()).toEqual(["alpha", "beta", "gamma"]);
+  });
+});

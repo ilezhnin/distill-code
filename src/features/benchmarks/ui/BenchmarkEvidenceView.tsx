@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { IconChevronDown } from "@tabler/icons-react";
+import { IconChevronDown, IconClock, IconCoin } from "@tabler/icons-react";
 import { acpGetSessionInfo } from "@/shared/api/acp";
 import { mergeAcpSessionInfo } from "@/features/chat/lib/acpSessionMapping";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -32,8 +32,8 @@ import {
   weightedShare,
 } from "../lib/benchmarkPreview";
 import {
-  formatCost,
-  formatSeconds,
+  formatElapsed,
+  formatUsd,
   modelDisplayName,
   shortId,
   stateLabel,
@@ -209,9 +209,15 @@ export function BenchmarkEvidenceView({
               </div>
               <div>
                 <dt className="text-xs text-muted-foreground">
-                  {t("fields.duration")}
+                  {t("fields.elapsed")}
                 </dt>
-                <dd className="mt-1">{formatSeconds(t, attempt.durationMs)}</dd>
+                <dd className="mt-1 flex items-center gap-1.5 tabular-nums">
+                  <IconClock
+                    className="size-4 text-muted-foreground"
+                    aria-hidden
+                  />
+                  {formatElapsed(t, attempt.durationMs)}
+                </dd>
               </div>
               <div>
                 <dt className="text-xs text-muted-foreground">
@@ -238,7 +244,13 @@ export function BenchmarkEvidenceView({
                 <dt className="text-xs text-muted-foreground">
                   {t("fields.cost")}
                 </dt>
-                <dd className="mt-1">{formatCost(t, attempt.usage.cost, 6)}</dd>
+                <dd className="mt-1 flex items-center gap-1.5 tabular-nums">
+                  <IconCoin
+                    className="size-4 text-muted-foreground"
+                    aria-hidden
+                  />
+                  {formatUsd(t, attempt.usage.cost)}
+                </dd>
               </div>
               {attempt.reason ? (
                 <p className="col-span-full text-xs text-muted-foreground">

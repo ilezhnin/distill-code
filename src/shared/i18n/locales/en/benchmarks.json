@@ -70,7 +70,12 @@
     "searchModels": "Search configurations",
     "table": "Table",
     "chart": "Chart",
-    "runLabel": "{{date}} · {{id}}"
+    "runLabel": "{{date}} · {{id}}",
+    "models": "Models",
+    "allModels": "All",
+    "showModels": "Show models",
+    "showAll": "Show all",
+    "modelOrProvider": "Model or provider"
   },
   "fields": {
     "name": "Name",
@@ -140,7 +145,8 @@
     "tokensOut": "Output tokens",
     "measuredAt": "Measured",
     "repetitionValue": "repetition {{value}}",
-    "usedRange": "Used before → after"
+    "usedRange": "Used before → after",
+    "elapsed": "Duration"
   },
   "split": {
     "development": "Development",
@@ -539,5 +545,15 @@
   "history": {
     "chartLabel": "Overall points per measurement",
     "pointLabel": "{{date}}: {{points}} points"
+  },
+  "elapsed": {
+    "seconds_one": "{{count}} s",
+    "seconds_other": "{{count}} s",
+    "minutes_one": "{{count}} min",
+    "minutes_other": "{{count}} min",
+    "hours_one": "{{count}} h",
+    "hours_other": "{{count}} h",
+    "days_one": "{{count}} day",
+    "days_other": "{{count}} days"
   }
 }

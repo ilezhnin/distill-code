@@ -70,7 +70,12 @@
     "searchModels": "Buscar configuraciones",
     "table": "Tabla",
     "chart": "Gráfico",
-    "runLabel": "{{date}} · {{id}}"
+    "runLabel": "{{date}} · {{id}}",
+    "models": "Modelos",
+    "allModels": "Todos",
+    "showModels": "Mostrar modelos",
+    "showAll": "Mostrar todos",
+    "modelOrProvider": "Modelo o proveedor"
   },
   "fields": {
     "name": "Nombre",
@@ -140,7 +145,8 @@
     "tokensOut": "Tokens de salida",
     "measuredAt": "Medido",
     "repetitionValue": "repetición {{value}}",
-    "usedRange": "Usado antes → después"
+    "usedRange": "Usado antes → después",
+    "elapsed": "Duración"
   },
   "split": {
     "development": "Desarrollo",
@@ -539,5 +545,15 @@
   "history": {
     "chartLabel": "Puntos generales por medición",
     "pointLabel": "{{date}}: {{points}} puntos"
+  },
+  "elapsed": {
+    "seconds_one": "{{count}} s",
+    "seconds_other": "{{count}} s",
+    "minutes_one": "{{count}} min",
+    "minutes_other": "{{count}} min",
+    "hours_one": "{{count}} h",
+    "hours_other": "{{count}} h",
+    "days_one": "{{count}} día",
+    "days_other": "{{count}} días"
   }
 }

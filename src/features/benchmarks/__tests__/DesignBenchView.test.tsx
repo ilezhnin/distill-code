@@ -113,6 +113,8 @@ describe("design gallery", () => {
     const reviewed = screen.getByRole("button", { name: "Open design 1" });
     expect(within(reviewed).getByText("alpha")).toBeInTheDocument();
     expect(within(reviewed).getByText("700")).toBeInTheDocument();
+    expect(within(reviewed).getByText("$0.02")).toBeInTheDocument();
+    expect(within(reviewed).getByText("1 s")).toBeInTheDocument();
     const image = within(reviewed).getByRole("presentation");
     expect(image.getAttribute("src")).toMatch(/^data:image\/svg\+xml/);
     expect(image.getAttribute("src")).not.toContain("%60%60%60");
