@@ -60,7 +60,11 @@ export function rowKey(row: LeaderboardRow): string {
   return configurationKey(row.configuration);
 }
 
-/** Matches the service's leaderboard identity, independent of runtime probes. */
+/**
+ * Matches the service's leaderboard identity, independent of runtime probes.
+ * The runner marks an attempt that made auxiliary calls with an `_auxiliary`
+ * profile; that is attempt evidence, not another candidate.
+ */
 export function configurationKey(configuration: Configuration): string {
   return JSON.stringify([
     configuration.providerId,
@@ -69,7 +73,7 @@ export function configurationKey(configuration: Configuration): string {
     configuration.effort || "default",
     configuration.fastMode ?? false,
     configuration.billingMode,
-    configuration.executionProfile,
+    configuration.executionProfile.replace(/_auxiliary$/, ""),
   ]);
 }
 

@@ -238,6 +238,8 @@
     "defaultEffort": "Valor predeterminado del proveedor",
     "noEffort": "Sin ajuste de esfuerzo",
     "addConfiguration": "Añadir configuración",
+    "catchUpMissing": "{{model}} ya no está disponible en esta cuenta. Elige una configuración abajo.",
+    "catchUpChanged": "{{model}} ya no ofrece este esfuerzo, modo rápido o facturación. Elige una configuración abajo.",
     "unsupportedProvider": "{{provider}} (no compatible)",
     "executionCount": "{{count}} ejecuciones",
     "estimatedCost": "Gasto previsto: {{value}}",
@@ -290,7 +292,7 @@
       "class": "Éxito medido en los casos de {{label}} en puntos sobre 1000. Más alto es mejor.",
       "efficiency": "Mediana de tokens de salida por intento puntuado. La configuración más frugal obtiene 1000, las demás en proporción.",
       "speed": "Duración mediana del intento. La configuración más rápida obtiene 1000, las demás en proporción.",
-      "cost": "USD medios por tarea, promediando las repeticiones de cada caso e incluyendo los jueces. Los cargos desconocidos siguen sin conocerse. El menor costo obtiene 1000 puntos."
+      "cost": "USD medios por tarea de la propia generación del modelo, promediando las repeticiones de cada caso. Las llamadas a los jueces no se incluyen. Los cargos desconocidos siguen sin conocerse. El menor costo obtiene 1000 puntos."
     },
     "allAxes": "Todos los tableros",
     "measured": "{{scored}} / {{planned}} medidas",
@@ -440,6 +442,7 @@
     "preparing": "Preparando",
     "dispatching": "Enviando",
     "collecting": "Recopilando evidencia",
+    "awaiting_judges": "Esperando a los jueces",
     "terminal": "Resuelto",
     "interrupted": "Interrumpido",
     "pass": "Aprobado",
@@ -476,7 +479,8 @@
     "controlled_batch": "Lote controlado",
     "unknown": "Desconocido",
     "judged": "Juzgado",
-    "rendered": "Renderizado"
+    "rendered": "Renderizado",
+    "abstained": "Abstención"
   },
   "tokens": "{{value}} tokens",
   "fastMode": "rápido",
@@ -544,18 +548,27 @@
     "missing": "Esta configuración no está en la selección actual.",
     "catchUp_one": "Ejecutar el {{count}} caso que falta",
     "catchUp_other": "Ejecutar los {{count}} casos que faltan",
-    "current": "Mostrar resultados actuales"
+    "queued": "En cola en la ejecución {{id}}",
+    "current": "Mostrar resultados actuales",
+    "statusHint": {
+      "preliminary": "Sin posición: a un caso actual aún le falta un resultado puntuado, una ejecución acortó el límite de tiempo de una tarea o el conjunto de casos de este modelo difiere del de los modelos clasificados.",
+      "retrospective": "Una estimación retrospectiva sobre el conjunto actual de casos. No tiene posición.",
+      "excluded": "Este modelo ayudó a crear todos los casos actuales, así que no se mide.",
+      "untested": "Aún no se ha ejecutado ningún caso con este modelo."
+    }
   },
   "history": {
     "title": "Historial de puntuación",
     "recalculated": "Conjunto actual",
     "recorded": "Según el registro",
-    "recalculatedDescription": "Los mismos casos medidos y condiciones de ejecución en cada punto. Las carencias anteriores usan el primer resultado posterior compatible; las revisiones usan las puntuaciones actuales. Estimación retrospectiva; la evidencia posterior se indica en cada punto.",
-    "recordedDescription": "Resultados y evaluaciones disponibles en cada fecha. La cobertura puede variar entre puntos.",
-    "laterEvidence": "{{backfilled}} casos medidos por primera vez después; {{revised}} casos revisados después.",
-    "chartLabel": "Puntos medidos; las líneas comparan los mismos casos medidos",
-    "pointLabel": "{{date}}: {{points}} puntos · {{scored}}/{{planned}} casos",
-    "coverage": "{{scored}} de {{planned}} casos actuales medidos. Las líneas conectan solo las mismas versiones de casos medidos y del entorno de ejecución. Un cambio de cobertura inicia una observación independiente."
+    "recalculatedDescription": "Cada punto cubre los casos actuales. Cada caso usa el resultado más reciente disponible en esa fecha, puntuado con las revisiones actuales; un caso aún no medido entonces usa su primer resultado posterior.",
+    "recordedDescription": "Resultados y evaluaciones tal como estaban en cada fecha. La cobertura puede variar entre puntos.",
+    "backfilled_one": "{{count}} caso medido por primera vez después",
+    "backfilled_other": "{{count}} casos medidos por primera vez después",
+    "revised_one": "{{count}} caso revisado después",
+    "revised_other": "{{count}} casos revisados después",
+    "chartLabel": "Puntos globales por medición",
+    "pointLabel": "{{date}}: {{points}} puntos · {{scored}}/{{planned}} casos"
   },
   "elapsed": {
     "seconds_one": "{{count}} s",

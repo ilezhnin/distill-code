@@ -51,7 +51,7 @@ impl Store {
     /// UI catalog window: the newest 1,000 definitions. Evidence and export
     /// consumers must use all_definitions so old published cases remain visible.
     pub async fn definitions(&self) -> Result<Vec<BenchmarkDefinition>> {
-        let rows=sqlx::query("SELECT id,draft_json,revision,archived FROM benchmark_definitions ORDER BY rowid DESC LIMIT 1000").fetch_all(&self.pool).await?;
+        let rows=sqlx::query("SELECT id,draft_json,revision,archived,archived_at FROM benchmark_definitions ORDER BY rowid DESC LIMIT 1000").fetch_all(&self.pool).await?;
         let mut out = Vec::new();
         for r in rows {
             let id: String = r.get(0);
@@ -60,6 +60,8 @@ impl Store {
                 draft: serde_json::from_str(r.get(1))?,
                 draft_revision: r.get(2),
                 archived: r.get(3),
+                archived_at: r.get(4),
+                archive_history: self.archive_history(&id).await?,
                 versions: self.versions_for(&id).await?,
             });
         }
@@ -84,7 +86,7 @@ impl Store {
     }
     pub async fn definition(&self, id: &str) -> Result<BenchmarkDefinition> {
         let r = sqlx::query(
-            "SELECT draft_json,revision,archived FROM benchmark_definitions WHERE id=?",
+            "SELECT draft_json,revision,archived,archived_at FROM benchmark_definitions WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -95,8 +97,20 @@ impl Store {
             draft: serde_json::from_str(r.get(0))?,
             draft_revision: r.get(1),
             archived: r.get(2),
+            archived_at: r.get(3),
+            archive_history: self.archive_history(id).await?,
             versions: self.versions_for(id).await?,
         })
+    }
+    /// Archive periods a restore closed, oldest first.
+    async fn archive_history(&self, id: &str) -> Result<Vec<(i64, i64)>> {
+        let rows = sqlx::query(
+            "SELECT archived_at,restored_at FROM benchmark_definition_archives WHERE definition_id=? ORDER BY archived_at",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
     pub async fn versions_for(&self, id: &str) -> Result<Vec<BenchmarkVersion>> {
         let rows=sqlx::query("SELECT id,content_hash,manifest_json,published_at FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC").bind(id).fetch_all(&self.pool).await?;
@@ -145,12 +159,39 @@ impl Store {
                 .collect::<std::result::Result<_, _>>()?,
         })
     }
+    pub async fn run_state(&self, id: &str) -> Result<String> {
+        sqlx::query_scalar::<_, String>("SELECT state FROM run_plans WHERE id=?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| BenchmarkError::new("validation", "Run not found"))
+    }
+    /// The outcome as recorded, before any evidence is read into it.
+    pub async fn stored_outcome(&self, id: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar::<_, Option<String>>(
+            "SELECT json_extract(data_json,'$.outcome') FROM attempts WHERE id=?
+             UNION ALL SELECT json_extract(data_json,'$.outcome') FROM workflow_steps WHERE attempt_id=? LIMIT 1",
+        )
+        .bind(id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
+    }
     /// Recent history needs plans and counts, never serialized attempt evidence.
     pub async fn runs(&self) -> Result<Vec<RunSummary>> {
         let rows = sqlx::query(
             "SELECT r.id,r.state,r.revision,r.created_at,r.updated_at,r.request_json,
                 (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id),
-                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal')
+                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal'),
+                CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
+                (SELECT json_group_array(json_array(a.configuration_id,
+                        json_extract(a.data_json,'$.observed.effort'),
+                        json_extract(a.data_json,'$.observed.fastMode')))
+                    FROM attempts a WHERE a.run_id=r.id AND a.phase<>'pending'
+                        AND json_extract(a.data_json,'$.observed.modelId')=json_extract(a.data_json,'$.configuration.modelId')
+                        AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'selection_changed')
+                END
              FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
         .fetch_all(&self.pool)
@@ -166,6 +207,7 @@ impl Store {
                     request: serde_json::from_str(r.get(5))?,
                     attempt_count: r.get::<i64, _>(6) as u64,
                     settled_count: r.get::<i64, _>(7) as u64,
+                    observed_selections: observed_selections(r.get(8)),
                 })
             })
             .collect()
@@ -200,7 +242,8 @@ impl Store {
                 json_extract(a.data_json,'$.durationMs'),
                 json_extract(a.data_json,'$.usage.output'),
                 json_extract(a.data_json,'$.usage.cost'),
-                COALESCE(json_extract(a.data_json,'$.evaluations'),'[]')
+                COALESCE(json_extract(a.data_json,'$.evaluations'),'[]'),
+                json_extract(a.data_json,'$.startedAt')
              FROM selected p JOIN attempts a ON a.rowid=p.attempt_rowid
              ORDER BY p.created_at DESC,p.run_id,p.attempt_rowid",
         )
@@ -216,22 +259,42 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|r| AttemptSummary {
-                id: r.get(0),
-                run_id: r.get(1),
-                version_id: r.get(2),
-                model_id: r.get(3),
-                phase: r.get(4),
-                outcome: super::analysis::effective_outcome(
-                    r.get::<Option<&str>, _>(5),
-                    &serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
-                        .unwrap_or_default(),
-                ),
-                repetition: r.get::<Option<u32>, _>(6).unwrap_or(0),
-                finished_at: r.get(7),
-                duration_ms: r.get(8),
-                output_tokens: r.get(9),
-                cost: r.get(10),
+            .map(|r| {
+                let finished_at: Option<i64> = r.get(7);
+                let started_at: Option<i64> = r.get(12);
+                let mut summary = AttemptSummary {
+                    id: r.get(0),
+                    run_id: r.get(1),
+                    version_id: r.get(2),
+                    model_id: r.get(3),
+                    phase: r.get(4),
+                    // A dated listing shows each attempt as it stood then.
+                    outcome: super::analysis::outcome_as_of(
+                        r.get::<Option<&str>, _>(5),
+                        finished_at,
+                        &serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
+                            .unwrap_or_default(),
+                        q.as_of,
+                    ),
+                    repetition: r.get::<Option<u32>, _>(6).unwrap_or(0),
+                    finished_at,
+                    duration_ms: r.get(8),
+                    output_tokens: r.get(9),
+                    cost: r.get(10),
+                };
+                if let Some(at) = q.as_of.filter(|at| finished_at.is_none_or(|end| end > *at)) {
+                    summary.phase = if started_at.is_some_and(|start| start <= at) {
+                        "running"
+                    } else {
+                        "pending"
+                    }
+                    .into();
+                    summary.finished_at = None;
+                    summary.duration_ms = None;
+                    summary.output_tokens = None;
+                    summary.cost = None;
+                }
+                summary
             })
             .collect())
     }
@@ -260,19 +323,38 @@ impl Store {
         .bind(&versions)
         .fetch_all(&self.pool)
         .await?;
-        let mut seen = std::collections::BTreeSet::new();
-        let mut out = Vec::new();
+        // One card per brief and model as the leaderboard counts it: runtime
+        // revisions and defaulted controls do not split a model. Rows come newest
+        // first; a card shows the newest scored rendering, else the newest
+        // rendering, else the newest settled attempt, else the newest attempt.
+        let mut candidates: Vec<(Attempt, BenchmarkDraft, i64)> = Vec::new();
+        let mut cards: std::collections::BTreeMap<(String, String), (u8, usize)> =
+            std::collections::BTreeMap::new();
         for row in rows {
             let attempt: Attempt = serde_json::from_str(&row.get::<String, _>(0))?;
-            let manifest: BenchmarkDraft = serde_json::from_str(&row.get::<String, _>(1))?;
-            let configuration = super::analysis::execution_configuration(&attempt).clone();
-            let key = (
-                attempt.version_id.clone(),
-                super::analysis::configuration_key(&configuration),
-            );
-            if !seen.insert(key) {
+            // A candidate that authored the brief is not an entry of it.
+            if attempt.outcome.as_deref() == Some("excluded") {
                 continue;
             }
+            let manifest: BenchmarkDraft = serde_json::from_str(&row.get::<String, _>(1))?;
+            let key = (
+                attempt.version_id.clone(),
+                super::analysis::leaderboard_key(&card_configuration(&attempt)),
+            );
+            let tier = card_tier(&attempt);
+            let index = candidates.len();
+            candidates.push((attempt, manifest, row.get(2)));
+            let card = cards.entry(key).or_insert((tier, index));
+            if tier > card.0 {
+                *card = (tier, index);
+            }
+        }
+        let mut chosen: Vec<usize> = cards.into_values().map(|(_, index)| index).collect();
+        chosen.sort_unstable();
+        let mut out = Vec::new();
+        for index in chosen {
+            let (attempt, manifest, run_created_at) = &candidates[index];
+            let configuration = card_configuration(attempt).into_owned();
             let review = attempt
                 .evaluations
                 .iter()
@@ -284,16 +366,8 @@ impl Store {
                     details: e.details.clone(),
                     created_at: e.created_at,
                 });
-            let judges = attempt
-                .evaluations
+            let judges = attempt.evaluations[scoring_batch(&attempt.evaluations)]
                 .iter()
-                .skip(
-                    attempt
-                        .evaluations
-                        .iter()
-                        .rposition(|e| e.provenance == "render")
-                        .unwrap_or(0),
-                )
                 .filter(|e| e.provenance == "judge")
                 .filter_map(|e| {
                     Some(DesignJudge {
@@ -307,11 +381,11 @@ impl Store {
                     })
                 })
                 .collect();
-            let score = super::analysis::score(&attempt);
+            let score = super::analysis::score(attempt);
             out.push(DesignEntry {
                 attempt_id: attempt.id.clone(),
                 run_id: attempt.run_id.clone(),
-                run_created_at: row.get(2),
+                run_created_at: *run_created_at,
                 version_id: attempt.version_id.clone(),
                 name: manifest.name.clone(),
                 task_family: manifest.task_family.clone(),
@@ -327,7 +401,8 @@ impl Store {
                 finished_at: attempt.finished_at,
                 duration_ms: attempt.duration_ms,
                 output_tokens: attempt.usage.output,
-                cost: super::analysis::mean_case_cost(&[&attempt], None),
+                // The candidate's own generation; judge calls are the benchmark's expense.
+                cost: attempt.usage.cost,
                 review,
                 judges,
                 score,
@@ -378,7 +453,8 @@ impl Store {
     pub async fn usage_ledger(&self) -> Result<Vec<UsageLedgerEntry>> {
         // Each native prompt owns its own session. Workflow roots aggregate these
         // children for benchmark quality, but must not count them twice in Stats.
-        let rows=sqlx::query("WITH native_attempts AS (SELECT id,phase,data_json FROM attempts a WHERE COALESCE(json_array_length(data_json,'$.workflowSteps'),0)=0 AND NOT EXISTS(SELECT 1 FROM workflow_steps s WHERE s.root_attempt_id=a.id) UNION ALL SELECT attempt_id AS id,phase,data_json FROM workflow_steps) SELECT id,json_extract(data_json,'$.sessionId'),json_extract(data_json,'$.configuration.providerId'),COALESCE(json_extract(data_json,'$.observed.modelId'),json_extract(data_json,'$.configuration.modelId')),json_extract(data_json,'$.observed.effort'),json_extract(data_json,'$.usage.input'),json_extract(data_json,'$.usage.output'),json_extract(data_json,'$.usage.cost'),json_extract(data_json,'$.durationMs'),json_extract(data_json,'$.finishedAt') FROM native_attempts WHERE phase='terminal' AND json_extract(data_json,'$.sessionId') IS NOT NULL AND json_extract(data_json,'$.evidenceHash') IS NOT NULL AND json_extract(data_json,'$.finishedAt') IS NOT NULL ORDER BY json_extract(data_json,'$.finishedAt'),id").fetch_all(&self.pool).await?;
+        // A rendering awaiting its panel has already paid for its generation.
+        let rows=sqlx::query("WITH native_attempts AS (SELECT id,phase,data_json FROM attempts a WHERE COALESCE(json_array_length(data_json,'$.workflowSteps'),0)=0 AND NOT EXISTS(SELECT 1 FROM workflow_steps s WHERE s.root_attempt_id=a.id) UNION ALL SELECT attempt_id AS id,phase,data_json FROM workflow_steps) SELECT id,json_extract(data_json,'$.sessionId'),json_extract(data_json,'$.configuration.providerId'),COALESCE(json_extract(data_json,'$.observed.modelId'),json_extract(data_json,'$.configuration.modelId')),json_extract(data_json,'$.observed.effort'),json_extract(data_json,'$.usage.input'),json_extract(data_json,'$.usage.output'),json_extract(data_json,'$.usage.cost'),json_extract(data_json,'$.durationMs'),json_extract(data_json,'$.finishedAt') FROM native_attempts WHERE phase IN ('terminal','awaiting_judges') AND json_extract(data_json,'$.sessionId') IS NOT NULL AND json_extract(data_json,'$.evidenceHash') IS NOT NULL AND json_extract(data_json,'$.finishedAt') IS NOT NULL ORDER BY json_extract(data_json,'$.finishedAt'),id").fetch_all(&self.pool).await?;
         let mut ledger: Vec<UsageLedgerEntry> = rows
             .into_iter()
             .map(|r| UsageLedgerEntry {
@@ -396,7 +472,7 @@ impl Store {
             .collect();
         let evaluations = sqlx::query_scalar::<_, String>(
             "SELECT e.value FROM attempts a,json_each(a.data_json,'$.evaluations') e
-             WHERE a.phase='terminal' AND json_extract(e.value,'$.provenance') IN ('judge','judge_failure')
+             WHERE a.phase IN ('terminal','awaiting_judges') AND json_extract(e.value,'$.provenance') IN ('judge','judge_failure')
                AND json_extract(e.value,'$.details.sessionId') IS NOT NULL"
         ).fetch_all(&self.pool).await?;
         for encoded in evaluations {
@@ -461,8 +537,10 @@ impl Store {
     }
     pub async fn recover(&self) -> Result<()> {
         // Never retry an attempt that may have crossed the host acceptance boundary.
+        // A rendering awaiting its panel has a sealed generation; its run asks the
+        // panel after resume, and reconciliation settles any judge turn cut off.
         let rows = sqlx::query_scalar::<_, String>(
-            "SELECT data_json FROM attempts WHERE phase NOT IN ('pending','terminal')",
+            "SELECT data_json FROM attempts WHERE phase NOT IN ('pending','terminal','awaiting_judges')",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -581,6 +659,96 @@ impl Store {
         Ok(())
     }
 }
+/// The distinct selections a run's acknowledged attempts ran with, from rows
+/// of `[configuration id, effort, fast mode as 0 or 1]`.
+fn observed_selections(rows: Option<&str>) -> Vec<ObservedRunSelection> {
+    let rows: Vec<(String, Option<String>, Option<i64>)> = rows
+        .and_then(|rows| serde_json::from_str(rows).ok())
+        .unwrap_or_default();
+    let mut selections: Vec<ObservedRunSelection> = Vec::new();
+    for (configuration_id, effort, fast_mode) in rows {
+        let selection = ObservedRunSelection {
+            configuration_id,
+            effort,
+            fast_mode: fast_mode.map(|fast| fast != 0),
+        };
+        if !selections.contains(&selection) {
+            selections.push(selection);
+        }
+    }
+    selections
+}
+
+/// The model a gallery card stands for: the leaderboard's own attribution, so
+/// a refused selection stays with the candidate that was asked for.
+fn card_configuration(attempt: &Attempt) -> std::borrow::Cow<'_, Configuration> {
+    super::analysis::execution_configuration(attempt)
+}
+
+/// The judge batch a card shows: the newest one whose valid votes reached its
+/// panel size, else the newest one. An unfinished re-evaluation never hides a
+/// settled panel.
+fn scoring_batch(evaluations: &[Evaluation]) -> std::ops::Range<usize> {
+    let markers: Vec<usize> = evaluations
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.provenance == "render")
+        .map(|(index, _)| index)
+        .collect();
+    let batch = |position: usize| {
+        let start = markers[position];
+        start
+            ..markers
+                .get(position + 1)
+                .copied()
+                .unwrap_or(evaluations.len())
+    };
+    for position in (0..markers.len()).rev() {
+        let range = batch(position);
+        let expected = evaluations[range.start]
+            .details
+            .as_ref()
+            .and_then(|d| d["expectedJudges"].as_u64())
+            .unwrap_or(1) as usize;
+        let votes = evaluations[range.clone()]
+            .iter()
+            .filter(|e| {
+                e.provenance == "judge"
+                    && e.score
+                        .is_some_and(|s| s.is_finite() && (0.0..=1.0).contains(&s))
+            })
+            .count();
+        if votes >= expected {
+            return range;
+        }
+    }
+    match markers.last() {
+        Some(_) => batch(markers.len() - 1),
+        None => 0..evaluations.len(),
+    }
+}
+
+/// How well an attempt can stand for its card: a scored rendering, a rendering,
+/// a settled attempt, anything else.
+fn card_tier(attempt: &Attempt) -> u8 {
+    if attempt.phase != "terminal" {
+        return 0;
+    }
+    let rendering = attempt
+        .output
+        .as_deref()
+        .is_some_and(|o| !o.trim().is_empty())
+        && !matches!(
+            attempt.outcome.as_deref(),
+            Some("cancelled" | "selection_changed" | "interrupted" | "dispatch_uncertain")
+        );
+    match (rendering, super::analysis::score(attempt).is_some()) {
+        (true, true) => 3,
+        (true, false) => 2,
+        _ => 1,
+    }
+}
+
 pub async fn event(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     id: &str,
@@ -598,7 +766,7 @@ pub async fn event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[tokio::test]
     async fn the_design_gallery_keeps_the_newest_rendering_per_brief_and_configuration() {
@@ -661,6 +829,198 @@ mod tests {
             .await
             .unwrap();
         assert!(none.is_empty());
+    }
+    #[tokio::test]
+    async fn one_gallery_card_per_model_shows_its_scored_rendering_and_generation_cost() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = |revision: &str, effort: Option<&str>| json!({"id":"sonnet","providerId":"claude-acp","accountId":"account","modelId":"sonnet","effort":effort,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":revision});
+        let judge = configuration("r1", None);
+        // Two batches: only the newer one shows, with its criteria unwrapped.
+        let judged = json!([
+            {"id":"objective","evaluatorRevision":"1","verdict":"pending_review","score":null,"reason":"waiting","createdAt":5,"provenance":"objective","artifacts":[]},
+            {"id":"render-1","evaluatorRevision":"1","verdict":"rendered","score":null,"reason":"r","createdAt":6,"provenance":"render","artifacts":[],"details":{"expectedJudges":2}},
+            {"id":"legacy","evaluatorRevision":"1","verdict":"judged","score":0.9,"reason":"old","createdAt":7,"provenance":"judge","artifacts":[],"details":{"adherence":0.9},"judge":judge},
+            {"id":"render-2","evaluatorRevision":"1","verdict":"rendered","score":null,"reason":"r","createdAt":8,"provenance":"render","artifacts":[],"details":{"expectedJudges":2}},
+            {"id":"new-1","evaluatorRevision":"1","verdict":"judged","score":0.6,"reason":"one","createdAt":9,"provenance":"judge","artifacts":[],"details":{"judgeBatchId":"b","sessionId":"s1","usageComplete":true,"criteria":{"adherence":0.6}},"judge":judge,"usage":{"schema":"native","cost":0.1}},
+            {"id":"new-2","evaluatorRevision":"1","verdict":"judged","score":0.8,"reason":"two","createdAt":10,"provenance":"judge","artifacts":[],"details":{"judgeBatchId":"b","sessionId":"s2","usageComplete":true,"criteria":{"adherence":0.8}},"judge":judge},
+            {"id":"failed","evaluatorRevision":"1","verdict":"abstained","score":null,"reason":"busy","createdAt":11,"provenance":"judge_failure","artifacts":[],"details":{"judgeBatchId":"b","usageComplete":true,"criteria":null},"judge":judge}
+        ]);
+        // Newest first: a pending retest under a new runtime, a cancelled one whose
+        // session acknowledged another model, then the judged rendering.
+        let mut substituted = configuration("r2", None);
+        substituted["modelId"] = json!("default");
+        let attempts = [
+            (
+                "run-3",
+                3,
+                "pending",
+                None,
+                configuration("r2", None),
+                Value::Null,
+                json!([]),
+                None,
+            ),
+            (
+                "run-2",
+                2,
+                "terminal",
+                Some("cancelled"),
+                configuration("r2", None),
+                substituted,
+                json!([]),
+                Some("<svg data-run='2'/>"),
+            ),
+            (
+                "run-1",
+                1,
+                "terminal",
+                Some("judged"),
+                configuration("r1", None),
+                configuration("r1", Some("default")),
+                judged,
+                Some("<svg data-run='1'/>"),
+            ),
+        ];
+        let mut tx = store.pool.begin().await.unwrap();
+        for (run, created_at, phase, outcome, requested, observed, evaluations, output) in attempts
+        {
+            let request = json!({"requestKey":run,"versionIds":[version.id],"configurations":[requested],"repetitions":1,"timeoutSeconds":600,"maxExecutions":4,"preview":false});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'running',1,?,?,?)")
+                .bind(run).bind(run).bind(created_at).bind(created_at).bind(request.to_string())
+                .execute(&mut *tx).await.unwrap();
+            let attempt = json!({"id":format!("attempt-{run}"),"runId":run,"versionId":version.id,"configuration":requested,"observed":observed,"repetition":0,"phase":phase,"outcome":outcome,"output":output,"finishedAt":created_at,"durationMs":1000,"usage":{"schema":"native","output":120,"cost":0.05},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'sonnet',0,?,?)")
+                .bind(format!("attempt-{run}")).bind(run).bind(&version.id).bind(phase).bind(attempt.to_string())
+                .execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let card = &entries[0];
+        assert_eq!(card.attempt_id, "attempt-run-1");
+        assert_eq!(card.score, Some(0.7));
+        // The card's cost is the candidate's own generation, whatever the judges cost.
+        assert_eq!(card.cost, Some(0.05));
+        assert_eq!(
+            card.judges.iter().map(|j| j.score).collect::<Vec<_>>(),
+            [0.6, 0.8]
+        );
+        assert_eq!(card.judges[0].details, Some(json!({"adherence":0.6})));
+    }
+    #[tokio::test]
+    async fn an_excluded_authored_cell_is_no_gallery_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let mut draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        draft.environment["authoredBy"] = json!(["fable"]);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = json!({"id":"fable","providerId":"claude-acp","accountId":"account","modelId":"claude-fable-5-1","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"r1"});
+        let insert = |run: &'static str, created_at: i64, attempt: Value| {
+            let store = &store;
+            let request = json!({"requestKey":run,"versionIds":[version.id],"configurations":[configuration],"repetitions":1,"timeoutSeconds":600,"maxExecutions":1,"preview":false});
+            async move {
+                sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'running',1,?,?,?)")
+                    .bind(run).bind(run).bind(created_at).bind(created_at).bind(request.to_string())
+                    .execute(&store.pool).await.unwrap();
+                sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'fable',0,'terminal',?)")
+                    .bind(attempt["id"].as_str().unwrap()).bind(run).bind(attempt["versionId"].as_str().unwrap()).bind(attempt.to_string())
+                    .execute(&store.pool).await.unwrap();
+            }
+        };
+        // The runner settled the planned cell without a model call.
+        insert("run-2", 2, json!({"id":"excluded","runId":"run-2","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"excluded","reason":"authored by this candidate","output":null,"finishedAt":2,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).await;
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert!(entries.is_empty());
+        // A rendering an older run made still stands for that model.
+        insert("run-1", 1, json!({"id":"rendering","runId":"run-1","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pending_review","output":"<svg/>","finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).await;
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].attempt_id, "rendering");
+    }
+    #[test]
+    fn a_refused_rendering_stays_on_the_requested_card() {
+        let requested = json!({"id":"opus","providerId":"claude-acp","accountId":"account","modelId":"opus","effort":"high","fastMode":true,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"r1"});
+        let mut observed = requested.clone();
+        observed["effort"] = json!("medium");
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v","configuration":requested,"observed":observed,"repetition":0,"phase":"terminal","outcome":"selection_changed","usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).unwrap();
+        assert_eq!(card_configuration(&attempt).effort.as_deref(), Some("high"));
+        attempt.observed.as_mut().unwrap().effort = Some("high".into());
+        attempt.observed.as_mut().unwrap().fast_mode = Some(false);
+        assert_eq!(card_configuration(&attempt).fast_mode, Some(true));
+    }
+    #[test]
+    fn a_card_shows_the_newest_settled_judge_batch() {
+        let evaluation = |provenance: &str, score: Option<f64>| -> Evaluation {
+            let details = if provenance == "render" {
+                json!({"expectedJudges": 2})
+            } else {
+                Value::Null
+            };
+            serde_json::from_value(json!({"id":"e","evaluatorRevision":"1","verdict":"v","score":score,"reason":"r","createdAt":1,"provenance":provenance,"artifacts":[],"details":details})).unwrap()
+        };
+        let mut evaluations = vec![
+            evaluation("objective", None),
+            evaluation("render", None),
+            evaluation("judge", Some(0.6)),
+            evaluation("judge", Some(0.8)),
+        ];
+        assert_eq!(scoring_batch(&evaluations), 1..4);
+        // An unfinished re-evaluation keeps the settled panel on the card.
+        evaluations.extend([
+            evaluation("render", None),
+            evaluation("judge", Some(0.2)),
+            evaluation("judge_failure", None),
+        ]);
+        assert_eq!(scoring_batch(&evaluations), 1..4);
+        evaluations.push(evaluation("judge", Some(0.4)));
+        assert_eq!(scoring_batch(&evaluations), 4..8);
+        assert_eq!(scoring_batch(&evaluations[..1]), 0..1);
+    }
+    #[tokio::test]
+    async fn the_usage_ledger_counts_each_judge_session_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let draft = super::super::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let config = json!({"id":"c","providerId":"claude-acp","accountId":"account","modelId":"sonnet","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let judge = json!({"id":"j","providerId":"claude-acp","accountId":"account","modelId":"haiku","effort":"low","fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let req = json!({"requestKey":"ledger","versionIds":[version.id],"configurations":[config],"repetitions":1,"timeoutSeconds":30,"maxExecutions":4});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','ledger','completed',1,0,0,?)").bind(req.to_string()).execute(&store.pool).await.unwrap();
+        let evaluations = json!([
+            {"id":"vote","evaluatorRevision":"1","verdict":"judged","score":0.7,"reason":"ok","createdAt":200,"provenance":"judge","artifacts":[],"details":{"sessionId":"judge-1","durationMs":40},"judge":judge,"usage":{"schema":"native","input":7,"output":3,"cost":0.01}},
+            {"id":"abstained","evaluatorRevision":"1","verdict":"abstained","score":null,"reason":"off form","createdAt":150,"provenance":"judge_failure","artifacts":[],"details":{"sessionId":"judge-2","durationMs":20},"judge":judge,"usage":{"schema":"native","input":5,"output":2,"cost":0.02}},
+            {"id":"busy","evaluatorRevision":"1","verdict":"abstained","score":null,"reason":"busy","createdAt":160,"provenance":"judge_failure","artifacts":[],"details":{"judgeBatchId":"b"},"judge":judge}
+        ]);
+        let attempt = json!({"id":"candidate","runId":"run","versionId":version.id,"configuration":config,"repetition":0,"phase":"terminal","outcome":"judged","sessionId":"candidate-session","observed":config,"finishedAt":100,"durationMs":10,"evidenceHash":"sealed","usage":{"input":30,"output":9,"cost":0.2,"schema":"native"},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
+        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES('candidate','run',?,'c',0,'terminal',?)").bind(&version.id).bind(attempt.to_string()).execute(&store.pool).await.unwrap();
+        let ledger = store.usage_ledger().await.unwrap();
+        assert_eq!(
+            ledger
+                .iter()
+                .map(|e| (e.session_id.as_str(), e.model_id.as_str(), e.finished_at))
+                .collect::<Vec<_>>(),
+            [
+                ("candidate-session", "sonnet", 100),
+                ("judge-2", "haiku", 150),
+                ("judge-1", "haiku", 200)
+            ]
+        );
+        assert_eq!(ledger[2].cost_usd, Some(0.01));
+        assert_eq!(ledger[2].effort.as_deref(), Some("low"));
+        assert_eq!(ledger[2].duration_ms, Some(40));
+        assert_eq!(ledger[1].input_tokens, Some(5));
     }
     #[tokio::test]
     async fn history_summaries_and_result_pages_do_not_load_attempt_evidence() {
@@ -808,6 +1168,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dated_attempt_listing_shows_each_attempt_as_it_stood_then() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let config = json!({"id":"c","providerId":"provider","accountId":"account","modelId":"native","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let req = json!({"requestKey":"dated","versionIds":[version.id],"configurations":[config],"repetitions":1,"timeoutSeconds":30,"maxExecutions":3});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','dated','completed',1,0,0,?)").bind(req.to_string()).execute(&store.pool).await.unwrap();
+        let evaluation = |id: &str, at: i64, provenance: &str, verdict: &str, score: Value| json!({"id":id,"evaluatorRevision":"1","verdict":verdict,"score":score,"reason":"r","createdAt":at,"provenance":provenance,"artifacts":[]});
+        let mut marker = evaluation("marker", 10, "render", "rendered", Value::Null);
+        marker["details"] = json!({"expectedJudges": 2});
+        let attempts = [
+            // Failed at 2; a human review at 10 flipped it and its stored outcome.
+            (
+                "reviewed",
+                "pass",
+                Some(2),
+                json!([
+                    evaluation("objective", 2, "objective", "fail", json!(0.0)),
+                    evaluation("review", 10, "human", "pass", json!(1.0))
+                ]),
+            ),
+            // Waiting for its panel at 3; judged at 11 and 12.
+            (
+                "rendering",
+                "judged",
+                Some(2),
+                json!([
+                    evaluation("pending", 3, "objective", "pending_review", Value::Null),
+                    marker,
+                    evaluation("vote-1", 11, "judge", "judged", json!(0.6)),
+                    evaluation("vote-2", 12, "judge", "judged", json!(0.8))
+                ]),
+            ),
+            // Still running at 5; it finished at 9.
+            (
+                "later",
+                "fail",
+                Some(9),
+                json!([evaluation("late", 9, "objective", "fail", json!(0.0))]),
+            ),
+        ];
+        for (id, outcome, finished, evaluations) in attempts {
+            let a = json!({"id":id,"runId":"run","versionId":version.id,"configuration":config,"repetition":0,"phase":"terminal","outcome":outcome,"startedAt":1,"finishedAt":finished,"durationMs":10,"usage":{"output":4,"cost":0.5,"schema":"native"},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,?,0,'terminal',?)").bind(id).bind(&version.id).bind(id).bind(a.to_string()).execute(&store.pool).await.unwrap();
+        }
+        let listed = |as_of: Option<i64>| {
+            let store = &store;
+            async move {
+                store
+                    .list_attempts(&ResultQuery {
+                        attempt_ids: Some(vec![
+                            "reviewed".into(),
+                            "rendering".into(),
+                            "later".into(),
+                        ]),
+                        as_of,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|a| (a.id.clone(), a))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            }
+        };
+        let today = listed(None).await;
+        assert_eq!(today["reviewed"].outcome.as_deref(), Some("pass"));
+        assert_eq!(today["rendering"].outcome.as_deref(), Some("judged"));
+        assert_eq!(today["later"].outcome.as_deref(), Some("fail"));
+        let then = listed(Some(5)).await;
+        assert_eq!(then["reviewed"].outcome.as_deref(), Some("fail"));
+        assert_eq!(then["rendering"].outcome.as_deref(), Some("pending_review"));
+        let later = &then["later"];
+        assert_eq!(
+            (later.outcome.as_deref(), later.phase.as_str()),
+            (None, "running")
+        );
+        assert_eq!((later.finished_at, later.cost), (None, None));
+    }
+
+    #[tokio::test]
+    async fn a_run_summary_names_the_selections_its_attempts_ran_with() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let config = json!({"id":"sonnet","providerId":"claude-acp","accountId":"account","modelId":"sonnet","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let req = json!({"requestKey":"observed","versionIds":[version.id],"configurations":[config],"repetitions":4,"timeoutSeconds":30,"maxExecutions":4});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','observed','running',1,0,0,?)").bind(req.to_string()).execute(&store.pool).await.unwrap();
+        let observed = |model: &str, effort: &str| {
+            let mut observed = config.clone();
+            observed["modelId"] = json!(model);
+            observed["effort"] = json!(effort);
+            observed["fastMode"] = json!(false);
+            observed
+        };
+        for (repetition, outcome, acknowledged) in [
+            (0, "pass", observed("sonnet", "high")),
+            (1, "fail", observed("sonnet", "high")),
+            // A refusal and a substituted model ran no candidate selection.
+            (2, "selection_changed", observed("sonnet", "low")),
+            (3, "selection_changed", observed("default", "medium")),
+        ] {
+            let a = json!({"id":format!("a{repetition}"),"runId":"run","versionId":version.id,"configuration":config,"observed":acknowledged,"repetition":repetition,"phase":"terminal","outcome":outcome,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,'sonnet',?,'terminal',?)").bind(format!("a{repetition}")).bind(&version.id).bind(repetition).bind(a.to_string()).execute(&store.pool).await.unwrap();
+        }
+        let summary = store.runs().await.unwrap().remove(0);
+        assert_eq!(
+            summary.observed_selections,
+            vec![ObservedRunSelection {
+                configuration_id: "sonnet".into(),
+                effort: Some("high".into()),
+                fast_mode: Some(false),
+            }]
+        );
+        // A finished run starts nothing, so its evidence is never read here.
+        store.set_run_state("run", "completed").await.unwrap();
+        assert!(store.runs().await.unwrap()[0]
+            .observed_selections
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn historical_definitions_and_filtered_usage_survive_ui_window_limits() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).await.unwrap();
@@ -906,9 +1392,22 @@ mod tests {
             35
         );
         assert!(!ledger.iter().any(|e| e.attempt_id == "root"));
+        // A rendering awaiting its panel has paid for its generation.
+        let mut waiting = make("waiting", 4);
+        waiting.phase = "awaiting_judges".into();
+        waiting.outcome = Some("pending_review".into());
+        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES('waiting','run',?,'waiting',0,'awaiting_judges',?)").bind(&version.id).bind(serde_json::to_string(&waiting).unwrap()).execute(&store.pool).await.unwrap();
+        let ledger = store.usage_ledger().await.unwrap();
+        assert!(ledger
+            .iter()
+            .any(|e| e.attempt_id == "waiting" && e.input_tokens == Some(4)));
         store.recover().await.unwrap();
         let cancelled = store.attempt("cancelled").await.unwrap();
         assert_eq!(cancelled.outcome.as_deref(), Some("cancelled"));
         assert!(cancelled.output.is_none());
+        // A sealed rendering awaiting its panel is no uncertain dispatch.
+        let waiting = store.attempt("waiting").await.unwrap();
+        assert_eq!(waiting.phase, "awaiting_judges");
+        assert_eq!(waiting.outcome.as_deref(), Some("pending_review"));
     }
 }

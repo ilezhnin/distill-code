@@ -158,6 +158,12 @@ function DesignCard({
     entry.phase === "terminal"
       ? (entry.outcome ?? "pending_review")
       : entry.phase;
+  // Only a rendering a panel still owes a verdict is waiting for one.
+  const awaitingPanel =
+    entry.phase === "awaiting_judges" ||
+    (entry.phase === "terminal"
+      ? state === "pending_review"
+      : entry.outcome === "pending_review");
   return (
     <li>
       <button
@@ -185,9 +191,11 @@ function DesignCard({
           ) : (
             <div className="min-w-0">
               <div className="font-medium">{t("design.entry", { number })}</div>
-              <div className="text-xs text-muted-foreground">
-                {t("design.awaitingReview")}
-              </div>
+              {awaitingPanel ? (
+                <div className="text-xs text-muted-foreground">
+                  {t("design.awaitingReview")}
+                </div>
+              ) : null}
             </div>
           )}
           <div className="shrink-0 text-right">

@@ -8,6 +8,12 @@ import type { CatalogEntry, Configuration, LeaderboardReport } from "../types";
 
 export const benchmarkKeys = ["benchmarks"] as const;
 
+/**
+ * History recomputes a leaderboard per observation, and a running batch saves
+ * an attempt every few seconds, so events refresh it at most this often.
+ */
+export const HISTORY_REFRESH_MS = 15_000;
+
 function useBenchmarkInvalidation(enabled: boolean) {
   const client = useQueryClient();
   useEffect(() => {
@@ -15,8 +21,20 @@ function useBenchmarkInvalidation(enabled: boolean) {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     let sequence = 0;
+    let historyTimer: ReturnType<typeof setTimeout> | undefined;
     const refresh = () => {
-      void client.invalidateQueries({ queryKey: benchmarkKeys });
+      void client.invalidateQueries({
+        queryKey: benchmarkKeys,
+        predicate: (query) => query.queryKey[1] !== "history",
+      });
+      if (historyTimer !== undefined) return;
+      historyTimer = setTimeout(() => {
+        historyTimer = undefined;
+        if (cancelled) return;
+        void client.invalidateQueries({
+          queryKey: [...benchmarkKeys, "history"],
+        });
+      }, HISTORY_REFRESH_MS);
     };
     // Subscribe first, then reconcile committed events to close the mount gap.
     void benchmarkApi
@@ -47,6 +65,7 @@ function useBenchmarkInvalidation(enabled: boolean) {
       .catch(refresh);
     return () => {
       cancelled = true;
+      clearTimeout(historyTimer);
       unlisten?.();
     };
   }, [client, enabled]);

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
+import {
+  boardsFor,
+  configurationKey,
+  rankRows,
+  rowKey,
+} from "../lib/benchmarkBoards";
 import { cohort, configuration, leaderboardRow } from "./fixtures";
 
 const rows = [
@@ -83,6 +88,18 @@ describe("leaderboard boards", () => {
         }),
       ),
     ).not.toBe(rowKey(before));
+  });
+
+  it("keeps an attempt with auxiliary calls on its configuration's row", () => {
+    const row = leaderboardRow({ configuration });
+    const auxiliary = {
+      ...configuration,
+      executionProfile: "native_text_auxiliary",
+    };
+    expect(configurationKey(auxiliary)).toBe(rowKey(row));
+    expect(
+      configurationKey({ ...configuration, executionProfile: "isolated_ui" }),
+    ).not.toBe(rowKey(row));
   });
 
   it("builds one board per shared measurement plus one per work class", () => {

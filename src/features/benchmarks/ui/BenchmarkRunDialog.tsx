@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconX } from "@tabler/icons-react";
@@ -20,8 +20,10 @@ import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { configurationLabel } from "../lib/benchmarkDraft";
-import { shortId } from "../lib/benchmarkLabels";
+import { authoredByCandidate } from "../lib/benchmarkEligibility";
+import { modelDisplayName, shortId } from "../lib/benchmarkLabels";
 import type {
   BenchmarkDefinition,
   Configuration,
@@ -35,6 +37,9 @@ import {
   SectionHeading,
   SelectField,
 } from "./BenchmarkPrimitives";
+
+/** Judge calls reserved per judged case (runner::MAX_JUDGES). */
+const JUDGE_CALLS = 3;
 
 export function BenchmarkRunDialog({
   definitions,
@@ -68,8 +73,50 @@ export function BenchmarkRunDialog({
   const [effort, setEffort] = useState("none");
   const [fastMode, setFastMode] = useState(false);
   const [versions, setVersions] = useState(selectedVersionIds);
-  const [configurations, setConfigurations] = useState<Configuration[]>(
-    selectedConfiguration ? [selectedConfiguration] : [],
+  const [configurations, setConfigurations] = useState<Configuration[]>([]);
+  // A catch-up row carries the runtime of its newest attempt; re-select its
+  // model from today's inventory so the runner does not refuse a stale pin.
+  const catchUpInventory = useQuery({
+    queryKey: [
+      "benchmark-catch-up-inventory",
+      selectedConfiguration?.providerId ?? "",
+      selectedConfiguration?.accountId ?? null,
+    ],
+    queryFn: () =>
+      selectedConfiguration
+        ? benchmarkApi.getInventory(
+            selectedConfiguration.providerId,
+            selectedConfiguration.accountId ?? null,
+          )
+        : Promise.resolve([]),
+    enabled: Boolean(selectedConfiguration),
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
+  });
+  const catchUp = useMemo(
+    () =>
+      selectedConfiguration && catchUpInventory.data
+        ? resolveCatchUpConfiguration(
+            selectedConfiguration,
+            catchUpInventory.data,
+          )
+        : null,
+    [selectedConfiguration, catchUpInventory.data],
+  );
+  const catchUpSeeded = useRef(false);
+  useEffect(() => {
+    if (catchUpSeeded.current || !catchUp || !("configuration" in catchUp))
+      return;
+    catchUpSeeded.current = true;
+    const pinned = catchUp.configuration;
+    setConfigurations((previous) =>
+      previous.some((entry) => entry.id === pinned.id)
+        ? previous
+        : [pinned, ...previous],
+    );
+  }, [catchUp]);
+  const resolvingCatchUp = Boolean(
+    selectedConfiguration && catchUpInventory.isPending,
   );
   const [repetitions, setRepetitions] = useState(1);
   const [timeoutSeconds, setTimeoutSeconds] = useState(300);
@@ -87,18 +134,23 @@ export function BenchmarkRunDialog({
   const published = definitions.filter(
     (entry) => !entry.archived && entry.versions.length > 0,
   );
-  const caseTurns = published
+  const chosenVersions = published
     .flatMap((definition) => definition.versions)
-    .filter((version) => versions.includes(version.id))
-    .reduce(
+    .filter((version) => versions.includes(version.id));
+  // Mirrors preview_run: every owed cell's turns plus the judge reservation;
+  // a candidate owes nothing on a case it wrote.
+  const owedTurns = (configuration: Configuration) =>
+    chosenVersions.reduce(
       (total, version) =>
-        total +
-        (version.manifest.workflow?.steps.length ?? 1) +
-        (version.manifest.evaluator.kind === "rubric" ? 3 : 0),
+        authoredByCandidate(version.manifest.environment, configuration)
+          ? total
+          : total +
+            (version.manifest.workflow?.steps.length ?? 1) +
+            (version.manifest.evaluator.kind === "rubric" ? JUDGE_CALLS : 0),
       0,
     );
   const [maxExecutions, setMaxExecutions] = useState(() =>
-    selectedConfiguration ? Math.max(20, caseTurns) : 20,
+    selectedConfiguration ? Math.max(20, owedTurns(selectedConfiguration)) : 20,
   );
   const [requestKey] = useState(() => crypto.randomUUID());
   const [preview, setPreview] = useState<{
@@ -140,7 +192,9 @@ export function BenchmarkRunDialog({
   );
   const signature = JSON.stringify(request);
   const validPreview = preview?.signature === signature ? preview.result : null;
-  const count = caseTurns * configurations.length * repetitions;
+  const count =
+    configurations.reduce((total, entry) => total + owedTurns(entry), 0) *
+    repetitions;
   const supported = new Set(
     capabilities.data
       ?.filter((entry) => entry.supported)
@@ -404,10 +458,32 @@ export function BenchmarkRunDialog({
                 </Button>
               </div>
             ) : null}
+            {resolvingCatchUp ? (
+              <BenchmarkEmpty title={t("loading")} compact />
+            ) : null}
+            {catchUpInventory.error ? (
+              <BenchmarkAlert>
+                {benchmarkErrorMessage(catchUpInventory.error)}
+              </BenchmarkAlert>
+            ) : null}
+            {selectedConfiguration && catchUp && "issue" in catchUp ? (
+              <BenchmarkAlert>
+                {catchUp.issue === "unavailable"
+                  ? (catchUp.reason ?? t("states.unsupported"))
+                  : t(
+                      catchUp.issue === "missing"
+                        ? "run.catchUpMissing"
+                        : "run.catchUpChanged",
+                      { model: modelDisplayName(selectedConfiguration) },
+                    )}
+              </BenchmarkAlert>
+            ) : null}
             {configurations.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                {t("run.noConfigurations")}
-              </p>
+              resolvingCatchUp ? null : (
+                <p className="text-xs text-muted-foreground">
+                  {t("run.noConfigurations")}
+                </p>
+              )
             ) : (
               <ul className="divide-y divide-border">
                 {configurations.map((entry) => (

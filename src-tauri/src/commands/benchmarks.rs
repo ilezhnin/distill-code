@@ -182,16 +182,26 @@ pub fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
     }
     capabilities
 }
+/// Ledger analysis is CPU work over every attempt; it runs off the async
+/// workers so a long history never stalls other commands.
+async fn analyze<T: Send + 'static>(
+    data: QueryData,
+    work: impl FnOnce(&QueryData) -> T + Send + 'static,
+) -> Result<T> {
+    tauri::async_runtime::spawn_blocking(move || work(&data))
+        .await
+        .map_err(|error| BenchmarkError::new("infrastructure_failure", error.to_string()))
+}
 #[tauri::command]
 pub async fn benchmark_get_leaderboard(
     app: AppHandle,
     query: ResultQuery,
 ) -> Result<LeaderboardReport> {
     let s = service(&app).await?;
-    Ok(benchmarks::analysis::leaderboard(
-        &s.query_data().await?,
-        &query,
-    ))
+    analyze(s.query_data().await?, move |data| {
+        benchmarks::analysis::leaderboard(data, &query)
+    })
+    .await
 }
 #[tauri::command]
 pub async fn benchmark_get_history(
@@ -199,10 +209,10 @@ pub async fn benchmark_get_history(
     configuration: Configuration,
 ) -> Result<Vec<HistorySnapshot>> {
     let s = service(&app).await?;
-    Ok(benchmarks::analysis::history(
-        &s.query_data().await?,
-        &configuration,
-    ))
+    analyze(s.query_data().await?, move |data| {
+        benchmarks::analysis::history(data, &configuration)
+    })
+    .await
 }
 #[tauri::command]
 pub async fn benchmark_get_usage_series(
@@ -344,4 +354,33 @@ pub async fn benchmark_save_schedule(app: AppHandle, schedule: Schedule) -> Resu
     let value = s.save_schedule(schedule).await?;
     s.changed().await;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn analysis_never_holds_the_async_worker() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        // This task can only run while the analysis leaves the worker free.
+        let ping = tokio::spawn(async move {
+            let _ = sender.send(());
+        });
+        let data = QueryData {
+            definitions: Vec::new(),
+            versions: Vec::new(),
+            runs: Vec::new(),
+            attempts: Vec::new(),
+        };
+        let received = analyze(data, move |_| {
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok()
+        })
+        .await
+        .unwrap();
+        assert!(received);
+        ping.await.unwrap();
+    }
 }

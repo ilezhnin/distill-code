@@ -1,9 +1,65 @@
 //! Per-case measurements and frozen baseline comparisons.
 use super::types::*;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn score(attempt: &Attempt) -> Option<f64> {
     score_as_of(attempt, None)
+}
+
+fn valid_score(score: &f64) -> bool {
+    score.is_finite() && (0.0..=1.0).contains(score)
+}
+
+/// The judge panel's state over a list of evaluations in recorded order.
+enum Panel {
+    /// No render marker: the attempt was never sent to a panel.
+    Absent,
+    /// Markers exist, but no batch reached its panel size.
+    Pending,
+    /// The newest batch that reached its panel size: the index of its render
+    /// marker and its valid votes.
+    Settled { marker: usize, votes: Vec<f64> },
+}
+
+/// A batch runs from its render marker to the next one. The newest batch
+/// whose valid votes reached its `expectedJudges` scores the attempt, so an
+/// unfinished re-evaluation never hides a settled panel.
+fn judge_panel(evaluations: &[&Evaluation]) -> Panel {
+    let markers: Vec<usize> = evaluations
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.provenance == "render")
+        .map(|(index, _)| index)
+        .collect();
+    if markers.is_empty() {
+        return Panel::Absent;
+    }
+    for position in (0..markers.len()).rev() {
+        let start = markers[position];
+        let end = markers
+            .get(position + 1)
+            .copied()
+            .unwrap_or(evaluations.len());
+        let expected = evaluations[start]
+            .details
+            .as_ref()
+            .and_then(|d| d["expectedJudges"].as_u64())
+            .unwrap_or(1) as usize;
+        let votes: Vec<f64> = evaluations[start..end]
+            .iter()
+            .filter(|e| e.provenance == "judge")
+            .filter_map(|e| e.score)
+            .filter(valid_score)
+            .collect();
+        if votes.len() >= expected {
+            return Panel::Settled {
+                marker: start,
+                votes,
+            };
+        }
+    }
+    Panel::Pending
 }
 
 /// Read legacy records through their latest evidence without rewriting the archive.
@@ -11,21 +67,10 @@ pub(super) fn evaluation_outcome(evaluations: &[Evaluation]) -> Option<&str> {
     if let Some(human) = evaluations.iter().rev().find(|e| e.provenance == "human") {
         return Some(&human.verdict);
     }
-    if let Some(start) = evaluations.iter().rposition(|e| e.provenance == "render") {
-        let expected = evaluations[start]
-            .details
-            .as_ref()
-            .and_then(|d| d["expectedJudges"].as_u64())
-            .unwrap_or(1) as usize;
-        let count = evaluations[start..]
-            .iter()
-            .filter(|e| e.provenance == "judge" && e.score.is_some())
-            .count();
-        return Some(if count >= expected {
-            "judged"
-        } else {
-            "pending_review"
-        });
+    match judge_panel(&evaluations.iter().collect::<Vec<_>>()) {
+        Panel::Settled { .. } => return Some("judged"),
+        Panel::Pending => return Some("pending_review"),
+        Panel::Absent => {}
     }
     evaluations
         .iter()
@@ -39,17 +84,54 @@ pub(super) fn normalize_outcome(mut attempt: Attempt) -> Attempt {
     attempt
 }
 
+/// The outcome shown for an attempt as it stood at `as_of`: none before it
+/// finished, else the newest evidence recorded by then. Today's stored outcome
+/// never stands in for a verdict that was recorded later.
+pub(super) fn outcome_as_of(
+    outcome: Option<&str>,
+    finished_at: Option<i64>,
+    evaluations: &[Evaluation],
+    as_of: Option<i64>,
+) -> Option<String> {
+    let Some(at) = as_of else {
+        return effective_outcome(outcome, evaluations);
+    };
+    if finished_at.is_none_or(|end| end > at) {
+        return None;
+    }
+    let known: Vec<Evaluation> = evaluations
+        .iter()
+        .filter(|e| e.created_at <= at)
+        .cloned()
+        .collect();
+    if has_quality_outcome(outcome)
+        && !is_budget_failure(outcome)
+        && known.iter().all(|e| e.provenance == "human_visual")
+        && evaluations.iter().any(|e| e.provenance != "human_visual")
+    {
+        return Some("pending_review".into());
+    }
+    effective_outcome(outcome, &known)
+}
+
 pub(super) fn effective_outcome(
     outcome: Option<&str>,
     evaluations: &[Evaluation],
 ) -> Option<String> {
-    if has_quality_outcome(outcome) {
+    if has_quality_outcome(outcome) && !is_budget_failure(outcome) {
         evaluation_outcome(evaluations)
             .or(outcome)
             .map(str::to_owned)
     } else {
         outcome.map(str::to_owned)
     }
+}
+
+/// Exceeding the published time or artifact budget is a task failure, not an
+/// infrastructure exclusion: the candidate chose that behavior. It scores a
+/// fixed 0 that no later evaluation of the partial output can change.
+fn is_budget_failure(outcome: Option<&str>) -> bool {
+    matches!(outcome, Some("budget_timeout" | "budget_reached"))
 }
 
 fn has_quality_outcome(outcome: Option<&str>) -> bool {
@@ -71,9 +153,11 @@ pub(super) fn score_as_of(attempt: &Attempt, as_of: Option<i64>) -> Option<f64> 
     if !has_quality_outcome(attempt.outcome.as_deref()) {
         return None;
     }
-    let valid = |score: &f64| score.is_finite() && (0.0..=1.0).contains(score);
     if as_of.is_some_and(|at| attempt.finished_at.is_none_or(|finished| finished > at)) {
         return None;
+    }
+    if is_budget_failure(attempt.outcome.as_deref()) {
+        return Some(0.0);
     }
     let evaluations: Vec<_> = attempt
         .evaluations
@@ -81,24 +165,20 @@ pub(super) fn score_as_of(attempt: &Attempt, as_of: Option<i64>) -> Option<f64> 
         .filter(|e| as_of.is_none_or(|at| e.created_at <= at))
         .collect();
     if let Some(review) = evaluations.iter().rev().find(|e| e.provenance == "human") {
-        return review.score.filter(valid);
+        return review.score.filter(valid_score);
     }
-    let panel_start = evaluations.iter().rposition(|e| e.provenance == "render");
-    let panel = &evaluations[panel_start.unwrap_or(0)..];
-    let judged: Vec<_> = panel
+    match judge_panel(&evaluations) {
+        Panel::Settled { votes, .. } => return median(votes),
+        Panel::Pending => return None,
+        Panel::Absent => {}
+    }
+    // Legacy judge votes recorded without a render marker.
+    let judged: Vec<_> = evaluations
         .iter()
         .filter(|e| e.provenance == "judge")
         .filter_map(|e| e.score)
-        .filter(valid)
+        .filter(valid_score)
         .collect();
-    if let Some(start) = panel_start {
-        let expected = evaluations[start]
-            .details
-            .as_ref()
-            .and_then(|d| d["expectedJudges"].as_u64())
-            .unwrap_or(1) as usize;
-        return (judged.len() >= expected).then(|| median(judged)).flatten();
-    }
     if !judged.is_empty() {
         return median(judged);
     }
@@ -107,7 +187,7 @@ pub(super) fn score_as_of(attempt: &Attempt, as_of: Option<i64>) -> Option<f64> 
         .rev()
         .find(|e| e.provenance != "human_visual" && e.provenance != "judge_failure")
     {
-        return evaluation.score.filter(valid);
+        return evaluation.score.filter(valid_score);
     }
     // Evaluated attempts get their score only from evidence available at the
     // cutoff. Today's mutable outcome cannot fill an earlier missing verdict.
@@ -120,9 +200,7 @@ pub(super) fn score_as_of(attempt: &Attempt, as_of: Option<i64>) -> Option<f64> 
     }
     match attempt.outcome.as_deref()? {
         "pass" => Some(1.0),
-        // Exceeding the published time or artifact budget is a task failure, not
-        // an infrastructure exclusion: the candidate chose that behavior.
-        "fail" | "budget_timeout" | "budget_reached" => Some(0.0),
+        "fail" => Some(0.0),
         _ => None,
     }
 }
@@ -142,7 +220,21 @@ pub(crate) fn configuration_key(configuration: &Configuration) -> String {
     .unwrap_or_default()
 }
 
-/// Runtime probes and omitted defaults do not create new leaderboard candidates.
+/// The runner marks a single attempt that made auxiliary model calls with an
+/// `_auxiliary` profile. That is attempt evidence, not a separate candidate.
+fn ledger_profile(profile: &str) -> &str {
+    profile.strip_suffix("_auxiliary").unwrap_or(profile)
+}
+
+fn has_auxiliary_usage(attempt: &Attempt) -> bool {
+    attempt.usage.schema.contains("auxiliary")
+        || execution_configuration(attempt)
+            .execution_profile
+            .ends_with("_auxiliary")
+}
+
+/// Runtime probes, omitted defaults and auxiliary-call markers do not create
+/// new leaderboard candidates.
 pub(super) fn leaderboard_key(configuration: &Configuration) -> String {
     serde_json::to_string(&(
         &configuration.provider_id,
@@ -155,67 +247,134 @@ pub(super) fn leaderboard_key(configuration: &Configuration) -> String {
             .unwrap_or("default"),
         configuration.fast_mode.unwrap_or(false),
         &configuration.billing_mode,
-        &configuration.execution_profile,
+        ledger_profile(&configuration.execution_profile),
     ))
     .unwrap_or_default()
 }
 
-pub(crate) fn execution_configuration(attempt: &Attempt) -> &Configuration {
-    attempt.observed.as_ref().unwrap_or(&attempt.configuration)
+/// Whether an acknowledged selection is the one asked for: the same model,
+/// and the requested effort and fast mode wherever the request set them.
+pub(crate) fn matches_selection(requested: &Configuration, observed: &Configuration) -> bool {
+    requested.model_id == observed.model_id
+        && requested
+            .effort
+            .as_ref()
+            .is_none_or(|e| Some(e) == observed.effort.as_ref())
+        && requested
+            .fast_mode
+            .is_none_or(|f| Some(f) == observed.fast_mode)
 }
 
+/// What ran. A refused selection (another model, effort or fast mode) stays
+/// with the candidate that was asked for; where that request left effort or
+/// fast mode to the provider, the requested model's acknowledged value fills it.
+pub(crate) fn execution_configuration(attempt: &Attempt) -> Cow<'_, Configuration> {
+    let requested = &attempt.configuration;
+    let Some(observed) = attempt
+        .observed
+        .as_ref()
+        .filter(|observed| observed.model_id == requested.model_id)
+    else {
+        return Cow::Borrowed(requested);
+    };
+    if attempt.outcome.as_deref() != Some("selection_changed")
+        || matches_selection(requested, observed)
+    {
+        return Cow::Borrowed(observed);
+    }
+    let mut asked = requested.clone();
+    if asked.effort.is_none() {
+        asked.effort = observed.effort.clone();
+    }
+    if asked.fast_mode.is_none() {
+        asked.fast_mode = observed.fast_mode;
+    }
+    Cow::Owned(asked)
+}
+
+/// What ran, as Nerf pairs it: the strict configuration, except that an
+/// attempt which also called an auxiliary model stays its configuration's
+/// evidence.
+fn nerf_configuration(attempt: &Attempt) -> Cow<'_, Configuration> {
+    let mut configuration = execution_configuration(attempt);
+    if configuration.execution_profile.ends_with("_auxiliary") {
+        let profile = ledger_profile(&configuration.execution_profile).to_owned();
+        configuration.to_mut().execution_profile = profile;
+    }
+    configuration
+}
+
+fn nerf_key(attempt: &Attempt) -> String {
+    configuration_key(&nerf_configuration(attempt))
+}
+
+/// The conditions a run measured under: its suite, repetitions and timeout.
+/// The execution cap only admits a plan, so it is not a condition.
 fn request_conditions(request: &RunRequest) -> String {
     let mut versions = request.version_ids.clone();
     versions.sort();
-    serde_json::to_string(&(
-        versions,
-        request.repetitions,
-        request.timeout_seconds,
-        request.max_executions,
-    ))
-    .unwrap_or_default()
+    serde_json::to_string(&(versions, request.repetitions, request.timeout_seconds))
+        .unwrap_or_default()
 }
 
 fn cohort(run: &BenchmarkRun) -> String {
     request_conditions(&run.request)
 }
 
+/// Each frozen configuration's conditions, taken from the baseline runs that
+/// produced its snapshots. The requested configuration may leave effort or
+/// fast mode unset while the snapshots carry the observed values, so the
+/// request's own configuration list cannot identify them. A snapshot without
+/// a recorded request adds an unmatchable condition.
+fn frozen_conditions(baseline: &Baseline) -> BTreeMap<String, BTreeSet<String>> {
+    let requests: BTreeMap<&str, &RunRequest> = baseline
+        .run_ids
+        .iter()
+        .map(String::as_str)
+        .zip(&baseline.run_conditions)
+        .collect();
+    let mut frozen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for attempt in &baseline.snapshots {
+        frozen.entry(nerf_key(attempt)).or_default().insert(
+            requests
+                .get(attempt.run_id.as_str())
+                .map(|request| request_conditions(request))
+                .unwrap_or_default(),
+        );
+    }
+    frozen
+}
+
+/// The follow-up run of each frozen configuration: its newest completed run
+/// after the baseline under that configuration's frozen conditions, else its
+/// newest one, which then reports changed conditions.
 fn selected_runs<'a>(
     data: &'a QueryData,
     baseline: &Baseline,
+    frozen: &BTreeMap<String, BTreeSet<String>>,
     query: &ResultQuery,
-) -> Vec<&'a BenchmarkRun> {
-    let conditions: BTreeSet<_> = baseline
-        .run_conditions
-        .iter()
-        .map(request_conditions)
-        .collect();
-    let keys: BTreeSet<_> = baseline
-        .snapshots
-        .iter()
-        .map(|a| configuration_key(execution_configuration(a)))
-        .collect();
+) -> BTreeMap<String, &'a BenchmarkRun> {
     let mut selected = BTreeMap::new();
-    for key in keys {
-        let candidates: Vec<_> = data
-            .runs
-            .iter()
-            .filter(|run| {
-                !run.request.preview
-                    && run.state == "completed"
-                    && run.created_at > baseline.created_at
-                    && !baseline.run_ids.contains(&run.id)
-                    && query.run_id.as_ref().is_none_or(|id| id == &run.id)
-                    && query.as_of.is_none_or(|at| run.updated_at <= at)
-                    && query
-                        .version_ids
-                        .as_ref()
-                        .is_none_or(|ids| ids.iter().all(|id| run.request.version_ids.contains(id)))
-                    && data.attempts.iter().any(|a| {
-                        a.run_id == run.id && configuration_key(execution_configuration(a)) == key
-                    })
-            })
-            .collect();
+    for (key, conditions) in frozen {
+        let candidates: Vec<_> =
+            data.runs
+                .iter()
+                .filter(|run| {
+                    !run.request.preview
+                        && run.state == "completed"
+                        && run.created_at > baseline.created_at
+                        && !baseline.run_ids.contains(&run.id)
+                        && query.run_id.as_ref().is_none_or(|id| id == &run.id)
+                        && query.as_of.is_none_or(|at| run.updated_at <= at)
+                        && query.version_ids.as_ref().is_none_or(|ids| {
+                            ids.iter().all(|id| run.request.version_ids.contains(id))
+                        })
+                        && data
+                            .attempts
+                            .iter()
+                            .any(|a| a.run_id == run.id && nerf_key(a) == *key)
+                })
+                .collect();
         let matching = candidates
             .iter()
             .copied()
@@ -226,10 +385,10 @@ fn selected_runs<'a>(
                 .into_iter()
                 .max_by_key(|run| (run.created_at, &run.id))
         }) {
-            selected.insert(&run.id, run);
+            selected.insert(key.clone(), run);
         }
     }
-    selected.into_values().collect()
+    selected
 }
 
 fn median(mut values: Vec<f64>) -> Option<f64> {
@@ -293,15 +452,62 @@ fn cell_stats(attempts: &[&Attempt], as_of: Option<i64>) -> (u32, u32, Option<f6
 
 /// The current pool: the latest published version of every live definition,
 /// or one run's suite when a run is asked for, narrowed by any version filter.
+/// A dated query takes the pool as it stood then, so a later publication,
+/// archive or restore never rewrites an earlier observation.
 pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a BenchmarkVersion> {
-    let archived: BTreeSet<&str> = data
+    let as_of = query.as_of;
+    let versions: BTreeMap<&str, &BenchmarkVersion> =
+        data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
+    // An archived definition is live before its archive time. Definitions
+    // archived before that time was recorded were still live through the
+    // last run that planned one of their versions.
+    let mut archived: BTreeMap<&str, i64> = data
         .definitions
         .iter()
         .filter(|definition| definition.archived)
+        .map(|definition| {
+            (
+                definition.id.as_str(),
+                definition.archived_at.map_or(i64::MIN, |at| at - 1),
+            )
+        })
+        .collect();
+    let legacy: BTreeSet<&str> = data
+        .definitions
+        .iter()
+        .filter(|definition| definition.archived && definition.archived_at.is_none())
         .map(|definition| definition.id.as_str())
         .collect();
-    let versions: BTreeMap<&str, &BenchmarkVersion> =
-        data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
+    // A restored definition stays retired inside every period it was archived.
+    let periods: BTreeMap<&str, &[(i64, i64)]> = data
+        .definitions
+        .iter()
+        .filter(|definition| !definition.archive_history.is_empty())
+        .map(|definition| {
+            (
+                definition.id.as_str(),
+                definition.archive_history.as_slice(),
+            )
+        })
+        .collect();
+    let archived_then = |definition: &str, at: i64| {
+        periods
+            .get(definition)
+            .is_some_and(|list| list.iter().any(|(from, until)| *from <= at && at < *until))
+    };
+    if as_of.is_some() && !legacy.is_empty() {
+        for run in data.runs.iter().filter(|run| !run.request.preview) {
+            for id in &run.request.version_ids {
+                if let Some(live_until) = versions
+                    .get(id.as_str())
+                    .filter(|v| legacy.contains(v.definition_id.as_str()))
+                    .and_then(|v| archived.get_mut(v.definition_id.as_str()))
+                {
+                    *live_until = (*live_until).max(run.updated_at);
+                }
+            }
+        }
+    }
     let mut pool: Vec<&BenchmarkVersion> = match query
         .run_id
         .as_ref()
@@ -316,7 +522,11 @@ pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benc
         None => {
             let mut latest: BTreeMap<&str, &BenchmarkVersion> = BTreeMap::new();
             for version in &data.versions {
-                if archived.contains(version.definition_id.as_str()) {
+                let retired = archived
+                    .get(version.definition_id.as_str())
+                    .is_some_and(|live_until| as_of.is_none_or(|at| at > *live_until))
+                    || as_of.is_some_and(|at| archived_then(&version.definition_id, at));
+                if retired || as_of.is_some_and(|at| version.published_at > at) {
                     continue;
                 }
                 let entry = latest
@@ -351,7 +561,11 @@ fn scored_cases(attempts: &[&Attempt], as_of: Option<i64>) -> u32 {
         .len() as u32
 }
 
-/// Publish a replacement cell only after every planned repetition has settled.
+/// A run's cell replaces an older one only when every planned repetition settled
+/// with a valid score. Cancelled, interrupted, failed-infrastructure, pending or
+/// partial retests keep the previous cell; scored failures do replace it. A case
+/// with no scored cell keeps its newest settled cell that began work, so paid
+/// spend stays visible; a cell that never ran is a plain gap.
 pub(super) fn latest_cell_attempts<'a>(
     attempts: &[&'a Attempt],
     runs: &BTreeMap<&str, &BenchmarkRun>,
@@ -361,7 +575,7 @@ pub(super) fn latest_cell_attempts<'a>(
     for attempt in attempts {
         groups.entry(&attempt.run_id).or_default().push(attempt);
     }
-    groups
+    let settled: Vec<(&str, Vec<&Attempt>)> = groups
         .into_iter()
         .filter(|(id, list)| {
             let run = runs[id];
@@ -372,29 +586,56 @@ pub(super) fn latest_cell_attempts<'a>(
                             .is_some_and(|at| as_of.is_none_or(|cutoff| at <= cutoff))
                 })
         })
-        .max_by_key(|(id, _)| (runs[id].created_at, *id))
-        .map(|(_, list)| list)
+        .collect();
+    let newest = |accept: &dyn Fn(&[&Attempt]) -> bool| {
+        settled
+            .iter()
+            .filter(|(_, list)| accept(list))
+            .max_by_key(|(id, _)| (runs[id].created_at, *id))
+            .map(|(_, list)| list.clone())
+    };
+    newest(&|list| list.iter().all(|a| score_as_of(a, as_of).is_some()))
+        .or_else(|| newest(&|list| list.iter().any(|a| a.started_at.is_some())))
         .unwrap_or_default()
 }
 
-/// Mean spend per task, giving each case equal weight regardless of repetitions.
+/// The spend a ledger row reports: scored cells as measured, and unscored cells
+/// only through the repetitions that began work, and only when all of those
+/// report their spend. A repetition that never ran spent nothing, and a cell
+/// whose spend is unknown is a gap for cost, never free.
+fn spent_attempts<'a>(attempts: &[&'a Attempt], as_of: Option<i64>) -> Vec<&'a Attempt> {
+    let unscored: BTreeSet<&str> = attempts
+        .iter()
+        .filter(|a| score_as_of(a, as_of).is_none())
+        .map(|a| a.version_id.as_str())
+        .collect();
+    let unknown: BTreeSet<&str> = attempts
+        .iter()
+        .filter(|a| unscored.contains(a.version_id.as_str()))
+        .filter(|a| a.started_at.is_some() && a.usage.cost.is_none())
+        .map(|a| a.version_id.as_str())
+        .collect();
+    attempts
+        .iter()
+        .copied()
+        .filter(|a| {
+            !unscored.contains(a.version_id.as_str())
+                || (a.started_at.is_some() && !unknown.contains(a.version_id.as_str()))
+        })
+        .collect()
+}
+
+/// The candidate's own generation spend per task: repetitions are averaged
+/// within a case, then cases are averaged. Judge calls are the benchmark's
+/// expense and stay on their evaluations. Unknown spend is never free.
 pub(super) fn mean_case_cost(attempts: &[&Attempt], as_of: Option<i64>) -> Option<f64> {
     let mut cases: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     for attempt in attempts {
-        let mut cost = attempt.usage.cost?;
-        for evaluation in attempt.evaluations.iter().filter(|e| {
-            matches!(e.provenance.as_str(), "judge" | "judge_failure")
-                && as_of.is_none_or(|at| e.created_at <= at)
-        }) {
-            if evaluation
-                .details
-                .as_ref()
-                .is_some_and(|d| d["usageComplete"] == false)
-            {
-                return None;
-            }
-            cost += evaluation.usage.as_ref()?.cost?;
+        // Spend of an attempt that finished after the cutoff was not known then.
+        if as_of.is_some_and(|at| attempt.finished_at.is_none_or(|end| end > at)) {
+            return None;
         }
+        let cost = attempt.usage.cost?;
         cases.entry(&attempt.version_id).or_default().push(cost);
     }
     (!cases.is_empty()).then(|| {
@@ -455,8 +696,8 @@ fn leaderboard_from_attempts(
         }
         let configuration = execution_configuration(attempt);
         let entry = cells
-            .entry(leaderboard_key(configuration))
-            .or_insert_with(|| (configuration.clone(), BTreeMap::new()));
+            .entry(leaderboard_key(&configuration))
+            .or_insert_with(|| (configuration.into_owned(), BTreeMap::new()));
         entry
             .1
             .entry(attempt.version_id.as_str())
@@ -477,8 +718,11 @@ fn leaderboard_from_attempts(
             if let Some(latest) = attempts.iter().max_by_key(|attempt| {
                 (runs[attempt.run_id.as_str()].created_at, attempt.started_at, &attempt.id)
             }) {
-                configuration = execution_configuration(latest).clone();
+                configuration = execution_configuration(latest).into_owned();
             }
+            // Catch-up pins this configuration, so it carries the runnable profile.
+            configuration.execution_profile =
+                ledger_profile(&configuration.execution_profile).to_owned();
             let eligible: Vec<&BenchmarkVersion> = pool
                 .iter()
                 .copied()
@@ -515,7 +759,8 @@ fn leaderboard_from_attempts(
             let incomplete: BTreeSet<_> = attempts.iter().filter(|a| score_as_of(a, query.as_of).is_none()).map(|a| &a.version_id).collect();
             let scored_attempts: Vec<&Attempt> = attempts.iter().copied()
                 .filter(|a| !incomplete.contains(&a.version_id)).collect();
-            let cost = mean_case_cost(&attempts, query.as_of);
+            let spent = spent_attempts(&attempts, query.as_of);
+            let cost = mean_case_cost(&spent, query.as_of);
             let standard_budgets = attempts.iter().all(|a| {
                 eligible.iter().find(|v| v.id == a.version_id).is_some_and(|v|
                     runs[a.run_id.as_str()].request.timeout_seconds >= v.manifest.limits.timeout_seconds)
@@ -562,14 +807,17 @@ fn leaderboard_from_attempts(
                         .filter_map(|a| a.duration_ms.map(|v| v as f64))
                         .collect(),
                 ),
+                // Auxiliary model calls inflate the counters; keep the figure pure.
                 median_output_tokens: median(
                     scored_attempts
                         .iter()
+                        .filter(|a| !has_auxiliary_usage(a))
                         .filter_map(|a| a.usage.output.map(|v| v as f64))
                         .collect(),
                 ),
                 cost,
-                measured_at: attempts.iter().flat_map(|a| a.finished_at.into_iter().chain(
+                // Work that never began measured nothing, so it never dates the row.
+                measured_at: scored_attempts.iter().chain(&spent).flat_map(|a| a.finished_at.into_iter().chain(
                     a.evaluations.iter().map(|e| e.created_at).filter(|at| query.as_of.is_none_or(|cutoff| *at <= cutoff))
                 )).max(),
                 points: quality.map(share_points),
@@ -621,29 +869,51 @@ fn leaderboard_from_attempts(
             work_classes: work_classes.clone(),
         }
     });
-    // Author exclusions can produce different measured pools. Do not rank those
-    // rows together as if they had answered the same cases.
-    let ranked_pools: BTreeSet<_> = rows
-        .iter()
-        .filter(|r| r.status == "comparable")
-        .map(|r| r.scored_version_ids.clone())
-        .collect();
-    if ranked_pools.len() > 1 {
-        for row in rows.iter_mut().filter(|r| r.status == "comparable") {
+    // Author exclusions can produce different measured pools. One reference set
+    // keeps the shared rank: the full pool when a comparable row covers it, else
+    // the set most comparable rows share (then the larger, then the first by id).
+    // Only the rows whose set differs lose the rank.
+    let mut ranked_sets: BTreeMap<&Vec<String>, usize> = BTreeMap::new();
+    for row in rows.iter().filter(|r| r.status == "comparable") {
+        *ranked_sets.entry(&row.scored_version_ids).or_default() += 1;
+    }
+    let full_pool: Vec<String> = pool.iter().map(|v| v.id.clone()).collect();
+    let reference = if ranked_sets.contains_key(&full_pool) {
+        Some(full_pool)
+    } else {
+        ranked_sets
+            .iter()
+            .max_by(|(a, x), (b, y)| x.cmp(y).then(a.len().cmp(&b.len())).then(b.cmp(a)))
+            .map(|(set, _)| (*set).clone())
+    };
+    if let Some(reference) = reference {
+        for row in rows
+            .iter_mut()
+            .filter(|r| r.status == "comparable" && r.scored_version_ids != reference)
+        {
             row.status = "preliminary".into();
             row.reason.push_str(
-                "; candidates have different eligible case sets, so no shared rank is assigned",
+                "; this candidate's eligible case set differs from the ranked pool, so no shared rank is assigned",
             );
         }
     }
-    // Lower-is-better boards score against the best comparable configuration in the pool.
+    // Lower-is-better boards score against the best ranked row that measured
+    // the metric. When no ranked row has it, the best measured row stands in,
+    // so a gap never blanks them.
     let best = |pick: fn(&LeaderboardRow) -> Option<f64>| {
-        rows.iter()
-            .filter(|row| row.status == "comparable")
-            .filter_map(pick)
-            .fold(None, |best: Option<f64>, value| {
-                Some(best.map_or(value, |b| b.min(value)))
-            })
+        let min_of = |ranked: bool| {
+            rows.iter()
+                .filter(|row| {
+                    if ranked {
+                        row.status == "comparable"
+                    } else {
+                        row.status == "preliminary" && row.scored > 0
+                    }
+                })
+                .filter_map(pick)
+                .reduce(f64::min)
+        };
+        min_of(true).or_else(|| min_of(false))
     };
     let best_tokens = best(|row| row.median_output_tokens);
     let best_duration = best(|row| row.median_duration_ms);
@@ -676,6 +946,52 @@ fn leaderboard_from_attempts(
     LeaderboardReport { cohort, rows }
 }
 
+/// The automated evaluation that defines an attempt's scoring protocol: the
+/// render marker of the judge batch that produced the score, else the newest
+/// objective check or render marker. Judges and human reviews grade or
+/// annotate one output; they are not a new protocol.
+fn protocol_evaluation(attempt: &Attempt, as_of: Option<i64>) -> Option<&Evaluation> {
+    let evaluations: Vec<&Evaluation> = attempt
+        .evaluations
+        .iter()
+        .filter(|e| as_of.is_none_or(|at| e.created_at <= at))
+        .collect();
+    if let Panel::Settled { marker, .. } = judge_panel(&evaluations) {
+        return Some(evaluations[marker]);
+    }
+    evaluations.into_iter().rev().find(|e| {
+        !matches!(
+            e.provenance.as_str(),
+            "judge" | "judge_failure" | "human" | "human_visual"
+        )
+    })
+}
+
+/// Provenance, evaluator revision and judge protocol hash of that evaluation.
+fn evaluator_identity(attempt: &Attempt) -> String {
+    let evaluation = protocol_evaluation(attempt, None);
+    serde_json::to_string(&(
+        evaluation.map(|e| (&e.provenance, &e.evaluator_revision)),
+        evaluation
+            .and_then(|e| e.details.as_ref())
+            .and_then(|d| d.get("protocolHash")),
+    ))
+    .unwrap_or_default()
+}
+
+/// Each case's evaluator identities. A follow-up is scored by the same
+/// evaluator only when its objective check or judge protocol is unchanged.
+fn case_evaluators<'a>(attempts: &[&'a Attempt]) -> BTreeMap<&'a str, BTreeSet<String>> {
+    let mut cases: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for attempt in attempts {
+        cases
+            .entry(attempt.version_id.as_str())
+            .or_default()
+            .insert(evaluator_identity(attempt));
+    }
+    cases
+}
+
 fn comparison_key(
     attempts: &[&Attempt],
     runs: &BTreeMap<&str, &BenchmarkRun>,
@@ -689,11 +1005,7 @@ fn comparison_key(
                 .iter()
                 .find(|v| v.id == a.version_id)
                 .expect("pool attempt");
-            let evaluation = a.evaluations.iter().rev().find(|e| {
-                as_of.is_none_or(|at| e.created_at <= at)
-                    && e.provenance != "judge"
-                    && e.provenance != "judge_failure"
-            });
+            let evaluation = protocol_evaluation(a, as_of);
             serde_json::to_string(&serde_json::json!([
                 a.version_id,
                 execution_configuration(a).inventory_revision,
@@ -712,34 +1024,21 @@ fn comparison_key(
     serde_json::to_string(&protocols).unwrap_or_default()
 }
 
-/// Recompute each observation on today's measured cases. A case first measured
-/// later supplies its earliest scored cell, explicitly marked as backfilled.
-/// This estimate is separate from the evidence that was available at the time.
+/// Recompute each observation on today's measured cases with today's evidence.
+/// A case keeps the newest scored cell observed by then, whatever runtime,
+/// budget or evaluator revision it ran under, so a retest never rewrites an
+/// earlier point. A case first measured later supplies its earliest scored
+/// cell, explicitly marked as backfilled.
 fn recalculated_history_report(
     data: &QueryData,
-    key: &str,
-    current: &[&Attempt],
+    own: &[&Attempt],
+    current: &BTreeSet<&str>,
     runs: &BTreeMap<&str, &BenchmarkRun>,
     at: i64,
 ) -> (LeaderboardReport, Vec<String>, Vec<String>) {
-    let pool = pool(data, &ResultQuery::default());
-    let mut protocols = BTreeMap::new();
-    for attempt in current {
-        let cell: Vec<_> = current
-            .iter()
-            .copied()
-            .filter(|a| a.version_id == attempt.version_id)
-            .collect();
-        protocols
-            .entry(attempt.version_id.as_str())
-            .or_insert_with(|| comparison_key(&cell, runs, &pool, None));
-    }
     let mut cells: BTreeMap<&str, BTreeMap<&str, Vec<&Attempt>>> = BTreeMap::new();
-    for attempt in &data.attempts {
-        if protocols.contains_key(attempt.version_id.as_str())
-            && leaderboard_key(execution_configuration(attempt)) == key
-            && runs.contains_key(attempt.run_id.as_str())
-        {
+    for &attempt in own {
+        if current.contains(attempt.version_id.as_str()) {
             cells
                 .entry(&attempt.version_id)
                 .or_default()
@@ -759,7 +1058,6 @@ fn recalculated_history_report(
                     && attempts.iter().all(|a| {
                         a.phase == "terminal" && a.finished_at.is_some() && score(a).is_some()
                     })
-                    && comparison_key(attempts, runs, &pool, None) == protocols[version]
             })
             .collect();
         settled.sort_by_key(|(id, _)| (runs[id].created_at, *id));
@@ -782,7 +1080,7 @@ fn recalculated_history_report(
         }
     }
     // A point with only future evidence has no observation to anchor it.
-    let mut report = if backfilled.len() == protocols.len() {
+    let mut report = if backfilled.len() == current.len() {
         LeaderboardReport {
             cohort: None,
             rows: Vec::new(),
@@ -804,7 +1102,64 @@ fn recalculated_history_report(
     (report, backfilled, revised)
 }
 
+/// Points a configuration's history keeps.
+const HISTORY_POINTS: usize = 24;
+
+/// Walks events newest first, keeps the oldest event of each run of equal
+/// observations and stops once `limit` observations are settled, so the work
+/// follows the points shown rather than every event ever recorded.
+fn newest_observations<E, T>(
+    newest_first: impl Iterator<Item = E>,
+    limit: usize,
+    mut observe: impl FnMut(E) -> Option<(String, T)>,
+) -> Vec<T> {
+    let mut kept = Vec::new();
+    let mut pending: Option<(String, T)> = None;
+    for event in newest_first {
+        if kept.len() == limit {
+            break;
+        }
+        let Some((signature, value)) = observe(event) else {
+            continue;
+        };
+        if pending.as_ref().is_some_and(|(seen, _)| *seen == signature) {
+            pending = Some((signature, value));
+        } else if let Some((_, newer)) = pending.replace((signature, value)) {
+            kept.push(newer);
+        }
+    }
+    if kept.len() < limit {
+        kept.extend(pending.map(|(_, value)| value));
+    }
+    kept.reverse();
+    kept
+}
+
+/// When a finished attempt's score first became known through its own
+/// evaluation, else when it finished. Human reviews are later events.
+fn settled_at(attempt: &Attempt) -> Option<i64> {
+    let finished = attempt.finished_at?;
+    let mut times: Vec<i64> = attempt
+        .evaluations
+        .iter()
+        .filter(|e| !matches!(e.provenance.as_str(), "human" | "human_visual"))
+        .map(|e| e.created_at)
+        .filter(|at| *at > finished)
+        .collect();
+    times.sort_unstable();
+    Some(
+        std::iter::once(finished)
+            .chain(times)
+            .find(|at| score_as_of(attempt, Some(*at)).is_some())
+            .unwrap_or(finished),
+    )
+}
+
 /// One data read supplies both the dated archive and the recalculated series.
+/// Every non-preview run that settled cells of this configuration is an
+/// observation whatever its state, and so is every later evaluation of them.
+/// A finished run is observed at its end; any other run, cancelled included,
+/// at the time its started cells settled.
 pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySnapshot> {
     let key = leaderboard_key(configuration);
     let runs: BTreeMap<_, _> = data
@@ -813,7 +1168,15 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
         .filter(|r| !r.request.preview)
         .map(|r| (r.id.as_str(), r))
         .collect();
-    let current = leaderboard(
+    let own: Vec<&Attempt> = data
+        .attempts
+        .iter()
+        .filter(|a| {
+            runs.contains_key(a.run_id.as_str())
+                && leaderboard_key(&execution_configuration(a)) == key
+        })
+        .collect();
+    let current_versions = leaderboard(
         data,
         &ResultQuery {
             limit: Some(500),
@@ -823,75 +1186,96 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
     .rows
     .into_iter()
     .find(|r| leaderboard_key(&r.configuration) == key)
-    .map(|r| {
-        data.attempts
-            .iter()
-            .filter(|a| {
-                r.attempt_ids.contains(&a.id) && r.scored_version_ids.contains(&a.version_id)
-            })
-            .collect::<Vec<_>>()
-    })
+    .map(|r| r.scored_version_ids)
     .unwrap_or_default();
+    let current: BTreeSet<&str> = current_versions.iter().map(String::as_str).collect();
+    let mut cells: BTreeMap<(&str, &str), Vec<&Attempt>> = BTreeMap::new();
+    for &a in &own {
+        cells
+            .entry((a.run_id.as_str(), a.version_id.as_str()))
+            .or_default()
+            .push(a);
+    }
+    cells.retain(|(run_id, _), attempts| {
+        attempts.len() == runs[run_id].request.repetitions as usize
+            && attempts
+                .iter()
+                .all(|a| a.phase == "terminal" && a.finished_at.is_some())
+    });
+    // A finished run is observed at its end. Any other run, cancelled included,
+    // is observed when its started cells settled, so its results never wait
+    // for a later run and a later cancel or evaluation never re-dates them; a
+    // later evaluation stays an event of its own.
+    let mut observed: BTreeMap<&str, i64> = BTreeMap::new();
+    for ((run_id, _), attempts) in &cells {
+        let run = runs[run_id];
+        let at = if run.state == "completed" {
+            Some(run.updated_at)
+        } else {
+            attempts
+                .iter()
+                .filter(|a| a.started_at.is_some())
+                .filter_map(|a| settled_at(a))
+                .max()
+        };
+        if let Some(at) = at {
+            let entry = observed.entry(*run_id).or_insert(at);
+            *entry = (*entry).max(at);
+        }
+    }
+    // A run none of whose cells began work is dated by its own record.
+    for (run_id, _) in cells.keys() {
+        observed.entry(*run_id).or_insert(runs[run_id].updated_at);
+    }
     let mut events = BTreeMap::new();
-    for a in data
-        .attempts
-        .iter()
-        .filter(|a| leaderboard_key(execution_configuration(a)) == key)
-    {
-        let Some(run) = runs.get(a.run_id.as_str()) else {
-            continue;
-        };
-        if run.state != "completed" {
-            continue;
-        }
-        events.insert(run.updated_at, &run.id);
-        for e in a
-            .evaluations
-            .iter()
-            .filter(|e| a.phase == "terminal" && e.created_at > run.updated_at)
-        {
-            events.insert(e.created_at, &run.id);
+    for ((run_id, _), attempts) in &cells {
+        let at = observed[run_id];
+        events.insert(at, *run_id);
+        for e in attempts.iter().flat_map(|a| &a.evaluations) {
+            if e.created_at > at {
+                events.insert(e.created_at, *run_id);
+            }
         }
     }
-    let mut previous = None;
-    let mut snapshots = Vec::new();
-    for (at, run_id) in events {
-        let report = leaderboard(
-            data,
-            &ResultQuery {
-                as_of: Some(at),
-                limit: Some(500),
-                ..Default::default()
-            },
-        );
-        let Some(row) = report
-            .rows
-            .iter()
-            .find(|r| leaderboard_key(&r.configuration) == key)
-        else {
-            continue;
-        };
-        let signature =
-            serde_json::to_string(&(row.points, &row.attempt_ids, &row.comparison_key, row.cost))
-                .unwrap_or_default();
-        if previous.as_ref() == Some(&signature) {
-            continue;
-        }
-        previous = Some(signature);
-        let (recalculated_report, backfilled_version_ids, revised_version_ids) =
-            recalculated_history_report(data, &key, &current, &runs, at);
-        snapshots.push(HistorySnapshot {
-            id: format!("{run_id}:{at}"),
-            run_id: run_id.clone(),
-            created_at: at,
-            report,
-            recalculated_report,
-            backfilled_version_ids,
-            revised_version_ids,
+    let observations =
+        newest_observations(events.into_iter().rev(), HISTORY_POINTS, |(at, run_id)| {
+            let report = leaderboard(
+                data,
+                &ResultQuery {
+                    as_of: Some(at),
+                    limit: Some(500),
+                    ..Default::default()
+                },
+            );
+            let row = report
+                .rows
+                .iter()
+                .find(|r| leaderboard_key(&r.configuration) == key)?;
+            let signature = serde_json::to_string(&(
+                row.points,
+                &row.attempt_ids,
+                &row.comparison_key,
+                row.cost,
+            ))
+            .unwrap_or_default();
+            Some((signature, (at, run_id, report)))
         });
-    }
-    snapshots.drain(..snapshots.len().saturating_sub(24));
-    snapshots
+    observations
+        .into_iter()
+        .map(|(at, run_id, report)| {
+            let (recalculated_report, backfilled_version_ids, revised_version_ids) =
+                recalculated_history_report(data, &own, &current, &runs, at);
+            HistorySnapshot {
+                id: format!("{run_id}:{at}"),
+                run_id: run_id.to_owned(),
+                created_at: at,
+                report,
+                recalculated_report,
+                backfilled_version_ids,
+                revised_version_ids,
+            }
+        })
+        .collect()
 }
 
 fn means_by_family(data: &QueryData, attempts: &[&Attempt]) -> BTreeMap<String, f64> {
@@ -963,19 +1347,15 @@ fn sign_probability(deltas: &[f64], threshold: f64) -> f64 {
 }
 
 pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Vec<Comparison> {
-    let current_runs = selected_runs(data, baseline, query);
-    let current_ids: BTreeSet<_> = current_runs
-        .iter()
-        .filter(|r| !baseline.run_ids.contains(&r.id) && r.created_at > baseline.created_at)
-        .map(|r| r.id.as_str())
-        .collect();
+    let frozen = frozen_conditions(baseline);
+    let selected = selected_runs(data, baseline, &frozen, query);
     let mut configurations: BTreeMap<String, (String, Configuration)> = BTreeMap::new();
     for attempt in &baseline.snapshots {
         configurations.insert(
-            configuration_key(execution_configuration(attempt)),
+            nerf_key(attempt),
             (
                 attempt.configuration.id.clone(),
-                execution_configuration(attempt).clone(),
+                nerf_configuration(attempt).into_owned(),
             ),
         );
     }
@@ -985,51 +1365,40 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
             .iter()
             .find(|v| v.id == attempt.version_id)
             .is_some_and(|v| {
-                super::routing::authored_by_candidate(&v.manifest, execution_configuration(attempt))
+                super::routing::authored_by_candidate(
+                    &v.manifest,
+                    &execution_configuration(attempt),
+                )
             })
     };
     for (key, (id, configuration)) in configurations {
         let before: Vec<_> = baseline
             .snapshots
             .iter()
-            .filter(|a| configuration_key(execution_configuration(a)) == key && !authored(a))
+            .filter(|a| nerf_key(a) == key && !authored(a))
             .collect();
+        // Only the run selected for this configuration is its follow-up; a run
+        // selected for another configuration never adds samples here.
+        let run = selected.get(&key).copied();
         let after: Vec<_> = data
             .attempts
             .iter()
             .filter(|a| {
-                current_ids.contains(a.run_id.as_str())
-                    && configuration_key(execution_configuration(a)) == key
-                    && !authored(a)
+                run.is_some_and(|run| a.run_id == run.id) && nerf_key(a) == key && !authored(a)
             })
             .collect();
         let before_cases: BTreeSet<_> = before.iter().map(|a| &a.version_id).collect();
         let after_cases: BTreeSet<_> = after.iter().map(|a| &a.version_id).collect();
-        let changed_evaluator = after.iter().any(|a| {
-            before
-                .iter()
-                .find(|b| b.version_id == a.version_id)
-                .is_some_and(|b| {
-                    b.evaluations.last().map(|e| &e.evaluator_revision)
-                        != a.evaluations.last().map(|e| &e.evaluator_revision)
-                })
+        let frozen_evaluators = case_evaluators(&before);
+        let changed_evaluator = case_evaluators(&after).iter().any(|(case, identities)| {
+            frozen_evaluators
+                .get(case)
+                .is_some_and(|frozen| frozen != identities)
         });
-        let frozen_conditions: BTreeSet<_> = baseline
-            .run_conditions
-            .iter()
-            .filter(|request| {
-                request
-                    .configurations
-                    .iter()
-                    .any(|c| configuration_key(c) == key)
-            })
-            .map(request_conditions)
-            .collect();
-        let budgets_match = frozen_conditions.len() == 1
-            && current_runs
-                .iter()
-                .filter(|run| after.iter().any(|a| a.run_id == run.id))
-                .all(|run| frozen_conditions.contains(&cohort(run)));
+        let conditions = frozen.get(&key);
+        let budgets_match = run.zip(conditions).is_some_and(|(run, conditions)| {
+            conditions.len() == 1 && conditions.contains(&cohort(run))
+        });
         let same_conditions = budgets_match
             && before_cases == after_cases
             && !changed_evaluator
@@ -1062,7 +1431,7 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
         let mut p = 1.0;
         if !after.is_empty() && !same_conditions {
             result.status = "changed_conditions".into();
-            result.reason = "Case coverage, evaluator revision, repetitions or frozen execution budgets differ or are unavailable".into();
+            result.reason = "Case coverage, evaluator protocol, repetitions or timeout differ or are unavailable".into();
         } else if !deltas.is_empty() {
             let relative = |old: Option<f64>, new: Option<f64>| {
                 old.zip(new)
@@ -1082,20 +1451,17 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
                         .collect(),
                 ),
             );
-            result.token_change_percent = relative(
+            // Auxiliary model calls inflate the counters; keep the figure pure.
+            let tokens = |attempts: &[&Attempt]| {
                 median(
-                    before
+                    attempts
                         .iter()
+                        .filter(|a| !has_auxiliary_usage(a))
                         .filter_map(|a| a.usage.output.map(|v| v as f64))
                         .collect(),
-                ),
-                median(
-                    after
-                        .iter()
-                        .filter_map(|a| a.usage.output.map(|v| v as f64))
-                        .collect(),
-                ),
-            );
+                )
+            };
+            result.token_change_percent = relative(tokens(&before), tokens(&after));
             let change = deltas.iter().sum::<f64>() / deltas.len() as f64;
             let initial = old.values().sum::<f64>() / old.len() as f64;
             let (low, high) = interval(&deltas);
@@ -1144,11 +1510,24 @@ pub(super) mod tests {
     }
     #[test]
     fn null_cost_is_not_free() {
-        let costs = [Some(1.0), None];
-        assert_eq!(
-            costs.into_iter().try_fold(0.0, |sum, x| x.map(|v| sum + v)),
-            None
-        );
+        let (data, _) = dataset();
+        let mut first = data.attempts[0].clone();
+        let mut repeat = first.clone();
+        repeat.id = "repeat".into();
+        repeat.repetition = 1;
+        let mut other = data.attempts[1].clone();
+        first.usage.cost = Some(1.0);
+        other.usage.cost = Some(5.0);
+        // An unknown repetition or an unknown case makes the mean unknown.
+        assert_eq!(mean_case_cost(&[&first, &repeat, &other], None), None);
+        assert_eq!(mean_case_cost(&[&first, &other, &repeat], None), None);
+        repeat.usage.cost = Some(3.0);
+        // Repetitions average within their case first: ((1 + 3) / 2 + 5) / 2.
+        let cost = mean_case_cost(&[&first, &repeat, &other], None).unwrap();
+        assert!((cost - 3.5).abs() < 1e-10);
+        // Spend reported after the cutoff was not known at it.
+        assert_eq!(mean_case_cost(&[&first], Some(1)), None);
+        assert_eq!(mean_case_cost(&[&first], Some(2)), Some(1.0));
     }
 
     pub fn dataset() -> (QueryData, Baseline) {
@@ -1367,13 +1746,16 @@ pub(super) mod tests {
             row.scored_version_ids,
             vec!["v0", "v1", "v2", "v3", "v4", "v5"]
         );
-        // The six measured cases still carry their points.
+        // The six measured cases still carry their points, on every board.
         assert_eq!(row.points, Some(0));
+        assert_eq!(row.speed_points, Some(1000));
         // Archiving a definition retires its case from the pool.
         data.definitions.push(BenchmarkDefinition {
             id: "d6".into(),
             draft_revision: 1,
             archived: true,
+            archived_at: None,
+            archive_history: vec![],
             draft: data.versions[6].manifest.clone(),
             versions: vec![],
         });
@@ -1443,7 +1825,10 @@ pub(super) mod tests {
     fn runtime_updates_and_implicit_defaults_share_one_ledger() {
         let (mut data, _) = dataset();
         for attempt in &mut data.attempts {
+            // Configuration IDs are display labels and differ between runs.
+            attempt.configuration.id = format!("label-{}", attempt.run_id);
             let observed = attempt.observed.as_mut().unwrap();
+            observed.id = format!("label-{}", attempt.run_id);
             if attempt.run_id == "before" {
                 observed.effort = None;
                 observed.fast_mode = None;

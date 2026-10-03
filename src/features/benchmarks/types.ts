@@ -75,6 +75,10 @@ export interface BenchmarkDefinition {
   id: string;
   draftRevision: number;
   archived: boolean;
+  /** When it was archived; null when live or archived before this was recorded. */
+  archivedAt: number | null;
+  /** Earlier archive periods a restore closed, as [archivedAt, restoredAt]; omitted when none. */
+  archiveHistory?: [number, number][];
   draft: BenchmarkDraft;
   versions: BenchmarkVersion[];
 }
@@ -129,6 +133,14 @@ export interface RunSummary {
   request: RunRequest;
   attemptCount: number;
   settledCount: number;
+  /** What each requested configuration's attempts acknowledged while the run can still start attempts. */
+  observedSelections: ObservedRunSelection[];
+}
+/** The effort and fast mode a requested configuration ran with in one run. */
+export interface ObservedRunSelection {
+  configurationId: string;
+  effort: string | null;
+  fastMode: boolean | null;
 }
 /** The human verdict behind a creative rendering. */
 export interface DesignReview {

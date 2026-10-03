@@ -11,7 +11,9 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { benchmarkApi } from "../api/benchmarks";
+import { BenchmarkAttemptList } from "../ui/BenchmarkAttemptList";
 import { BenchmarkEditor } from "../ui/BenchmarkEditor";
 import { BenchmarksView } from "../ui/BenchmarksView";
 import { LeaderboardView } from "../ui/LeaderboardView";
@@ -95,20 +97,22 @@ const scopeProps = {
 };
 
 function wrap(content: ReactNode) {
-  return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({
-          defaultOptions: {
-            queries: { retry: false },
-            mutations: { retry: false },
-          },
-        })
-      }
-    >
-      {content}
-    </QueryClientProvider>,
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+  const view = render(
+    <QueryClientProvider client={client}>{content}</QueryClientProvider>,
   );
+  return {
+    ...view,
+    rerender: (next: ReactNode) =>
+      view.rerender(
+        <QueryClientProvider client={client}>{next}</QueryClientProvider>,
+      ),
+  };
 }
 
 describe("benchmark authoring and saved evidence", () => {
@@ -333,6 +337,7 @@ describe("benchmark authoring and saved evidence", () => {
     );
     expect(open).toHaveBeenCalledWith(rowKey(unfinished));
     cleanup();
+    const catchUp = vi.fn();
     wrap(
       <BenchmarkConfigurationPage
         row={unfinished}
@@ -340,17 +345,21 @@ describe("benchmark authoring and saved evidence", () => {
         runs={[]}
         versions={definition.versions}
         onEvidence={inspect}
-        onRun={vi.fn()}
+        onRun={catchUp}
+        onOpenRun={vi.fn()}
         onBack={vi.fn()}
       />,
     );
     expect(
       screen.getByRole("heading", { name: "model-1" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("No valid evidence")).toBeInTheDocument();
-    expect(
+    expect(screen.getByText("Preliminary")).toBeInTheDocument();
+    // The service's English reason is not page text; the badge explains on hold.
+    expect(screen.queryByText("No valid evidence")).not.toBeInTheDocument();
+    await userEvent.click(
       screen.getByRole("button", { name: "Run the 1 missing case" }),
-    ).toBeInTheDocument();
+    );
+    expect(catchUp).toHaveBeenCalledWith(["version-1"]);
     expect(
       screen.queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
@@ -364,6 +373,248 @@ describe("benchmark authoring and saved evidence", () => {
       offset: 0,
       limit: 50,
     });
+  });
+  it("does not offer gaps an unfinished run already plans again", async () => {
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    const catchUp = vi.fn();
+    const openRun = vi.fn();
+    const gaps = leaderboardRow({
+      status: "preliminary",
+      missingVersionIds: ["version-1", "version-2"],
+    });
+    const queued = {
+      ...runSummary,
+      id: "active-run-1",
+      state: "paused",
+      request: { ...runSummary.request, versionIds: ["version-1"] },
+    };
+    const { rerender } = wrap(
+      <BenchmarkConfigurationPage
+        row={gaps}
+        report={{ cohort, rows: [gaps] }}
+        runs={[queued, runSummary]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={catchUp}
+        onOpenRun={openRun}
+        onBack={vi.fn()}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Run the 1 missing case" }),
+    );
+    expect(catchUp).toHaveBeenCalledWith(["version-2"]);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Queued in run active-r" }),
+    );
+    expect(openRun).toHaveBeenCalledWith("active-run-1");
+    rerender(
+      <BenchmarkConfigurationPage
+        row={gaps}
+        report={{ cohort, rows: [gaps] }}
+        runs={[
+          {
+            ...queued,
+            request: {
+              ...queued.request,
+              versionIds: ["version-1", "version-2"],
+            },
+          },
+        ]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={catchUp}
+        onOpenRun={openRun}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /missing case/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Queued in run active-r" }),
+    ).toBeInTheDocument();
+  });
+  it("starts a catch-up from the model page on today's runtime", async () => {
+    const stale = {
+      ...configuration,
+      inventoryRevision: "runtime-of-the-last-attempt",
+    };
+    const unfinished = leaderboardRow({
+      configuration: stale,
+      status: "preliminary",
+      missingVersionIds: ["version-1"],
+    });
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort,
+      rows: [unfinished],
+    });
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+      {
+        configuration: { ...configuration, inventoryRevision: "runtime-now" },
+        name: "Test model",
+        efforts: ["high"],
+        supportsFastMode: true,
+        available: true,
+        reason: null,
+      },
+    ]);
+    vi.mocked(benchmarkApi.previewRun).mockResolvedValue({
+      valid: true,
+      issues: [],
+      executionCount: 1,
+      estimatedCost: null,
+      costReason: "",
+    });
+    vi.mocked(invoke).mockResolvedValue({
+      accounts: [],
+      defaults: {},
+      automaticSwitching: {},
+    });
+    wrap(
+      <BenchmarksView
+        location={{
+          section: "leaderboard",
+          configurationId: rowKey(unfinished),
+        }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Run the 1 missing case" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Run benchmarks",
+    });
+    expect(await within(dialog).findByText("1 executions")).toBeInTheDocument();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Check plan" }),
+    );
+    await waitFor(() =>
+      expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          versionIds: ["version-1"],
+          configurations: [
+            expect.objectContaining({
+              modelId: "model-1",
+              effort: "high",
+              inventoryRevision: "runtime-now",
+            }),
+          ],
+        }),
+      ),
+    );
+    expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
+      "claude-acp",
+      "account-1",
+    );
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("starts a different attempt set on its first page", async () => {
+    vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>
+      Array.from(
+        {
+          length: Math.max(
+            0,
+            Math.min(50, (query.attemptIds?.length ?? 0) - (query.offset ?? 0)),
+          ),
+        },
+        (_, index) => ({
+          ...attemptSummary,
+          id: query.attemptIds?.[(query.offset ?? 0) + index] ?? "",
+        }),
+      ),
+    );
+    const many = Array.from({ length: 60 }, (_, index) => `current-${index}`);
+    const { rerender } = wrap(
+      <BenchmarkAttemptList
+        query={{ attemptIds: many }}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+      />,
+    );
+    await screen.findAllByRole("button", { name: "Inspect" });
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+        attemptIds: many,
+        offset: 50,
+        limit: 50,
+      }),
+    );
+    rerender(
+      <BenchmarkAttemptList
+        query={{ attemptIds: ["older-0", "older-1"] }}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+        attemptIds: ["older-0", "older-1"],
+        offset: 0,
+        limit: 50,
+      }),
+    );
+    expect(
+      await screen.findAllByRole("button", { name: "Inspect" }),
+    ).toHaveLength(2);
+  });
+  it("keeps the page while the listed attempts only grow", async () => {
+    vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>
+      Array.from(
+        {
+          length: Math.max(
+            0,
+            Math.min(50, (query.attemptIds?.length ?? 0) - (query.offset ?? 0)),
+          ),
+        },
+        (_, index) => ({
+          ...attemptSummary,
+          id: query.attemptIds?.[(query.offset ?? 0) + index] ?? "",
+        }),
+      ),
+    );
+    const many = Array.from({ length: 60 }, (_, index) => `current-${index}`);
+    const list = (ids: string[], resetKey?: string) => (
+      <BenchmarkAttemptList
+        query={{ attemptIds: ids }}
+        versions={definition.versions}
+        resetKey={resetKey}
+        onEvidence={vi.fn()}
+      />
+    );
+    const lastCall = (attemptIds: string[], offset: number) =>
+      waitFor(() =>
+        expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+          attemptIds,
+          offset,
+          limit: 50,
+        }),
+      );
+    const { rerender } = wrap(list(many));
+    await screen.findAllByRole("button", { name: "Inspect" });
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await lastCall(many, 50);
+    // A case settles while the run goes on: its attempts join the list.
+    const grown = [...many, "settled-60"];
+    rerender(list(grown));
+    await lastCall(grown, 50);
+    // Another reset key is another listing, read from its first page.
+    rerender(list(grown, "current"));
+    await lastCall(grown, 0);
+    await screen.findAllByRole("button", { name: "Inspect" });
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await lastCall(grown, 50);
+    const point = [...grown, "settled-61"];
+    rerender(list(point, "current"));
+    await lastCall(point, 50);
+    rerender(list(point, "true:point-1"));
+    await lastCall(point, 0);
   });
   it("ranks every board on its own and re-ranks from a table column", async () => {
     const rows = [
@@ -451,6 +702,102 @@ describe("benchmark authoring and saved evidence", () => {
       "–",
       "",
     ]);
+  });
+  it("places ranks over every row and pages only the rendered list", async () => {
+    const rows = Array.from({ length: 55 }, (_, index) =>
+      leaderboardRow({
+        configuration: {
+          ...configuration,
+          id: `m${index}`,
+          modelId: `model-${String(index).padStart(2, "0")}`,
+        },
+        // Listed weakest first, so a page-local rank would be wrong.
+        points: 100 + index,
+      }),
+    );
+    const onPageChange = vi.fn();
+    const view = wrap(
+      <LeaderboardView
+        {...scopeProps}
+        onPageChange={onPageChange}
+        onOpen={vi.fn()}
+        report={{ cohort, rows }}
+      />,
+    );
+    const ranks = () =>
+      screen
+        .getAllByRole("row")
+        .slice(1)
+        .map((row) => within(row).getAllByRole("cell")[0].textContent);
+    expect(ranks()).toHaveLength(50);
+    expect(ranks()[0]).toBe("1");
+    expect(screen.getByText("model-54")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(onPageChange).toHaveBeenCalledWith(1);
+    view.rerender(
+      <LeaderboardView
+        {...scopeProps}
+        page={1}
+        onPageChange={onPageChange}
+        onOpen={vi.fn()}
+        report={{ cohort, rows }}
+      />,
+    );
+    expect(ranks()).toEqual(["51", "52", "53", "54", "55"]);
+    expect(screen.getByText("model-00")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+  it("reads another board from its top", async () => {
+    // Every row ranks on Overall; only thirty have a known cost.
+    const rows = Array.from({ length: 55 }, (_, index) =>
+      leaderboardRow({
+        configuration: {
+          ...configuration,
+          id: `m${index}`,
+          modelId: `model-${String(index).padStart(2, "0")}`,
+        },
+        points: 100 + index,
+        costPoints: index < 30 ? 100 + index : null,
+      }),
+    );
+    const onPageChange = vi.fn();
+    wrap(
+      <LeaderboardView
+        {...scopeProps}
+        page={1}
+        onPageChange={onPageChange}
+        onOpen={vi.fn()}
+        report={{ cohort, rows }}
+      />,
+    );
+    const ranks = () =>
+      screen
+        .getAllByRole("row")
+        .slice(1)
+        .map((row) => within(row).getAllByRole("cell")[0].textContent);
+    expect(ranks()).toEqual(["51", "52", "53", "54", "55"]);
+    await userEvent.click(screen.getByRole("tab", { name: "Cost" }));
+    expect(onPageChange).toHaveBeenCalledWith(0);
+    // Even before the page resets, the shorter board never renders empty.
+    expect(ranks()).toHaveLength(30);
+    expect(ranks()[0]).toBe("1");
+  });
+  it("asks the service for the whole leaderboard at once", async () => {
+    wrap(
+      <BenchmarksView
+        location={{ section: "leaderboard" }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(benchmarkApi.getLeaderboard).toHaveBeenCalledWith({
+        runId: null,
+        versionIds: null,
+        offset: 0,
+        limit: 500,
+      }),
+    );
   });
   it("labels every outcome the service emits instead of showing raw keys", () => {
     wrap(
@@ -851,25 +1198,40 @@ describe("configuration history", () => {
       createdAt: 500,
       updatedAt: 600,
     };
+    const pointAt = Date.UTC(2026, 0, 10, 12);
+    const latestAt = Date.UTC(2026, 1, 1, 12);
     const olderRow = leaderboardRow({
       points: 600,
       quality: 0.6,
-      measuredAt: 550,
+      measuredAt: pointAt - 60_000,
+      attemptIds: ["attempt-0"],
     });
     const latestRow = leaderboardRow({
       points: 900,
       quality: 0.9,
-      measuredAt: 2000,
+      measuredAt: latestAt,
+      missingVersionIds: ["version-1"],
     });
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
       {
         id: "old",
         runId: older.id,
-        createdAt: 600,
+        createdAt: pointAt,
         report: { cohort, rows: [olderRow] },
         recalculatedReport: {
           cohort,
-          rows: [{ ...olderRow, points: 750, quality: 0.75 }],
+          rows: [
+            {
+              ...olderRow,
+              points: 750,
+              quality: 0.75,
+              status: "preliminary",
+              reason:
+                "1/1 current cases; 1 first measured later, 0 reviewed later; recalculated using today's evidence",
+              // The backfilled case finished months after the point.
+              measuredAt: Date.UTC(2026, 5, 20, 12),
+            },
+          ],
         },
         backfilledVersionIds: ["later-case"],
         revisedVersionIds: [],
@@ -877,11 +1239,12 @@ describe("configuration history", () => {
       {
         id: "latest",
         runId: runSummary.id,
-        createdAt: 2000,
+        createdAt: latestAt,
         report: { cohort, rows: [latestRow] },
       },
     ]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    const catchUp = vi.fn();
     wrap(
       <BenchmarkConfigurationPage
         row={latestRow}
@@ -889,12 +1252,15 @@ describe("configuration history", () => {
         runs={[runSummary, older]}
         versions={definition.versions}
         onEvidence={vi.fn()}
-        onRun={vi.fn()}
+        onRun={catchUp}
+        onOpenRun={vi.fn()}
         onBack={vi.fn()}
       />,
     );
     const rating = () =>
       screen.getByText("Overall rating").nextElementSibling?.textContent;
+    const measured = () =>
+      screen.getByText("Measured").nextElementSibling?.textContent;
     expect(rating()).toBe("900");
     const oldPoint = await screen.findByRole("button", {
       name: /: 750 points · 1\/1 cases$/,
@@ -902,12 +1268,34 @@ describe("configuration history", () => {
     expect(
       screen.getByRole("button", { name: /: 900 points · 1\/1 cases$/ }),
     ).toHaveAttribute("aria-pressed", "false");
+    // The chart carries points and dates only, with no caption below it.
+    const chart = screen.getByLabelText("Overall points per measurement");
+    expect(
+      [...chart.querySelectorAll("text")].some((text) =>
+        text.textContent?.includes("/"),
+      ),
+    ).toBe(false);
+    expect(chart.querySelector("title")).toBeNull();
+    expect(screen.queryByText(/today's cases/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/at each date/)).not.toBeInTheDocument();
     await userEvent.click(oldPoint);
     expect(rating()).toBe("750");
     expect(oldPoint).toHaveAttribute("aria-pressed", "true");
+    expect(measured()).toMatch(/Jan 10, 2026/);
+    expect(screen.getByText("Preliminary")).toBeInTheDocument();
     expect(
-      screen.getByText("Measured").nextElementSibling?.textContent,
-    ).toMatch(/1969|1970/);
+      screen.queryByText(/recalculated using today's evidence/),
+    ).not.toBeInTheDocument();
+    expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+      attemptIds: ["attempt-0"],
+      offset: 0,
+      limit: 50,
+    });
+    // Catch-up fills today's gaps, whichever point is shown.
+    await userEvent.click(
+      screen.getByRole("button", { name: "Run the 1 missing case" }),
+    );
+    expect(catchUp).toHaveBeenCalledWith(["version-1"]);
     expect(benchmarkApi.getHistory).toHaveBeenCalledWith(configuration);
     await userEvent.click(
       screen.getByRole("button", { name: "Show current results" }),
@@ -916,8 +1304,108 @@ describe("configuration history", () => {
     await userEvent.click(screen.getByRole("button", { name: "As recorded" }));
     await userEvent.click(screen.getByRole("button", { name: /: 600 points/ }));
     expect(rating()).toBe("600");
+    expect(measured()).toMatch(/Jan 10, 2026/);
+    // A dated point lists the verdicts that stood at its date.
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+        attemptIds: ["attempt-0"],
+        asOf: pointAt,
+        offset: 0,
+        limit: 50,
+      }),
+    );
     await userEvent.click(screen.getByRole("button", { name: "Current pool" }));
     expect(rating()).toBe("900");
+  });
+
+  it("offers only a mode that has measurements", async () => {
+    const dated = leaderboardRow({ points: 600, attemptIds: ["attempt-0"] });
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
+      {
+        id: "only-recorded",
+        runId: runSummary.id,
+        createdAt: 1_000,
+        report: { cohort, rows: [dated] },
+        // Today's pool has no measured point for this observation.
+        recalculatedReport: {
+          cohort,
+          rows: [{ ...dated, points: null, quality: null }],
+        },
+      },
+    ]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    const current = leaderboardRow({ points: 900 });
+    wrap(
+      <BenchmarkConfigurationPage
+        row={current}
+        report={{ cohort, rows: [current] }}
+        runs={[runSummary]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: /: 600 points/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "As recorded" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Current pool" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps following a selected point while its run settles more cells", async () => {
+    const point = (id: string, createdAt: number, points: number) => ({
+      id,
+      runId: runSummary.id,
+      createdAt,
+      report: { cohort, rows: [leaderboardRow({ points })] },
+    });
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
+      point("earlier:1", 1_000, 400),
+      point(`${runSummary.id}:2000`, 2_000, 500),
+    ]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const current = leaderboardRow({ points: 900 });
+    render(
+      <QueryClientProvider client={client}>
+        <BenchmarkConfigurationPage
+          row={current}
+          report={{ cohort, rows: [current] }}
+          runs={[runSummary]}
+          versions={definition.versions}
+          onEvidence={vi.fn()}
+          onRun={vi.fn()}
+          onOpenRun={vi.fn()}
+          onBack={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    const rating = () =>
+      screen.getByText("Overall rating").nextElementSibling?.textContent;
+    await userEvent.click(
+      await screen.findByRole("button", { name: /: 500 points/ }),
+    );
+    expect(rating()).toBe("500");
+    // The running run's single point moved to its newest settled cell.
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
+      point("earlier:1", 1_000, 400),
+      point(`${runSummary.id}:3000`, 3_000, 700),
+    ]);
+    await act(() => client.invalidateQueries());
+    await waitFor(() => expect(rating()).toBe("700"));
+    expect(
+      screen.getByRole("button", { name: /: 700 points/ }),
+    ).toHaveAttribute("aria-pressed", "true");
+    client.clear();
   });
 });
 
@@ -990,6 +1478,7 @@ describe("post-run evaluation history", () => {
         versions={definition.versions}
         onEvidence={vi.fn()}
         onRun={vi.fn()}
+        onOpenRun={vi.fn()}
         onBack={vi.fn()}
       />,
     );

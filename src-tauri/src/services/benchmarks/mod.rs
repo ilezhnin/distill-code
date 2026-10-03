@@ -15,22 +15,57 @@ pub mod usage;
 pub mod worker;
 pub mod workflow;
 
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, OnceLock, Weak};
 use store::{event, now, Store};
 use tauri::Manager;
 use tokio::sync::{Mutex, Notify, OnceCell};
 use types::*;
 
 const MATRIX_ORDER_ALGORITHM: &str = "sha256-cell-order-v1";
-static EVALUATION_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// One evaluation writer per attempt: a judge panel on one rendering never
+/// blocks a review of another.
+fn evaluation_lock(attempt_id: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(attempt_id).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(attempt_id.to_owned(), Arc::downgrade(&lock));
+    lock
+}
 
 pub(super) fn execution_count(draft: &BenchmarkDraft) -> usize {
     draft.workflow.as_ref().map_or(1, |w| w.steps.len())
         + if draft.evaluator.kind == "rubric" {
-            3
+            runner::MAX_JUDGES
         } else {
             0
         }
+}
+
+/// A plan owes a cell unless its candidate helped write the case.
+fn owed(version: &BenchmarkVersion, configuration: &Configuration) -> bool {
+    !routing::authored_by_candidate(&version.manifest, configuration)
+}
+
+/// Executions a plan owes: every owed cell's turns and judge reservation, per repetition.
+fn owed_executions(versions: &[BenchmarkVersion], request: &RunRequest) -> usize {
+    let mut turns = 0usize;
+    for version in versions {
+        for configuration in &request.configurations {
+            if owed(version, configuration) {
+                turns = turns.saturating_add(execution_count(&version.manifest));
+            }
+        }
+    }
+    turns.saturating_mul(request.repetitions as usize)
 }
 
 fn matrix_order_seed(request_key: &str) -> String {
@@ -160,17 +195,72 @@ impl BenchmarkService {
             attempts,
         })
     }
+    /// Executions a saved plan owes, read from the stored manifests alone.
+    pub(super) async fn planned_executions(&self, request: &RunRequest) -> Result<usize> {
+        let mut versions = Vec::new();
+        for id in &request.version_ids {
+            versions.push(self.store.version(id).await?);
+        }
+        Ok(owed_executions(&versions, request))
+    }
     pub async fn preview_run(&self, request: &RunRequest) -> Result<RunPreview> {
         let mut issues = Vec::new();
-        let mut case_turns = 0usize;
+        let mut versions = Vec::new();
         for id in &request.version_ids {
-            let draft = self.store.version(id).await?.manifest;
-            case_turns = case_turns.saturating_add(execution_count(&draft));
+            versions.push(self.store.version(id).await?);
         }
-        let count = case_turns
-            .checked_mul(request.configurations.len())
-            .and_then(|v| v.checked_mul(request.repetitions as usize))
-            .unwrap_or(usize::MAX);
+        let count = owed_executions(&versions, request);
+        if !versions.is_empty()
+            && request
+                .configurations
+                .iter()
+                .any(|c| !versions.iter().any(|v| owed(v, c)))
+        {
+            issues.push("A configuration authored every selected case and owes none".into());
+        }
+        // Judge turns share the measured provider, so they cannot sit inside a quota sample.
+        if versions.iter().any(|v| {
+            v.manifest.evaluator.kind == "rubric"
+                && !runner::rubric_criteria(&v.manifest).is_empty()
+                && v.manifest.measurement_profile != "task_metrics"
+        }) {
+            issues.push("Judged creative briefs support task metrics only".into());
+        }
+        // A pinned runtime that changed since selection would fail every cell.
+        let mut runtimes: HashMap<(String, Option<String>), Vec<InventoryModel>> = HashMap::new();
+        for c in &request.configurations {
+            let Some(pinned) = c.inventory_revision.as_ref() else {
+                continue;
+            };
+            let key = (c.provider_id.clone(), c.account_id.clone());
+            if !runtimes.contains_key(&key) {
+                match self
+                    .backend
+                    .inventory(&c.provider_id, c.account_id.as_deref(), false)
+                    .await
+                {
+                    Ok(models) => {
+                        runtimes.insert(key.clone(), models);
+                    }
+                    Err(error) => {
+                        issues.push(format!(
+                            "Runtime inventory is unavailable: {}",
+                            error.message
+                        ));
+                        continue;
+                    }
+                }
+            }
+            let current = runtimes[&key]
+                .iter()
+                .find(|m| m.configuration.model_id == c.model_id)
+                .and_then(|m| m.configuration.inventory_revision.as_ref());
+            if current != Some(pinned) {
+                issues.push(
+                    "Runtime changed since this configuration was selected; refresh it".into(),
+                );
+            }
+        }
         if request.request_key.trim().is_empty() || request.request_key.len() > 256 {
             issues.push("A bounded idempotency request key is required".into());
         }
@@ -206,8 +296,7 @@ impl BenchmarkService {
             }
         }
         let mut profiles = std::collections::HashSet::new();
-        for id in &request.version_ids {
-            let version = self.store.version(id).await?;
+        for version in &versions {
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
                 .await?;
             profiles.insert(version.manifest.measurement_profile.clone());
@@ -259,7 +348,23 @@ impl BenchmarkService {
             versions.push(self.store.version(version_id).await?);
         }
         let path = self.store.root.join("runs").join(&id);
-        let cells = randomized_matrix(&request)?;
+        // A candidate is never scheduled on a case it helped write.
+        let authored: BTreeSet<(&str, &str)> = versions
+            .iter()
+            .flat_map(|v| {
+                request
+                    .configurations
+                    .iter()
+                    .filter(|c| !owed(v, c))
+                    .map(|c| (v.id.as_str(), c.id.as_str()))
+            })
+            .collect();
+        let cells: Vec<_> = randomized_matrix(&request)?
+            .into_iter()
+            .filter(|(version, configuration, _)| {
+                !authored.contains(&(version.as_str(), configuration.id.as_str()))
+            })
+            .collect();
         let mut manifest = serde_json::to_value(&request)?;
         manifest["executionOrder"] = serde_json::json!({
             "algorithm": MATRIX_ORDER_ALGORITHM,
@@ -431,7 +536,8 @@ impl BenchmarkService {
         reason: String,
         details: Option<serde_json::Value>,
     ) -> Result<Attempt> {
-        let _guard = EVALUATION_LOCK.lock().await;
+        let lock = evaluation_lock(id);
+        let _guard = lock.lock().await;
         if let Some(details) = &details {
             let valid = details.as_object().is_some_and(|map| {
                 !map.is_empty()
@@ -484,6 +590,26 @@ impl BenchmarkService {
                 "A finished output and a published review rubric are required",
             ));
         }
+        // An override replaces a verdict; a budget failure or an unscored
+        // outcome has none to replace.
+        if !visual
+            && !matches!(
+                self.store.stored_outcome(id).await?.as_deref(),
+                Some(
+                    "pass"
+                        | "fail"
+                        | "completed"
+                        | "evaluation_error"
+                        | "pending_review"
+                        | "judged"
+                )
+            )
+        {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Only an evaluated result can be reviewed",
+            ));
+        }
         a.evaluations.push(Evaluation {
             id: uuid::Uuid::new_v4().to_string(),
             evaluator_revision: v.manifest.evaluator.revision,
@@ -504,7 +630,13 @@ impl BenchmarkService {
         Ok(a)
     }
     pub async fn rescore(&self, id: &str) -> Result<Attempt> {
-        let _guard = EVALUATION_LOCK.lock().await;
+        let lock = evaluation_lock(id);
+        let Ok(_guard) = lock.try_lock() else {
+            return Err(BenchmarkError::new(
+                "validation",
+                "This attempt is already being evaluated",
+            ));
+        };
         if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workflow_steps WHERE attempt_id=?")
             .bind(id)
             .fetch_one(&self.store.pool)
@@ -523,15 +655,57 @@ impl BenchmarkService {
                 "Only a finished attempt can be rescored",
             ));
         }
+        // Budget failures, cancellations, exclusions and infrastructure outcomes
+        // keep their recorded outcome; only an evaluated result is evaluated again.
+        if !matches!(
+            self.store.stored_outcome(id).await?.as_deref(),
+            Some("pass" | "fail" | "completed" | "evaluation_error" | "pending_review" | "judged")
+        ) {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Only an evaluated result can be evaluated again",
+            ));
+        }
         let v = self.store.version(&a.version_id).await?;
+        if routing::authored_by_candidate(&v.manifest, &a.configuration) {
+            return Err(BenchmarkError::new(
+                "validation",
+                "The candidate authored this case, so its result is excluded",
+            ));
+        }
         let output = a.output.as_deref().ok_or_else(|| {
             BenchmarkError::new("evidence_missing", "Attempt has no sealed output")
         })?;
         let e = runner::evaluate(&v.manifest, output).await?;
         // A creative brief goes back to the judge panel; its objective verdict
         // ("review required") is already on record and says nothing new.
-        if v.manifest.evaluator.kind == "rubric" {
-            a = self.backend.judge(&self.store, a, &v).await?;
+        if v.manifest.evaluator.kind == "rubric" && e.verdict == "pending_review" {
+            // A human review overrides every panel, so new judge calls could not change the score.
+            if a.evaluations
+                .iter()
+                .any(|e| e.provenance == "human" && e.score.is_some())
+            {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    "A human review overrides the judge panel",
+                ));
+            }
+            let recorded = a.evaluations.len();
+            a = self
+                .backend
+                .judge(&self.store, a, &v, runner::JudgeStop::manual())
+                .await?;
+            if !a.evaluations[recorded.min(a.evaluations.len())..]
+                .iter()
+                .any(|e| e.provenance == "render")
+            {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    a.reason
+                        .clone()
+                        .unwrap_or_else(|| "No judge panel could be assembled".into()),
+                ));
+            }
         } else {
             a.outcome = Some(e.verdict.clone());
             a.evaluations.push(e);

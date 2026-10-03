@@ -175,8 +175,21 @@ impl Store {
     }
     pub async fn archive(&self, id: &str, archived: bool) -> Result<BenchmarkDefinition> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE benchmark_definitions SET archived=?,revision=revision+1 WHERE id=?")
+        let at = now();
+        // A restore keeps the period it ends, so a dated pool inside it never
+        // owes the definition; a later archive starts a new period.
+        if !archived {
+            sqlx::query("INSERT INTO benchmark_definition_archives(definition_id,archived_at,restored_at) SELECT id,archived_at,? FROM benchmark_definitions WHERE id=? AND archived=1 AND archived_at IS NOT NULL")
+                .bind(at)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        // Dated pools retire a definition from its first archive time on.
+        sqlx::query("UPDATE benchmark_definitions SET archived=?,archived_at=CASE WHEN ? THEN COALESCE(archived_at,?) ELSE NULL END,revision=revision+1 WHERE id=?")
             .bind(archived)
+            .bind(archived)
+            .bind(at)
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -194,6 +207,45 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn archiving_records_the_first_archive_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        assert_eq!(definition.archived_at, None);
+        let archived = store.archive(&definition.id, true).await.unwrap();
+        let at = archived.archived_at.expect("archive time recorded");
+        assert!(archived.archived);
+        // Archiving again keeps the first time; the listing reads it too.
+        sqlx::query("UPDATE benchmark_definitions SET archived_at=? WHERE id=?")
+            .bind(at - 100)
+            .bind(&definition.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let again = store.archive(&definition.id, true).await.unwrap();
+        assert_eq!(again.archived_at, Some(at - 100));
+        let listed = store.definitions().await.unwrap();
+        assert_eq!(listed[0].archived_at, Some(at - 100));
+        let restored = store.archive(&definition.id, false).await.unwrap();
+        assert!(!restored.archived);
+        assert_eq!(restored.archived_at, None);
+        // The restore keeps the period it ended; a second archive opens another.
+        let [(from, until)] = restored.archive_history[..] else {
+            panic!("one closed period: {:?}", restored.archive_history);
+        };
+        assert_eq!(from, at - 100);
+        assert!(until >= at);
+        let again = store.archive(&definition.id, true).await.unwrap();
+        assert!(again.archived_at.is_some_and(|start| start >= until));
+        let twice = store.archive(&definition.id, false).await.unwrap();
+        assert_eq!(twice.archive_history.len(), 2);
+        assert_eq!(twice.archive_history[0], (from, until));
+        // Restoring a live definition records nothing.
+        let live = store.archive(&definition.id, false).await.unwrap();
+        assert_eq!(live.archive_history.len(), 2);
+    }
     #[tokio::test]
     async fn entry_state_hash_tracks_actual_public_fixture_contents() {
         let directory = tempfile::tempdir().unwrap();

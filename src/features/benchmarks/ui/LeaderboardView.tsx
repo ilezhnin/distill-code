@@ -141,7 +141,19 @@ export function LeaderboardView({
   const unranked = ranked.filter((entry) => entry.rank == null);
   // Nothing ranked yet means nothing to hide behind.
   const showUnranked = unrankedOpen || rankedRows.length === 0;
-  const shown = showUnranked ? ranked : rankedRows;
+  const listed = showUnranked ? ranked : rankedRows;
+  // Ranks are placed over every row; only the rendered list is paged. A list
+  // that shrank (another board ranks fewer rows) shows its last page.
+  const lastPage = Math.max(0, Math.ceil(listed.length / pageSize) - 1);
+  const current = Math.min(page, lastPage);
+  const shown = listed.slice(current * pageSize, (current + 1) * pageSize);
+  const hasMore = listed.length > (current + 1) * pageSize;
+  // Another board is another ranking, read from its top.
+  const chooseBoard = (id: BoardId) => {
+    if (id === board.id) return;
+    setBoardId(id);
+    onPageChange(0);
+  };
   // Every board's standing per row: points for the profile bars, place for the dialog.
   const standings = useMemo(
     () =>
@@ -255,7 +267,10 @@ export function LeaderboardView({
       <DisclosureButton
         type="button"
         aria-expanded={unrankedOpen}
-        onClick={() => setUnrankedOpen((open) => !open)}
+        onClick={() => {
+          setUnrankedOpen((open) => !open);
+          onPageChange(0);
+        }}
       >
         {unrankedOpen
           ? t("leaderboard.hideUnranked")
@@ -273,7 +288,10 @@ export function LeaderboardView({
             terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
           }))}
           selected={chosen}
-          onChange={setChosen}
+          onChange={(next) => {
+            setChosen(next);
+            onPageChange(0);
+          }}
         />
         <div className="flex min-w-0 items-center gap-2">
           <ToggleGroup
@@ -296,7 +314,7 @@ export function LeaderboardView({
       </div>
       <Tabs
         value={board.id}
-        onValueChange={(value) => setBoardId(value as BoardId)}
+        onValueChange={(value) => chooseBoard(value as BoardId)}
       >
         <TabsList variant="buttons" className="flex-wrap justify-start">
           {boards.map((entry) => (
@@ -421,7 +439,7 @@ export function LeaderboardView({
                     rightIcon={
                       entry.id === board.id ? <IconChevronDown /> : undefined
                     }
-                    onClick={() => setBoardId(entry.id)}
+                    onClick={() => chooseBoard(entry.id)}
                   >
                     {boardLabel(entry)}
                   </Button>
@@ -467,9 +485,9 @@ export function LeaderboardView({
       )}
       {unrankedDisclosure}
       <BenchmarkPager
-        page={page}
+        page={current}
         pageSize={pageSize}
-        count={rows.length}
+        count={hasMore ? pageSize : 0}
         onPageChange={onPageChange}
       />
     </section>

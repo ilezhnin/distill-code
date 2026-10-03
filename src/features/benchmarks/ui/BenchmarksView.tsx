@@ -103,6 +103,7 @@ export function BenchmarksView({
   const [runSelection, setRunSelection] = useState<{
     versions: string[];
     preview: boolean;
+    /** A catch-up row; the dialog re-selects it from today's inventory. */
     configuration?: Configuration;
   } | null>(null);
   const [scope, setScope] = useState<ResultScope>({
@@ -125,14 +126,11 @@ export function BenchmarksView({
     }),
     [scope, page],
   );
+  // Ranks, places and the model filter need every row; the board pages its
+  // own rendered list. 500 is the service's cap.
   const leaderboardQuery = useMemo(
-    () => ({
-      runId: null,
-      versionIds: null,
-      offset: page * PAGE_SIZE,
-      limit: PAGE_SIZE,
-    }),
-    [page],
+    () => ({ runId: null, versionIds: null, offset: 0, limit: 500 }),
+    [],
   );
   const leaderboard = useQuery({
     queryKey: [...benchmarkKeys, "leaderboard", leaderboardQuery],
@@ -352,6 +350,7 @@ export function BenchmarksView({
                   }),
                 )
               }
+              onOpenRun={openRun}
               onBack={() => onNavigate({ section: "leaderboard" })}
             />
           ) : leaderboard.isPending ? (

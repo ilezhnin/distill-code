@@ -129,6 +129,9 @@ describe("design gallery", () => {
     expect(
       within(failed).getByText("Time budget exceeded"),
     ).toBeInTheDocument();
+    expect(
+      within(failed).queryByText("Awaiting the judge panel"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("gamma")).not.toBeInTheDocument();
     const judged = screen.getByRole("button", { name: "Open design 4" });
     expect(within(judged).getByText("delta")).toBeInTheDocument();
@@ -136,6 +139,32 @@ describe("design gallery", () => {
     expect(within(judged).getByText("2 judges")).toBeInTheDocument();
     await userEvent.click(pending);
     expect(onEvidence).toHaveBeenCalledWith("attempt-2");
+  });
+
+  it("promises a panel verdict only to a rendering that waits for one", () => {
+    show([
+      entry({
+        attemptId: "excluded",
+        configuration: { ...configuration, id: "a", modelId: "alpha" },
+        output: null,
+        outcome: "excluded",
+      }),
+      entry({
+        attemptId: "waiting",
+        configuration: { ...configuration, id: "b", modelId: "beta" },
+        phase: "awaiting_judges",
+        outcome: "pending_review",
+      }),
+    ]);
+    const excluded = screen.getByRole("button", { name: "Open design 1" });
+    expect(within(excluded).getByText("Entry 1")).toBeInTheDocument();
+    expect(
+      within(excluded).queryByText("Awaiting the judge panel"),
+    ).not.toBeInTheDocument();
+    const waiting = screen.getByRole("button", { name: "Open design 2" });
+    expect(
+      within(waiting).getByText("Awaiting the judge panel"),
+    ).toBeInTheDocument();
   });
 
   it("offers nothing but the hint when no brief has run", () => {

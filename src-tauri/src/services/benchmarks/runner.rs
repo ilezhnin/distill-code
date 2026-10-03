@@ -1,4 +1,5 @@
 use super::{
+    analysis::matches_selection,
     evaluation, fixtures,
     store::{now, Store},
     types::*,
@@ -16,6 +17,63 @@ use std::{
 use tauri::Manager;
 use tokio::sync::watch;
 
+/// Fewest judges whose votes may settle a rendering.
+pub(crate) const MIN_JUDGES: usize = 2;
+/// Most judges on one panel; plan admission reserves this many calls.
+pub(crate) const MAX_JUDGES: usize = 3;
+const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
+const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
+/// A rendering whose panel a pause or busy judges held back: its generation
+/// is sealed and the run asks the panel before any new generation.
+pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
+
+/// Whether a panel stopped short in a way its run can take up again.
+fn judging_deferred(attempt: &Attempt) -> bool {
+    matches!(
+        attempt.reason.as_deref(),
+        Some(JUDGING_STOPPED | JUDGES_BUSY)
+    )
+}
+
+/// What stops a judge panel between its calls: the run's cancel signal and,
+/// for a panel inside a run, the run leaving the running state.
+#[derive(Clone)]
+pub struct JudgeStop {
+    cancel: watch::Receiver<bool>,
+    run_id: Option<String>,
+}
+impl JudgeStop {
+    pub fn run(run_id: &str, cancel: watch::Receiver<bool>) -> Self {
+        Self {
+            cancel,
+            run_id: Some(run_id.to_string()),
+        }
+    }
+    /// An operator's own request outside any running plan.
+    pub fn manual() -> Self {
+        Self {
+            cancel: watch::channel(false).1,
+            run_id: None,
+        }
+    }
+    fn cancelled(&self) -> bool {
+        *self.cancel.borrow()
+    }
+    /// A panel inside a run finishes a batch its own stop cut short.
+    fn continues_batches(&self) -> bool {
+        self.run_id.is_some()
+    }
+    pub async fn halted(&self, store: &Store) -> Result<bool> {
+        if self.cancelled() {
+            return Ok(true);
+        }
+        Ok(match &self.run_id {
+            Some(id) => store.run_state(id).await? != "running",
+            None => false,
+        })
+    }
+}
+
 pub trait ExecutionBackend: Send + Sync {
     fn unsupported(&self, configuration: &Configuration, draft: &BenchmarkDraft) -> Option<String>;
     /// Scores a creative rendering with a panel of other models; nothing happens
@@ -25,8 +83,23 @@ pub trait ExecutionBackend: Send + Sync {
         _store: &'a Store,
         attempt: Attempt,
         _version: &'a BenchmarkVersion,
+        _stop: JudgeStop,
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move { Ok(attempt) })
+    }
+    /// Settles judge turns a restart cut off. Without host records their usage
+    /// stays unknown; the reply never counts as a vote.
+    fn reconcile_judges<'a>(
+        &'a self,
+        _store: &'a Store,
+        mut attempt: Attempt,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move {
+            for evaluation in attempt.evaluations.iter_mut().filter(|e| in_flight(e)) {
+                settle_interrupted_judge(evaluation, None);
+            }
+            Ok(attempt)
+        })
     }
     fn execute<'a>(
         &'a self,
@@ -80,12 +153,348 @@ pub fn host_error(message: String) -> BenchmarkError {
     BenchmarkError::new(code, reason.trim())
 }
 
+/// The model a row stands for: a declared alias resolves to its target, an
+/// undeclared moving alias to nothing.
+pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
+    let declared = crate::services::agent_host::harness::harness(provider)
+        .and_then(|h| h.models.iter().find(|m| m.id.eq_ignore_ascii_case(model)));
+    match declared.and_then(|m| m.alias_of) {
+        Some(target) => Some(target.to_lowercase()),
+        None if matches!(model.to_lowercase().as_str(), "default" | "current") => None,
+        None => Some(model.to_lowercase()),
+    }
+}
+
+/// Up to three judges for a rendering, other providers first. A judge is never
+/// the candidate's own model (aliases resolved; an unresolved candidate alias
+/// admits no judge) and never an author of the case.
+pub(crate) fn select_judges(
+    candidates: &[&Configuration],
+    draft: &BenchmarkDraft,
+    mut offered: Vec<Configuration>,
+) -> Vec<Configuration> {
+    let excluded: Option<Vec<String>> = candidates
+        .iter()
+        .map(|c| concrete_model(&c.provider_id, &c.model_id))
+        .collect();
+    let Some(excluded) = excluded else {
+        return Vec::new();
+    };
+    // Concrete rows first, so an alias never takes its own target's seat.
+    offered.sort_by_key(|c| {
+        concrete_model(&c.provider_id, &c.model_id).as_deref() != Some(&c.model_id.to_lowercase())
+    });
+    let mut panel: Vec<(Configuration, String)> = Vec::new();
+    for configuration in offered {
+        let Some(model) = concrete_model(&configuration.provider_id, &configuration.model_id)
+        else {
+            continue;
+        };
+        let mut resolved = configuration.clone();
+        resolved.model_id = model.clone();
+        if excluded.contains(&model)
+            || super::routing::authored_by_candidate(draft, &configuration)
+            || super::routing::authored_by_candidate(draft, &resolved)
+            || panel.iter().any(|(judge, seated)| {
+                judge.provider_id == configuration.provider_id && seated == &model
+            })
+        {
+            continue;
+        }
+        panel.push((configuration, model));
+    }
+    let provider = candidates.first().map(|c| c.provider_id.as_str());
+    panel.sort_by_key(|(judge, _)| Some(judge.provider_id.as_str()) == provider);
+    panel.truncate(MAX_JUDGES);
+    panel.into_iter().map(|(judge, _)| judge).collect()
+}
+
+/// Why a panel cannot settle a rendering, before any judge is asked.
+pub(crate) fn panel_issue(panel: &[Configuration]) -> Option<String> {
+    (panel.len() < MIN_JUDGES).then(|| {
+        format!(
+            "No judge panel: {} eligible judge(s), at least {MIN_JUDGES} are required",
+            panel.len()
+        )
+    })
+}
+
+/// Why a settled judge turn cannot count as a vote: the host flagged it, or
+/// the model that answered is not the judge that was asked.
+fn judge_turn_failure(judge: &Configuration, status: &ExecutionDispatch) -> Option<String> {
+    if let Some(error) = &status.error {
+        return Some(
+            error["message"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string()),
+        );
+    }
+    let Some(selection) = status
+        .result
+        .as_ref()
+        .and_then(|result| result.get("observedSelection"))
+    else {
+        return Some("Judge turn has no acknowledged selection".into());
+    };
+    let mut observed = judge.clone();
+    observed.model_id = selection["modelId"].as_str().unwrap_or_default().into();
+    observed.effort = selection["reasoningEffort"].as_str().map(str::to_owned);
+    observed.fast_mode = selection["fastMode"].as_bool();
+    (!matches_selection(judge, &observed)).then(|| "Judge selection changed during the turn".into())
+}
+
+fn in_flight(evaluation: &Evaluation) -> bool {
+    evaluation
+        .details
+        .as_ref()
+        .is_some_and(|d| d["inFlight"] == true)
+}
+
+/// Settles a judge placeholder a restart cut off. Recovered usage is kept; the
+/// reply never counts because its batch was interrupted.
+fn settle_interrupted_judge(evaluation: &mut Evaluation, usage: Option<TokenUsage>) {
+    let complete = usage.is_some();
+    evaluation.reason = if complete {
+        "Judge turn interrupted by a restart; usage recovered from the host"
+    } else {
+        "Judge turn interrupted by a restart; its usage is unknown"
+    }
+    .into();
+    evaluation.usage = usage;
+    if let Some(details) = evaluation.details.as_mut().and_then(Value::as_object_mut) {
+        details.insert("inFlight".into(), json!(false));
+        details.insert("usageComplete".into(), json!(complete));
+    }
+}
+
+/// An abstention recorded without any judge session.
+fn judge_abstention(
+    version: &BenchmarkVersion,
+    judge: &Configuration,
+    batch: &str,
+    reason: String,
+) -> Evaluation {
+    Evaluation {
+        id: uuid::Uuid::new_v4().to_string(),
+        evaluator_revision: version.manifest.evaluator.revision.clone(),
+        verdict: "abstained".into(),
+        score: None,
+        reason,
+        created_at: now(),
+        provenance: "judge_failure".into(),
+        artifacts: Vec::new(),
+        details: Some(json!({"judgeBatchId": batch, "usageComplete": true})),
+        judge: Some(judge.clone()),
+        usage: None,
+    }
+}
+
+fn valid_vote(evaluation: &Evaluation) -> bool {
+    evaluation.provenance == "judge"
+        && evaluation
+            .score
+            .is_some_and(|s| s.is_finite() && (0.0..=1.0).contains(&s))
+}
+
+const PANEL_INCOMPLETE: &str =
+    "The judge panel is incomplete; every judge must return a valid score sheet";
+/// The error code a judge whose account turned busy answers with.
+const ACCOUNT_BUSY: &str = "account_busy";
+
+/// How a panel's pass over its judges ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelEnd {
+    /// Every judge was asked.
+    Asked,
+    /// The run stopped before the next judge.
+    Stopped,
+    /// An answer left the batch unable to reach its panel size.
+    Incomplete,
+    /// A judge's account turned busy; the batch waits for it.
+    Busy,
+}
+
+/// One judge's answer to its batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JudgeAnswer {
+    /// A valid vote.
+    Vote,
+    /// An abstention; the batch lost this seat.
+    NoVote,
+    /// The judge's account is busy; nothing was recorded or paid.
+    Busy,
+}
+
+/// One batch's judges as the panel loop sees them.
+trait PanelJudges: Send {
+    fn halted(&mut self) -> BoxFuture<'_, Result<bool>>;
+    /// Asks the judge at `index` of the panel.
+    fn ask<'s>(
+        &'s mut self,
+        index: usize,
+        judge: &'s Configuration,
+    ) -> BoxFuture<'s, Result<JudgeAnswer>>;
+}
+
+/// Asks `judges` (panel index, judge) in order. It stops before a judge when
+/// the run halts or a judge's account turns busy, and as soon as the batch
+/// can no longer reach `expected` valid votes, so no call is paid that could
+/// never count.
+async fn ask_panel(
+    judges: &[(usize, Configuration)],
+    expected: usize,
+    mut votes: usize,
+    panel: &mut impl PanelJudges,
+) -> Result<(PanelEnd, usize)> {
+    for (position, (index, judge)) in judges.iter().enumerate() {
+        if votes + (judges.len() - position) < expected {
+            return Ok((PanelEnd::Incomplete, votes));
+        }
+        if panel.halted().await? {
+            return Ok((PanelEnd::Stopped, votes));
+        }
+        match panel.ask(*index, judge).await? {
+            JudgeAnswer::Vote => votes += 1,
+            JudgeAnswer::NoVote => {}
+            JudgeAnswer::Busy => return Ok((PanelEnd::Busy, votes)),
+        }
+    }
+    let end = if votes >= expected {
+        PanelEnd::Asked
+    } else {
+        PanelEnd::Incomplete
+    };
+    Ok((end, votes))
+}
+
+/// The attempt's reason after a panel pass: none once the batch settled, else
+/// why it stopped short. A stop or a busy judge defers to the run, which
+/// finishes the batch with the judges it has not asked yet.
+fn panel_reason(
+    end: PanelEnd,
+    votes: usize,
+    expected: usize,
+    cancelled: bool,
+) -> Option<&'static str> {
+    if votes >= expected {
+        return None;
+    }
+    Some(if end == PanelEnd::Stopped || cancelled {
+        JUDGING_STOPPED
+    } else if end == PanelEnd::Busy {
+        JUDGES_BUSY
+    } else {
+        PANEL_INCOMPLETE
+    })
+}
+
+/// The newest judge batch a stop cut short: its run finishes it with the
+/// judges it has not asked yet. Only a batch whose every answer so far is a
+/// valid vote qualifies, since one abstention means it can never settle.
+#[derive(Debug)]
+struct OpenBatch {
+    id: String,
+    panel: Vec<Configuration>,
+    asked: Vec<Configuration>,
+    expected: usize,
+    rendering: String,
+}
+
+fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
+    let start = evaluations.iter().rposition(|e| e.provenance == "render")?;
+    let marker = &evaluations[start];
+    let details = marker.details.as_ref()?;
+    let panel: Vec<Configuration> =
+        serde_json::from_value(details.pointer("/protocol/panel")?.clone()).ok()?;
+    let expected = usize::try_from(details["expectedJudges"].as_u64()?).ok()?;
+    let answers = &evaluations[start + 1..];
+    if panel.len() != expected || answers.len() >= expected || !answers.iter().all(valid_vote) {
+        return None;
+    }
+    Some(OpenBatch {
+        id: details["judgeBatchId"].as_str()?.to_owned(),
+        asked: answers.iter().filter_map(|e| e.judge.clone()).collect(),
+        panel,
+        expected,
+        rendering: marker.artifacts.first()?.path.clone(),
+    })
+}
+
+/// The native panel: each judge's evaluation is saved on the attempt as it lands.
+struct NativePanel<'a> {
+    backend: &'a NativeBackend,
+    store: &'a Store,
+    attempt: &'a mut Attempt,
+    version: &'a BenchmarkVersion,
+    batch: &'a str,
+    prompt: &'a str,
+    image: &'a OwnedTurnImage,
+    criteria: &'a [RubricCriterion],
+    stop: &'a JudgeStop,
+}
+
+impl PanelJudges for NativePanel<'_> {
+    fn halted(&mut self) -> BoxFuture<'_, Result<bool>> {
+        Box::pin(self.stop.halted(self.store))
+    }
+    fn ask<'s>(
+        &'s mut self,
+        index: usize,
+        judge: &'s Configuration,
+    ) -> BoxFuture<'s, Result<JudgeAnswer>> {
+        Box::pin(async move {
+            let evaluation = match self
+                .backend
+                .ask_judge(
+                    self.store,
+                    self.attempt,
+                    self.version,
+                    judge,
+                    self.batch,
+                    index,
+                    self.prompt,
+                    self.image,
+                    self.criteria,
+                    self.stop,
+                )
+                .await
+            {
+                Ok(evaluation) => evaluation,
+                // A busy account is a reason to wait, not an abstention.
+                Err(error) if error.code == ACCOUNT_BUSY => return Ok(JudgeAnswer::Busy),
+                Err(error) => judge_abstention(self.version, judge, self.batch, error.message),
+            };
+            let vote = if valid_vote(&evaluation) {
+                JudgeAnswer::Vote
+            } else {
+                JudgeAnswer::NoVote
+            };
+            match self
+                .attempt
+                .evaluations
+                .iter_mut()
+                .find(|e| e.id == evaluation.id)
+            {
+                Some(slot) => *slot = evaluation,
+                None => self.attempt.evaluations.push(evaluation),
+            }
+            self.store.save_attempt(self.attempt).await?;
+            Ok(vote)
+        })
+    }
+}
+
 impl NativeBackend {
-    /// Up to three available models that are not the candidate, other providers first.
-    async fn judge_panel(&self, candidate: &Configuration) -> Result<Vec<Configuration>> {
+    /// The panel for one rendering from every enabled account's available models.
+    async fn judge_panel(
+        &self,
+        attempt: &Attempt,
+        draft: &BenchmarkDraft,
+    ) -> Result<Vec<Configuration>> {
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
-        let mut panel: Vec<Configuration> = Vec::new();
+        let mut offered = Vec::new();
         for account in snapshot.accounts.iter().filter(|account| account.enabled) {
             let Ok(models) = self
                 .inventory(&account.provider_id, Some(&account.id), false)
@@ -93,32 +502,50 @@ impl NativeBackend {
             else {
                 continue;
             };
-            for model in models.into_iter().filter(|model| model.available) {
-                let configuration = model.configuration;
-                let id = configuration.model_id.to_lowercase();
-                if id == "default"
-                    || id == candidate.model_id.to_lowercase()
-                    || panel.iter().any(|judge| {
-                        judge.provider_id == configuration.provider_id
-                            && judge.model_id == configuration.model_id
-                    })
-                {
-                    continue;
-                }
-                panel.push(configuration);
-            }
+            offered.extend(
+                models
+                    .into_iter()
+                    .filter(|model| model.available)
+                    .map(|model| model.configuration),
+            );
         }
-        panel.sort_by_key(|judge| judge.provider_id == candidate.provider_id);
-        panel.truncate(3);
-        Ok(panel)
+        let mut candidates = vec![&attempt.configuration];
+        candidates.extend(attempt.observed.as_ref());
+        Ok(select_judges(&candidates, draft, offered))
     }
 
-    /// One judge's verdict, or nothing when the judge is busy, silent or off form.
+    /// Whether every judge's account is free before a batch starts or
+    /// continues. A judge that turns busy mid-panel also defers the batch.
+    async fn judges_idle(&self, panel: &[Configuration]) -> Result<bool> {
+        let host = self
+            .app
+            .state::<AgentHost>()
+            .get_or_start(&self.app)
+            .await
+            .map_err(host_error)?;
+        for judge in panel {
+            let Some(account) = judge.account_id.as_deref() else {
+                return Ok(false);
+            };
+            let activity = host
+                .account_activity(&judge.provider_id, account)
+                .await
+                .map_err(host_error)?;
+            if !activity.active_sessions.is_empty() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// One judge's evaluation. A placeholder is saved before the turn is sent,
+    /// so a restart still finds the session and its spend; the result reuses
+    /// the placeholder's id.
     #[allow(clippy::too_many_arguments)]
     async fn ask_judge(
         &self,
         store: &Store,
-        attempt: &Attempt,
+        attempt: &mut Attempt,
         version: &BenchmarkVersion,
         judge: &Configuration,
         batch: &str,
@@ -126,7 +553,8 @@ impl NativeBackend {
         prompt: &str,
         image: &OwnedTurnImage,
         criteria: &[RubricCriterion],
-    ) -> Result<Option<Evaluation>> {
+        stop: &JudgeStop,
+    ) -> Result<Evaluation> {
         let host = self
             .app
             .state::<AgentHost>()
@@ -134,14 +562,23 @@ impl NativeBackend {
             .await
             .map_err(host_error)?;
         let Some(account) = judge.account_id.clone() else {
-            return Ok(None);
+            return Ok(judge_abstention(
+                version,
+                judge,
+                batch,
+                "Judge has no managed account".into(),
+            ));
         };
         let activity = host
             .account_activity(&judge.provider_id, &account)
             .await
             .map_err(host_error)?;
+        // Interactive work has priority; the batch waits and nothing is paid.
         if !activity.active_sessions.is_empty() {
-            return Ok(None);
+            return Err(BenchmarkError::new(
+                ACCOUNT_BUSY,
+                "Judge account became busy",
+            ));
         }
         let cwd = store
             .root
@@ -164,7 +601,34 @@ impl NativeBackend {
             })
             .await
             .map_err(host_error)?;
+        let mut acknowledged = judge.clone();
+        acknowledged.model_id = session.selection.model_id.clone().unwrap_or_default();
+        acknowledged.effort = session.selection.reasoning_effort.clone();
+        acknowledged.fast_mode = session.selection.fast_mode;
+        if !session.substitutions.is_empty() || !matches_selection(judge, &acknowledged) {
+            let mut abstention = judge_abstention(
+                version,
+                judge,
+                batch,
+                "Judge selection was not acknowledged".into(),
+            );
+            abstention.details = Some(json!({"judgeBatchId": batch,
+                "sessionId": session.session_id, "usageComplete": true}));
+            return Ok(abstention);
+        }
         let key = format!("benchmark:{}:judge:{batch}:{index}", attempt.id);
+        let mut placeholder =
+            judge_abstention(version, judge, batch, "Judge turn in flight".into());
+        placeholder.details = Some(
+            json!({"judgeBatchId": batch, "sessionId": session.session_id,
+            "requestKey": key, "usageComplete": false, "inFlight": true}),
+        );
+        let placeholder_id = placeholder.id.clone();
+        attempt.evaluations.push(placeholder);
+        if let Err(error) = store.save_attempt(attempt).await {
+            attempt.evaluations.pop();
+            return Err(error);
+        }
         let timeout = Duration::from_secs(180);
         let dispatch = host
             .dispatch_owned_turn(OwnedTurnRequest {
@@ -181,7 +645,13 @@ impl NativeBackend {
         let mut reply = String::new();
         let mut usage = TokenUsage::default();
         let mut failure = dispatch.err();
+        let mut turn_failure = None;
         while failure.is_none() {
+            if stop.cancelled() {
+                let _ = host.cancel_owned_turn(&key).await;
+                failure = Some("Judging cancelled".to_string());
+                break;
+            }
             if started.elapsed() > timeout + Duration::from_secs(15) {
                 let _ = host.cancel_owned_turn(&key).await;
                 failure = Some("Judge exceeded its time budget".to_string());
@@ -214,7 +684,9 @@ impl NativeBackend {
                         && !page.has_more
                         && cursor >= status.event_cursor =>
                 {
-                    break
+                    // A flagged or substituted turn abstains; its spend still counts.
+                    turn_failure = judge_turn_failure(judge, &status);
+                    break;
                 }
                 None => {
                     failure = Some("Judge execution status is unavailable".into());
@@ -228,6 +700,7 @@ impl NativeBackend {
         if !usage_complete {
             let _ = host.cancel_owned_turn(&key).await;
         }
+        let failure = failure.or(turn_failure);
         let parsed = failure
             .is_none()
             .then(|| parse_judge_reply(&reply, criteria))
@@ -240,8 +713,8 @@ impl NativeBackend {
             Some(_) => "Scored by the judge panel".into(),
             None => failure.unwrap_or_else(|| "Judge returned no valid score sheet".into()),
         };
-        Ok(Some(Evaluation {
-            id: uuid::Uuid::new_v4().to_string(),
+        Ok(Evaluation {
+            id: placeholder_id,
             evaluator_revision: version.manifest.evaluator.revision.clone(),
             verdict: if score.is_some() {
                 "judged"
@@ -266,7 +739,7 @@ impl NativeBackend {
             ),
             judge: Some(judge.clone()),
             usage: Some(usage),
-        }))
+        })
     }
 }
 
@@ -276,92 +749,192 @@ impl ExecutionBackend for NativeBackend {
         store: &'a Store,
         mut attempt: Attempt,
         version: &'a BenchmarkVersion,
+        stop: JudgeStop,
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move {
             let criteria = rubric_criteria(&version.manifest);
+            if criteria.is_empty() {
+                return Ok(attempt);
+            }
+            // An answer without markup is settled as a failure by evaluate().
             let Some(document) = render_document(
                 attempt.output.as_deref().unwrap_or_default(),
                 version.manifest.facets.output_format.as_deref(),
             ) else {
                 return Ok(attempt);
             };
-            if criteria.is_empty() {
+            // Nothing is written until the panel can settle the rendering, so a
+            // batch that cannot finish never replaces a settled score.
+            if stop.halted(store).await? {
+                attempt.reason = Some(JUDGING_STOPPED.into());
                 return Ok(attempt);
             }
-            let png = match super::worker::render(&document, 1024, 768).await {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    attempt.reason = Some(format!("Rendering failed: {}", error.message));
-                    return Ok(attempt);
+            let prompt = judge_prompt(&version.manifest, &criteria);
+            // A batch its run's stop cut short is finished by the judges it has
+            // not asked yet, so the plan's reservation still covers it.
+            let open = match stop
+                .continues_batches()
+                .then(|| open_batch(&attempt.evaluations))
+                .flatten()
+            {
+                Some(open) => tokio::fs::read(&open.rendering)
+                    .await
+                    .ok()
+                    .map(|png| (open, png)),
+                None => None,
+            };
+            let (batch, judges, expected, votes, png) = match open {
+                Some((open, png)) => {
+                    let judges: Vec<(usize, Configuration)> = open
+                        .panel
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(_, judge)| !open.asked.contains(judge))
+                        .collect();
+                    let waiting: Vec<Configuration> =
+                        judges.iter().map(|(_, judge)| judge.clone()).collect();
+                    if !self.judges_idle(&waiting).await? {
+                        attempt.reason = Some(JUDGES_BUSY.into());
+                        return Ok(attempt);
+                    }
+                    (open.id, judges, open.expected, open.asked.len(), png)
+                }
+                None => {
+                    let panel = self.judge_panel(&attempt, &version.manifest).await?;
+                    if let Some(issue) = panel_issue(&panel) {
+                        attempt.reason = Some(issue);
+                        return Ok(attempt);
+                    }
+                    if !self.judges_idle(&panel).await? {
+                        attempt.reason = Some(JUDGES_BUSY.into());
+                        return Ok(attempt);
+                    }
+                    let png = match super::worker::render(&document, 1024, 768).await {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            attempt.reason = Some(format!("Rendering failed: {}", error.message));
+                            return Ok(attempt);
+                        }
+                    };
+                    let directory = store
+                        .root
+                        .join("runs")
+                        .join(&attempt.run_id)
+                        .join(&attempt.id);
+                    tokio::fs::create_dir_all(&directory).await?;
+                    let batch = uuid::Uuid::new_v4().to_string();
+                    let expected = panel.len();
+                    let protocol = json!({"panel": panel, "prompt": prompt,
+                        "renderer": JUDGE_RENDERER, "samplesPerJudge": 1, "expectedJudges": expected});
+                    let protocol_hash = judge_protocol_hash(&panel, &prompt);
+                    let path = directory.join(format!("rendering-{batch}.png"));
+                    tokio::fs::write(&path, &png).await?;
+                    let settled = super::analysis::score(&attempt).is_some();
+                    attempt.evaluations.push(Evaluation {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        evaluator_revision: version.manifest.evaluator.revision.clone(),
+                        verdict: "rendered".into(),
+                        score: None,
+                        reason: "Rendered for the judge panel".into(),
+                        created_at: now(),
+                        provenance: "render".into(),
+                        artifacts: vec![Artifact {
+                            kind: "screenshot".into(),
+                            path: path.to_string_lossy().into_owned(),
+                            hash: hex::encode(Sha256::digest(&png)),
+                            label: "Rendering".into(),
+                        }],
+                        details: Some(json!({"judgeBatchId": batch, "expectedJudges": expected,
+                            "protocolHash": protocol_hash, "protocol": protocol})),
+                        judge: None,
+                        usage: None,
+                    });
+                    if !settled {
+                        attempt.outcome = Some("pending_review".into());
+                    }
+                    store.save_attempt(&attempt).await?;
+                    (
+                        batch,
+                        panel.into_iter().enumerate().collect(),
+                        expected,
+                        0,
+                        png,
+                    )
                 }
             };
-            let directory = store
-                .root
-                .join("runs")
-                .join(&attempt.run_id)
-                .join(&attempt.id);
-            tokio::fs::create_dir_all(&directory).await?;
-            let batch = uuid::Uuid::new_v4().to_string();
-            let panel = self.judge_panel(&attempt.configuration).await?;
-            let prompt = judge_prompt(&version.manifest, &criteria);
-            let protocol = json!({"panel": panel, "prompt": prompt,
-                "renderer": "chromium-1024x768-v1", "samplesPerJudge": 1, "expectedJudges": 3});
-            let protocol_hash = hex::encode(Sha256::digest(serde_json::to_vec(&protocol)?));
-            let path = directory.join(format!("rendering-{batch}.png"));
-            tokio::fs::write(&path, &png).await?;
-            attempt.evaluations.push(Evaluation {
-                id: uuid::Uuid::new_v4().to_string(),
-                evaluator_revision: version.manifest.evaluator.revision.clone(),
-                verdict: "rendered".into(),
-                score: None,
-                reason: "Rendered for the judge panel".into(),
-                created_at: now(),
-                provenance: "render".into(),
-                artifacts: vec![Artifact {
-                    kind: "screenshot".into(),
-                    path: path.to_string_lossy().into_owned(),
-                    hash: hex::encode(Sha256::digest(&png)),
-                    label: "Rendering".into(),
-                }],
-                details: Some(json!({"judgeBatchId": batch, "expectedJudges": 3,
-                    "protocolHash": protocol_hash, "protocol": protocol})),
-                judge: None,
-                usage: None,
-            });
-            attempt.outcome = Some("pending_review".into());
-            store.save_attempt(&attempt).await?;
-            if panel.is_empty() {
-                attempt.reason = Some("No judge panel: no other model is signed in".into());
-                return Ok(attempt);
-            }
             let image = OwnedTurnImage {
                 data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png),
                 mime_type: "image/png".into(),
             };
-            for (index, judge) in panel.iter().enumerate() {
-                match self
-                    .ask_judge(
-                        store, &attempt, version, judge, &batch, index, &prompt, &image, &criteria,
-                    )
-                    .await
-                {
-                    Ok(Some(evaluation)) => attempt.evaluations.push(evaluation),
-                    Ok(None) => {}
-                    Err(error) => log::warn!(
-                        "[benchmarks] judge {} failed: {}",
-                        judge.model_id,
-                        error.message
-                    ),
-                }
-                store.save_attempt(&attempt).await?;
-            }
-            if super::analysis::score(&attempt).is_some() {
+            let (end, votes) = ask_panel(
+                &judges,
+                expected,
+                votes,
+                &mut NativePanel {
+                    backend: self,
+                    store,
+                    attempt: &mut attempt,
+                    version,
+                    batch: &batch,
+                    prompt: &prompt,
+                    image: &image,
+                    criteria: &criteria,
+                    stop: &stop,
+                },
+            )
+            .await?;
+            if votes >= expected {
                 attempt.outcome = Some("judged".into());
-                attempt.reason = None;
-            } else {
-                attempt.reason = Some(
-                    "The judge panel is incomplete; three valid score sheets are required".into(),
-                );
+            }
+            attempt.reason =
+                panel_reason(end, votes, expected, stop.cancelled()).map(str::to_owned);
+            Ok(attempt)
+        })
+    }
+    fn reconcile_judges<'a>(
+        &'a self,
+        _store: &'a Store,
+        mut attempt: Attempt,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            for evaluation in attempt.evaluations.iter_mut().filter(|e| in_flight(e)) {
+                let details = evaluation.details.clone().unwrap_or_default();
+                let (Some(key), Some(session)) = (
+                    details["requestKey"].as_str(),
+                    details["sessionId"].as_str(),
+                ) else {
+                    settle_interrupted_judge(evaluation, None);
+                    continue;
+                };
+                let status = host.execution_status(key).await.ok().flatten();
+                let Some(status) = status.filter(|s| s.phase == "terminal") else {
+                    let _ = host.cancel_owned_turn(key).await;
+                    settle_interrupted_judge(evaluation, None);
+                    continue;
+                };
+                let mut usage = TokenUsage::default();
+                let mut reply = String::new();
+                let mut cursor = 0i64;
+                let complete = loop {
+                    let Ok(page) = host.read_owned_events(session, cursor, 200).await else {
+                        break false;
+                    };
+                    for event in page.events {
+                        consume_event(&event.payload, &mut reply, &mut usage);
+                    }
+                    let advanced = page.cursor > cursor;
+                    cursor = page.cursor;
+                    if !page.has_more || !advanced {
+                        break !page.has_more && cursor >= status.event_cursor;
+                    }
+                };
+                settle_interrupted_judge(evaluation, complete.then_some(usage));
             }
             Ok(attempt)
         })
@@ -1070,16 +1643,6 @@ fn model_identity(inventory: &Value) -> Vec<String> {
     ids.dedup();
     ids
 }
-fn matches_selection(requested: &Configuration, observed: &Configuration) -> bool {
-    requested.model_id == observed.model_id
-        && requested
-            .effort
-            .as_ref()
-            .is_none_or(|e| Some(e) == observed.effort.as_ref())
-        && requested
-            .fast_mode
-            .is_none_or(|f| Some(f) == observed.fast_mode)
-}
 fn effective_timeout_seconds(requested: u32, draft: &BenchmarkDraft) -> u32 {
     requested.min(draft.limits.timeout_seconds).min(
         draft
@@ -1140,23 +1703,78 @@ fn unfence_markup(output: &str) -> &str {
     body.trim()
 }
 
+fn head(body: &str) -> String {
+    body.chars().take(200).collect::<String>().to_lowercase()
+}
+
+/// The drawing or page in an answer: the answer itself when it starts with
+/// markup, else the first `<svg>`…`</svg>` or HTML document anywhere in it.
+fn markup_body<'a>(output: &'a str, format: Option<&str>) -> Option<&'a str> {
+    let body = unfence_markup(output);
+    let start = head(body);
+    if start.starts_with("<svg")
+        || start.starts_with("<!doctype html")
+        || start.starts_with("<html")
+        || (format == Some("svg") && start.contains("<svg"))
+        || (format == Some("html") && start.contains('<'))
+    {
+        return Some(body);
+    }
+    // ASCII lowering keeps byte offsets, and every offset found sits on a '<'.
+    let lowered = output.to_ascii_lowercase();
+    for (opening, closing) in [
+        ("<svg", "</svg>"),
+        ("<!doctype html", "</html>"),
+        ("<html", "</html>"),
+    ] {
+        if let Some(from) = lowered.find(opening) {
+            if let Some(to) = lowered.rfind(closing).filter(|to| *to > from) {
+                return output.get(from..to + closing.len());
+            }
+        }
+    }
+    None
+}
+
+const JUDGE_RENDERER: &str = "chromium-1024x768-v1";
+
+/// How a rendering is judged: each judge's provider, model, effort and fast
+/// mode, the prompt, the renderer and the panel size. Accounts and runtime
+/// probes do not change a verdict, so they stay out of the hash that the
+/// leaderboard and Nerf compare.
+pub(crate) fn judge_protocol_hash(panel: &[Configuration], prompt: &str) -> String {
+    let mut judges: Vec<(&str, &str, &str, bool)> = panel
+        .iter()
+        .map(|judge| {
+            (
+                judge.provider_id.as_str(),
+                judge.model_id.as_str(),
+                judge
+                    .effort
+                    .as_deref()
+                    .filter(|effort| !effort.is_empty())
+                    .unwrap_or("default"),
+                judge.fast_mode.unwrap_or(false),
+            )
+        })
+        .collect();
+    judges.sort();
+    let identity = json!({"judges": judges, "prompt": prompt, "renderer": JUDGE_RENDERER,
+        "samplesPerJudge": 1, "expectedJudges": panel.len()});
+    hex::encode(Sha256::digest(identity.to_string().as_bytes()))
+}
+
 /// A standalone document that shows a drawing or a page, or nothing when the
 /// output is neither.
 pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<String> {
-    let body = unfence_markup(output);
-    let lowered: String = body.chars().take(200).collect::<String>().to_lowercase();
-    if lowered.starts_with("<svg") || (format == Some("svg") && lowered.contains("<svg")) {
+    let body = markup_body(output, format)?;
+    let start = head(body);
+    if start.starts_with("<svg") || (format == Some("svg") && start.contains("<svg")) {
         return Some(format!(
             "<!doctype html><html><head><meta charset=\"utf-8\"><style>html,body{{margin:0;height:100%;display:grid;place-items:center;background:#fff}}svg{{width:100%;height:auto;max-height:100%}}</style></head><body>{body}</body></html>"
         ));
     }
-    if lowered.starts_with("<!doctype html")
-        || lowered.starts_with("<html")
-        || (format == Some("html") && lowered.contains('<'))
-    {
-        return Some(body.to_string());
-    }
-    None
+    Some(body.to_string())
 }
 
 fn judge_prompt(draft: &BenchmarkDraft, criteria: &[RubricCriterion]) -> String {
@@ -1185,7 +1803,8 @@ pub(crate) fn parse_judge_reply(
 ) -> Option<(serde_json::Map<String, Value>, String)> {
     let start = reply.find('{')?;
     let end = reply.rfind('}')?;
-    let value: Value = serde_json::from_str(&reply[start..=end]).ok()?;
+    // A reply whose last '}' precedes its first '{' has no object at all.
+    let value: Value = serde_json::from_str(reply.get(start..=end)?).ok()?;
     let scores = value.get("scores")?.as_object()?;
     let mut shares = serde_json::Map::new();
     for criterion in criteria {
@@ -1250,14 +1869,30 @@ fn prompt_with_fixtures(draft: &BenchmarkDraft) -> Result<String> {
 }
 pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation> {
     if matches!(draft.evaluator.kind.as_str(), "javascript" | "browser") {
-        super::worker::evaluate(draft, output).await
-    } else {
-        evaluation::evaluate(&draft.evaluator, output)
+        return super::worker::evaluate(draft, output).await;
     }
+    let mut evaluation = evaluation::evaluate(&draft.evaluator, output)?;
+    // A judged brief answered without any drawing or page leaves the panel
+    // nothing to see: the candidate failed it, the evidence is not missing.
+    if draft.evaluator.kind == "rubric"
+        && !rubric_criteria(draft).is_empty()
+        && render_document(output, draft.facets.output_format.as_deref()).is_none()
+    {
+        evaluation.verdict = "fail".into();
+        evaluation.score = Some(0.0);
+        evaluation.reason = "No renderable SVG or HTML markup in the answer".into();
+    }
+    Ok(evaluation)
 }
 
 impl BenchmarkService {
     pub async fn run_loop(self: Arc<Self>) {
+        if let Err(error) = self.reconcile_judges().await {
+            log::warn!(
+                "[benchmarks] judge reconciliation failed: {}",
+                error.message
+            );
+        }
         loop {
             if let Err(error) = self.tick().await {
                 log::warn!("[benchmarks] runner paused: {}", error.message);
@@ -1303,7 +1938,15 @@ impl BenchmarkService {
                             }
                         }
                     }
-                    restored.phase = "terminal".into();
+                    // A rendering whose panel a restart cut off keeps its paid
+                    // generation and waits for its run's resume, which asks a
+                    // fresh panel; anything else settles here.
+                    if self.awaits_panel(&restored, &version).await? {
+                        restored.phase = AWAITING_JUDGES.into();
+                        restored.reason = Some(JUDGING_STOPPED.into());
+                    } else {
+                        restored.phase = "terminal".into();
+                    }
                     self.store.save_attempt(&restored).await?;
                     self.changed().await;
                 }
@@ -1331,6 +1974,12 @@ impl BenchmarkService {
                         a.outcome = Some("cancelled".into());
                         a.finished_at = Some(now());
                         self.store.save_attempt(&a).await?;
+                    } else if a.phase == AWAITING_JUDGES {
+                        // The sealed output stands; only its verdict is missing.
+                        let mut waiting = self.store.attempt(&a.id).await?;
+                        waiting.phase = "terminal".into();
+                        waiting.reason = Some(JUDGING_STOPPED.into());
+                        self.store.save_attempt(&waiting).await?;
                     }
                 }
                 self.store.set_run_state(&run.id, "cancelled").await?;
@@ -1340,13 +1989,24 @@ impl BenchmarkService {
             if run.state != "running" {
                 continue;
             }
-            let Some(mut a) = run.attempts.iter().find(|a| a.phase == "pending").cloned() else {
-                self.finish_measurement(&run).await?;
-                self.store.set_run_state(&run.id, "completed").await?;
-                self.changed().await;
+            // A rendering a pause or busy judges held back is judged before any
+            // new generation; the run completes only once none is waiting.
+            let mut judges_busy = false;
+            if let Some(waiting) = run.attempts.iter().find(|a| a.phase == AWAITING_JUDGES) {
+                judges_busy = self.resume_judging(&run, &waiting.id).await?;
+                if !judges_busy {
+                    self.changed().await;
+                    break;
+                }
+            }
+            let Some((mut a, version)) = self.next_dispatchable(&run).await? else {
+                if !judges_busy {
+                    self.finish_measurement(&run).await?;
+                    self.store.set_run_state(&run.id, "completed").await?;
+                    self.changed().await;
+                }
                 continue;
             };
-            let version = self.store.version(&a.version_id).await?;
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
                 .await?;
             if version.manifest.measurement_profile != "task_metrics"
@@ -1354,12 +2014,15 @@ impl BenchmarkService {
             {
                 continue;
             }
+            // Judges run only where the saved plan reserved their calls; known
+            // before the paid turn.
+            let judge_budget = self.judge_budget(&run, &version).await;
             a.phase = "preparing".into();
             a.started_at = Some(now());
             self.store.save_attempt(&a).await?;
             let (cancel_tx, cancel_rx) = watch::channel(false);
             *self.active.lock().await = Some((run.id.clone(), cancel_tx));
-            if self.store.run(&run.id).await?.state != "running" {
+            if self.store.run_state(&run.id).await? != "running" {
                 a.phase = "pending".into();
                 a.started_at = None;
                 self.store.save_attempt(&a).await?;
@@ -1372,7 +2035,7 @@ impl BenchmarkService {
                     a.clone(),
                     version.clone(),
                     run.request.timeout_seconds,
-                    cancel_rx,
+                    cancel_rx.clone(),
                 )
                 .await
             } else {
@@ -1382,42 +2045,22 @@ impl BenchmarkService {
                         a.clone(),
                         version.clone(),
                         run.request.timeout_seconds,
-                        cancel_rx,
+                        cancel_rx.clone(),
                     )
                     .await
+            };
+            // The cancel signal stays live through judging.
+            let result = match result {
+                Ok(completed) => {
+                    let stop = JudgeStop::run(&run.id, cancel_rx);
+                    self.settle(completed, &version, judge_budget, stop).await
+                }
+                Err(error) => Err(error),
             };
             *self.active.lock().await = None;
             match result {
                 Ok(mut completed) => {
-                    if completed.outcome.as_deref() == Some("completed") {
-                        match evaluate(
-                            &version.manifest,
-                            completed.output.as_deref().unwrap_or_default(),
-                        )
-                        .await
-                        {
-                            Ok(e) => {
-                                completed.outcome = Some(e.verdict.clone());
-                                completed.evaluations.push(e);
-                                if version.manifest.evaluator.kind == "rubric" {
-                                    // Old saved plans may predate judge reservations.
-                                    if !self.preview_run(&run.request).await?.valid {
-                                        completed.reason = Some("Judge calls are not covered by this saved run's execution budget".into());
-                                    } else {
-                                        completed = self
-                                            .backend
-                                            .judge(&self.store, completed, &version)
-                                            .await?;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                completed.outcome = Some("evaluation_error".into());
-                                completed.reason = Some(e.message);
-                            }
-                        }
-                    }
-                    completed.phase = "terminal".into();
+                    completed.phase = self.settled_phase(&run, &completed).await?.into();
                     self.store.save_attempt(&completed).await?;
                 }
                 Err(error) => {
@@ -1441,6 +2084,211 @@ impl BenchmarkService {
             }
             self.changed().await;
             break;
+        }
+        Ok(())
+    }
+    /// The next pending attempt to dispatch. A pending cell whose candidate
+    /// authored the case settles as excluded here, without any model call.
+    async fn next_dispatchable(
+        &self,
+        run: &BenchmarkRun,
+    ) -> Result<Option<(Attempt, BenchmarkVersion)>> {
+        let mut versions: std::collections::HashMap<String, BenchmarkVersion> =
+            std::collections::HashMap::new();
+        for pending in run.attempts.iter().filter(|a| a.phase == "pending") {
+            if !versions.contains_key(&pending.version_id) {
+                let version = self.store.version(&pending.version_id).await?;
+                versions.insert(pending.version_id.clone(), version);
+            }
+            let version = &versions[&pending.version_id];
+            if !super::routing::authored_by_candidate(&version.manifest, &pending.configuration) {
+                return Ok(Some((pending.clone(), version.clone())));
+            }
+            let mut excluded = pending.clone();
+            excluded.phase = "terminal".into();
+            excluded.outcome = Some("excluded".into());
+            excluded.reason = Some("authored by this candidate".into());
+            excluded.finished_at = Some(now());
+            self.store.save_attempt(&excluded).await?;
+            self.changed().await;
+        }
+        Ok(None)
+    }
+    /// Evaluates a finished generation and, for a creative brief, asks the
+    /// judge panel. Evaluator and judge failures stay on the attempt.
+    async fn settle(
+        &self,
+        mut completed: Attempt,
+        version: &BenchmarkVersion,
+        judge_budget: Option<std::result::Result<bool, String>>,
+        stop: JudgeStop,
+    ) -> Result<Attempt> {
+        if completed.outcome.as_deref() != Some("completed") {
+            return Ok(completed);
+        }
+        let evaluation = match evaluate(
+            &version.manifest,
+            completed.output.as_deref().unwrap_or_default(),
+        )
+        .await
+        {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                completed.outcome = Some("evaluation_error".into());
+                completed.reason = Some(error.message);
+                return Ok(completed);
+            }
+        };
+        let judging =
+            version.manifest.evaluator.kind == "rubric" && evaluation.verdict == "pending_review";
+        completed.outcome = Some(evaluation.verdict.clone());
+        completed.evaluations.push(evaluation);
+        if !judging {
+            return Ok(completed);
+        }
+        Ok(self
+            .ask_judges(completed, version, judge_budget, stop)
+            .await)
+    }
+    /// Sends a rendering to its judge panel where the saved plan reserved the
+    /// calls. Judge failures stay on the attempt.
+    async fn ask_judges(
+        &self,
+        mut attempt: Attempt,
+        version: &BenchmarkVersion,
+        judge_budget: Option<std::result::Result<bool, String>>,
+        stop: JudgeStop,
+    ) -> Attempt {
+        match judge_budget {
+            Some(Ok(true)) => {
+                let lock = super::evaluation_lock(&attempt.id);
+                let _guard = lock.lock().await;
+                let recorded: Vec<String> =
+                    attempt.evaluations.iter().map(|e| e.id.clone()).collect();
+                match self
+                    .backend
+                    .judge(&self.store, attempt.clone(), version, stop)
+                    .await
+                {
+                    Ok(judged) => attempt = judged,
+                    Err(error) => {
+                        // Once the panel saved, the store holds this attempt's verdicts
+                        // plus the judges' spend; before that only memory holds them.
+                        if let Ok(saved) = self.store.attempt(&attempt.id).await {
+                            if recorded
+                                .iter()
+                                .all(|id| saved.evaluations.iter().any(|e| &e.id == id))
+                            {
+                                attempt = saved;
+                            }
+                        }
+                        attempt.reason = Some(format!("Judging failed: {}", error.message));
+                    }
+                }
+            }
+            Some(Ok(false)) => {
+                attempt.reason =
+                    Some("Judge calls are not covered by this saved run's execution budget".into());
+            }
+            Some(Err(message)) => {
+                attempt.reason = Some(format!(
+                    "Judge reservation could not be verified: {message}"
+                ));
+            }
+            None => {}
+        }
+        attempt
+    }
+    /// Whether a run's saved plan reserved judge calls for this case; known
+    /// before any paid turn. Old plans may predate the reservation.
+    async fn judge_budget(
+        &self,
+        run: &BenchmarkRun,
+        version: &BenchmarkVersion,
+    ) -> Option<std::result::Result<bool, String>> {
+        if version.manifest.evaluator.kind != "rubric" {
+            return None;
+        }
+        Some(
+            self.planned_executions(&run.request)
+                .await
+                .map(|count| count <= run.request.max_executions as usize && count <= 1000)
+                .map_err(|error| error.message),
+        )
+    }
+    /// Asks the panel of one rendering a pause or busy judges held back. True
+    /// when the panel is still held back by busy judges.
+    async fn resume_judging(&self, run: &BenchmarkRun, id: &str) -> Result<bool> {
+        let waiting = self.store.attempt(id).await?;
+        let version = self.store.version(&waiting.version_id).await?;
+        let judge_budget = self.judge_budget(run, &version).await;
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        *self.active.lock().await = Some((run.id.clone(), cancel_tx));
+        let mut attempt = waiting.clone();
+        attempt.reason = None;
+        let stop = JudgeStop::run(&run.id, cancel_rx);
+        let mut judged = self.ask_judges(attempt, &version, judge_budget, stop).await;
+        *self.active.lock().await = None;
+        judged.phase = self.settled_phase(run, &judged).await?.into();
+        let busy = judged.phase == AWAITING_JUDGES && judged.reason.as_deref() == Some(JUDGES_BUSY);
+        // A panel still waiting on busy judges records nothing new.
+        if serde_json::to_value(&judged)? != serde_json::to_value(&waiting)? {
+            self.store.save_attempt(&judged).await?;
+        }
+        Ok(busy)
+    }
+    /// Whether a recovered attempt is a rendering still owed its panel: a
+    /// judged brief, a renderable output with no verdict yet, and a run that
+    /// is not being cancelled. No judge is asked here.
+    async fn awaits_panel(&self, attempt: &Attempt, version: &BenchmarkVersion) -> Result<bool> {
+        let manifest = &version.manifest;
+        Ok(manifest.evaluator.kind == "rubric"
+            && !rubric_criteria(manifest).is_empty()
+            && attempt.outcome.as_deref() == Some("pending_review")
+            && super::analysis::score(attempt).is_none()
+            && render_document(
+                attempt.output.as_deref().unwrap_or_default(),
+                manifest.facets.output_format.as_deref(),
+            )
+            .is_some()
+            && !matches!(
+                self.store.run_state(&attempt.run_id).await?.as_str(),
+                "cancelling" | "cancelled"
+            ))
+    }
+    /// A panel a pause or busy judges held back waits for its run; anything
+    /// else, a cancelled run included, settles the attempt.
+    async fn settled_phase(&self, run: &BenchmarkRun, attempt: &Attempt) -> Result<&'static str> {
+        Ok(
+            if judging_deferred(attempt)
+                && !matches!(
+                    self.store.run_state(&run.id).await?.as_str(),
+                    "cancelling" | "cancelled"
+                )
+            {
+                AWAITING_JUDGES
+            } else {
+                "terminal"
+            },
+        )
+    }
+    /// Judge turns a restart cut off: their placeholders are settled from the
+    /// host's records, so the spend is kept and never counts as a vote.
+    pub(super) async fn reconcile_judges(&self) -> Result<()> {
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT a.id FROM attempts a WHERE EXISTS(SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
+               WHERE json_extract(e.value,'$.details.inFlight')=1)",
+        )
+        .fetch_all(&self.store.pool)
+        .await?;
+        for id in ids {
+            let lock = super::evaluation_lock(&id);
+            let Ok(_guard) = lock.try_lock() else {
+                continue;
+            };
+            let attempt = self.store.attempt(&id).await?;
+            let attempt = self.backend.reconcile_judges(&self.store, attempt).await?;
+            self.store.save_attempt(&attempt).await?;
         }
         Ok(())
     }
@@ -1591,10 +2439,47 @@ impl BenchmarkService {
 #[derive(Default)]
 pub struct FakeBackend {
     pub calls: std::sync::atomic::AtomicU64,
+    /// Judge panels asked, and those that found their run stopped.
+    pub judges: std::sync::atomic::AtomicU64,
+    pub stopped_judges: std::sync::atomic::AtomicU64,
+    /// Tests hold a panel open to act on its run meanwhile.
+    pub hold_judges: std::sync::atomic::AtomicBool,
+    pub judge_entered: tokio::sync::Notify,
+    pub judge_release: tokio::sync::Notify,
+    /// Judge accounts report activity, as a native panel sees them.
+    pub busy_judges: std::sync::atomic::AtomicBool,
+    /// The panel fails before it records anything.
+    pub fail_judges: std::sync::atomic::AtomicBool,
 }
 impl ExecutionBackend for FakeBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
+    }
+    fn judge<'a>(
+        &'a self,
+        store: &'a Store,
+        mut attempt: Attempt,
+        _version: &'a BenchmarkVersion,
+        stop: JudgeStop,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        use std::sync::atomic::Ordering;
+        Box::pin(async move {
+            self.judges.fetch_add(1, Ordering::SeqCst);
+            if self.fail_judges.load(Ordering::SeqCst) {
+                return Err(BenchmarkError::new("infrastructure_failure", "host down"));
+            }
+            if self.hold_judges.load(Ordering::SeqCst) {
+                self.judge_entered.notify_one();
+                self.judge_release.notified().await;
+            }
+            if stop.halted(store).await? {
+                self.stopped_judges.fetch_add(1, Ordering::SeqCst);
+                attempt.reason = Some(JUDGING_STOPPED.into());
+            } else if self.busy_judges.load(Ordering::SeqCst) {
+                attempt.reason = Some(JUDGES_BUSY.into());
+            }
+            Ok(attempt)
+        })
     }
     fn inventory<'a>(
         &'a self,
@@ -1706,9 +2591,157 @@ mod tests {
         assert_eq!(super::weighted_share(&shares, &criteria), 0.7);
         // A sheet missing a criterion is no verdict at all.
         assert!(super::parse_judge_reply("{\"scores\": {\"craft\": 6}}", &criteria).is_none());
+        // A closing brace before the first opening one is no sheet, never a panic.
+        for reply in ["Scores} {\"scores\": {\"craft\": 7", ":} {", "}{"] {
+            assert!(super::parse_judge_reply(reply, &criteria).is_none());
+        }
         let document = super::render_document("```svg\n<svg xmlns='x'/>", Some("svg")).unwrap();
         assert!(document.contains("<body><svg xmlns='x'/></body>"));
         assert!(super::render_document("42", Some("text")).is_none());
+        // A drawing after a long preamble is still the drawing.
+        let preamble = format!(
+            "{} Here it is:\n<svg xmlns='x'><rect/></svg>\nEnjoy.",
+            "Prose. ".repeat(40)
+        );
+        let document = super::render_document(&preamble, Some("svg")).unwrap();
+        assert!(document.contains("<body><svg xmlns='x'><rect/></svg></body>"));
+        assert!(super::render_document("I cannot draw.", Some("svg")).is_none());
+    }
+    fn judge_row(model: &str) -> Configuration {
+        Configuration {
+            id: format!("claude-acp:account:{model}"),
+            provider_id: "claude-acp".into(),
+            account_id: Some("account".into()),
+            model_id: model.into(),
+            effort: None,
+            fast_mode: None,
+            billing_mode: "subscription".into(),
+            execution_profile: "native_text".into(),
+            inventory_revision: Some("runtime".into()),
+            model_name: None,
+        }
+    }
+    #[test]
+    fn a_runtime_probe_or_account_never_changes_the_judge_protocol() {
+        let panel = vec![judge_row("sonnet"), judge_row("haiku")];
+        let hash = judge_protocol_hash(&panel, "prompt");
+        let mut probed = panel.clone();
+        probed[0].inventory_revision = Some("re-probed".into());
+        probed[1].account_id = Some("other-account".into());
+        probed[1].id = "relabelled".into();
+        probed.reverse();
+        assert_eq!(judge_protocol_hash(&probed, "prompt"), hash);
+        let mut replaced = panel.clone();
+        replaced[1].model_id = "opus".into();
+        assert_ne!(judge_protocol_hash(&replaced, "prompt"), hash);
+        assert_ne!(judge_protocol_hash(&panel[..1], "prompt"), hash);
+        assert_ne!(judge_protocol_hash(&panel, "another prompt"), hash);
+    }
+    #[test]
+    fn judge_panels_skip_the_candidate_its_alias_and_the_cases_authors() {
+        let offered = || {
+            [
+                "default",
+                "opus[1m]",
+                "claude-fable-5-1[1m]",
+                "sonnet",
+                "haiku",
+            ]
+            .map(judge_row)
+            .to_vec()
+        };
+        let ids =
+            |panel: &[Configuration]| panel.iter().map(|c| c.model_id.clone()).collect::<Vec<_>>();
+        let mut draft = creative();
+        draft.environment["authoredBy"] = json!([]);
+        // Any model but the candidate may judge a case nobody here wrote, and
+        // the alias never takes its target's seat.
+        let panel = select_judges(&[&judge_row("sonnet")], &draft, offered());
+        assert_eq!(ids(&panel), ["opus[1m]", "claude-fable-5-1[1m]", "haiku"]);
+        assert!(panel_issue(&panel).is_none());
+        // The default alias is Opus, so Opus never judges it.
+        let panel = select_judges(&[&judge_row("default")], &draft, offered());
+        assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "sonnet", "haiku"]);
+        // An author of the case never judges it; one judge cannot settle anything.
+        draft.environment["authoredBy"] = json!(["haiku", "fable"]);
+        let panel = select_judges(&[&judge_row("opus[1m]")], &draft, offered());
+        assert_eq!(ids(&panel), ["sonnet"]);
+        assert!(panel_issue(&panel).is_some());
+        // An author never judges through its alias either.
+        draft.environment["authoredBy"] = json!(["opus"]);
+        let panel = select_judges(&[&judge_row("sonnet")], &draft, offered());
+        assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "haiku"]);
+        // A candidate alias with an unknown target admits no judge.
+        let mut moving = judge_row("current");
+        moving.provider_id = "other-provider".into();
+        assert!(select_judges(&[&moving], &draft, offered()).is_empty());
+        // The seeded tasks were written by Fable, so as their author it never judges them.
+        let seeded = creative();
+        for candidate in ["opus[1m]", "sonnet", "haiku", "claude-fable-5-1[1m]"] {
+            let panel = select_judges(&[&judge_row(candidate)], &seeded, offered());
+            assert!(!panel.iter().any(|j| j.model_id.contains("fable")));
+            assert!(!panel.iter().any(|j| j.model_id == candidate));
+        }
+    }
+    #[test]
+    fn flagged_or_substituted_judge_turns_abstain() {
+        let judge = judge_row("sonnet");
+        let status = |result: Option<Value>, error: Option<Value>| ExecutionDispatch {
+            request_key: "key".into(),
+            session_id: "session".into(),
+            run_id: "run".into(),
+            user_message_id: "message".into(),
+            phase: "terminal".into(),
+            event_cursor: 4,
+            result,
+            error,
+        };
+        let acknowledged =
+            |model: &str| Some(json!({"observedSelection": {"modelId": model, "fastMode": false}}));
+        assert!(judge_turn_failure(&judge, &status(acknowledged("sonnet"), None)).is_none());
+        let violated = status(
+            None,
+            Some(json!({"kind": "selection_changed",
+                "message": "capability_missing: native execution violated the declared no-tool policy"})),
+        );
+        assert!(judge_turn_failure(&judge, &violated)
+            .unwrap()
+            .contains("no-tool policy"));
+        assert!(judge_turn_failure(&judge, &status(acknowledged("opus[1m]"), None)).is_some());
+        assert!(judge_turn_failure(&judge, &status(Some(json!({})), None)).is_some());
+    }
+    #[test]
+    fn interrupted_judge_usage_is_kept_only_when_recovered() {
+        let mut evaluation = Evaluation {
+            id: "judge".into(),
+            evaluator_revision: "1".into(),
+            verdict: "abstained".into(),
+            score: None,
+            reason: "Judge turn in flight".into(),
+            created_at: 1,
+            provenance: "judge_failure".into(),
+            artifacts: Vec::new(),
+            details: Some(
+                json!({"sessionId": "s", "requestKey": "k", "usageComplete": false, "inFlight": true}),
+            ),
+            judge: Some(judge_row("sonnet")),
+            usage: None,
+        };
+        let mut recovered = evaluation.clone();
+        settle_interrupted_judge(
+            &mut recovered,
+            Some(TokenUsage {
+                output: Some(40),
+                cost: Some(0.02),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(recovered.details.as_ref().unwrap()["usageComplete"], true);
+        assert_eq!(recovered.usage.as_ref().unwrap().cost, Some(0.02));
+        settle_interrupted_judge(&mut evaluation, None);
+        assert!(!in_flight(&evaluation));
+        assert_eq!(evaluation.details.as_ref().unwrap()["usageComplete"], false);
+        assert!(evaluation.score.is_none());
     }
     use super::*;
     use std::sync::atomic::Ordering;
@@ -2269,5 +3302,672 @@ mod tests {
         let mut requested = c;
         requested.effort = Some("low".into());
         assert!(!matches_selection(&requested, &observed));
+    }
+    fn creative() -> BenchmarkDraft {
+        seed_definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap()
+    }
+    async fn publish(s: &BenchmarkService, draft: BenchmarkDraft) -> BenchmarkVersion {
+        let definition = s.store.save_draft(None, None, draft).await.unwrap();
+        s.store.publish(&definition.id, 1).await.unwrap()
+    }
+    /// One repetition of a creative brief for the passing fake model.
+    async fn creative_request(s: &BenchmarkService) -> RunRequest {
+        let version = publish(s, creative()).await;
+        let mut req = request(s).await;
+        req.request_key = "creative".into();
+        req.version_ids = vec![version.id];
+        req.repetitions = 1;
+        req.max_executions = 4;
+        req
+    }
+    async fn rewrite_plan(s: &BenchmarkService, id: &str, request: &RunRequest) {
+        sqlx::query("UPDATE run_plans SET request_json=? WHERE id=?")
+            .bind(serde_json::to_string(request).unwrap())
+            .bind(id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn authored_cells_are_never_planned_or_dispatched() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let mut authored = seed_definitions().remove(0);
+        authored.name.push_str(" written by the candidate");
+        authored.environment["authoredBy"] = json!(["fake-pass"]);
+        let written = publish(&s, authored).await;
+        req.version_ids.push(written.id.clone());
+        req.repetitions = 1;
+        let mut other = req.configurations[0].clone();
+        other.id = "fake-fail".into();
+        other.model_id = "fake-fail".into();
+        req.configurations.push(other);
+        req.max_executions = 3;
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(preview.valid, "{:?}", preview.issues);
+        assert_eq!(preview.execution_count, 3);
+        let run = s.start_run(req.clone()).await.unwrap();
+        assert_eq!(run.attempts.len(), 3);
+        assert!(!run
+            .attempts
+            .iter()
+            .any(|a| a.version_id == written.id && a.configuration.model_id == "fake-pass"));
+        // A configuration that wrote every selected case owes nothing.
+        let mut only = req.clone();
+        only.request_key = "only-authored".into();
+        only.version_ids = vec![written.id.clone()];
+        only.configurations.truncate(1);
+        let preview = s.preview_run(&only).await.unwrap();
+        assert!(!preview.valid);
+        assert!(preview.issues.iter().any(|i| i.contains("owes none")));
+        // A plan saved before this rule still holds such a cell: it settles
+        // without any model call when its turn comes.
+        let mut legacy = run.attempts[0].clone();
+        legacy.id = "legacy-authored".into();
+        legacy.version_id = written.id.clone();
+        legacy.configuration = req.configurations[0].clone();
+        legacy.repetition = 0;
+        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,0,'pending',?)")
+            .bind(&legacy.id).bind(&run.id).bind(&written.id).bind(&legacy.configuration.id)
+            .bind(serde_json::to_string(&legacy).unwrap())
+            .execute(&s.store.pool).await.unwrap();
+        for _ in 0..5 {
+            s.tick().await.unwrap();
+        }
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
+        let excluded = s.store.attempt("legacy-authored").await.unwrap();
+        assert_eq!(excluded.phase, "terminal");
+        assert_eq!(excluded.outcome.as_deref(), Some("excluded"));
+        assert_eq!(
+            excluded.reason.as_deref(),
+            Some("authored by this candidate")
+        );
+        assert!(excluded.session_id.is_none());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
+    }
+    #[tokio::test]
+    async fn stale_runtime_pins_and_judged_quota_briefs_are_plan_issues() {
+        let (_dir, s, _) = setup().await;
+        let mut req = request(&s).await;
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        req.configurations[0].inventory_revision = Some("runtime-before-an-update".into());
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(!preview.valid);
+        assert!(preview.issues.iter().any(|i| i.contains("Runtime changed")));
+        assert!(s.start_run(req).await.is_err());
+        let mut quota = creative();
+        quota.measurement_profile = "controlled_quota".into();
+        let version = publish(&s, quota).await;
+        let mut req = creative_request(&s).await;
+        req.version_ids = vec![version.id];
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(preview
+            .issues
+            .iter()
+            .any(|i| i.contains("task metrics only")));
+    }
+    #[tokio::test]
+    async fn judge_calls_are_reserved_and_only_the_budget_skips_them() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = creative_request(&s).await;
+        req.max_executions = 3;
+        let preview = s.preview_run(&req).await.unwrap();
+        assert_eq!(preview.execution_count, 4);
+        assert!(!preview.valid);
+        assert!(s.start_run(req.clone()).await.is_err());
+        req.max_executions = 4;
+        let covered = s.start_run(req.clone()).await.unwrap();
+        // A pin that went stale after admission does not cost the panel its reservation.
+        let mut stale = req.clone();
+        stale.configurations[0].inventory_revision = Some("runtime-before-an-update".into());
+        rewrite_plan(&s, &covered.id, &stale).await;
+        s.tick().await.unwrap();
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        let judged = s.store.attempt(&covered.attempts[0].id).await.unwrap();
+        assert_eq!(judged.phase, "terminal");
+        assert!(judged.reason.is_none());
+        // A plan saved before the reservation never dispatches judges.
+        let mut old = req.clone();
+        old.request_key = "saved-before-reservations".into();
+        let old_run = s.start_run(old.clone()).await.unwrap();
+        old.max_executions = 1;
+        rewrite_plan(&s, &old_run.id, &old).await;
+        s.tick().await.unwrap();
+        s.tick().await.unwrap();
+        let skipped = s.store.attempt(&old_run.attempts[0].id).await.unwrap();
+        assert_eq!(skipped.phase, "terminal");
+        assert_eq!(skipped.outcome.as_deref(), Some("pending_review"));
+        assert_eq!(
+            skipped.reason.as_deref(),
+            Some("Judge calls are not covered by this saved run's execution budget")
+        );
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+    }
+    /// Starts a creative run and stops it with `action` while its panel runs.
+    async fn stop_during_the_panel(
+        s: &Arc<BenchmarkService>,
+        backend: &FakeBackend,
+        action: &str,
+    ) -> BenchmarkRun {
+        backend.hold_judges.store(true, Ordering::SeqCst);
+        let run = s.start_run(creative_request(s).await).await.unwrap();
+        let background = s.clone();
+        let tick = tokio::spawn(async move { background.tick().await });
+        backend.judge_entered.notified().await;
+        // The cancel signal stays live while the panel runs.
+        assert!(s.active.lock().await.is_some());
+        s.control(&run.id, action).await.unwrap();
+        backend.hold_judges.store(false, Ordering::SeqCst);
+        backend.judge_release.notify_one();
+        tick.await.unwrap().unwrap();
+        assert_eq!(backend.stopped_judges.load(Ordering::SeqCst), 1, "{action}");
+        assert!(s.active.lock().await.is_none());
+        run
+    }
+    #[tokio::test]
+    async fn a_cancel_reaches_a_running_judge_panel_and_settles_the_attempt() {
+        let (_dir, s, backend) = setup().await;
+        let run = stop_during_the_panel(&s, &backend, "cancel").await;
+        let a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(a.phase, "terminal");
+        assert_eq!(a.outcome.as_deref(), Some("pending_review"));
+        assert_eq!(a.reason.as_deref(), Some(JUDGING_STOPPED));
+    }
+    #[tokio::test]
+    async fn a_paused_panel_is_asked_again_after_resume_without_a_new_generation() {
+        let (_dir, s, backend) = setup().await;
+        let run = stop_during_the_panel(&s, &backend, "pause").await;
+        let id = &run.attempts[0].id;
+        let waiting = s.store.attempt(id).await.unwrap();
+        assert_eq!(waiting.phase, AWAITING_JUDGES);
+        assert_eq!(waiting.outcome.as_deref(), Some("pending_review"));
+        assert!(waiting.output.is_some());
+        // While paused nothing is asked and the run never completes.
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "paused");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        s.control(&run.id, "resume").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 2);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        let judged = s.store.attempt(id).await.unwrap();
+        assert_eq!(judged.phase, "terminal");
+        assert!(judged.reason.is_none());
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn a_cancel_settles_a_rendering_that_waits_for_its_panel() {
+        let (_dir, s, backend) = setup().await;
+        let run = stop_during_the_panel(&s, &backend, "pause").await;
+        s.tick().await.unwrap();
+        s.control(&run.id, "cancel").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelled");
+        let a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(a.phase, "terminal");
+        assert_eq!(a.outcome.as_deref(), Some("pending_review"));
+        assert_eq!(a.reason.as_deref(), Some(JUDGING_STOPPED));
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn busy_judges_hold_the_run_open_until_the_panel_is_asked() {
+        let (_dir, s, backend) = setup().await;
+        backend.busy_judges.store(true, Ordering::SeqCst);
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        let id = &run.attempts[0].id;
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        assert_eq!(s.store.attempt(id).await.unwrap().phase, AWAITING_JUDGES);
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "running");
+        backend.busy_judges.store(false, Ordering::SeqCst);
+        s.tick().await.unwrap();
+        let judged = s.store.attempt(id).await.unwrap();
+        assert_eq!(judged.phase, "terminal");
+        assert!(judged.reason.is_none());
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    }
+    /// Rewrites a creative run's first attempt as a killed process left it:
+    /// mid-panel with a render marker and an in-flight judge turn, or sealed
+    /// but not yet evaluated. Then the app restarts.
+    async fn restart_during_the_first_panel(
+        s: &BenchmarkService,
+        backend: &FakeBackend,
+        evaluated: bool,
+    ) -> String {
+        let run = s.start_run(creative_request(s).await).await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.phase = "collecting".into();
+        if evaluated {
+            let mut marker = judge_abstention(
+                &s.store.version(&a.version_id).await.unwrap(),
+                &judge_row("sonnet"),
+                "batch",
+                String::new(),
+            );
+            marker.provenance = "render".into();
+            marker.verdict = "rendered".into();
+            marker.judge = None;
+            marker.details = Some(json!({"judgeBatchId": "batch", "expectedJudges": 2,
+                "protocol": {"panel": [judge_row("sonnet"), judge_row("haiku")]}}));
+            let mut placeholder = marker.clone();
+            placeholder.id = "in-flight".into();
+            placeholder.provenance = "judge_failure".into();
+            placeholder.verdict = "abstained".into();
+            placeholder.judge = Some(judge_row("sonnet"));
+            placeholder.details = Some(json!({"judgeBatchId": "batch", "sessionId": "session",
+                "requestKey": "key", "usageComplete": false, "inFlight": true}));
+            a.evaluations.extend([marker, placeholder]);
+            assert_eq!(a.outcome.as_deref(), Some("pending_review"));
+        } else {
+            a.outcome = Some("completed".into());
+            a.evaluations.clear();
+        }
+        s.store.save_attempt(&a).await.unwrap();
+        s.store.recover().await.unwrap();
+        s.reconcile_judges().await.unwrap();
+        s.tick().await.unwrap();
+        a.id
+    }
+    #[tokio::test]
+    async fn a_restart_during_the_first_panel_waits_for_resume_without_a_new_generation() {
+        for evaluated in [true, false] {
+            let (_dir, s, backend) = setup().await;
+            let id = restart_during_the_first_panel(&s, &backend, evaluated).await;
+            let waiting = s.store.attempt(&id).await.unwrap();
+            assert_eq!(waiting.phase, AWAITING_JUDGES, "{evaluated}");
+            assert_eq!(waiting.reason.as_deref(), Some(JUDGING_STOPPED));
+            assert_eq!(waiting.outcome.as_deref(), Some("pending_review"));
+            let run = s.store.run(&waiting.run_id).await.unwrap();
+            assert_eq!(run.state, "needs_attention");
+            // Nothing is asked until the operator resumes.
+            s.tick().await.unwrap();
+            assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+            s.control(&run.id, "resume").await.unwrap();
+            s.tick().await.unwrap();
+            assert_eq!(backend.judges.load(Ordering::SeqCst), 2, "{evaluated}");
+            assert_eq!(backend.calls.load(Ordering::SeqCst), 1, "{evaluated}");
+            let judged = s.store.attempt(&id).await.unwrap();
+            assert_eq!(judged.phase, "terminal");
+            assert!(judged.reason.is_none());
+        }
+    }
+    #[tokio::test]
+    async fn a_restart_while_cancelling_settles_the_rendering() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.phase = "collecting".into();
+        s.store.save_attempt(&a).await.unwrap();
+        s.store.set_run_state(&run.id, "cancelled").await.unwrap();
+        s.store.recover().await.unwrap();
+        s.tick().await.unwrap();
+        let settled = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(settled.phase, "terminal");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn a_panel_that_fails_before_saving_keeps_the_objective_verdict() {
+        let (_dir, s, backend) = setup().await;
+        backend.fail_judges.store(true, Ordering::SeqCst);
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(a.phase, "terminal");
+        assert_eq!(a.outcome.as_deref(), Some("pending_review"));
+        assert!(a
+            .evaluations
+            .iter()
+            .any(|e| e.provenance == "objective" && e.verdict == "pending_review"));
+        assert!(a.reason.as_deref().unwrap().starts_with("Judging failed:"));
+    }
+    /// A scripted panel: `answers[i]` is judge `i`'s answer.
+    struct ScriptedPanel {
+        answers: Vec<JudgeAnswer>,
+        asked: Vec<usize>,
+        halt_after: Option<usize>,
+    }
+    impl PanelJudges for ScriptedPanel {
+        fn halted(&mut self) -> BoxFuture<'_, Result<bool>> {
+            let halted = self.halt_after.is_some_and(|n| self.asked.len() >= n);
+            Box::pin(async move { Ok(halted) })
+        }
+        fn ask<'s>(
+            &'s mut self,
+            index: usize,
+            _: &'s Configuration,
+        ) -> BoxFuture<'s, Result<JudgeAnswer>> {
+            self.asked.push(index);
+            let answer = self.answers[index];
+            Box::pin(async move { Ok(answer) })
+        }
+    }
+    #[tokio::test]
+    async fn a_panel_stops_paying_once_its_batch_cannot_settle() {
+        use JudgeAnswer::{Busy, NoVote, Vote};
+        let judges: Vec<(usize, Configuration)> = ["opus[1m]", "haiku", "claude-opus-4-8"]
+            .into_iter()
+            .map(judge_row)
+            .enumerate()
+            .collect();
+        let run = |answers: Vec<JudgeAnswer>, halt_after: Option<usize>, votes: usize| {
+            let judges = judges.clone();
+            async move {
+                let mut panel = ScriptedPanel {
+                    answers,
+                    asked: Vec::new(),
+                    halt_after,
+                };
+                // Every judge asked before a stop cast a valid vote.
+                let end = ask_panel(&judges[votes..], 3, votes, &mut panel)
+                    .await
+                    .unwrap();
+                (end, panel.asked)
+            }
+        };
+        // The first abstention ends the batch: nobody else is asked.
+        assert_eq!(
+            run(vec![NoVote, Vote, Vote], None, 0).await,
+            ((PanelEnd::Incomplete, 0), vec![0])
+        );
+        assert_eq!(
+            run(vec![Vote, NoVote, Vote], None, 0).await,
+            ((PanelEnd::Incomplete, 1), vec![0, 1])
+        );
+        assert_eq!(
+            run(vec![Vote, Vote, Vote], None, 0).await,
+            ((PanelEnd::Asked, 3), vec![0, 1, 2])
+        );
+        // A stop leaves the rest for the run; a resumed batch asks only them.
+        assert_eq!(
+            run(vec![Vote, Vote, Vote], Some(1), 0).await,
+            ((PanelEnd::Stopped, 1), vec![0])
+        );
+        assert_eq!(
+            run(vec![Vote, Vote, Vote], None, 1).await,
+            ((PanelEnd::Asked, 3), vec![1, 2])
+        );
+        // A judge whose account turned busy ends the pass without an answer.
+        assert_eq!(
+            run(vec![Vote, Busy, Vote], None, 0).await,
+            ((PanelEnd::Busy, 1), vec![0, 1])
+        );
+    }
+    #[test]
+    fn a_judge_that_turns_busy_defers_the_batch_to_its_run() {
+        assert_eq!(panel_reason(PanelEnd::Busy, 1, 3, false), Some(JUDGES_BUSY));
+        assert_eq!(
+            panel_reason(PanelEnd::Busy, 1, 3, true),
+            Some(JUDGING_STOPPED)
+        );
+        assert_eq!(
+            panel_reason(PanelEnd::Stopped, 1, 3, false),
+            Some(JUDGING_STOPPED)
+        );
+        assert_eq!(
+            panel_reason(PanelEnd::Incomplete, 1, 3, false),
+            Some(PANEL_INCOMPLETE)
+        );
+        assert_eq!(panel_reason(PanelEnd::Asked, 3, 3, false), None);
+        // The run keeps such an attempt waiting for its panel.
+        let reason = |end: PanelEnd| {
+            let mut attempt: Attempt = serde_json::from_value(json!({
+                "id": "a", "runId": "r", "versionId": "v", "repetition": 0,
+                "phase": "collecting", "configuration": judge_row("sonnet"),
+                "usage": TokenUsage::default(), "evaluations": [], "eventCursor": 0
+            }))
+            .unwrap();
+            attempt.reason = panel_reason(end, 1, 3, false).map(str::to_owned);
+            judging_deferred(&attempt)
+        };
+        assert!(reason(PanelEnd::Busy));
+        assert!(!reason(PanelEnd::Incomplete));
+    }
+    #[test]
+    fn only_a_stopped_batch_of_valid_votes_is_continued() {
+        let panel: Vec<Configuration> = ["opus[1m]", "haiku", "claude-opus-4-8"]
+            .into_iter()
+            .map(judge_row)
+            .collect();
+        let evaluation =
+            |provenance: &str, judge: Option<&Configuration>, score: Option<f64>| Evaluation {
+                id: uuid::Uuid::new_v4().to_string(),
+                evaluator_revision: "1".into(),
+                verdict: "v".into(),
+                score,
+                reason: String::new(),
+                created_at: 1,
+                provenance: provenance.into(),
+                artifacts: Vec::new(),
+                details: None,
+                judge: judge.cloned(),
+                usage: None,
+            };
+        let mut marker = evaluation("render", None, None);
+        marker.artifacts.push(Artifact {
+            kind: "screenshot".into(),
+            path: "rendering.png".into(),
+            hash: "h".into(),
+            label: "Rendering".into(),
+        });
+        marker.details = Some(json!({"judgeBatchId": "batch", "expectedJudges": 3,
+            "protocol": {"panel": panel, "expectedJudges": 3}}));
+        let mut evaluations = vec![
+            evaluation("objective", None, None),
+            marker,
+            evaluation("judge", Some(&panel[0]), Some(0.7)),
+        ];
+        let open = open_batch(&evaluations).unwrap();
+        assert_eq!((open.id.as_str(), open.expected), ("batch", 3));
+        assert_eq!(open.asked, vec![panel[0].clone()]);
+        assert_eq!(open.rendering, "rendering.png");
+        // An abstention can never settle the batch; a full batch is done.
+        evaluations.push(evaluation("judge_failure", Some(&panel[1]), None));
+        assert!(open_batch(&evaluations).is_none());
+        evaluations.pop();
+        evaluations.push(evaluation("judge", Some(&panel[1]), Some(0.6)));
+        evaluations.push(evaluation("judge", Some(&panel[2]), Some(0.5)));
+        assert!(open_batch(&evaluations).is_none());
+        assert!(open_batch(&evaluations[..1]).is_none());
+    }
+    #[tokio::test]
+    async fn evaluating_again_keeps_budget_failures_exclusions_and_human_overrides() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        req.repetitions = 1;
+        req.max_executions = 1;
+        let run = s.start_run(req).await.unwrap();
+        s.tick().await.unwrap();
+        let id = run.attempts[0].id.clone();
+        assert_eq!(
+            s.store.attempt(&id).await.unwrap().outcome.as_deref(),
+            Some("pass")
+        );
+        // The output still holds a passing answer; the recorded outcome stands.
+        for outcome in [
+            "budget_timeout",
+            "budget_reached",
+            "cancelled",
+            "selection_changed",
+            "excluded",
+        ] {
+            let mut a = s.store.attempt(&id).await.unwrap();
+            a.outcome = Some(outcome.into());
+            a.evaluations.clear();
+            s.store.save_attempt(&a).await.unwrap();
+            assert_eq!(s.rescore(&id).await.unwrap_err().code, "validation");
+            let kept = s.store.attempt(&id).await.unwrap();
+            assert_eq!(kept.outcome.as_deref(), Some(outcome));
+            assert!(kept.evaluations.is_empty());
+        }
+        // A human review overrides the panel, so no judge is asked again.
+        let creative = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        s.tick().await.unwrap();
+        let reviewed = s
+            .review(&creative.attempts[0].id, 0.8, "Override".into(), None)
+            .await
+            .unwrap();
+        let asked = backend.judges.load(Ordering::SeqCst);
+        assert_eq!(asked, 1);
+        assert_eq!(
+            s.rescore(&reviewed.id).await.unwrap_err().code,
+            "validation"
+        );
+        assert_eq!(backend.judges.load(Ordering::SeqCst), asked);
+        // A human override cannot turn a budget failure into a verdict either.
+        let mut timed_out = s.store.attempt(&creative.attempts[0].id).await.unwrap();
+        timed_out.outcome = Some("budget_timeout".into());
+        timed_out.evaluations.clear();
+        s.store.save_attempt(&timed_out).await.unwrap();
+        let refused = s
+            .review(&timed_out.id, 1.0, "Override".into(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.message, "Only an evaluated result can be reviewed");
+        let kept = s.store.attempt(&timed_out.id).await.unwrap();
+        assert_eq!(kept.outcome.as_deref(), Some("budget_timeout"));
+        assert_eq!(super::super::analysis::score(&kept), Some(0.0));
+    }
+    #[tokio::test]
+    async fn evaluating_again_persists_the_new_verdict_of_a_finished_attempt() {
+        let (_dir, s, _) = setup().await;
+        let mut req = request(&s).await;
+        req.repetitions = 1;
+        req.max_executions = 1;
+        let run = s.start_run(req).await.unwrap();
+        let id = run.attempts[0].id.clone();
+        let waiting = s.rescore(&id).await.unwrap_err();
+        assert_eq!(waiting.code, "validation");
+        assert_eq!(waiting.message, "Only a finished attempt can be rescored");
+        s.tick().await.unwrap();
+        // An evaluator failure on a passing answer, evaluated again.
+        let mut a = s.store.attempt(&id).await.unwrap();
+        a.outcome = Some("evaluation_error".into());
+        a.evaluations.clear();
+        s.store.save_attempt(&a).await.unwrap();
+        let rescored = s.rescore(&id).await.unwrap();
+        assert_eq!(rescored.outcome.as_deref(), Some("pass"));
+        // The raw record, not only its normalized reading, holds the verdict.
+        assert_eq!(
+            s.store.stored_outcome(&id).await.unwrap().as_deref(),
+            Some("pass")
+        );
+        let stored = s.store.attempt(&id).await.unwrap();
+        assert_eq!(stored.evaluations.len(), 1);
+        assert_eq!(super::super::analysis::score(&stored), Some(1.0));
+    }
+    #[tokio::test]
+    async fn a_panel_on_one_attempt_never_blocks_a_review_of_another() {
+        let (_dir, s, _) = setup().await;
+        let mut req = creative_request(&s).await;
+        req.repetitions = 2;
+        req.max_executions = 8;
+        let run = s.start_run(req).await.unwrap();
+        s.tick().await.unwrap();
+        s.tick().await.unwrap();
+        let (first, second) = (&run.attempts[0].id, &run.attempts[1].id);
+        let panel = super::super::evaluation_lock(first);
+        let _held = panel.lock().await;
+        let review = s.review(second, 0.5, "Reviewed meanwhile".into(), None);
+        let reviewed = tokio::time::timeout(Duration::from_secs(5), review).await;
+        assert!(reviewed.expect("review waited on another panel").is_ok());
+        let busy = s.rescore(first).await.unwrap_err();
+        assert_eq!(busy.message, "This attempt is already being evaluated");
+    }
+    #[tokio::test]
+    async fn evaluating_again_without_a_panel_keeps_the_settled_score() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        let vote = |id: &str, score: f64| Evaluation {
+            id: id.into(),
+            evaluator_revision: "1".into(),
+            verdict: if id == "render" { "rendered" } else { "judged" }.into(),
+            score: (id != "render").then_some(score),
+            reason: "recorded".into(),
+            created_at: now(),
+            provenance: if id == "render" { "render" } else { "judge" }.into(),
+            artifacts: Vec::new(),
+            details: (id == "render").then(|| json!({"expectedJudges": 2})),
+            judge: (id != "render").then(|| judge_row("sonnet")),
+            usage: None,
+        };
+        a.evaluations
+            .extend([vote("render", 0.0), vote("first", 0.6), vote("second", 0.8)]);
+        a.outcome = Some("judged".into());
+        s.store.save_attempt(&a).await.unwrap();
+        let before = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(super::super::analysis::score(&before), Some(0.7));
+        // The fake panel starts no batch, so nothing may be written.
+        let refused = s.rescore(&a.id).await.unwrap_err();
+        assert_eq!(refused.code, "validation");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 2);
+        let after = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(after.evaluations.len(), before.evaluations.len());
+        assert_eq!(super::super::analysis::score(&after), Some(0.7));
+    }
+    #[tokio::test]
+    async fn an_answer_without_markup_fails_and_asks_no_judge() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = creative_request(&s).await;
+        req.configurations[0].id = "fake-fail".into();
+        req.configurations[0].model_id = "fake-fail".into();
+        let run = s.start_run(req).await.unwrap();
+        s.tick().await.unwrap();
+        let a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(a.output.as_deref(), Some("I cannot draw."));
+        assert_eq!(a.outcome.as_deref(), Some("fail"));
+        assert_eq!(super::super::analysis::score(&a), Some(0.0));
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn judge_turns_cut_off_by_a_restart_are_settled_and_never_vote() {
+        let (_dir, s, _) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.evaluations.push(Evaluation {
+            id: "in-flight".into(),
+            evaluator_revision: "1".into(),
+            verdict: "abstained".into(),
+            score: None,
+            reason: "Judge turn in flight".into(),
+            created_at: now(),
+            provenance: "judge_failure".into(),
+            artifacts: Vec::new(),
+            details: Some(json!({"judgeBatchId": "batch", "sessionId": "session",
+                "requestKey": "key", "usageComplete": false, "inFlight": true})),
+            judge: Some(judge_row("sonnet")),
+            usage: None,
+        });
+        s.store.save_attempt(&a).await.unwrap();
+        s.reconcile_judges().await.unwrap();
+        let a = s.store.attempt(&a.id).await.unwrap();
+        let settled = a.evaluations.iter().find(|e| e.id == "in-flight").unwrap();
+        assert!(!in_flight(settled));
+        assert!(settled.reason.contains("restart"));
+        assert!(settled.score.is_none());
+        let left: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM attempts a,json_each(a.data_json,'$.evaluations') e
+             WHERE json_extract(e.value,'$.details.inFlight')=1",
+        )
+        .fetch_one(&s.store.pool)
+        .await
+        .unwrap();
+        assert_eq!(left, 0);
     }
 }

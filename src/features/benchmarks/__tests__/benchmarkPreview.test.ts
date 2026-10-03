@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   evaluationCriteria,
   previewDocument,
+  renderable,
   rubricCriteriaOf,
   weightedShare,
 } from "../lib/benchmarkPreview";
@@ -51,6 +52,21 @@ describe("previewDocument", () => {
     expect(previewDocument("42", "text")).toBeNull();
     expect(previewDocument("fn main() {}", "rust")).toBeNull();
     expect(previewDocument(null, "svg")).toBeNull();
+  });
+
+  it("finds the drawing the judges saw behind a long preamble", () => {
+    const preamble = `${"Here is my design, with notes. ".repeat(10)}\n\n`;
+    const drawing = "<SVG viewBox='0 0 4 4'><rect/></SVG>";
+    expect(
+      renderable(`${preamble}\`\`\`svg\n${drawing}\n\`\`\``, null),
+    ).toEqual({ kind: "svg", body: drawing });
+    const page = "<!DOCTYPE html><html><body>hi</body></html>";
+    expect(renderable(`${preamble}${page}\nThanks.`, "html")).toEqual({
+      kind: "html",
+      body: page,
+    });
+    // A closing tag before any opening one is not a drawing.
+    expect(renderable(`${preamble}</svg> then <svg`, null)).toBeNull();
   });
 });
 

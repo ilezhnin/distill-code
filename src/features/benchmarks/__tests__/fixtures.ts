@@ -33,6 +33,7 @@ export const definition: BenchmarkDefinition = {
   id: "definition-1",
   draftRevision: 1,
   archived: false,
+  archivedAt: null,
   draft,
   versions: [
     {
@@ -125,6 +126,7 @@ export const runSummary: RunSummary = {
   request: run.request,
   attemptCount: 1,
   settledCount: 1,
+  observedSelections: [],
 };
 
 export const attemptSummary: AttemptSummary = {

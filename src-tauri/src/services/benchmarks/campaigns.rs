@@ -118,8 +118,11 @@ fn refresh_candidates(schedule: &Schedule, inventory: &[InventoryModel]) -> Vec<
     }
     if rule.include_new_models {
         for model in inventory.iter().filter(|model| model.available) {
-            if (!rule.model_ids.is_empty()
-                && !rule.model_ids.contains(&model.configuration.model_id))
+            // Without a named list every available model may join; a list limits
+            // discovery to the models it names.
+            let admitted =
+                rule.model_ids.is_empty() || rule.model_ids.contains(&model.configuration.model_id);
+            if !admitted
                 || configurations
                     .iter()
                     .any(|config| config.model_id == model.configuration.model_id)
@@ -212,8 +215,8 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
             continue;
         }
         let mut request = schedule.request.clone();
-        if let Some(rule) = &schedule.discovery {
-            match service
+        let candidates = match &schedule.discovery {
+            Some(rule) => match service
                 .backend
                 .inventory(&rule.provider_id, rule.account_id.as_deref(), true)
                 .await
@@ -223,11 +226,7 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
                         .store
                         .record_inventory(&rule.provider_id, rule.account_id.as_deref(), &inventory)
                         .await?;
-                    request.configurations = choose_candidates(
-                        refresh_candidates(&schedule, &inventory),
-                        &prior,
-                        rule.max_candidates as usize,
-                    );
+                    refresh_candidates(&schedule, &inventory)
                 }
                 Err(error) => {
                     schedule.enabled = false;
@@ -235,27 +234,33 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
                     update_if_current(service, &expected, &schedule).await?;
                     continue;
                 }
-            }
+            },
+            None => request.configurations.clone(),
+        };
+        // New unsupported candidates remain untested; only covered configurations
+        // that owe at least one case they did not author enter a plan, so only
+        // they take one of discovery's candidate slots.
+        let mut manifests = Vec::new();
+        for id in &request.version_ids {
+            manifests.push(service.store.version(id).await?.manifest);
         }
-        // New unsupported candidates remain untested; only covered configurations enter a plan.
-        let mut eligible = Vec::new();
-        for configuration in request.configurations {
-            let mut covered = true;
-            for id in &request.version_ids {
-                if service
-                    .backend
-                    .unsupported(&configuration, &service.store.version(id).await?.manifest)
-                    .is_some()
-                {
-                    covered = false;
-                    break;
-                }
-            }
-            if covered {
-                eligible.push(configuration);
-            }
-        }
-        request.configurations = eligible;
+        let eligible: Vec<Configuration> = candidates
+            .into_iter()
+            .filter(|configuration| {
+                manifests.iter().all(|manifest| {
+                    service
+                        .backend
+                        .unsupported(configuration, manifest)
+                        .is_none()
+                }) && manifests
+                    .iter()
+                    .any(|manifest| !super::routing::authored_by_candidate(manifest, configuration))
+            })
+            .collect();
+        request.configurations = match &schedule.discovery {
+            Some(rule) => choose_candidates(eligible, &prior, rule.max_candidates as usize),
+            None => eligible,
+        };
         request.request_key = format!("{prefix}{}", schedule.next_due_at);
         request.max_executions = request
             .max_executions
@@ -325,6 +330,167 @@ mod tests {
             2,
         );
         assert_eq!(selected, vec![new, newest]);
+    }
+
+    #[test]
+    fn discovery_adds_available_models_or_only_the_named_ones() {
+        let (data, _) = super::super::analysis::tests::dataset();
+        let mut schedule: Schedule = serde_json::from_value(serde_json::json!({"id":"campaign","name":"Pilot","enabled":false,"intervalMinutes":60,"nextDueAt":0,"request":data.runs[0].request,"missed":false,"discovery":{"providerId":"claude","accountId":"private-account","includeNewModels":true,"modelIds":[],"maxCandidates":8},"maxRuns":2,"maxTotalExecutions":20,"generatedRunIds":[],"pausedReason":null})).unwrap();
+        let saved = schedule.request.configurations[0].clone();
+        let row = |id: &str, name: Option<&str>| {
+            let mut configuration = saved.clone();
+            configuration.id = id.into();
+            configuration.model_id = id.into();
+            configuration.effort = None;
+            configuration.model_name = name.map(str::to_owned);
+            InventoryModel {
+                configuration,
+                name: name.unwrap_or(id).into(),
+                efforts: vec!["medium".into()],
+                supports_fast_mode: false,
+                available: true,
+                reason: None,
+            }
+        };
+        let inventory = vec![
+            row(&saved.model_id, None),
+            row("claude-fable-5-1[1m]", Some("Fable 5.1")),
+            row("haiku", None),
+            row("claude-fable-5[1m]", Some("Fable 5")),
+            row("mystery", Some("Fable 6")),
+        ];
+        let models = |schedule: &Schedule| {
+            refresh_candidates(schedule, &inventory)
+                .into_iter()
+                .map(|c| c.model_id)
+                .collect::<Vec<_>>()
+        };
+        let discovered = models(&schedule);
+        assert_eq!(discovered[0], saved.model_id);
+        for model in [
+            "claude-fable-5-1[1m]",
+            "haiku",
+            "claude-fable-5[1m]",
+            "mystery",
+        ] {
+            assert!(
+                discovered.iter().any(|id| id == model),
+                "{model} missing from {discovered:?}"
+            );
+        }
+        // A named list limits discovery to the models it names.
+        schedule.discovery.as_mut().unwrap().model_ids = vec!["claude-fable-5[1m]".into()];
+        assert_eq!(
+            models(&schedule),
+            [saved.model_id.as_str(), "claude-fable-5[1m]"]
+        );
+        // A model the saved plan already holds stays first.
+        schedule.discovery.as_mut().unwrap().model_ids.clear();
+        schedule.request.configurations[0] = inventory[1].configuration.clone();
+        let discovered = models(&schedule);
+        assert_eq!(discovered[0], "claude-fable-5-1[1m]");
+        assert!(discovered.iter().any(|id| id == &saved.model_id));
+        assert!(discovered.iter().any(|id| id == "haiku"));
+    }
+
+    #[tokio::test]
+    async fn discovery_never_plans_a_candidate_on_cases_it_wrote() {
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let service = BenchmarkService {
+            store: super::super::store::Store::open(directory.path())
+                .await
+                .unwrap(),
+            backend: Arc::new(super::super::runner::FakeBackend::default()),
+            wake: tokio::sync::Notify::new(),
+            active: tokio::sync::Mutex::new(None),
+            app: None,
+        };
+        let mut draft = super::super::runner::seed_definitions().remove(0);
+        draft.environment["authoredBy"] = serde_json::json!(["fake-fail"]);
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        let version = service.store.publish(&definition.id, 1).await.unwrap();
+        let inventory = service
+            .backend
+            .inventory("fake", Some("isolated"), false)
+            .await
+            .unwrap();
+        let request = RunRequest {
+            request_key: "template".into(),
+            version_ids: vec![version.id],
+            configurations: vec![inventory[0].configuration.clone()],
+            repetitions: 1,
+            timeout_seconds: 10,
+            max_executions: 2,
+            preview: false,
+        };
+        let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
+        service.store.save_schedule(&schedule).await.unwrap();
+        tick(&service).await.unwrap();
+        let runs = service.store.all_runs().await.unwrap();
+        assert_eq!(
+            runs.len(),
+            1,
+            "{:?}",
+            service.store.schedules().await.unwrap()[0].paused_reason
+        );
+        let models: Vec<_> = runs[0]
+            .request
+            .configurations
+            .iter()
+            .map(|c| c.model_id.as_str())
+            .collect();
+        assert_eq!(models, ["fake-pass"]);
+        assert_eq!(runs[0].attempts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_candidate_that_owes_nothing_never_takes_a_discovery_slot() {
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let service = BenchmarkService {
+            store: super::super::store::Store::open(directory.path())
+                .await
+                .unwrap(),
+            backend: Arc::new(super::super::runner::FakeBackend::default()),
+            wake: tokio::sync::Notify::new(),
+            active: tokio::sync::Mutex::new(None),
+            app: None,
+        };
+        // The saved candidate, first in inventory order, wrote the only case.
+        let mut draft = super::super::runner::seed_definitions().remove(0);
+        draft.environment["authoredBy"] = serde_json::json!(["fake-pass"]);
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        let version = service.store.publish(&definition.id, 1).await.unwrap();
+        let inventory = service
+            .backend
+            .inventory("fake", Some("isolated"), false)
+            .await
+            .unwrap();
+        let request = RunRequest {
+            request_key: "template".into(),
+            version_ids: vec![version.id],
+            configurations: vec![inventory[0].configuration.clone()],
+            repetitions: 1,
+            timeout_seconds: 10,
+            max_executions: 2,
+            preview: false,
+        };
+        let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":1},"maxRuns":2,"maxTotalExecutions":4})).unwrap();
+        service.store.save_schedule(&schedule).await.unwrap();
+        tick(&service).await.unwrap();
+        let saved = service.store.schedules().await.unwrap().remove(0);
+        assert!(saved.enabled, "{:?}", saved.paused_reason);
+        assert_eq!(saved.paused_reason, None);
+        let runs = service.store.all_runs().await.unwrap();
+        assert_eq!(runs.len(), 1);
+        let models: Vec<_> = runs[0]
+            .request
+            .configurations
+            .iter()
+            .map(|c| c.model_id.as_str())
+            .collect();
+        assert_eq!(models, ["fake-fail"]);
     }
 
     #[tokio::test]

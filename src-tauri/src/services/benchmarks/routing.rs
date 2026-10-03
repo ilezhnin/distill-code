@@ -19,6 +19,9 @@ pub const WORK_CLASSES: [&str; 10] = [
     "general-medium",
     "general-light",
 ];
+/// Names how `candidate_key` is derived. Keys recorded under an earlier
+/// algorithm (decision snapshot pins) are not comparable with current ones.
+pub const CANDIDATE_KEY_ALGORITHM: &str = "leaderboard-identity-v2";
 pub fn candidate_key(c: &Configuration) -> String {
     hash(super::analysis::leaderboard_key(c).as_bytes())
 }
@@ -327,14 +330,20 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
                 d.work_class_id == q.work_class_id && facets_match(&q.facets, &d.facets)
             }
     };
-    // Class evidence follows the current pool. Exact queries explicitly name a frozen case.
-    let current_pool = super::analysis::pool(data, &ResultQuery::default());
+    // Class evidence owes the pool as it stood at the cutoff, so a later
+    // publication never changes an earlier answer. Exact queries name a frozen case.
+    let cutoff_pool = super::analysis::pool(
+        data,
+        &ResultQuery {
+            as_of: Some(q.cutoff_at),
+            ..Default::default()
+        },
+    );
     let expected_cases: BTreeSet<_> = data
         .versions
         .iter()
         .filter(|v| {
-            compatible_version(v)
-                && (q.mode == "exact" || current_pool.iter().any(|p| p.id == v.id))
+            compatible_version(v) && (q.mode == "exact" || cutoff_pool.iter().any(|p| p.id == v.id))
         })
         .map(|v| v.id.as_str())
         .collect();
@@ -348,7 +357,7 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
                 && runs
                     .get(a.run_id.as_str())
                     .is_some_and(|r| !r.request.preview && r.created_at <= q.cutoff_at)
-                && candidate_key(super::analysis::execution_configuration(a)) == key
+                && candidate_key(&super::analysis::execution_configuration(a)) == key
         }) {
             by_case.entry(&a.version_id).or_default().push(a);
         }
@@ -396,8 +405,8 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             } else if d.work_class_id != q.work_class_id || !facets_match(&q.facets, &d.facets) {
                 continue;
             }
-            let config = a.observed.as_ref().unwrap_or(&a.configuration);
-            if candidate_key(config) != key {
+            let config = super::analysis::execution_configuration(a);
+            if candidate_key(&config) != key {
                 continue;
             }
             if authored_by_candidate(d, &candidate.configuration) {
@@ -751,10 +760,33 @@ mod tests {
             candidate_key(&config("low")),
             candidate_key(&config("high"))
         );
+        // A display id never splits a candidate; an account does.
         let mut label = config("low");
         label.id = "unrelated display label".into();
-        label.account_id = Some("another account".into());
-        assert_ne!(candidate_key(&label), candidate_key(&config("low")));
+        assert_eq!(candidate_key(&label), candidate_key(&config("low")));
+        let mut account = config("low");
+        account.account_id = Some("another account".into());
+        assert_ne!(candidate_key(&account), candidate_key(&config("low")));
+    }
+    #[test]
+    fn class_evidence_owes_the_pool_as_it_stood_at_the_cutoff() {
+        let (mut data, q) = matrix();
+        let mut replacement = data.versions[0].clone();
+        assert_eq!(replacement.definition_id, "def-easy-0");
+        replacement.id = "easy-0-v2".into();
+        replacement.published_at = 3000;
+        data.versions.push(replacement);
+        // Published after the cutoff: the earlier version still counts.
+        let before = get_evidence(&data, &q).unwrap();
+        assert_eq!(before.candidates[0].sample_count, 2);
+        assert_eq!(before.candidates[0].missing_count, 0);
+        assert_eq!(consumer(&before), Some(candidate_key(&config("low"))));
+        // Published before the cutoff: the replacement is owed and unmeasured.
+        data.versions.last_mut().unwrap().published_at = 1500;
+        let after = get_evidence(&data, &q).unwrap();
+        assert_eq!(after.candidates[0].sample_count, 1);
+        assert_eq!(after.candidates[0].missing_count, 1);
+        assert_eq!(after.candidates[0].status, "insufficient_evidence");
     }
     #[test]
     fn live_availability_new_candidates_pins_unknown_cost_and_staleness_are_explicit() {

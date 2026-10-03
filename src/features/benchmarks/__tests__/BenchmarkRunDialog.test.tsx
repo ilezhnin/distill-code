@@ -69,7 +69,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("pins a catch-up configuration and budgets the selected cases before preview", async () => {
+it("pins a catch-up configuration to today's runtime and budgets the selected cases before preview", async () => {
   const definitions = Array.from({ length: 21 }, (_, index) => ({
     ...definition,
     id: `definition-${index}`,
@@ -88,6 +88,18 @@ it("pins a catch-up configuration and budgets the selected cases before preview"
     ],
   }));
   const selectedVersionIds = definitions.map((entry) => entry.versions[0].id);
+  // The row's newest attempt ran on a runtime that has since changed.
+  const stale = { ...configuration, inventoryRevision: "runtime-then" };
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration: { ...configuration, inventoryRevision: "runtime-now" },
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: true,
+      available: true,
+      reason: null,
+    },
+  ]);
   render(
     <QueryClientProvider
       client={
@@ -97,13 +109,17 @@ it("pins a catch-up configuration and budgets the selected cases before preview"
       <BenchmarkRunDialog
         definitions={definitions}
         selectedVersionIds={selectedVersionIds}
-        selectedConfiguration={configuration}
+        selectedConfiguration={stale}
         onClose={vi.fn()}
         onStarted={vi.fn()}
       />
     </QueryClientProvider>,
   );
-  expect(screen.getByText("21 executions")).toBeInTheDocument();
+  expect(await screen.findByText("21 executions")).toBeInTheDocument();
+  expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
+    "claude-acp",
+    "account-1",
+  );
   expect(
     screen.getByRole("spinbutton", { name: "Time limit (seconds)" }),
   ).toHaveValue(600);
@@ -115,7 +131,15 @@ it("pins a catch-up configuration and budgets the selected cases before preview"
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        configurations: [configuration],
+        configurations: [
+          expect.objectContaining({
+            modelId: "model-1",
+            effort: "high",
+            fastMode: false,
+            billingMode: "subscription",
+            inventoryRevision: "runtime-now",
+          }),
+        ],
         versionIds: selectedVersionIds,
         repetitions: 1,
         timeoutSeconds: 600,
@@ -124,6 +148,118 @@ it("pins a catch-up configuration and budgets the selected cases before preview"
     ),
   );
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
+it("does not plan a catch-up for a model the runtime no longer lists", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([]);
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        selectedConfiguration={configuration}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "model-1 is no longer available on this account.",
+  );
+  expect(screen.getByText("0 executions")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+  expect(benchmarkApi.previewRun).not.toHaveBeenCalled();
+});
+
+it("shows why the runtime blocks a catch-up model it still lists", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration,
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: true,
+      available: false,
+      reason:
+        "Installed Claude bridge changed; benchmark adapter requires verification",
+    },
+  ]);
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        selectedConfiguration={configuration}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(
+    "Installed Claude bridge changed; benchmark adapter requires verification",
+  );
+  expect(alert).not.toHaveTextContent("no longer available");
+  expect(screen.getByText("0 executions")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+  expect(benchmarkApi.previewRun).not.toHaveBeenCalled();
+});
+
+it("reserves judge calls per judged case and owes nothing on cases the candidate wrote", async () => {
+  const version = definition.versions[0];
+  const caseOf = (
+    index: number,
+    kind: string,
+    authoredBy?: string[],
+  ): typeof definition => ({
+    ...definition,
+    id: `definition-${index}`,
+    versions: [
+      {
+        ...version,
+        id: `version-${index}`,
+        manifest: {
+          ...version.manifest,
+          evaluator: { ...version.manifest.evaluator, kind },
+          environment: authoredBy ? { authoredBy } : {},
+        },
+      },
+    ],
+  });
+  const definitions = [
+    ...Array.from({ length: 6 }, (_, index) => caseOf(index, "rubric")),
+    caseOf(6, "exact"),
+    // Written by the candidate: never planned, so never counted.
+    caseOf(7, "rubric", ["MODEL-1"]),
+    caseOf(8, "exact", ["model-1"]),
+  ];
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={definitions}
+        selectedVersionIds={definitions.map((entry) => entry.versions[0].id)}
+        selectedConfiguration={configuration}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  // Six judged cases at one turn plus three judge calls, one exact case.
+  expect(await screen.findByText("25 executions")).toBeInTheDocument();
+  expect(
+    screen.getByRole("spinbutton", { name: "Maximum executions" }),
+  ).toHaveValue(25);
 });
 
 it("counts every workflow step against the explicit execution budget", async () => {

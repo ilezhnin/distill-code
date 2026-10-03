@@ -5,14 +5,18 @@ import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
   historyKey,
   modelNameKey,
   useConfigurationHistory,
   useModelCatalog,
   useModelNames,
+  type HistorySnapshot,
 } from "../hooks/useBenchmarks";
 import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
+import { catchUpCases } from "../lib/benchmarkCatchUp";
 import { historyMeasurements } from "../lib/benchmarkHistory";
 import {
   boardDescription,
@@ -28,6 +32,7 @@ import type {
   BenchmarkVersion,
   LeaderboardReport,
   LeaderboardRow,
+  ResultQuery,
   RunSummary,
 } from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
@@ -60,6 +65,11 @@ function rowOf(report: LeaderboardReport, key: string): LeaderboardRow | null {
   );
 }
 
+/** A history point's identity; older snapshots carry only their run. */
+function pointId(snapshot: HistorySnapshot): string {
+  return snapshot.id ?? snapshot.runId;
+}
+
 function money(value: number | null | undefined): string {
   return value == null ? "–" : `$${Number(value.toPrecision(3)).toString()}`;
 }
@@ -72,9 +82,11 @@ function money(value: number | null | undefined): string {
 export function BenchmarkConfigurationPage({
   row,
   report,
+  runs,
   versions,
   onEvidence,
   onRun,
+  onOpenRun,
   onBack,
 }: {
   row: LeaderboardRow;
@@ -84,6 +96,8 @@ export function BenchmarkConfigurationPage({
   onEvidence: (id: string) => void;
   /** Starts a run over the given cases, for the gaps this row has. */
   onRun: (versionIds: string[]) => void;
+  /** Opens an unfinished run that already covers some of the gaps. */
+  onOpenRun: (runId: string) => void;
   onBack: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
@@ -92,19 +106,61 @@ export function BenchmarkConfigurationPage({
   const catalog = useModelCatalog();
   const key = historyKey(row.configuration);
   const history = useConfigurationHistory(row.configuration);
-  const [recorded, setRecorded] = useState(false);
-  const measurements = useMemo(
-    () => historyMeasurements(history.snapshots, key, recorded),
-    [history.snapshots, key, recorded],
+  const [preferRecorded, setRecorded] = useState(false);
+  const recalculatedPoints = useMemo(
+    () => historyMeasurements(history.snapshots, key, false),
+    [history.snapshots, key],
   );
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const selected =
-    measurements.find(
-      (entry) => (entry.snapshot.id ?? entry.snapshot.runId) === selectedRunId,
-    ) ?? null;
+  const recordedPoints = useMemo(
+    () => historyMeasurements(history.snapshots, key, true),
+    [history.snapshots, key],
+  );
+  // Only a mode with measurements is offered; an empty one never blanks the chart.
+  const modes = [false, true].filter(
+    (mode) => (mode ? recordedPoints : recalculatedPoints).length > 0,
+  );
+  const recorded = modes.includes(preferRecorded)
+    ? preferRecorded
+    : (modes[0] ?? preferRecorded);
+  const measurements = recorded ? recordedPoints : recalculatedPoints;
+  const [selection, setSelection] = useState<{
+    id: string;
+    runId: string;
+  } | null>(null);
+  // An unfinished run's point moves forward as more cells settle, so a
+  // selection that vanished follows its run, else the newest point.
+  const selected = selection
+    ? (measurements.find((entry) => pointId(entry.snapshot) === selection.id) ??
+      [...measurements]
+        .reverse()
+        .find((entry) => entry.snapshot.runId === selection.runId) ??
+      measurements.at(-1) ??
+      null)
+    : null;
+  const select = (id: string | null) => {
+    const entry = measurements.find((point) => pointId(point.snapshot) === id);
+    setSelection(
+      entry
+        ? { id: pointId(entry.snapshot), runId: entry.snapshot.runId }
+        : null,
+    );
+  };
   // History changes the page only after an explicit point selection.
   const shownReport = selected?.report ?? report;
   const shownRow = selected?.row ?? rowOf(report, key) ?? row;
+  // A point is dated by its observation, not by later evidence it borrows.
+  const shownAt = selected ? selected.snapshot.createdAt : shownRow.measuredAt;
+  // A dated point lists the verdicts that stood at its date.
+  const attemptQuery: ResultQuery =
+    recorded && selected
+      ? { attemptIds: shownRow.attemptIds, asOf: selected.snapshot.createdAt }
+      : { attemptIds: shownRow.attemptIds };
+  const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
+  const queuedRunId = catchUp.queuedRunId;
+  const statusHint = t(
+    `configuration.statusHint.${selected && !recorded ? "retrospective" : shownRow.status}`,
+    { defaultValue: "" },
+  );
   const standings: BoardStanding[] = useMemo(() => {
     const boards = boardsFor(shownReport.cohort);
     return boards.map((board) => {
@@ -137,7 +193,7 @@ export function BenchmarkConfigurationPage({
     catalog,
     shownRow.configuration,
     modelName,
-    shownRow.measuredAt ?? report.cohort?.newestRunAt,
+    shownAt ?? report.cohort?.newestRunAt,
   );
   const name =
     fact?.displayName ?? modelDisplayName(shownRow.configuration, modelName);
@@ -168,9 +224,9 @@ export function BenchmarkConfigurationPage({
     [t("configuration.cases"), `${shownRow.scored} / ${shownRow.planned}`],
     [
       t("configuration.measured"),
-      shownRow.measuredAt == null
+      shownAt == null
         ? t("unknown")
-        : formatDate(shownRow.measuredAt, {
+        : formatDate(shownAt, {
             dateStyle: "medium",
             timeStyle: "short",
           }),
@@ -234,28 +290,38 @@ export function BenchmarkConfigurationPage({
           </div>
         </dl>
       </header>
-      {history.snapshots.length > 0 ? (
+      {modes.length > 0 ? (
         <section className="space-y-3" aria-label={t("history.title")}>
           <div className="flex flex-wrap items-center gap-2">
-            {[false, true].map((mode) => (
-              <Button
-                key={String(mode)}
-                type="button"
-                size="sm"
-                variant={recorded === mode ? "subtle" : "ghost"}
-                aria-pressed={recorded === mode}
-                onClick={() => {
-                  setRecorded(mode);
-                  setSelectedRunId(null);
-                }}
-              >
-                {t(mode ? "history.recorded" : "history.recalculated")}
-              </Button>
+            {modes.map((mode) => (
+              <Tooltip key={String(mode)} delayDuration={TOOLTIP_DELAY.held}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={recorded === mode ? "subtle" : "ghost"}
+                    aria-pressed={recorded === mode}
+                    onClick={() => {
+                      setRecorded(mode);
+                      setSelection(null);
+                    }}
+                  >
+                    {t(mode ? "history.recorded" : "history.recalculated")}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-72">
+                  {t(
+                    mode
+                      ? "history.recordedDescription"
+                      : "history.recalculatedDescription",
+                  )}
+                </TooltipContent>
+              </Tooltip>
             ))}
           </div>
           <PointsHistoryChart
             points={measurements.map((entry) => ({
-              id: entry.snapshot.id ?? entry.snapshot.runId,
+              id: pointId(entry.snapshot),
               at: entry.snapshot.createdAt,
               points: entry.row.points,
               series: entry.series,
@@ -268,48 +334,57 @@ export function BenchmarkConfigurationPage({
                 ? 0
                 : (entry.snapshot.revisedVersionIds?.length ?? 0),
             }))}
-            selectedId={
-              selected
-                ? (selected.snapshot.id ?? selected.snapshot.runId)
-                : null
-            }
-            onSelect={setSelectedRunId}
+            selectedId={selected ? pointId(selected.snapshot) : null}
+            onSelect={select}
           />
-          <p className="text-xs text-muted-foreground">
-            {t(
-              recorded
-                ? "history.recordedDescription"
-                : "history.recalculatedDescription",
-            )}
-          </p>
         </section>
       ) : null}
       {selected ? (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setSelectedRunId(null)}
-        >
+        <Button variant="outline" size="sm" onClick={() => select(null)}>
           {t("configuration.current")}
         </Button>
       ) : null}
       {shownRow.status !== "comparable" ? (
         <div className="flex flex-wrap items-center gap-2">
-          <StateBadge state={shownRow.status} />
-          <span className="text-xs text-muted-foreground">
-            {shownRow.reason}
-          </span>
+          {statusHint ? (
+            <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <StateBadge state={shownRow.status} />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-72">
+                {statusHint}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <StateBadge state={shownRow.status} />
+          )}
         </div>
       ) : null}
-      {row.missingVersionIds.length > 0 ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => onRun(row.missingVersionIds)}
-        >
-          {t("configuration.catchUp", { count: row.missingVersionIds.length })}
-        </Button>
+      {catchUp.owed.length > 0 || queuedRunId ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {catchUp.owed.length > 0 ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onRun(catchUp.owed)}
+            >
+              {t("configuration.catchUp", { count: catchUp.owed.length })}
+            </Button>
+          ) : null}
+          {queuedRunId ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => onOpenRun(queuedRunId)}
+            >
+              {t("configuration.queued", { id: shortId(queuedRunId) })}
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       <div className="grid gap-10 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <section className="space-y-4">
@@ -418,8 +493,9 @@ export function BenchmarkConfigurationPage({
           <p className="text-xs text-muted-foreground">{t("results.empty")}</p>
         ) : (
           <BenchmarkAttemptList
-            query={{ attemptIds: shownRow.attemptIds }}
+            query={attemptQuery}
             versions={versions}
+            resetKey={`${recorded}:${selection?.id ?? "current"}`}
             onEvidence={onEvidence}
           />
         )}

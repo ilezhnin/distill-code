@@ -238,6 +238,8 @@
     "defaultEffort": "Provider default",
     "noEffort": "No effort setting",
     "addConfiguration": "Add configuration",
+    "catchUpMissing": "{{model}} is no longer available on this account. Choose a configuration below.",
+    "catchUpChanged": "{{model}} no longer offers this effort, fast mode or billing. Choose a configuration below.",
     "unsupportedProvider": "{{provider}} (unsupported)",
     "executionCount": "{{count}} executions",
     "estimatedCost": "Expected spend: {{value}}",
@@ -290,7 +292,7 @@
       "class": "Measured success on {{label}} cases as points out of 1000. Higher is better.",
       "efficiency": "Median output tokens per scored attempt. The leanest configuration scores 1000, the others in proportion.",
       "speed": "Median attempt duration. The fastest configuration scores 1000, the others in proportion.",
-      "cost": "Mean reported USD per task, averaging repetitions within each case and including judge calls. Unknown charges remain unknown. The lowest cost scores 1000."
+      "cost": "Mean reported USD per task for the model's own generation, averaging repetitions within each case. Judge calls are not included. Unknown charges remain unknown. The lowest cost scores 1000."
     },
     "allAxes": "All boards",
     "measured": "{{scored}} / {{planned}} measured",
@@ -440,6 +442,7 @@
     "preparing": "Preparing",
     "dispatching": "Dispatching",
     "collecting": "Collecting evidence",
+    "awaiting_judges": "Awaiting judges",
     "terminal": "Settled",
     "interrupted": "Interrupted",
     "pass": "Pass",
@@ -476,7 +479,8 @@
     "controlled_batch": "Controlled batch",
     "unknown": "Unknown",
     "judged": "Judged",
-    "rendered": "Rendered"
+    "rendered": "Rendered",
+    "abstained": "Abstained"
   },
   "tokens": "{{value}} tokens",
   "fastMode": "fast",
@@ -544,18 +548,27 @@
     "missing": "This configuration is not in the current selection.",
     "catchUp_one": "Run the {{count}} missing case",
     "catchUp_other": "Run the {{count}} missing cases",
-    "current": "Show current results"
+    "queued": "Queued in run {{id}}",
+    "current": "Show current results",
+    "statusHint": {
+      "preliminary": "Not ranked: a current case has no scored result yet, a run shortened a task's time limit, or this model's case set differs from the ranked models.",
+      "retrospective": "A retrospective estimate on today's case pool. It has no rank.",
+      "excluded": "This model helped author every current case, so it is not measured.",
+      "untested": "No case has run for this model yet."
+    }
   },
   "history": {
     "title": "Rating history",
     "recalculated": "Current pool",
     "recorded": "As recorded",
-    "recalculatedDescription": "Same measured cases and execution conditions at every point. Earlier gaps use the first matching later result; reviews use today's scores. A retrospective estimate; later evidence is marked on each point.",
-    "recordedDescription": "Results and evaluations available at each date. Coverage can differ between points.",
-    "laterEvidence": "{{backfilled}} cases first measured later; {{revised}} cases reviewed later.",
-    "chartLabel": "Measured points; lines compare the same measured cases",
-    "pointLabel": "{{date}}: {{points}} points · {{scored}}/{{planned}} cases",
-    "coverage": "{{scored}} of {{planned}} current cases measured. Lines connect only the same measured case versions and runtime. A change in coverage starts a separate observation."
+    "recalculatedDescription": "Every point covers today's cases. Each case uses the newest result available at that date, scored with today's reviews; a case not yet measured then uses its first later result.",
+    "recordedDescription": "Results and evaluations as they stood at each date. Coverage can differ between points.",
+    "backfilled_one": "{{count}} case first measured later",
+    "backfilled_other": "{{count}} cases first measured later",
+    "revised_one": "{{count}} case reviewed later",
+    "revised_other": "{{count}} cases reviewed later",
+    "chartLabel": "Overall points per measurement",
+    "pointLabel": "{{date}}: {{points}} points · {{scored}}/{{planned}} cases"
   },
   "elapsed": {
     "seconds_one": "{{count}} s",

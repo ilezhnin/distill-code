@@ -27,6 +27,10 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import {
+  authoredByCandidate,
+  hasEvaluatedOutcome,
+} from "../lib/benchmarkEligibility";
+import {
   evaluationCriteria,
   previewDocument,
   rubricCriteriaOf,
@@ -113,12 +117,48 @@ export function BenchmarkEvidenceView({
   const judged = attempt?.evaluations.some(
     (evaluation) => evaluation.provenance === "judge",
   );
+  const panelKind = manifest?.evaluator.kind === "rubric";
+  // A panel task stays anonymous only while its verdict is still to come;
+  // an objective fail or a budget failure is already final.
+  const verdictPending =
+    attempt?.phase !== "terminal" ||
+    attempt.outcome === "pending_review" ||
+    attempt.outcome === "completed" ||
+    attempt.outcome === "evaluation_error";
   // Identity stays hidden while the frozen rubric is still loading, too.
-  const blind = !manifest || (Boolean(rubric.trim()) && !reviewed && !judged);
+  const blind =
+    !manifest ||
+    (Boolean(rubric.trim()) &&
+      !reviewed &&
+      !judged &&
+      (!panelKind || verdictPending));
+  // An override replaces a verdict; a visual note only annotates one.
   const canReview =
     Boolean(rubric.trim()) &&
     attempt?.phase === "terminal" &&
-    attempt.output !== null;
+    attempt.output !== null &&
+    (visual || hasEvaluatedOutcome(attempt.outcome));
+  // The panel can score a rendering that no judge scored yet; asking it
+  // reveals no identity. A human override outranks any later panel, so
+  // asking again would spend calls that cannot change the score.
+  const overridden = attempt?.evaluations.some(
+    (evaluation) => evaluation.provenance === "human",
+  );
+  // Budget failures, cancelled, refused and excluded attempts keep their
+  // outcome, and a candidate is never scored on a case it wrote.
+  const canRescore =
+    attempt?.phase === "terminal" &&
+    attempt.output !== null &&
+    hasEvaluatedOutcome(attempt.outcome) &&
+    !authoredByCandidate(manifest?.environment, attempt.configuration) &&
+    (panelKind ? Boolean(rubric.trim()) && !overridden : !blind);
+  // Only a renderable answer to a brief with criteria reaches the panel; any
+  // other answer is checked again without a model call.
+  const panelRescore =
+    panelKind &&
+    ((preview != null && criteria.length > 0) ||
+      attempt?.outcome === "pending_review" ||
+      attempt?.outcome === "judged");
   const evaluate = async (review: boolean) => {
     if (review && !canReview) return;
     setBusy(true);
@@ -525,21 +565,14 @@ export function BenchmarkEvidenceView({
           ) : null}
         </DialogBody>
         <DialogFooter>
-          {attempt &&
-          !blind &&
-          attempt.phase === "terminal" &&
-          attempt.output !== null ? (
+          {canRescore ? (
             <Button
               type="button"
               variant="outline"
               disabled={busy}
               onClick={() => void evaluate(false)}
             >
-              {t(
-                manifest?.evaluator.kind === "rubric"
-                  ? "evidence.rescoreJudges"
-                  : "evidence.rescore",
-              )}
+              {t(panelRescore ? "evidence.rescoreJudges" : "evidence.rescore")}
             </Button>
           ) : null}
           {!blind ? (

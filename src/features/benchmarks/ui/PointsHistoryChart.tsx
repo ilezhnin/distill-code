@@ -2,6 +2,8 @@ import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 
 export interface HistoryPoint {
   id: string;
@@ -32,9 +34,41 @@ export function historySegments(points: HistoryPoint[]): HistoryPoint[][] {
   return segments;
 }
 
+/** Centre distance that keeps two markers (radius 7 plus stroke) apart. */
+export const POINT_GAP = 16;
+
 /**
- * Current-pool observations. Lines connect only the same measured case set;
- * a change in coverage stays a separate observation, with its evidence intact.
+ * Horizontal positions for times in ascending order. Time stays proportional
+ * where it can; observations minutes apart are pushed apart so every marker
+ * stays clickable. Too many points for the width fall back to even spacing.
+ */
+export function placePoints(
+  times: number[],
+  left: number,
+  right: number,
+  gap = POINT_GAP,
+): number[] {
+  const count = times.length;
+  if (count === 0) return [];
+  if (count === 1) return [(left + right) / 2];
+  const width = right - left;
+  if ((count - 1) * gap >= width)
+    return times.map((_, index) => left + (index * width) / (count - 1));
+  const first = times[0];
+  const span = Math.max(1, times[count - 1] - first);
+  const placed = times.map((at) => left + ((at - first) / span) * width);
+  for (let index = 1; index < count; index += 1)
+    placed[index] = Math.max(placed[index], placed[index - 1] + gap);
+  placed[count - 1] = Math.min(placed[count - 1], right);
+  for (let index = count - 2; index >= 0; index -= 1)
+    placed[index] = Math.min(placed[index], placed[index + 1] - gap);
+  return placed;
+}
+
+/**
+ * Points over time for one configuration. Every measurement is a button on
+ * the line; the chosen one drives the rest of the page. Lines connect only
+ * the same measured case set.
  */
 export function PointsHistoryChart({
   points,
@@ -58,16 +92,21 @@ export function PointsHistoryChart({
   const measured = points.filter((point) => point.points != null);
   const first = measured[0]?.at ?? 0;
   const last = measured.at(-1)?.at ?? first;
-  const span = Math.max(1, last - first);
-  const x = (at: number) =>
-    measured.length <= 1
-      ? padding.left + plotWidth / 2
-      : padding.left + inset + ((at - first) / span) * (plotWidth - 2 * inset);
+  const placed = placePoints(
+    measured.map((point) => point.at),
+    padding.left + inset,
+    padding.left + plotWidth - inset,
+  );
+  const positions = new Map(
+    measured.map((point, index) => [point.id, placed[index]]),
+  );
+  const x = (point: HistoryPoint) =>
+    positions.get(point.id) ?? padding.left + plotWidth / 2;
   // Labels keep a minimum distance; the selected point always keeps its label.
   const labelled = new Set<string>();
   const taken: number[] = [];
   const claim = (point: HistoryPoint) => {
-    const at = x(point.at);
+    const at = x(point);
     if (taken.every((other) => Math.abs(other - at) >= 56)) {
       labelled.add(point.id);
       taken.push(at);
@@ -86,7 +125,7 @@ export function PointsHistoryChart({
     segment
       .map(
         (point, index) =>
-          `${index === 0 ? "M" : "L"}${x(point.at).toFixed(1)},${y(point.points as number).toFixed(1)}`,
+          `${index === 0 ? "M" : "L"}${x(point).toFixed(1)},${y(point.points as number).toFixed(1)}`,
       )
       .join(" ");
   const date = (at: number) =>
@@ -95,8 +134,12 @@ export function PointsHistoryChart({
       : formatDate(at, { month: "short", day: "numeric" });
   return (
     <figure>
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-44 w-full">
-        <title>{t("history.chartLabel")}</title>
+      {/* Named by aria-label: a native <title> opens an instant tooltip over the plot. */}
+      <svg
+        aria-label={t("history.chartLabel")}
+        viewBox={`0 0 ${width} ${height}`}
+        className="h-44 w-full"
+      >
         <defs>
           <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
             <stop offset="0" stopColor="var(--chart-1)" stopOpacity="0.25" />
@@ -129,7 +172,7 @@ export function PointsHistoryChart({
           .map((segment) => (
             <g key={segment[0].id} data-history-segment>
               <path
-                d={`${path(segment)} L${x(segment[segment.length - 1].at).toFixed(1)},${y(0)} L${x(segment[0].at).toFixed(1)},${y(0)} Z`}
+                d={`${path(segment)} L${x(segment[segment.length - 1]).toFixed(1)},${y(0)} L${x(segment[0]).toFixed(1)},${y(0)} Z`}
                 fill={`url(#${gradientId})`}
               />
               <path
@@ -143,51 +186,62 @@ export function PointsHistoryChart({
         {measured.map((point) => {
           const selected = point.id === selectedId;
           const label = labelled.has(point.id);
+          const summary = t("history.pointLabel", {
+            date: formatDate(point.at, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            }),
+            points: point.points,
+            scored: point.scored,
+            planned: point.planned,
+          });
+          const later = [
+            point.backfilled
+              ? t("history.backfilled", { count: point.backfilled })
+              : null,
+            point.revised
+              ? t("history.revised", { count: point.revised })
+              : null,
+          ].filter((line): line is string => line !== null);
           return (
             <g key={point.id}>
-              {/* biome-ignore lint/a11y/useSemanticElements: a point on an SVG line cannot be a <button> element */}
-              <circle
-                cx={x(point.at)}
-                cy={y(point.points as number)}
-                r={selected ? 7 : 5}
-                fill={selected ? "var(--chart-1)" : "var(--background)"}
-                stroke="var(--chart-1)"
-                strokeWidth="2"
-                role="button"
-                tabIndex={0}
-                aria-pressed={selected}
-                aria-label={t("history.pointLabel", {
-                  date: formatDate(point.at, {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                  }),
-                  points: point.points,
-                  scored: point.scored,
-                  planned: point.planned,
-                })}
-                className={cn(
-                  "cursor-pointer outline-none focus-visible:stroke-foreground",
-                )}
-                onClick={() => onSelect(point.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onSelect(point.id);
-                  }
-                }}
-              >
-                <title>
-                  {t("history.coverage", {
-                    scored: point.scored,
-                    planned: point.planned,
-                  })}
-                  {point.backfilled || point.revised
-                    ? ` ${t("history.laterEvidence", { backfilled: point.backfilled ?? 0, revised: point.revised ?? 0 })}`
-                    : ""}
-                </title>
-              </circle>
+              <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+                <TooltipTrigger asChild>
+                  {/* biome-ignore lint/a11y/useSemanticElements: a point on an SVG line cannot be a <button> element */}
+                  <circle
+                    cx={x(point)}
+                    cy={y(point.points as number)}
+                    r={selected ? 7 : 5}
+                    fill={selected ? "var(--chart-1)" : "var(--background)"}
+                    stroke="var(--chart-1)"
+                    strokeWidth="2"
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={selected}
+                    aria-label={summary}
+                    className={cn(
+                      "cursor-pointer outline-none focus-visible:stroke-foreground",
+                    )}
+                    onClick={() => onSelect(point.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelect(point.id);
+                      }
+                    }}
+                  />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-64">
+                  <p className="tabular-nums">{summary}</p>
+                  {later.map((line) => (
+                    <p key={line} className="opacity-80">
+                      {line}
+                    </p>
+                  ))}
+                </TooltipContent>
+              </Tooltip>
               <text
-                x={x(point.at)}
+                x={x(point)}
                 y={height - padding.bottom + 14}
                 visibility={label ? undefined : "hidden"}
                 textAnchor="middle"
@@ -199,7 +253,7 @@ export function PointsHistoryChart({
                 {date(point.at)}
               </text>
               <text
-                x={x(point.at)}
+                x={x(point)}
                 y={y(point.points as number) - 11}
                 visibility={label ? undefined : "hidden"}
                 textAnchor="middle"
@@ -208,7 +262,7 @@ export function PointsHistoryChart({
                   selected ? "fill-foreground" : "fill-muted-foreground",
                 )}
               >
-                {point.points} · {point.scored}/{point.planned}
+                {point.points}
               </text>
             </g>
           );

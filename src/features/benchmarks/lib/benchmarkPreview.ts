@@ -82,7 +82,18 @@ function unfence(text: string): string {
   return body.trim();
 }
 
-/** The drawing or page inside an output, or null when the output is neither. */
+/** Markup a preamble may precede, searched in this order like the judge renderer. */
+const EMBEDDED: [string, string, RenderableMarkup["kind"]][] = [
+  ["<svg", "</svg>", "svg"],
+  ["<!doctype html", "</html>", "html"],
+  ["<html", "</html>", "html"],
+];
+
+/**
+ * The drawing or page inside an output, or null when the output is neither.
+ * Mirrors runner::markup_body: the output itself when it starts with markup,
+ * else the first `<svg>`…`</svg>` or HTML document anywhere in it.
+ */
 export function renderable(
   output: string | null | undefined,
   format: string | null | undefined,
@@ -101,6 +112,14 @@ export function renderable(
     (format === "html" && lowered.includes("<"))
   )
     return { kind: "html", body };
+  // ASCII lowering keeps every offset of the original text.
+  const ascii = output.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  for (const [opening, closing, kind] of EMBEDDED) {
+    const from = ascii.indexOf(opening);
+    const to = ascii.lastIndexOf(closing);
+    if (from >= 0 && to > from)
+      return { kind, body: output.slice(from, to + closing.length) };
+  }
   return null;
 }
 

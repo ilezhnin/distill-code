@@ -160,6 +160,13 @@ pub struct BenchmarkDefinition {
     pub id: String,
     pub draft_revision: i64,
     pub archived: bool,
+    /// When the definition was archived; None for live ones and for
+    /// definitions archived before the time was recorded.
+    #[serde(default)]
+    pub archived_at: Option<i64>,
+    /// Earlier archive periods a restore closed, as (archived_at, restored_at).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archive_history: Vec<(i64, i64)>,
     pub draft: BenchmarkDraft,
     pub versions: Vec<BenchmarkVersion>,
 }
@@ -228,6 +235,19 @@ pub struct RunSummary {
     pub request: RunRequest,
     pub attempt_count: u64,
     pub settled_count: u64,
+    /// What each requested configuration's attempts acknowledged in a run that
+    /// may still start attempts, so a request that left effort or fast mode to
+    /// the provider names the row it fills. Empty once the run has finished.
+    #[serde(default)]
+    pub observed_selections: Vec<ObservedRunSelection>,
+}
+/// The effort and fast mode a requested configuration ran with in one run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedRunSelection {
+    pub configuration_id: String,
+    pub effort: Option<String>,
+    pub fast_mode: Option<bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -658,7 +678,8 @@ pub struct RoutingEvidenceQuery {
     pub objective: RoutingObjective,
     pub constraints: RoutingConstraints,
     pub max_age_ms: u64,
-    /// None selects the newest compatible earlier run's timeout cohort.
+    /// Some keeps only runs with exactly this timeout. None keeps every run
+    /// that gave each case at least its published time budget.
     #[serde(default)]
     pub timeout_seconds: Option<u32>,
 }

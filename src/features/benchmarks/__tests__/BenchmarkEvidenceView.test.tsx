@@ -211,6 +211,7 @@ describe("blind benchmark review", () => {
 
 describe("creative rubric review", () => {
   afterEach(cleanup);
+  beforeEach(() => vi.clearAllMocks());
   const creativeDefinition: BenchmarkDefinition = {
     ...definition,
     versions: [
@@ -239,7 +240,7 @@ describe("creative rubric review", () => {
   };
   const drawing: Attempt = {
     ...attempt,
-    outcome: null,
+    outcome: "pending_review",
     output: [
       "```svg",
       "<svg xmlns='http://www.w3.org/2000/svg'><rect width='4' height='4'/></svg>",
@@ -295,5 +296,214 @@ describe("creative rubric review", () => {
         { adherence: 0.8, craft: 0.6 },
       ),
     );
+  });
+
+  it("asks the panel again for a rendering no judge scored, without revealing identity", async () => {
+    const unjudged: Attempt = {
+      ...drawing,
+      outcome: "pending_review",
+      evaluations: [
+        {
+          ...attempt.evaluations[0],
+          id: "render",
+          verdict: "rendered",
+          score: null,
+          provenance: "render",
+          reason: "Rendered for the panel",
+          details: { expectedJudges: 2 },
+        },
+        {
+          ...attempt.evaluations[0],
+          id: "abstain",
+          verdict: "abstained",
+          score: null,
+          provenance: "judge_failure",
+          reason: "The judge timed out",
+        },
+      ],
+    };
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(unjudged);
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    vi.mocked(benchmarkApi.rescore).mockResolvedValue(unjudged);
+    showEvidence();
+    const again = await screen.findByRole("button", {
+      name: "Evaluate again (up to 3 model calls)",
+    });
+    expect(
+      screen.getByRole("heading", { name: /Anonymous review/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("model-1");
+    await userEvent.click(again);
+    await waitFor(() =>
+      expect(benchmarkApi.rescore).toHaveBeenCalledWith(attempt.id),
+    );
+  });
+
+  it("does not spend panel calls on a rendering a human override decides", async () => {
+    const overridden: Attempt = {
+      ...drawing,
+      outcome: "pass",
+      evaluations: [
+        ...drawing.evaluations,
+        {
+          ...attempt.evaluations[0],
+          id: "human",
+          verdict: "pass",
+          score: 0.8,
+          provenance: "human",
+          reason: "The beam reads well.",
+        },
+      ],
+    };
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(overridden);
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    showEvidence();
+    await screen.findByRole("heading", { name: /model-1/ });
+    expect(
+      screen.queryByRole("button", { name: /Evaluate again/ }),
+    ).not.toBeInTheDocument();
+    expect(benchmarkApi.rescore).not.toHaveBeenCalled();
+  });
+
+  it("offers no evaluation for outcomes the service keeps", async () => {
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    for (const outcome of ["budget_timeout", "cancelled", "excluded"]) {
+      vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+        ...drawing,
+        outcome,
+      });
+      showEvidence();
+      await screen.findByText("Score the drawing against the brief.");
+      expect(
+        screen.queryByRole("button", { name: /Evaluate again/ }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Record rubric review" }),
+      ).not.toBeInTheDocument();
+      cleanup();
+    }
+    expect(benchmarkApi.rescore).not.toHaveBeenCalled();
+  });
+
+  it("shows the identity, spend and reason of an answer the objective check already failed", async () => {
+    const prose: Attempt = {
+      ...drawing,
+      outcome: "fail",
+      output: "I cannot draw.",
+      durationMs: 65_000,
+      usage: { ...drawing.usage, cost: 0.42 },
+      evaluations: [
+        {
+          ...attempt.evaluations[0],
+          verdict: "fail",
+          score: 0,
+          reason: "No renderable SVG or HTML markup in the answer",
+        },
+      ],
+    };
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(prose);
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    showEvidence();
+    await screen.findByRole("heading", { name: /model-1/ });
+    expect(
+      screen.queryByRole("heading", { name: /Anonymous review/ }),
+    ).not.toBeInTheDocument();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("Status");
+    expect(dialog).toHaveTextContent("1 min 5 s");
+    expect(dialog).toHaveTextContent("$0.42");
+    expect(
+      screen.getByText("No renderable SVG or HTML markup in the answer"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Evaluate again" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: "Evaluate again (up to 3 model calls)",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the identity, elapsed time and cost of a budget failure", async () => {
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    for (const outcome of ["budget_timeout", "budget_reached"]) {
+      vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+        ...drawing,
+        outcome,
+        durationMs: 65_000,
+        usage: { ...drawing.usage, cost: 0.42 },
+        evaluations: [],
+      });
+      showEvidence();
+      await screen.findByRole("heading", { name: /model-1/ });
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toHaveTextContent("Status");
+      expect(dialog).toHaveTextContent("1 min 5 s");
+      expect(dialog).toHaveTextContent("$0.42");
+      expect(
+        screen.queryByRole("button", { name: /Evaluate again/ }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Record rubric review" }),
+      ).not.toBeInTheDocument();
+      cleanup();
+    }
+  });
+
+  it("offers no evaluation on a case the candidate wrote", async () => {
+    const [version] = creativeDefinition.versions;
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      {
+        ...creativeDefinition,
+        versions: [
+          {
+            ...version,
+            manifest: {
+              ...version.manifest,
+              environment: {
+                ...(version.manifest.environment as object),
+                authoredBy: ["MODEL-1"],
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(drawing);
+    showEvidence();
+    await screen.findByText("Score the drawing against the brief.");
+    expect(
+      screen.queryByRole("button", { name: /Evaluate again/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows why the service refused to evaluate again", async () => {
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(drawing);
+    vi.mocked(benchmarkApi.rescore).mockRejectedValue(
+      "No judge panel: 1 eligible judge(s), at least 2 are required",
+    );
+    showEvidence();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Evaluate again/ }),
+    );
+    expect(
+      await screen.findByText(
+        "No judge panel: 1 eligible judge(s), at least 2 are required",
+      ),
+    ).toBeInTheDocument();
   });
 });
