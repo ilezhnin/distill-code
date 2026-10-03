@@ -567,6 +567,9 @@ fn history_includes_late_reviews_without_global_run_truncation() {
     let configuration = data.attempts[0].configuration.clone();
     data.attempts[0]
         .evaluations
+        .push(evaluation(2, Some(1.0), "objective", "pass"));
+    data.attempts[0]
+        .evaluations
         .push(evaluation(50, Some(0.4), "human", "fail"));
     for n in 0..30 {
         let mut run = data.runs[0].clone();
@@ -583,6 +586,15 @@ fn history_includes_late_reviews_without_global_run_truncation() {
     assert_eq!(points[0].recalculated_report.rows[0].points, Some(900));
     assert_eq!(points[0].revised_version_ids, vec!["v0"]);
     assert!(points[1].revised_version_ids.is_empty());
+
+    // Unscored at the first point, the case was first measured later, not
+    // reviewed later, as the dated report shows.
+    data.attempts[0].evaluations.remove(0);
+    let points = history(&data, &configuration);
+    assert_eq!(points[0].report.rows[0].scored, 5);
+    assert_eq!(points[0].backfilled_version_ids, vec!["v0"]);
+    assert!(points[0].revised_version_ids.is_empty());
+    assert_eq!(points[0].recalculated_report.rows[0].points, Some(900));
 }
 
 #[test]

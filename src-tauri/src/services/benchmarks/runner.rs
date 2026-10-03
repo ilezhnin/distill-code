@@ -3018,6 +3018,23 @@ mod tests {
         assert!(run.attempts[0].evidence_hash.is_some());
     }
     #[tokio::test]
+    async fn a_baseline_leaves_out_cells_settled_as_excluded() {
+        let (_dir, s, _) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let mut excluded = s.store.run(&run.id).await.unwrap().attempts[0].clone();
+        excluded.outcome = Some("excluded".into());
+        excluded.evaluations.clear();
+        s.store.save_attempt(&excluded).await.unwrap();
+        let b = s
+            .create_baseline("With an authored cell".into(), vec![run.id.clone()], 0.1)
+            .await
+            .unwrap();
+        assert!(b.snapshots.iter().all(|a| a.id != excluded.id));
+    }
+    #[tokio::test]
     async fn baseline_is_a_frozen_copy() {
         let (_dir, s, _) = setup().await;
         let req = request(&s).await;

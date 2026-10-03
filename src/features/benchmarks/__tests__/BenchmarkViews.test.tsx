@@ -490,7 +490,7 @@ describe("benchmark authoring and saved evidence", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Run benchmarks",
     });
-    expect(await within(dialog).findByText("1 executions")).toBeInTheDocument();
+    expect(await within(dialog).findByText("1 execution")).toBeInTheDocument();
     await userEvent.click(
       within(dialog).getByRole("button", { name: "Check plan" }),
     );
@@ -666,7 +666,7 @@ describe("benchmark authoring and saved evidence", () => {
     // Rows without a rank stay out of the way until asked for.
     expect(screen.queryByText("delta")).not.toBeInTheDocument();
     await userEvent.click(
-      screen.getByRole("button", { name: "Show 1 unranked configurations" }),
+      screen.getByRole("button", { name: "Show 1 unranked configuration" }),
     );
     expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
     await userEvent.click(

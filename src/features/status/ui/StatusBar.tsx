@@ -52,15 +52,20 @@ export function StatusBar() {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => startProviderRateLimitPolling(), []);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
   const providers = useMemo(
     () => buildProviderStatuses(catalog, snapshot?.providers, agentReadiness),
     [catalog, snapshot, agentReadiness],
   );
+  // A provider pause counts down by the second; otherwise a slow tick keeps
+  // reset times and "updated" labels fresh.
+  const paused = providers.some((provider) => provider.usageRetryAt != null);
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setNow(Date.now()),
+      paused ? 1_000 : 30_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [paused]);
 
   const visibleProviders = providers.filter((provider) => {
     const readiness = agentReadiness.get(provider.provider);

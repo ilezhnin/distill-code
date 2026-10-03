@@ -1061,11 +1061,13 @@ fn recalculated_history_report(
             })
             .collect();
         settled.sort_by_key(|(id, _)| (runs[id].created_at, *id));
+        // A cell counts as known at `at` only if it was scored by then; a panel
+        // that answered later falls through to the backfill branch.
         let known = settled.iter().rev().find(|(id, attempts)| {
             runs[id].created_at <= at
-                && attempts
-                    .iter()
-                    .all(|a| a.finished_at.is_some_and(|end| end <= at))
+                && attempts.iter().all(|a| {
+                    a.finished_at.is_some_and(|end| end <= at) && score_as_of(a, Some(at)).is_some()
+                })
         });
         if let Some((_, attempts)) = known.or_else(|| settled.first()) {
             if known.is_none() {

@@ -499,15 +499,20 @@ impl BenchmarkService {
                     "Development previews cannot become official baselines",
                 ));
             }
+            // Cells settled as excluded (authored by their candidate) were never owed.
+            let owed: Vec<Attempt> = run
+                .attempts
+                .into_iter()
+                .filter(|a| a.outcome.as_deref() != Some("excluded"))
+                .collect();
             if run.state != "completed"
-                || run
-                    .attempts
+                || owed
                     .iter()
                     .any(|a| a.phase != "terminal" || analysis::score(a).is_none())
             {
                 return Err(BenchmarkError::new("validation","An official baseline requires a completed matrix with all quality outcomes observed"));
             }
-            snapshots.extend(run.attempts);
+            snapshots.extend(owed);
             run_conditions.push(run.request);
         }
         let baseline = Baseline {
