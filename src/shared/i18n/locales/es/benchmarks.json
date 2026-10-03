@@ -545,8 +545,9 @@
     "catchUp_other": "Ejecutar los {{count}} casos que faltan"
   },
   "history": {
-    "chartLabel": "Puntos generales por medición",
-    "pointLabel": "{{date}}: {{points}} puntos"
+    "chartLabel": "Puntos medidos; las líneas comparan los mismos casos medidos",
+    "pointLabel": "{{date}}: {{points}} puntos · {{scored}}/{{planned}} casos",
+    "coverage": "{{scored}} de {{planned}} casos actuales medidos. Las líneas conectan solo las mismas versiones de casos medidos y del entorno de ejecución. Un cambio de cobertura inicia una observación independiente."
   },
   "elapsed": {
     "seconds_one": "{{count}} s",

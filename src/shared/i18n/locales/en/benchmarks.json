@@ -545,8 +545,9 @@
     "catchUp_other": "Run the {{count}} missing cases"
   },
   "history": {
-    "chartLabel": "Overall points per measurement",
-    "pointLabel": "{{date}}: {{points}} points"
+    "chartLabel": "Measured points; lines compare the same measured cases",
+    "pointLabel": "{{date}}: {{points}} points · {{scored}}/{{planned}} cases",
+    "coverage": "{{scored}} of {{planned}} current cases measured. Lines connect only the same measured case versions and runtime. A change in coverage starts a separate observation."
   },
   "elapsed": {
     "seconds_one": "{{count}} s",

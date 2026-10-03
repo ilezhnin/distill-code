@@ -7,11 +7,32 @@ export interface HistoryPoint {
   id: string;
   at: number;
   points: number | null;
+  series: string;
+  scored: number;
+  planned: number;
+}
+
+/** Never bridge a missing result or a change in measured versions or runtime. */
+export function historySegments(points: HistoryPoint[]): HistoryPoint[][] {
+  const segments: HistoryPoint[][] = [];
+  let segment: HistoryPoint[] = [];
+  for (const point of points) {
+    if (point.points == null) {
+      segment = [];
+      continue;
+    }
+    if (!segment.length || segment[0].series !== point.series) {
+      segment = [];
+      segments.push(segment);
+    }
+    segment.push(point);
+  }
+  return segments;
 }
 
 /**
- * Points over time for one configuration. Every measurement is a button on
- * the line; the chosen one drives the rest of the page.
+ * Current-pool observations. Lines connect only the same measured case set;
+ * a change in coverage stays a separate observation, with its evidence intact.
  */
 export function PointsHistoryChart({
   points,
@@ -57,12 +78,13 @@ export function PointsHistoryChart({
     measured.length > 1 &&
     new Date(first).toDateString() === new Date(last).toDateString();
   const y = (value: number) => padding.top + (1 - value / 1000) * plotHeight;
-  const path = measured
-    .map(
-      (point, index) =>
-        `${index === 0 ? "M" : "L"}${x(point.at).toFixed(1)},${y(point.points as number).toFixed(1)}`,
-    )
-    .join(" ");
+  const path = (segment: HistoryPoint[]) =>
+    segment
+      .map(
+        (point, index) =>
+          `${index === 0 ? "M" : "L"}${x(point.at).toFixed(1)},${y(point.points as number).toFixed(1)}`,
+      )
+      .join(" ");
   const date = (at: number) =>
     oneDay
       ? formatDate(at, { hour: "numeric", minute: "2-digit" })
@@ -98,20 +120,22 @@ export function PointsHistoryChart({
             </text>
           </g>
         ))}
-        {measured.length > 1 ? (
-          <>
-            <path
-              d={`${path} L${x(last).toFixed(1)},${y(0)} L${x(first).toFixed(1)},${y(0)} Z`}
-              fill={`url(#${gradientId})`}
-            />
-            <path
-              d={path}
-              fill="none"
-              stroke="var(--chart-1)"
-              strokeWidth="2"
-            />
-          </>
-        ) : null}
+        {historySegments(points)
+          .filter((segment) => segment.length > 1)
+          .map((segment) => (
+            <g key={segment[0].id} data-history-segment>
+              <path
+                d={`${path(segment)} L${x(segment[segment.length - 1].at).toFixed(1)},${y(0)} L${x(segment[0].at).toFixed(1)},${y(0)} Z`}
+                fill={`url(#${gradientId})`}
+              />
+              <path
+                d={path(segment)}
+                fill="none"
+                stroke="var(--chart-1)"
+                strokeWidth="2"
+              />
+            </g>
+          ))}
         {measured.map((point) => {
           const selected = point.id === selectedId;
           const label = labelled.has(point.id);
@@ -134,6 +158,8 @@ export function PointsHistoryChart({
                     timeStyle: "short",
                   }),
                   points: point.points,
+                  scored: point.scored,
+                  planned: point.planned,
                 })}
                 className={cn(
                   "cursor-pointer outline-none focus-visible:stroke-foreground",
@@ -145,7 +171,14 @@ export function PointsHistoryChart({
                     onSelect(point.id);
                   }
                 }}
-              />
+              >
+                <title>
+                  {t("history.coverage", {
+                    scored: point.scored,
+                    planned: point.planned,
+                  })}
+                </title>
+              </circle>
               <text
                 x={x(point.at)}
                 y={height - padding.bottom + 14}
@@ -168,7 +201,7 @@ export function PointsHistoryChart({
                   selected ? "fill-foreground" : "fill-muted-foreground",
                 )}
               >
-                {point.points}
+                {point.points} · {point.scored}/{point.planned}
               </text>
             </g>
           );

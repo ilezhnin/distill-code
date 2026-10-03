@@ -882,10 +882,10 @@ describe("configuration history", () => {
       screen.getByText("Overall rating").nextElementSibling?.textContent;
     expect(rating()).toBe("900");
     const oldPoint = await screen.findByRole("button", {
-      name: /: 600 points$/,
+      name: /: 600 points · 1\/1 cases$/,
     });
     expect(
-      screen.getByRole("button", { name: /: 900 points$/ }),
+      screen.getByRole("button", { name: /: 900 points · 1\/1 cases$/ }),
     ).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(oldPoint);
     expect(rating()).toBe("600");

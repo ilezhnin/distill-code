@@ -299,6 +299,8 @@ export interface ResultQuery {
   limit?: number | null;
 }
 export interface LeaderboardRow {
+  /** Exact measured case set; equal counts alone do not make a trend. */
+  scoredVersionIds: string[];
   configuration: Configuration;
   passed: number;
   scored: number;

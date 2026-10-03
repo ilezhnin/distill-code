@@ -421,6 +421,9 @@ pub struct ResultQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderboardRow {
+    /// Exact scored versions, so partial snapshots with equal counts are not
+    /// mistaken for measurements of the same tasks.
+    pub scored_version_ids: Vec<String>,
     pub configuration: Configuration,
     pub passed: u32,
     pub scored: u32,
