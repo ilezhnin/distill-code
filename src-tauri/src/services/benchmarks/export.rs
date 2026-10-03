@@ -60,11 +60,14 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                     let reward=if authored { None } else { attempt.and_then(|a|super::analysis::score(a)) };
                     json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
                         "excluded":authored.then_some("authored_by_candidate"),
-                        "outcome":attempt.and_then(|a|a.outcome.as_deref()),"phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),
+                        "outcome":attempt.and_then(|a|super::analysis::effective_outcome(a.outcome.as_deref(),&a.evaluations)),"phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),
                         "usage":attempt.map(|a|&a.usage),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
                         "observedConfiguration":attempt.and_then(|a|a.observed.as_ref()).map(|c|public_configuration(c,salt)),
                         "workflowSteps":attempt.map(|a|&a.workflow_steps),
-                        "evaluationRevisions":attempt.map(|a|a.evaluations.iter().map(|e|json!({"id":e.id,"revision":e.evaluator_revision,"provenance":e.provenance,"verdict":e.verdict,"score":e.score,"createdAt":e.created_at})).collect::<Vec<_>>()),
+                        "evaluationRevisions":attempt.map(|a|a.evaluations.iter().map(|e|json!({"id":e.id,"revision":e.evaluator_revision,"provenance":e.provenance,"verdict":e.verdict,"score":e.score,"createdAt":e.created_at,"usage":e.usage,
+                            "judge":e.judge.as_ref().map(|c|public_configuration(c,salt)),
+                            "judgeBatchId":e.details.as_ref().and_then(|d|d.get("judgeBatchId")),
+                            "protocolHash":e.details.as_ref().and_then(|d|d.get("protocolHash"))})).collect::<Vec<_>>()),
                         "subscriptionCharge":null,"subscriptionChargeReason":"See batch-level quota evidence; never allocated by token share"})
                 }).collect();
                 matrix.push(json!({"configuration":public_configuration(config,salt),"outcomes":observations}));
@@ -79,6 +82,85 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                 "candidates":run.request.configurations.iter().map(|c|public_configuration(c,salt)).collect::<Vec<_>>(),
                 "matrix":matrix,"evaluatorRevision":version.manifest.evaluator.revision}));
         }
+    }
+    Ok(result)
+}
+
+/// Current cases joined across runs, with an explicit missing cell for every
+/// observed candidate. Historical outcome rows remain a separate archive.
+pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<Value>> {
+    let archive = rows(data, include_held_out, salt)?;
+    let runs: BTreeMap<_, _> = data
+        .runs
+        .iter()
+        .filter(|r| !r.request.preview)
+        .map(|r| (r.id.as_str(), r))
+        .collect();
+    let candidates: BTreeMap<_, _> = data
+        .attempts
+        .iter()
+        .filter(|a| runs.contains_key(a.run_id.as_str()))
+        .map(|a| {
+            let c = super::analysis::execution_configuration(a);
+            (super::analysis::leaderboard_key(c), c)
+        })
+        .collect();
+    let mut result = Vec::new();
+    for version in super::analysis::pool(data, &ResultQuery::default()) {
+        if version.manifest.split == "held_out" && !include_held_out {
+            continue;
+        }
+        let mut matrix = Vec::new();
+        for (key, configuration) in &candidates {
+            let list: Vec<_> = data
+                .attempts
+                .iter()
+                .filter(|a| {
+                    a.version_id == version.id
+                        && runs.contains_key(a.run_id.as_str())
+                        && super::analysis::leaderboard_key(
+                            super::analysis::execution_configuration(a),
+                        ) == *key
+                })
+                .collect();
+            let selected = super::analysis::latest_cell_attempts(&list, &runs, None);
+            let excluded = super::routing::authored_by_candidate(&version.manifest, configuration);
+            let mut outcomes = Vec::new();
+            for a in &selected {
+                if let Some(observation) = archive
+                    .iter()
+                    .flat_map(|r| r["matrix"].as_array().into_iter().flatten())
+                    .flat_map(|c| c["outcomes"].as_array().into_iter().flatten())
+                    .find(|o| o["attemptId"] == a.id)
+                {
+                    outcomes.push(observation.clone());
+                }
+            }
+            let complete = !excluded
+                && !selected.is_empty()
+                && selected.iter().all(|a| super::analysis::score(a).is_some());
+            let reward = complete.then(|| {
+                selected
+                    .iter()
+                    .filter_map(|a| super::analysis::score(a))
+                    .sum::<f64>()
+                    / selected.len() as f64
+            });
+            matrix.push(json!({"configuration":public_configuration(configuration,salt), "observed":complete,
+                "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"outcomes":outcomes,
+                "meanCost":super::analysis::mean_case_cost(&selected,None),
+                "runId":selected.first().map(|a|&a.run_id),
+                "effectiveTimeoutSeconds":selected.first().map(|a|runs[a.run_id.as_str()].request.timeout_seconds.min(version.manifest.limits.timeout_seconds)),
+                "repetitions":selected.len()}));
+        }
+        result.push(json!({"schemaVersion":2,"selectionProvenance":"current_pool_latest_settled_cell",
+            "taskVersion":version.id,"contentHash":version.content_hash,"family":version.manifest.task_family,"split":version.manifest.split,
+            "features":{"prompt":version.manifest.prompt,"fixtures":version.manifest.fixtures,"workClassId":version.manifest.work_class_id,
+                "roleId":version.manifest.role_id,"rolePrompt":version.manifest.role_prompt,"facets":version.manifest.facets,
+                "roleContextHash":version.manifest.role_context_hash,"entryState":version.manifest.entry_state,
+                "workflow":version.manifest.workflow,"executionProfile":version.manifest.execution_profile,"limits":version.manifest.limits},
+            "matrix":matrix,"completeMatrix":matrix.iter().all(|c|c["observed"] == true),
+            "evaluatorRevision":version.manifest.evaluator.revision}));
     }
     Ok(result)
 }
@@ -128,14 +210,27 @@ pub async fn export(
         jsonl.push('\n');
     }
     let hash = format!("{:x}", Sha256::digest(jsonl.as_bytes()));
+    let prepared = ledger_rows(&data, include_held_out, &id)?;
+    let ledger_jsonl = prepared
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .join("\n")
+        + "\n";
+    let ledger_hash = format!("{:x}", Sha256::digest(ledger_jsonl.as_bytes()));
     let manifest = json!({"schemaVersion":1,"id":id,"createdAt":now(),"rowCount":rows.len(),"contentHash":hash,"catalogDefinitions":data.definitions.len(),
         "purpose":if include_held_out{"explicit_evaluation_export"}else{"training"},"includesHeldOut":include_held_out,
         "aggregation":"equal frozen-case means over observed repetitions; missing values stay null",
+        "archive":"outcomes.jsonl",
+        "currentPool":{"path":"ledger.jsonl","rowCount":prepared.len(),"contentHash":ledger_hash,
+            "selection":"latest settled repetitions per candidate and current task version; explicit observation masks",
+            "trainingPolicy":"exclude held-out cases; require compatible protocols and complete candidate cells before fitting soft targets"},
         "quotaSemantics":"whole controlled batch only; mixed and unknown charges are omitted",
         "quota":quota,"versions":rows.iter().map(|row|json!({"version":row["taskVersion"],"family":row["family"],"split":row["split"],"hash":row["contentHash"]})).collect::<Vec<_>>()});
     let path = directory.join("outcomes.jsonl");
     let manifest_path = directory.join("manifest.json");
     tokio::fs::write(&path, jsonl).await?;
+    tokio::fs::write(directory.join("ledger.jsonl"), ledger_jsonl).await?;
     tokio::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?).await?;
     let mut tx = store.pool.begin().await?;
     sqlx::query("INSERT INTO exports(id,data_json) VALUES(?,?)")

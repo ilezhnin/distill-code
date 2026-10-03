@@ -321,6 +321,7 @@ pub fn run() {
             commands::benchmarks::benchmark_get_inventory,
             commands::benchmarks::benchmark_get_capabilities,
             commands::benchmarks::benchmark_get_leaderboard,
+            commands::benchmarks::benchmark_get_history,
             commands::benchmarks::benchmark_get_usage_series,
             commands::benchmarks::benchmark_get_usage_ledger,
             commands::benchmarks::benchmark_get_routing_evidence,

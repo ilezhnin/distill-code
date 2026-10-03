@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluationCriteria,
   previewDocument,
   rubricCriteriaOf,
   weightedShare,
 } from "../lib/benchmarkPreview";
+
+it("shows legacy and batched judge criteria without interpreting protocol metadata as scores", () => {
+  expect(evaluationCriteria({ craft: 0.8 })).toEqual([["craft", 0.8]]);
+  expect(
+    evaluationCriteria({
+      criteria: { craft: 0.8 },
+      judgeBatchId: "batch",
+      durationMs: 20,
+    }),
+  ).toEqual([["craft", 0.8]]);
+  expect(evaluationCriteria({ expectedJudges: 3, protocol: {} })).toEqual([]);
+});
 
 describe("previewDocument", () => {
   it("wraps an SVG, also when a Markdown fence surrounds it, under a no-script policy", () => {

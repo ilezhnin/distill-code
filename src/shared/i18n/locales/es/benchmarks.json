@@ -275,12 +275,13 @@
     "criterion": "{{label}} · peso {{weight}}",
     "weighted": "Puntuación ponderada {{points}} de 1000",
     "judge": "Juez · {{model}}",
-    "override": "Anular el panel"
+    "override": "Anular el panel",
+    "rescoreJudges": "Evaluar de nuevo (hasta 3 llamadas)"
   },
   "leaderboard": {
     "boards": {
       "overall": "General",
-      "efficiency": "Eficiencia",
+      "efficiency": "Uso de tokens de salida",
       "speed": "Velocidad",
       "cost": "Coste"
     },
@@ -289,7 +290,7 @@
       "class": "Éxito medido en los casos de {{label}} en puntos sobre 1000. Más alto es mejor.",
       "efficiency": "Mediana de tokens de salida por intento puntuado. La configuración más frugal obtiene 1000, las demás en proporción.",
       "speed": "Duración mediana del intento. La configuración más rápida obtiene 1000, las demás en proporción.",
-      "cost": "Coste medido del conjunto en USD, tal como lo informó el proveedor. La configuración más barata obtiene 1000, las demás en proporción."
+      "cost": "USD medios por tarea, promediando las repeticiones de cada caso e incluyendo los jueces. Los cargos desconocidos siguen sin conocerse. El menor costo obtiene 1000 puntos."
     },
     "allAxes": "Todos los tableros",
     "measured": "{{scored}} / {{planned}} medidas",
@@ -530,7 +531,7 @@
     "context": "Ventana de contexto",
     "cases": "Casos puntuados",
     "measured": "Medido",
-    "spend": "Gasto medido del conjunto",
+    "spend": "Costo medio por tarea",
     "outputTokens": "Mediana de tokens de salida",
     "pricing": "Precios",
     "perMillion": "USD por millón de tokens",
@@ -542,7 +543,8 @@
     "back": "Clasificación",
     "missing": "Esta configuración no está en la selección actual.",
     "catchUp_one": "Ejecutar el {{count}} caso que falta",
-    "catchUp_other": "Ejecutar los {{count}} casos que faltan"
+    "catchUp_other": "Ejecutar los {{count}} casos que faltan",
+    "current": "Mostrar resultados actuales"
   },
   "history": {
     "chartLabel": "Puntos medidos; las líneas comparan los mismos casos medidos",

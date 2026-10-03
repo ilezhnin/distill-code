@@ -22,6 +22,16 @@ use tokio::sync::{Mutex, Notify, OnceCell};
 use types::*;
 
 const MATRIX_ORDER_ALGORITHM: &str = "sha256-cell-order-v1";
+static EVALUATION_LOCK: Mutex<()> = Mutex::const_new(());
+
+pub(super) fn execution_count(draft: &BenchmarkDraft) -> usize {
+    draft.workflow.as_ref().map_or(1, |w| w.steps.len())
+        + if draft.evaluator.kind == "rubric" {
+            3
+        } else {
+            0
+        }
+}
 
 fn matrix_order_seed(request_key: &str) -> String {
     fixtures::hash(format!("{MATRIX_ORDER_ALGORITHM}\0{request_key}").as_bytes())
@@ -154,16 +164,8 @@ impl BenchmarkService {
         let mut issues = Vec::new();
         let mut case_turns = 0usize;
         for id in &request.version_ids {
-            case_turns = case_turns.saturating_add(
-                self.store
-                    .version(id)
-                    .await?
-                    .manifest
-                    .workflow
-                    .as_ref()
-                    .map(|w| w.steps.len())
-                    .unwrap_or(1),
-            );
+            let draft = self.store.version(id).await?.manifest;
+            case_turns = case_turns.saturating_add(execution_count(&draft));
         }
         let count = case_turns
             .checked_mul(request.configurations.len())
@@ -191,7 +193,11 @@ impl BenchmarkService {
             }
         }
         let mut ids = std::collections::HashSet::new();
+        let mut identities = std::collections::HashSet::new();
         for c in &request.configurations {
+            if !identities.insert(analysis::leaderboard_key(c)) {
+                issues.push("Duplicate configuration identity in matrix".into());
+            }
             if !ids.insert(&c.id) {
                 issues.push("Duplicate configuration ID in matrix".into());
             }
@@ -389,13 +395,10 @@ impl BenchmarkService {
                 ));
             }
             if run.state != "completed"
-                || run.attempts.iter().any(|a| {
-                    a.phase != "terminal"
-                        || !matches!(
-                            a.outcome.as_deref(),
-                            Some("pass" | "fail" | "budget_timeout" | "budget_reached")
-                        )
-                })
+                || run
+                    .attempts
+                    .iter()
+                    .any(|a| a.phase != "terminal" || analysis::score(a).is_none())
             {
                 return Err(BenchmarkError::new("validation","An official baseline requires a completed matrix with all quality outcomes observed"));
             }
@@ -428,6 +431,7 @@ impl BenchmarkService {
         reason: String,
         details: Option<serde_json::Value>,
     ) -> Result<Attempt> {
+        let _guard = EVALUATION_LOCK.lock().await;
         if let Some(details) = &details {
             let valid = details.as_object().is_some_and(|map| {
                 !map.is_empty()
@@ -491,6 +495,7 @@ impl BenchmarkService {
             artifacts: Vec::new(),
             details,
             judge: None,
+            usage: None,
         });
         if !visual {
             a.outcome = Some(if score == 1.0 { "pass" } else { "fail" }.into());
@@ -499,6 +504,7 @@ impl BenchmarkService {
         Ok(a)
     }
     pub async fn rescore(&self, id: &str) -> Result<Attempt> {
+        let _guard = EVALUATION_LOCK.lock().await;
         if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workflow_steps WHERE attempt_id=?")
             .bind(id)
             .fetch_one(&self.store.pool)
@@ -511,6 +517,12 @@ impl BenchmarkService {
             ));
         }
         let mut a = self.store.attempt(id).await?;
+        if a.phase != "terminal" {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Only a finished attempt can be rescored",
+            ));
+        }
         let v = self.store.version(&a.version_id).await?;
         let output = a.output.as_deref().ok_or_else(|| {
             BenchmarkError::new("evidence_missing", "Attempt has no sealed output")
@@ -521,6 +533,7 @@ impl BenchmarkService {
         if v.manifest.evaluator.kind == "rubric" {
             a = self.backend.judge(&self.store, a, &v).await?;
         } else {
+            a.outcome = Some(e.verdict.clone());
             a.evaluations.push(e);
         }
         self.store.save_attempt(&a).await?;

@@ -27,6 +27,7 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import {
+  evaluationCriteria,
   previewDocument,
   rubricCriteriaOf,
   weightedShare,
@@ -364,9 +365,12 @@ export function BenchmarkEvidenceView({
                             : ""}
                         </span>
                       </div>
-                      {evaluation.details ? (
+                      {evaluation.details &&
+                      ["judge", "human", "human_visual"].includes(
+                        evaluation.provenance,
+                      ) ? (
                         <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                          {Object.entries(evaluation.details).map(
+                          {evaluationCriteria(evaluation.details).map(
                             ([id, value]) => (
                               <div key={id}>
                                 <dt className="inline">
@@ -531,7 +535,11 @@ export function BenchmarkEvidenceView({
               disabled={busy}
               onClick={() => void evaluate(false)}
             >
-              {t("evidence.rescore")}
+              {t(
+                manifest?.evaluator.kind === "rubric"
+                  ? "evidence.rescoreJudges"
+                  : "evidence.rescore",
+              )}
             </Button>
           ) : null}
           {!blind ? (

@@ -17,13 +17,14 @@ export function historyMeasurements(snapshots: HistorySnapshot[], key: string) {
     const versions = [...row.scoredVersionIds].sort();
     const series = JSON.stringify([
       versions,
-      row.configuration.inventoryRevision,
+      row.comparisonKey ?? row.configuration.inventoryRevision,
       gap,
     ]);
     const signature = JSON.stringify([
       series,
       [...row.attemptIds].sort(),
       row.points,
+      row.cost,
     ]);
     // A run of another model or an unmeasured case is not a new observation.
     if (signature === previous) return [];

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
-import type { CatalogEntry, LeaderboardReport, RunSummary } from "../types";
+import type { CatalogEntry, Configuration, LeaderboardReport } from "../types";
 
 export const benchmarkKeys = ["benchmarks"] as const;
 
@@ -123,58 +123,21 @@ export function useModelNames(): Map<string, string> {
 export const historyKey = configurationKey;
 
 export interface HistorySnapshot {
+  id?: string;
   runId: string;
   createdAt: number;
   report: LeaderboardReport;
 }
 
-const HISTORY_RUNS = 24;
-
-/**
- * Reconstruct the current pool at each completed run. A partial snapshot is
- * evidence, but only identical measured case sets may share a chart segment.
- */
-export function useConfigurationHistory(runs: RunSummary[]): {
+/** History is reconstructed once per candidate, including evaluation events. */
+export function useConfigurationHistory(configuration: Configuration): {
   snapshots: HistorySnapshot[];
   loading: boolean;
 } {
-  const chosen = runs
-    .filter((run) => run.state === "completed" && !run.request.preview)
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, HISTORY_RUNS);
-  const results = useQueries({
-    queries: chosen.map((run) => ({
-      queryKey: [
-        ...benchmarkKeys,
-        "leaderboard",
-        {
-          asOf: run.updatedAt,
-          runId: null,
-          versionIds: null,
-          offset: 0,
-          limit: 500,
-        },
-      ],
-      queryFn: () =>
-        benchmarkApi.getLeaderboard({
-          asOf: run.updatedAt,
-          runId: null,
-          versionIds: null,
-          offset: 0,
-          limit: 500,
-        }),
-      staleTime: 60_000,
-    })),
+  const result = useQuery({
+    queryKey: [...benchmarkKeys, "history", historyKey(configuration)],
+    queryFn: () => benchmarkApi.getHistory(configuration),
+    staleTime: 60_000,
   });
-  const snapshots: HistorySnapshot[] = [];
-  results.forEach((result, index) => {
-    if (result.data)
-      snapshots.push({
-        runId: chosen[index].id,
-        createdAt: chosen[index].updatedAt,
-        report: result.data,
-      });
-  });
-  snapshots.sort((a, b) => a.createdAt - b.createdAt);
-  return { snapshots, loading: results.some((result) => result.isPending) };
+  return { snapshots: result.data ?? [], loading: result.isPending };
 }

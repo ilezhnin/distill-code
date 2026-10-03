@@ -21,6 +21,22 @@ export interface RenderableMarkup {
   body: string;
 }
 
+/** Criterion scores from legacy reviews or a versioned judge response. */
+export function evaluationCriteria(
+  details: Record<string, unknown> | null | undefined,
+): [string, number][] {
+  if (!details) return [];
+  const values = details.criteria ?? details;
+  if (!values || typeof values !== "object" || Array.isArray(values)) return [];
+  return Object.entries(values).filter(
+    (entry): entry is [string, number] =>
+      typeof entry[1] === "number" &&
+      Number.isFinite(entry[1]) &&
+      entry[1] >= 0 &&
+      entry[1] <= 1,
+  );
+}
+
 /** The weighted criteria a rubric task declares in its environment, or none. */
 export function rubricCriteriaOf(environment: unknown): RubricCriterion[] {
   if (!environment || typeof environment !== "object") return [];

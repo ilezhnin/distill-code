@@ -121,6 +121,7 @@ impl NativeBackend {
         attempt: &Attempt,
         version: &BenchmarkVersion,
         judge: &Configuration,
+        batch: &str,
         index: usize,
         prompt: &str,
         image: &OwnedTurnImage,
@@ -147,52 +148,66 @@ impl NativeBackend {
             .join("runs")
             .join(&attempt.run_id)
             .join(&attempt.id)
-            .join(format!("judge-{index}"));
+            .join(format!("judge-{batch}-{index}"));
         tokio::fs::create_dir_all(&cwd).await?;
         let session = host
             .create_owned_session(OwnedSessionRequest {
-                owner_id: format!("{}:judge:{index}", attempt.id),
+                owner_id: format!("{}:judge:{batch}:{index}", attempt.id),
                 provider_id: judge.provider_id.clone(),
                 account_id: account,
                 model_id: judge.model_id.clone(),
-                reasoning_effort: None,
-                fast_mode: None,
+                reasoning_effort: judge.effort.clone(),
+                fast_mode: judge.fast_mode,
                 cwd: cwd.to_string_lossy().into_owned(),
                 title: format!("Benchmark judge: {}", version.manifest.name),
                 profile: ExecutionProfile::NativeTextV1,
             })
             .await
             .map_err(host_error)?;
-        let key = format!("benchmark:{}:judge:{index}", attempt.id);
+        let key = format!("benchmark:{}:judge:{batch}:{index}", attempt.id);
         let timeout = Duration::from_secs(180);
-        host.dispatch_owned_turn(OwnedTurnRequest {
-            session_id: session.session_id.clone(),
-            request_key: key.clone(),
-            prompt: prompt.to_string(),
-            policy_hash: session.policy_hash,
-            timeout_ms: timeout.as_millis() as u64,
-            images: vec![image.clone()],
-        })
-        .await
-        .map_err(host_error)?;
+        let dispatch = host
+            .dispatch_owned_turn(OwnedTurnRequest {
+                session_id: session.session_id.clone(),
+                request_key: key.clone(),
+                prompt: prompt.to_string(),
+                policy_hash: session.policy_hash,
+                timeout_ms: timeout.as_millis() as u64,
+                images: vec![image.clone()],
+            })
+            .await;
         let started = Instant::now();
         let mut cursor = 0i64;
         let mut reply = String::new();
         let mut usage = TokenUsage::default();
-        loop {
+        let mut failure = dispatch.err();
+        while failure.is_none() {
             if started.elapsed() > timeout + Duration::from_secs(15) {
                 let _ = host.cancel_owned_turn(&key).await;
-                return Ok(None);
+                failure = Some("Judge exceeded its time budget".to_string());
+                break;
             }
-            let page = host
+            let page = match host
                 .read_owned_events(&session.session_id, cursor, 200)
                 .await
-                .map_err(host_error)?;
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            };
             for event in page.events {
                 consume_event(&event.payload, &mut reply, &mut usage);
             }
             cursor = page.cursor;
-            let status = host.execution_status(&key).await.map_err(host_error)?;
+            let status = match host.execution_status(&key).await {
+                Ok(status) => status,
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            };
             match status {
                 Some(status)
                     if status.phase == "terminal"
@@ -201,30 +216,56 @@ impl NativeBackend {
                 {
                     break
                 }
-                None => return Ok(None),
+                None => {
+                    failure = Some("Judge execution status is unavailable".into());
+                    break;
+                }
                 _ => {}
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        let Some((shares, notes)) = parse_judge_reply(&reply, criteria) else {
-            return Ok(None);
+        let usage_complete = failure.is_none();
+        if !usage_complete {
+            let _ = host.cancel_owned_turn(&key).await;
+        }
+        let parsed = failure
+            .is_none()
+            .then(|| parse_judge_reply(&reply, criteria))
+            .flatten();
+        let score = parsed
+            .as_ref()
+            .map(|(shares, _)| weighted_share(shares, criteria));
+        let reason = match &parsed {
+            Some((_, notes)) if !notes.is_empty() => notes.clone(),
+            Some(_) => "Scored by the judge panel".into(),
+            None => failure.unwrap_or_else(|| "Judge returned no valid score sheet".into()),
         };
-        let score = weighted_share(&shares, criteria);
         Ok(Some(Evaluation {
             id: uuid::Uuid::new_v4().to_string(),
             evaluator_revision: version.manifest.evaluator.revision.clone(),
-            verdict: "judged".into(),
-            score: Some(score),
-            reason: if notes.is_empty() {
-                "Scored by the judge panel".into()
+            verdict: if score.is_some() {
+                "judged"
             } else {
-                notes
-            },
+                "abstained"
+            }
+            .into(),
+            score,
+            reason,
             created_at: now(),
-            provenance: "judge".into(),
+            provenance: if score.is_some() {
+                "judge"
+            } else {
+                "judge_failure"
+            }
+            .into(),
             artifacts: Vec::new(),
-            details: Some(Value::Object(shares)),
+            details: Some(
+                json!({"judgeBatchId": batch, "sessionId": session.session_id, "usageComplete": usage_complete,
+                "durationMs": started.elapsed().as_millis() as u64,
+                "criteria": parsed.map(|(shares, _)| shares)}),
+            ),
             judge: Some(judge.clone()),
+            usage: Some(usage),
         }))
     }
 }
@@ -260,7 +301,13 @@ impl ExecutionBackend for NativeBackend {
                 .join(&attempt.run_id)
                 .join(&attempt.id);
             tokio::fs::create_dir_all(&directory).await?;
-            let path = directory.join("rendering.png");
+            let batch = uuid::Uuid::new_v4().to_string();
+            let panel = self.judge_panel(&attempt.configuration).await?;
+            let prompt = judge_prompt(&version.manifest, &criteria);
+            let protocol = json!({"panel": panel, "prompt": prompt,
+                "renderer": "chromium-1024x768-v1", "samplesPerJudge": 1, "expectedJudges": 3});
+            let protocol_hash = hex::encode(Sha256::digest(serde_json::to_vec(&protocol)?));
+            let path = directory.join(format!("rendering-{batch}.png"));
             tokio::fs::write(&path, &png).await?;
             attempt.evaluations.push(Evaluation {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -276,15 +323,17 @@ impl ExecutionBackend for NativeBackend {
                     hash: hex::encode(Sha256::digest(&png)),
                     label: "Rendering".into(),
                 }],
-                details: None,
+                details: Some(json!({"judgeBatchId": batch, "expectedJudges": 3,
+                    "protocolHash": protocol_hash, "protocol": protocol})),
                 judge: None,
+                usage: None,
             });
-            let panel = self.judge_panel(&attempt.configuration).await?;
+            attempt.outcome = Some("pending_review".into());
+            store.save_attempt(&attempt).await?;
             if panel.is_empty() {
                 attempt.reason = Some("No judge panel: no other model is signed in".into());
                 return Ok(attempt);
             }
-            let prompt = judge_prompt(&version.manifest, &criteria);
             let image = OwnedTurnImage {
                 data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png),
                 mime_type: "image/png".into(),
@@ -292,7 +341,7 @@ impl ExecutionBackend for NativeBackend {
             for (index, judge) in panel.iter().enumerate() {
                 match self
                     .ask_judge(
-                        store, &attempt, version, judge, index, &prompt, &image, &criteria,
+                        store, &attempt, version, judge, &batch, index, &prompt, &image, &criteria,
                     )
                     .await
                 {
@@ -304,11 +353,15 @@ impl ExecutionBackend for NativeBackend {
                         error.message
                     ),
                 }
+                store.save_attempt(&attempt).await?;
             }
-            if attempt.evaluations.iter().any(|e| e.provenance == "judge") {
+            if super::analysis::score(&attempt).is_some() {
                 attempt.outcome = Some("judged".into());
+                attempt.reason = None;
             } else {
-                attempt.reason = Some("The judge panel returned no complete score sheet".into());
+                attempt.reason = Some(
+                    "The judge panel is incomplete; three valid score sheets are required".into(),
+                );
             }
             Ok(attempt)
         })
@@ -1347,10 +1400,15 @@ impl BenchmarkService {
                                 completed.outcome = Some(e.verdict.clone());
                                 completed.evaluations.push(e);
                                 if version.manifest.evaluator.kind == "rubric" {
-                                    completed = self
-                                        .backend
-                                        .judge(&self.store, completed, &version)
-                                        .await?;
+                                    // Old saved plans may predate judge reservations.
+                                    if !self.preview_run(&run.request).await?.valid {
+                                        completed.reason = Some("Judge calls are not covered by this saved run's execution budget".into());
+                                    } else {
+                                        completed = self
+                                            .backend
+                                            .judge(&self.store, completed, &version)
+                                            .await?;
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -1737,6 +1795,7 @@ mod tests {
         req.max_executions = 12;
         let mut second = req.configurations[0].clone();
         second.id = "second".into();
+        second.effort = Some("high".into());
         req.configurations.push(second);
         let identities = |cells: Vec<(String, Configuration, u32)>| {
             cells
@@ -2093,6 +2152,7 @@ mod tests {
         let mut req = request(&s).await;
         req.version_ids = vec![v.id];
         req.repetitions = 1;
+        req.max_executions = 4 * req.configurations.len() as u32;
         let run = s.start_run(req).await.unwrap();
         s.tick().await.unwrap();
         let a = s.store.attempt(&run.attempts[0].id).await.unwrap();

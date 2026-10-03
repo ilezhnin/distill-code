@@ -20,17 +20,7 @@ pub const WORK_CLASSES: [&str; 10] = [
     "general-light",
 ];
 pub fn candidate_key(c: &Configuration) -> String {
-    hash(
-        serde_json::to_string(&json!([
-            c.provider_id,
-            c.model_id,
-            c.effort,
-            c.fast_mode,
-            c.execution_profile
-        ]))
-        .unwrap_or_default()
-        .as_bytes(),
-    )
+    hash(super::analysis::leaderboard_key(c).as_bytes())
 }
 /// A candidate that helped write a test must not be scored on it. Authors are
 /// declared as lowercase needles in `environment.authoredBy`; a needle matches
@@ -325,11 +315,6 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
         }
     }
     let runs: BTreeMap<_, _> = data.runs.iter().map(|r| (r.id.as_str(), r)).collect();
-    let candidate_keys: BTreeSet<_> = q
-        .candidates
-        .iter()
-        .map(|c| candidate_key(&c.configuration))
-        .collect();
     let compatible_version = |v: &BenchmarkVersion| {
         let d = &v.manifest;
         q.permitted_splits.contains(&d.split)
@@ -342,68 +327,56 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
                 d.work_class_id == q.work_class_id && facets_match(&q.facets, &d.facets)
             }
     };
-    // One timeout cohort is shared by every candidate. Selecting a different
-    // cohort independently for each model would silently compare unequal budgets.
-    let protocol_timeout = q.timeout_seconds.or_else(|| {
-        data.attempts
-            .iter()
-            .filter_map(|a| {
-                let v = versions.get(a.version_id.as_str())?;
-                let run = runs.get(a.run_id.as_str())?;
-                let finished = a.finished_at?;
-                (!run.request.preview
-                    && finished <= q.cutoff_at
-                    && compatible_version(v)
-                    && candidate_keys.contains(&candidate_key(
-                        a.observed.as_ref().unwrap_or(&a.configuration),
-                    )))
-                .then_some((
-                    finished,
-                    run.created_at,
-                    run.request.timeout_seconds,
-                ))
-            })
-            .max()
-            .map(|(_, _, timeout)| timeout)
-    });
+    // Class evidence follows the current pool. Exact queries explicitly name a frozen case.
+    let current_pool = super::analysis::pool(data, &ResultQuery::default());
     let expected_cases: BTreeSet<_> = data
-        .runs
+        .versions
         .iter()
-        .filter(|run| {
-            !run.request.preview
-                && run.created_at <= q.cutoff_at
-                && Some(run.request.timeout_seconds) == protocol_timeout
-                && run
-                    .request
-                    .configurations
-                    .iter()
-                    .any(|c| candidate_keys.contains(&candidate_key(c)))
+        .filter(|v| {
+            compatible_version(v)
+                && (q.mode == "exact" || current_pool.iter().any(|p| p.id == v.id))
         })
-        .flat_map(|run| run.request.version_ids.iter())
-        .filter(|id| {
-            versions
-                .get(id.as_str())
-                .is_some_and(|v| compatible_version(v))
-        })
-        .map(String::as_str)
+        .map(|v| v.id.as_str())
         .collect();
+    let protocol_timeout = q.timeout_seconds;
     let mut rows = Vec::new();
     for candidate in &q.candidates {
         let key = candidate_key(&candidate.configuration);
+        let mut by_case: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
+        for a in data.attempts.iter().filter(|a| {
+            expected_cases.contains(a.version_id.as_str())
+                && runs
+                    .get(a.run_id.as_str())
+                    .is_some_and(|r| !r.request.preview && r.created_at <= q.cutoff_at)
+                && candidate_key(super::analysis::execution_configuration(a)) == key
+        }) {
+            by_case.entry(&a.version_id).or_default().push(a);
+        }
+        let selected: BTreeSet<_> = by_case
+            .values()
+            .flat_map(|list| super::analysis::latest_cell_attempts(list, &runs, Some(q.cutoff_at)))
+            .map(|a| &a.id)
+            .collect();
         let mut samples = Vec::new();
         let mut stale_seen = false;
         let mut authored_seen = false;
-        for a in &data.attempts {
+        for a in data.attempts.iter().filter(|a| selected.contains(&a.id)) {
             let Some(run) = runs.get(a.run_id.as_str()) else {
                 continue;
             };
-            if run.request.preview || Some(run.request.timeout_seconds) != protocol_timeout {
+            if run.request.preview
+                || protocol_timeout.is_some_and(|t| run.request.timeout_seconds != t)
+            {
                 continue;
             }
             let Some(v) = versions.get(a.version_id.as_str()) else {
                 continue;
             };
             let d = &v.manifest;
+            if protocol_timeout.is_none() && run.request.timeout_seconds < d.limits.timeout_seconds
+            {
+                continue;
+            }
             if !q.permitted_splits.contains(&d.split)
                 || a.finished_at.is_none_or(|t| t > q.cutoff_at)
                 || a.phase != "terminal"
@@ -484,11 +457,10 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
         } else {
             None
         };
-        let cost = if samples.iter().all(|(a, _)| a.usage.cost.is_some()) {
-            average(samples.iter().filter_map(|(a, _)| a.usage.cost))
-        } else {
-            None
-        };
+        let cost = super::analysis::mean_case_cost(
+            &samples.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
+            Some(q.cutoff_at),
+        );
         let mut row = RoutingEvidenceRow {
             candidate_key: key.clone(),
             configuration: candidate.configuration.clone(),
@@ -601,25 +573,7 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
     })
 }
 fn score_at(attempt: &Attempt, cutoff: i64) -> Option<f64> {
-    if matches!(
-        attempt.outcome.as_deref(),
-        Some("budget_timeout" | "budget_reached")
-    ) {
-        return Some(0.0);
-    }
-    if !matches!(
-        attempt.outcome.as_deref(),
-        Some("pass" | "fail" | "pending_review" | "judged")
-    ) {
-        return None;
-    }
-    let mut snapshot = attempt.clone();
-    snapshot
-        .evaluations
-        .retain(|e| e.created_at <= cutoff && e.provenance != "human_visual");
-    let evaluation = snapshot.evaluations.last()?;
-    snapshot.outcome = Some(evaluation.verdict.clone());
-    super::analysis::score(&snapshot)
+    super::analysis::score_as_of(attempt, Some(cutoff))
 }
 
 #[cfg(test)]
@@ -724,6 +678,7 @@ mod tests {
                             artifacts: vec![],
                             details: None,
                             judge: None,
+                            usage: None,
                         }],
                         event_cursor: 1,
                         workflow_steps: vec![],
@@ -799,7 +754,7 @@ mod tests {
         let mut label = config("low");
         label.id = "unrelated display label".into();
         label.account_id = Some("another account".into());
-        assert_eq!(candidate_key(&label), candidate_key(&config("low")));
+        assert_ne!(candidate_key(&label), candidate_key(&config("low")));
     }
     #[test]
     fn live_availability_new_candidates_pins_unknown_cost_and_staleness_are_explicit() {
@@ -891,7 +846,7 @@ mod tests {
             .all(|c| c.sample_count == 0 && !c.eligible));
     }
     #[test]
-    fn budgets_are_a_shared_cohort_and_fractional_reviews_are_preserved() {
+    fn explicit_budget_filter_and_fractional_reviews_are_preserved() {
         let (mut data, mut q) = matrix();
         data.runs[0].request.timeout_seconds = 30;
         data.attempts[0].finished_at = Some(1100);
@@ -899,9 +854,9 @@ mod tests {
         assert!(e
             .candidates
             .iter()
-            .all(|c| c.protocol_timeout_seconds == Some(30)));
+            .all(|c| c.protocol_timeout_seconds.is_none()));
         assert_eq!(e.candidates[0].sample_count, 1);
-        assert_eq!(e.candidates[1].sample_count, 0);
+        assert_eq!(e.candidates[1].sample_count, 2);
         q.timeout_seconds = Some(120);
         let e = get_evidence(&data, &q).unwrap();
         assert_eq!(e.candidates[0].sample_count, 1);
@@ -917,6 +872,7 @@ mod tests {
             artifacts: vec![],
             details: None,
             judge: None,
+            usage: None,
         });
         assert_eq!(score_at(&data.attempts[2], 2000), Some(0.5));
         assert_eq!(score_at(&data.attempts[2], 1200), Some(1.0));

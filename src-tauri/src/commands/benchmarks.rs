@@ -194,6 +194,17 @@ pub async fn benchmark_get_leaderboard(
     ))
 }
 #[tauri::command]
+pub async fn benchmark_get_history(
+    app: AppHandle,
+    configuration: Configuration,
+) -> Result<Vec<HistorySnapshot>> {
+    let s = service(&app).await?;
+    Ok(benchmarks::analysis::history(
+        &s.query_data().await?,
+        &configuration,
+    ))
+}
+#[tauri::command]
 pub async fn benchmark_get_usage_series(
     app: AppHandle,
     query: ResultQuery,

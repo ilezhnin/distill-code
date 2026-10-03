@@ -92,7 +92,9 @@ export function BenchmarkRunDialog({
     .filter((version) => versions.includes(version.id))
     .reduce(
       (total, version) =>
-        total + (version.manifest.workflow?.steps.length ?? 1),
+        total +
+        (version.manifest.workflow?.steps.length ?? 1) +
+        (version.manifest.evaluator.kind === "rubric" ? 3 : 0),
       0,
     );
   const [maxExecutions, setMaxExecutions] = useState(() =>
@@ -253,7 +255,8 @@ export function BenchmarkRunDialog({
                     }
                   />
                   <span className="min-w-0 truncate">
-                    {version.manifest.name}
+                    {version.manifest.name} (
+                    {t(`split.${version.manifest.split}`)})
                   </span>
                   <code className="text-xs text-muted-foreground">
                     {shortId(version.contentHash)}

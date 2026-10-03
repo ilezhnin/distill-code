@@ -331,6 +331,9 @@ pub struct Evaluation {
     /// The panel member behind a judge verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<Configuration>,
+    /// Provider-reported usage for this evaluator call; absent stays unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -421,6 +424,9 @@ pub struct ResultQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderboardRow {
+    /// Per-case runtime, effective timeout and scoring protocol, for trend boundaries.
+    #[serde(default)]
+    pub comparison_key: String,
     /// Exact scored versions, so partial snapshots with equal counts are not
     /// mistaken for measurements of the same tasks.
     pub scored_version_ids: Vec<String>,
@@ -503,6 +509,14 @@ pub struct LeaderboardCohort {
 pub struct LeaderboardReport {
     pub cohort: Option<LeaderboardCohort>,
     pub rows: Vec<LeaderboardRow>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySnapshot {
+    pub id: String,
+    pub run_id: String,
+    pub created_at: i64,
+    pub report: LeaderboardReport,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

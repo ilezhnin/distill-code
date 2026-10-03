@@ -69,6 +69,7 @@ fn failed_artifact(draft: &BenchmarkDraft, reason: &str) -> Evaluation {
         artifacts: Vec::new(),
         details: None,
         judge: None,
+        usage: None,
     }
 }
 
@@ -333,5 +334,6 @@ pub async fn evaluate_with_runtime(
         artifacts,
         details: None,
         judge: None,
+        usage: None,
     })
 }

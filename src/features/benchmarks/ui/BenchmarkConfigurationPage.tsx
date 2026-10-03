@@ -72,7 +72,6 @@ function money(value: number | null | undefined): string {
 export function BenchmarkConfigurationPage({
   row,
   report,
-  runs,
   versions,
   onEvidence,
   onRun,
@@ -92,18 +91,17 @@ export function BenchmarkConfigurationPage({
   const names = useModelNames();
   const catalog = useModelCatalog();
   const key = historyKey(row.configuration);
-  const history = useConfigurationHistory(runs);
+  const history = useConfigurationHistory(row.configuration);
   const measurements = useMemo(
     () => historyMeasurements(history.snapshots, key),
     [history.snapshots, key],
   );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const selected =
-    measurements.find((entry) => entry.snapshot.runId === selectedRunId) ??
-    measurements.at(-1) ??
-    null;
-  // The chosen measurement drives everything below the chart; the cohort row
-  // stands in until the history has loaded.
+    measurements.find(
+      (entry) => (entry.snapshot.id ?? entry.snapshot.runId) === selectedRunId,
+    ) ?? null;
+  // History changes the page only after an explicit point selection.
   const shownReport = selected?.snapshot.report ?? report;
   const shownRow = selected?.row ?? rowOf(report, key) ?? row;
   const standings: BoardStanding[] = useMemo(() => {
@@ -238,16 +236,27 @@ export function BenchmarkConfigurationPage({
       {measurements.length > 0 ? (
         <PointsHistoryChart
           points={measurements.map((entry) => ({
-            id: entry.snapshot.runId,
+            id: entry.snapshot.id ?? entry.snapshot.runId,
             at: entry.row.measuredAt ?? entry.snapshot.createdAt,
             points: entry.row.points,
             series: entry.series,
             scored: entry.row.scored,
             planned: entry.row.planned,
           }))}
-          selectedId={selected?.snapshot.runId ?? null}
+          selectedId={
+            selected ? (selected.snapshot.id ?? selected.snapshot.runId) : null
+          }
           onSelect={setSelectedRunId}
         />
+      ) : null}
+      {selected ? (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setSelectedRunId(null)}
+        >
+          {t("configuration.current")}
+        </Button>
       ) : null}
       {shownRow.status !== "comparable" ? (
         <div className="flex flex-wrap items-center gap-2">

@@ -51,6 +51,7 @@ vi.mock("../api/benchmarks", () => ({
     getEvidence: vi.fn(),
     listBaselines: vi.fn(),
     getLeaderboard: vi.fn(),
+    getHistory: vi.fn().mockResolvedValue([]),
     listDesigns: vi.fn(),
     getRoutingEvidence: vi.fn(),
     getUsageSeries: vi.fn(),
@@ -860,12 +861,20 @@ describe("configuration history", () => {
       quality: 0.9,
       measuredAt: 2000,
     });
-    vi.mocked(benchmarkApi.getLeaderboard).mockImplementation(
-      async (query) => ({
-        cohort,
-        rows: [query.asOf === 600 ? olderRow : latestRow],
-      }),
-    );
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
+      {
+        id: "old",
+        runId: older.id,
+        createdAt: 600,
+        report: { cohort, rows: [olderRow] },
+      },
+      {
+        id: "latest",
+        runId: runSummary.id,
+        createdAt: 2000,
+        report: { cohort, rows: [latestRow] },
+      },
+    ]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     wrap(
       <BenchmarkConfigurationPage
@@ -886,20 +895,18 @@ describe("configuration history", () => {
     });
     expect(
       screen.getByRole("button", { name: /: 900 points · 1\/1 cases$/ }),
-    ).toHaveAttribute("aria-pressed", "true");
+    ).toHaveAttribute("aria-pressed", "false");
     await userEvent.click(oldPoint);
     expect(rating()).toBe("600");
     expect(oldPoint).toHaveAttribute("aria-pressed", "true");
     expect(
       screen.getByText("Measured").nextElementSibling?.textContent,
     ).toMatch(/1969|1970/);
-    expect(benchmarkApi.getLeaderboard).toHaveBeenCalledWith({
-      asOf: 600,
-      runId: null,
-      versionIds: null,
-      offset: 0,
-      limit: 500,
-    });
+    expect(benchmarkApi.getHistory).toHaveBeenCalledWith(configuration);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show current results" }),
+    );
+    expect(rating()).toBe("900");
   });
 });
 
@@ -945,5 +952,42 @@ describe("model filter", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Show all" }));
     expect(names()).toEqual(["alpha", "beta", "gamma"]);
+  });
+});
+
+describe("post-run evaluation history", () => {
+  afterEach(cleanup);
+  it("keeps the current score visible after a later evaluation", async () => {
+    const current = leaderboardRow({ points: 900, quality: 0.9 });
+    const historical = leaderboardRow({ points: 600, quality: 0.6 });
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
+      {
+        id: "historical",
+        runId: runSummary.id,
+        createdAt: 1000,
+        report: { cohort, rows: [historical] },
+      },
+    ]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listCatalog).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getCandidateObservations).mockResolvedValue([]);
+    wrap(
+      <BenchmarkConfigurationPage
+        row={current}
+        report={{ cohort, rows: [current] }}
+        runs={[runSummary]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText("Overall rating").nextElementSibling?.textContent,
+    ).toBe("900");
+    await screen.findByRole("button", { name: /: 600 points/ });
+    expect(
+      screen.getByText("Overall rating").nextElementSibling?.textContent,
+    ).toBe("900");
   });
 });

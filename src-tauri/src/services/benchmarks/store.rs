@@ -141,7 +141,7 @@ impl Store {
             request: serde_json::from_str(r.get(4))?,
             attempts: rows
                 .into_iter()
-                .map(|v| serde_json::from_str(&v))
+                .map(|v| serde_json::from_str(&v).map(super::analysis::normalize_outcome))
                 .collect::<std::result::Result<_, _>>()?,
         })
     }
@@ -199,7 +199,8 @@ impl Store {
                 json_extract(a.data_json,'$.finishedAt'),
                 json_extract(a.data_json,'$.durationMs'),
                 json_extract(a.data_json,'$.usage.output'),
-                json_extract(a.data_json,'$.usage.cost')
+                json_extract(a.data_json,'$.usage.cost'),
+                COALESCE(json_extract(a.data_json,'$.evaluations'),'[]')
              FROM selected p JOIN attempts a ON a.rowid=p.attempt_rowid
              ORDER BY p.created_at DESC,p.run_id,p.attempt_rowid",
         )
@@ -221,7 +222,11 @@ impl Store {
                 version_id: r.get(2),
                 model_id: r.get(3),
                 phase: r.get(4),
-                outcome: r.get(5),
+                outcome: super::analysis::effective_outcome(
+                    r.get::<Option<&str>, _>(5),
+                    &serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
+                        .unwrap_or_default(),
+                ),
                 repetition: r.get::<Option<u32>, _>(6).unwrap_or(0),
                 finished_at: r.get(7),
                 duration_ms: r.get(8),
@@ -282,13 +287,23 @@ impl Store {
             let judges = attempt
                 .evaluations
                 .iter()
+                .skip(
+                    attempt
+                        .evaluations
+                        .iter()
+                        .rposition(|e| e.provenance == "render")
+                        .unwrap_or(0),
+                )
                 .filter(|e| e.provenance == "judge")
                 .filter_map(|e| {
                     Some(DesignJudge {
                         configuration: e.judge.clone()?,
                         score: e.score?,
                         reason: e.reason.clone(),
-                        details: e.details.clone(),
+                        details: e
+                            .details
+                            .as_ref()
+                            .map(|d| d.get("criteria").unwrap_or(d).clone()),
                     })
                 })
                 .collect();
@@ -304,12 +319,15 @@ impl Store {
                 output_format: manifest.facets.output_format.clone(),
                 configuration,
                 phase: attempt.phase.clone(),
-                outcome: attempt.outcome.clone(),
+                outcome: super::analysis::effective_outcome(
+                    attempt.outcome.as_deref(),
+                    &attempt.evaluations,
+                ),
                 output: attempt.output.clone(),
                 finished_at: attempt.finished_at,
                 duration_ms: attempt.duration_ms,
                 output_tokens: attempt.usage.output,
-                cost: attempt.usage.cost,
+                cost: super::analysis::mean_case_cost(&[&attempt], None),
                 review,
                 judges,
                 score,
@@ -353,13 +371,15 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| BenchmarkError::new("evidence_missing", "Attempt not found"))?;
-        Ok(serde_json::from_str(&data)?)
+        Ok(super::analysis::normalize_outcome(serde_json::from_str(
+            &data,
+        )?))
     }
     pub async fn usage_ledger(&self) -> Result<Vec<UsageLedgerEntry>> {
         // Each native prompt owns its own session. Workflow roots aggregate these
         // children for benchmark quality, but must not count them twice in Stats.
         let rows=sqlx::query("WITH native_attempts AS (SELECT id,phase,data_json FROM attempts a WHERE COALESCE(json_array_length(data_json,'$.workflowSteps'),0)=0 AND NOT EXISTS(SELECT 1 FROM workflow_steps s WHERE s.root_attempt_id=a.id) UNION ALL SELECT attempt_id AS id,phase,data_json FROM workflow_steps) SELECT id,json_extract(data_json,'$.sessionId'),json_extract(data_json,'$.configuration.providerId'),COALESCE(json_extract(data_json,'$.observed.modelId'),json_extract(data_json,'$.configuration.modelId')),json_extract(data_json,'$.observed.effort'),json_extract(data_json,'$.usage.input'),json_extract(data_json,'$.usage.output'),json_extract(data_json,'$.usage.cost'),json_extract(data_json,'$.durationMs'),json_extract(data_json,'$.finishedAt') FROM native_attempts WHERE phase='terminal' AND json_extract(data_json,'$.sessionId') IS NOT NULL AND json_extract(data_json,'$.evidenceHash') IS NOT NULL AND json_extract(data_json,'$.finishedAt') IS NOT NULL ORDER BY json_extract(data_json,'$.finishedAt'),id").fetch_all(&self.pool).await?;
-        Ok(rows
+        let mut ledger: Vec<UsageLedgerEntry> = rows
             .into_iter()
             .map(|r| UsageLedgerEntry {
                 attempt_id: r.get(0),
@@ -373,7 +393,33 @@ impl Store {
                 duration_ms: r.get::<Option<i64>, _>(8).map(|v| v as u64),
                 finished_at: r.get(9),
             })
-            .collect())
+            .collect();
+        let evaluations = sqlx::query_scalar::<_, String>(
+            "SELECT e.value FROM attempts a,json_each(a.data_json,'$.evaluations') e
+             WHERE a.phase='terminal' AND json_extract(e.value,'$.provenance') IN ('judge','judge_failure')
+               AND json_extract(e.value,'$.details.sessionId') IS NOT NULL"
+        ).fetch_all(&self.pool).await?;
+        for encoded in evaluations {
+            let evaluation: Evaluation = serde_json::from_str(&encoded)?;
+            if let (Some(judge), Some(usage), Some(details)) =
+                (evaluation.judge, evaluation.usage, evaluation.details)
+            {
+                ledger.push(UsageLedgerEntry {
+                    attempt_id: evaluation.id,
+                    session_id: details["sessionId"].as_str().unwrap_or_default().into(),
+                    provider_id: judge.provider_id,
+                    model_id: judge.model_id,
+                    effort: judge.effort,
+                    input_tokens: usage.input,
+                    output_tokens: usage.output,
+                    cost_usd: usage.cost,
+                    duration_ms: details["durationMs"].as_u64(),
+                    finished_at: evaluation.created_at,
+                });
+            }
+        }
+        ledger.sort_by_key(|entry| (entry.finished_at, entry.attempt_id.clone()));
+        Ok(ledger)
     }
     pub async fn save_attempt(&self, attempt: &Attempt) -> Result<()> {
         let mut tx = self.pool.begin().await?;

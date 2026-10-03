@@ -204,10 +204,11 @@ export interface Evaluation {
   createdAt: number;
   provenance: string;
   artifacts: Artifact[];
-  /** Per-criterion scores (0 to 1) behind a rubric review, keyed by criterion id. */
-  details?: Record<string, number> | null;
+  /** Criterion scores and versioned evaluator metadata. */
+  details?: Record<string, unknown> | null;
   /** The panel member behind a judge verdict. */
   judge?: Configuration | null;
+  usage?: TokenUsage | null;
 }
 export interface Attempt {
   id: string;
@@ -299,6 +300,7 @@ export interface ResultQuery {
   limit?: number | null;
 }
 export interface LeaderboardRow {
+  comparisonKey?: string;
   /** Exact measured case set; equal counts alone do not make a trend. */
   scoredVersionIds: string[];
   configuration: Configuration;

@@ -1,3 +1,4 @@
+import type { HistorySnapshot } from "../hooks/useBenchmarks";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
@@ -11,6 +12,7 @@ import type {
   BenchmarkVersion,
   CandidateObservation,
   Capability,
+  Configuration,
   CatalogEntry,
   InventoryModel,
   RunPreview,
@@ -98,6 +100,8 @@ export const benchmarkApi = {
     invoke<void>("benchmark_delete_catalog_entry", { id }),
   getLeaderboard: (query: ResultQuery) =>
     invoke<LeaderboardReport>("benchmark_get_leaderboard", { query }),
+  getHistory: (configuration: Configuration) =>
+    invoke<HistorySnapshot[]>("benchmark_get_history", { configuration }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>
     invoke<RoutingEvidence>("benchmark_get_routing_evidence", { query }),
   getUsageSeries: (query: ResultQuery) =>

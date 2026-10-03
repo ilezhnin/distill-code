@@ -275,12 +275,13 @@
     "criterion": "{{label}} · weight {{weight}}",
     "weighted": "Weighted score {{points}} of 1000",
     "judge": "Judge · {{model}}",
-    "override": "Override the panel"
+    "override": "Override the panel",
+    "rescoreJudges": "Evaluate again (up to 3 model calls)"
   },
   "leaderboard": {
     "boards": {
       "overall": "Overall",
-      "efficiency": "Efficiency",
+      "efficiency": "Output token use",
       "speed": "Speed",
       "cost": "Cost"
     },
@@ -289,7 +290,7 @@
       "class": "Measured success on {{label}} cases as points out of 1000. Higher is better.",
       "efficiency": "Median output tokens per scored attempt. The leanest configuration scores 1000, the others in proportion.",
       "speed": "Median attempt duration. The fastest configuration scores 1000, the others in proportion.",
-      "cost": "Measured cost of the suite in USD, as the provider reported it. The cheapest configuration scores 1000, the others in proportion."
+      "cost": "Mean reported USD per task, averaging repetitions within each case and including judge calls. Unknown charges remain unknown. The lowest cost scores 1000."
     },
     "allAxes": "All boards",
     "measured": "{{scored}} / {{planned}} measured",
@@ -530,7 +531,7 @@
     "context": "Context window",
     "cases": "Cases scored",
     "measured": "Measured",
-    "spend": "Measured suite spend",
+    "spend": "Mean cost per task",
     "outputTokens": "Median output tokens",
     "pricing": "Pricing",
     "perMillion": "USD per million tokens",
@@ -542,7 +543,8 @@
     "back": "Leaderboard",
     "missing": "This configuration is not in the current selection.",
     "catchUp_one": "Run the {{count}} missing case",
-    "catchUp_other": "Run the {{count}} missing cases"
+    "catchUp_other": "Run the {{count}} missing cases",
+    "current": "Show current results"
   },
   "history": {
     "chartLabel": "Measured points; lines compare the same measured cases",
