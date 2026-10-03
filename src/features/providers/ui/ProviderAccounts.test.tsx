@@ -76,7 +76,7 @@ function status(
 
 describe("account plan and credit display", () => {
   it("shows a telemetry pause with a live countdown while keeping plan and quota", () => {
-    const snapshot: ProviderAccountStatus = {
+    const snapshot = {
       ...status("personal"),
       state: "error",
       stale: true,
@@ -94,7 +94,7 @@ describe("account plan and credit display", () => {
           modelId: null,
         },
       ],
-    };
+    } satisfies ProviderAccountStatus;
     const { rerender } = render(
       <ProviderAccountDetails
         account={accounts[0]}
@@ -107,7 +107,7 @@ describe("account plan and credit display", () => {
     expect(screen.getByText("Usage updates paused")).toBeInTheDocument();
     expect(screen.getByText(/Retry in 34:27/)).toBeInTheDocument();
     expect(screen.queryByText("Usage unavailable")).toBeNull();
-    expect(screen.queryByText(snapshot.error!)).toBeNull();
+    expect(screen.queryByText(snapshot.error)).toBeNull();
     rerender(
       <ProviderAccountDetails
         account={accounts[0]}

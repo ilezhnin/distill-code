@@ -986,3 +986,28 @@ dev verification found four selectable observations and exactly one connecting
 segment (957 to 870), with the current 66-case pool and 43-case catch-up action
 preserved. No paid model runs or judge calls were made for this correction.
 No new paid model run was started for these checks.
+
+### Continuation recheck (October 2, 2026)
+
+Rechecked the ledger and history corrections at `e528bcd8`. `just clippy`,
+`just fmt`, `just fmt-check`, `just check` and the full Vitest suite passed
+(225 files, 1,444 tests). The account telemetry fixture now uses `satisfies`
+to keep its error string typed without a non-null assertion, removing the
+Biome warning. Vitest still reports Vite's future native-config-loader warning
+and jsdom's missing Canvas implementation; neither failed a test.
+
+The documented `just dev-windows` launch succeeded with CDP on 9333 and Vite
+on 53517. `cohort-check.mjs`, `qa-gallery.mjs`, `qa-history.mjs`,
+`qa-ledger.mjs` and `qa-history-comparability.mjs` confirmed the 66-case pool,
+14 boards, selectable history, gallery and 43-case catch-up selection with
+44 executions and a 600-second budget. The gallery and history checks recorded
+no console errors. Screenshots and assertions are under
+`E:/Unity/distill_code/benchmark-review-qa/ledger-recheck/`.
+
+Regenerated the four private creative briefs, verified all 48 definitions,
+reassigned the same 24/24 splits and imported the four files again. Publication
+reused their existing version IDs. Their latest native manifests match the
+published files and retain 600-second timeouts; the other 44 files are unchanged.
+The pool and seven recorded runs are unchanged. No paid runs or judge calls
+were started. Rust unit tests, installer packaging and actual model execution
+under the new timeouts were not repeated in this recheck.
