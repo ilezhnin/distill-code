@@ -131,9 +131,8 @@ export interface HistorySnapshot {
 const HISTORY_RUNS = 24;
 
 /**
- * The ledger as it stood when each completed run finished, oldest first, so a
- * model page can chart a configuration's points on the current pool over
- * time and open any of those states.
+ * Reconstruct the current pool at each completed run. A partial snapshot is
+ * evidence, but only identical measured case sets may share a chart segment.
  */
 export function useConfigurationHistory(runs: RunSummary[]): {
   snapshots: HistorySnapshot[];

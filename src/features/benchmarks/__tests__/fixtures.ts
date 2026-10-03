@@ -153,6 +153,7 @@ export function leaderboardRow(
   overrides: Partial<LeaderboardRow> = {},
 ): LeaderboardRow {
   return {
+    scoredVersionIds: ["version-1"],
     configuration,
     passed: 1,
     scored: 1,

@@ -921,7 +921,12 @@ remove work-class boards. Nerf comparisons retain their frozen-run conditions.
   by time while keeping the same current pool. The model page queries one snapshot
   at each completed run's `updatedAt`, includes partial measurements, and selects
   the newest point. Selecting a point changes the ratings, coverage and attempt
-  list together.
+  list together. Sharing a pool does not make partial scores comparable: the
+  mean uses only measured cases. The chart joins observations only when their
+  exact `scoredVersionIds` and runtime revision match. Equal coverage counts
+  with different versions are separate observations. Repeated snapshots with
+  unchanged evidence do not create extra points. Point labels and tooltips show
+  measured cases over the current pool.
 - Run time budgets do not define leaderboard cohorts. A case keeps its own
   timeout and the run budget caps execution; the dialog raises that budget to
   the longest selected case. Creative seeds and the four private creative briefs
@@ -948,4 +953,36 @@ Republishing the four private creative briefs kept the pool at 66, changed the
 Sonnet row from 24 to 23 measured cases, and selected its 43 gaps with the same
 configuration, a 600 s time limit and a budget for all 44 workflow executions.
 The other 44 private definitions and the 24/24 split assignment were unchanged.
+
+### History correction (October 2, 2026)
+
+The first ledger verification checked the pool denominator but missed the
+changing numerator's task composition. It therefore did not establish the
+intended history behavior. The current-pool ledger, newest result per case,
+catch-up action and `asOf` queries remain the agreed design. No frozen-suite
+selector is added to the leaderboard. Frozen baselines remain in Nerf Bench.
+
+The live Sonnet observations are 0 on 1/66 cases, 929 on 14/66, 957 on 23/66,
+and 870 on the same 23/66. The first run had one scored failure and thirteen
+`selection_changed` exclusions. Connecting its partial score to the 14-case
+result implied a quality improvement that those data do not establish.
+Likewise, connecting 14-case and 23-case means confused coverage growth with
+quality change. Those observations are now separate points. The 957-to-870
+segment remains: the repeated 23 cases changed from 22 passing to 20 passing.
+One repetition does not establish a provider regression.
+
+This distinction follows the original comparison requirement without inventing
+a proprietary rating formula. BridgeBench documents repeated comparisons to a
+baseline, while its leaderboard scoring method is private. Fugu's worker-by-task
+reward matrix supports per-case evidence; it does not prescribe a global history
+curve over changing measured subsets.
+[BridgeBench leaderboard guide](https://www.bridgebench.ai/blog/how-the-leaderboard-works),
+[Nerf Bench guide](https://www.bridgebench.ai/blog/how-nerf-bench-works),
+[Fugu section 3.1.2](https://arxiv.org/html/2606.21228#S3.SS1.SSS2).
+
+Validation covers added gaps, replacement versions with equal case counts,
+unchanged observations, repeated measurements and runtime boundaries. Native
+dev verification found four selectable observations and exactly one connecting
+segment (957 to 870), with the current 66-case pool and 43-case catch-up action
+preserved. No paid model runs or judge calls were made for this correction.
 No new paid model run was started for these checks.

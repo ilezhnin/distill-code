@@ -332,6 +332,7 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
                     attempt_ids: Vec::new(),
                     axes: Vec::new(),
                     missing_version_ids: Vec::new(),
+                    scored_version_ids: Vec::new(),
                 };
             }
             let planned = eligible.len() as u32;
@@ -425,6 +426,8 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
                 attempt_ids: attempts.iter().map(|a| a.id.clone()).collect(),
                 axes,
                 missing_version_ids,
+                scored_version_ids: scored_attempts.iter().map(|a| a.version_id.clone())
+                    .collect::<BTreeSet<_>>().into_iter().collect(),
             }
         })
         .collect();
@@ -855,12 +858,14 @@ pub(super) mod tests {
             .reason
             .contains("1 cases authored by this candidate excluded"));
         assert!(!row.attempt_ids.contains(&"after-v0".to_string()));
+        assert_eq!(row.scored_version_ids, vec!["v1", "v2", "v3", "v4", "v5"]);
         for version in &mut data.versions {
             version.manifest.environment["authoredBy"] = serde_json::json!(["claude"]);
         }
         let report = leaderboard(&data, &query);
         assert_eq!(report.rows[0].status, "excluded");
         assert_eq!(report.rows[0].quality, None);
+        assert!(report.rows[0].scored_version_ids.is_empty());
         assert!(report.cohort.is_some());
         let comparison = compare(&data, &baseline, &query);
         assert_eq!(comparison[0].status, "insufficient_evidence");
@@ -904,6 +909,10 @@ pub(super) mod tests {
         assert_eq!(row.status, "preliminary");
         assert_eq!((row.scored, row.planned), (1, 6));
         assert_eq!(row.missing_version_ids.len(), 5);
+        assert_eq!(
+            row.scored_version_ids,
+            vec![data.attempts[0].version_id.clone()]
+        );
         assert_eq!(row.axes.iter().map(|axis| axis.planned).sum::<u32>(), 6);
         data.attempts[0].outcome = None;
         data.attempts[0].usage.cost = Some(0.5);
@@ -944,6 +953,10 @@ pub(super) mod tests {
         assert_eq!(row.status, "preliminary");
         assert_eq!((row.scored, row.planned), (6, 7));
         assert_eq!(row.missing_version_ids, vec!["v6".to_string()]);
+        assert_eq!(
+            row.scored_version_ids,
+            vec!["v0", "v1", "v2", "v3", "v4", "v5"]
+        );
         // The six measured cases still carry their points.
         assert_eq!(row.points, Some(0));
         // Archiving a definition retires its case from the pool.
@@ -965,6 +978,7 @@ pub(super) mod tests {
         data.versions.push(revised);
         let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
         assert_eq!(row.missing_version_ids, vec!["v1b".to_string()]);
+        assert_eq!(row.scored_version_ids, vec!["v0", "v2", "v3", "v4", "v5"]);
         // Asking for one run shows that run's own suite.
         let narrow = ResultQuery {
             run_id: Some("before".into()),

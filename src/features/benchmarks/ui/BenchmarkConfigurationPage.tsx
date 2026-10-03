@@ -6,7 +6,6 @@ import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import {
-  type HistorySnapshot,
   historyKey,
   modelNameKey,
   useConfigurationHistory,
@@ -14,6 +13,7 @@ import {
   useModelNames,
 } from "../hooks/useBenchmarks";
 import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
+import { historyMeasurements } from "../lib/benchmarkHistory";
 import {
   boardDescription,
   boardTitle,
@@ -51,7 +51,7 @@ interface BoardStanding {
   share: number | null;
 }
 
-/** The row of a configuration inside a report: the best-covered one when runtimes differ. */
+/** Runtime revisions share a leaderboard identity. */
 function rowOf(report: LeaderboardReport, key: string): LeaderboardRow | null {
   return (
     report.rows
@@ -94,15 +94,7 @@ export function BenchmarkConfigurationPage({
   const key = historyKey(row.configuration);
   const history = useConfigurationHistory(runs);
   const measurements = useMemo(
-    () =>
-      history.snapshots
-        .map((snapshot) => ({ snapshot, row: rowOf(snapshot.report, key) }))
-        .filter(
-          (
-            entry,
-          ): entry is { snapshot: HistorySnapshot; row: LeaderboardRow } =>
-            entry.row?.points != null,
-        ),
+    () => historyMeasurements(history.snapshots, key),
     [history.snapshots, key],
   );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -249,6 +241,9 @@ export function BenchmarkConfigurationPage({
             id: entry.snapshot.runId,
             at: entry.row.measuredAt ?? entry.snapshot.createdAt,
             points: entry.row.points,
+            series: entry.series,
+            scored: entry.row.scored,
+            planned: entry.row.planned,
           }))}
           selectedId={selected?.snapshot.runId ?? null}
           onSelect={setSelectedRunId}
