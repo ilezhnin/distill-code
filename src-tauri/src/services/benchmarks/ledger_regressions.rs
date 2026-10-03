@@ -195,6 +195,101 @@ fn history_includes_late_reviews_without_global_run_truncation() {
     assert_eq!(points[0].report.rows[0].points, Some(1000));
     assert_eq!(points[1].report.rows[0].points, Some(900));
     assert_eq!(points[1].created_at, 50);
+    assert_eq!(points[0].recalculated_report.rows[0].points, Some(900));
+    assert_eq!(points[0].revised_version_ids, vec!["v0"]);
+    assert!(points[1].revised_version_ids.is_empty());
+}
+
+#[test]
+fn backfill_aligns_the_pool_but_preserves_real_retests_and_the_dated_archive() {
+    let (mut data, _) = super::tests::dataset();
+    data.versions.truncate(3);
+    data.attempts.retain(|a| {
+        (a.run_id == "before" && a.version_id == "v0")
+            || (a.run_id == "after" && a.version_id == "v1")
+    });
+    data.attempts[1].finished_at = Some(6);
+    let configuration = data.attempts[0].configuration.clone();
+    let first = history(&data, &configuration);
+    assert_eq!(first[0].report.rows[0].points, Some(1000));
+    assert_eq!(first[0].report.rows[0].scored, 1);
+    assert_eq!(first[0].recalculated_report.rows[0].points, Some(500));
+    assert_eq!(first[0].backfilled_version_ids, vec!["v1"]);
+    assert!(first
+        .iter()
+        .all(|s| s.recalculated_report.rows[0].scored == 2
+            && s.recalculated_report.rows[0].planned == 3));
+
+    let mut run = data.runs[1].clone();
+    run.id = "retest".into();
+    run.created_at = 10;
+    run.updated_at = 11;
+    let mut attempt = data.attempts[1].clone();
+    attempt.id = "retest-v1".into();
+    attempt.run_id = run.id.clone();
+    attempt.finished_at = Some(11);
+    attempt.outcome = Some("pass".into());
+    data.runs.push(run);
+    data.attempts.push(attempt);
+    let points = history(&data, &configuration);
+    assert_eq!(
+        points
+            .iter()
+            .map(|s| s.recalculated_report.rows[0].points)
+            .collect::<Vec<_>>(),
+        vec![Some(500), Some(500), Some(1000)]
+    );
+    assert_eq!(
+        points[0].recalculated_report.rows[0].attempt_ids,
+        first[0].recalculated_report.rows[0].attempt_ids
+    );
+    assert!(points.last().unwrap().backfilled_version_ids.is_empty());
+    assert_eq!(
+        points.last().unwrap().recalculated_report.rows[0].points,
+        leaderboard(&data, &ResultQuery::default()).rows[0].points
+    );
+}
+
+#[test]
+fn backfill_requires_every_repetition_and_never_reuses_a_replaced_version() {
+    let (mut data, _) = super::tests::dataset();
+    let configuration = data.attempts[0].configuration.clone();
+    data.runs[1].request.repetitions = 2;
+    data.attempts
+        .iter_mut()
+        .filter(|a| a.run_id == "after")
+        .for_each(|a| a.finished_at = Some(6));
+    // One repetition of the later run cannot displace the first complete cell.
+    let mut replacement = data.versions[0].clone();
+    replacement.id = "replacement".into();
+    replacement.published_at = 9;
+    data.versions.push(replacement);
+    let points = history(&data, &configuration);
+    for point in points {
+        let row = &point.recalculated_report.rows[0];
+        assert_eq!(row.points, Some(1000));
+        assert_eq!(row.scored, 5);
+        assert_eq!(row.missing_version_ids, vec!["replacement"]);
+        assert!(row.attempt_ids.iter().all(|id| id.starts_with("before-")));
+    }
+}
+
+#[test]
+fn recalculation_uses_current_execution_conditions_and_requires_an_observed_anchor() {
+    let (mut data, _) = super::tests::dataset();
+    let configuration = data.attempts[0].configuration.clone();
+    for a in &mut data.attempts {
+        if a.run_id == "before" {
+            a.observed.as_mut().unwrap().inventory_revision = Some("old-runtime".into());
+        } else {
+            a.finished_at = Some(6);
+        }
+    }
+    let points = history(&data, &configuration);
+    assert_eq!(points[0].report.rows[0].points, Some(1000));
+    assert!(points[0].recalculated_report.rows.is_empty());
+    assert_eq!(points[1].recalculated_report.rows[0].points, Some(0));
+    assert!(points[1].backfilled_version_ids.is_empty());
 }
 
 #[test]

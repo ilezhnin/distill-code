@@ -867,6 +867,12 @@ describe("configuration history", () => {
         runId: older.id,
         createdAt: 600,
         report: { cohort, rows: [olderRow] },
+        recalculatedReport: {
+          cohort,
+          rows: [{ ...olderRow, points: 750, quality: 0.75 }],
+        },
+        backfilledVersionIds: ["later-case"],
+        revisedVersionIds: [],
       },
       {
         id: "latest",
@@ -891,13 +897,13 @@ describe("configuration history", () => {
       screen.getByText("Overall rating").nextElementSibling?.textContent;
     expect(rating()).toBe("900");
     const oldPoint = await screen.findByRole("button", {
-      name: /: 600 points · 1\/1 cases$/,
+      name: /: 750 points · 1\/1 cases$/,
     });
     expect(
       screen.getByRole("button", { name: /: 900 points · 1\/1 cases$/ }),
     ).toHaveAttribute("aria-pressed", "false");
     await userEvent.click(oldPoint);
-    expect(rating()).toBe("600");
+    expect(rating()).toBe("750");
     expect(oldPoint).toHaveAttribute("aria-pressed", "true");
     expect(
       screen.getByText("Measured").nextElementSibling?.textContent,
@@ -906,6 +912,11 @@ describe("configuration history", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Show current results" }),
     );
+    expect(rating()).toBe("900");
+    await userEvent.click(screen.getByRole("button", { name: "As recorded" }));
+    await userEvent.click(screen.getByRole("button", { name: /: 600 points/ }));
+    expect(rating()).toBe("600");
+    await userEvent.click(screen.getByRole("button", { name: "Current pool" }));
     expect(rating()).toBe("900");
   });
 });

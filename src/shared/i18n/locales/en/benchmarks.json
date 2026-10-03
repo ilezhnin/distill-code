@@ -547,6 +547,12 @@
     "current": "Show current results"
   },
   "history": {
+    "title": "Rating history",
+    "recalculated": "Current pool",
+    "recorded": "As recorded",
+    "recalculatedDescription": "Same measured cases and execution conditions at every point. Earlier gaps use the first matching later result; reviews use today's scores. A retrospective estimate; later evidence is marked on each point.",
+    "recordedDescription": "Results and evaluations available at each date. Coverage can differ between points.",
+    "laterEvidence": "{{backfilled}} cases first measured later; {{revised}} cases reviewed later.",
     "chartLabel": "Measured points; lines compare the same measured cases",
     "pointLabel": "{{date}}: {{points}} points · {{scored}}/{{planned}} cases",
     "coverage": "{{scored}} of {{planned}} current cases measured. Lines connect only the same measured case versions and runtime. A change in coverage starts a separate observation."

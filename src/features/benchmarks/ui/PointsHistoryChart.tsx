@@ -10,6 +10,8 @@ export interface HistoryPoint {
   series: string;
   scored: number;
   planned: number;
+  backfilled?: number;
+  revised?: number;
 }
 
 /** Never bridge a missing result or a change in measured versions or runtime. */
@@ -48,7 +50,7 @@ export function PointsHistoryChart({
   const gradientId = useId();
   const width = 640;
   const height = 180;
-  const padding = { left: 36, right: 20, top: 16, bottom: 32 };
+  const padding = { left: 36, right: 20, top: 28, bottom: 32 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   // End points sit inside the plot so their labels stay clear of the axes.
@@ -73,6 +75,8 @@ export function PointsHistoryChart({
   };
   const chosen = measured.find((point) => point.id === selectedId);
   if (chosen) claim(chosen);
+  const latest = measured.at(-1);
+  if (latest && latest !== chosen) claim(latest);
   for (const point of measured) if (point.id !== selectedId) claim(point);
   const oneDay =
     measured.length > 1 &&
@@ -177,6 +181,9 @@ export function PointsHistoryChart({
                     scored: point.scored,
                     planned: point.planned,
                   })}
+                  {point.backfilled || point.revised
+                    ? ` ${t("history.laterEvidence", { backfilled: point.backfilled ?? 0, revised: point.revised ?? 0 })}`
+                    : ""}
                 </title>
               </circle>
               <text

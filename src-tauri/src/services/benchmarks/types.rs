@@ -517,6 +517,9 @@ pub struct HistorySnapshot {
     pub run_id: String,
     pub created_at: i64,
     pub report: LeaderboardReport,
+    pub recalculated_report: LeaderboardReport,
+    pub backfilled_version_ids: Vec<String>,
+    pub revised_version_ids: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

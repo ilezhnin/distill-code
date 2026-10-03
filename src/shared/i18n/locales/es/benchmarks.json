@@ -547,6 +547,12 @@
     "current": "Mostrar resultados actuales"
   },
   "history": {
+    "title": "Historial de puntuación",
+    "recalculated": "Conjunto actual",
+    "recorded": "Según el registro",
+    "recalculatedDescription": "Los mismos casos medidos y condiciones de ejecución en cada punto. Las carencias anteriores usan el primer resultado posterior compatible; las revisiones usan las puntuaciones actuales. Estimación retrospectiva; la evidencia posterior se indica en cada punto.",
+    "recordedDescription": "Resultados y evaluaciones disponibles en cada fecha. La cobertura puede variar entre puntos.",
+    "laterEvidence": "{{backfilled}} casos medidos por primera vez después; {{revised}} casos revisados después.",
     "chartLabel": "Puntos medidos; las líneas comparan los mismos casos medidos",
     "pointLabel": "{{date}}: {{points}} puntos · {{scored}}/{{planned}} casos",
     "coverage": "{{scored}} de {{planned}} casos actuales medidos. Las líneas conectan solo las mismas versiones de casos medidos y del entorno de ejecución. Un cambio de cobertura inicia una observación independiente."

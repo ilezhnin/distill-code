@@ -44,6 +44,33 @@ function segments(snapshots: HistorySnapshot[]) {
 }
 
 describe("ledger history comparability", () => {
+  it("defaults to the aligned pool, preserves recorded scores and folds review-only events", () => {
+    const first = snapshot("1", ["a"], 0);
+    const later = snapshot("2", ["a", "b"], 500);
+    first.recalculatedReport = {
+      cohort,
+      rows: [
+        leaderboardRow({
+          points: 500,
+          scored: 2,
+          scoredVersionIds: ["a", "b"],
+          attemptIds: ["first-a", "later-b"],
+        }),
+      ],
+    };
+    first.backfilledVersionIds = ["b"];
+    later.recalculatedReport = first.recalculatedReport;
+    later.backfilledVersionIds = [];
+    const review = { ...first, id: "review", createdAt: 1.5 };
+    expect(
+      historyMeasurements([first, review, later], key).map((e) => e.row.points),
+    ).toEqual([500, 500]);
+    expect(
+      historyMeasurements([first, later], key, true).map((e) => e.row.points),
+    ).toEqual([0, 500]);
+    first.recalculatedReport = { cohort, rows: [] };
+    expect(historyMeasurements([first, later], key)).toHaveLength(1);
+  });
   it("does not draw through a snapshot with no score", () => {
     const missing = snapshot("2", [], 0);
     missing.report.rows[0].points = null;

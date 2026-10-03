@@ -92,9 +92,10 @@ export function BenchmarkConfigurationPage({
   const catalog = useModelCatalog();
   const key = historyKey(row.configuration);
   const history = useConfigurationHistory(row.configuration);
+  const [recorded, setRecorded] = useState(false);
   const measurements = useMemo(
-    () => historyMeasurements(history.snapshots, key),
-    [history.snapshots, key],
+    () => historyMeasurements(history.snapshots, key, recorded),
+    [history.snapshots, key, recorded],
   );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const selected =
@@ -102,7 +103,7 @@ export function BenchmarkConfigurationPage({
       (entry) => (entry.snapshot.id ?? entry.snapshot.runId) === selectedRunId,
     ) ?? null;
   // History changes the page only after an explicit point selection.
-  const shownReport = selected?.snapshot.report ?? report;
+  const shownReport = selected?.report ?? report;
   const shownRow = selected?.row ?? rowOf(report, key) ?? row;
   const standings: BoardStanding[] = useMemo(() => {
     const boards = boardsFor(shownReport.cohort);
@@ -233,21 +234,55 @@ export function BenchmarkConfigurationPage({
           </div>
         </dl>
       </header>
-      {measurements.length > 0 ? (
-        <PointsHistoryChart
-          points={measurements.map((entry) => ({
-            id: entry.snapshot.id ?? entry.snapshot.runId,
-            at: entry.row.measuredAt ?? entry.snapshot.createdAt,
-            points: entry.row.points,
-            series: entry.series,
-            scored: entry.row.scored,
-            planned: entry.row.planned,
-          }))}
-          selectedId={
-            selected ? (selected.snapshot.id ?? selected.snapshot.runId) : null
-          }
-          onSelect={setSelectedRunId}
-        />
+      {history.snapshots.length > 0 ? (
+        <section className="space-y-3" aria-label={t("history.title")}>
+          <div className="flex flex-wrap items-center gap-2">
+            {[false, true].map((mode) => (
+              <Button
+                key={String(mode)}
+                type="button"
+                size="sm"
+                variant={recorded === mode ? "subtle" : "ghost"}
+                aria-pressed={recorded === mode}
+                onClick={() => {
+                  setRecorded(mode);
+                  setSelectedRunId(null);
+                }}
+              >
+                {t(mode ? "history.recorded" : "history.recalculated")}
+              </Button>
+            ))}
+          </div>
+          <PointsHistoryChart
+            points={measurements.map((entry) => ({
+              id: entry.snapshot.id ?? entry.snapshot.runId,
+              at: entry.snapshot.createdAt,
+              points: entry.row.points,
+              series: entry.series,
+              scored: entry.row.scored,
+              planned: entry.row.planned,
+              backfilled: recorded
+                ? 0
+                : (entry.snapshot.backfilledVersionIds?.length ?? 0),
+              revised: recorded
+                ? 0
+                : (entry.snapshot.revisedVersionIds?.length ?? 0),
+            }))}
+            selectedId={
+              selected
+                ? (selected.snapshot.id ?? selected.snapshot.runId)
+                : null
+            }
+            onSelect={setSelectedRunId}
+          />
+          <p className="text-xs text-muted-foreground">
+            {t(
+              recorded
+                ? "history.recordedDescription"
+                : "history.recalculatedDescription",
+            )}
+          </p>
+        </section>
       ) : null}
       {selected ? (
         <Button

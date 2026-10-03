@@ -127,9 +127,12 @@ export interface HistorySnapshot {
   runId: string;
   createdAt: number;
   report: LeaderboardReport;
+  recalculatedReport?: LeaderboardReport;
+  backfilledVersionIds?: string[];
+  revisedVersionIds?: string[];
 }
 
-/** History is reconstructed once per candidate, including evaluation events. */
+/** Dated evidence and current-pool recalculations share one candidate query. */
 export function useConfigurationHistory(configuration: Configuration): {
   snapshots: HistorySnapshot[];
   loading: boolean;

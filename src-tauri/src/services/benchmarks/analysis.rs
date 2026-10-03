@@ -411,6 +411,14 @@ pub(super) fn mean_case_cost(attempts: &[&Attempt], as_of: Option<i64>) -> Optio
 /// averaged per case, coverage is counted against the pool, and a rank needs
 /// every case measured. Adding a case adds a gap to fill, never a reset.
 pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
+    leaderboard_from_attempts(data, query, &data.attempts.iter().collect::<Vec<_>>())
+}
+
+fn leaderboard_from_attempts(
+    data: &QueryData,
+    query: &ResultQuery,
+    source: &[&Attempt],
+) -> LeaderboardReport {
     let pool = pool(data, query);
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
     let runs: BTreeMap<&str, &BenchmarkRun> = data
@@ -436,7 +444,7 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
     // Every attempt on a pool case from a counted run, by configuration and case.
     let mut cells: BTreeMap<String, (Configuration, BTreeMap<&str, Vec<&Attempt>>)> =
         BTreeMap::new();
-    for attempt in &data.attempts {
+    for &attempt in source {
         if !pool_ids.contains(attempt.version_id.as_str())
             || !runs.contains_key(attempt.run_id.as_str())
             || query
@@ -704,7 +712,99 @@ fn comparison_key(
     serde_json::to_string(&protocols).unwrap_or_default()
 }
 
-/// One data read, with a bounded history for this candidate including later reviews.
+/// Recompute each observation on today's measured cases. A case first measured
+/// later supplies its earliest scored cell, explicitly marked as backfilled.
+/// This estimate is separate from the evidence that was available at the time.
+fn recalculated_history_report(
+    data: &QueryData,
+    key: &str,
+    current: &[&Attempt],
+    runs: &BTreeMap<&str, &BenchmarkRun>,
+    at: i64,
+) -> (LeaderboardReport, Vec<String>, Vec<String>) {
+    let pool = pool(data, &ResultQuery::default());
+    let mut protocols = BTreeMap::new();
+    for attempt in current {
+        let cell: Vec<_> = current
+            .iter()
+            .copied()
+            .filter(|a| a.version_id == attempt.version_id)
+            .collect();
+        protocols
+            .entry(attempt.version_id.as_str())
+            .or_insert_with(|| comparison_key(&cell, runs, &pool, None));
+    }
+    let mut cells: BTreeMap<&str, BTreeMap<&str, Vec<&Attempt>>> = BTreeMap::new();
+    for attempt in &data.attempts {
+        if protocols.contains_key(attempt.version_id.as_str())
+            && leaderboard_key(execution_configuration(attempt)) == key
+            && runs.contains_key(attempt.run_id.as_str())
+        {
+            cells
+                .entry(&attempt.version_id)
+                .or_default()
+                .entry(&attempt.run_id)
+                .or_default()
+                .push(attempt);
+        }
+    }
+    let mut selected = Vec::new();
+    let mut backfilled = Vec::new();
+    let mut revised = Vec::new();
+    for (version, groups) in cells {
+        let mut settled: Vec<_> = groups
+            .into_iter()
+            .filter(|(id, attempts)| {
+                attempts.len() == runs[id].request.repetitions as usize
+                    && attempts.iter().all(|a| {
+                        a.phase == "terminal" && a.finished_at.is_some() && score(a).is_some()
+                    })
+                    && comparison_key(attempts, runs, &pool, None) == protocols[version]
+            })
+            .collect();
+        settled.sort_by_key(|(id, _)| (runs[id].created_at, *id));
+        let known = settled.iter().rev().find(|(id, attempts)| {
+            runs[id].created_at <= at
+                && attempts
+                    .iter()
+                    .all(|a| a.finished_at.is_some_and(|end| end <= at))
+        });
+        if let Some((_, attempts)) = known.or_else(|| settled.first()) {
+            if known.is_none() {
+                backfilled.push(version.to_owned());
+            } else if attempts
+                .iter()
+                .any(|a| a.evaluations.iter().any(|e| e.created_at > at))
+            {
+                revised.push(version.to_owned());
+            }
+            selected.extend(attempts.iter().copied());
+        }
+    }
+    // A point with only future evidence has no observation to anchor it.
+    let mut report = if backfilled.len() == protocols.len() {
+        LeaderboardReport {
+            cohort: None,
+            rows: Vec::new(),
+        }
+    } else {
+        leaderboard_from_attempts(data, &ResultQuery::default(), &selected)
+    };
+    for row in &mut report.rows {
+        // A retrospective estimate has no dated peer comparison or rank.
+        row.status = "preliminary".into();
+        row.efficiency_points = None;
+        row.speed_points = None;
+        row.cost_points = None;
+        row.reason = format!(
+            "{}/{} current cases; {} first measured later, {} reviewed later; recalculated using today's evidence",
+            row.scored, row.planned, backfilled.len(), revised.len()
+        );
+    }
+    (report, backfilled, revised)
+}
+
+/// One data read supplies both the dated archive and the recalculated series.
 pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySnapshot> {
     let key = leaderboard_key(configuration);
     let runs: BTreeMap<_, _> = data
@@ -713,6 +813,25 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
         .filter(|r| !r.request.preview)
         .map(|r| (r.id.as_str(), r))
         .collect();
+    let current = leaderboard(
+        data,
+        &ResultQuery {
+            limit: Some(500),
+            ..Default::default()
+        },
+    )
+    .rows
+    .into_iter()
+    .find(|r| leaderboard_key(&r.configuration) == key)
+    .map(|r| {
+        data.attempts
+            .iter()
+            .filter(|a| {
+                r.attempt_ids.contains(&a.id) && r.scored_version_ids.contains(&a.version_id)
+            })
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
     let mut events = BTreeMap::new();
     for a in data
         .attempts
@@ -759,11 +878,16 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
             continue;
         }
         previous = Some(signature);
+        let (recalculated_report, backfilled_version_ids, revised_version_ids) =
+            recalculated_history_report(data, &key, &current, &runs, at);
         snapshots.push(HistorySnapshot {
             id: format!("{run_id}:{at}"),
             run_id: run_id.clone(),
             created_at: at,
             report,
+            recalculated_report,
+            backfilled_version_ids,
+            revised_version_ids,
         });
     }
     snapshots.drain(..snapshots.len().saturating_sub(24));
