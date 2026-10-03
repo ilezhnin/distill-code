@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconX } from "@tabler/icons-react";
@@ -39,12 +39,14 @@ import {
 export function BenchmarkRunDialog({
   definitions,
   selectedVersionIds = [],
+  selectedConfiguration,
   previewOnly = false,
   onClose,
   onStarted,
 }: {
   definitions: BenchmarkDefinition[];
   selectedVersionIds?: string[];
+  selectedConfiguration?: Configuration;
   previewOnly?: boolean;
   onClose: () => void;
   onStarted: (id: string) => void;
@@ -66,10 +68,36 @@ export function BenchmarkRunDialog({
   const [effort, setEffort] = useState("none");
   const [fastMode, setFastMode] = useState(false);
   const [versions, setVersions] = useState(selectedVersionIds);
-  const [configurations, setConfigurations] = useState<Configuration[]>([]);
+  const [configurations, setConfigurations] = useState<Configuration[]>(
+    selectedConfiguration ? [selectedConfiguration] : [],
+  );
   const [repetitions, setRepetitions] = useState(1);
   const [timeoutSeconds, setTimeoutSeconds] = useState(300);
-  const [maxExecutions, setMaxExecutions] = useState(20);
+  // The run budget caps every case; it must reach the longest case chosen.
+  const longest = Math.max(
+    0,
+    ...definitions
+      .flatMap((definition) => definition.versions)
+      .filter((version) => versions.includes(version.id))
+      .map((version) => version.manifest.limits.timeoutSeconds),
+  );
+  useEffect(() => {
+    if (longest > 0) setTimeoutSeconds((current) => Math.max(current, longest));
+  }, [longest]);
+  const published = definitions.filter(
+    (entry) => !entry.archived && entry.versions.length > 0,
+  );
+  const caseTurns = published
+    .flatMap((definition) => definition.versions)
+    .filter((version) => versions.includes(version.id))
+    .reduce(
+      (total, version) =>
+        total + (version.manifest.workflow?.steps.length ?? 1),
+      0,
+    );
+  const [maxExecutions, setMaxExecutions] = useState(() =>
+    selectedConfiguration ? Math.max(20, caseTurns) : 20,
+  );
   const [requestKey] = useState(() => crypto.randomUUID());
   const [preview, setPreview] = useState<{
     signature: string;
@@ -110,17 +138,6 @@ export function BenchmarkRunDialog({
   );
   const signature = JSON.stringify(request);
   const validPreview = preview?.signature === signature ? preview.result : null;
-  const published = definitions.filter(
-    (entry) => !entry.archived && entry.versions.length > 0,
-  );
-  const caseTurns = published
-    .flatMap((definition) => definition.versions)
-    .filter((version) => versions.includes(version.id))
-    .reduce(
-      (total, version) =>
-        total + (version.manifest.workflow?.steps.length ?? 1),
-      0,
-    );
   const count = caseTurns * configurations.length * repetitions;
   const supported = new Set(
     capabilities.data

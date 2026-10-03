@@ -144,8 +144,9 @@ export interface HistorySnapshot {
 const HISTORY_RUNS = 24;
 
 /**
- * One leaderboard snapshot per completed run, oldest first, so a model page
- * can chart a configuration's points over time and open any measurement.
+ * The ledger as it stood when each completed run finished, oldest first, so a
+ * model page can chart a configuration's points on the current pool over
+ * time and open any of those states.
  */
 export function useConfigurationHistory(runs: RunSummary[]): {
   snapshots: HistorySnapshot[];
@@ -160,11 +161,18 @@ export function useConfigurationHistory(runs: RunSummary[]): {
       queryKey: [
         ...benchmarkKeys,
         "leaderboard",
-        { runId: run.id, versionIds: null, offset: 0, limit: 500 },
+        {
+          asOf: run.updatedAt,
+          runId: null,
+          versionIds: null,
+          offset: 0,
+          limit: 500,
+        },
       ],
       queryFn: () =>
         benchmarkApi.getLeaderboard({
-          runId: run.id,
+          asOf: run.updatedAt,
+          runId: null,
           versionIds: null,
           offset: 0,
           limit: 500,
@@ -177,7 +185,7 @@ export function useConfigurationHistory(runs: RunSummary[]): {
     if (result.data)
       snapshots.push({
         runId: chosen[index].id,
-        createdAt: chosen[index].createdAt,
+        createdAt: chosen[index].updatedAt,
         report: result.data,
       });
   });

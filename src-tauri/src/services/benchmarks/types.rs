@@ -412,6 +412,9 @@ pub struct ResultQuery {
     /// Exact attempts to list; reports hand these to the evidence dialog.
     #[serde(default)]
     pub attempt_ids: Option<Vec<String>>,
+    /// The ledger as it stood at this time: runs and attempts after it are left out.
+    #[serde(default)]
+    pub as_of: Option<i64>,
     pub offset: Option<u32>,
     pub limit: Option<u32>,
 }
@@ -441,6 +444,10 @@ pub struct LeaderboardRow {
     pub attempt_ids: Vec<String>,
     /// Success per work class of the suite, in the cohort's class order.
     pub axes: Vec<LeaderboardAxis>,
+    /// Pool cases this configuration has no scored result for: the gap a
+    /// catch-up run fills.
+    #[serde(default)]
+    pub missing_version_ids: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

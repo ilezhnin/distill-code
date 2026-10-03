@@ -698,6 +698,7 @@ mod tests {
             run_id: Some("run-104".into()),
             version_ids: Some(vec![first.id.clone()]),
             attempt_ids: None,
+            as_of: None,
             offset: Some(50),
             limit: Some(50),
         };

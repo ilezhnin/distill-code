@@ -540,7 +540,9 @@
     "cacheWrites": "Cache writes {{price}}",
     "source": "Source: {{source}} · checked {{date}}",
     "back": "Leaderboard",
-    "missing": "This configuration is not in the current selection."
+    "missing": "This configuration is not in the current selection.",
+    "catchUp_one": "Run the {{count}} missing case",
+    "catchUp_other": "Run the {{count}} missing cases"
   },
   "history": {
     "chartLabel": "Overall points per measurement",

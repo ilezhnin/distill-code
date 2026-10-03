@@ -540,7 +540,9 @@
     "cacheWrites": "Escrituras de caché {{price}}",
     "source": "Fuente: {{source}} · comprobado el {{date}}",
     "back": "Clasificación",
-    "missing": "Esta configuración no está en la selección actual."
+    "missing": "Esta configuración no está en la selección actual.",
+    "catchUp_one": "Ejecutar el {{count}} caso que falta",
+    "catchUp_other": "Ejecutar los {{count}} casos que faltan"
   },
   "history": {
     "chartLabel": "Puntos generales por medición",
