@@ -5,7 +5,6 @@ import { motion, useReducedMotion } from "motion/react";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { DisclosureButton } from "@/shared/ui/disclosure-button";
-import { SearchBar } from "@/shared/ui/SearchBar";
 import {
   Table,
   TableBody,
@@ -53,21 +52,15 @@ import {
   BenchmarkEmpty,
   BenchmarkPager,
   BoardIcon,
-  FilterMenu,
   ModelIdentity,
   ScoreBar,
   StateBadge,
-  type Option,
 } from "./BenchmarkPrimitives";
-import type { ResultScope } from "./BenchmarksView";
+import { ModelFilter } from "./ModelFilter";
 
 interface Props {
   report: LeaderboardReport | undefined;
   loading: boolean;
-  scope: ResultScope;
-  onScopeChange: (scope: ResultScope) => void;
-  suiteOptions: Option[];
-  runOptions: Option[];
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
@@ -76,10 +69,6 @@ interface Props {
 }
 
 const MotionRow = motion.create(TableRow);
-
-function distinct(values: (string | null | undefined)[]): string[] {
-  return [...new Set(values.filter((value): value is string => !!value))];
-}
 
 /** Rows that differ only by runtime revision need the revision to tell them apart. */
 function twinKey(configuration: Configuration): string {
@@ -94,10 +83,6 @@ function twinKey(configuration: Configuration): string {
 export function LeaderboardView({
   report,
   loading,
-  scope,
-  onScopeChange,
-  suiteOptions,
-  runOptions,
   page,
   pageSize,
   onPageChange,
@@ -107,11 +92,8 @@ export function LeaderboardView({
   const reduceMotion = useReducedMotion();
   const names = useModelNames();
   const catalog = useModelCatalog();
-  const [query, setQuery] = useState("");
-  const [provider, setProvider] = useState("all");
-  const [effort, setEffort] = useState("all");
-  const [fast, setFast] = useState("all");
-  const [track, setTrack] = useState("all");
+  // Chosen models stand side by side; nothing chosen means every model.
+  const [chosen, setChosen] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<"chart" | "table">("chart");
   const [boardId, setBoardId] = useState<BoardId>("overall");
   const [unrankedOpen, setUnrankedOpen] = useState(false);
@@ -148,17 +130,8 @@ export function LeaderboardView({
     factOf(row)?.vendor ?? providerVendor(row.configuration.providerId);
   const visible = useMemo(
     () =>
-      rows.filter(
-        (row) =>
-          `${facts.get(rowKey(row))?.displayName ?? ""} ${modelDisplayName(row.configuration, names.get(modelNameKey(row.configuration)))} ${row.configuration.modelId} ${row.configuration.providerId}`
-            .toLowerCase()
-            .includes(query.trim().toLowerCase()) &&
-          (provider === "all" || row.configuration.providerId === provider) &&
-          (effort === "all" || row.configuration.effort === effort) &&
-          (fast === "all" || String(row.configuration.fastMode) === fast) &&
-          (track === "all" || row.configuration.executionProfile === track),
-      ),
-    [rows, facts, names, query, provider, effort, fast, track],
+      chosen.size === 0 ? rows : rows.filter((row) => chosen.has(rowKey(row))),
+    [rows, chosen],
   );
   const ranked = useMemo(() => rankRows(visible, board), [visible, board]);
   const rankedRows = useMemo(
@@ -200,24 +173,6 @@ export function LeaderboardView({
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 420, damping: 38 };
   const boardLabel = (entry: Board) => boardTitle(t, entry);
-  const facet = (
-    label: string,
-    value: string,
-    set: (value: string) => void,
-    values: string[],
-    labelFor: (value: string) => string = (value) => value,
-  ) =>
-    values.length > 1 ? (
-      <FilterMenu
-        label={label}
-        value={value}
-        onChange={set}
-        options={[
-          { value: "all", label: `${label}: ${t("all")}` },
-          ...values.map((entry) => ({ value: entry, label: labelFor(entry) })),
-        ]}
-      />
-    ) : null;
   // In table mode the rank and model stay put while the boards scroll.
   const pinned = (offset: string) =>
     view === "table" && `sticky ${offset} z-10 bg-background`;
@@ -310,60 +265,17 @@ export function LeaderboardView({
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <FilterMenu
-            label={t("filters.suite")}
-            value={scope.versionId}
-            options={suiteOptions}
-            onChange={(versionId) => onScopeChange({ ...scope, versionId })}
-          />
-          <FilterMenu
-            label={t("filters.run")}
-            value={scope.runId}
-            options={runOptions}
-            onChange={(runId) => onScopeChange({ ...scope, runId })}
-          />
-          {facet(
-            t("filters.provider"),
-            provider,
-            setProvider,
-            distinct(rows.map((entry) => entry.configuration.providerId)),
-          )}
-          {facet(
-            t("filters.effort"),
-            effort,
-            setEffort,
-            distinct(rows.map((entry) => entry.configuration.effort)),
-          )}
-          {facet(
-            t("filters.fastMode"),
-            fast,
-            setFast,
-            distinct(
-              rows.map((entry) =>
-                entry.configuration.fastMode == null
-                  ? null
-                  : String(entry.configuration.fastMode),
-              ),
-            ),
-            (value) => (value === "true" ? t("enabled") : t("disabled")),
-          )}
-          {facet(
-            t("filters.track"),
-            track,
-            setTrack,
-            distinct(rows.map((entry) => entry.configuration.executionProfile)),
-          )}
-        </div>
+        <ModelFilter
+          options={rows.map((entry) => ({
+            key: rowKey(entry),
+            name: nameOf(entry),
+            vendor: vendorOf(entry),
+            terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
+          }))}
+          selected={chosen}
+          onChange={setChosen}
+        />
         <div className="flex min-w-0 items-center gap-2">
-          <SearchBar
-            size="small"
-            value={query}
-            onChange={setQuery}
-            placeholder={t("filters.searchModels")}
-            aria-label={t("filters.searchModels")}
-            className="w-56"
-          />
           <ToggleGroup
             type="single"
             size="sm"
