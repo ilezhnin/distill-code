@@ -32,6 +32,7 @@ import {
   useBenchmarkRuns,
 } from "../hooks/useBenchmarks";
 import { shortId } from "../lib/benchmarkLabels";
+import type { Configuration } from "../types";
 import {
   BENCHMARK_SECTIONS,
   type BenchmarkLocation,
@@ -102,6 +103,7 @@ export function BenchmarksView({
   const [runSelection, setRunSelection] = useState<{
     versions: string[];
     preview: boolean;
+    configuration?: Configuration;
   } | null>(null);
   const [scope, setScope] = useState<ResultScope>({
     versionId: "all",
@@ -341,6 +343,15 @@ export function BenchmarksView({
               runs={runs.data ?? []}
               versions={versions}
               onEvidence={openEvidence}
+              onRun={(ids) =>
+                guarded(() =>
+                  setRunSelection({
+                    versions: ids,
+                    preview: false,
+                    configuration: openedRow.configuration,
+                  }),
+                )
+              }
               onBack={() => onNavigate({ section: "leaderboard" })}
             />
           ) : leaderboard.isPending ? (
@@ -424,6 +435,7 @@ export function BenchmarksView({
         <BenchmarkRunDialog
           definitions={definitions.data ?? []}
           selectedVersionIds={runSelection.versions}
+          selectedConfiguration={runSelection.configuration}
           previewOnly={runSelection.preview}
           onClose={() => setRunSelection(null)}
           onStarted={openRun}

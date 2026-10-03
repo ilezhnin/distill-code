@@ -171,6 +171,7 @@ export function leaderboardRow(
     reason: "1/1 scored cells in the same frozen suite",
     attemptIds: [attempt.id],
     axes: [],
+    missingVersionIds: [],
     ...overrides,
   };
 }

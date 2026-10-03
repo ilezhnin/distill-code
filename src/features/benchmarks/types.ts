@@ -293,6 +293,8 @@ export interface ResultQuery {
   runId?: string | null;
   versionIds?: string[] | null;
   attemptIds?: string[] | null;
+  /** The ledger as it stood at this time. */
+  asOf?: number | null;
   offset?: number | null;
   limit?: number | null;
 }
@@ -317,6 +319,8 @@ export interface LeaderboardRow {
   attemptIds: string[];
   /** Success per work class of the suite, in the cohort's class order. */
   axes: LeaderboardAxis[];
+  /** Pool cases without a scored result: the gap a catch-up run fills. */
+  missingVersionIds: string[];
 }
 export interface LeaderboardAxis {
   id: string;

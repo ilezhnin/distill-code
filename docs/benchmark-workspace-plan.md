@@ -890,3 +890,58 @@ The leaderboard no longer offers filters by suite, run, provider, effort, fast m
 ### Icon boards
 
 The board tabs are icon-only with one glyph per board (trophy for Overall, a feather for Efficiency, a bolt for Speed, a coin for Cost, and one per work class: layout, palette, code, braces, target, route, message, notebook, test pipe, shield), the same glyphs on the model page's ratings. A tooltip with the board's name and description opens after a held hover of three seconds (`TOOLTIP_DELAY.held`); the active board's name and description sit on the line under the tabs, so the selected board is always named without the two rows of text buttons. Tabs keep their names for the accessibility tree and for the tests.
+
+## Per-case ledger (October 2, 2026)
+
+The leaderboard now keeps the newest measurement for each configuration and
+case over the current task pool. This replaces the earlier broadest-run cohort
+rule for the leaderboard: a short follow-up cannot change its denominator or
+remove work-class boards. Nerf comparisons retain their frozen-run conditions.
+
+### Pool, results and coverage
+
+- The pool contains the latest published version of every live definition.
+  An explicit run query uses that run's version list; a version filter narrows
+  either pool. Archiving a definition removes it from the default pool.
+- For each configuration and case, the newest run's attempts supersede older
+  attempts. Repetitions average within a case, and cases have equal weight.
+  Configuration identity still includes the recorded execution conditions.
+- `scored` counts cases with a score; `planned` counts eligible pool cases.
+  `missingVersionIds` lists cases without a score. Only complete coverage is
+  `comparable`; partial coverage remains `preliminary` and has no overall rank.
+  Author exclusions remove the candidate's own cases from its denominator.
+- Publishing a changed case creates a new version. Its old measurements stay
+  in run history, while its replacement becomes a gap on the current board.
+  A new case adds a gap without discarding measurements of other cases.
+- `ResultQuery.asOf` restricts runs, completed attempts and judge/human evaluations
+  by time while keeping the same current pool. The model page queries one snapshot
+  at each completed run's `updatedAt`, includes partial measurements, and selects
+  the newest point. Selecting a point changes the ratings, coverage and attempt
+  list together.
+- Run time budgets do not define leaderboard cohorts. A case keeps its own
+  timeout and the run budget caps execution; the dialog raises that budget to
+  the longest selected case. Creative seeds and the four private creative briefs
+  declare 600 seconds.
+
+This retains the case-by-configuration evidence needed for later routing.
+Fugu's single-step training evaluates each worker repeatedly on each question
+and averages its rewards before constructing the worker target distribution.
+Our ledger and catch-up policy are local product decisions built around that
+form of evidence. [Sakana Fugu technical report, section 3.1.2](https://arxiv.org/html/2606.21228#S3.SS1.SSS2).
+
+### Catch-up workflow and validation
+
+Open a model from the leaderboard and choose **Run the N missing cases**. The
+shared run dialog pins that row's full configuration, selects its missing cases,
+and sets an execution budget that covers their workflow steps. Review the
+configuration, repetitions and plan before starting. Opening the dialog or
+inspecting history never starts a model run. Held-out tasks remain reserved until
+the operator chooses to run them.
+
+On October 2 the native dev app returned 66 current cases across ten work
+classes (14 boards). All six completed-run snapshots used that same pool.
+Republishing the four private creative briefs kept the pool at 66, changed the
+Sonnet row from 24 to 23 measured cases, and selected its 43 gaps with the same
+configuration, a 600 s time limit and a budget for all 44 workflow executions.
+The other 44 private definitions and the 24/24 split assignment were unchanged.
+No new paid model run was started for these checks.

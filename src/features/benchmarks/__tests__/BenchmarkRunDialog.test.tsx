@@ -69,6 +69,63 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it("pins a catch-up configuration and budgets the selected cases before preview", async () => {
+  const definitions = Array.from({ length: 21 }, (_, index) => ({
+    ...definition,
+    id: `definition-${index}`,
+    versions: [
+      {
+        ...definition.versions[0],
+        id: `version-${index}`,
+        manifest: {
+          ...definition.versions[0].manifest,
+          limits: {
+            ...definition.versions[0].manifest.limits,
+            timeoutSeconds: 600,
+          },
+        },
+      },
+    ],
+  }));
+  const selectedVersionIds = definitions.map((entry) => entry.versions[0].id);
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={definitions}
+        selectedVersionIds={selectedVersionIds}
+        selectedConfiguration={configuration}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText("21 executions")).toBeInTheDocument();
+  expect(
+    screen.getByRole("spinbutton", { name: "Time limit (seconds)" }),
+  ).toHaveValue(600);
+  expect(
+    screen.getByRole("spinbutton", { name: "Maximum executions" }),
+  ).toHaveValue(21);
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configurations: [configuration],
+        versionIds: selectedVersionIds,
+        repetitions: 1,
+        timeoutSeconds: 600,
+        maxExecutions: 21,
+      }),
+    ),
+  );
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
 it("counts every workflow step against the explicit execution budget", async () => {
   const user = userEvent.setup();
   const workflowDefinition = {

@@ -313,6 +313,7 @@ describe("benchmark authoring and saved evidence", () => {
       costPoints: null,
       status: "preliminary",
       reason: "No valid evidence",
+      missingVersionIds: ["version-1"],
     });
     const report = { cohort, rows: [unfinished] };
     wrap(<LeaderboardView {...scopeProps} report={report} onOpen={open} />);
@@ -338,6 +339,7 @@ describe("benchmark authoring and saved evidence", () => {
         runs={[]}
         versions={definition.versions}
         onEvidence={inspect}
+        onRun={vi.fn()}
         onBack={vi.fn()}
       />,
     );
@@ -345,6 +347,9 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByRole("heading", { name: "model-1" }),
     ).toBeInTheDocument();
     expect(screen.getByText("No valid evidence")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Run the 1 missing case" }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
@@ -857,8 +862,8 @@ describe("configuration history", () => {
     });
     vi.mocked(benchmarkApi.getLeaderboard).mockImplementation(
       async (query) => ({
-        cohort: { ...cohort, runIds: [query.runId ?? "run-1"] },
-        rows: [query.runId === "run-0" ? olderRow : latestRow],
+        cohort,
+        rows: [query.asOf === 600 ? olderRow : latestRow],
       }),
     );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
@@ -869,6 +874,7 @@ describe("configuration history", () => {
         runs={[runSummary, older]}
         versions={definition.versions}
         onEvidence={vi.fn()}
+        onRun={vi.fn()}
         onBack={vi.fn()}
       />,
     );
@@ -888,7 +894,8 @@ describe("configuration history", () => {
       screen.getByText("Measured").nextElementSibling?.textContent,
     ).toMatch(/1969|1970/);
     expect(benchmarkApi.getLeaderboard).toHaveBeenCalledWith({
-      runId: "run-0",
+      asOf: 600,
+      runId: null,
       versionIds: null,
       offset: 0,
       limit: 500,

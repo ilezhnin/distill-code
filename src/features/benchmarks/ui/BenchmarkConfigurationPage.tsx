@@ -75,6 +75,7 @@ export function BenchmarkConfigurationPage({
   runs,
   versions,
   onEvidence,
+  onRun,
   onBack,
 }: {
   row: LeaderboardRow;
@@ -82,6 +83,8 @@ export function BenchmarkConfigurationPage({
   runs: RunSummary[];
   versions: BenchmarkVersion[];
   onEvidence: (id: string) => void;
+  /** Starts a run over the given cases, for the gaps this row has. */
+  onRun: (versionIds: string[]) => void;
   onBack: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
@@ -98,14 +101,14 @@ export function BenchmarkConfigurationPage({
           (
             entry,
           ): entry is { snapshot: HistorySnapshot; row: LeaderboardRow } =>
-            entry.row?.status === "comparable",
+            entry.row?.points != null,
         ),
     [history.snapshots, key],
   );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const selected =
     measurements.find((entry) => entry.snapshot.runId === selectedRunId) ??
-    (row.status === "comparable" ? measurements.at(-1) : null) ??
+    measurements.at(-1) ??
     null;
   // The chosen measurement drives everything below the chart; the cohort row
   // stands in until the history has loaded.
@@ -258,6 +261,16 @@ export function BenchmarkConfigurationPage({
             {shownRow.reason}
           </span>
         </div>
+      ) : null}
+      {row.missingVersionIds.length > 0 ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onRun(row.missingVersionIds)}
+        >
+          {t("configuration.catchUp", { count: row.missingVersionIds.length })}
+        </Button>
       ) : null}
       <div className="grid gap-10 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <section className="space-y-4">

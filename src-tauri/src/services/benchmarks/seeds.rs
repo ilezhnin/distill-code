@@ -511,7 +511,7 @@ pub fn definitions() -> Vec<BenchmarkDraft> {
                     context: "clean".into(),
                 },
                 limits: Limits {
-                    timeout_seconds: 120,
+                    timeout_seconds: if seed.class == "creative" { 600 } else { 120 },
                     max_turns: 1,
                     max_artifact_bytes: 1024 * 1024,
                 },
