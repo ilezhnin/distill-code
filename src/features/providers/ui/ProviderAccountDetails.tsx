@@ -71,6 +71,11 @@ export function ProviderUsageDetails({
   const { t } = useTranslation("settings");
   const { formatDate, formatNumber } = useLocaleFormatting();
   const hasResetCredits = Boolean(resetTokens?.credits?.length);
+  const usagePaused = usage.usageRetryAt != null;
+  const retrySeconds = Math.max(
+    0,
+    Math.ceil(((usage.usageRetryAt ?? now) - now) / 1000),
+  );
   const date = (value: number) =>
     formatDate(value, { dateStyle: "short", timeStyle: "short" });
   return (
@@ -79,12 +84,16 @@ export function ProviderUsageDetails({
         {state !== "ready" ? (
           <Badge
             variant={
-              state === "limited" || state === "error" || state === "needs_auth"
+              state === "limited" ||
+              (state === "error" && !usagePaused) ||
+              state === "needs_auth"
                 ? "destructive"
                 : "secondary"
             }
           >
-            {t(`accounts.states.${state}`)}
+            {usagePaused && state === "error"
+              ? t("accounts.usagePaused")
+              : t(`accounts.states.${state}`)}
           </Badge>
         ) : null}
         <span className="text-muted-foreground">
@@ -192,7 +201,16 @@ export function ProviderUsageDetails({
           })}
         </div>
       ) : null}
-      {usage.error ? (
+      {usagePaused ? (
+        <p className="text-muted-foreground" role="status">
+          {retrySeconds > 0
+            ? t("accounts.usageRetryIn", {
+                minutes: Math.floor(retrySeconds / 60),
+                seconds: String(retrySeconds % 60).padStart(2, "0"),
+              })
+            : t("accounts.usageRetryPending")}
+        </p>
+      ) : usage.error ? (
         <p className="break-words text-destructive" role="status">
           {usage.error}
         </p>

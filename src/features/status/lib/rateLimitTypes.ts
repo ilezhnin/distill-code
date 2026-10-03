@@ -37,6 +37,7 @@ export interface ProviderRateLimits {
   provider: AgentPlatformId;
   accountId?: string;
   accountLimited?: boolean;
+  usageRetryAt?: number | null;
   session: RateLimitWindow | null;
   weekly: RateLimitWindow | null;
   fableWeekly?: RateLimitWindow | null;

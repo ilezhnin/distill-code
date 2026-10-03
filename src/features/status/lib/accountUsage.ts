@@ -31,6 +31,7 @@ export function accountUsageFor(
     provider: account.providerId,
     accountId: account.id,
     accountLimited: configured && status?.state === "limited",
+    usageRetryAt: status?.usageRetryAt,
     configured,
     session: null,
     weekly: null,

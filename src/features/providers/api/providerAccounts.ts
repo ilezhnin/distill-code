@@ -59,6 +59,7 @@ export interface ProviderAccountStatus {
   lastAttemptAt: number;
   stale: boolean;
   error: string | null;
+  usageRetryAt?: number | null;
 }
 
 export interface ProviderAccountStatuses {

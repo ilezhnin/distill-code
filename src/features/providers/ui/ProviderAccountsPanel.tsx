@@ -489,7 +489,7 @@ function AccountCard({
               type="button"
               variant="outline"
               size="xs"
-              disabled={busy}
+              disabled={busy || (status?.usageRetryAt ?? 0) > now}
               onClick={() =>
                 void run(() =>
                   useProviderAccountsStore.getState().refresh(true),

@@ -146,6 +146,55 @@ fn fresh_status(id: &str) -> ProviderAccountStatus {
 }
 
 #[tokio::test]
+async fn usage_cooldown_blocks_cli_refresh_until_the_deadline_even_when_forced() {
+    let state = ProviderAccountStatusState::default();
+    let target = account("a");
+    let mut paused = fresh_status("a");
+    paused.state = AccountState::Error;
+    paused.stale = true;
+    paused.last_attempt_at = now_ms() - CACHE_MS * 2;
+    paused.usage_retry_at = Some(now_ms() + 60_000);
+    state.cache.lock().await.insert("a".into(), paused.clone());
+    for force in [false, true] {
+        let cached = state
+            .refresh(&target, force, async {
+                panic!("cooldown must prevent the entire probe, including CLI initialization")
+            })
+            .await;
+        assert_eq!(cached, paused);
+    }
+    state
+        .cache
+        .lock()
+        .await
+        .get_mut("a")
+        .unwrap()
+        .usage_retry_at = Some(now_ms() - 1);
+    let refreshed = state
+        .refresh(&target, false, async { fresh_status("a") })
+        .await;
+    assert_eq!(refreshed.state, AccountState::Ready);
+    assert_eq!(refreshed.usage_retry_at, None);
+}
+
+#[test]
+fn failed_usage_keeps_the_new_identity_and_previous_quota() {
+    let mut old = status("a", 59.0, 5000);
+    old.subscription = Some("Pro".into());
+    let mut failed = ProviderAccountStatus::empty("a", "codex-acp", 2000);
+    failed.state = AccountState::Error;
+    failed.subscription = Some("Max (5x)".into());
+    failed.account_label = Some("Current account".into());
+    failed.usage_retry_at = Some(60_000);
+    let merged = merge_refresh(Some(&old), failed);
+    assert_eq!(merged.subscription.as_deref(), Some("Max (5x)"));
+    assert_eq!(merged.account_label.as_deref(), Some("Current account"));
+    assert_eq!(merged.limits, old.limits);
+    assert_eq!(merged.usage_retry_at, Some(60_000));
+    assert!(merged.stale);
+}
+
+#[tokio::test]
 async fn a_slow_account_does_not_block_another_accounts_refresh() {
     let state = Arc::new(ProviderAccountStatusState::default());
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();

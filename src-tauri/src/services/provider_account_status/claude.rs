@@ -187,7 +187,7 @@ pub(super) async fn fetch(
             status.state = AccountState::NeedsAuth;
             return Ok(status);
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Ok(usage_failure(status, error)),
     };
     if !usage["limits"].is_array()
         && !usage["five_hour"].is_object()
@@ -198,6 +198,20 @@ pub(super) async fn fetch(
     map_usage(&mut status, &usage);
     status.reset_tokens = claude_resets::map_inventory(&usage, now_ms())?;
     Ok(status)
+}
+
+fn usage_failure(
+    mut status: ProviderAccountStatus,
+    error: claude_resets::RequestError,
+) -> ProviderAccountStatus {
+    if let claude_resets::RequestError::RateLimited(seconds) = &error {
+        status.usage_retry_at =
+            Some(now_ms().saturating_add(((*seconds).min(i64::MAX as u64 / 1000) * 1000) as i64));
+    }
+    status.state = AccountState::Error;
+    status.stale = true;
+    status.error = Some(error.to_string());
+    status
 }
 
 pub(super) async fn consume(
@@ -433,6 +447,24 @@ fn window_minutes(kind: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn first_usage_failure_retains_the_native_plan_and_identity() {
+        let mut status = super::ProviderAccountStatus::empty("a", "claude-acp", super::now_ms());
+        status.subscription = Some("Claude Max (5x)".into());
+        status.account_label = Some("Current account".into());
+        let before = super::now_ms();
+        let failed = super::usage_failure(
+            status,
+            super::claude_resets::RequestError::RateLimited(2067),
+        );
+        assert_eq!(failed.subscription.as_deref(), Some("Claude Max (5x)"));
+        assert_eq!(failed.account_label.as_deref(), Some("Current account"));
+        assert_eq!(failed.state, super::AccountState::Error);
+        assert!(failed.stale);
+        assert!(failed.usage_retry_at.unwrap() >= before + 2_067_000);
+        assert!(failed.limits.is_empty());
+    }
+
     use super::*;
 
     #[test]
