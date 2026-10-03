@@ -490,6 +490,7 @@ impl BenchmarkService {
             provenance: if visual { "human_visual" } else { "human" }.into(),
             artifacts: Vec::new(),
             details,
+            judge: None,
         });
         if !visual {
             a.outcome = Some(if score == 1.0 { "pass" } else { "fail" }.into());
@@ -515,7 +516,13 @@ impl BenchmarkService {
             BenchmarkError::new("evidence_missing", "Attempt has no sealed output")
         })?;
         let e = runner::evaluate(&v.manifest, output).await?;
-        a.evaluations.push(e);
+        // A creative brief goes back to the judge panel; its objective verdict
+        // ("review required") is already on record and says nothing new.
+        if v.manifest.evaluator.kind == "rubric" {
+            a = self.backend.judge(&self.store, a, &v).await?;
+        } else {
+            a.evaluations.push(e);
+        }
         self.store.save_attempt(&a).await?;
         Ok(a)
     }

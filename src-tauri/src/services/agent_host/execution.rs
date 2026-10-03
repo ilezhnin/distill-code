@@ -89,6 +89,16 @@ pub struct OwnedTurnRequest {
     pub prompt: String,
     pub policy_hash: String,
     pub timeout_ms: u64,
+    /// Images sent after the text, base64 with their media type.
+    #[serde(default)]
+    pub images: Vec<OwnedTurnImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedTurnImage {
+    pub data: String,
+    pub mime_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,16 +3,26 @@ use super::types::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn score(attempt: &Attempt) -> Option<f64> {
-    if matches!(attempt.outcome.as_deref(), Some("pass" | "fail")) {
+    let valid = |score: &f64| score.is_finite() && (0.0..=1.0).contains(score);
+    if matches!(attempt.outcome.as_deref(), Some("pass" | "fail" | "judged")) {
         if let Some(review) = attempt
             .evaluations
             .iter()
             .rev()
             .find(|e| e.provenance == "human")
         {
-            return review
-                .score
-                .filter(|score| score.is_finite() && (0.0..=1.0).contains(score));
+            return review.score.filter(valid);
+        }
+        // A panel verdict is the median of its judges, so one outlier moves nothing.
+        let judged: Vec<f64> = attempt
+            .evaluations
+            .iter()
+            .filter(|e| e.provenance == "judge")
+            .filter_map(|e| e.score)
+            .filter(valid)
+            .collect();
+        if !judged.is_empty() {
+            return median(judged);
         }
     }
     match attempt.outcome.as_deref()? {
@@ -720,6 +730,32 @@ pub(super) mod tests {
         assert_eq!(row.axes.iter().map(|axis| axis.planned).sum::<u32>(), 6);
     }
     #[test]
+    fn a_judged_rendering_scores_the_panel_median_until_a_human_overrides() {
+        let (data, _) = dataset();
+        let mut attempt = data.attempts[0].clone();
+        attempt.outcome = Some("judged".into());
+        let judge = |score: f64, provenance: &str| Evaluation {
+            id: format!("{provenance}-{score}"),
+            evaluator_revision: "1".into(),
+            verdict: "judged".into(),
+            score: Some(score),
+            reason: String::new(),
+            created_at: 9,
+            provenance: provenance.into(),
+            artifacts: vec![],
+            details: None,
+            judge: None,
+        };
+        attempt.evaluations = vec![
+            judge(0.9, "judge"),
+            judge(0.6, "judge"),
+            judge(0.2, "judge"),
+        ];
+        assert_eq!(score(&attempt), Some(0.6));
+        attempt.evaluations.push(judge(0.35, "human"));
+        assert_eq!(score(&attempt), Some(0.35));
+    }
+    #[test]
     fn a_narrow_follow_up_run_never_shrinks_the_board() {
         let (mut data, _) = dataset();
         // One case re-run later with its own budget: a follow-up, not a new suite.
@@ -806,6 +842,7 @@ pub(super) mod tests {
             provenance: "human".into(),
             artifacts: vec![],
             details: None,
+            judge: None,
         });
         assert_eq!(score(attempt), Some(0.8));
         attempt.evaluations.push(Evaluation {

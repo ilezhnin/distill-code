@@ -267,7 +267,9 @@
     "rescore": "Evaluar de nuevo",
     "preview": "Salida renderizada",
     "criterion": "{{label}} · peso {{weight}}",
-    "weighted": "Puntuación ponderada {{points}} de 1000"
+    "weighted": "Puntuación ponderada {{points}} de 1000",
+    "judge": "Juez · {{model}}",
+    "override": "Anular el panel"
   },
   "leaderboard": {
     "boards": {
@@ -302,10 +304,12 @@
     "designs_one": "{{count}} diseño",
     "designs_other": "{{count}} diseños",
     "entry": "Entrada {{number}}",
-    "awaitingReview": "Pendiente de revisión a ciegas",
+    "awaitingReview": "Pendiente del panel de jueces",
     "open": "Abrir diseño {{number}}",
     "empty": "Aún no hay diseños.",
-    "emptyHint": "Ejecuta un encargo creativo; cada resultado aparece aquí para su revisión a ciegas."
+    "emptyHint": "Ejecuta un encargo creativo; cada resultado aparece aquí para su revisión a ciegas.",
+    "judges_one": "{{count}} juez",
+    "judges_other": "{{count}} jueces"
   },
   "nerf": {
     "description": "Cambios respecto a una línea base congelada de Distill. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
@@ -463,7 +467,9 @@
     "measured": "Medido",
     "mixed": "Mixto",
     "controlled_batch": "Lote controlado",
-    "unknown": "Desconocido"
+    "unknown": "Desconocido",
+    "judged": "Juzgado",
+    "rendered": "Renderizado"
   },
   "tokens": "{{value}} tokens",
   "fastMode": "rápido",

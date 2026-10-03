@@ -72,6 +72,7 @@ pub fn evaluate(evaluator: &Evaluator, output: &str) -> Result<Evaluation> {
         provenance: "objective".into(),
         artifacts: Vec::new(),
         details: None,
+        judge: None,
     })
 }
 pub fn validate(e: &Evaluator) -> Vec<String> {

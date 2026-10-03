@@ -34,6 +34,7 @@ import {
 import {
   formatCost,
   formatSeconds,
+  modelDisplayName,
   shortId,
   stateLabel,
 } from "../lib/benchmarkLabels";
@@ -107,8 +108,12 @@ export function BenchmarkEvidenceView({
       evaluation.score !== null &&
       evaluation.evaluatorRevision === manifest?.evaluator.revision,
   );
+  // A panel verdict opens the identity the way a human review does.
+  const judged = attempt?.evaluations.some(
+    (evaluation) => evaluation.provenance === "judge",
+  );
   // Identity stays hidden while the frozen rubric is still loading, too.
-  const blind = !manifest || (Boolean(rubric.trim()) && !reviewed);
+  const blind = !manifest || (Boolean(rubric.trim()) && !reviewed && !judged);
   const canReview =
     Boolean(rubric.trim()) &&
     attempt?.phase === "terminal" &&
@@ -333,8 +338,15 @@ export function BenchmarkEvidenceView({
                       <div className="flex flex-wrap items-center gap-2">
                         <StateBadge state={evaluation.verdict} />
                         <span className="text-xs text-muted-foreground">
-                          {evaluation.provenance} ·{" "}
-                          {evaluation.evaluatorRevision}
+                          {evaluation.judge
+                            ? t("evidence.judge", {
+                                model: modelDisplayName(
+                                  evaluation.judge,
+                                  evaluation.judge.modelName,
+                                ),
+                              })
+                            : evaluation.provenance}{" "}
+                          · {evaluation.evaluatorRevision}
                           {evaluation.score != null
                             ? ` · ${evaluation.score.toFixed(2)}`
                             : ""}
@@ -369,7 +381,9 @@ export function BenchmarkEvidenceView({
           ) : null}
           {canReview ? (
             <section className="space-y-3">
-              <SectionHeading title={t("evidence.review")} />
+              <SectionHeading
+                title={t(judged ? "evidence.override" : "evidence.review")}
+              />
               {criteria.length > 0 ? (
                 <div className="space-y-3">
                   {criteria.map((criterion) => (

@@ -72,6 +72,8 @@ try {
   const page = await context.newPage();
   page.setDefaultTimeout(1500);
   const shell = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
+  const quietShell =
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">";
   await page.setContent(shell);
   const boundary = await page.evaluate(async () => ({
     node: typeof globalThis.process,
@@ -156,13 +158,19 @@ try {
         checks.push({ index, pass: false });
       }
     }
-    if (request.screenshotPath) {
-      const screenshot = await page.screenshot({ type: "png", timeout: 3000 });
-      if (screenshot.length > 2 * 1024 * 1024)
-        throw new Error("Screenshot exceeds artifact cap");
-      await writeFile(request.screenshotPath, screenshot, { flag: "wx" });
-    }
+  } else if (request.kind === "render") {
+    // A drawing or page for the judge panel: no scripts, no checks, one picture.
+    await page.setContent(quietShell + request.output, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForTimeout(400);
   } else throw new Error("Unsupported artifact evaluator");
+  if (request.screenshotPath) {
+    const screenshot = await page.screenshot({ type: "png", timeout: 3000 });
+    if (screenshot.length > 2 * 1024 * 1024)
+      throw new Error("Screenshot exceeds artifact cap");
+    await writeFile(request.screenshotPath, screenshot, { flag: "wx" });
+  }
   process.stdout.write(
     JSON.stringify({
       pass: checks.every((check) => check.pass),
