@@ -1672,3 +1672,193 @@ fn the_protocol_that_scored_identifies_the_evaluator() {
     assert_eq!(result[0].status, "changed_conditions");
     assert_ne!(leaderboard(&data, &query).rows[0].comparison_key, key);
 }
+
+/// Gives every attempt an objective verdict: the frozen run passed every case
+/// and the follow-up failed it.
+fn evaluate_objectively(data: &mut QueryData) {
+    for a in &mut data.attempts {
+        let (value, verdict) = if a.run_id == "before" {
+            (1.0, "pass")
+        } else {
+            (0.0, "fail")
+        };
+        a.evaluations = vec![evaluation(2, Some(value), "objective", verdict)];
+    }
+}
+
+/// Settles attempt `id` as a timeout: no evaluation, a fixed 0.
+fn time_out(data: &mut QueryData, id: &str) {
+    let a = data.attempts.iter_mut().find(|a| a.id == id).unwrap();
+    a.outcome = Some("budget_timeout".into());
+    a.evaluations.clear();
+}
+
+#[test]
+fn a_budget_failure_is_paired_nerf_evidence() {
+    let query = ResultQuery::default();
+    let (mut data, mut baseline) = super::tests::dataset();
+    evaluate_objectively(&mut data);
+    refreeze(&data, &mut baseline);
+    time_out(&mut data, "after-v0");
+    let result = compare(&data, &baseline, &query);
+    assert_eq!(result[0].status, "confirmed_change");
+    assert_eq!(result[0].quality_change, Some(-1.0));
+    // The frozen run timed out on v0 instead, so that family did not change.
+    let (mut data, mut baseline) = super::tests::dataset();
+    evaluate_objectively(&mut data);
+    time_out(&mut data, "before-v0");
+    refreeze(&data, &mut baseline);
+    let result = compare(&data, &baseline, &query);
+    assert_eq!(result[0].status, "preliminary");
+    assert!((result[0].quality_change.unwrap() + 5.0 / 6.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_brief_failed_for_missing_markup_pairs_with_its_judged_case() {
+    let (mut data, mut baseline) = super::tests::dataset();
+    let kind = data.versions[0].manifest.evaluator.kind.clone();
+    data.versions[0].manifest.evaluator.kind = "rubric".into();
+    judge_run(&mut data, "before", Some("panel-a"), 1.0);
+    refreeze(&data, &mut baseline);
+    judge_run(&mut data, "after", Some("panel-a"), 0.0);
+    // The follow-up answered the v0 brief without markup, so no panel saw it.
+    let bare = data
+        .attempts
+        .iter_mut()
+        .find(|a| a.id == "after-v0")
+        .unwrap();
+    bare.outcome = Some("fail".into());
+    bare.evaluations = vec![evaluation(2, Some(0.0), "objective", "fail")];
+    let query = ResultQuery::default();
+    let result = compare(&data, &baseline, &query);
+    assert_eq!(result[0].status, "confirmed_change");
+    assert_eq!(result[0].quality_change, Some(-1.0));
+    // An objective check against a panel stays another evaluator.
+    data.versions[0].manifest.evaluator.kind = kind;
+    let result = compare(&data, &baseline, &query);
+    assert_eq!(result[0].status, "changed_conditions");
+    assert_eq!(result[0].quality_change, None);
+}
+
+#[test]
+fn a_baseline_frozen_from_a_run_and_its_catch_up_pairs_with_one_follow_up() {
+    let (mut data, mut baseline) = super::tests::dataset();
+    // The frozen run measured v0..v2 and its catch-up v3..v5, under the same
+    // repetitions and timeout.
+    data.runs[0].request.version_ids.truncate(3);
+    data.attempts
+        .retain(|a| !(a.run_id == "before" && a.version_id.as_str() >= "v3"));
+    add_run(&mut data, "catch-up", 3, &["v3", "v4", "v5"]);
+    measure(&mut data, "catch-up", "model", "pass");
+    baseline.run_ids.push("catch-up".into());
+    refreeze(&data, &mut baseline);
+    let result = compare(&data, &baseline, &ResultQuery::default());
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].status, "confirmed_change");
+    assert_eq!(result[0].quality_change, Some(-1.0));
+    assert!(result[0]
+        .attempt_ids
+        .iter()
+        .all(|id| id.starts_with("after-")));
+}
+
+#[test]
+fn a_refusal_before_any_session_stays_on_the_row_its_run_acknowledged() {
+    let mut data = before_only();
+    data.runs[0].state = "running".into();
+    // The run dialog sends no effort; the sessions acknowledged "high".
+    data.runs[0].request.configurations[0].effort = None;
+    for a in &mut data.attempts {
+        a.configuration.effort = None;
+        a.observed.as_mut().unwrap().effort = Some("high".into());
+    }
+    // The runtime changed mid-run: v5 was refused before a session existed,
+    // and v4 is still waiting.
+    let refused = data
+        .attempts
+        .iter_mut()
+        .find(|a| a.version_id == "v5")
+        .unwrap();
+    refused.outcome = Some("selection_changed".into());
+    refused.observed = None;
+    refused.output = None;
+    let waiting = data
+        .attempts
+        .iter_mut()
+        .find(|a| a.version_id == "v4")
+        .unwrap();
+    waiting.phase = "pending".into();
+    waiting.outcome = None;
+    waiting.started_at = None;
+    waiting.finished_at = None;
+    waiting.observed = None;
+    waiting.output = None;
+    let rows = leaderboard(&data, &ResultQuery::default()).rows;
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    // The refusal is the row's newest attempt, so it also names the row.
+    assert_eq!(row.configuration.effort.as_deref(), Some("high"));
+    assert_eq!((row.scored, row.attempted, row.planned), (4, 5, 6));
+    assert_eq!(row.missing_version_ids, vec!["v4", "v5"]);
+    let points = history(&data, &row.configuration);
+    assert!(!points.is_empty());
+    assert!(points.iter().all(|p| p.report.rows.len() == 1));
+}
+
+#[test]
+fn a_resumed_older_run_never_replaces_the_first_backfill() {
+    let mut data = before_only();
+    let configuration = data.attempts[0].configuration.clone();
+    let v5 = data
+        .attempts
+        .iter()
+        .find(|a| a.version_id == "v5")
+        .unwrap()
+        .clone();
+    data.attempts.retain(|a| a.version_id != "v5");
+    // "parked" was created first but reached v5 only after "catch-up" scored it.
+    for (id, created_at, outcome, finished_at) in
+        [("parked", 1, "fail", 20), ("catch-up", 5, "pass", 10)]
+    {
+        let mut run = data.runs[0].clone();
+        run.id = id.into();
+        run.created_at = created_at;
+        run.updated_at = finished_at + 1;
+        run.request.version_ids = vec!["v5".into()];
+        data.runs.push(run);
+        let mut a = v5.clone();
+        a.id = format!("{id}-v5");
+        a.run_id = id.into();
+        a.outcome = Some(outcome.into());
+        a.started_at = Some(finished_at - 1);
+        a.finished_at = Some(finished_at);
+        data.attempts.push(a);
+    }
+    let backfill = |data: &QueryData| {
+        let points = history(data, &configuration);
+        assert_eq!(points[0].created_at, 3);
+        assert_eq!(points[0].backfilled_version_ids, vec!["v5"]);
+        points[0].recalculated_report.rows[0].clone()
+    };
+    let mut paused = data.clone();
+    let parked = paused.runs.iter_mut().find(|r| r.id == "parked").unwrap();
+    parked.state = "paused".into();
+    let waiting = paused
+        .attempts
+        .iter_mut()
+        .find(|a| a.id == "parked-v5")
+        .unwrap();
+    waiting.phase = "pending".into();
+    waiting.outcome = None;
+    waiting.started_at = None;
+    waiting.finished_at = None;
+    waiting.observed = None;
+    waiting.output = None;
+    let first = backfill(&paused);
+    assert_eq!(first.points, Some(1000));
+    assert!(first.attempt_ids.contains(&"catch-up-v5".to_string()));
+    // Resumed, the older run's fail is a later cell, not the first one.
+    let resumed = backfill(&data);
+    assert_eq!(resumed.attempt_ids, first.attempt_ids);
+    assert_eq!(resumed.points, Some(1000));
+}

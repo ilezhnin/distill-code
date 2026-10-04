@@ -230,6 +230,9 @@ impl Store {
         Ok(())
     }
 }
+/// Declared facets narrow a class. The input size is a measurement every saved
+/// draft records (`public-input-bytes-v1`), not a declared facet, so it never
+/// narrows one: two cases of a class almost never have the same byte count.
 fn facets_match(wanted: &TaskFacets, known: &TaskFacets) -> bool {
     wanted
         .language
@@ -247,9 +250,6 @@ fn facets_match(wanted: &TaskFacets, known: &TaskFacets) -> bool {
             .output_format
             .as_ref()
             .is_none_or(|v| Some(v) == known.output_format.as_ref())
-        && wanted
-            .input_bytes
-            .is_none_or(|v| Some(v) == known.input_bytes)
 }
 fn average(values: impl Iterator<Item = f64>) -> Option<f64> {
     let values: Vec<f64> = values.collect();
@@ -348,15 +348,27 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
         .map(|v| v.id.as_str())
         .collect();
     let protocol_timeout = q.timeout_seconds;
+    // The run filter: an explicit timeout keeps only runs with exactly that
+    // timeout, otherwise a run must give the case its published time budget.
+    let within_protocol = |run: &BenchmarkRun, version: &BenchmarkVersion| match protocol_timeout {
+        Some(t) => run.request.timeout_seconds == t,
+        None => run.request.timeout_seconds >= version.manifest.limits.timeout_seconds,
+    };
     let mut rows = Vec::new();
     for candidate in &q.candidates {
         let key = candidate_key(&candidate.configuration);
+        // Runs outside the protocol are left out before the newest cell is
+        // chosen, so a shorter smoke run never hides an older compliant cell.
         let mut by_case: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
         for a in data.attempts.iter().filter(|a| {
             expected_cases.contains(a.version_id.as_str())
-                && runs
-                    .get(a.run_id.as_str())
-                    .is_some_and(|r| !r.request.preview && r.created_at <= q.cutoff_at)
+                && runs.get(a.run_id.as_str()).is_some_and(|r| {
+                    !r.request.preview
+                        && r.created_at <= q.cutoff_at
+                        && versions
+                            .get(a.version_id.as_str())
+                            .is_some_and(|v| within_protocol(r, v))
+                })
                 && candidate_key(&super::analysis::execution_configuration(a)) == key
         }) {
             by_case.entry(&a.version_id).or_default().push(a);
@@ -368,22 +380,15 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             .collect();
         let mut samples = Vec::new();
         let mut stale_seen = false;
-        let mut authored_seen = false;
         for a in data.attempts.iter().filter(|a| selected.contains(&a.id)) {
             let Some(run) = runs.get(a.run_id.as_str()) else {
                 continue;
             };
-            if run.request.preview
-                || protocol_timeout.is_some_and(|t| run.request.timeout_seconds != t)
-            {
-                continue;
-            }
             let Some(v) = versions.get(a.version_id.as_str()) else {
                 continue;
             };
             let d = &v.manifest;
-            if protocol_timeout.is_none() && run.request.timeout_seconds < d.limits.timeout_seconds
-            {
+            if run.request.preview || !within_protocol(run, v) {
                 continue;
             }
             if !q.permitted_splits.contains(&d.split)
@@ -410,7 +415,6 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
                 continue;
             }
             if authored_by_candidate(d, &candidate.configuration) {
-                authored_seen = true;
                 continue;
             }
             if candidate
@@ -514,7 +518,9 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
                 "excluded",
                 "Candidate violates a hard identity or provider constraint".into(),
             ))
-        } else if quality.is_none() && authored_seen && owed_cases.is_empty() {
+        } else if quality.is_none() && !expected_cases.is_empty() && owed_cases.is_empty() {
+            // Authored cells are never planned, so the case sets decide this,
+            // not attempts on them.
             Some((
                 "excluded",
                 "Candidate helped author every compatible case; its own answers cannot count"
@@ -965,6 +971,82 @@ mod tests {
         ));
         data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([" native "]);
         assert!(authored_by_candidate(&data.versions[0].manifest, &other));
+    }
+    #[test]
+    fn a_newer_run_outside_the_protocol_never_hides_an_older_compliant_cell() {
+        let (mut data, mut q) = matrix();
+        // A later 30 s smoke run failed a case the 120 s run passed.
+        let mut run = data.runs[0].clone();
+        assert_eq!(run.id, "easy-0-model-low");
+        run.id = "smoke".into();
+        run.created_at = 950;
+        run.request.timeout_seconds = 30;
+        let mut attempt = data.attempts[0].clone();
+        attempt.id = "smoke".into();
+        attempt.run_id = "smoke".into();
+        attempt.outcome = Some("fail".into());
+        attempt.finished_at = Some(1050);
+        attempt.evaluations[0].verdict = "fail".into();
+        attempt.evaluations[0].score = Some(0.0);
+        data.runs.push(run);
+        data.attempts.push(attempt);
+        for timeout in [None, Some(120)] {
+            q.timeout_seconds = timeout;
+            let e = get_evidence(&data, &q).unwrap();
+            assert_eq!(e.candidates[0].sample_count, 2, "{timeout:?}");
+            assert_eq!(e.candidates[0].missing_count, 0, "{timeout:?}");
+            assert_eq!(e.candidates[0].quality, Some(1.0), "{timeout:?}");
+            assert_eq!(e.candidates[0].status, "preliminary", "{timeout:?}");
+        }
+        // Under the protocol, the newer scored cell still replaces the older one.
+        q.timeout_seconds = None;
+        data.runs.last_mut().unwrap().request.timeout_seconds = 120;
+        let e = get_evidence(&data, &q).unwrap();
+        assert_eq!(e.candidates[0].sample_count, 2);
+        assert_eq!(e.candidates[0].quality, Some(0.5));
+    }
+    #[test]
+    fn a_candidate_that_wrote_every_compatible_case_is_excluded_without_attempts() {
+        let (mut data, mut q) = matrix();
+        for version in &mut data.versions {
+            version.manifest.environment["authoredBy"] = serde_json::json!(["model-native"]);
+        }
+        // Authored cells are no longer planned, and an older plan's authored
+        // cells settle as excluded without starting.
+        for a in &mut data.attempts {
+            a.started_at = None;
+            a.outcome = Some("excluded".into());
+            a.evaluations.clear();
+        }
+        let settled = get_evidence(&data, &q).unwrap();
+        data.attempts.clear();
+        let unplanned = get_evidence(&data, &q).unwrap();
+        for evidence in [settled, unplanned] {
+            assert!(evidence
+                .candidates
+                .iter()
+                .all(|c| c.status == "excluded" && !c.eligible && c.sample_count == 0));
+        }
+        // No compatible case at all stays untested.
+        q.role_context_hash = "unseen-role-context".into();
+        assert_eq!(
+            get_evidence(&data, &q).unwrap().candidates[0].status,
+            "untested"
+        );
+    }
+    #[test]
+    fn a_measured_input_size_never_narrows_a_class() {
+        let (mut data, mut q) = matrix();
+        for (index, version) in data.versions.iter_mut().enumerate() {
+            version.manifest.facets.input_bytes = Some(1000 + index as u64);
+        }
+        // The target's own measured size, as the routing dialog sends it.
+        q.facets.input_bytes = Some(5000);
+        let e = get_evidence(&data, &q).unwrap();
+        assert_eq!(e.candidates[0].sample_count, 2);
+        assert_eq!(e.candidates[0].quality, Some(1.0));
+        assert_eq!(e.candidates[0].status, "preliminary");
+        assert_eq!(consumer(&e), Some(candidate_key(&config("low"))));
     }
     #[test]
     fn partial_case_coverage_cannot_win_a_comparable_class_cohort() {

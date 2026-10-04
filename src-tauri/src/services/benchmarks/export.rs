@@ -101,21 +101,33 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
     // A column needs one countable score on an exported case. Identities seen
     // only through unscored attempts (a changed model selection, failed
     // infrastructure) or only on withheld or self-authored cases are no candidates.
-    let candidates: BTreeMap<_, _> = data
-        .attempts
-        .iter()
-        .filter(|a| {
-            let c = super::analysis::execution_configuration(a);
-            runs.contains_key(a.run_id.as_str())
-                && versions.get(a.version_id.as_str()).is_some_and(|v| {
-                    (include_held_out || v.manifest.split != "held_out")
-                        && !super::routing::authored_by_candidate(&v.manifest, &c)
-                })
-                && super::analysis::score(a).is_some()
-        })
-        .map(|a| {
-            let c = super::analysis::execution_configuration(a);
-            (super::analysis::leaderboard_key(&c), c)
+    let order = |a: &Attempt| (runs[a.run_id.as_str()].created_at, a.started_at);
+    let mut newest: BTreeMap<String, &Attempt> = BTreeMap::new();
+    for a in data.attempts.iter().filter(|a| {
+        let c = super::analysis::execution_configuration(a);
+        runs.contains_key(a.run_id.as_str())
+            && versions.get(a.version_id.as_str()).is_some_and(|v| {
+                (include_held_out || v.manifest.split != "held_out")
+                    && !super::routing::authored_by_candidate(&v.manifest, &c)
+            })
+            && super::analysis::score(a).is_some()
+    }) {
+        let key = super::analysis::leaderboard_key(&super::analysis::execution_configuration(a));
+        let entry = newest.entry(key).or_insert(a);
+        if (order(a), &a.id) > (order(entry), &entry.id) {
+            *entry = a;
+        }
+    }
+    // A column names its newest scored configuration, as the leaderboard row
+    // does, without the runner's `_auxiliary` marker of one attempt.
+    let candidates: BTreeMap<String, Configuration> = newest
+        .into_iter()
+        .map(|(key, a)| {
+            let mut c = super::analysis::execution_configuration(a).into_owned();
+            if let Some(profile) = c.execution_profile.strip_suffix("_auxiliary") {
+                c.execution_profile = profile.to_owned();
+            }
+            (key, c)
         })
         .collect();
     // A candidate owes only the cases some run planned for it, matched by
@@ -586,6 +598,33 @@ mod tests {
         assert!(rows
             .iter()
             .all(|r| columns(r) == 1 && r["matrix"][0]["runId"] == "after"));
+    }
+
+    #[test]
+    fn a_ledger_column_names_the_runnable_configuration_of_its_newest_run() {
+        let (mut data, _) = dataset();
+        // The newest run made auxiliary calls; the older one ran another runtime.
+        for a in &mut data.attempts {
+            let observed = a.observed.as_mut().unwrap();
+            if a.run_id == "after" {
+                a.usage.schema = "provider_turn_with_auxiliary_v2".into();
+                observed.execution_profile = "native_text_auxiliary".into();
+            } else {
+                observed.inventory_revision = Some("older-runtime".into());
+            }
+        }
+        // Whichever attempt comes last, the column is the same.
+        for _ in 0..2 {
+            let rows = ledger_rows(&data, false, "t").unwrap();
+            assert_eq!(rows.len(), 6);
+            for row in &rows {
+                assert_eq!(columns(row), 1);
+                let configuration = &row["matrix"][0]["configuration"];
+                assert_eq!(configuration["executionProfile"], "native_text");
+                assert_eq!(configuration["inventoryRevision"], "runtime-hash");
+            }
+            data.attempts.reverse();
+        }
     }
 
     #[tokio::test]

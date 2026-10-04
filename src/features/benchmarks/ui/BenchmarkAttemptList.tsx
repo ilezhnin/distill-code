@@ -39,7 +39,8 @@ function keepsEvery(previous: string[] | null, next: string[] | null) {
 /**
  * Paged attempt rows for one query: case, outcome, duration, tokens, cost,
  * evidence. `resetKey` names what the reader chose to list; a new choice or
- * filter starts on the first page, an attempt set that only grows does not.
+ * filter starts on the first page, the same choice keeps its page while its
+ * attempts change. Without a key, an attempt set that only grows keeps it.
  */
 export function BenchmarkAttemptList({
   query,
@@ -55,8 +56,9 @@ export function BenchmarkAttemptList({
   onEvidence: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
-  // With a reset key the caller owns the scope; a point that moves forward
-  // with its run keeps the page as long as its attempts only grow.
+  // With a reset key the caller owns the scope, so a point that moves forward
+  // with its run keeps the page even when a newer cell replaces older
+  // attempts. Without one, a set that drops attempts is another listing.
   const scope = resetKey ?? JSON.stringify({ ...query, attemptIds: undefined });
   const ids = query.attemptIds ?? null;
   const [paging, setPaging] = useState({ scope, ids, page: 0 });
@@ -65,9 +67,14 @@ export function BenchmarkAttemptList({
       ? Number.POSITIVE_INFINITY
       : Math.max(0, Math.ceil(ids.length / PAGE_SIZE) - 1);
   const page =
-    paging.scope === scope && keepsEvery(paging.ids, ids)
+    paging.scope === scope &&
+    (resetKey !== undefined || keepsEvery(paging.ids, ids))
       ? Math.min(paging.page, lastPage)
       : 0;
+  // Remember the page actually shown, so returning to an earlier listing
+  // starts on its first page instead of where the reader once left it.
+  if (paging.scope !== scope || paging.page !== page)
+    setPaging({ scope, ids, page });
   const paged = { ...query, offset: page * PAGE_SIZE, limit: PAGE_SIZE };
   const attempts = useQuery({
     queryKey: [...benchmarkKeys, "attempts", paged],

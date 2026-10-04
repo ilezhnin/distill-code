@@ -191,6 +191,12 @@ impl Store {
                     FROM attempts a WHERE a.run_id=r.id AND a.phase<>'pending'
                         AND json_extract(a.data_json,'$.observed.modelId')=json_extract(a.data_json,'$.configuration.modelId')
                         AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'selection_changed')
+                END,
+                CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
+                (SELECT json_group_array(json_array(o.configuration_id,o.version_id))
+                    FROM (SELECT a.configuration_id,a.version_id FROM attempts a
+                        WHERE a.run_id=r.id AND a.phase<>'terminal'
+                        GROUP BY a.configuration_id,a.version_id ORDER BY MIN(a.rowid)) o)
                 END
              FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
@@ -208,6 +214,7 @@ impl Store {
                     attempt_count: r.get::<i64, _>(6) as u64,
                     settled_count: r.get::<i64, _>(7) as u64,
                     observed_selections: observed_selections(r.get(8)),
+                    open_cells: open_cells(r.get(9)),
                 })
             })
             .collect()
@@ -679,6 +686,19 @@ fn observed_selections(rows: Option<&str>) -> Vec<ObservedRunSelection> {
     selections
 }
 
+/// The cells a run still has work on, from distinct rows of
+/// `[configuration id, version id]`.
+fn open_cells(rows: Option<&str>) -> Vec<OpenRunCell> {
+    rows.and_then(|rows| serde_json::from_str::<Vec<(String, String)>>(rows).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(configuration_id, version_id)| OpenRunCell {
+            configuration_id,
+            version_id,
+        })
+        .collect()
+}
+
 /// The model a gallery card stands for: the leaderboard's own attribution, so
 /// a refused selection stays with the candidate that was asked for.
 fn card_configuration(attempt: &Attempt) -> std::borrow::Cow<'_, Configuration> {
@@ -729,9 +749,13 @@ fn scoring_batch(evaluations: &[Evaluation]) -> std::ops::Range<usize> {
 }
 
 /// How well an attempt can stand for its card: a scored rendering, a rendering,
-/// a settled attempt, anything else.
+/// a settled attempt, anything else. A rendering awaiting its panel has a
+/// sealed generation and stands like a settled one.
 fn card_tier(attempt: &Attempt) -> u8 {
-    if attempt.phase != "terminal" {
+    if !matches!(
+        attempt.phase.as_str(),
+        "terminal" | super::runner::AWAITING_JUDGES
+    ) {
         return 0;
     }
     let rendering = attempt
@@ -947,6 +971,55 @@ mod tests {
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].attempt_id, "rendering");
+    }
+    #[tokio::test]
+    async fn a_rendering_awaiting_its_panel_outranks_an_older_cancelled_attempt() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = json!({"id":"sonnet","providerId":"claude-acp","accountId":"account","modelId":"sonnet","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"r1"});
+        let objective = json!([{"id":"objective","evaluatorRevision":"1","verdict":"pending_review","score":null,"reason":"waiting","createdAt":5,"provenance":"objective","artifacts":[]}]);
+        // An older run was cancelled before its cell ran; a newer one holds a
+        // rendering whose panel a pause deferred.
+        for (run, created_at, state, phase, outcome, output, evaluations) in [
+            (
+                "run-1",
+                1,
+                "cancelled",
+                "terminal",
+                "cancelled",
+                None,
+                json!([]),
+            ),
+            (
+                "run-2",
+                2,
+                "paused",
+                "awaiting_judges",
+                "pending_review",
+                Some("<svg/>"),
+                objective,
+            ),
+        ] {
+            let request = json!({"requestKey":run,"versionIds":[version.id],"configurations":[configuration],"repetitions":1,"timeoutSeconds":600,"maxExecutions":4,"preview":false});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,?,1,?,?,?)")
+                .bind(run).bind(run).bind(state).bind(created_at).bind(created_at).bind(request.to_string())
+                .execute(&store.pool).await.unwrap();
+            let attempt = json!({"id":format!("attempt-{run}"),"runId":run,"versionId":version.id,"configuration":configuration,"repetition":0,"phase":phase,"outcome":outcome,"output":output,"finishedAt":created_at,"usage":{"schema":"native","cost":0.05},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'sonnet',0,?,?)")
+                .bind(format!("attempt-{run}")).bind(run).bind(&version.id).bind(phase).bind(attempt.to_string())
+                .execute(&store.pool).await.unwrap();
+        }
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].attempt_id, "attempt-run-2");
+        assert_eq!(entries[0].phase, "awaiting_judges");
+        assert_eq!(entries[0].output.as_deref(), Some("<svg/>"));
     }
     #[test]
     fn a_refused_rendering_stays_on_the_requested_card() {
@@ -1291,6 +1364,69 @@ mod tests {
         assert!(store.runs().await.unwrap()[0]
             .observed_selections
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_summary_lists_only_the_cells_its_run_has_yet_to_settle() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let mut draft = super::super::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft.clone()).await.unwrap();
+        let first = store.publish(&definition.id, 1).await.unwrap();
+        draft.name.push_str(" second version");
+        store
+            .save_draft(Some(&definition.id), Some(1), draft)
+            .await
+            .unwrap();
+        let second = store.publish(&definition.id, 2).await.unwrap();
+        let config = |id: &str| json!({"id":id,"providerId":"claude-acp","accountId":"account","modelId":id,"effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let req = json!({"requestKey":"open","versionIds":[first.id,second.id],"configurations":[config("sonnet"),config("haiku")],"repetitions":2,"timeoutSeconds":30,"maxExecutions":8});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','open','running',1,0,0,?)").bind(req.to_string()).execute(&store.pool).await.unwrap();
+        for (id, configuration, version, repetition, phase, outcome) in [
+            // Settled without a score: the run never retries it.
+            (
+                "a0",
+                "sonnet",
+                &first.id,
+                0,
+                "terminal",
+                Some("infrastructure_failure"),
+            ),
+            ("a1", "sonnet", &first.id, 1, "terminal", Some("pass")),
+            ("a2", "sonnet", &second.id, 0, "pending", None),
+            (
+                "a3",
+                "sonnet",
+                &second.id,
+                1,
+                "awaiting_judges",
+                Some("pending_review"),
+            ),
+            ("a4", "haiku", &first.id, 0, "running", None),
+            ("a5", "haiku", &second.id, 0, "terminal", Some("cancelled")),
+        ] {
+            let a = json!({"id":id,"runId":"run","versionId":version,"configuration":config(configuration),"repetition":repetition,"phase":phase,"outcome":outcome,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,?,?,?,?)").bind(id).bind(version).bind(configuration).bind(repetition).bind(phase).bind(a.to_string()).execute(&store.pool).await.unwrap();
+        }
+        let summary = store.runs().await.unwrap().remove(0);
+        let cell = |configuration: &str, version: &str| OpenRunCell {
+            configuration_id: configuration.into(),
+            version_id: version.into(),
+        };
+        // One entry per cell, in plan order, however many attempts it holds.
+        assert_eq!(
+            summary.open_cells,
+            vec![cell("sonnet", &second.id), cell("haiku", &first.id)]
+        );
+        assert_eq!(
+            serde_json::to_value(&summary).unwrap()["openCells"][0],
+            json!({"configurationId":"sonnet","versionId":second.id})
+        );
+        // A run finished or being cancelled starts nothing, so its attempts are never read here.
+        for state in ["cancelling", "cancelled", "completed"] {
+            store.set_run_state("run", state).await.unwrap();
+            assert!(store.runs().await.unwrap()[0].open_cells.is_empty());
+        }
     }
 
     #[tokio::test]

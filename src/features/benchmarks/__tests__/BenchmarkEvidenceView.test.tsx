@@ -341,6 +341,72 @@ describe("creative rubric review", () => {
     );
   });
 
+  const panel = (expectedJudges: number, votes: number[]): Attempt => ({
+    ...drawing,
+    sessionId: "private-session",
+    outcome: votes.length >= expectedJudges ? "judged" : "pending_review",
+    evaluations: [
+      {
+        ...attempt.evaluations[0],
+        id: "render",
+        verdict: "rendered",
+        score: null,
+        provenance: "render",
+        reason: "Rendered for the panel",
+        details: { expectedJudges },
+      },
+      ...votes.map((score, index) => ({
+        ...attempt.evaluations[0],
+        id: `vote-${index}`,
+        verdict: "judged",
+        score,
+        provenance: "judge",
+        reason: "Scored against the criteria",
+        judge: { ...attempt.configuration, modelId: "judge-model" },
+      })),
+      {
+        ...attempt.evaluations[0],
+        id: "abstain",
+        verdict: "abstained",
+        score: null,
+        provenance: "judge_failure",
+        reason: "The judge abstained",
+      },
+    ],
+  });
+
+  it("keeps a rendering anonymous while its panel holds only part of its votes", async () => {
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(panel(3, [0.7]));
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    showEvidence();
+    await screen.findByRole("button", {
+      name: "Evaluate again (up to 3 model calls)",
+    });
+    expect(
+      screen.getByRole("heading", { name: /Anonymous review/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("model-1");
+    expect(screen.queryByText("Override the panel")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open transcript" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the identity once the panel reaches its size", async () => {
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(panel(2, [0.6, 0.8]));
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      creativeDefinition,
+    ]);
+    showEvidence();
+    await screen.findByRole("heading", { name: /model-1/ });
+    expect(screen.getByText("Override the panel")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open transcript" }),
+    ).toBeInTheDocument();
+  });
+
   it("does not spend panel calls on a rendering a human override decides", async () => {
     const overridden: Attempt = {
       ...drawing,

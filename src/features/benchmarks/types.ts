@@ -135,6 +135,13 @@ export interface RunSummary {
   settledCount: number;
   /** What each requested configuration's attempts acknowledged while the run can still start attempts. */
   observedSelections: ObservedRunSelection[];
+  /** The cells an unfinished run still has a non-terminal attempt in; absent on older summaries. */
+  openCells?: OpenRunCell[];
+}
+/** A requested configuration and case an unfinished run has yet to settle. */
+export interface OpenRunCell {
+  configurationId: string;
+  versionId: string;
 }
 /** The effort and fast mode a requested configuration ran with in one run. */
 export interface ObservedRunSelection {

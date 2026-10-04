@@ -240,6 +240,18 @@ pub struct RunSummary {
     /// the provider names the row it fills. Empty once the run has finished.
     #[serde(default)]
     pub observed_selections: Vec<ObservedRunSelection>,
+    /// The cells a run that may still start attempts has yet to settle, so a
+    /// cell it settled without a score is not taken as still planned. Empty
+    /// once the run has finished.
+    #[serde(default)]
+    pub open_cells: Vec<OpenRunCell>,
+}
+/// A requested configuration and case with an attempt not yet terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRunCell {
+    pub configuration_id: String,
+    pub version_id: String,
 }
 /// The effort and fast mode a requested configuration ran with in one run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

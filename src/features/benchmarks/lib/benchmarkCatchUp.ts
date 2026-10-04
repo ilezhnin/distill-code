@@ -117,13 +117,21 @@ export function catchUpCases(
   let queuedRun: RunSummary | null = null;
   for (const run of runs) {
     if (run.request.preview || FINISHED_RUN_STATES.has(run.state)) continue;
-    if (
-      !run.request.configurations.some((entry) =>
-        requests(entry, row.configuration, run),
-      )
-    )
-      continue;
-    const covered = run.request.versionIds.filter((id) => missing.has(id));
+    const matching = new Set(
+      run.request.configurations
+        .filter((entry) => requests(entry, row.configuration, run))
+        .map((entry) => entry.id),
+    );
+    if (matching.size === 0) continue;
+    // A run never retries a cell it settled, scored or not, so only its open
+    // cells still plan the gap. A summary without open cells predates them
+    // and counts the whole request.
+    const planned = run.openCells
+      ? run.openCells
+          .filter((cell) => matching.has(cell.configurationId))
+          .map((cell) => cell.versionId)
+      : run.request.versionIds;
+    const covered = planned.filter((id) => missing.has(id));
     if (covered.length === 0) continue;
     for (const id of covered) queued.add(id);
     if (!queuedRun || run.createdAt > queuedRun.createdAt) queuedRun = run;

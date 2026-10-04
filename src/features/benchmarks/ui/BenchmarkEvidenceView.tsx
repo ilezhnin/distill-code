@@ -29,6 +29,7 @@ import { configurationLabel } from "../lib/benchmarkDraft";
 import {
   authoredByCandidate,
   hasEvaluatedOutcome,
+  hasPanelVerdict,
 } from "../lib/benchmarkEligibility";
 import {
   evaluationCriteria,
@@ -113,10 +114,9 @@ export function BenchmarkEvidenceView({
       evaluation.score !== null &&
       evaluation.evaluatorRevision === manifest?.evaluator.revision,
   );
-  // A panel verdict opens the identity the way a human review does.
-  const judged = attempt?.evaluations.some(
-    (evaluation) => evaluation.provenance === "judge",
-  );
+  // A panel verdict opens the identity the way a human review does; a vote of
+  // a panel that never reached its size is no verdict yet.
+  const judged = attempt ? hasPanelVerdict(attempt.evaluations) : false;
   const panelKind = manifest?.evaluator.kind === "rubric";
   // A panel task stays anonymous only while its verdict is still to come;
   // an objective fail or a budget failure is already final.

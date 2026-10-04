@@ -115,6 +115,45 @@ function wrap(content: ReactNode) {
   };
 }
 
+/** Serves each page of listed attempt ids the way the service pages them. */
+function serveListedPages() {
+  vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>
+    Array.from(
+      {
+        length: Math.max(
+          0,
+          Math.min(50, (query.attemptIds?.length ?? 0) - (query.offset ?? 0)),
+        ),
+      },
+      (_, index) => ({
+        ...attemptSummary,
+        id: query.attemptIds?.[(query.offset ?? 0) + index] ?? "",
+      }),
+    ),
+  );
+}
+
+function attemptList(ids: string[], resetKey?: string) {
+  return (
+    <BenchmarkAttemptList
+      query={{ attemptIds: ids }}
+      versions={definition.versions}
+      resetKey={resetKey}
+      onEvidence={vi.fn()}
+    />
+  );
+}
+
+function listedPage(attemptIds: string[], offset: number) {
+  return waitFor(() =>
+    expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+      attemptIds,
+      offset,
+      limit: 50,
+    }),
+  );
+}
+
 describe("benchmark authoring and saved evidence", () => {
   afterEach(cleanup);
   beforeEach(() => {
@@ -515,106 +554,79 @@ describe("benchmark authoring and saved evidence", () => {
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   });
   it("starts a different attempt set on its first page", async () => {
-    vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>
-      Array.from(
-        {
-          length: Math.max(
-            0,
-            Math.min(50, (query.attemptIds?.length ?? 0) - (query.offset ?? 0)),
-          ),
-        },
-        (_, index) => ({
-          ...attemptSummary,
-          id: query.attemptIds?.[(query.offset ?? 0) + index] ?? "",
-        }),
-      ),
-    );
+    serveListedPages();
     const many = Array.from({ length: 60 }, (_, index) => `current-${index}`);
-    const { rerender } = wrap(
-      <BenchmarkAttemptList
-        query={{ attemptIds: many }}
-        versions={definition.versions}
-        onEvidence={vi.fn()}
-      />,
-    );
+    const { rerender } = wrap(attemptList(many));
     await screen.findAllByRole("button", { name: "Inspect" });
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
-    await waitFor(() =>
-      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
-        attemptIds: many,
-        offset: 50,
-        limit: 50,
-      }),
-    );
-    rerender(
-      <BenchmarkAttemptList
-        query={{ attemptIds: ["older-0", "older-1"] }}
-        versions={definition.versions}
-        onEvidence={vi.fn()}
-      />,
-    );
-    await waitFor(() =>
-      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
-        attemptIds: ["older-0", "older-1"],
-        offset: 0,
-        limit: 50,
-      }),
-    );
+    await listedPage(many, 50);
+    rerender(attemptList(["older-0", "older-1"]));
+    await listedPage(["older-0", "older-1"], 0);
     expect(
       await screen.findAllByRole("button", { name: "Inspect" }),
     ).toHaveLength(2);
   });
   it("keeps the page while the listed attempts only grow", async () => {
-    vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>
-      Array.from(
-        {
-          length: Math.max(
-            0,
-            Math.min(50, (query.attemptIds?.length ?? 0) - (query.offset ?? 0)),
-          ),
-        },
-        (_, index) => ({
-          ...attemptSummary,
-          id: query.attemptIds?.[(query.offset ?? 0) + index] ?? "",
-        }),
-      ),
-    );
+    serveListedPages();
     const many = Array.from({ length: 60 }, (_, index) => `current-${index}`);
-    const list = (ids: string[], resetKey?: string) => (
-      <BenchmarkAttemptList
-        query={{ attemptIds: ids }}
-        versions={definition.versions}
-        resetKey={resetKey}
-        onEvidence={vi.fn()}
-      />
-    );
-    const lastCall = (attemptIds: string[], offset: number) =>
-      waitFor(() =>
-        expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
-          attemptIds,
-          offset,
-          limit: 50,
-        }),
-      );
-    const { rerender } = wrap(list(many));
+    const { rerender } = wrap(attemptList(many));
     await screen.findAllByRole("button", { name: "Inspect" });
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
-    await lastCall(many, 50);
+    await listedPage(many, 50);
     // A case settles while the run goes on: its attempts join the list.
     const grown = [...many, "settled-60"];
-    rerender(list(grown));
-    await lastCall(grown, 50);
+    rerender(attemptList(grown));
+    await listedPage(grown, 50);
     // Another reset key is another listing, read from its first page.
-    rerender(list(grown, "current"));
-    await lastCall(grown, 0);
+    rerender(attemptList(grown, "current"));
+    await listedPage(grown, 0);
     await screen.findAllByRole("button", { name: "Inspect" });
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
-    await lastCall(grown, 50);
+    await listedPage(grown, 50);
     const point = [...grown, "settled-61"];
-    rerender(list(point, "current"));
-    await lastCall(point, 50);
-    rerender(list(point, "true:point-1"));
-    await lastCall(point, 0);
+    rerender(attemptList(point, "current"));
+    await listedPage(point, 50);
+    rerender(attemptList(point, "true:point-1"));
+    await listedPage(point, 0);
+  });
+  it("keeps the page of a chosen listing while newer cells replace its attempts", async () => {
+    serveListedPages();
+    const many = Array.from({ length: 60 }, (_, index) => `current-${index}`);
+    const { rerender } = wrap(attemptList(many, "false:current"));
+    await screen.findAllByRole("button", { name: "Inspect" });
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await listedPage(many, 50);
+    // A retested case settles: its new attempts replace the older cell's.
+    const replaced = [...many.slice(1), "retest-0", "retest-1", "retest-2"];
+    rerender(attemptList(replaced, "false:current"));
+    await listedPage(replaced, 50);
+    // A listing that shrinks below the page shows its last page instead.
+    const fewer = replaced.slice(0, 40);
+    rerender(attemptList(fewer, "false:current"));
+    await listedPage(fewer, 0);
+  });
+  it("starts a listing the reader returns to on its first page", async () => {
+    serveListedPages();
+    const many = Array.from({ length: 60 }, (_, index) => `current-${index}`);
+    const point = ["point-0", "point-1"];
+    // With a reset key per choice, and without one, where the ids tell.
+    for (const [current, older] of [
+      ["false:current", "false:point-1"],
+      [undefined, undefined],
+    ]) {
+      cleanup();
+      const { rerender } = wrap(attemptList(many, current));
+      await screen.findAllByRole("button", { name: "Inspect" });
+      await userEvent.click(screen.getByRole("button", { name: "Next" }));
+      await listedPage(many, 50);
+      rerender(attemptList(point, older));
+      await listedPage(point, 0);
+      rerender(attemptList(many, current));
+      await listedPage(many, 0);
+      expect(
+        await screen.findByRole("button", { name: "Previous" }),
+      ).toBeDisabled();
+    }
   });
   it("ranks every board on its own and re-ranks from a table column", async () => {
     const rows = [

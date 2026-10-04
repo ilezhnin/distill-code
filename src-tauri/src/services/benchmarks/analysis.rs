@@ -292,6 +292,65 @@ pub(crate) fn execution_configuration(attempt: &Attempt) -> Cow<'_, Configuratio
     Cow::Owned(asked)
 }
 
+/// Each run's newest attempt that acknowledged its requested model, by run and
+/// requested configuration, for requests that left effort or fast mode to the
+/// provider.
+type Acknowledgments<'a> = BTreeMap<(&'a str, String), &'a Attempt>;
+
+fn run_acknowledgments(attempts: &[Attempt]) -> Acknowledgments<'_> {
+    let mut acknowledged: Acknowledgments<'_> = BTreeMap::new();
+    for attempt in attempts.iter().filter(|a| {
+        (a.configuration.effort.is_none() || a.configuration.fast_mode.is_none())
+            && a.observed
+                .as_ref()
+                .is_some_and(|observed| observed.model_id == a.configuration.model_id)
+    }) {
+        let newest = acknowledged
+            .entry((
+                attempt.run_id.as_str(),
+                configuration_key(&attempt.configuration),
+            ))
+            .or_insert(attempt);
+        if (attempt.started_at, &attempt.id) > (newest.started_at, &newest.id) {
+            *newest = attempt;
+        }
+    }
+    acknowledged
+}
+
+/// What ran, as the ledger counts it. An attempt with no acknowledgment of
+/// its requested model (refused before a session existed, or still waiting)
+/// fills the effort and fast mode its request left to the provider from what
+/// the same request acknowledged in its run, so it stays on that row.
+fn ledger_configuration<'a>(
+    attempt: &'a Attempt,
+    acknowledged: &Acknowledgments<'_>,
+) -> Cow<'a, Configuration> {
+    let configuration = execution_configuration(attempt);
+    let requested = &attempt.configuration;
+    if (requested.effort.is_some() && requested.fast_mode.is_some())
+        || attempt
+            .observed
+            .as_ref()
+            .is_some_and(|observed| observed.model_id == requested.model_id)
+    {
+        return configuration;
+    }
+    let Some(sibling) = acknowledged.get(&(attempt.run_id.as_str(), configuration_key(requested)))
+    else {
+        return configuration;
+    };
+    let seen = execution_configuration(sibling);
+    let mut filled = configuration.into_owned();
+    if filled.effort.is_none() {
+        filled.effort = seen.effort.clone();
+    }
+    if filled.fast_mode.is_none() {
+        filled.fast_mode = seen.fast_mode;
+    }
+    Cow::Owned(filled)
+}
+
 /// What ran, as Nerf pairs it: the strict configuration, except that an
 /// attempt which also called an auxiliary model stays its configuration's
 /// evidence.
@@ -310,39 +369,65 @@ fn nerf_key(attempt: &Attempt) -> String {
 
 /// The conditions a run measured under: its suite, repetitions and timeout.
 /// The execution cap only admits a plan, so it is not a condition.
-fn request_conditions(request: &RunRequest) -> String {
-    let mut versions = request.version_ids.clone();
-    versions.sort();
-    serde_json::to_string(&(versions, request.repetitions, request.timeout_seconds))
-        .unwrap_or_default()
+fn conditions<'a>(
+    versions: impl IntoIterator<Item = &'a String>,
+    repetitions: u32,
+    timeout_seconds: u32,
+) -> String {
+    let versions: BTreeSet<&String> = versions.into_iter().collect();
+    serde_json::to_string(&(versions, repetitions, timeout_seconds)).unwrap_or_default()
 }
 
 fn cohort(run: &BenchmarkRun) -> String {
-    request_conditions(&run.request)
+    let request = &run.request;
+    conditions(
+        &request.version_ids,
+        request.repetitions,
+        request.timeout_seconds,
+    )
 }
 
 /// Each frozen configuration's conditions, taken from the baseline runs that
 /// produced its snapshots. The requested configuration may leave effort or
 /// fast mode unset while the snapshots carry the observed values, so the
-/// request's own configuration list cannot identify them. A snapshot without
-/// a recorded request adds an unmatchable condition.
-fn frozen_conditions(baseline: &Baseline) -> BTreeMap<String, BTreeSet<String>> {
+/// request's own configuration list cannot identify them. Runs of one
+/// configuration with the same repetitions and timeout freeze the union of
+/// their suites, so a run and its catch-up pair with one follow-up over both.
+/// A snapshot without a recorded request adds an unmatchable condition.
+pub(super) fn frozen_conditions(baseline: &Baseline) -> BTreeMap<String, BTreeSet<String>> {
     let requests: BTreeMap<&str, &RunRequest> = baseline
         .run_ids
         .iter()
         .map(String::as_str)
         .zip(&baseline.run_conditions)
         .collect();
-    let mut frozen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut runs: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     for attempt in &baseline.snapshots {
-        frozen.entry(nerf_key(attempt)).or_default().insert(
-            requests
-                .get(attempt.run_id.as_str())
-                .map(|request| request_conditions(request))
-                .unwrap_or_default(),
-        );
+        runs.entry(nerf_key(attempt))
+            .or_default()
+            .insert(attempt.run_id.as_str());
     }
-    frozen
+    runs.into_iter()
+        .map(|(key, run_ids)| {
+            let mut frozen = BTreeSet::new();
+            let mut suites: BTreeMap<(u32, u32), BTreeSet<&String>> = BTreeMap::new();
+            for id in run_ids {
+                match requests.get(id) {
+                    Some(request) => suites
+                        .entry((request.repetitions, request.timeout_seconds))
+                        .or_default()
+                        .extend(&request.version_ids),
+                    None => {
+                        frozen.insert(String::new());
+                    }
+                }
+            }
+            for ((repetitions, timeout_seconds), versions) in suites {
+                frozen.insert(conditions(versions, repetitions, timeout_seconds));
+            }
+            (key, frozen)
+        })
+        .collect()
 }
 
 /// The follow-up run of each frozen configuration: its newest completed run
@@ -682,6 +767,7 @@ fn leaderboard_from_attempts(
             .map(|v| v.manifest.work_class_id.as_str())
             .unwrap_or("unknown")
     };
+    let acknowledged = run_acknowledgments(&data.attempts);
     // Every attempt on a pool case from a counted run, by configuration and case.
     let mut cells: BTreeMap<String, (Configuration, BTreeMap<&str, Vec<&Attempt>>)> =
         BTreeMap::new();
@@ -694,7 +780,7 @@ fn leaderboard_from_attempts(
         {
             continue;
         }
-        let configuration = execution_configuration(attempt);
+        let configuration = ledger_configuration(attempt, &acknowledged);
         let entry = cells
             .entry(leaderboard_key(&configuration))
             .or_insert_with(|| (configuration.into_owned(), BTreeMap::new()));
@@ -718,7 +804,7 @@ fn leaderboard_from_attempts(
             if let Some(latest) = attempts.iter().max_by_key(|attempt| {
                 (runs[attempt.run_id.as_str()].created_at, attempt.started_at, &attempt.id)
             }) {
-                configuration = execution_configuration(latest).into_owned();
+                configuration = ledger_configuration(latest, &acknowledged).into_owned();
             }
             // Catch-up pins this configuration, so it carries the runnable profile.
             configuration.execution_profile =
@@ -979,11 +1065,32 @@ fn evaluator_identity(attempt: &Attempt) -> String {
     .unwrap_or_default()
 }
 
+/// Whether an attempt scores the same under any evaluator: a budget failure's
+/// fixed 0, or a judged brief answered without markup, which fails before a
+/// panel sees it (its rubric check is otherwise always pending review).
+fn protocol_neutral(data: &QueryData, attempt: &Attempt) -> bool {
+    is_budget_failure(attempt.outcome.as_deref())
+        || protocol_evaluation(attempt, None).is_some_and(|e| {
+            e.provenance == "objective"
+                && e.verdict == "fail"
+                && data
+                    .versions
+                    .iter()
+                    .find(|v| v.id == attempt.version_id)
+                    .is_some_and(|v| v.manifest.evaluator.kind == "rubric")
+        })
+}
+
 /// Each case's evaluator identities. A follow-up is scored by the same
 /// evaluator only when its objective check or judge protocol is unchanged.
-fn case_evaluators<'a>(attempts: &[&'a Attempt]) -> BTreeMap<&'a str, BTreeSet<String>> {
+/// Protocol-neutral attempts identify no evaluator, so a case they alone
+/// measured on one side is not compared.
+fn case_evaluators<'a>(
+    data: &QueryData,
+    attempts: &[&'a Attempt],
+) -> BTreeMap<&'a str, BTreeSet<String>> {
     let mut cases: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for attempt in attempts {
+    for attempt in attempts.iter().filter(|a| !protocol_neutral(data, a)) {
         cases
             .entry(attempt.version_id.as_str())
             .or_default()
@@ -1027,8 +1134,8 @@ fn comparison_key(
 /// Recompute each observation on today's measured cases with today's evidence.
 /// A case keeps the newest scored cell observed by then, whatever runtime,
 /// budget or evaluator revision it ran under, so a retest never rewrites an
-/// earlier point. A case first measured later supplies its earliest scored
-/// cell, explicitly marked as backfilled.
+/// earlier point. A case first measured later supplies the first cell scored
+/// after the point, explicitly marked as backfilled.
 fn recalculated_history_report(
     data: &QueryData,
     own: &[&Attempt],
@@ -1069,7 +1176,18 @@ fn recalculated_history_report(
                     a.finished_at.is_some_and(|end| end <= at) && score_as_of(a, Some(at)).is_some()
                 })
         });
-        if let Some((_, attempts)) = known.or_else(|| settled.first()) {
+        // Otherwise the first cell scored after it stands, whenever its run was
+        // created, so an older run resumed later never replaces that backfill.
+        let first_later = || {
+            settled.iter().min_by_key(|(id, attempts)| {
+                (
+                    attempts.iter().filter_map(|a| settled_at(a)).max(),
+                    runs[id].created_at,
+                    *id,
+                )
+            })
+        };
+        if let Some((_, attempts)) = known.or_else(first_later) {
             if known.is_none() {
                 backfilled.push(version.to_owned());
             } else if attempts
@@ -1170,12 +1288,13 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
         .filter(|r| !r.request.preview)
         .map(|r| (r.id.as_str(), r))
         .collect();
+    let acknowledged = run_acknowledgments(&data.attempts);
     let own: Vec<&Attempt> = data
         .attempts
         .iter()
         .filter(|a| {
             runs.contains_key(a.run_id.as_str())
-                && leaderboard_key(&execution_configuration(a)) == key
+                && leaderboard_key(&ledger_configuration(a, &acknowledged)) == key
         })
         .collect();
     let current_versions = leaderboard(
@@ -1391,12 +1510,14 @@ pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Ve
             .collect();
         let before_cases: BTreeSet<_> = before.iter().map(|a| &a.version_id).collect();
         let after_cases: BTreeSet<_> = after.iter().map(|a| &a.version_id).collect();
-        let frozen_evaluators = case_evaluators(&before);
-        let changed_evaluator = case_evaluators(&after).iter().any(|(case, identities)| {
-            frozen_evaluators
-                .get(case)
-                .is_some_and(|frozen| frozen != identities)
-        });
+        let frozen_evaluators = case_evaluators(data, &before);
+        let changed_evaluator = case_evaluators(data, &after)
+            .iter()
+            .any(|(case, identities)| {
+                frozen_evaluators
+                    .get(case)
+                    .is_some_and(|frozen| frozen != identities)
+            });
         let conditions = frozen.get(&key);
         let budgets_match = run.zip(conditions).is_some_and(|(run, conditions)| {
             conditions.len() == 1 && conditions.contains(&cohort(run))

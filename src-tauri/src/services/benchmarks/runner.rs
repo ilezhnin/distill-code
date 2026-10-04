@@ -2221,6 +2221,26 @@ impl BenchmarkService {
     async fn resume_judging(&self, run: &BenchmarkRun, id: &str) -> Result<bool> {
         let waiting = self.store.attempt(id).await?;
         let version = self.store.version(&waiting.version_id).await?;
+        let mut settled = waiting.clone();
+        settled.phase = "terminal".into();
+        // A plan saved before authored cells were left out may still hold a
+        // rendering its candidate wrote; no verdict on it could ever count.
+        if super::routing::authored_by_candidate(&version.manifest, &waiting.configuration) {
+            settled.outcome = Some("excluded".into());
+            settled.reason = Some("authored by this candidate".into());
+            self.store.save_attempt(&settled).await?;
+            return Ok(false);
+        }
+        // Every vote of the batch landed before the final save: the panel
+        // already settled it, and only an explicit evaluation asks again.
+        if super::analysis::score(&waiting).is_some() {
+            if settled.outcome.as_deref() == Some("pending_review") {
+                settled.outcome = Some("judged".into());
+            }
+            settled.reason = None;
+            self.store.save_attempt(&settled).await?;
+            return Ok(false);
+        }
         let judge_budget = self.judge_budget(run, &version).await;
         let (cancel_tx, cancel_rx) = watch::channel(false);
         *self.active.lock().await = Some((run.id.clone(), cancel_tx));
@@ -2239,7 +2259,8 @@ impl BenchmarkService {
     }
     /// Whether a recovered attempt is a rendering still owed its panel: a
     /// judged brief, a renderable output with no verdict yet, and a run that
-    /// is not being cancelled. No judge is asked here.
+    /// can still resume. Nothing resumes a finished run, so its rendering
+    /// settles and stays open to Evaluate again. No judge is asked here.
     async fn awaits_panel(&self, attempt: &Attempt, version: &BenchmarkVersion) -> Result<bool> {
         let manifest = &version.manifest;
         Ok(manifest.evaluator.kind == "rubric"
@@ -2251,9 +2272,9 @@ impl BenchmarkService {
                 manifest.facets.output_format.as_deref(),
             )
             .is_some()
-            && !matches!(
+            && matches!(
                 self.store.run_state(&attempt.run_id).await?.as_str(),
-                "cancelling" | "cancelled"
+                "running" | "pausing" | "paused" | "needs_attention"
             ))
     }
     /// A panel a pause or busy judges held back waits for its run; anything
@@ -3035,6 +3056,26 @@ mod tests {
         assert!(b.snapshots.iter().all(|a| a.id != excluded.id));
     }
     #[tokio::test]
+    async fn a_baseline_refuses_a_configuration_frozen_under_two_protocols() {
+        let (_dir, s, _) = setup().await;
+        let first = s.start_run(request(&s).await).await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let mut longer = request(&s).await;
+        longer.timeout_seconds += 60;
+        longer.request_key = "longer-key".into();
+        let second = s.start_run(longer).await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let both = vec![first.id.clone(), second.id.clone()];
+        assert!(s.create_baseline("Mixed".into(), both, 0.1).await.is_err());
+        for id in [first.id, second.id] {
+            assert!(s.create_baseline("One".into(), vec![id], 0.1).await.is_ok());
+        }
+    }
+    #[tokio::test]
     async fn baseline_is_a_frozen_copy() {
         let (_dir, s, _) = setup().await;
         let req = request(&s).await;
@@ -3636,6 +3677,89 @@ mod tests {
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
+    async fn a_restart_inside_a_completed_run_settles_the_rendering() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        // A failed final save left the rendering mid-panel; the run completed anyway.
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.phase = "collecting".into();
+        s.store.save_attempt(&a).await.unwrap();
+        s.store.set_run_state(&run.id, "completed").await.unwrap();
+        s.store.recover().await.unwrap();
+        s.tick().await.unwrap();
+        // Nothing resumes a completed run, so the rendering never waits for a panel.
+        let settled = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(settled.phase, "terminal");
+        assert_eq!(settled.outcome.as_deref(), Some("pending_review"));
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn a_resumed_panel_whose_votes_all_landed_asks_no_judge() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        // Each vote was saved as it landed, but the process stopped before the
+        // attempt's final save.
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.evaluations.extend(settled_batch());
+        a.phase = AWAITING_JUDGES.into();
+        a.reason = None;
+        s.store.save_attempt(&a).await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        let settled = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(settled.phase, "terminal");
+        assert!(settled.reason.is_none());
+        assert_eq!(super::super::analysis::score(&settled), Some(0.7));
+        assert_eq!(
+            s.store.stored_outcome(&a.id).await.unwrap().as_deref(),
+            Some("judged")
+        );
+    }
+    #[tokio::test]
+    async fn a_recovered_rendering_its_candidate_authored_asks_no_judge() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        // A plan saved before authored cells were left out generated one, and
+        // a restart cut off its panel.
+        let mut authored = creative();
+        authored.name.push_str(" written by the candidate");
+        authored.environment["authoredBy"] = json!(["fake-pass"]);
+        let written = publish(&s, authored).await;
+        let mut legacy = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        legacy.id = "legacy-authored".into();
+        legacy.version_id = written.id.clone();
+        legacy.phase = "collecting".into();
+        assert_eq!(legacy.outcome.as_deref(), Some("pending_review"));
+        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,0,'collecting',?)")
+            .bind(&legacy.id).bind(&run.id).bind(&written.id).bind(&legacy.configuration.id)
+            .bind(serde_json::to_string(&legacy).unwrap())
+            .execute(&s.store.pool).await.unwrap();
+        s.store.recover().await.unwrap();
+        s.tick().await.unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
+        let excluded = s.store.attempt("legacy-authored").await.unwrap();
+        assert_eq!(excluded.phase, "terminal");
+        assert_eq!(excluded.outcome.as_deref(), Some("excluded"));
+        assert_eq!(
+            excluded.reason.as_deref(),
+            Some("authored by this candidate")
+        );
+        // The paid generation stays on record; no judge was asked.
+        assert!(excluded.output.is_some());
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
     async fn a_panel_that_fails_before_saving_keeps_the_objective_verdict() {
         let (_dir, s, backend) = setup().await;
         backend.fail_judges.store(true, Ordering::SeqCst);
@@ -3904,12 +4028,8 @@ mod tests {
         let busy = s.rescore(first).await.unwrap_err();
         assert_eq!(busy.message, "This attempt is already being evaluated");
     }
-    #[tokio::test]
-    async fn evaluating_again_without_a_panel_keeps_the_settled_score() {
-        let (_dir, s, backend) = setup().await;
-        let run = s.start_run(creative_request(&s).await).await.unwrap();
-        s.tick().await.unwrap();
-        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+    /// A render marker for two judges and their valid votes, 0.6 and 0.8.
+    fn settled_batch() -> [Evaluation; 3] {
         let vote = |id: &str, score: f64| Evaluation {
             id: id.into(),
             evaluator_revision: "1".into(),
@@ -3923,8 +4043,15 @@ mod tests {
             judge: (id != "render").then(|| judge_row("sonnet")),
             usage: None,
         };
-        a.evaluations
-            .extend([vote("render", 0.0), vote("first", 0.6), vote("second", 0.8)]);
+        [vote("render", 0.0), vote("first", 0.6), vote("second", 0.8)]
+    }
+    #[tokio::test]
+    async fn evaluating_again_without_a_panel_keeps_the_settled_score() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.evaluations.extend(settled_batch());
         a.outcome = Some("judged".into());
         s.store.save_attempt(&a).await.unwrap();
         let before = s.store.attempt(&a.id).await.unwrap();

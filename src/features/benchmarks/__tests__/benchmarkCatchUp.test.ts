@@ -111,6 +111,39 @@ describe("catch-up cases", () => {
     expect(result).toEqual({ owed: ["version-3"], queuedRunId: "newer-run" });
   });
 
+  it("offers a gap the unfinished run already settled without a score", () => {
+    // version-1 settled as an infrastructure failure; only version-2 is open.
+    const campaign = active(
+      {
+        id: "campaign",
+        openCells: [
+          { configurationId: "config-1", versionId: "version-2" },
+          { configurationId: "config-2", versionId: "version-1" },
+        ],
+      },
+      {
+        versionIds: ["version-1", "version-2"],
+        configurations: [
+          { ...configuration, effort: null, fastMode: null },
+          { ...configuration, id: "config-2", modelId: "model-2" },
+        ],
+      },
+    );
+    expect(catchUpCases(row, [campaign])).toEqual({
+      owed: ["version-1", "version-3"],
+      queuedRunId: "campaign",
+    });
+    // A parked run with nothing left open plans no gap at all.
+    const parked = active(
+      { id: "parked", state: "needs_attention", openCells: [] },
+      { versionIds: ["version-1", "version-2", "version-3"] },
+    );
+    expect(catchUpCases(row, [parked])).toEqual({
+      owed: ["version-1", "version-2", "version-3"],
+      queuedRunId: null,
+    });
+  });
+
   it("offers every gap when no unfinished run plans it", () => {
     const result = catchUpCases(row, [
       active({ id: "done", state: "completed" }),

@@ -524,6 +524,17 @@ impl BenchmarkService {
             snapshots,
             run_conditions,
         };
+        // One follow-up run reproduces one protocol per configuration, so a
+        // configuration frozen under two could never be compared.
+        if analysis::frozen_conditions(&baseline)
+            .values()
+            .any(|conditions| conditions.len() > 1)
+        {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Each configuration in a baseline needs the same repetitions and timeout in all its runs",
+            ));
+        }
         let mut tx = self.store.pool.begin().await?;
         sqlx::query("INSERT INTO baselines(id,data_json) VALUES(?,?)")
             .bind(&baseline.id)

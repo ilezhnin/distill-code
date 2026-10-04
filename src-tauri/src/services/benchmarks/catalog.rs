@@ -158,6 +158,21 @@ impl Store {
         .fetch_optional(&mut *tx)
         .await?;
         if let Some(key) = existing {
+            // The pool takes a definition's newest version, so content an older
+            // version holds cannot become current again; only the current
+            // version republishes.
+            let superseded = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM benchmark_versions newer JOIN benchmark_versions found ON found.definition_id=newer.definition_id WHERE found.id=? AND newer.published_at>found.published_at",
+            )
+            .bind(&key)
+            .fetch_one(&mut *tx)
+            .await?;
+            if superseded != 0 {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    "This draft matches an earlier published version; change it before publishing it again",
+                ));
+            }
             tx.commit().await?;
             return self.version(&key).await;
         }
@@ -177,13 +192,26 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let at = now();
         // A restore keeps the period it ends, so a dated pool inside it never
-        // owes the definition; a later archive starts a new period.
+        // owes the definition; a later archive starts a new period. An archive
+        // older than its recorded time starts where `analysis::pool` puts it:
+        // after the last non-preview run that planned one of its versions, or
+        // at the start of time when none did.
         if !archived {
-            sqlx::query("INSERT INTO benchmark_definition_archives(definition_id,archived_at,restored_at) SELECT id,archived_at,? FROM benchmark_definitions WHERE id=? AND archived=1 AND archived_at IS NOT NULL")
-                .bind(at)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT INTO benchmark_definition_archives(definition_id,archived_at,restored_at)
+                 SELECT d.id,COALESCE(d.archived_at,
+                    (SELECT MAX(r.updated_at)+1 FROM run_plans r
+                     JOIN json_each(r.request_json,'$.versionIds') planned
+                     JOIN benchmark_versions v ON v.id=planned.value
+                     WHERE v.definition_id=d.id
+                        AND COALESCE(json_extract(r.request_json,'$.preview'),0)=0),
+                    0),?
+                 FROM benchmark_definitions d WHERE d.id=? AND d.archived=1",
+            )
+            .bind(at)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         }
         // Dated pools retire a definition from its first archive time on.
         sqlx::query("UPDATE benchmark_definitions SET archived=?,archived_at=CASE WHEN ? THEN COALESCE(archived_at,?) ELSE NULL END,revision=revision+1 WHERE id=?")
@@ -245,6 +273,130 @@ mod tests {
         // Restoring a live definition records nothing.
         let live = store.archive(&definition.id, false).await.unwrap();
         assert_eq!(live.archive_history.len(), 2);
+    }
+    /// The catalog and runs as the evidence queries read them.
+    async fn query_data(store: &Store) -> QueryData {
+        let definitions = store.all_definitions().await.unwrap();
+        QueryData {
+            versions: definitions
+                .iter()
+                .flat_map(|d| d.versions.clone())
+                .collect(),
+            definitions,
+            runs: store.all_runs().await.unwrap(),
+            attempts: vec![],
+        }
+    }
+    fn pooled(data: &QueryData, as_of: Option<i64>, version: &str) -> bool {
+        super::super::analysis::pool(
+            data,
+            &ResultQuery {
+                as_of,
+                ..Default::default()
+            },
+        )
+        .iter()
+        .any(|v| v.id == version)
+    }
+    #[tokio::test]
+    async fn restoring_an_archive_older_than_its_recorded_time_keeps_its_period() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let mut versions = Vec::new();
+        for task_family in ["planned", "unplanned"] {
+            let mut draft = super::super::runner::seed_definitions().remove(0);
+            draft.task_family = task_family.into();
+            let definition = store.save_draft(None, None, draft).await.unwrap();
+            versions.push(store.publish(&definition.id, 1).await.unwrap());
+        }
+        let [planned, unplanned] = &versions[..] else {
+            unreachable!()
+        };
+        sqlx::query("UPDATE benchmark_versions SET published_at=10")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        // One run planned the first case and last changed at 1000; a preview
+        // run changed later and does not count.
+        for (id, updated_at, preview) in [("run", 1000, false), ("preview", 5000, true)] {
+            let request = serde_json::json!({"requestKey":id,"versionIds":[planned.id],"configurations":[],"repetitions":1,"timeoutSeconds":30,"maxExecutions":1,"preview":preview});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'completed',1,0,?,?)")
+                .bind(id)
+                .bind(id)
+                .bind(updated_at)
+                .bind(request.to_string())
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        // Both were archived before the archive time was recorded.
+        sqlx::query("UPDATE benchmark_definitions SET archived=1,archived_at=NULL")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let before = query_data(&store).await;
+        assert!(pooled(&before, Some(1000), &planned.id));
+        assert!(!pooled(&before, Some(2000), &planned.id));
+        assert!(!pooled(&before, Some(2000), &unplanned.id));
+        for version in &versions {
+            let restored = store.archive(&version.definition_id, false).await.unwrap();
+            let [(from, until)] = restored.archive_history[..] else {
+                panic!("one closed period: {:?}", restored.archive_history);
+            };
+            assert_eq!(from, if version.id == planned.id { 1001 } else { 0 });
+            assert!(until > 5000);
+        }
+        // The restore changes no earlier dated pool; the current one owes both.
+        let after = query_data(&store).await;
+        assert!(pooled(&after, Some(1000), &planned.id));
+        assert!(!pooled(&after, Some(2000), &planned.id));
+        assert!(!pooled(&after, Some(2000), &unplanned.id));
+        assert!(pooled(&after, None, &planned.id));
+        assert!(pooled(&after, None, &unplanned.id));
+    }
+    #[tokio::test]
+    async fn content_of_an_earlier_version_cannot_republish_as_current() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::runner::seed_definitions().remove(0);
+        let definition = store.save_draft(None, None, draft.clone()).await.unwrap();
+        let first = store.publish(&definition.id, 1).await.unwrap();
+        sqlx::query("UPDATE benchmark_versions SET published_at=1 WHERE id=?")
+            .bind(&first.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut changed = draft.clone();
+        changed.prompt.push_str(" Use compact JSON.");
+        store
+            .save_draft(Some(&definition.id), Some(1), changed)
+            .await
+            .unwrap();
+        let second = store.publish(&definition.id, 2).await.unwrap();
+        // Reverting the draft reports that the pool would keep the newer version.
+        store
+            .save_draft(Some(&definition.id), Some(2), draft)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.publish(&definition.id, 3).await.unwrap_err().code,
+            "validation"
+        );
+        let data = query_data(&store).await;
+        assert!(pooled(&data, None, &second.id));
+        assert!(!pooled(&data, None, &first.id));
+        // The current version still republishes as itself.
+        let current = store.definition(&definition.id).await.unwrap();
+        let mut again = current.draft.clone();
+        again.prompt.push_str(" Use compact JSON.");
+        store
+            .save_draft(Some(&definition.id), Some(current.draft_revision), again)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.publish(&definition.id, 4).await.unwrap().id,
+            second.id
+        );
     }
     #[tokio::test]
     async fn entry_state_hash_tracks_actual_public_fixture_contents() {
