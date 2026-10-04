@@ -38,9 +38,12 @@ import {
   SIDEBAR_CHAT_ROW_DENSITY_CLASSES,
   SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
   SIDEBAR_NAV_TEXT_CLASS,
+  SIDEBAR_NESTED_ROW_PADDING_CLASS,
   SIDEBAR_ROW_ACTIVE_CLASS,
   SIDEBAR_ROW_HEIGHT_CLASS,
   SIDEBAR_ROW_HOVER_CLASS,
+  SIDEBAR_ROW_SHELL_ACTIVE_CLASS,
+  SIDEBAR_ROW_SHELL_HOVER_CLASS,
   SIDEBAR_ROW_TEXT_DEFAULT_CLASS,
   SIDEBAR_ROW_VERTICAL_PADDING_CLASS,
   type SidebarChatRowDensity,
@@ -274,7 +277,7 @@ export function SidebarChatRow({
             ? "pl-8"
             : "pl-2"
           : needsLeadingSlot
-            ? "pl-[38px]"
+            ? SIDEBAR_NESTED_ROW_PADDING_CLASS
             : densityClasses.contentPadding));
   // The chat icon and quick-pin action deliberately share the left gutter:
   // pinning replaces the icon rather than creating a second position.
@@ -660,11 +663,12 @@ export function SidebarChatRow({
             event.stopPropagation();
           }}
           className={cn(
-            "relative flex items-center group/chat-row rounded-sm hover:bg-[var(--sidebar-row-hover)] focus-within:bg-[var(--sidebar-row-hover)]",
+            "relative flex items-center group/chat-row rounded-sm",
+            SIDEBAR_ROW_SHELL_HOVER_CLASS,
             SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
             (isActive || menuOpen || contextMenuOpen) &&
               (!selectionEnabled || selected) &&
-              "bg-[var(--sidebar-row-active)]",
+              SIDEBAR_ROW_SHELL_ACTIVE_CLASS,
             selected && SELECTED_CHAT_ROW_CLASS,
             selected && SELECTED_CHAT_ROW_MERGE_CLASS,
             draggingSession !== null && "pointer-events-none",

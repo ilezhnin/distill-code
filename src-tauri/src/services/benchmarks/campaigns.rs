@@ -104,10 +104,14 @@ fn refresh_candidates(schedule: &Schedule, inventory: &[InventoryModel]) -> Vec<
         else {
             continue;
         };
+        // A saved effort the model no longer lists, or none on a model that
+        // lists levels (it would run at the CLI's "default" and count
+        // nowhere), leaves the candidates.
         if saved
             .effort
             .as_ref()
             .is_some_and(|effort| !model.efforts.contains(effort))
+            || super::effort::left_to_the_cli(saved, model)
             || saved.fast_mode == Some(true) && !model.supports_fast_mode
         {
             continue;
@@ -137,7 +141,17 @@ fn refresh_candidates(schedule: &Schedule, inventory: &[InventoryModel]) -> Vec<
             {
                 continue;
             }
-            configurations.push(model.configuration.clone());
+            // A new model starts at its highest listed level, as the run
+            // dialog starts it; one that lists only levels nobody chooses
+            // stays out. A model without an effort control runs unset.
+            let mut discovered = model.configuration.clone();
+            if !model.efforts.is_empty() {
+                let Some(level) = super::effort::preselected(&model.efforts) else {
+                    continue;
+                };
+                discovered.effort = Some(level.to_owned());
+            }
+            configurations.push(discovered);
         }
     }
     configurations
@@ -399,13 +413,129 @@ mod tests {
             models(&schedule),
             [saved.model_id.as_str(), "claude-fable-5[1m]"]
         );
-        // A model the saved plan already holds stays first.
+        // A model the saved plan already holds, at a level it lists, stays first.
         schedule.discovery.as_mut().unwrap().model_ids.clear();
         schedule.request.configurations[0] = inventory[1].configuration.clone();
+        schedule.request.configurations[0].effort = Some("medium".into());
         let discovered = models(&schedule);
         assert_eq!(discovered[0], "claude-fable-5-1[1m]");
         assert!(discovered.iter().any(|id| id == &saved.model_id));
         assert!(discovered.iter().any(|id| id == "haiku"));
+    }
+
+    #[test]
+    fn discovery_never_leaves_an_effort_to_the_cli() {
+        let (data, _) = super::super::analysis::tests::dataset();
+        let mut schedule: Schedule = serde_json::from_value(serde_json::json!({"id":"campaign","name":"Pilot","enabled":false,"intervalMinutes":60,"nextDueAt":0,"request":data.runs[0].request,"missed":false,"discovery":{"providerId":"claude","accountId":"private-account","includeNewModels":true,"modelIds":[],"maxCandidates":8},"maxRuns":2,"maxTotalExecutions":20,"generatedRunIds":[],"pausedReason":null})).unwrap();
+        let saved = schedule.request.configurations[0].clone();
+        let row = |id: &str, efforts: &[&str]| {
+            let mut configuration = saved.clone();
+            configuration.id = id.into();
+            configuration.model_id = id.into();
+            configuration.effort = None;
+            InventoryModel {
+                configuration,
+                name: id.into(),
+                efforts: efforts.iter().map(|&effort| effort.into()).collect(),
+                supports_fast_mode: false,
+                available: true,
+                reason: None,
+            }
+        };
+        let inventory = vec![
+            row(&saved.model_id, &["low", "medium"]),
+            row("opus", &["low", "max", "high", "ultra"]),
+            row("gpt", &["minimal", "xhigh", "medium"]),
+            row("custom", &["ultra", "turbo"]),
+            row("delegating", &["ultra"]),
+            row("haiku", &[]),
+        ];
+        let efforts = |schedule: &Schedule| {
+            refresh_candidates(schedule, &inventory)
+                .into_iter()
+                .map(|c| (c.model_id, c.effort))
+                .collect::<Vec<_>>()
+        };
+        // A new model starts at its highest listed level, never "ultra"; one
+        // that lists only "ultra" stays out; a model without an effort
+        // control runs unset.
+        let level = |effort: &str| Some(effort.to_owned());
+        assert_eq!(
+            efforts(&schedule),
+            [
+                (saved.model_id.clone(), level("medium")),
+                ("opus".into(), level("max")),
+                ("gpt".into(), level("xhigh")),
+                ("custom".into(), level("turbo")),
+                ("haiku".into(), None),
+            ]
+        );
+        // A saved configuration that leaves the effort unset on a model that
+        // lists levels is no candidate.
+        schedule.request.configurations[0].effort = None;
+        assert_eq!(
+            efforts(&schedule),
+            [
+                ("opus".into(), level("max")),
+                ("gpt".into(), level("xhigh")),
+                ("custom".into(), level("turbo")),
+                ("haiku".into(), None),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_campaign_plans_a_discovered_model_at_its_highest_level() {
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Arc::new(super::super::runner::FakeBackend::default());
+        *backend.effort_levels.lock().unwrap() = vec!["low".into(), "high".into()];
+        let service = BenchmarkService {
+            store: super::super::store::Store::open(directory.path())
+                .await
+                .unwrap(),
+            backend,
+            wake: tokio::sync::Notify::new(),
+            active: tokio::sync::Mutex::new(None),
+            app: None,
+        };
+        let draft = super::super::runner::seed_definitions().remove(0);
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        let version = service.store.publish(&definition.id, 1).await.unwrap();
+        let inventory = service
+            .backend
+            .inventory("fake", Some("isolated"), false)
+            .await
+            .unwrap();
+        let mut saved = inventory[0].configuration.clone();
+        saved.effort = Some("low".into());
+        let request = RunRequest {
+            request_key: "template".into(),
+            version_ids: vec![version.id],
+            configurations: vec![saved],
+            repetitions: 1,
+            timeout_seconds: 10,
+            max_executions: 2,
+            preview: false,
+        };
+        let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
+        service.store.save_schedule(&schedule).await.unwrap();
+        tick(&service).await.unwrap();
+        let saved = service.store.schedules().await.unwrap().remove(0);
+        assert_eq!(saved.paused_reason, None);
+        let runs = service.store.all_runs().await.unwrap();
+        assert_eq!(runs.len(), 1);
+        let mut planned: Vec<_> = runs[0]
+            .request
+            .configurations
+            .iter()
+            .map(|c| (c.model_id.as_str(), c.effort.as_deref()))
+            .collect();
+        planned.sort_unstable();
+        assert_eq!(
+            planned,
+            [("fake-fail", Some("high")), ("fake-pass", Some("low"))]
+        );
     }
 
     #[tokio::test]

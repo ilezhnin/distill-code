@@ -478,3 +478,141 @@ it("selects the CLI sign-in whenever the capabilities naming it arrive", async (
   expect(screen.getByRole("option", { name: "CLI sign-in" })).toBeVisible();
   expect(screen.queryByRole("option", { name: "No account" })).toBeNull();
 });
+
+/** Picks Claude Code, the test account and the test model in a fresh dialog. */
+async function chooseTestModel(user: ReturnType<typeof userEvent.setup>) {
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  await user.click(screen.getByRole("option", { name: "Test account" }));
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  await user.click(screen.getByRole("option", { name: "Test model" }));
+}
+
+it("offers only the levels a model lists and starts at its highest", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration: { ...configuration, effort: null, fastMode: null },
+      name: "Test model",
+      // An older runtime may still list the CLI's "default"; it is no level.
+      efforts: ["low", "default", "high", "xhigh", "ultra"],
+      supportsFastMode: false,
+      available: true,
+      reason: null,
+    },
+  ]);
+  await chooseTestModel(user);
+  const effort = screen.getByRole("combobox", { name: "Native effort" });
+  // The highest level is chosen for the operator; "ultra" never is.
+  expect(effort).toHaveTextContent("xhigh");
+  await user.click(effort);
+  expect(
+    screen.getAllByRole("option").map((option) => option.textContent),
+  ).toEqual(["low", "high", "xhigh", "ultra"]);
+  expect(screen.queryByRole("option", { name: "default" })).toBeNull();
+  expect(screen.queryByRole("option", { name: "Provider default" })).toBeNull();
+  expect(
+    screen.queryByRole("option", { name: "No effort setting" }),
+  ).toBeNull();
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configurations: [
+          expect.objectContaining({ modelId: "model-1", effort: "xhigh" }),
+        ],
+      }),
+    ),
+  );
+});
+
+it("starts each model at max when it lists max", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration: { ...configuration, effort: null, fastMode: null },
+      name: "Test model",
+      efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+      supportsFastMode: false,
+      available: true,
+      reason: null,
+    },
+  ]);
+  await chooseTestModel(user);
+  expect(
+    screen.getByRole("combobox", { name: "Native effort" }),
+  ).toHaveTextContent("max");
+});
+
+it("runs a model without an effort control unset, with no other choice", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration: { ...configuration, effort: null, fastMode: null },
+      name: "Test model",
+      efforts: [],
+      supportsFastMode: false,
+      available: true,
+      reason: null,
+    },
+  ]);
+  await chooseTestModel(user);
+  const effort = screen.getByRole("combobox", { name: "Native effort" });
+  expect(effort).toHaveTextContent("No effort setting");
+  await user.click(effort);
+  expect(
+    screen.getAllByRole("option").map((option) => option.textContent),
+  ).toEqual(["No effort setting"]);
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configurations: [
+          expect.objectContaining({ modelId: "model-1", effort: null }),
+        ],
+      }),
+    ),
+  );
+});
+
+it("does not catch up a row measured at the CLI's default", async () => {
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        selectedConfiguration={{ ...configuration, effort: "default" }}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "model-1 no longer offers this effort",
+  );
+  expect(screen.getByText("0 executions")).toBeInTheDocument();
+  expect(benchmarkApi.previewRun).not.toHaveBeenCalled();
+});

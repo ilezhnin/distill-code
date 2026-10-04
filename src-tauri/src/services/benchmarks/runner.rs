@@ -2182,7 +2182,9 @@ fn managed_lock_entry(harness_id: &str) -> Option<String> {
         .and_then(|tools| tools.get(harness_id))
         .map(canonical_json)
 }
-/// The efforts a bridge row offers that the profile does not refuse.
+/// The effort levels a bridge row offers that the profile does not refuse.
+/// The CLI's "default" names no level, so it is never offered: a model whose
+/// only entry is "default" has no effort control here and runs unset.
 fn offered_efforts(row: &Value, excluded: &[String]) -> Vec<String> {
     row.get("reasoningEfforts")
         .or_else(|| row.get("efforts"))
@@ -2190,6 +2192,7 @@ fn offered_efforts(row: &Value, excluded: &[String]) -> Vec<String> {
         .into_iter()
         .flatten()
         .filter_map(|v| v.as_str().or_else(|| v["value"].as_str()))
+        .filter(|effort| !super::effort::names_cli_default(Some(*effort)))
         .filter(|effort| !excluded.iter().any(|refused| refused == effort))
         .map(str::to_owned)
         .collect()
@@ -3120,6 +3123,9 @@ pub struct FakeBackend {
     /// Sessions the host refuses to open before any provider call (a sign-in
     /// near expiry, a refused preflight).
     pub capability_refusals: std::sync::atomic::AtomicU64,
+    /// The effort levels every fake model lists: none, so no effort control,
+    /// unless a test gives them some.
+    pub effort_levels: std::sync::Mutex<Vec<String>>,
 }
 impl ExecutionBackend for FakeBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
@@ -3158,6 +3164,13 @@ impl ExecutionBackend for FakeBackend {
         _: bool,
     ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
         Box::pin(async move {
+            // Fake models have no effort control unless a test lists levels,
+            // so their measurements are fully specified with the effort unset.
+            let efforts = self
+                .effort_levels
+                .lock()
+                .map(|levels| levels.clone())
+                .unwrap_or_default();
             Ok(["fake-pass", "fake-fail"]
                 .into_iter()
                 .map(|id| InventoryModel {
@@ -3166,7 +3179,7 @@ impl ExecutionBackend for FakeBackend {
                         provider_id: provider.into(),
                         account_id: account.map(str::to_owned),
                         model_id: id.into(),
-                        effort: Some("default".into()),
+                        effort: None,
                         fast_mode: None,
                         billing_mode: "simulated".into(),
                         execution_profile: "native_text".into(),
@@ -3174,7 +3187,7 @@ impl ExecutionBackend for FakeBackend {
                         model_name: None,
                     },
                     name: id.into(),
-                    efforts: vec!["default".into()],
+                    efforts: efforts.clone(),
                     supports_fast_mode: false,
                     available: true,
                     reason: None,
@@ -4895,6 +4908,128 @@ mod tests {
             .issues
             .iter()
             .any(|i| i.contains("task metrics only")));
+    }
+    #[tokio::test]
+    async fn a_cli_default_effort_is_refused_at_planning() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        req.configurations[0].effort = Some("default".into());
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(!preview.valid);
+        assert!(
+            preview
+                .issues
+                .iter()
+                .any(|issue| issue.contains("fake-pass")
+                    && issue.contains("\"default\" is not an effort level")),
+            "{:?}",
+            preview.issues
+        );
+        let refused = s.start_run(req.clone()).await.unwrap_err();
+        assert!(refused.message.contains("not an effort level"));
+        assert!(s.store.runs().await.unwrap().is_empty());
+        // An explicit level plans, and so does a model without an effort control.
+        req.configurations[0].effort = Some("high".into());
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        req.configurations[0].effort = None;
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn the_inventory_never_offers_the_cli_default_effort() {
+        let claude = NativeProvider::Claude.excluded_efforts();
+        let row = json!({"modelId":"sonnet","reasoningEfforts":["default","low","high","max"]});
+        assert_eq!(offered_efforts(&row, claude), ["low", "high", "max"]);
+        let described = json!({"id":"opus","efforts":[{"value":"default"},{"value":"xhigh"}]});
+        assert_eq!(offered_efforts(&described, claude), ["xhigh"]);
+        // A model whose only entry is the CLI's default has no effort control.
+        let haiku = json!({"modelId":"haiku","reasoningEfforts":["default"]});
+        assert!(offered_efforts(&haiku, claude).is_empty());
+        // The fake models have none either, and leave the effort unset.
+        let (_dir, s, _) = setup().await;
+        for model in s
+            .backend
+            .inventory("fake", Some("isolated"), false)
+            .await
+            .unwrap()
+        {
+            assert!(model.efforts.is_empty());
+            assert_eq!(model.configuration.effort, None);
+        }
+    }
+    #[tokio::test]
+    async fn an_unset_effort_is_refused_on_a_model_that_lists_levels() {
+        let (_dir, s, backend) = setup().await;
+        *backend.effort_levels.lock().unwrap() = vec!["high".into()];
+        let mut req = request(&s).await;
+        req.configurations[0].effort = None;
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(!preview.valid);
+        assert!(
+            preview
+                .issues
+                .iter()
+                .any(|issue| issue.contains("fake-pass")
+                    && issue.contains("leaves its reasoning effort to the CLI")
+                    && issue.ends_with("the model lists: high")),
+            "{:?}",
+            preview.issues
+        );
+        let refused = s.start_run(req.clone()).await.unwrap_err();
+        assert!(refused
+            .message
+            .contains("leaves its reasoning effort to the CLI"));
+        assert!(s.store.runs().await.unwrap().is_empty());
+        // A level the model lists plans.
+        req.configurations[0].effort = Some("high".into());
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(preview.valid, "{:?}", preview.issues);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn the_analysis_data_leaves_out_attempts_acknowledged_at_the_cli_default() {
+        let (_dir, s, _) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let completed = s.store.run(&run.id).await.unwrap();
+        assert_eq!(completed.state, "completed");
+        let counted =
+            |data: &QueryData| data.attempts.iter().filter(|a| a.run_id == run.id).count();
+        let ranked = |data: &QueryData| {
+            super::super::analysis::leaderboard(data, &ResultQuery::default())
+                .rows
+                .iter()
+                .any(|row| row.configuration.model_id == "fake-pass")
+        };
+        let data = s.query_data().await.unwrap();
+        assert_eq!(counted(&data), 2);
+        assert!(ranked(&data));
+        // The bridge acknowledged the CLI's "default" for every attempt of the
+        // unset request.
+        for attempt in &completed.attempts {
+            let mut attempt = s.store.attempt(&attempt.id).await.unwrap();
+            attempt.observed.as_mut().unwrap().effort = Some("default".into());
+            s.store.save_attempt(&attempt).await.unwrap();
+        }
+        let data = s.query_data().await.unwrap();
+        assert_eq!(counted(&data), 0);
+        assert!(!ranked(&data));
+        let planned = data.runs.iter().find(|r| r.id == run.id).unwrap();
+        assert!(planned.attempts.is_empty());
+        assert!(planned.request.configurations.is_empty());
+        // Run detail and the raw run listing keep them for audit.
+        assert_eq!(s.store.run(&run.id).await.unwrap().attempts.len(), 2);
+        let listed = s.store.runs().await.unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .find(|r| r.id == run.id)
+                .unwrap()
+                .attempt_count,
+            2
+        );
     }
     #[tokio::test]
     async fn judge_calls_are_reserved_and_only_the_budget_skips_them() {

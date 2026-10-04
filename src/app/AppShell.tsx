@@ -3988,6 +3988,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           onSettingsBack: leaveSecondarySurface,
           onSettingsSectionChange: selectSettingsSection,
           onNavigate: handleNavigate,
+          onBenchmarkSectionSelect: (section) =>
+            navigateBenchmarks({ section }),
           onNewChatInProject: handleNewChatInProject,
           onNewConductorInProject: handleNewConductorInProject,
           onNewChat: () => {
@@ -4010,6 +4012,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           onReorderProject: reorderProjects,
           onSelectSession: handleSelectSession,
           activeView,
+          activeBenchmarkSection: benchmarkLocation.section,
           activeSettingsSection,
           activeSessionId,
           onProjectCreatedRevisionHandled: (revision) =>

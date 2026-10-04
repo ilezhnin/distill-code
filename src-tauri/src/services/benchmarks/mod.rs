@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod campaigns;
 pub mod catalog;
+pub mod effort;
 pub mod evaluation;
 pub mod export;
 pub mod fixtures;
@@ -188,12 +189,14 @@ impl BenchmarkService {
             .collect();
         let runs = self.store.all_runs().await?;
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
-        Ok(QueryData {
+        // Every analysis reads this data, so a measurement of an unknown
+        // effort is left out of all of them alike; the store keeps it.
+        Ok(effort::with_known_effort(QueryData {
             definitions,
             versions,
             runs,
             attempts,
-        })
+        }))
     }
     /// Executions a saved plan owes, read from the stored manifests alone.
     pub(super) async fn planned_executions(&self, request: &RunRequest) -> Result<usize> {
@@ -251,14 +254,24 @@ impl BenchmarkService {
                     }
                 }
             }
-            let current = runtimes[&key]
+            let model = runtimes[&key]
                 .iter()
-                .find(|m| m.configuration.model_id == c.model_id)
-                .and_then(|m| m.configuration.inventory_revision.as_ref());
+                .find(|m| m.configuration.model_id == c.model_id);
+            let current = model.and_then(|m| m.configuration.inventory_revision.as_ref());
             if current != Some(pinned) {
                 issues.push(
                     "Runtime changed since this configuration was selected; refresh it".into(),
                 );
+            }
+            // A model that lists levels runs an unset effort at the CLI's
+            // "default", which no analysis counts (see `effort`).
+            if let Some(model) = model.filter(|model| effort::left_to_the_cli(c, model)) {
+                issues.push(format!(
+                    "Configuration {} ({}) leaves its reasoning effort to the CLI; choose one of the levels the model lists: {}",
+                    c.id,
+                    c.model_name.as_deref().unwrap_or(&c.model_id),
+                    model.efforts.join(", "),
+                ));
             }
         }
         if request.request_key.trim().is_empty() || request.request_key.len() > 256 {
@@ -293,6 +306,16 @@ impl BenchmarkService {
             }
             if c.id.is_empty() || c.model_id.is_empty() || c.provider_id.is_empty() {
                 issues.push("Configuration requires ID, provider and model".into());
+            }
+            // Nobody could tell which effort such a cell measured, so no
+            // analysis would count it (see `effort`).
+            if effort::names_cli_default(c.effort.as_deref()) {
+                issues.push(format!(
+                    "Configuration {} ({}) leaves its reasoning effort to the CLI; \"{}\" is not an effort level, so choose one the model lists",
+                    c.id,
+                    c.model_name.as_deref().unwrap_or(&c.model_id),
+                    effort::CLI_DEFAULT_EFFORT,
+                ));
             }
         }
         let mut profiles = std::collections::HashSet::new();

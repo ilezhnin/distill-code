@@ -9,6 +9,7 @@ import type {
   RunSummary,
 } from "../types";
 import { onMovingAlias } from "./benchmarkBoards";
+import { CLI_DEFAULT_EFFORT, explicitEfforts } from "./benchmarkEffort";
 
 export type CatchUpResolution =
   | { configuration: Configuration }
@@ -34,14 +35,15 @@ export function resolveCatchUpConfiguration(
   // Listed but blocked, for example while a changed runtime awaits verification.
   if (!model.available)
     return { issue: "unavailable", reason: model.reason ?? null };
-  // "default" is the provider's own effort, the same ledger cell as none.
-  const effort =
-    row.effort &&
-    (row.effort !== "default" || model.efforts.includes("default"))
-      ? row.effort
-      : null;
+  // The row's own level, which the model must still list. A model with an
+  // effort control never runs unset, and the CLI's "default" names no level,
+  // so a row measured at it cannot run again.
+  const effort = row.effort || null;
   if (
-    (effort && !model.efforts.includes(effort)) ||
+    effort === CLI_DEFAULT_EFFORT ||
+    (effort
+      ? !model.efforts.includes(effort)
+      : explicitEfforts(model.efforts).length > 0) ||
     (row.fastMode === true && !model.supportsFastMode) ||
     model.configuration.billingMode !== row.billingMode
   )

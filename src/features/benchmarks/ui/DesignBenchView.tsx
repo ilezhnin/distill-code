@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconClock, IconCoin } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
@@ -22,6 +22,7 @@ import { resolveCatalogEntry } from "../lib/modelCatalog";
 import type { DesignEntry } from "../types";
 import {
   BenchmarkEmpty,
+  BenchmarkToolbar,
   FilterMenu,
   ModelIdentity,
   type Option,
@@ -44,10 +45,13 @@ export function DesignBenchView({
   entries,
   loading,
   onEvidence,
+  actions,
 }: {
   entries: DesignEntry[];
   loading: boolean;
   onEvidence: (id: string) => void;
+  /** The page actions, last in the brief filter row. */
+  actions?: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
   const names = useModelNames();
@@ -89,51 +93,52 @@ export function DesignBenchView({
       vendor: fact?.vendor ?? providerVendor(entry.configuration.providerId),
     };
   };
-  if (loading) return <BenchmarkEmpty title={t("loading")} compact />;
-  if (entries.length === 0)
-    return (
-      <BenchmarkEmpty
-        title={t("design.empty")}
-        description={t("design.emptyHint")}
-      />
-    );
   return (
     <section className="space-y-8">
-      {briefs.length > 1 ? (
-        <div>
+      <BenchmarkToolbar actions={actions}>
+        {!loading && briefs.length > 1 ? (
           <FilterMenu
             label={t("design.brief")}
             value={brief}
             options={options}
             onChange={setBrief}
           />
-        </div>
-      ) : null}
-      {shown.map((group) => (
-        <section key={group.versionId} className="space-y-3">
-          <div className="flex items-baseline justify-between gap-4">
-            <SectionHeading title={group.name} />
-            <span className="text-xs text-muted-foreground">
-              {t("design.designs", { count: group.entries.length })}
-            </span>
-          </div>
-          <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {group.entries.map((entry, index) => {
-              const { name, vendor } = identity(entry);
-              return (
-                <DesignCard
-                  key={entry.attemptId}
-                  entry={entry}
-                  number={index + 1}
-                  name={name}
-                  vendor={vendor}
-                  onOpen={() => onEvidence(entry.attemptId)}
-                />
-              );
-            })}
-          </ul>
-        </section>
-      ))}
+        ) : null}
+      </BenchmarkToolbar>
+      {loading ? (
+        <BenchmarkEmpty title={t("loading")} compact />
+      ) : entries.length === 0 ? (
+        <BenchmarkEmpty
+          title={t("design.empty")}
+          description={t("design.emptyHint")}
+        />
+      ) : (
+        shown.map((group) => (
+          <section key={group.versionId} className="space-y-3">
+            <div className="flex items-baseline justify-between gap-4">
+              <SectionHeading title={group.name} />
+              <span className="text-xs text-muted-foreground">
+                {t("design.designs", { count: group.entries.length })}
+              </span>
+            </div>
+            <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {group.entries.map((entry, index) => {
+                const { name, vendor } = identity(entry);
+                return (
+                  <DesignCard
+                    key={entry.attemptId}
+                    entry={entry}
+                    number={index + 1}
+                    name={name}
+                    vendor={vendor}
+                    onOpen={() => onEvidence(entry.attemptId)}
+                  />
+                );
+              })}
+            </ul>
+          </section>
+        ))
+      )}
     </section>
   );
 }

@@ -22,6 +22,7 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { configurationLabel } from "../lib/benchmarkDraft";
+import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
 import { modelDisplayName, shortId } from "../lib/benchmarkLabels";
 import type {
@@ -40,6 +41,9 @@ import {
 
 /** Judge calls reserved per judged case (runner::MAX_JUDGES). */
 const JUDGE_CALLS = 3;
+
+/** The effort field's one value for a model without an effort control. */
+const NO_EFFORT = "no-effort-setting";
 
 export function BenchmarkRunDialog({
   definitions,
@@ -70,7 +74,9 @@ export function BenchmarkRunDialog({
   const [providerId, setProviderId] = useState("");
   const [accountId, setAccountId] = useState("none");
   const [modelIndex, setModelIndex] = useState("none");
-  const [effort, setEffort] = useState("none");
+  // An explicit level the selected model lists; null until one is chosen,
+  // and for a model without an effort control.
+  const [effort, setEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
   const [versions, setVersions] = useState(selectedVersionIds);
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
@@ -189,6 +195,13 @@ export function BenchmarkRunDialog({
     staleTime: 30_000,
   });
   const model = inventory.data?.[Number(modelIndex)];
+  // The CLI's "default" names no level, so it is never offered: a model that
+  // lists levels runs at one of them, and only a model without an effort
+  // control runs with the effort unset.
+  const modelEfforts = model ? explicitEfforts(model.efforts) : [];
+  const effortChosen =
+    modelEfforts.length === 0 ||
+    (effort !== null && modelEfforts.includes(effort));
   const request: RunRequest = useMemo(
     () => ({
       requestKey,
@@ -246,10 +259,10 @@ export function BenchmarkRunDialog({
     }
   };
   const addConfiguration = () => {
-    if (!model) return;
+    if (!model || !effortChosen) return;
     const config: Configuration = {
       ...model.configuration,
-      effort: effort === "none" ? null : effort,
+      effort: modelEfforts.length ? effort : null,
       fastMode: model.supportsFastMode ? fastMode : null,
     };
     config.id = [
@@ -350,7 +363,7 @@ export function BenchmarkRunDialog({
                       setProviderId(value === "none" ? "" : value);
                       setAccountId("none");
                       setModelIndex("none");
-                      setEffort("none");
+                      setEffort(null);
                     }}
                     options={[
                       { value: "none", label: t("run.chooseProvider") },
@@ -398,7 +411,10 @@ export function BenchmarkRunDialog({
                       value={modelIndex}
                       onChange={(value) => {
                         setModelIndex(value);
-                        setEffort("none");
+                        const chosen = inventory.data?.[Number(value)];
+                        setEffort(
+                          chosen ? preselectedEffort(chosen.efforts) : null,
+                        );
                         setFastMode(false);
                       }}
                       options={[
@@ -417,20 +433,18 @@ export function BenchmarkRunDialog({
                   {(id) => (
                     <SelectField
                       id={id}
-                      value={effort}
-                      onChange={setEffort}
-                      options={[
-                        {
-                          value: "none",
-                          label: model.efforts.length
-                            ? t("run.defaultEffort")
-                            : t("run.noEffort"),
-                        },
-                        ...model.efforts.map((value) => ({
-                          value,
-                          label: value,
-                        })),
-                      ]}
+                      value={modelEfforts.length ? (effort ?? "") : NO_EFFORT}
+                      onChange={(value) =>
+                        setEffort(value === NO_EFFORT ? null : value)
+                      }
+                      options={
+                        modelEfforts.length
+                          ? modelEfforts.map((value) => ({
+                              value,
+                              label: value,
+                            }))
+                          : [{ value: NO_EFFORT, label: t("run.noEffort") }]
+                      }
                     />
                   )}
                 </Field>
@@ -477,7 +491,7 @@ export function BenchmarkRunDialog({
                   type="button"
                   variant="outline"
                   size="sm"
-                  disabled={!model.available}
+                  disabled={!model.available || !effortChosen}
                   onClick={addConfiguration}
                 >
                   {t("run.addConfiguration")}

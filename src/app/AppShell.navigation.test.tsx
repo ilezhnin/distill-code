@@ -199,7 +199,10 @@ vi.mock("@/features/migration/hooks/useDefaultModelGate", () => ({
 
 vi.mock("@/app/views/NavigationPanesView", () => ({
   NavigationPanesView: ({
+    activeBenchmarkSection,
+    activeView,
     collapsed,
+    onBenchmarkSectionSelect,
     onNavigate,
     onNewChat,
     onNewChatInProject,
@@ -210,6 +213,9 @@ vi.mock("@/app/views/NavigationPanesView", () => ({
     <nav aria-label="mock sidebar">
       <div data-testid="mock-sidebar-collapsed">{String(collapsed)}</div>
       <div data-testid="mock-sidebar-width">{String(width)}</div>
+      <div data-testid="mock-sidebar-benchmark-section">
+        {activeView === "benchmarks" ? activeBenchmarkSection : "closed"}
+      </div>
       <button type="button" onClick={onNewChat}>
         Sidebar new chat
       </button>
@@ -218,6 +224,9 @@ vi.mock("@/app/views/NavigationPanesView", () => ({
       </button>
       <button type="button" onClick={() => onNavigate?.("benchmarks")}>
         Sidebar benchmarks
+      </button>
+      <button type="button" onClick={() => onBenchmarkSectionSelect?.("nerf")}>
+        Sidebar Nerf Bench
       </button>
       <button type="button" onClick={() => onNavigate?.("skills")}>
         Sidebar skills
@@ -663,6 +672,48 @@ describe("AppShell global navigation", () => {
     });
     useProviderCatalogStore.getState().reset();
     setReadyRuntimeConfig();
+  });
+
+  it("opens Leaderboard from Benchmarks and follows sections chosen in the sidebar", async () => {
+    const user = userEvent.setup();
+    renderAppShell();
+    const sidebarSection = () =>
+      screen.getByTestId("mock-sidebar-benchmark-section");
+    expect(sidebarSection()).toHaveTextContent("closed");
+
+    await user.click(
+      screen.getByRole("button", { name: "Sidebar benchmarks" }),
+    );
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"section":"leaderboard"',
+    );
+    expect(sidebarSection()).toHaveTextContent("leaderboard");
+
+    await user.click(
+      screen.getByRole("button", { name: "Sidebar Nerf Bench" }),
+    );
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"section":"nerf"',
+    );
+    expect(sidebarSection()).toHaveTextContent("nerf");
+
+    // A deep location keeps its own section highlighted in the sidebar.
+    await user.click(
+      screen.getByRole("button", { name: "Open benchmark evidence" }),
+    );
+    expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
+      '"attemptId":"attempt-1"',
+    );
+    expect(sidebarSection()).toHaveTextContent("development");
+
+    await user.click(screen.getByRole("button", { name: "Sidebar skills" }));
+    expect(sidebarSection()).toHaveTextContent("closed");
+
+    // Coming back starts on Leaderboard again.
+    await user.click(
+      screen.getByRole("button", { name: "Sidebar benchmarks" }),
+    );
+    expect(sidebarSection()).toHaveTextContent("leaderboard");
   });
 
   it("restores benchmark section and evidence selection through Back and Forward", async () => {

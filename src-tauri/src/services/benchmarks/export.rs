@@ -31,7 +31,13 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
         }
     }
     let mut result = Vec::new();
-    for run in data.runs.iter().filter(|run| !run.request.preview) {
+    // A run whose every request named no effort level has no candidate left
+    // to export (see `effort`).
+    for run in data
+        .runs
+        .iter()
+        .filter(|run| !run.request.preview && !run.request.configurations.is_empty())
+    {
         for version_id in &run.request.version_ids {
             let version = data
                 .versions

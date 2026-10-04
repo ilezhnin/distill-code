@@ -26,6 +26,10 @@ interface SidebarNavItemProps {
   testId?: string;
   navId?: string;
   labelTransitionDelay?: string;
+  // Whether the destinations nested under this item are shown. The list
+  // follows the route (it opens on arrival and closes on leaving), so it is
+  // announced but not toggled in place.
+  listExpanded?: boolean;
   // Optional trailing affordance (e.g. an "update available" indicator).
   // Rendered inline at the right edge when expanded, and as a small overlay
   // dot at the leading icon's corner when collapsed.
@@ -46,6 +50,7 @@ export function SidebarNavItem({
   testId,
   navId,
   labelTransitionDelay,
+  listExpanded,
   trailingIcon,
   trailingLabel,
 }: SidebarNavItemProps) {
@@ -88,6 +93,8 @@ export function SidebarNavItem({
       onClick={onClick}
       aria-label={ariaLabel}
       aria-current={isActive ? "page" : undefined}
+      aria-expanded={listExpanded}
+      data-sidebar-route-disclosure={listExpanded == null ? undefined : ""}
       className={className}
     >
       {Icon ? (

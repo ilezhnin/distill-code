@@ -27,7 +27,11 @@ import {
   BenchmarkSchedulesDialog,
 } from "../ui/BenchmarkManagementDialogs";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
-import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
+import {
+  BENCHMARK_SECTIONS,
+  type BenchmarkLocation,
+  type BenchmarkSection,
+} from "../lib/benchmarkNavigation";
 import {
   attempt,
   attemptSummary,
@@ -278,31 +282,99 @@ describe("benchmark authoring and saved evidence", () => {
     ).toHaveValue(120);
   });
   it("opens every view without probing inventory or starting inference", async () => {
-    function Workspace() {
-      const [location, setLocation] = useState<BenchmarkLocation>({
-        section: "leaderboard",
-      });
-      return (
-        <BenchmarksView
-          location={location}
-          onNavigate={setLocation}
-          onSelectSession={vi.fn()}
-        />
-      );
-    }
-    wrap(<Workspace />);
+    const view = (section: BenchmarkSection) => (
+      <BenchmarksView
+        location={{ section }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />
+    );
+    const { rerender } = wrap(view("leaderboard"));
     await screen.findByText("No results for this selection.");
-    for (const label of [
-      "Design Bench",
-      "Bench development",
-      "Nerf Bench",
-      "Usage Bench",
-      "Leaderboard",
-    ]) {
-      await userEvent.click(screen.getByRole("tab", { name: label }));
+    // The sections are chosen from the sidebar; the page keeps only its
+    // actions, in the section's own first row, and never repeats the section
+    // names as tabs.
+    for (const section of BENCHMARK_SECTIONS) {
+      rerender(view(section));
+      expect(screen.getByTestId("benchmark-toolbar")).toContainElement(
+        screen.getByRole("button", { name: "New test" }),
+      );
+      expect(
+        screen.queryByRole("tab", { name: "Design Bench" }),
+      ).not.toBeInTheDocument();
     }
     expect(benchmarkApi.getInventory).not.toHaveBeenCalled();
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("keeps the page actions in the first row of the board and the model page", async () => {
+    const row = leaderboardRow({ points: 120 });
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort,
+      rows: [row],
+    });
+    vi.mocked(benchmarkApi.listRuns).mockRejectedValue(
+      new Error("Runs are unavailable"),
+    );
+    const view = (location: BenchmarkLocation) => (
+      <BenchmarksView
+        location={location}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />
+    );
+    const { rerender } = wrap(view({ section: "leaderboard" }));
+    // The boards, the model filter and the actions share one row, so it
+    // wraps only when all of them overflow together.
+    const boards = await screen.findByRole("tablist");
+    const toolbar = screen.getByTestId("benchmark-toolbar");
+    expect(toolbar).toContainElement(boards);
+    expect(toolbar).toContainElement(
+      screen.getByRole("button", { name: "Models" }),
+    );
+    expect(toolbar).toContainElement(
+      screen.getByRole("button", { name: "Run tests" }),
+    );
+    // A failure banner sits above the row, never beside the actions.
+    expect(toolbar).not.toContainElement(await screen.findByRole("alert"));
+    rerender(view({ section: "leaderboard", configurationId: rowKey(row) }));
+    const back = await screen.findByRole("button", { name: "Leaderboard" });
+    expect(screen.getByTestId("benchmark-toolbar")).toContainElement(back);
+    expect(screen.getByTestId("benchmark-toolbar")).toContainElement(
+      screen.getByRole("button", { name: "Run tests" }),
+    );
+  });
+  it("opens a section switched to from outside the page on its first page", async () => {
+    const rows = Array.from({ length: 55 }, (_, index) =>
+      leaderboardRow({
+        configuration: {
+          ...configuration,
+          id: `m${index}`,
+          modelId: `model-${String(index).padStart(2, "0")}`,
+        },
+        points: 100 + index,
+      }),
+    );
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort,
+      rows,
+    });
+    const view = (section: BenchmarkSection) => (
+      <BenchmarksView
+        location={{ section }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />
+    );
+    const firstRank = () =>
+      within(screen.getAllByRole("row")[1]).getAllByRole("cell")[0].textContent;
+    const { rerender } = wrap(view("leaderboard"));
+    await screen.findByText("model-54");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(firstRank()).toBe("51");
+    rerender(view("nerf"));
+    rerender(view("leaderboard"));
+    await screen.findByText("model-54");
+    expect(firstRank()).toBe("1");
   });
   it("replaces the run dialog with captured evidence when Inspect is clicked", async () => {
     function Workspace() {

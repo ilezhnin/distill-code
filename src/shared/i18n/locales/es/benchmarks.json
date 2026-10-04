@@ -237,7 +237,6 @@
     "chooseModel": "Elige un modelo",
     "noAccount": "Sin cuenta",
     "cliLogin": "Sesión de la CLI",
-    "defaultEffort": "Valor predeterminado del proveedor",
     "noEffort": "Sin ajuste de esfuerzo",
     "addConfiguration": "Añadir configuración",
     "catchUpMissing": "{{model}} ya no está disponible en esta cuenta. Elige una configuración abajo.",

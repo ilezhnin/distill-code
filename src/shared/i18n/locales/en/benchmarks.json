@@ -237,7 +237,6 @@
     "chooseModel": "Choose a model",
     "noAccount": "No account",
     "cliLogin": "CLI sign-in",
-    "defaultEffort": "Provider default",
     "noEffort": "No effort setting",
     "addConfiguration": "Add configuration",
     "catchUpMissing": "{{model}} is no longer available on this account. Choose a configuration below.",

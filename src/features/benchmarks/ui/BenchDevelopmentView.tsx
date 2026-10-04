@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -37,6 +37,7 @@ import { BenchmarkEditor } from "./BenchmarkEditor";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
+  BenchmarkToolbar,
   FilterMenu,
 } from "./BenchmarkPrimitives";
 
@@ -61,6 +62,7 @@ export function BenchDevelopmentView({
   onEdit,
   onRun,
   onEvidence,
+  actions,
 }: {
   definitions: BenchmarkDefinition[];
   loading: boolean;
@@ -68,6 +70,8 @@ export function BenchDevelopmentView({
   onEdit: (id?: string) => void;
   onRun: (versionId: string, preview?: boolean) => void;
   onEvidence: (id: string) => void;
+  /** The page actions, last in the first row. */
+  actions?: ReactNode;
 }) {
   const { t } = useTranslation(["benchmarks", "settings"]);
   const client = useQueryClient();
@@ -87,15 +91,41 @@ export function BenchDevelopmentView({
   };
   if (benchmarkId) {
     if (benchmarkId !== "new" && !definition) {
-      return loading ? (
-        <BenchmarkEmpty title={t("benchmarks:loading")} compact />
-      ) : (
-        <BenchmarkEmpty title={t("benchmarks:editor.missing")} />
+      return (
+        <div className="space-y-5">
+          <BenchmarkToolbar actions={actions} />
+          {loading ? (
+            <BenchmarkEmpty title={t("benchmarks:loading")} compact />
+          ) : (
+            <BenchmarkEmpty title={t("benchmarks:editor.missing")} />
+          )}
+        </div>
       );
     }
     return (
       <div className="space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <BenchmarkToolbar
+          actions={actions}
+          trailing={
+            <Tabs
+              value={tab}
+              onValueChange={(value) =>
+                useBenchmarkViewStore
+                  .getState()
+                  .guardNavigation(() => setTab(value))
+              }
+            >
+              <TabsList variant="weight">
+                <TabsTrigger value="editor" variant="weight">
+                  {t("benchmarks:editor.tab")}
+                </TabsTrigger>
+                <TabsTrigger value="results" variant="weight">
+                  {t("benchmarks:editor.results")}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          }
+        >
           <Button
             type="button"
             variant="ghost"
@@ -107,24 +137,7 @@ export function BenchDevelopmentView({
           >
             {t("benchmarks:actions.back")}
           </Button>
-          <Tabs
-            value={tab}
-            onValueChange={(value) =>
-              useBenchmarkViewStore
-                .getState()
-                .guardNavigation(() => setTab(value))
-            }
-          >
-            <TabsList variant="weight">
-              <TabsTrigger value="editor" variant="weight">
-                {t("benchmarks:editor.tab")}
-              </TabsTrigger>
-              <TabsTrigger value="results" variant="weight">
-                {t("benchmarks:editor.results")}
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </div>
+        </BenchmarkToolbar>
         <Tabs value={tab}>
           <TabsContent value="editor">
             <BenchmarkEditor
@@ -156,7 +169,20 @@ export function BenchDevelopmentView({
   );
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <BenchmarkToolbar
+        actions={actions}
+        trailing={
+          <FilterMenu
+            label={t("benchmarks:filters.scope")}
+            value={scope}
+            onChange={(value) => setScope(value === "all" ? "all" : "active")}
+            options={[
+              { value: "active", label: t("benchmarks:filters.active") },
+              { value: "all", label: t("benchmarks:filters.includeArchived") },
+            ]}
+          />
+        }
+      >
         <SearchBar
           size="pill-card"
           value={query}
@@ -165,16 +191,7 @@ export function BenchDevelopmentView({
           aria-label={t("benchmarks:filters.search")}
           className="w-64"
         />
-        <FilterMenu
-          label={t("benchmarks:filters.scope")}
-          value={scope}
-          onChange={(value) => setScope(value === "all" ? "all" : "active")}
-          options={[
-            { value: "active", label: t("benchmarks:filters.active") },
-            { value: "all", label: t("benchmarks:filters.includeArchived") },
-          ]}
-        />
-      </div>
+      </BenchmarkToolbar>
       {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
       {loading ? (
         <BenchmarkEmpty title={t("benchmarks:loading")} compact />

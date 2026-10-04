@@ -46,9 +46,28 @@ describe("catch-up configuration", () => {
     expect(pinned(row).executionProfile).toBe("native_text");
   });
 
-  it("keeps the provider default effort unpinned", () => {
-    const row = { ...configuration, effort: "default", fastMode: null };
-    expect(pinned(row)).toMatchObject({ effort: null, fastMode: null });
+  it("keeps the row's own level and never runs a model with levels unset", () => {
+    expect(pinned({ ...configuration, effort: "low" }).effort).toBe("low");
+    // "default" names no level, so a row measured at it cannot run again,
+    // even on a runtime that still lists it.
+    const measuredAtDefault = { ...configuration, effort: "default" };
+    expect(resolveCatchUpConfiguration(measuredAtDefault, [current])).toEqual({
+      issue: "changed",
+    });
+    expect(
+      resolveCatchUpConfiguration(measuredAtDefault, [
+        { ...current, efforts: ["default", "high"] },
+      ]),
+    ).toEqual({ issue: "changed" });
+    // Unset only for a model without an effort control.
+    const unset = { ...configuration, effort: null, fastMode: null };
+    expect(resolveCatchUpConfiguration(unset, [current])).toEqual({
+      issue: "changed",
+    });
+    expect(pinned(unset, [{ ...current, efforts: [] }])).toMatchObject({
+      effort: null,
+      fastMode: null,
+    });
   });
 
   it("refuses a model or option the runtime no longer offers", () => {

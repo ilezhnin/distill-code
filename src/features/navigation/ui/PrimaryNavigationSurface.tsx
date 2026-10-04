@@ -1,4 +1,5 @@
 import {
+  Fragment,
   forwardRef,
   type CSSProperties,
   type ComponentProps,
@@ -12,17 +13,23 @@ import { ArrowUpCircle } from "lucide-react";
 import type { AppView } from "@/app/AppShell";
 import { PaneSurface } from "@/app/layout/panes/paneChrome";
 import {
+  BENCHMARK_SECTIONS,
+  type BenchmarkSection,
+} from "@/features/benchmarks/lib/benchmarkNavigation";
+import {
   DEFAULT_SETTINGS_SECTION,
   type SETTINGS_SECTIONS,
   type SectionId,
 } from "@/features/settings/ui/settingsSections";
 import { cn } from "@/shared/lib/cn";
+import { CollapseReveal } from "@/shared/ui/collapse-reveal";
 import {
   SIDEBAR_PANEL_ELEVATED_SHADOW_CLASS,
   SIDEBAR_PRIMARY_NAV_TOP_INSET_CLASS,
   SIDEBAR_SECTION_DIVIDER_INSET_CLASS,
 } from "@/shared/ui/sidebar-tokens";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { SidebarNavSubItem } from "./SidebarNavSubItem";
 import {
   SidebarNavAgentsIcon,
   SidebarNavHomeIcon,
@@ -37,6 +44,7 @@ type SidebarNavItemIcon = NonNullable<
 >;
 
 interface PrimaryNavigationSurfaceProps {
+  activeBenchmarkSection?: BenchmarkSection;
   activeSettingsSection?: SectionId;
   activeView?: AppView;
   agentUpdatesAvailable: boolean;
@@ -50,6 +58,7 @@ interface PrimaryNavigationSurfaceProps {
   navCollapsed: boolean;
   navLabelVisible: boolean;
   onKeyDown: KeyboardEventHandler<HTMLElement>;
+  onBenchmarkSectionSelect?: (section: BenchmarkSection) => void;
   onNavigate?: (view: AppView) => void;
   onSettingsBack?: () => void;
   onSettingsClick?: () => void;
@@ -68,6 +77,7 @@ export const PrimaryNavigationSurface = forwardRef<
   PrimaryNavigationSurfaceProps
 >(function PrimaryNavigationSurface(
   {
+    activeBenchmarkSection = "leaderboard",
     activeSettingsSection = DEFAULT_SETTINGS_SECTION,
     activeView = "home",
     agentUpdatesAvailable,
@@ -81,6 +91,7 @@ export const PrimaryNavigationSurface = forwardRef<
     navCollapsed,
     navLabelVisible,
     onKeyDown,
+    onBenchmarkSectionSelect,
     onNavigate,
     onSettingsBack,
     onSettingsClick,
@@ -95,7 +106,10 @@ export const PrimaryNavigationSurface = forwardRef<
   },
   ref,
 ) {
-  const { t } = useTranslation(["sidebar", "settings"]);
+  const { t } = useTranslation(["sidebar", "settings", "benchmarks"]);
+  // Benchmarks lists its sections under itself, like a project lists its
+  // chats, for as long as a benchmark page is open.
+  const benchmarksExpanded = !navCollapsed && activeView === "benchmarks";
   const mainNavItems: readonly {
     id: AppView;
     label: string;
@@ -166,19 +180,46 @@ export const PrimaryNavigationSurface = forwardRef<
               />
 
               {mainNavItems.map((item) => {
-                const isActive = activeView === item.id;
+                const hasSections = item.id === "benchmarks" && !navCollapsed;
+                // While the list is open its section carries the highlight,
+                // the way a project's selected chat does, not the parent row.
+                const isActive = activeView === item.id && !hasSections;
                 return (
-                  <SidebarNavItem
-                    key={item.id}
-                    navId={item.id}
-                    icon={item.icon}
-                    label={item.label}
-                    collapsed={navCollapsed}
-                    labelTransition={labelTransition}
-                    labelVisible={navLabelVisible}
-                    isActive={isActive}
-                    onClick={() => onNavigate?.(item.id)}
-                  />
+                  <Fragment key={item.id}>
+                    <SidebarNavItem
+                      navId={item.id}
+                      icon={item.icon}
+                      label={item.label}
+                      collapsed={navCollapsed}
+                      labelTransition={labelTransition}
+                      labelVisible={navLabelVisible}
+                      isActive={isActive}
+                      listExpanded={
+                        hasSections ? benchmarksExpanded : undefined
+                      }
+                      onClick={() => onNavigate?.(item.id)}
+                    />
+                    {hasSections ? (
+                      <CollapseReveal open={benchmarksExpanded}>
+                        <div data-sidebar-benchmark-sections>
+                          {BENCHMARK_SECTIONS.map((section) => (
+                            <SidebarNavSubItem
+                              key={section}
+                              navId={`benchmarks-${section}`}
+                              label={t(`benchmarks:sections.${section}`)}
+                              isActive={
+                                benchmarksExpanded &&
+                                activeBenchmarkSection === section
+                              }
+                              onClick={() =>
+                                onBenchmarkSectionSelect?.(section)
+                              }
+                            />
+                          ))}
+                        </div>
+                      </CollapseReveal>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </div>

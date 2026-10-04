@@ -344,6 +344,8 @@ pub async fn benchmark_get_comparisons(
         .into_iter()
         .find(|v| v.id == baseline_id)
         .ok_or_else(|| BenchmarkError::new("validation", "Baseline not found"))?;
+    // The frozen side leaves out what the follow-up side leaves out.
+    let baseline = benchmarks::effort::baseline_with_known_effort(baseline);
     Ok(benchmarks::analysis::compare(
         &s.query_data().await?,
         &baseline,

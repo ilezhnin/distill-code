@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconChevronRight, IconPlus } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
@@ -22,6 +22,7 @@ import { BenchmarkAttemptsDialog } from "./BenchmarkAttemptsDialog";
 import {
   BenchmarkEmpty,
   BenchmarkPager,
+  BenchmarkToolbar,
   FilterMenu,
   StateBadge,
   type Option,
@@ -45,6 +46,8 @@ interface Props {
   pageSize: number;
   onPageChange: (page: number) => void;
   onEvidence: (id: string) => void;
+  /** The page actions, last in the filter row. */
+  actions?: ReactNode;
 }
 
 export function UsageBenchView({
@@ -64,6 +67,7 @@ export function UsageBenchView({
   pageSize,
   onPageChange,
   onEvidence,
+  actions,
 }: Props) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -88,7 +92,17 @@ export function UsageBenchView({
       );
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <BenchmarkToolbar
+        actions={actions}
+        trailing={
+          <FilterMenu
+            label={t("filters.run")}
+            value={scope.runId}
+            options={runOptions}
+            onChange={(runId) => onScopeChange({ ...scope, runId })}
+          />
+        }
+      >
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <FilterMenu
             label={t("filters.baseline")}
@@ -106,13 +120,7 @@ export function UsageBenchView({
             {t("baseline.create")}
           </Button>
         </div>
-        <FilterMenu
-          label={t("filters.run")}
-          value={scope.runId}
-          options={runOptions}
-          onChange={(runId) => onScopeChange({ ...scope, runId })}
-        />
-      </div>
+      </BenchmarkToolbar>
       <p className="text-xs text-muted-foreground">
         {baseline
           ? t("usage.summary", {

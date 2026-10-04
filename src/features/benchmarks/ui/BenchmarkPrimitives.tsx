@@ -44,6 +44,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/shared/ui/select";
+import { explicitEffort } from "../lib/benchmarkEffort";
 import { shortId, stateLabel, stateTone } from "../lib/benchmarkLabels";
 import type { Configuration } from "../types";
 
@@ -150,6 +151,38 @@ export function FilterMenu({
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * A section's first row: its own controls on the left, then its trailing
+ * controls and the page actions on the right. The row owns the actions, so
+ * it wraps only when everything in it overflows, and the right-hand group
+ * stays on the right when it does.
+ */
+export function BenchmarkToolbar({
+  children,
+  trailing,
+  actions,
+}: {
+  children?: ReactNode;
+  trailing?: ReactNode;
+  actions?: ReactNode;
+}) {
+  if (!children && !trailing && !actions) return null;
+  return (
+    <div
+      data-testid="benchmark-toolbar"
+      className="flex flex-wrap items-center justify-between gap-3"
+    >
+      {children}
+      {trailing || actions ? (
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          {trailing}
+          {actions}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -410,9 +443,10 @@ export function Metric({ label, value }: { label: string; value: ReactNode }) {
 
 /**
  * A model the way the reference names one: vendor icon beside both lines,
- * display name with its effort (the CLI's own default included, so every
- * row says which effort it measured) and fast mode as chips, and the vendor
- * underneath. A model without an effort control shows none.
+ * display name with its effort level and fast mode as chips, and the vendor
+ * underneath. A model without an effort control shows no effort chip, and
+ * the CLI's "default" is never named as one: it is no level, and a row
+ * measured at it is left out of every board.
  */
 export function ModelIdentity({
   configuration,
@@ -428,7 +462,7 @@ export function ModelIdentity({
   children?: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
-  const effort = configuration.effort || null;
+  const effort = explicitEffort(configuration.effort);
   return (
     <div className="flex min-w-0 items-center gap-3">
       <span className="shrink-0">

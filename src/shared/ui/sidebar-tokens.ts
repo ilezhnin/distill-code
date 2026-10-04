@@ -37,6 +37,15 @@ export const SIDEBAR_ROW_HOVER_CLASS =
 export const SIDEBAR_ROW_ACTIVE_CLASS =
   "bg-[var(--sidebar-row-active)] text-sidebar-foreground hover:bg-[var(--sidebar-row-active)] hover:text-sidebar-foreground";
 
+/**
+ * Fills of the element that wraps a row button (chat rows, nested nav rows).
+ * They layer under the button's own fill, which is what gives those rows
+ * their deeper hover and active tint.
+ */
+export const SIDEBAR_ROW_SHELL_HOVER_CLASS =
+  "hover:bg-[var(--sidebar-row-hover)] focus-within:bg-[var(--sidebar-row-hover)]";
+export const SIDEBAR_ROW_SHELL_ACTIVE_CLASS = "bg-[var(--sidebar-row-active)]";
+
 /** Raised (dark) popovers used by sidebar row menus. */
 export const SIDEBAR_RAISED_MENU_CONTENT_CLASS =
   "w-44 px-1 py-1 text-sm font-normal leading-normal [&_[data-slot=context-menu-item]]:gap-2 [&_[data-slot=context-menu-item]]:rounded-[6px] [&_[data-slot=context-menu-item]]:px-2 [&_[data-slot=context-menu-item]]:py-1 [&_[data-slot=context-menu-item]]:text-sm [&_[data-slot=context-menu-item]]:font-normal [&_[data-slot=context-menu-item]]:leading-normal [&_[data-slot=context-menu-item]]:opacity-[0.85] [&_[data-slot=context-menu-item]:focus]:!text-popover-raised-foreground [&_[data-slot=context-menu-item]:focus]:opacity-100 [&_[data-slot=dropdown-menu-item]]:gap-2 [&_[data-slot=dropdown-menu-item]]:rounded-[6px] [&_[data-slot=dropdown-menu-item]]:px-2 [&_[data-slot=dropdown-menu-item]]:py-1 [&_[data-slot=dropdown-menu-item]]:text-sm [&_[data-slot=dropdown-menu-item]]:font-normal [&_[data-slot=dropdown-menu-item]]:leading-normal [&_[data-slot=dropdown-menu-item]]:opacity-[0.85] [&_[data-slot=dropdown-menu-item]:focus]:!text-popover-raised-foreground [&_[data-slot=dropdown-menu-item]:focus]:opacity-100 [&_[data-slot=dropdown-menu-checkbox-item]]:gap-2 [&_[data-slot=dropdown-menu-checkbox-item]]:rounded-[6px] [&_[data-slot=dropdown-menu-checkbox-item]]:px-2 [&_[data-slot=dropdown-menu-checkbox-item]]:py-1 [&_[data-slot=dropdown-menu-checkbox-item]]:text-sm [&_[data-slot=dropdown-menu-checkbox-item]]:font-normal [&_[data-slot=dropdown-menu-checkbox-item]]:leading-normal [&_[data-slot=dropdown-menu-checkbox-item]]:opacity-[0.85] [&_[data-slot=dropdown-menu-checkbox-item]:focus]:!text-popover-raised-foreground [&_[data-slot=dropdown-menu-checkbox-item]:focus]:opacity-100 [&_[data-slot=context-menu-label]]:px-2 [&_[data-slot=context-menu-label]]:py-1 [&_[data-slot=context-menu-label]]:text-sm [&_[data-slot=context-menu-label]]:font-normal [&_[data-slot=context-menu-label]]:leading-normal [&_[data-slot=dropdown-menu-label]]:px-2 [&_[data-slot=dropdown-menu-label]]:py-1 [&_[data-slot=dropdown-menu-label]]:text-sm [&_[data-slot=dropdown-menu-label]]:font-normal [&_[data-slot=dropdown-menu-label]]:leading-normal";
@@ -80,6 +89,13 @@ export const SIDEBAR_SECTION_HEADER_ROW_CLASS = `${SIDEBAR_SECTION_HEADER_PADDIN
 
 /** Standalone chat row left padding; aligns with section divider inset. */
 export const SIDEBAR_CHAT_ROW_PADDING_CLASS = "pl-3";
+
+/**
+ * Left padding of a row nested under a parent row (a project's chats, the
+ * sections under a main nav item): clears the 16px leading slot so nested
+ * labels share one column.
+ */
+export const SIDEBAR_NESTED_ROW_PADDING_CLASS = "pl-[38px]";
 
 /** Density variants for chat rows. Default preserves grouped sidebar rhythm. */
 export type SidebarChatRowDensity = "default" | "dense";

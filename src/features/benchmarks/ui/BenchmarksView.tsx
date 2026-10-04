@@ -24,7 +24,6 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { PageShell } from "@/shared/ui/page-shell";
 import { PageToolbarButton } from "@/shared/ui/page-toolbar-button";
-import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import {
   benchmarkKeys,
@@ -33,11 +32,7 @@ import {
 } from "../hooks/useBenchmarks";
 import { shortId } from "../lib/benchmarkLabels";
 import type { Configuration } from "../types";
-import {
-  BENCHMARK_SECTIONS,
-  type BenchmarkLocation,
-  type BenchmarkSection,
-} from "../lib/benchmarkNavigation";
+import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import { BenchDevelopmentView } from "./BenchDevelopmentView";
 import { BenchmarkCatalogDialog } from "./BenchmarkCatalogDialog";
@@ -55,6 +50,7 @@ import { DesignBenchView } from "./DesignBenchView";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
+  BenchmarkToolbar,
   type Option,
 } from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
@@ -112,6 +108,12 @@ export function BenchmarksView({
   });
   const [baselineId, setBaselineId] = useState("none");
   const [page, setPage] = useState(0);
+  // Every section opens on its first page, whoever switched to it.
+  const [pageSection, setPageSection] = useState(location.section);
+  if (pageSection !== location.section) {
+    setPageSection(location.section);
+    setPage(0);
+  }
   const pendingNavigation = useBenchmarkViewStore((state) => state.pending);
   const versions = useMemo(
     () => definitions.data?.flatMap((definition) => definition.versions) ?? [],
@@ -243,77 +245,62 @@ export function BenchmarksView({
     { kind: "routing", label: t("toolbar.routing"), icon: <IconRoute /> },
     { kind: "catalog", label: t("toolbar.catalog"), icon: <IconCoin /> },
   ];
+  // The sections live in the sidebar, so each section's first row carries
+  // the page actions on its right.
+  const actions = (
+    <>
+      <PageToolbarButton
+        type="button"
+        size="icon-xs"
+        aria-label={t("actions.run")}
+        tooltip={t("actions.run")}
+        onClick={() => openRunDialog()}
+      >
+        <IconPlayerPlay className="!size-4" />
+      </PageToolbarButton>
+      <PageToolbarButton
+        type="button"
+        size="icon-xs"
+        aria-label={t("actions.new")}
+        tooltip={t("actions.new")}
+        onClick={() =>
+          onNavigate({ section: "development", benchmarkId: "new" })
+        }
+      >
+        <IconPlus className="!size-4" />
+      </PageToolbarButton>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <PageToolbarButton
+            type="button"
+            size="icon-xs"
+            aria-label={t("actions.more")}
+          >
+            <IconDots className="!size-4" />
+          </PageToolbarButton>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {menuItems.map((item, index) => (
+            <Fragment key={item.kind}>
+              {index === 1 || index === 3 ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuItem
+                onSelect={() => guarded(() => setDialog(item.kind))}
+              >
+                {item.icon}
+                {item.label}
+              </DropdownMenuItem>
+            </Fragment>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
   return (
     <PageShell contentWidth="full">
       <section
         aria-label={t("title")}
         className="mx-auto flex w-full max-w-[120rem] flex-col gap-6"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <Tabs
-            value={location.section}
-            onValueChange={(section) => {
-              setPage(0);
-              onNavigate({ section: section as BenchmarkSection });
-            }}
-          >
-            <TabsList variant="weight">
-              {BENCHMARK_SECTIONS.map((section) => (
-                <TabsTrigger key={section} value={section} variant="weight">
-                  {t(`sections.${section}`)}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          <div className="flex items-center gap-2">
-            <PageToolbarButton
-              type="button"
-              size="icon-xs"
-              aria-label={t("actions.run")}
-              tooltip={t("actions.run")}
-              onClick={() => openRunDialog()}
-            >
-              <IconPlayerPlay className="!size-4" />
-            </PageToolbarButton>
-            <PageToolbarButton
-              type="button"
-              size="icon-xs"
-              aria-label={t("actions.new")}
-              tooltip={t("actions.new")}
-              onClick={() =>
-                onNavigate({ section: "development", benchmarkId: "new" })
-              }
-            >
-              <IconPlus className="!size-4" />
-            </PageToolbarButton>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <PageToolbarButton
-                  type="button"
-                  size="icon-xs"
-                  aria-label={t("actions.more")}
-                >
-                  <IconDots className="!size-4" />
-                </PageToolbarButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {menuItems.map((item, index) => (
-                  <Fragment key={item.kind}>
-                    {index === 1 || index === 3 ? (
-                      <DropdownMenuSeparator />
-                    ) : null}
-                    <DropdownMenuItem
-                      onSelect={() => guarded(() => setDialog(item.kind))}
-                    >
-                      {item.icon}
-                      {item.label}
-                    </DropdownMenuItem>
-                  </Fragment>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
         {errors.map((error) => (
           <BenchmarkAlert key={error}>{error}</BenchmarkAlert>
         ))}
@@ -330,6 +317,7 @@ export function BenchmarksView({
             }
             onRun={openRunDialog}
             onEvidence={openEvidence}
+            actions={actions}
           />
         ) : null}
         {location.section === "leaderboard" && location.configurationId ? (
@@ -352,22 +340,28 @@ export function BenchmarksView({
               }
               onOpenRun={openRun}
               onBack={() => onNavigate({ section: "leaderboard" })}
+              actions={actions}
             />
-          ) : leaderboard.isPending ? (
-            <BenchmarkEmpty title={t("loading")} compact />
           ) : (
-            <BenchmarkEmpty
-              title={t("configuration.missing")}
-              action={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => onNavigate({ section: "leaderboard" })}
-                >
-                  {t("configuration.back")}
-                </Button>
-              }
-            />
+            <>
+              <BenchmarkToolbar actions={actions} />
+              {leaderboard.isPending ? (
+                <BenchmarkEmpty title={t("loading")} compact />
+              ) : (
+                <BenchmarkEmpty
+                  title={t("configuration.missing")}
+                  action={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => onNavigate({ section: "leaderboard" })}
+                    >
+                      {t("configuration.back")}
+                    </Button>
+                  }
+                />
+              )}
+            </>
           )
         ) : null}
         {location.section === "design" ? (
@@ -375,6 +369,7 @@ export function BenchmarksView({
             entries={designs.data ?? []}
             loading={designs.isPending}
             onEvidence={openEvidence}
+            actions={actions}
           />
         ) : null}
         {location.section === "leaderboard" && !location.configurationId ? (
@@ -387,6 +382,7 @@ export function BenchmarksView({
             onOpen={(key) =>
               onNavigate({ section: "leaderboard", configurationId: key })
             }
+            actions={actions}
           />
         ) : null}
         {location.section === "nerf" ? (
@@ -407,6 +403,7 @@ export function BenchmarksView({
             pageSize={PAGE_SIZE}
             onPageChange={setPage}
             onEvidence={openEvidence}
+            actions={actions}
           />
         ) : null}
         {location.section === "usage" ? (
@@ -427,6 +424,7 @@ export function BenchmarksView({
             pageSize={PAGE_SIZE}
             onPageChange={setPage}
             onEvidence={openEvidence}
+            actions={actions}
           />
         ) : null}
       </section>

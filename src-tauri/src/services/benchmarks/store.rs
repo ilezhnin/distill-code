@@ -333,6 +333,21 @@ impl Store {
         .bind(&versions)
         .fetch_all(&self.pool)
         .await?;
+        // A rendering of an unknown effort is no entry (see `effort`). An
+        // attempt without an acknowledgment is judged by what its run's
+        // attempts of the same request were acknowledged at.
+        let mut defaulted = super::effort::DefaultedRequests::default();
+        for row in sqlx::query(
+            "SELECT run_id,json_extract(data_json,'$.configuration') FROM attempts
+             WHERE json_extract(data_json,'$.observed.effort')=?",
+        )
+        .bind(super::effort::CLI_DEFAULT_EFFORT)
+        .fetch_all(&self.pool)
+        .await?
+        {
+            let requested: Configuration = serde_json::from_str(&row.get::<String, _>(1))?;
+            defaulted.add(&row.get::<String, _>(0), &requested);
+        }
         // One card per brief and model as the leaderboard counts it: runtime
         // revisions and defaulted controls do not split a model. Rows come newest
         // first; a card shows the newest scored rendering, else the newest
@@ -343,7 +358,9 @@ impl Store {
         for row in rows {
             let attempt: Attempt = serde_json::from_str(&row.get::<String, _>(0))?;
             // A candidate that authored the brief is not an entry of it.
-            if attempt.outcome.as_deref() == Some("excluded") {
+            if attempt.outcome.as_deref() == Some("excluded")
+                || super::effort::effort_unknown(&attempt, &defaulted)
+            {
                 continue;
             }
             let manifest: BenchmarkDraft = serde_json::from_str(&row.get::<String, _>(1))?;
@@ -931,7 +948,7 @@ mod tests {
             .unwrap();
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
-        let configuration = |revision: &str, effort: Option<&str>| json!({"id":"sonnet","providerId":"claude-acp","accountId":"account","modelId":"sonnet","effort":effort,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":revision});
+        let configuration = |revision: &str, fast: Option<bool>| json!({"id":"sonnet","providerId":"claude-acp","accountId":"account","modelId":"sonnet","effort":"high","fastMode":fast,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":revision});
         let judge = configuration("r1", None);
         // Two batches: only the newer one shows, with its criteria unwrapped.
         let judged = json!([
@@ -974,7 +991,7 @@ mod tests {
                 "terminal",
                 Some("judged"),
                 configuration("r1", None),
-                configuration("r1", Some("default")),
+                configuration("r1", Some(false)),
                 judged,
                 Some("<svg data-run='1'/>"),
             ),
@@ -1038,6 +1055,69 @@ mod tests {
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].attempt_id, "rendering");
+    }
+    #[tokio::test]
+    async fn a_rendering_of_an_unknown_effort_is_no_gallery_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = |model: &str, effort: Option<&str>| json!({"id":model,"providerId":"claude-acp","accountId":"account","modelId":model,"effort":effort,"fastMode":false,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"r1"});
+        let acknowledged = |model: &str, effort: Option<&str>| Some(configuration(model, effort));
+        // Sonnet asked for the CLI's default. Opus left the effort unset: one
+        // attempt was acknowledged at the default, and another of the same
+        // request in that run never was. Haiku has no effort control.
+        let attempts = [
+            (
+                "sonnet",
+                "run-1",
+                configuration("sonnet", Some("default")),
+                acknowledged("sonnet", Some("default")),
+            ),
+            (
+                "opus-2",
+                "run-2",
+                configuration("opus", None),
+                acknowledged("opus", Some("default")),
+            ),
+            ("opus-3", "run-2", configuration("opus", None), None),
+            (
+                "haiku",
+                "run-3",
+                configuration("haiku", None),
+                acknowledged("haiku", None),
+            ),
+        ];
+        let mut tx = store.pool.begin().await.unwrap();
+        for run in ["run-1", "run-2", "run-3"] {
+            let request = json!({"requestKey":run,"versionIds":[version.id],"configurations":[],"repetitions":1,"timeoutSeconds":600,"maxExecutions":1,"preview":false});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'completed',1,0,0,?)")
+                .bind(run).bind(run).bind(request.to_string())
+                .execute(&mut *tx).await.unwrap();
+        }
+        for (repetition, (id, run, requested, observed)) in attempts.into_iter().enumerate() {
+            let attempt = json!({"id":id,"runId":run,"versionId":version.id,"configuration":requested,"observed":observed,"repetition":repetition,"phase":"terminal","outcome":"pending_review","output":format!("<svg data-id='{id}'/>"),"finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,?,'terminal',?)")
+                .bind(id).bind(run).bind(&version.id).bind(requested["id"].as_str().unwrap()).bind(repetition as i64).bind(attempt.to_string())
+                .execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.attempt_id.as_str())
+                .collect::<Vec<_>>(),
+            ["haiku"]
+        );
+        // The archive keeps every attempt for audit.
+        for id in ["sonnet", "opus-2", "opus-3"] {
+            assert!(store.attempt(id).await.is_ok());
+        }
     }
     #[tokio::test]
     async fn a_rendering_awaiting_its_panel_outranks_an_older_cancelled_attempt() {

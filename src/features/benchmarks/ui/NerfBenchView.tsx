@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconChevronRight, IconPlus } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
@@ -23,6 +23,7 @@ import { BenchmarkAttemptsDialog } from "./BenchmarkAttemptsDialog";
 import {
   BenchmarkEmpty,
   BenchmarkPager,
+  BenchmarkToolbar,
   FilterMenu,
   ModelIdentity,
   StateBadge,
@@ -47,6 +48,8 @@ interface Props {
   pageSize: number;
   onPageChange: (page: number) => void;
   onEvidence: (id: string) => void;
+  /** The page actions, last in the filter row. */
+  actions?: ReactNode;
 }
 
 export function NerfBenchView({
@@ -66,6 +69,7 @@ export function NerfBenchView({
   pageSize,
   onPageChange,
   onEvidence,
+  actions,
 }: Props) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -88,7 +92,25 @@ export function NerfBenchView({
       : formatDate(value, { dateStyle: "medium", timeStyle: "short" });
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <BenchmarkToolbar
+        actions={actions}
+        trailing={
+          <>
+            <FilterMenu
+              label={t("filters.suite")}
+              value={scope.versionId}
+              options={suiteOptions}
+              onChange={(versionId) => onScopeChange({ ...scope, versionId })}
+            />
+            <FilterMenu
+              label={t("filters.run")}
+              value={scope.runId}
+              options={runOptions}
+              onChange={(runId) => onScopeChange({ ...scope, runId })}
+            />
+          </>
+        }
+      >
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <FilterMenu
             label={t("filters.baseline")}
@@ -106,21 +128,7 @@ export function NerfBenchView({
             {t("baseline.create")}
           </Button>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <FilterMenu
-            label={t("filters.suite")}
-            value={scope.versionId}
-            options={suiteOptions}
-            onChange={(versionId) => onScopeChange({ ...scope, versionId })}
-          />
-          <FilterMenu
-            label={t("filters.run")}
-            value={scope.runId}
-            options={runOptions}
-            onChange={(runId) => onScopeChange({ ...scope, runId })}
-          />
-        </div>
-      </div>
+      </BenchmarkToolbar>
       <p className="text-xs text-muted-foreground">
         {baseline
           ? t("nerf.summary", {

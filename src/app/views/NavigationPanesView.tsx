@@ -13,6 +13,7 @@ import { useAgentUpdatesAvailable } from "@/features/providers/hooks/useAgentUpd
 import { cn } from "@/shared/lib/cn";
 import type { AppView } from "@/app/AppShell";
 import type { ProjectInfo } from "@/features/projects/api/projects";
+import type { BenchmarkSection } from "@/features/benchmarks/lib/benchmarkNavigation";
 import { PrimaryNavigationSurface } from "@/features/navigation/ui/PrimaryNavigationSurface";
 import type { CommandOutcome } from "@/features/distillctl/navigation";
 import { SessionListCapability } from "@/features/sessions/capabilities/SessionListCapability";
@@ -52,11 +53,13 @@ export interface NavigationPanesViewProps {
   onMoveToProject?: (sessionId: string, projectId: string | null) => void;
   onReorderProject?: (fromId: string, toId: string) => void;
   onNavigate?: (view: AppView) => void;
+  onBenchmarkSectionSelect?: (section: BenchmarkSection) => void;
   onOpenProject?: (projectId: string) => void;
   onSelectSession?: (sessionId: string) => void;
   onProjectCreatedRevisionHandled?: (revision: number) => void;
   projectCreatedRevision?: number;
   activeView?: AppView;
+  activeBenchmarkSection?: BenchmarkSection;
   activeSettingsSection?: SectionId;
   activeSessionId?: string | null;
   className?: string;
@@ -218,11 +221,13 @@ export function NavigationPanesView({
   onMoveToProject,
   onReorderProject,
   onNavigate,
+  onBenchmarkSectionSelect,
   onOpenProject,
   onSelectSession,
   onProjectCreatedRevisionHandled,
   projectCreatedRevision,
   activeView,
+  activeBenchmarkSection,
   activeSettingsSection = DEFAULT_SETTINGS_SECTION,
   activeSessionId,
   className,
@@ -332,6 +337,14 @@ export function NavigationPanesView({
       if (expanded !== "true" && expanded !== "false") {
         return;
       }
+      // A list that follows the route opens by navigating there and only
+      // closes by leaving, so ArrowLeft has nothing to collapse.
+      if (
+        event.key === "ArrowLeft" &&
+        target.hasAttribute("data-sidebar-route-disclosure")
+      ) {
+        return;
+      }
 
       if (
         (event.key === "ArrowRight" && expanded === "false") ||
@@ -354,6 +367,7 @@ export function NavigationPanesView({
       width={width}
     >
       <PrimaryNavigationSurface
+        activeBenchmarkSection={activeBenchmarkSection}
         activeSettingsSection={activeSettingsSection}
         activeView={activeView}
         agentUpdatesAvailable={agentUpdatesAvailable}
@@ -367,6 +381,7 @@ export function NavigationPanesView({
         navCollapsed={collapsed}
         navLabelVisible={labelVisible}
         onKeyDown={handleSidebarNavKeyDown}
+        onBenchmarkSectionSelect={onBenchmarkSectionSelect}
         onNavigate={onNavigate}
         onSettingsBack={onSettingsBack}
         onSettingsClick={onSettingsClick}

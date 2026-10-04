@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconChevronLeft, IconPlayerPlay } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
@@ -18,6 +18,7 @@ import {
 } from "../hooks/useBenchmarks";
 import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
 import { catchUpCases } from "../lib/benchmarkCatchUp";
+import { explicitEffort } from "../lib/benchmarkEffort";
 import { historyMeasurements } from "../lib/benchmarkHistory";
 import {
   boardDescription,
@@ -38,6 +39,7 @@ import type {
 } from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import {
+  BenchmarkToolbar,
   BoardIcon,
   ScoreBar,
   SectionHeading,
@@ -89,6 +91,7 @@ export function BenchmarkConfigurationPage({
   onRun,
   onOpenRun,
   onBack,
+  actions,
 }: {
   row: LeaderboardRow;
   report: LeaderboardReport;
@@ -100,6 +103,8 @@ export function BenchmarkConfigurationPage({
   /** Opens an unfinished run that already covers some of the gaps. */
   onOpenRun: (runId: string) => void;
   onBack: () => void;
+  /** The page actions, on the right of the back row. */
+  actions?: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -223,7 +228,13 @@ export function BenchmarkConfigurationPage({
         : t("unknown"),
     ],
     [t("fields.provider"), shownRow.configuration.providerId],
-    [t("fields.effort"), shownRow.configuration.effort ?? t("unknown")],
+    // A model without an effort control has none; the CLI's "default" is
+    // no level and never printed as one.
+    [
+      t("fields.effort"),
+      explicitEffort(shownRow.configuration.effort) ??
+        (shownRow.configuration.effort ? t("unknown") : t("run.noEffort")),
+    ],
     [
       t("fields.fastMode"),
       shownRow.configuration.fastMode == null
@@ -260,15 +271,17 @@ export function BenchmarkConfigurationPage({
   ];
   return (
     <div className="space-y-8">
-      <Button
-        type="button"
-        variant="ghost"
-        flush
-        leftIcon={<IconChevronLeft />}
-        onClick={onBack}
-      >
-        {t("configuration.back")}
-      </Button>
+      <BenchmarkToolbar actions={actions}>
+        <Button
+          type="button"
+          variant="ghost"
+          flush
+          leftIcon={<IconChevronLeft />}
+          onClick={onBack}
+        >
+          {t("configuration.back")}
+        </Button>
+      </BenchmarkToolbar>
       <header className="flex flex-wrap items-start justify-between gap-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex size-12 shrink-0 items-center justify-center rounded-md bg-muted">

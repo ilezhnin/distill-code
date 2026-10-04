@@ -50,6 +50,7 @@ import {
   AxisBars,
   BenchmarkEmpty,
   BenchmarkPager,
+  BenchmarkToolbar,
   BoardIcon,
   ModelIdentity,
   ScoreBar,
@@ -65,6 +66,8 @@ interface Props {
   onPageChange: (page: number) => void;
   /** A row opened as its own page, by row key. */
   onOpen: (key: string) => void;
+  /** The page actions, last in the boards row. */
+  actions?: ReactNode;
 }
 
 const MotionRow = motion.create(TableRow);
@@ -86,6 +89,7 @@ export function LeaderboardView({
   pageSize,
   onPageChange,
   onOpen,
+  actions,
 }: Props) {
   const { t } = useTranslation("benchmarks");
   const reduceMotion = useReducedMotion();
@@ -256,8 +260,44 @@ export function LeaderboardView({
   );
   return (
     <section className="space-y-4">
-      {/* Boards on the left; the model filter and the view switch on the right. */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Boards on the left; the model filter, the view switch and the page
+          actions on the right. */}
+      <BenchmarkToolbar
+        actions={actions}
+        trailing={
+          <>
+            <ModelFilter
+              options={rows.map((entry) => ({
+                key: rowKey(entry),
+                name: nameOf(entry),
+                vendor: vendorOf(entry),
+                terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
+              }))}
+              selected={chosen}
+              onChange={(next) => {
+                setChosen(next);
+                onPageChange(0);
+              }}
+            />
+            <ToggleGroup
+              type="single"
+              size="sm"
+              className="shrink-0"
+              value={view}
+              onValueChange={(value) => {
+                if (value === "table" || value === "chart") setView(value);
+              }}
+            >
+              <ToggleGroupItem value="chart">
+                {t("filters.chart")}
+              </ToggleGroupItem>
+              <ToggleGroupItem value="table">
+                {t("filters.table")}
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </>
+        }
+      >
         <Tabs
           value={board.id}
           onValueChange={(value) => chooseBoard(value as BoardId)}
@@ -283,38 +323,7 @@ export function LeaderboardView({
             ))}
           </TabsList>
         </Tabs>
-        <div className="flex min-w-0 items-center gap-2">
-          <ModelFilter
-            options={rows.map((entry) => ({
-              key: rowKey(entry),
-              name: nameOf(entry),
-              vendor: vendorOf(entry),
-              terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
-            }))}
-            selected={chosen}
-            onChange={(next) => {
-              setChosen(next);
-              onPageChange(0);
-            }}
-          />
-          <ToggleGroup
-            type="single"
-            size="sm"
-            className="shrink-0"
-            value={view}
-            onValueChange={(value) => {
-              if (value === "table" || value === "chart") setView(value);
-            }}
-          >
-            <ToggleGroupItem value="chart">
-              {t("filters.chart")}
-            </ToggleGroupItem>
-            <ToggleGroupItem value="table">
-              {t("filters.table")}
-            </ToggleGroupItem>
-          </ToggleGroup>
-        </div>
-      </div>
+      </BenchmarkToolbar>
       {loading ? (
         <BenchmarkEmpty title={t("loading")} compact />
       ) : visible.length === 0 ? (
