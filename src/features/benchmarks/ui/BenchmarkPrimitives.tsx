@@ -410,8 +410,9 @@ export function Metric({ label, value }: { label: string; value: ReactNode }) {
 
 /**
  * A model the way the reference names one: vendor icon beside both lines,
- * display name with the selection that differs from the default as chips,
- * and the vendor underneath.
+ * display name with its effort (the CLI's own default included, so every
+ * row says which effort it measured) and fast mode as chips, and the vendor
+ * underneath. A model without an effort control shows none.
  */
 export function ModelIdentity({
   configuration,
@@ -427,10 +428,7 @@ export function ModelIdentity({
   children?: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
-  const effort =
-    configuration.effort && configuration.effort !== "default"
-      ? configuration.effort
-      : null;
+  const effort = configuration.effort || null;
   return (
     <div className="flex min-w-0 items-center gap-3">
       <span className="shrink-0">
