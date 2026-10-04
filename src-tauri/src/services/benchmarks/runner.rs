@@ -430,6 +430,17 @@ fn is_quota_wait(error: &Value) -> bool {
         && data["dispatchStarted"] == Value::Bool(false)
 }
 
+/// Whether the provider refused a dispatched turn for an exhausted usage
+/// allowance before answering anything. Kimi Code reports its 5-hour limit as
+/// ACP's `auth_required` with "403 You've reached your 5-hour usage limit".
+/// Nothing was measured, so the cell waits for the reset like a quota wait the
+/// host saw coming, instead of settling as an infrastructure failure.
+fn refused_for_quota(error: &Value, output: &str, usage: &TokenUsage) -> bool {
+    crate::services::provider_account_status::is_quota_error(error)
+        && output.is_empty()
+        && usage.output.unwrap_or(0) == 0
+}
+
 /// When a turn the host refused for quota may try again: the reset the host
 /// named, or a short retry.
 fn quota_until(error: &str) -> i64 {
@@ -1804,7 +1815,9 @@ impl ExecutionBackend for NativeBackend {
                     && !page.has_more
                     && attempt.event_cursor >= status.event_cursor
                 {
-                    if let Some(error) = status.error.as_ref().filter(|e| is_quota_wait(e)) {
+                    if let Some(error) = status.error.as_ref().filter(|e| {
+                        is_quota_wait(e) || refused_for_quota(e, &capture.output, &attempt.usage)
+                    }) {
                         return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
                     }
                     terminal = json!({"terminalDispatch":status});
@@ -4344,6 +4357,24 @@ mod tests {
             .attempts
             .iter()
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("cancelled")));
+    }
+    #[test]
+    fn a_provider_usage_limit_before_any_answer_waits_for_quota() {
+        let limit = json!({"code":-32000,"data":{"accountId":"cli-login-kimi-acp",
+            "dispatchStarted":true,"promptNotAccepted":false},
+            "message":"Authentication required: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends."});
+        let empty = TokenUsage::default();
+        assert!(refused_for_quota(&limit, "", &empty));
+        // An answer already under way was measured; it settles as it ended.
+        assert!(!refused_for_quota(&limit, "partial", &empty));
+        let answered = TokenUsage {
+            output: Some(12),
+            ..Default::default()
+        };
+        assert!(!refused_for_quota(&limit, "", &answered));
+        // A model the plan leaves out is no quota.
+        let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
+        assert!(!refused_for_quota(&refused, "", &empty));
     }
     #[tokio::test]
     async fn a_baseline_leaves_out_cells_settled_as_excluded() {
