@@ -247,7 +247,7 @@ export function BenchmarksView({
     <PageShell contentWidth="full">
       <section
         aria-label={t("title")}
-        className="mx-auto flex w-full max-w-[70rem] flex-col gap-6"
+        className="mx-auto flex w-full max-w-[120rem] flex-col gap-6"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Tabs

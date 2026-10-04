@@ -674,24 +674,19 @@ describe("benchmark authoring and saved evidence", () => {
           const cells = within(row).getAllByRole("cell");
           return `${cells[0].textContent} ${cells[1].querySelector(".font-medium")?.textContent}`;
         });
-    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta"]);
-    // Rows without a rank stay out of the way until asked for.
-    expect(screen.queryByText("delta")).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Show 1 unranked configuration" }),
-    );
+    // Every model is listed; a row without a rank follows the ranked ones.
     expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
-    await userEvent.click(
-      screen.getByRole("button", { name: "Hide unranked configurations" }),
-    );
+    expect(
+      screen.queryByRole("button", { name: /unranked/ }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("tab", { name: "Simple coding" }),
     ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "Speed" }));
-    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma"]);
+    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
     await userEvent.click(screen.getByRole("button", { name: "Cost" }));
-    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma"]);
+    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
     expect(screen.getByRole("button", { name: "Cost" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -790,9 +785,9 @@ describe("benchmark authoring and saved evidence", () => {
     expect(ranks()).toEqual(["51", "52", "53", "54", "55"]);
     await userEvent.click(screen.getByRole("tab", { name: "Cost" }));
     expect(onPageChange).toHaveBeenCalledWith(0);
-    // Even before the page resets, the shorter board never renders empty.
-    expect(ranks()).toHaveLength(30);
-    expect(ranks()[0]).toBe("1");
+    // Before the page resets, the second page holds the rows the cost board
+    // cannot rank; they follow every ranked row.
+    expect(ranks()).toEqual(["–", "–", "–", "–", "–"]);
   });
   it("asks the service for the whole leaderboard at once", async () => {
     wrap(

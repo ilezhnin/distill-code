@@ -302,9 +302,6 @@
     "emptyHint": "Publica una prueba y ejecútala para recopilar evidencia.",
     "runtime": "runtime {{id}}",
     "chartLabel": "{{model}}: {{value}}",
-    "showUnranked_one": "Mostrar {{count}} configuración sin posición",
-    "showUnranked_other": "Mostrar {{count}} configuraciones sin posición",
-    "hideUnranked": "Ocultar configuraciones sin posición",
     "price": "API entrada / salida por 1M",
     "context": "Contexto",
     "priceShort": "Precio API"

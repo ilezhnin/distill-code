@@ -4,7 +4,6 @@ import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
 import { motion, useReducedMotion } from "motion/react";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
-import { DisclosureButton } from "@/shared/ui/disclosure-button";
 import {
   Table,
   TableBody,
@@ -96,7 +95,6 @@ export function LeaderboardView({
   const [chosen, setChosen] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<"chart" | "table">("chart");
   const [boardId, setBoardId] = useState<BoardId>("overall");
-  const [unrankedOpen, setUnrankedOpen] = useState(false);
   const rows = useMemo(() => report?.rows ?? [], [report]);
   const cohort = report?.cohort;
   const boards = useMemo(() => boardsFor(cohort), [cohort]);
@@ -134,14 +132,8 @@ export function LeaderboardView({
     [rows, chosen],
   );
   const ranked = useMemo(() => rankRows(visible, board), [visible, board]);
-  const rankedRows = useMemo(
-    () => ranked.filter((entry) => entry.rank != null),
-    [ranked],
-  );
-  const unranked = ranked.filter((entry) => entry.rank == null);
-  // Nothing ranked yet means nothing to hide behind.
-  const showUnranked = unrankedOpen || rankedRows.length === 0;
-  const listed = showUnranked ? ranked : rankedRows;
+  // Every model is listed; rows without a rank follow the ranked ones.
+  const listed = ranked;
   // Ranks are placed over every row; only the rendered list is paged. A list
   // that shrank (another board ranks fewer rows) shows its last page.
   const lastPage = Math.max(0, Math.ceil(listed.length / pageSize) - 1);
@@ -262,21 +254,6 @@ export function LeaderboardView({
       {detailsCell(entry)}
     </MotionRow>
   );
-  const unrankedDisclosure =
-    unranked.length > 0 && rankedRows.length > 0 ? (
-      <DisclosureButton
-        type="button"
-        aria-expanded={unrankedOpen}
-        onClick={() => {
-          setUnrankedOpen((open) => !open);
-          onPageChange(0);
-        }}
-      >
-        {unrankedOpen
-          ? t("leaderboard.hideUnranked")
-          : t("leaderboard.showUnranked", { count: unranked.length })}
-      </DisclosureButton>
-    ) : null;
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -434,7 +411,7 @@ export function LeaderboardView({
                     type="button"
                     variant="ghost"
                     size="xs"
-                    className="h-auto max-w-20 whitespace-normal text-right leading-tight"
+                    className="h-auto max-w-32 whitespace-normal text-right leading-tight"
                     aria-pressed={entry.id === board.id}
                     rightIcon={
                       entry.id === board.id ? <IconChevronDown /> : undefined
@@ -483,7 +460,6 @@ export function LeaderboardView({
           </TableBody>
         </Table>
       )}
-      {unrankedDisclosure}
       <BenchmarkPager
         page={current}
         pageSize={pageSize}

@@ -302,9 +302,6 @@
     "emptyHint": "Publish a test and run it to collect evidence.",
     "runtime": "runtime {{id}}",
     "chartLabel": "{{model}}: {{value}}",
-    "showUnranked_one": "Show {{count}} unranked configuration",
-    "showUnranked_other": "Show {{count}} unranked configurations",
-    "hideUnranked": "Hide unranked configurations",
     "price": "API in / out per 1M",
     "context": "Context",
     "priceShort": "API price"
