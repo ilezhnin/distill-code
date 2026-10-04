@@ -307,10 +307,15 @@ fn read_for_compare(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|err| format!("Failed to read '{}': {err}", path.display()))
 }
 
+/// The YAML block of a `SKILL.md`, with either line ending: a copy installed
+/// from a Windows checkout ends its lines with CRLF, and is still ours to
+/// update.
 fn skill_frontmatter(contents: &str) -> Option<&str> {
-    let contents = contents.strip_prefix("---\n")?;
+    let contents = contents
+        .strip_prefix("---\n")
+        .or_else(|| contents.strip_prefix("---\r\n"))?;
     let end = contents.find("\n---")?;
-    Some(&contents[..end])
+    Some(contents[..end].trim_end_matches('\r'))
 }
 
 #[derive(Deserialize)]
@@ -775,5 +780,74 @@ mod tests {
             fs::read_to_string(target.path().join("agent-builder").join(SKILL_FILE_NAME)).unwrap(),
             "---\nname: agent-builder\nmetadata:\n  distillBundled: true\n---\nupdated"
         );
+    }
+
+    /// A bundled skill installed from a Windows checkout carries CRLF line
+    /// endings. It is still the app's own copy and is updated — an old one
+    /// otherwise keeps sending agents to folders the app no longer reads —
+    /// while a CRLF skill without the marker stays the user's.
+    #[test]
+    fn a_bundled_skill_with_crlf_line_endings_is_updated() {
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        write_skill(source.path(), "agent-builder", BUNDLED);
+        write_skill(source.path(), "skill-builder", BUNDLED);
+        write_skill(
+            target.path(),
+            "agent-builder",
+            "---\r\nname: agent-builder\r\nmetadata:\r\n  distillBundled: true\r\n---\r\nAgents live at ~/.agents/agents.\r\n",
+        );
+        let own = "---\r\nname: skill-builder\r\n---\r\nmine\r\n";
+        write_skill(target.path(), "skill-builder", own);
+
+        let seeded = seed_bundled_skills_from_dir(source.path(), target.path()).unwrap();
+
+        assert_eq!(seeded, 1);
+        assert_eq!(
+            fs::read_to_string(target.path().join("agent-builder").join(SKILL_FILE_NAME)).unwrap(),
+            BUNDLED
+        );
+        assert_eq!(
+            fs::read_to_string(target.path().join("skill-builder").join(SKILL_FILE_NAME)).unwrap(),
+            own
+        );
+    }
+
+    /// Bundled skills land in the Distill root's `skills`, and nothing is
+    /// created in the home folder the root sits in.
+    #[test]
+    fn bundled_skills_install_under_the_distill_root() {
+        let distro = tempdir().unwrap();
+        let home = tempdir().unwrap();
+        write_skill(
+            &distro.path().join(DISTRO_SKILLS_DIR_NAME),
+            "agent-builder",
+            BUNDLED,
+        );
+        let bundle = DistroBundle {
+            root_dir: distro.path().to_path_buf(),
+            bin_dir: None,
+            manifest: Default::default(),
+        };
+        let root = home.path().join(".distill");
+
+        let seeded = seed_bundled_skills(&bundle, &root).unwrap();
+
+        assert_eq!(seeded, 1);
+        assert_eq!(
+            fs::read_to_string(
+                root.join("skills")
+                    .join("agent-builder")
+                    .join(SKILL_FILE_NAME)
+            )
+            .unwrap(),
+            BUNDLED
+        );
+        let created: Vec<_> = fs::read_dir(home.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(created, vec![".distill".to_string()]);
     }
 }

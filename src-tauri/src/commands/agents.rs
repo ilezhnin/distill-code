@@ -161,29 +161,33 @@ pub fn read_agent_source_file(
     app: tauri::AppHandle,
     source_path: String,
 ) -> Result<ImportFileReadResult, String> {
-    let e2e_agents_dir = app
-        .try_state::<crate::services::e2e_mode::E2eMode>()
-        .map(|mode| mode.agents_dir());
-    let mut roots = vec![e2e_agents_dir
-        .clone()
-        .unwrap_or(crate::services::distill_root::app_root(&app)?.join("agents"))];
-    if e2e_agents_dir.is_none() {
-        if let Some(home) = dirs::home_dir() {
-            roots.push(home.join(".agents/agents"));
-        }
-        if let Some(parent) = Path::new(&source_path).parent().filter(|parent| {
-            parent.file_name().and_then(|name| name.to_str()) == Some("agents")
-                && parent
-                    .parent()
-                    .and_then(Path::file_name)
-                    .and_then(|name| name.to_str())
-                    == Some(".distill")
-        }) {
-            roots.push(parent.to_path_buf());
-        }
-    }
+    let roots = match app.try_state::<crate::services::e2e_mode::E2eMode>() {
+        Some(mode) => vec![mode.agents_dir()],
+        None => agent_source_roots(
+            &crate::services::distill_root::app_root(&app)?,
+            &source_path,
+        ),
+    };
     let path = validate_agent_source_path_with_roots(&source_path, &roots)?;
     read_persona_file(path, "agent source")
+}
+
+/// Where an agent file may be read from: the Distill root's `agents`, and the
+/// `.distill/agents` of the project the file is in. Folders other tools keep
+/// (`~/.agents/agents`, a project's `.agents`) are not trusted.
+fn agent_source_roots(distill_root: &Path, source_path: &str) -> Vec<PathBuf> {
+    let mut roots = vec![distill_root.join("agents")];
+    if let Some(parent) = Path::new(source_path).parent().filter(|parent| {
+        parent.file_name().and_then(|name| name.to_str()) == Some("agents")
+            && parent
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some(crate::commands::project_store::PROJECT_STORE_DIR)
+    }) {
+        roots.push(parent.to_path_buf());
+    }
+    roots
 }
 
 fn read_persona_file(path: PathBuf, context: &'static str) -> Result<ImportFileReadResult, String> {
@@ -210,7 +214,7 @@ fn read_persona_file(path: PathBuf, context: &'static str) -> Result<ImportFileR
 
 #[cfg(test)]
 mod tests {
-    use super::validate_agent_source_path_with_roots;
+    use super::{agent_source_roots, validate_agent_source_path_with_roots};
     use tempfile::{tempdir, Builder};
 
     #[test]
@@ -277,5 +281,38 @@ mod tests {
             std::fs::read_to_string(normal_agent).unwrap(),
             "---\nname: Normal\n---\n\nSecret"
         );
+    }
+
+    /// An agent file left in the folder older builds shared with other tools
+    /// (`~/.agents/agents`) or in a project's `.agents` is not read; the
+    /// Distill root's and a project's `.distill` agents are.
+    #[test]
+    fn legacy_agent_folders_are_not_trusted() {
+        let home = tempdir().unwrap();
+        let root = home.path().join(".distill");
+        let project = home.path().join("repo");
+        let write = |dir: std::path::PathBuf| {
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("scout.md");
+            std::fs::write(&file, b"---\nname: Scout\n---\n\nPrompt").unwrap();
+            file.to_string_lossy().into_owned()
+        };
+        let own = write(root.join("agents"));
+        let local = write(project.join(".distill").join("agents"));
+        let legacy = write(home.path().join(".agents").join("agents"));
+        let stray = write(project.join(".agents").join("agents"));
+
+        for accepted in [&own, &local] {
+            let roots = agent_source_roots(&root, accepted);
+            assert!(validate_agent_source_path_with_roots(accepted, &roots).is_ok());
+        }
+        for refused in [&legacy, &stray] {
+            let roots = agent_source_roots(&root, refused);
+            assert!(roots
+                .iter()
+                .all(|root| !root.components().any(|part| part.as_os_str() == ".agents")));
+            let error = validate_agent_source_path_with_roots(refused, &roots).unwrap_err();
+            assert!(error.contains("outside the trusted"), "{error}");
+        }
     }
 }

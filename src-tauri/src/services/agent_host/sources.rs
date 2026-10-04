@@ -1,7 +1,9 @@
-//! Skills, agents (personas), and projects as files on disk. This is the
-//! host-side replacement for goose's "sources": the same on-disk layout
-//! (`~/.agents/skills/<name>/SKILL.md`, `~/.agents/agents/<slug>.md`,
-//! `<app data>/projects/<slug>.md`) so existing files keep working.
+//! Skills, agents (personas), and projects as files on disk, read and written
+//! only under the Distill root (`<root>/skills/<name>/SKILL.md`,
+//! `<root>/agents/<slug>.md`, `<root>/projects/<slug>.md`) and a project's own
+//! `.distill` folder (`<project>/.distill/skills`, `<project>/.distill/agents`).
+//! Folders other tools keep — `~/.agents`, a project's `.agents`, `.claude`,
+//! `.codex`, `.gemini`, `.goose` — are never sources.
 
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -9,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::protocol::{self, invalid_params};
+use crate::commands::project_store::PROJECT_STORE_DIR;
 use crate::services::windows_names::reject_unusable_windows_name;
 
 static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -72,39 +75,46 @@ struct Root {
 }
 
 pub struct SourceRoots {
+    /// The Distill root: global `skills/` and `agents/` live here.
     pub root: PathBuf,
-    pub compatibility_root: Option<PathBuf>,
-    /// `<app data>/projects` — where projects live.
+    /// `<root>/projects` — where projects live.
     pub projects_dir: PathBuf,
-    /// `<app data>/skills` — bundled skills seeded by the app.
+    /// `<root>/skills` — where the app installs its bundled skills.
     pub builtin_skills_dir: PathBuf,
     /// Legacy goose data dir to migrate projects from, once.
     pub legacy_projects_dir: Option<PathBuf>,
 }
 
+impl SourceRoots {
+    /// Every source folder under the Distill `root`, the way the agent host
+    /// opens them; `legacy_projects_dir` is goose's projects folder, imported
+    /// once when present.
+    pub fn new(root: PathBuf, legacy_projects_dir: Option<PathBuf>) -> Self {
+        Self {
+            projects_dir: root.join("projects"),
+            builtin_skills_dir: root.join("skills"),
+            root,
+            legacy_projects_dir,
+        }
+    }
+}
+
+/// The project's `.distill/<kind>` (when a project is named), then the Distill
+/// root's `<kind>`. Nothing else is ever scanned or written.
 fn source_roots(kind: &str, project_dir: Option<&Path>, roots: &SourceRoots) -> Vec<Root> {
     let mut result = Vec::new();
     if let Some(project) = project_dir {
-        for folder in [".distill", ".agents"] {
-            result.push(Root {
-                path: project.join(folder).join(kind),
-                global: false,
-                writable: true,
-            });
-        }
+        result.push(Root {
+            path: project.join(PROJECT_STORE_DIR).join(kind),
+            global: false,
+            writable: true,
+        });
     }
     result.push(Root {
         path: roots.root.join(kind),
         global: true,
         writable: true,
     });
-    if let Some(compatibility) = &roots.compatibility_root {
-        result.push(Root {
-            path: compatibility.join(kind),
-            global: true,
-            writable: true,
-        });
-    }
     result
 }
 
@@ -947,8 +957,7 @@ pub fn update(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
     Ok(json!({ "source": source }))
 }
 
-/// A source path inside a project's `.distill/<kind>` (or compatibility
-/// `.agents/<kind>`) is writable even when
+/// A source path inside a project's `.distill/<kind>` is writable even when
 /// the request carries no project directory: derive the root from the path.
 fn project_root_guess(path: &str, kind: &str) -> Option<Root> {
     let path = PathBuf::from(path);
@@ -959,7 +968,7 @@ fn project_root_guess(path: &str, kind: &str) -> Option<Root> {
                 .parent()
                 .and_then(|grand| grand.file_name())
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name == ".agents" || name == ".distill")
+                == Some(PROJECT_STORE_DIR)
         {
             return Some(Root {
                 path: parent.to_path_buf(),
@@ -1190,8 +1199,9 @@ mod tests {
         assert_eq!(leftovers, vec!["SKILL.md".to_string()]);
     }
 
-    /// Distill roots precede compatibility .agents roots; vendor folders
-    /// belonging to harnesses are never imported as Distill configuration.
+    /// Only the project's `.distill` and the Distill root are roots: the
+    /// project's `.agents` and every vendor folder are never Distill
+    /// configuration.
     #[test]
     fn a_vendor_folder_is_never_a_root() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1204,7 +1214,6 @@ mod tests {
         }
         let sources = SourceRoots {
             root: dir.path().join("global"),
-            compatibility_root: Some(dir.path().join("home/.agents")),
             projects_dir: dir.path().join("projects"),
             builtin_skills_dir: dir.path().join("skills"),
             legacy_projects_dir: None,
@@ -1213,20 +1222,110 @@ mod tests {
             ("skills", skill_roots(Some(&project), &sources)),
             ("agents", agent_roots(Some(&project), &sources)),
         ] {
-            assert_eq!(roots[0].path, project.join(".distill").join(kind));
-            assert_eq!(roots[1].path, project.join(".agents").join(kind));
-            assert_eq!(roots[2].path, sources.root.join(kind));
-            for root in &roots {
-                assert!(
-                    root.path == sources.root.join(kind)
-                        || root.path.ends_with(Path::new(".distill").join(kind))
-                        || root.path.ends_with(Path::new(".agents").join(kind)),
-                    "{} is not a Distill or compatibility root",
-                    root.path.display()
-                );
-                assert!(root.writable);
-            }
+            let paths: Vec<_> = roots.iter().map(|root| root.path.clone()).collect();
+            assert_eq!(
+                paths,
+                vec![project.join(".distill").join(kind), sources.root.join(kind)]
+            );
+            assert!(roots.iter().all(|root| root.writable));
         }
+    }
+
+    fn write_agent(dir: &Path, slug: &str, body: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join(format!("{slug}.md")),
+            format!("---\nname: {slug}\ndescription: Example\n---\n{body}"),
+        )
+        .unwrap();
+    }
+
+    fn write_skill(dir: &Path, name: &str) {
+        let skill = dir.join(name);
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Example\n---\nbody"),
+        )
+        .unwrap();
+    }
+
+    /// A home that still has the folder older builds shared with other tools
+    /// (`~/.agents`) next to the Distill root: only the root is listed. The
+    /// roots are built the way the agent host builds them.
+    #[test]
+    fn the_legacy_home_agents_folder_is_ignored() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(".distill");
+        let legacy = home.path().join(".agents");
+        write_agent(&root.join("agents"), "own", "root");
+        write_agent(&legacy.join("agents"), "legacy", "legacy");
+        write_skill(&root.join("skills"), "own-skill");
+        write_skill(&legacy.join("skills"), "legacy-skill");
+        let roots = SourceRoots::new(root.clone(), None);
+        assert_eq!(roots.projects_dir, root.join("projects"));
+        assert_eq!(roots.builtin_skills_dir, root.join("skills"));
+
+        let listed = list(&json!({}), &roots).unwrap();
+        let names: Vec<_> = listed["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|source| source["type"] != "project")
+            .map(|source| source["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["own-skill".to_string(), "own".to_string()]);
+    }
+
+    /// A project's `.agents` folder is not a project source: it is neither
+    /// listed nor accepted for an edit or a delete.
+    #[test]
+    fn a_project_agents_folder_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("repo");
+        let root = dir.path().join("root");
+        write_agent(&project.join(".distill/agents"), "local", "distill");
+        write_agent(&project.join(".agents/agents"), "stray", "agents");
+        write_skill(&project.join(".agents/skills"), "stray-skill");
+        let roots = SourceRoots {
+            projects_dir: root.join("projects"),
+            builtin_skills_dir: root.join("skills"),
+            root,
+            legacy_projects_dir: None,
+        };
+
+        let listed = list(&json!({ "projectDir": project }), &roots).unwrap();
+        let names: Vec<_> = listed["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|source| source["type"] != "project")
+            .map(|source| source["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["local".to_string()]);
+
+        let stray_agent = project.join(".agents/agents/stray.md");
+        let edit = update(
+            &json!({
+                "type": "agent",
+                "path": stray_agent,
+                "name": "stray",
+                "content": "rewritten",
+            }),
+            &roots,
+        );
+        assert!(edit.is_err());
+        let removal = delete(
+            &json!({ "type": "skill", "path": project.join(".agents/skills/stray-skill") }),
+            &roots,
+        );
+        assert!(removal.is_err());
+        assert!(fs::read_to_string(&stray_agent)
+            .unwrap()
+            .ends_with("agents"));
+        assert!(project
+            .join(".agents/skills/stray-skill/SKILL.md")
+            .is_file());
     }
 
     #[test]
@@ -1249,7 +1348,6 @@ mod tests {
             projects_dir: root.join("projects"),
             builtin_skills_dir: root.join("skills"),
             root,
-            compatibility_root: None,
             legacy_projects_dir: None,
         };
         let local = list(&json!({"type":"agent", "projectDir": project}), &roots).unwrap();

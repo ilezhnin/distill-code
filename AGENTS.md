@@ -36,6 +36,10 @@ outside the repository. `distro/` is for generic built-in skills and starter age
 - `src-tauri/crates/distillctl/` — bundled distillctl CLI
 - `distro/skills/distill-help/references/distillctl.md` — distillctl guidance agents
   read from the bundled `distill-help` skill
+- `.agents/` — development skills and checks for coding agents working on this
+  repository, read straight from the checkout. Distill itself does not list a
+  project's `.agents` (see `docs/distill-root-layout.md`), so a Distill chat on
+  this repository does not offer them.
 
 ## Architectural laws
 

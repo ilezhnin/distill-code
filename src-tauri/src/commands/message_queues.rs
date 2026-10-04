@@ -21,13 +21,41 @@ pub async fn load_message_queues(app: AppHandle) -> Result<Option<String>, Strin
         .wait_until_ready()
         .await;
     let path = message_queues_path(&app)?;
-    tokio::task::spawn_blocking(move || match fs::read_to_string(&path) {
-        Ok(serialized) => Ok(Some(serialized)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("Failed to read message queues: {error}")),
-    })
-    .await
-    .map_err(|error| format!("Failed to read message queues: {error}"))?
+    let root = crate::services::distill_root::app_root(&app)?;
+    let home = dirs::home_dir();
+    tokio::task::spawn_blocking(move || read_message_queues_at(&path, home.as_deref(), &root))
+        .await
+        .map_err(|error| format!("Failed to read message queues: {error}"))?
+}
+
+/// The persisted queues as the renderer gets them. A message queued before
+/// the agents moved into the Distill root names its persona by its old path
+/// (`~/.agents/agents/<file>`); it is handed over naming the root's copy of
+/// that agent, so it still sends with it. A string rewrite only: the old
+/// folder is never opened, and the file changes with the renderer's next
+/// update of that queue.
+fn read_message_queues_at(
+    path: &Path,
+    home: Option<&Path>,
+    root: &Path,
+) -> Result<Option<String>, String> {
+    let serialized = match fs::read_to_string(path) {
+        Ok(serialized) => serialized,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Failed to read message queues: {error}")),
+    };
+    let Some(home) = home else {
+        return Ok(Some(serialized));
+    };
+    let Ok(mut queues) = serde_json::from_str::<serde_json::Value>(&serialized) else {
+        return Ok(Some(serialized));
+    };
+    if !crate::services::root_migration::rebase_agent_references(&mut queues, home, root) {
+        return Ok(Some(serialized));
+    }
+    serde_json::to_string(&queues)
+        .map(Some)
+        .map_err(|error| format!("Failed to serialize message queues: {error}"))
 }
 
 /// Merges the renderer's updates into the persisted queues.
@@ -139,6 +167,92 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             r#"{"main-only":[{"recordId":"large-image"}]}"#
+        );
+    }
+
+    /// A message queued with a persona recorded in the folder older builds
+    /// shared with other tools is read naming the root's copy of that agent;
+    /// its text, a persona the root lacks and the file on disk stay as they
+    /// were, and the old folder is not brought back.
+    #[test]
+    fn a_queued_persona_in_the_legacy_home_folder_is_read_as_the_root_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let root = home.join(".distill");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("agents").join("planner.md"), "persona").unwrap();
+        let legacy = |file: &str| {
+            home.join(".agents")
+                .join("agents")
+                .join(file)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let stored = serde_json::json!({
+            "s1": [{
+                "kind": "deferred",
+                "payload": {
+                    "persona": { "kind": "persona", "id": legacy("planner.md"), "name": "Planner" },
+                    "text": legacy("planner.md"),
+                },
+            }],
+            "s2": [{
+                "kind": "deferred",
+                "payload": {
+                    "persona": { "kind": "persona", "id": legacy("gone.md") },
+                    "text": "hi",
+                },
+            }],
+        })
+        .to_string();
+        let path = root.join("state").join(MESSAGE_QUEUES_FILENAME);
+        persist_message_queues_at_path(&path, Some(&stored)).unwrap();
+
+        let loaded: serde_json::Value = serde_json::from_str(
+            &read_message_queues_at(&path, Some(&home), &root)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            loaded["s1"][0]["payload"]["persona"]["id"],
+            root.join("agents")
+                .join("planner.md")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(loaded["s1"][0]["payload"]["text"], legacy("planner.md"));
+        assert_eq!(
+            loaded["s2"][0]["payload"]["persona"]["id"],
+            legacy("gone.md")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), stored);
+        assert!(!home.join(".agents").exists());
+    }
+
+    #[test]
+    fn queues_without_a_legacy_persona_are_read_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join(".distill");
+        let path = root.join("state").join(MESSAGE_QUEUES_FILENAME);
+        assert_eq!(
+            read_message_queues_at(&path, Some(temp.path()), &root).unwrap(),
+            None
+        );
+        let stored = r#"{"s1":[{"recordId":"a","payload":{"text":"x"}}]}"#;
+        persist_message_queues_at_path(&path, Some(stored)).unwrap();
+        assert_eq!(
+            read_message_queues_at(&path, Some(temp.path()), &root)
+                .unwrap()
+                .as_deref(),
+            Some(stored)
+        );
+        assert_eq!(
+            read_message_queues_at(&path, None, &root)
+                .unwrap()
+                .as_deref(),
+            Some(stored)
         );
     }
 

@@ -5,6 +5,9 @@
 //! Nothing in the code reads those spellings any more, so this brings what is
 //! on disk along, once, at startup — before the seeders, which would otherwise
 //! take their own earlier installs for the user's files and stop updating them.
+//! It works on the Distill root only, where the one-time adoption
+//! (`root_migration`) copied what older builds kept elsewhere; nothing outside
+//! the root is read or written.
 //!
 //! Every step is idempotent and finds nothing to do on the second start. The
 //! transcripts are covered separately, by the agent host's migration
@@ -25,29 +28,31 @@ const QUEUED_MESSAGE_NAMES: &[(&str, &str)] = &[
     ("\"berdDeliveryId\":", "\"distillDeliveryId\":"),
     ("\"berdSenderLabel\":", "\"distillSenderLabel\":"),
 ];
-/// What an older build left in the app's own folders under its own names and
-/// the renamed build installs again under new ones.
-const RETIRED_APP_PATHS: &[&str] = &[
-    "bin/berdctl.cmd",
-    "bin/berd-monitor.cmd",
-    "bin/berdctl",
-    "bin/berd-monitor",
-    "berdctl",
+/// What an older build left under its own names and the renamed build installs
+/// again under new ones, as the root holds it: the CLI shims the adoption
+/// copied from the app's old `bin` into `cache/bin`, and the bundled skills'
+/// old staging folder.
+const RETIRED_ROOT_PATHS: &[&str] = &[
+    "cache/bin/berdctl.cmd",
+    "cache/bin/berd-monitor.cmd",
+    "cache/bin/berdctl",
+    "cache/bin/berd-monitor",
     "skills/.berd-skill-transactions",
 ];
 const RETIRED_BUNDLED_SKILLS: &[&str] = &["berd-help", "berd-monitor"];
 
-pub fn adopt(app_data_dir: &Path, agents_dir: Option<&Path>) {
-    if let Some(agents_dir) = agents_dir {
-        adopt_agents_dir(agents_dir);
-    }
-    adopt_app_skills(&app_data_dir.join("skills"));
+/// Brings the Distill root's `agents`, `skills`, queued messages
+/// (`state/message-queues.json`) and CLI shims (`cache/bin`) under the new
+/// names.
+pub fn adopt(root: &Path) {
+    adopt_agents_dir(&root.join("agents"));
+    adopt_app_skills(&root.join("skills"));
     rewrite_file(
-        &app_data_dir.join("message-queues.json"),
+        &root.join("state").join("message-queues.json"),
         QUEUED_MESSAGE_NAMES,
     );
-    for retired in RETIRED_APP_PATHS {
-        remove(&app_data_dir.join(retired));
+    for retired in RETIRED_ROOT_PATHS {
+        remove(&root.join(retired));
     }
 }
 
@@ -212,13 +217,14 @@ mod tests {
         assert!(!dir.path().join(OLD_SEED_MARKER).exists());
     }
 
-    #[test]
-    fn the_app_folders_lose_what_the_old_names_left_behind() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path();
+    const OLD_QUEUE: &str = r#"{"s1":[{"payload":{"origin":"berdctl_cross_session","text":"about berdctl_cross_session"}}]}"#;
+
+    /// What an older build left under the old names, laid out at `dir` with
+    /// the root's paths for the skills, the agents, the queue and the shims.
+    fn lay_out_old_names(dir: &Path) {
         let skill = |name: &str, contents: &str| {
-            fs::create_dir_all(app.join("skills").join(name)).unwrap();
-            fs::write(app.join("skills").join(name).join("SKILL.md"), contents).unwrap();
+            fs::create_dir_all(dir.join("skills").join(name)).unwrap();
+            fs::write(dir.join("skills").join(name).join("SKILL.md"), contents).unwrap();
         };
         skill(
             "planning",
@@ -232,29 +238,78 @@ mod tests {
             "berd-monitor",
             "---\nname: berd-monitor\n---\nthe user's own",
         );
-        fs::create_dir_all(app.join("bin")).unwrap();
-        fs::write(app.join("bin").join("berdctl.cmd"), "@echo off").unwrap();
-        fs::write(app.join("bin").join("distillctl.cmd"), "@echo off").unwrap();
-        fs::create_dir_all(app.join("berdctl")).unwrap();
-        fs::write(
-            app.join("message-queues.json"),
-            r#"{"s1":[{"payload":{"origin":"berdctl_cross_session","text":"about berdctl_cross_session"}}]}"#,
-        )
-        .unwrap();
+        fs::create_dir_all(dir.join("skills/.berd-skill-transactions")).unwrap();
+        fs::create_dir_all(dir.join("agents")).unwrap();
+        fs::write(dir.join("agents/planner.md"), SEEDED).unwrap();
+        fs::create_dir_all(dir.join("cache/bin")).unwrap();
+        fs::write(dir.join("cache/bin/berdctl.cmd"), "@echo off").unwrap();
+        fs::write(dir.join("cache/bin/distillctl.cmd"), "@echo off").unwrap();
+        fs::create_dir_all(dir.join("state")).unwrap();
+        fs::write(dir.join("state/message-queues.json"), OLD_QUEUE).unwrap();
+    }
 
-        adopt(app, None);
+    #[test]
+    fn the_root_loses_what_the_old_names_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        lay_out_old_names(root);
 
-        assert!(fs::read_to_string(app.join("skills/planning/SKILL.md"))
+        adopt(root);
+
+        assert!(fs::read_to_string(root.join("skills/planning/SKILL.md"))
             .unwrap()
             .contains("distillBundled: true"));
-        assert!(!app.join("skills/berd-help").exists());
-        assert!(app.join("skills/berd-monitor/SKILL.md").is_file());
-        assert!(!app.join("bin/berdctl.cmd").exists());
-        assert!(app.join("bin/distillctl.cmd").is_file());
-        assert!(!app.join("berdctl").exists());
+        assert!(!root.join("skills/berd-help").exists());
+        assert!(root.join("skills/berd-monitor/SKILL.md").is_file());
+        assert!(!root.join("skills/.berd-skill-transactions").exists());
+        assert!(fs::read_to_string(root.join("agents/planner.md"))
+            .unwrap()
+            .contains("distillBundled: true"));
+        assert!(!root.join("cache/bin/berdctl.cmd").exists());
+        assert!(root.join("cache/bin/distillctl.cmd").is_file());
         assert_eq!(
-            fs::read_to_string(app.join("message-queues.json")).unwrap(),
+            fs::read_to_string(root.join("state/message-queues.json")).unwrap(),
             r#"{"s1":[{"payload":{"origin":"distillctl_cross_session","text":"about berdctl_cross_session"}}]}"#
         );
+    }
+
+    /// Only the root it is given: the app's old data folder (or any folder
+    /// beside the root) keeps the old names exactly as they were.
+    #[test]
+    fn nothing_outside_the_root_is_touched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".distill");
+        let outside = dir.path().join("com.levocat.distill");
+        fs::create_dir_all(&root).unwrap();
+        lay_out_old_names(&outside);
+        fs::create_dir_all(outside.join("bin")).unwrap();
+        fs::write(outside.join("bin/berdctl.cmd"), "@echo off").unwrap();
+        fs::write(outside.join("message-queues.json"), OLD_QUEUE).unwrap();
+        fs::create_dir_all(outside.join("berdctl")).unwrap();
+
+        adopt(&root);
+
+        assert!(fs::read_to_string(outside.join("skills/planning/SKILL.md"))
+            .unwrap()
+            .contains("berdBundled: true"));
+        assert!(outside.join("skills/berd-help/SKILL.md").is_file());
+        assert!(outside.join("skills/.berd-skill-transactions").is_dir());
+        assert_eq!(
+            fs::read_to_string(outside.join("agents/planner.md")).unwrap(),
+            SEEDED
+        );
+        assert!(outside.join("cache/bin/berdctl.cmd").is_file());
+        assert!(outside.join("bin/berdctl.cmd").is_file());
+        assert!(outside.join("berdctl").is_dir());
+        assert_eq!(
+            fs::read_to_string(outside.join("state/message-queues.json")).unwrap(),
+            OLD_QUEUE
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("message-queues.json")).unwrap(),
+            OLD_QUEUE
+        );
+        // An empty root stays empty: nothing is created to rename.
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     }
 }

@@ -104,7 +104,7 @@ pub async fn import_agent_avatar_file(
     source_path: String,
 ) -> Result<String, String> {
     let trusted_roots = trusted_agent_roots(&app)?;
-    let agent_path = validate_agent_source_path_with_roots(&agent_path, &trusted_roots)?;
+    let agent_path = validate_agent_source_path_with_roots(&agent_path, &trusted_roots.trusted)?;
     let source_path = validate_imported_image_avatar_path(&source_path)?;
     let bytes = read_imported_image_avatar(&source_path)?;
     let (mime_type, extension) = imported_image_avatar_format(&bytes)
@@ -195,20 +195,53 @@ fn decode_imported_poster_data_url(data_url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn trusted_agent_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
-    let mut roots = Vec::new();
-    if let Some(e2e_mode) = app.try_state::<crate::services::e2e_mode::E2eMode>() {
-        roots.push(e2e_mode.agents_dir());
-        return Ok(roots);
+/// Where the agent an avatar belongs to may be.
+#[derive(Debug, Default)]
+struct AgentAvatarRoots {
+    /// The Distill root's `agents` (an E2E run's own in isolation). Folders
+    /// other tools keep, such as `~/.agents/agents`, are never trusted.
+    trusted: Vec<PathBuf>,
+    /// `(home, Distill root)`, for records made before the agents moved into
+    /// the root.
+    moved_from_home: Option<(PathBuf, PathBuf)>,
+}
+
+impl AgentAvatarRoots {
+    /// An avatar imported before the agents moved into the Distill root
+    /// recorded its agent as `~/.agents/agents/<file>`. That agent and its
+    /// `.avatars` folder now live in `<root>/agents`, so the record is read
+    /// there; the old folder is never opened.
+    fn agent_source_path(&self, recorded: &str) -> String {
+        self.moved_from_home
+            .as_ref()
+            .and_then(|(home, root)| {
+                crate::services::root_migration::rebase_agent_path(recorded, home, root)
+            })
+            .unwrap_or_else(|| recorded.to_string())
     }
-    roots.push(crate::services::distill_root::app_root(app)?.join("agents"));
-    roots.push(
-        dirs::home_dir()
-            .ok_or_else(|| "Failed to resolve home directory for agent avatar import".to_string())?
-            .join(".agents")
-            .join("agents"),
-    );
-    Ok(roots)
+}
+
+fn trusted_agent_roots(app: &AppHandle) -> Result<AgentAvatarRoots, String> {
+    if let Some(e2e_mode) = app.try_state::<crate::services::e2e_mode::E2eMode>() {
+        return Ok(AgentAvatarRoots {
+            trusted: vec![e2e_mode.agents_dir()],
+            moved_from_home: None,
+        });
+    }
+    Ok(agent_avatar_roots(
+        dirs::home_dir(),
+        crate::services::distill_root::app_root(app)?,
+    ))
+}
+
+/// The roots outside an E2E run: only the Distill root's `agents` is trusted,
+/// whatever `home` still holds; `home` serves only to read an old record's
+/// path as the root's copy.
+fn agent_avatar_roots(home: Option<PathBuf>, root: PathBuf) -> AgentAvatarRoots {
+    AgentAvatarRoots {
+        trusted: vec![root.join("agents")],
+        moved_from_home: home.map(|home| (home, root)),
+    }
 }
 
 fn validate_agent_source_path_with_roots(
@@ -348,13 +381,13 @@ fn delete_user_avatar_at_with_app(
 
 #[cfg(test)]
 fn delete_user_avatar_at(paths: &UserAvatarPaths, avatar_ref: &str) -> Result<(), String> {
-    delete_user_avatar_at_with_roots(paths, avatar_ref, &[])
+    delete_user_avatar_at_with_roots(paths, avatar_ref, &AgentAvatarRoots::default())
 }
 
 fn delete_user_avatar_at_with_roots(
     paths: &UserAvatarPaths,
     avatar_ref: &str,
-    trusted_roots: &[PathBuf],
+    trusted_roots: &AgentAvatarRoots,
 ) -> Result<(), String> {
     let avatar_id = parse_user_avatar_ref(avatar_ref)?
         .ok_or_else(|| "Invalid user avatar reference".to_string())?;
@@ -406,19 +439,13 @@ fn cached_agent_avatar_for_id(
     app: &AppHandle,
     avatar_id: &str,
 ) -> Result<Option<CachedAvatar>, String> {
-    // Prefer the installed agents directory. Those files live under $HOME,
-    // which the webview asset protocol can actually load. Distro copies on
-    // E:\ or in Program Files are outside that scope, so looking there first
-    // would resolve a path the UI cannot display.
+    // Prefer the installed agents directory in the Distill root. Those files
+    // live under $HOME, which the webview asset protocol can actually load.
+    // Distro copies on E:\ or in Program Files are outside that scope, so
+    // looking there first would resolve a path the UI cannot display.
     let installed = crate::services::distill_root::app_root(app)?.join("agents/.avatars");
     if let Some(avatar) = cached_agent_avatar_for_id_at(&installed, avatar_id)? {
         return Ok(Some(avatar));
-    }
-    if let Some(home_dir) = dirs::home_dir() {
-        let user_avatars = home_dir.join(".agents").join("agents").join(".avatars");
-        if let Some(avatar) = cached_agent_avatar_for_id_at(&user_avatars, avatar_id)? {
-            return Ok(Some(avatar));
-        }
     }
 
     let Some(distro_state) = app.try_state::<crate::services::distro_bundle::DistroBundleState>()
@@ -766,17 +793,19 @@ fn user_avatar_media_path(
         let trusted_roots = trusted_agent_roots(app)?;
         return user_avatar_media_path_with_roots(paths, manifest, &trusted_roots);
     }
-    user_avatar_media_path_with_roots(paths, manifest, &[])
+    user_avatar_media_path_with_roots(paths, manifest, &AgentAvatarRoots::default())
 }
 
 fn user_avatar_media_path_with_roots(
     paths: &UserAvatarPaths,
     manifest: &UserAvatarManifest,
-    trusted_roots: &[PathBuf],
+    trusted_roots: &AgentAvatarRoots,
 ) -> Result<PathBuf, String> {
     validate_safe_relative_path(&manifest.path)?;
     if let Some(agent_source_path) = manifest.agent_source_path.as_deref() {
-        let agent_path = validate_agent_source_path_with_roots(agent_source_path, trusted_roots)?;
+        let agent_source_path = trusted_roots.agent_source_path(agent_source_path);
+        let agent_path =
+            validate_agent_source_path_with_roots(&agent_source_path, &trusted_roots.trusted)?;
         let agent_dir = agent_path
             .parent()
             .ok_or_else(|| "Agent source file has no parent directory".to_string())?;
@@ -986,5 +1015,92 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".part"))
             .count();
         assert_eq!(part_files, 0);
+    }
+
+    /// Seeds an agent with an imported image avatar in `agents_dir` and a
+    /// manifest that records the agent as `recorded_agent`.
+    fn seed_agent_avatar(
+        paths: &UserAvatarPaths,
+        agents_dir: &Path,
+        recorded_agent: &Path,
+        id: &str,
+    ) -> PathBuf {
+        fs::create_dir_all(agents_dir.join(".avatars")).unwrap();
+        fs::write(agents_dir.join("scout.md"), b"---\nname: Scout\n---\n").unwrap();
+        let media = agents_dir.join(".avatars").join(format!("{id}.png"));
+        fs::write(&media, b"png-bytes").unwrap();
+        let manifest = UserAvatarManifest {
+            id: id.to_string(),
+            path: format!(".avatars/{id}.png"),
+            mime_type: "image/png".to_string(),
+            alpha_mode: None,
+            poster_path: None,
+            agent_source_path: Some(recorded_agent.to_string_lossy().into_owned()),
+            byte_size: 9,
+            created_at_ms: 0,
+        };
+        fs::write(
+            paths.meta.join(format!("{id}.json")),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        media
+    }
+
+    /// An avatar recorded against the folder older builds shared with other
+    /// tools (`~/.agents/agents`) resolves to the agent's copy in the Distill
+    /// root, never to the old folder, even while that folder still exists.
+    #[test]
+    fn an_agent_avatar_recorded_in_the_legacy_home_folder_is_read_from_the_root() {
+        let (dir, paths) = temp_user_avatar_paths();
+        let home = dir.path().join("home");
+        let root = home.join(".distill");
+        let legacy_agents = home.join(".agents").join("agents");
+        let legacy_agent = legacy_agents.join("scout.md");
+        let legacy_media = seed_agent_avatar(&paths, &legacy_agents, &legacy_agent, "agent-1");
+        let root_media = seed_agent_avatar(&paths, &root.join("agents"), &legacy_agent, "agent-1");
+        // Built the way the import and delete commands build them, from a
+        // home that still has the old folder.
+        let roots = agent_avatar_roots(Some(home.clone()), root.clone());
+        assert_eq!(roots.trusted, vec![root.join("agents")]);
+        assert!(validate_agent_source_path_with_roots(
+            &legacy_agent.to_string_lossy(),
+            &roots.trusted
+        )
+        .is_err());
+        let manifest = read_user_avatar_manifest(&paths, "agent-1").unwrap();
+
+        let resolved = user_avatar_media_path_with_roots(&paths, &manifest, &roots).unwrap();
+        assert_eq!(
+            dunce::canonicalize(&resolved).unwrap(),
+            dunce::canonicalize(&root_media).unwrap()
+        );
+
+        delete_user_avatar_at_with_roots(&paths, "user-avatar:agent-1", &roots).unwrap();
+        assert!(!root_media.exists());
+        assert!(legacy_media.exists(), "the legacy folder is never touched");
+    }
+
+    /// Without its copy in the Distill root the recorded legacy agent is not
+    /// trusted: the old folder is not a fallback.
+    #[test]
+    fn an_agent_avatar_whose_agent_is_only_in_the_legacy_home_folder_does_not_resolve() {
+        let (dir, paths) = temp_user_avatar_paths();
+        let home = dir.path().join("home");
+        let root = home.join(".distill");
+        let legacy_agents = home.join(".agents").join("agents");
+        let legacy_media = seed_agent_avatar(
+            &paths,
+            &legacy_agents,
+            &legacy_agents.join("scout.md"),
+            "agent-2",
+        );
+        fs::create_dir_all(root.join("agents")).unwrap();
+        let roots = agent_avatar_roots(Some(home), root);
+        let manifest = read_user_avatar_manifest(&paths, "agent-2").unwrap();
+
+        assert!(user_avatar_media_path_with_roots(&paths, &manifest, &roots).is_err());
+        assert!(delete_user_avatar_at_with_roots(&paths, "user-avatar:agent-2", &roots).is_err());
+        assert!(legacy_media.exists());
     }
 }

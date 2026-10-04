@@ -824,24 +824,14 @@ impl Inner {
                 Err(error) => log::warn!("[agent-host] goose session import failed: {error}"),
             }
         }
-        let roots = SourceRoots {
-            projects_dir: distill_root.join("projects"),
-            builtin_skills_dir: distill_root.join("skills"),
-            root: distill_root,
-            compatibility_root: if app
-                .try_state::<crate::services::e2e_mode::E2eMode>()
-                .is_none()
-            {
-                dirs::home_dir().map(|home| home.join(".agents"))
-            } else {
-                None
-            },
-            legacy_projects_dir: if isolated {
+        let roots = SourceRoots::new(
+            distill_root,
+            if isolated {
                 None
             } else {
                 legacy_goose_projects_dir()
             },
-        };
+        );
 
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await

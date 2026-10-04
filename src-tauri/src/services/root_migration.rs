@@ -1,16 +1,28 @@
 //! Adopt old Distill stores once. Originals remain available for rollback;
 //! after adoption only the root copy is opened by this version of the app.
+//!
+//! This is the only place that reads the folder older builds shared with other
+//! tools (`~/.agents`), and only while it is still there: the copy runs once,
+//! never creates the folder and never writes to it. Everything else reads the
+//! Distill root and a project's `.distill`.
 use sqlx::Connection;
 use sqlx::Row;
 
-fn rebase_agent_path(value: &str, home: &Path, root: &Path) -> Option<String> {
+/// The Distill root's copy of an agent an older build recorded at
+/// `~/.agents/agents/<file>`, when the root has it. A string rewrite: the old
+/// folder is not opened.
+pub(crate) fn rebase_agent_path(value: &str, home: &Path, root: &Path) -> Option<String> {
     let prefix = format!(
         "{}/",
         home.join(".agents/agents")
             .to_string_lossy()
             .replace('\\', "/")
     );
-    let normalized = value.replace('\\', "/");
+    // A canonicalized record carries the verbatim prefix (`\\?\C:\...`).
+    let normalized = value
+        .strip_prefix(r"\\?\")
+        .unwrap_or(value)
+        .replace('\\', "/");
     if !normalized
         .to_lowercase()
         .starts_with(&prefix.to_lowercase())
@@ -55,6 +67,19 @@ pub fn rebase_agent_references(value: &mut serde_json::Value, home: &Path, root:
                         *value = serde_json::Value::String(rebased);
                         changed = true;
                     }
+                } else if key == "persona" && value.is_object() {
+                    // A queued message records its persona as
+                    // `{ "kind": "persona", "id": <agent path>, "name": … }`.
+                    if let Some(id) = value.get_mut("id") {
+                        if let Some(rebased) = id
+                            .as_str()
+                            .and_then(|path| rebase_agent_path(path, home, root))
+                        {
+                            *id = serde_json::Value::String(rebased);
+                            changed = true;
+                        }
+                    }
+                    changed |= rebase_agent_references(value, home, root);
                 } else if !matches!(
                     key.as_str(),
                     "text" | "content" | "prompt" | "systemPrompt" | "executionSystemPrompt"
@@ -305,6 +330,108 @@ mod tests {
         assert!(!rebase_agent_references(&mut value, &home, &root));
     }
 
+    /// The shape a queued message records its persona in
+    /// (`payload.persona.id`) moves too; the message's text does not.
+    #[test]
+    fn a_queued_message_persona_moves_to_the_root_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let root = home.join(".distill");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("agents/planner.md"), "persona").unwrap();
+        let old = home
+            .join(".agents")
+            .join("agents")
+            .join("planner.md")
+            .to_string_lossy()
+            .into_owned();
+        let mut queues = serde_json::json!({
+            "s1": [{
+                "kind": "deferred",
+                "payload": {
+                    "persona": { "kind": "persona", "id": old, "name": "Planner" },
+                    "text": old,
+                },
+            }],
+        });
+
+        assert!(rebase_agent_references(&mut queues, &home, &root));
+
+        let persona = &queues["s1"][0]["payload"]["persona"];
+        assert_eq!(
+            persona["id"],
+            root.join("agents")
+                .join("planner.md")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(persona["kind"], "persona");
+        assert_eq!(persona["name"], "Planner");
+        assert_eq!(queues["s1"][0]["payload"]["text"], old);
+        assert!(!home.join(".agents").exists());
+    }
+
+    /// Production code that names the folder older builds shared with other
+    /// tools (`.agents`) as a path: only this one-time import, and the
+    /// benchmark profiles' checks of what a launched CLI would read on its
+    /// own. Re-adding a `~/.agents` or project `.agents` root anywhere else —
+    /// skills, agents, avatars, the agent host — fails here, whatever the
+    /// home of the machine running the tests holds.
+    #[test]
+    fn only_the_import_and_the_benchmark_preflights_name_the_legacy_folder() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed = [
+            Path::new("services").join("root_migration.rs"),
+            Path::new("services")
+                .join("agent_host")
+                .join("execution.rs"),
+            Path::new("services").join("benchmarks"),
+        ];
+        let mut files = vec![src.clone()];
+        let mut offenders = Vec::new();
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                for entry in fs::read_dir(&path).unwrap() {
+                    files.push(entry.unwrap().path());
+                }
+                continue;
+            }
+            let relative = path.strip_prefix(&src).unwrap();
+            let name = relative.file_name().and_then(|name| name.to_str());
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs")
+                || allowed.iter().any(|allowed| relative.starts_with(allowed))
+                || matches!(name, Some("tests.rs"))
+                || name.is_some_and(|name| name.ends_with("_tests.rs"))
+            {
+                continue;
+            }
+            let source = fs::read_to_string(&path).unwrap();
+            let mut lines = source.lines().enumerate().peekable();
+            while let Some((number, line)) = lines.next() {
+                let code = line.trim_start();
+                // An inline test module ends the production part of a file.
+                if code.starts_with("#[cfg(test)]")
+                    && lines.peek().is_some_and(|(_, next)| {
+                        next.trim_start().starts_with("mod ") && next.trim_end().ends_with('{')
+                    })
+                {
+                    break;
+                }
+                let code = code.split("//").next().unwrap_or_default();
+                if [r#"".agents"#, "/.agents", r"\.agents"]
+                    .iter()
+                    .any(|needle| code.contains(needle))
+                {
+                    offenders.push(format!("{}:{}", relative.display(), number + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "the legacy `.agents` folder is named outside the one-time import: {offenders:?}"
+        );
+    }
+
     #[test]
     fn adoption_preserves_edits_and_does_not_reimport_deleted_files() {
         let temp = tempfile::tempdir().unwrap();
@@ -389,5 +516,86 @@ mod tests {
         assert_eq!(original, old);
         assert!(source.exists());
         adopt_sessions(&root, &legacy).await.unwrap();
+    }
+
+    #[test]
+    fn a_canonicalized_agent_record_moves_to_the_root_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let root = home.join(".distill");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("agents/worker.md"), "persona").unwrap();
+        let recorded = format!(
+            r"\\?\{}",
+            home.join(".agents")
+                .join("agents")
+                .join("worker.md")
+                .display()
+        );
+        assert_eq!(
+            rebase_agent_path(&recorded, &home, &root).as_deref(),
+            Some(
+                dunce::simplified(&root.join("agents").join("worker.md"))
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        // An agent the root does not have is left as recorded.
+        let missing = home.join(".agents/agents/gone.md");
+        assert_eq!(
+            rebase_agent_path(&missing.to_string_lossy(), &home, &root),
+            None
+        );
+        assert!(!home.join(".agents").exists());
+    }
+
+    /// The one-time adoption reads `~/.agents` only when it is there and never
+    /// brings it back.
+    #[test]
+    fn adoption_never_creates_the_legacy_home_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let root = home.join(".distill");
+        let legacy = temp.path().join("legacy");
+        crate::services::distill_root::ensure_root_layout(&root).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+
+        adopt_files(&root, &legacy, &home).unwrap();
+
+        assert!(!home.join(".agents").exists());
+        assert!(root.join("state/legacy-files-adopted.json").is_file());
+    }
+
+    /// A home that still has the folder is imported once, without replacing
+    /// the root's own files, and the folder is left exactly as it was.
+    #[test]
+    fn adoption_imports_a_present_legacy_home_folder_once_and_leaves_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let root = home.join(".distill");
+        let legacy = temp.path().join("legacy");
+        crate::services::distill_root::ensure_root_layout(&root).unwrap();
+        fs::create_dir_all(home.join(".agents/agents")).unwrap();
+        fs::write(home.join(".agents/agents/worker.md"), "old").unwrap();
+        fs::write(home.join(".agents/agents/scout.md"), "old scout").unwrap();
+        fs::write(root.join("agents/worker.md"), "edited").unwrap();
+
+        adopt_files(&root, &legacy, &home).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("agents/worker.md")).unwrap(),
+            "edited"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("agents/scout.md")).unwrap(),
+            "old scout"
+        );
+
+        fs::write(home.join(".agents/agents/later.md"), "later").unwrap();
+        adopt_files(&root, &legacy, &home).unwrap();
+        assert!(!root.join("agents/later.md").exists());
+        assert_eq!(
+            fs::read_to_string(home.join(".agents/agents/worker.md")).unwrap(),
+            "old"
+        );
     }
 }

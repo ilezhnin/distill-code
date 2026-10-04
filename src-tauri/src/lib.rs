@@ -229,11 +229,10 @@ pub fn run() {
                 .try_state::<services::e2e_mode::E2eMode>()
                 .map(|mode| mode.agents_dir());
             // An isolated E2E run starts from nothing; everywhere else the
-            // seeders below must find their earlier installs under the names
-            // they now look for.
+            // seeders below must find their earlier installs in the root under
+            // the names they now look for.
             if e2e_agents_dir.is_none() {
-                let agents_dir = dirs::home_dir().map(|home| home.join(".agents").join("agents"));
-                services::upstream_names::adopt(&app_data_dir, agents_dir.as_deref());
+                services::upstream_names::adopt(&distill_root);
             }
             {
                 let distro_state = app.state::<DistroBundleState>();
@@ -259,7 +258,7 @@ pub fn run() {
                     });
 
                     let agents_dir = e2e_agents_dir.unwrap_or_else(|| distill_root.join("agents"));
-                    match bundled_agents::seed_bundled_agents(bundle, Some(&agents_dir)) {
+                    match bundled_agents::seed_bundled_agents(bundle, &agents_dir) {
                         Ok(result) => {
                             if result.seeded_count > 0 {
                                 log::info!("Seeded {} bundled agent(s)", result.seeded_count);

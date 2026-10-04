@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::services::distro_bundle::DistroBundle;
 
 const DISTRO_AGENTS_DIR_NAME: &str = "agents";
-const GLOBAL_AGENTS_DIR_NAME: &str = ".agents";
-const AGENTS_DIR_NAME: &str = "agents";
 const MARKER_FILE_NAME: &str = ".distill-bundled-agents.json";
 static INSTALL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -36,21 +34,14 @@ struct AgentMetadata {
     distill_bundled: Option<bool>,
 }
 
+/// Installs the distro's starter agents into `target_root`: the Distill
+/// root's `agents` folder (an E2E run's own in isolation). There is no other
+/// destination; nothing is installed into a folder other tools keep.
 pub fn seed_bundled_agents(
     bundle: &DistroBundle,
-    target_root: Option<&Path>,
+    target_root: &Path,
 ) -> Result<SeedBundledAgentsResult, String> {
-    let target_root = match target_root {
-        Some(target_root) => target_root.to_path_buf(),
-        None => {
-            let Some(home_dir) = dirs::home_dir() else {
-                return Err("Failed to resolve home directory for bundled agents".to_string());
-            };
-            home_dir.join(GLOBAL_AGENTS_DIR_NAME).join(AGENTS_DIR_NAME)
-        }
-    };
-
-    seed_bundled_agents_from_dir(&bundle.root_dir.join(DISTRO_AGENTS_DIR_NAME), &target_root)
+    seed_bundled_agents_from_dir(&bundle.root_dir.join(DISTRO_AGENTS_DIR_NAME), target_root)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -202,10 +193,15 @@ fn files_are_equal(left: &Path, right: &Path) -> Result<bool, String> {
     Ok(left_bytes == right_bytes)
 }
 
+/// The YAML block of an agent file, with either line ending: a copy installed
+/// from a Windows checkout ends its lines with CRLF, and is still ours to
+/// update.
 fn agent_frontmatter(contents: &str) -> Option<&str> {
-    let contents = contents.strip_prefix("---\n")?;
+    let contents = contents
+        .strip_prefix("---\n")
+        .or_else(|| contents.strip_prefix("---\r\n"))?;
     let end = contents.find("\n---")?;
-    Some(&contents[..end])
+    Some(contents[..end].trim_end_matches('\r'))
 }
 
 fn install_agent_file(source: &Path, target: &Path) -> Result<(), String> {
@@ -412,5 +408,69 @@ mod tests {
 
         let second_result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
         assert_eq!(second_result.seeded_count, 0);
+    }
+
+    /// A starter agent installed from a Windows checkout carries CRLF line
+    /// endings; it is still recognised as the app's own and updated, while a
+    /// CRLF file without the marker stays the user's.
+    #[test]
+    fn a_seeded_agent_with_crlf_line_endings_is_updated() {
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        let bundled = "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nWrite to ~/.distill/agents.";
+        write_agent(source.path(), "builderbot.md", bundled);
+        write_agent(
+            source.path(),
+            "scout.md",
+            "---\nname: Scout\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nLook.",
+        );
+        seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
+        let old = "---\r\nname: Builderbot\r\ndescription: Agent\r\nmetadata:\r\n  distillBundled: true\r\n---\r\nWrite to ~/.agents/agents.\r\n";
+        write_agent(target.path(), "builderbot.md", old);
+        let own = "---\r\nname: Scout\r\ndescription: Mine\r\n---\r\nMine.\r\n";
+        write_agent(target.path(), "scout.md", own);
+
+        let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
+
+        assert_eq!(result.seeded_count, 1);
+        assert_eq!(
+            fs::read_to_string(target.path().join("builderbot.md")).unwrap(),
+            bundled
+        );
+        assert_eq!(
+            fs::read_to_string(target.path().join("scout.md")).unwrap(),
+            own
+        );
+    }
+
+    /// The starter agents land in the Distill root's `agents`, and nothing is
+    /// created in the home folder the root sits in.
+    #[test]
+    fn bundled_agents_install_under_the_distill_root() {
+        let distro = tempdir().unwrap();
+        let home = tempdir().unwrap();
+        write_agent(
+            &distro.path().join("agents"),
+            "scout.md",
+            "---\nname: Scout\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nLook around.",
+        );
+        let bundle = DistroBundle {
+            root_dir: distro.path().to_path_buf(),
+            bin_dir: None,
+            manifest: Default::default(),
+        };
+        let root = home.path().join(".distill");
+
+        let result = seed_bundled_agents(&bundle, &root.join("agents")).unwrap();
+
+        assert_eq!(result.seeded_count, 1);
+        assert!(root.join("agents").join("scout.md").is_file());
+        assert!(root.join("agents").join(MARKER_FILE_NAME).is_file());
+        let created: Vec<_> = fs::read_dir(home.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(created, vec![".distill".to_string()]);
     }
 }

@@ -39,7 +39,7 @@ import {
 import { formatSkillName, isValidSkillName } from "../lib/skillsHelpers";
 import { getRenamedSkillFileLocation } from "../lib/skillsPath";
 
-/** Sentinel value for the personal (`~/.agents/skills`) save location. */
+/** Sentinel value for the personal (Distill root `skills`) save location. */
 const GLOBAL_VALUE = "__global__";
 
 // Shared visual constants for create/edit sheets.

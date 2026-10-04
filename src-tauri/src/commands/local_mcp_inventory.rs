@@ -159,7 +159,9 @@ fn claude_code_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
     files
 }
 
-/// The complete allowlist of Codex config locations Distill will read or modify.
+/// The complete allowlist of Codex config locations Distill reads, to show
+/// what the Codex CLI will load. It never writes them: they are the CLI's
+/// configuration, not Distill data (see `docs/distill-root-layout.md`).
 pub fn codex_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
     let mut files = Vec::new();
     if let Some(home) = home_dir() {

@@ -5,6 +5,25 @@ resolves it from `DISTILL_ROOT`, then the `root-path` pointer in the OS config
 directory, then `~/.distill`. The pointer allows startup to locate a root that
 the user has moved.
 
+Distill reads and writes its own data — settings, chats, projects, agents,
+skills, memory, benchmarks — only under this root and, for a project, in that
+project's `.distill/` folder. Folders other tools keep are not Distill data:
+`~/.agents`, `~/.claude`, `~/.codex`, `~/.gemini`, `~/.goose`, and a project's
+`.agents`, `.claude` or `.codex` folders are neither listed, offered nor written.
+Bringing something in from them is an explicit import (a skill, agent or memory
+file the user picks). The provider CLIs Distill launches still use their own
+homes; that is the CLI's behaviour, not Distill reading them.
+
+Where Distill shows the state of a provider CLI, it reads that CLI's own
+configuration without writing it or copying it into the root: the Extensions
+settings list the MCP servers Claude Code (`~/.claude.json`, a workspace's
+`.mcp.json`) and Codex (`config.toml` in `CODEX_HOME` or `~/.codex`, a
+workspace's `.codex/config.toml`) will load, and the usage meters read the
+Kimi CLI's configuration (`KIMI_CODE_HOME` or `~/.kimi-code`) and the Grok
+CLI's sign-in (`GROK_HOME` or `~/.grok`) to ask for those accounts' quotas.
+Those files are the CLIs' configuration, not Distill data, and never a source
+of skills, agents, chats, projects or memory.
+
 ## App data
 
 | Path under the root | Purpose |
@@ -12,8 +31,8 @@ the user has moved.
 | `settings.json` | Global application preferences |
 | `sessions/agent-host.db` | Session records and chat history |
 | `projects/` | Registered project records |
-| `agents/` | Installed built-in and user-created agent definitions |
-| `skills/` | Installed built-in and user-created skills |
+| `agents/` | Agent definitions: the starter agents Distill installs and the user's own |
+| `skills/` | Skills: the built-in skills Distill installs and the user's own |
 | `state/` | Message queues, usage history and other application state |
 | `provider-accounts/` | Saved Claude and Codex account metadata and isolated credential homes |
 | `benchmarks/benchmarks.db` | Versioned benchmark catalog, frozen plans, results, decisions, quota batches and opt-in campaigns |
@@ -50,14 +69,21 @@ composing session styles.
 The target project's settings can override `style-guidelines` and
 `at-mention-default-category`. General chats use global settings. Appearance,
 locale and keyboard bindings remain global. Project agent and skill sources
-override global sources of the same name without changing other projects.
-Legacy `.agents` sources remain available for compatibility.
+(`<project>/.distill/agents`, `<project>/.distill/skills`) override global
+sources of the same name without changing other projects.
 
 ## Migration and recovery
 
-The root is initialized before app-owned stores open. Legacy AppData and personal
-`.agents` files are copied without replacing existing root content. Originals
-remain available for recovery.
+The root is initialized before app-owned stores open. Legacy AppData files are
+copied once without replacing existing root content. A `~/.agents` folder that
+older builds shared with other tools is imported in the same one-time pass, and
+only when it is present: Distill never creates that folder, writes to it, or
+reads it afterwards. Agent avatars and queued messages recorded against an agent
+in it resolve to the agent's copy under `agents/`. Names older builds wrote
+under the upstream name are brought along in the root's copies only; the old
+AppData folder is left as it was. Sessions and projects of goose, the app the
+first builds ran on, are imported once from its application data folder when it
+exists. Originals remain available for recovery.
 
 Session migration uses a SQLite snapshot that includes committed WAL contents.
 The completed snapshot is promoted atomically and is not imported again. Agent

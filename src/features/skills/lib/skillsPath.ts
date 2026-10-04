@@ -1,4 +1,9 @@
-const PROJECT_SKILLS_MARKERS = ["/.agents/skills/"];
+/**
+ * A project's skills live only in its own `.distill/skills`. Folders other
+ * tools keep (`.agents`, `.claude`, `.codex`, `.gemini`) are not Distill's and
+ * never mark a project skill.
+ */
+const PROJECT_SKILLS_MARKERS = ["/.distill/skills/"];
 
 export function normalizePath(path: string): string {
   return path.replace(/\\/g, "/");

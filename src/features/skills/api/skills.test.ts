@@ -37,7 +37,7 @@ describe("createSkill", () => {
         name: "test-writer",
         description: "Writes tests",
         content: "Write tests",
-        path: "/tmp/alpha/.agents/skills/test-writer",
+        path: "/tmp/alpha/.distill/skills/test-writer",
         global: false,
         properties: { color: "blue" },
       },
@@ -58,7 +58,7 @@ describe("createSkill", () => {
       }),
     );
     expect(skill).toMatchObject({
-      id: "project:/tmp/alpha/.agents/skills/test-writer",
+      id: "project:/tmp/alpha/.distill/skills/test-writer",
       sourceKind: "project",
       sourceLabel: "alpha",
       projectLinks: [
@@ -85,7 +85,7 @@ describe("skill mutation events", () => {
         name: "test-writer",
         description: "Writes tests",
         content: "Write tests",
-        path: "/Users/test/.agents/skills/test-writer",
+        path: "/Users/test/.distill/skills/test-writer",
         global: true,
       },
     });
@@ -97,7 +97,7 @@ describe("skill mutation events", () => {
           name: "imported",
           description: "Imported skill",
           content: "Imported instructions",
-          path: "/Users/test/.agents/skills/imported",
+          path: "/Users/test/.distill/skills/imported",
           global: true,
         },
       ],
@@ -110,13 +110,13 @@ describe("skill mutation events", () => {
         "./skills"
       );
       await updateSkill(
-        "/Users/test/.agents/skills/test-writer",
+        "/Users/test/.distill/skills/test-writer",
         "test-writer",
         "Writes tests",
         "Write tests",
         "blue",
       );
-      await deleteSkill("/Users/test/.agents/skills/test-writer");
+      await deleteSkill("/Users/test/.distill/skills/test-writer");
       await importSkills([123, 125], "IMPORTED.SKILL.JSON");
 
       expect(listener).toHaveBeenCalledTimes(3);
