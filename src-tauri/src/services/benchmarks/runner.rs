@@ -146,11 +146,17 @@ pub trait ExecutionBackend: Send + Sync {
 pub struct NativeBackend {
     pub app: tauri::AppHandle,
 }
+/// Host errors read "code: reason". Any other text, such as a provider's own
+/// "Internal error: ..." message, is an infrastructure failure.
 pub fn host_error(message: String) -> BenchmarkError {
-    let (code, reason) = message
-        .split_once(':')
-        .unwrap_or(("infrastructure_failure", &message));
-    BenchmarkError::new(code, reason.trim())
+    match message.split_once(':') {
+        Some((code, reason))
+            if !code.is_empty() && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') =>
+        {
+            BenchmarkError::new(code, reason.trim())
+        }
+        _ => BenchmarkError::new("infrastructure_failure", message),
+    }
 }
 
 /// The model a row stands for: a declared alias resolves to its target, an
@@ -301,6 +307,62 @@ const PANEL_INCOMPLETE: &str =
     "The judge panel is incomplete; every judge must return a valid score sheet";
 /// The error code a judge whose account turned busy answers with.
 const ACCOUNT_BUSY: &str = "account_busy";
+/// The error code of a turn the host refused before any provider call because
+/// every eligible account waits for quota.
+const QUOTA_WAIT: &str = "account_quota_wait";
+/// How long a run waits when the host names no quota reset.
+const QUOTA_RETRY_MS: i64 = 5 * 60 * 1000;
+
+/// Runs whose account waits for quota, with the time to try again. Kept in
+/// memory: after a restart the next dispatch asks the host again, at no cost.
+static QUOTA_HOLDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether a host error is a quota wait that never reached the provider.
+fn is_quota_wait(error: &Value) -> bool {
+    let data = error.get("data").unwrap_or(error);
+    (data["kind"] == QUOTA_WAIT || data["type"] == QUOTA_WAIT)
+        && data["dispatchStarted"] == Value::Bool(false)
+}
+
+/// Holds a run until the quota reset the host named, or a short retry.
+fn hold_for_quota(run_id: &str, error: &str) {
+    let reset = serde_json::from_str::<Value>(error)
+        .ok()
+        .and_then(|e| e.pointer("/data/nextReset").and_then(Value::as_i64));
+    let until = reset
+        .filter(|at| *at > now())
+        .unwrap_or_else(|| now() + QUOTA_RETRY_MS);
+    QUOTA_HOLDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(run_id.to_owned(), until);
+}
+
+fn held_for_quota(run_id: &str) -> bool {
+    let mut holds = QUOTA_HOLDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match holds.get(run_id) {
+        Some(until) if *until > now() => true,
+        Some(_) => {
+            holds.remove(run_id);
+            false
+        }
+        None => false,
+    }
+}
+
+/// The host request key of an attempt's candidate turn. A turn the host
+/// refused before any provider call returns the attempt to the queue, and the
+/// next dispatch starts at a new time, so it never meets the refused record.
+fn dispatch_key(attempt: &Attempt) -> String {
+    format!(
+        "benchmark:{}:{}",
+        attempt.id,
+        attempt.started_at.unwrap_or_default()
+    )
+}
 
 /// How a panel's pass over its judges ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1201,7 +1263,7 @@ impl ExecutionBackend for NativeBackend {
                 ));
             }
             store.save_attempt(&attempt).await?;
-            let key = format!("benchmark:{}:0", attempt.id);
+            let key = dispatch_key(&attempt);
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
             let started = Instant::now();
             let dispatch = host
@@ -1283,6 +1345,9 @@ impl ExecutionBackend for NativeBackend {
                     && !page.has_more
                     && attempt.event_cursor >= status.event_cursor
                 {
+                    if let Some(error) = status.error.as_ref().filter(|e| is_quota_wait(e)) {
+                        return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
+                    }
                     evidence.push(json!({"terminalDispatch":status}));
                     if let Some(result) = status.result.as_ref() {
                         consume_terminal_result(result, &mut attempt);
@@ -1378,8 +1443,18 @@ impl ExecutionBackend for NativeBackend {
                 .get_or_start(&self.app)
                 .await
                 .map_err(host_error)?;
-            let key = format!("benchmark:{}:0", attempt.id);
-            let Some(status) = host.execution_status(&key).await.map_err(host_error)? else {
+            // Dispatches made before keys carried their start time used ":0".
+            let mut found = None;
+            for key in [
+                dispatch_key(&attempt),
+                format!("benchmark:{}:0", attempt.id),
+            ] {
+                found = host.execution_status(&key).await.map_err(host_error)?;
+                if found.is_some() {
+                    break;
+                }
+            }
+            let Some(status) = found else {
                 return Ok(None);
             };
             if status.phase != "terminal" {
@@ -1986,7 +2061,7 @@ impl BenchmarkService {
                 self.changed().await;
                 continue;
             }
-            if run.state != "running" {
+            if run.state != "running" || held_for_quota(&run.id) {
                 continue;
             }
             // A rendering a pause or busy judges held back is judged before any
@@ -2069,6 +2144,28 @@ impl BenchmarkService {
                         failed.phase = "pending".into();
                         failed.started_at = None;
                         self.store.save_attempt(&failed).await?;
+                        return Ok(());
+                    }
+                    // A turn the provider never saw keeps its cell: a quota wait
+                    // holds the run until the reset, and a model the provider
+                    // refused to select waits for the operator.
+                    let refused = error.code == "selection_changed" && failed.phase == "preparing";
+                    if error.code == QUOTA_WAIT || refused {
+                        failed.phase = "pending".into();
+                        failed.started_at = None;
+                        failed.session_id = None;
+                        failed.host_run_id = None;
+                        failed.observed = None;
+                        failed.event_cursor = 0;
+                        failed.usage = TokenUsage::default();
+                        failed.reason = Some(error.message.clone());
+                        self.store.save_attempt(&failed).await?;
+                        if refused {
+                            self.store.set_run_state(&run.id, "needs_attention").await?;
+                        } else {
+                            hold_for_quota(&run.id, &error.message);
+                        }
+                        self.changed().await;
                         return Ok(());
                     }
                     failed.phase = "terminal".into();
@@ -2471,6 +2568,10 @@ pub struct FakeBackend {
     pub busy_judges: std::sync::atomic::AtomicBool,
     /// The panel fails before it records anything.
     pub fail_judges: std::sync::atomic::AtomicBool,
+    /// Turns the host refuses for quota before any provider call.
+    pub quota_waits: std::sync::atomic::AtomicU64,
+    /// Sessions whose provider refuses the requested model before dispatch.
+    pub refused_selections: std::sync::atomic::AtomicU64,
 }
 impl ExecutionBackend for FakeBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
@@ -2542,7 +2643,31 @@ impl ExecutionBackend for FakeBackend {
         mut cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            use std::sync::atomic::Ordering;
+            let take = |counter: &std::sync::atomic::AtomicU64| {
+                counter
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok()
+            };
+            if take(&self.refused_selections) {
+                let mut observed = a.configuration.clone();
+                observed.model_id = "default".into();
+                a.observed = Some(observed);
+                store.save_attempt(&a).await?;
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "Provider did not acknowledge the exact model, effort and fast mode",
+                ));
+            }
+            if take(&self.quota_waits) {
+                a.phase = "running".into();
+                a.host_run_id = Some(format!("fake-{}", a.id));
+                store.save_attempt(&a).await?;
+                let error = json!({"code":-32010,"data":{"kind":QUOTA_WAIT,
+                    "dispatchStarted":false,"nextReset":now() + 60_000}});
+                return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
             a.phase = "running".into();
             a.host_run_id = Some(format!("fake-{}", a.id));
             a.observed = Some(a.configuration.clone());
@@ -3054,6 +3179,56 @@ mod tests {
             .await
             .unwrap();
         assert!(b.snapshots.iter().all(|a| a.id != excluded.id));
+    }
+    #[tokio::test]
+    async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {
+        let (_dir, s, fake) = setup().await;
+        fake.quota_waits.store(1, Ordering::SeqCst);
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        assert!(held.attempts.iter().all(|a| a.phase == "pending"));
+        assert!(held.attempts.iter().all(|a| a.host_run_id.is_none()));
+        // Nothing is sent before the reset.
+        s.tick().await.unwrap();
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        QUOTA_HOLDS.lock().unwrap().remove(&run.id);
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.phase == "terminal" && a.outcome.as_deref() != Some(QUOTA_WAIT)));
+    }
+    #[tokio::test]
+    async fn a_selection_refused_before_dispatch_keeps_the_cell_for_the_operator() {
+        let (_dir, s, fake) = setup().await;
+        fake.refused_selections.store(1, Ordering::SeqCst);
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let stopped = s.store.run(&run.id).await.unwrap();
+        assert_eq!(stopped.state, "needs_attention");
+        assert!(stopped
+            .attempts
+            .iter()
+            .all(|a| a.phase == "pending" && a.observed.is_none()));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn only_an_identifier_before_the_colon_is_a_host_error_code() {
+        assert_eq!(host_error("validation: bad key".into()).code, "validation");
+        let crash = host_error("Internal error: {\"details\":\"exited\"}".into());
+        assert_eq!(crash.code, "infrastructure_failure");
+        assert!(crash.message.starts_with("Internal error:"));
+        assert!(is_quota_wait(
+            &json!({"code":-32010,"data":{"kind":QUOTA_WAIT,"dispatchStarted":false}})
+        ));
+        assert!(!is_quota_wait(
+            &json!({"code":-32010,"data":{"kind":QUOTA_WAIT,"dispatchStarted":true}})
+        ));
     }
     #[tokio::test]
     async fn a_baseline_refuses_a_configuration_frozen_under_two_protocols() {
