@@ -23,6 +23,7 @@ import {
 } from "@/features/settings/ui/settingsSections";
 import { cn } from "@/shared/lib/cn";
 import { CollapseReveal } from "@/shared/ui/collapse-reveal";
+import { Spinner } from "@/shared/ui/spinner";
 import {
   SIDEBAR_PANEL_ELEVATED_SHADOW_CLASS,
   SIDEBAR_PRIMARY_NAV_TOP_INSET_CLASS,
@@ -45,6 +46,8 @@ type SidebarNavItemIcon = NonNullable<
 
 interface PrimaryNavigationSurfaceProps {
   activeBenchmarkSection?: BenchmarkSection;
+  /** Attempts settled and planned while benchmark runs dispatch. */
+  benchmarkProgress?: { settled: number; total: number } | null;
   activeSettingsSection?: SectionId;
   activeView?: AppView;
   agentUpdatesAvailable: boolean;
@@ -78,6 +81,7 @@ export const PrimaryNavigationSurface = forwardRef<
 >(function PrimaryNavigationSurface(
   {
     activeBenchmarkSection = "leaderboard",
+    benchmarkProgress,
     activeSettingsSection = DEFAULT_SETTINGS_SECTION,
     activeView = "home",
     agentUpdatesAvailable,
@@ -198,6 +202,23 @@ export const PrimaryNavigationSurface = forwardRef<
                         hasSections ? benchmarksExpanded : undefined
                       }
                       onClick={() => onNavigate?.(item.id)}
+                      trailingIcon={
+                        item.id === "benchmarks" && benchmarkProgress ? (
+                          <span className="inline-flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
+                            <Spinner
+                              decorative
+                              className="size-3 text-chart-1"
+                            />
+                            {benchmarkProgress.settled}/
+                            {benchmarkProgress.total}
+                          </span>
+                        ) : undefined
+                      }
+                      trailingLabel={
+                        item.id === "benchmarks" && benchmarkProgress
+                          ? t("benchmarks:activity.sidebar", benchmarkProgress)
+                          : undefined
+                      }
                     />
                     {hasSections ? (
                       <CollapseReveal open={benchmarksExpanded}>

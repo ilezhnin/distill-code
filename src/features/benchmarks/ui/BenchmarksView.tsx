@@ -45,6 +45,7 @@ import {
 } from "./BenchmarkManagementDialogs";
 import { Button } from "@/shared/ui/button";
 import { rowKey } from "../lib/benchmarkBoards";
+import { BenchmarkActivity } from "./BenchmarkActivity";
 import { BenchmarkConfigurationPage } from "./BenchmarkConfigurationPage";
 import { DesignBenchView } from "./DesignBenchView";
 import {
@@ -304,6 +305,7 @@ export function BenchmarksView({
         {errors.map((error) => (
           <BenchmarkAlert key={error}>{error}</BenchmarkAlert>
         ))}
+        <BenchmarkActivity runs={runs.data ?? []} onOpenRun={openRun} />
         {location.section === "development" ? (
           <BenchDevelopmentView
             definitions={definitions.data ?? []}
@@ -375,6 +377,7 @@ export function BenchmarksView({
         {location.section === "leaderboard" && !location.configurationId ? (
           <LeaderboardView
             report={leaderboard.data}
+            runs={runs.data ?? []}
             loading={leaderboard.isPending}
             page={page}
             pageSize={PAGE_SIZE}

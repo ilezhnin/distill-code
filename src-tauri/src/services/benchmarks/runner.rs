@@ -4265,10 +4265,8 @@ mod tests {
         let run = s.start_run(req).await.unwrap();
         let background = s.clone();
         let tick = tokio::spawn(async move { background.tick().await });
-        for _ in 0..100 {
-            if !s.active.lock().await.is_empty() {
-                break;
-            }
+        // Cancelled once the turn reached the provider.
+        while backend.in_flight.load(Ordering::SeqCst) == 0 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
         s.control(&run.id, "cancel").await.unwrap();

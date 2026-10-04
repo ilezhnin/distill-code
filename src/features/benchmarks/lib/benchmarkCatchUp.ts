@@ -81,7 +81,7 @@ function ledgerEffort(effort: string | null | undefined): string {
  * that left effort or fast mode to the provider lands on what its attempts
  * acknowledged; before any has run, it may land on any of them.
  */
-function requests(
+export function requests(
   requested: Configuration,
   row: Configuration,
   run: RunSummary,

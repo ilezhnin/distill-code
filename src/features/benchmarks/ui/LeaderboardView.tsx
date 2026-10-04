@@ -15,6 +15,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
+import { Spinner } from "@/shared/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import {
   modelNameKey,
@@ -29,6 +30,7 @@ import {
   type BoardId,
   type RankedRow,
 } from "../lib/benchmarkBoards";
+import { rowActivity } from "../lib/benchmarkActivity";
 import {
   boardDescription,
   boardTitle,
@@ -45,6 +47,7 @@ import type {
   Configuration,
   LeaderboardReport,
   LeaderboardRow,
+  RunSummary,
 } from "../types";
 import {
   AxisBars,
@@ -60,6 +63,8 @@ import { ModelFilter } from "./ModelFilter";
 
 interface Props {
   report: LeaderboardReport | undefined;
+  /** Runs whose open cells mark the rows they still measure. */
+  runs?: RunSummary[];
   loading: boolean;
   page: number;
   pageSize: number;
@@ -84,6 +89,7 @@ function twinKey(configuration: Configuration): string {
 
 export function LeaderboardView({
   report,
+  runs = [],
   loading,
   page,
   pageSize,
@@ -197,22 +203,35 @@ export function LeaderboardView({
       {entry.rank ?? "–"}
     </TableCell>
   );
-  const modelCell = (entry: RankedRow) => (
-    <TableCell className={cn(pinned("left-10"))}>
-      <ModelIdentity
-        configuration={entry.row.configuration}
-        name={nameOf(entry.row)}
-        vendor={vendorOf(entry.row)}
-        showRuntime={(twins.get(twinKey(entry.row.configuration)) ?? 0) > 1}
-      >
-        {view === "table" && entry.row.status !== "comparable" ? (
-          <div className="mt-1">
-            <StateBadge state={entry.row.status} />
-          </div>
-        ) : null}
-      </ModelIdentity>
-    </TableCell>
-  );
+  const modelCell = (entry: RankedRow) => {
+    const activity = rowActivity(entry.row, runs);
+    return (
+      <TableCell className={cn(pinned("left-10"))}>
+        <ModelIdentity
+          configuration={entry.row.configuration}
+          name={nameOf(entry.row)}
+          vendor={vendorOf(entry.row)}
+          showRuntime={(twins.get(twinKey(entry.row.configuration)) ?? 0) > 1}
+        >
+          {view === "table" && entry.row.status !== "comparable" ? (
+            <div className="mt-1">
+              <StateBadge state={entry.row.status} />
+            </div>
+          ) : null}
+          {activity.open > 0 ? (
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+              {activity.running > 0 ? (
+                <Spinner decorative className="size-3 text-chart-1" />
+              ) : null}
+              {t(activity.running > 0 ? "activity.running" : "activity.left", {
+                open: activity.open,
+              })}
+            </div>
+          ) : null}
+        </ModelIdentity>
+      </TableCell>
+    );
+  };
   const factCells = (entry: RankedRow) => {
     const fact = factOf(entry.row);
     const compact = view === "table" && "px-1 text-xs";

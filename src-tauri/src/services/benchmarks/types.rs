@@ -252,6 +252,9 @@ pub struct RunSummary {
 pub struct OpenRunCell {
     pub configuration_id: String,
     pub version_id: String,
+    /// An attempt of the cell is in flight or awaits its judges.
+    #[serde(default)]
+    pub running: bool,
 }
 /// The effort and fast mode a requested configuration ran with in one run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

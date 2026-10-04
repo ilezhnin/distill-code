@@ -260,6 +260,14 @@
     "progressLabel": "Settled attempts",
     "preview": "Development preview"
   },
+  "activity": {
+    "title": "Runs in progress",
+    "progress": "{{settled}} / {{total}}",
+    "now": "Running now: {{models}}",
+    "sidebar": "{{settled}} of {{total}} attempts settled",
+    "left": "{{open}} left",
+    "running": "Running, {{open}} left"
+  },
   "evidence": {
     "title": "Evidence",
     "description": "Sealed output and evaluation revisions remain available independently of the live transcript.",

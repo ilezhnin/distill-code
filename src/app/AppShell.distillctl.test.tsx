@@ -50,6 +50,7 @@ vi.mock("./hooks/useAppStartup", () => ({
 
 vi.mock("@/features/benchmarks/hooks/useBenchmarks", () => ({
   useBenchmarkRuntime: () => {},
+  useBenchmarkProgress: () => null,
 }));
 
 vi.mock("@/features/migration/hooks/useMigrationGate", () => ({

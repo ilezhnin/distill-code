@@ -1,6 +1,9 @@
 import type { BenchmarkLocation } from "@/features/benchmarks/lib/benchmarkNavigation";
 import { useBenchmarkViewStore } from "@/features/benchmarks/stores/benchmarkViewStore";
-import { useBenchmarkRuntime } from "@/features/benchmarks/hooks/useBenchmarks";
+import {
+  useBenchmarkProgress,
+  useBenchmarkRuntime,
+} from "@/features/benchmarks/hooks/useBenchmarks";
 import {
   useCallback,
   useEffect,
@@ -564,6 +567,7 @@ function getTopBarChromeInsets(
 
 export function AppShell({ children }: { children?: React.ReactNode }) {
   useBenchmarkRuntime();
+  const benchmarkProgress = useBenchmarkProgress();
   const { t } = useTranslation([
     "chat",
     "common",
@@ -4013,6 +4017,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           onSelectSession: handleSelectSession,
           activeView,
           activeBenchmarkSection: benchmarkLocation.section,
+          benchmarkProgress,
           activeSettingsSection,
           activeSessionId,
           onProjectCreatedRevisionHandled: (revision) =>

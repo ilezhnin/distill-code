@@ -193,8 +193,8 @@ impl Store {
                         AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'selection_changed')
                 END,
                 CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
-                (SELECT json_group_array(json_array(o.configuration_id,o.version_id))
-                    FROM (SELECT a.configuration_id,a.version_id FROM attempts a
+                (SELECT json_group_array(json_array(o.configuration_id,o.version_id,o.running))
+                    FROM (SELECT a.configuration_id,a.version_id,MAX(a.phase<>'pending') AS running FROM attempts a
                         WHERE a.run_id=r.id AND a.phase<>'terminal'
                         GROUP BY a.configuration_id,a.version_id ORDER BY MIN(a.rowid)) o)
                 END
@@ -741,14 +741,15 @@ fn observed_selections(rows: Option<&str>) -> Vec<ObservedRunSelection> {
 }
 
 /// The cells a run still has work on, from distinct rows of
-/// `[configuration id, version id]`.
+/// `[configuration id, version id, 1 while an attempt of it runs]`.
 fn open_cells(rows: Option<&str>) -> Vec<OpenRunCell> {
-    rows.and_then(|rows| serde_json::from_str::<Vec<(String, String)>>(rows).ok())
+    rows.and_then(|rows| serde_json::from_str::<Vec<(String, String, i64)>>(rows).ok())
         .unwrap_or_default()
         .into_iter()
-        .map(|(configuration_id, version_id)| OpenRunCell {
+        .map(|(configuration_id, version_id, running)| OpenRunCell {
             configuration_id,
             version_id,
+            running: running != 0,
         })
         .collect()
 }
@@ -1693,23 +1694,30 @@ mod tests {
             ),
             ("a4", "haiku", &first.id, 0, "running", None),
             ("a5", "haiku", &second.id, 0, "terminal", Some("cancelled")),
+            ("a6", "haiku", &second.id, 1, "pending", None),
         ] {
             let a = json!({"id":id,"runId":"run","versionId":version,"configuration":config(configuration),"repetition":repetition,"phase":phase,"outcome":outcome,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,?,?,?,?)").bind(id).bind(version).bind(configuration).bind(repetition).bind(phase).bind(a.to_string()).execute(&store.pool).await.unwrap();
         }
         let summary = store.runs().await.unwrap().remove(0);
-        let cell = |configuration: &str, version: &str| OpenRunCell {
+        let cell = |configuration: &str, version: &str, running: bool| OpenRunCell {
             configuration_id: configuration.into(),
             version_id: version.into(),
+            running,
         };
-        // One entry per cell, in plan order, however many attempts it holds.
+        // One entry per cell, in plan order, however many attempts it holds;
+        // a cell runs while any attempt of it left the queue.
         assert_eq!(
             summary.open_cells,
-            vec![cell("sonnet", &second.id), cell("haiku", &first.id)]
+            vec![
+                cell("sonnet", &second.id, true),
+                cell("haiku", &first.id, true),
+                cell("haiku", &second.id, false),
+            ]
         );
         assert_eq!(
             serde_json::to_value(&summary).unwrap()["openCells"][0],
-            json!({"configurationId":"sonnet","versionId":second.id})
+            json!({"configurationId":"sonnet","versionId":second.id,"running":true})
         );
         // A run finished or being cancelled starts nothing, so its attempts are never read here.
         for state in ["cancelling", "cancelled", "completed"] {

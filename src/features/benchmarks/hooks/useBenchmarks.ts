@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
+import { runProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
@@ -100,6 +101,21 @@ export const useBenchmarkRuns = () =>
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
   });
+
+/** Attempts settled and planned over the runs dispatching now; null while none is. */
+export function useBenchmarkProgress() {
+  const runs = useQuery({
+    queryKey: [...benchmarkKeys, "runs"],
+    queryFn: benchmarkApi.listRuns,
+    enabled: isDesktopRuntime(),
+  });
+  return useMemo(() => {
+    const dispatching = (runs.data ?? []).filter(
+      (run) => run.state === "running" || run.state === "pausing",
+    );
+    return dispatching.length > 0 ? runProgress(dispatching) : null;
+  }, [runs.data]);
+}
 
 /** Dated vendor facts; an empty catalog is seeded by the service on first read. */
 export function useModelCatalog() {

@@ -60,6 +60,8 @@ export interface NavigationPanesViewProps {
   projectCreatedRevision?: number;
   activeView?: AppView;
   activeBenchmarkSection?: BenchmarkSection;
+  /** Attempts settled and planned while benchmark runs dispatch. */
+  benchmarkProgress?: { settled: number; total: number } | null;
   activeSettingsSection?: SectionId;
   activeSessionId?: string | null;
   className?: string;
@@ -228,6 +230,7 @@ export function NavigationPanesView({
   projectCreatedRevision,
   activeView,
   activeBenchmarkSection,
+  benchmarkProgress,
   activeSettingsSection = DEFAULT_SETTINGS_SECTION,
   activeSessionId,
   className,
@@ -368,6 +371,7 @@ export function NavigationPanesView({
     >
       <PrimaryNavigationSurface
         activeBenchmarkSection={activeBenchmarkSection}
+        benchmarkProgress={benchmarkProgress}
         activeSettingsSection={activeSettingsSection}
         activeView={activeView}
         agentUpdatesAvailable={agentUpdatesAvailable}

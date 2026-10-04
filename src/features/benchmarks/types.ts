@@ -142,6 +142,8 @@ export interface RunSummary {
 export interface OpenRunCell {
   configurationId: string;
   versionId: string;
+  /** An attempt of the cell is in flight or awaits its judges. */
+  running?: boolean;
 }
 /** The effort and fast mode a requested configuration ran with in one run. */
 export interface ObservedRunSelection {

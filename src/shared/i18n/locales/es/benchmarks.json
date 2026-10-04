@@ -260,6 +260,14 @@
     "progressLabel": "Intentos resueltos",
     "preview": "Vista previa de desarrollo"
   },
+  "activity": {
+    "title": "Ejecuciones en curso",
+    "progress": "{{settled}} / {{total}}",
+    "now": "En curso: {{models}}",
+    "sidebar": "{{settled}} de {{total}} intentos resueltos",
+    "left": "Quedan {{open}}",
+    "running": "En curso, quedan {{open}}"
+  },
   "evidence": {
     "title": "Evidencia",
     "description": "La salida sellada y las revisiones de evaluación siguen disponibles independientemente de la transcripción en vivo.",

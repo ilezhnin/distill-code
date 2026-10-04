@@ -5,6 +5,7 @@ import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
+import { Spinner } from "@/shared/ui/spinner";
 import { toggleVariants } from "@/shared/ui/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
@@ -17,6 +18,7 @@ import {
   type HistorySnapshot,
 } from "../hooks/useBenchmarks";
 import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
+import { rowActivity } from "../lib/benchmarkActivity";
 import { catchUpCases } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { historyMeasurements } from "../lib/benchmarkHistory";
@@ -162,6 +164,7 @@ export function BenchmarkConfigurationPage({
       ? { attemptIds: shownRow.attemptIds, asOf: selected.snapshot.createdAt }
       : { attemptIds: shownRow.attemptIds };
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
+  const activity = useMemo(() => rowActivity(row, runs), [row, runs]);
   // Every case of the current pool this configuration is measured on,
   // including those its provider refused, which only a whole run asks again.
   const pool = useMemo(
@@ -175,6 +178,8 @@ export function BenchmarkConfigurationPage({
     [row],
   );
   const queuedRunId = catchUp.queuedRunId;
+  // The run measuring this model now, else one that plans its gaps.
+  const openRunId = activity.runId ?? queuedRunId;
   // Missing cases first; with none missing and none queued, the whole pool again.
   const runCases =
     catchUp.owed.length > 0 ? catchUp.owed : queuedRunId ? [] : pool;
@@ -347,7 +352,7 @@ export function BenchmarkConfigurationPage({
               <TooltipContent side="bottom">{runAction}</TooltipContent>
             </Tooltip>
           ) : null}
-          {queuedRunId ? (
+          {openRunId ? (
             <Tooltip delayDuration={TOOLTIP_DELAY.held}>
               <TooltipTrigger asChild>
                 <Button
@@ -355,15 +360,25 @@ export function BenchmarkConfigurationPage({
                   variant="ghost"
                   size="sm"
                   aria-label={t("configuration.queued", {
-                    id: shortId(queuedRunId),
+                    id: shortId(openRunId),
                   })}
-                  onClick={() => onOpenRun(queuedRunId)}
+                  onClick={() => onOpenRun(openRunId)}
                 >
-                  {t("configuration.queuedShort")}
+                  {activity.running > 0 ? (
+                    <Spinner decorative className="size-3.5 text-chart-1" />
+                  ) : null}
+                  {activity.open > 0
+                    ? t(
+                        activity.running > 0
+                          ? "activity.running"
+                          : "activity.left",
+                        { open: activity.open },
+                      )
+                    : t("configuration.queuedShort")}
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">
-                {t("configuration.queued", { id: shortId(queuedRunId) })}
+                {t("configuration.queued", { id: shortId(openRunId) })}
               </TooltipContent>
             </Tooltip>
           ) : null}
