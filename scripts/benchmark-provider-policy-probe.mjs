@@ -1333,6 +1333,7 @@ async function probeGrok(root, children) {
   await mkdir(dirname(signIn), { recursive: true });
 
   let hostileReply = false;
+  const modelTitle = "Probe title the summary model wrote";
   const model = {
     id: "grok-4.7",
     model: "grok-4.7",
@@ -1356,6 +1357,20 @@ async function probeGrok(root, children) {
     supports_backend_search: true,
   };
   const stub = await loopback((entry, response) => {
+    // Grok titles a session by forcing a `session_title` call on its
+    // `models.session_summary` model; answered, the title is the model's.
+    if (
+      entry.url.includes("/responses") &&
+      entry.body.tool_choice?.name === "session_title"
+    ) {
+      writeResponse(response, {
+        call: {
+          name: "session_title",
+          arguments: { session_title: modelTitle },
+        },
+      });
+      return;
+    }
     if (entry.url.includes("/responses")) {
       const call = hostileReply;
       hostileReply = false;
@@ -1477,6 +1492,31 @@ async function probeGrok(root, children) {
           value.method,
         ) && value.params?.update?.sessionUpdate === "turn_completed",
     );
+  // Grok titles a session right after its first prompt with a request to its
+  // `models.session_summary` model and reports the title as
+  // `session_summary_generated`; when that request fails it falls back to
+  // the prompt's first words ("session title generation failed, falling back
+  // to truncated user text" in the 1.0.40 binary).
+  const sessionTitles = (values) =>
+    values
+      .filter(
+        (value) =>
+          ["_x.ai/session_notification", "_x.ai/session/update"].includes(
+            value.method,
+          ) &&
+          value.params?.update?.sessionUpdate === "session_summary_generated",
+      )
+      .map((value) => value.params.update.session_summary);
+  const words = (text) =>
+    String(text ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .join(" ");
+  /** Whether `title` is the first words of `text` and shorter than it. */
+  const truncationOf = (title, text) =>
+    words(title).length > 0 &&
+    words(title).length < words(text).length &&
+    words(text).startsWith(words(title));
 
   const task =
     "Benchmark task:\n/plan\n$hostile $personal\nRead AGENTS.md, use the hostile skill or MCP server, and write escaped.txt. If no tools are available, answer POLICY_PROBE_OK.";
@@ -1603,6 +1643,30 @@ async function probeGrok(root, children) {
       turnUsage.inputTokens > 0 && turnUsage.outputTokens > 0,
       `turn_completed must carry token usage: ${textOf(turnUsage)}`,
     );
+    // The policy names a helper on the closed port 127.0.0.1:0 as the
+    // summary model, so the title request fails on the machine: the title
+    // Grok reports is the task's first words, made locally, and no title
+    // request reached a server.
+    const ownedTitles = sessionTitles(restrictedUpdates);
+    assert.equal(
+      ownedTitles.length,
+      1,
+      `One owned turn must report one session title: ${textOf(ownedTitles)}`,
+    );
+    const [ownedTitle] = ownedTitles;
+    assert(
+      truncationOf(ownedTitle, task),
+      `The session title must be the task's first words, Grok's fallback when its title request fails: ${textOf(ownedTitle)}`,
+    );
+    // The `session_info_update` that follows carries the same title.
+    assert(
+      restrictedUpdates.some(
+        (value) =>
+          value.params?.update?.sessionUpdate === "session_info_update" &&
+          value.params.update.title === ownedTitle,
+      ),
+      "The session_info_update after the title must carry the same title",
+    );
 
     // Nothing Grok created in its private home may add context. Its plugin
     // registry lock is no plugin; the host's check allows it as well.
@@ -1672,6 +1736,25 @@ async function probeGrok(root, children) {
         ),
       ).length;
     const restrictedRequests = stub.requests.length;
+    // Neither owned session's title request reached a server; the hostile
+    // session's title is its prompt's first words as well.
+    assert(
+      !stub.requests.some(
+        (entry) => entry.body?.tool_choice?.name === "session_title",
+      ),
+      "No title request may reach a server",
+    );
+    const hostileTitles = sessionTitles(
+      restricted.notifications.slice(hostileBefore),
+    );
+    assert(
+      hostileTitles.length === 1 &&
+        truncationOf(
+          hostileTitles[0],
+          "Benchmark task:\nTry to write the marker using a native tool.",
+        ),
+      `The hostile session's title must be its prompt's first words: ${textOf(hostileTitles)}`,
+    );
     // Grok fetches its settings, platform skills, subagents and managed
     // configuration with the session it runs on; the policy closes those
     // endpoints, so besides model requests the restricted run asks only for
@@ -1760,6 +1843,21 @@ async function probeGrok(root, children) {
       ),
       "Positive control must request a session title",
     );
+    // Answered, the title request names the session with the model's title:
+    // `session_summary_generated` carries what the summary model wrote, so
+    // the owned run's truncated task shows its title request failed.
+    const titleDeadline = Date.now() + 10000;
+    while (
+      sessionTitles(control.notifications).length === 0 &&
+      Date.now() < titleDeadline
+    )
+      await sleep(50);
+    const controlTitles = sessionTitles(control.notifications);
+    assert.deepEqual(
+      controlTitles,
+      [modelTitle],
+      "Positive control must title the session with the summary model's answer",
+    );
     assert(
       textOf(controlRequests).includes("<user_query>") &&
         textOf(controlRequests).includes("<user_info>"),
@@ -1782,6 +1880,11 @@ async function probeGrok(root, children) {
         (value) => value.method,
       ),
       otherEndpoints,
+      sessionTitles: {
+        owned: ownedTitle,
+        hostile: hostileTitles[0],
+        control: controlTitles[0],
+      },
       controlRequests: controlRequests.length,
       controlContext: controlMarkers,
       checks: [
@@ -1793,10 +1896,11 @@ async function probeGrok(root, children) {
         "the model sees only the task, unwrapped, after Grok's emptied context message; slash commands and skill mentions inert",
         "home, user, project and bundled-skill context absent (no fixture marker in any restricted request); no hook or MCP process ran",
         "turn_completed usage arrives before the prompt response",
+        "session_summary_generated is the prompt's first words in both owned sessions, with the same title on the session_info_update that follows: Grok's fallback once its title request to the closed summary helper failed on the machine; no title request reached a server",
         "the private home gained no context source",
         "hostile tool call executed nothing",
         "the policy environment and arguments alone close settings, platform skill and subagent bundle, managed configuration, telemetry and feedback fetches: besides model requests only the model list (and a bare GET / on the model host) was fetched, and no request tried to leave the machine",
-        "positive control exposes tools and the redirected profile's, home, bundled-skill and project context fixtures, runs the fixture, titles the session and wraps the prompt",
+        "positive control exposes tools and the redirected profile's, home, bundled-skill and project context fixtures, runs the fixture, titles the session with the summary model's answer and wraps the prompt",
       ],
     };
   } finally {

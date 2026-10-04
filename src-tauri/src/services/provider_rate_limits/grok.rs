@@ -123,6 +123,80 @@ pub fn benchmark_sign_in_expiring(
     expires_at_ms.is_some_and(|expires| expires - now < benchmark_sign_in_margin_ms(turn_limit_ms))
 }
 
+/// When the user's Grok sign-in expires, read the way
+/// [`benchmark_auth_document`] reads the session, and nothing else of it.
+/// `None` without a session or without an expiry.
+pub fn benchmark_sign_in_expiry() -> Result<Option<i64>, String> {
+    match fs::read_to_string(grok_auth_path()) {
+        Ok(raw) => match parse_grok_auth_session(&raw) {
+            GrokAuthReadResult::Missing => Ok(None),
+            GrokAuthReadResult::Error(error) => Err(error),
+            GrokAuthReadResult::Ok(session) => Ok(session.expires_at_ms),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Grok auth file cannot be read".into()),
+    }
+}
+
+/// How long before expiry the Grok CLI renews a sign-in by default:
+/// `GROK_AUTH_EARLY_INVALIDATION_SECS` unset is 300 seconds.
+const GROK_CLI_RENEWAL_WINDOW_MS: i64 = 5 * 60 * 1000;
+
+/// How far into the CLI's renewal window a waiting run starts again, so the
+/// CLI already counts the sign-in as due when the run lists its models.
+const RENEWAL_WINDOW_SLACK_MS: i64 = 30 * 1000;
+
+/// How long before expiry the Grok CLI the user's chats run renews its
+/// sign-in: from then on it counts the session as expired and renews it, in
+/// its own home with its own refresh token, before any request it makes
+/// (the pinned 1.0.40 logs "oidc refresh enter" with reason `PreRequest`).
+/// `GROK_AUTH_EARLY_INVALIDATION_SECS` as the user's environment sets it,
+/// else Grok's default.
+pub fn cli_renewal_window_ms() -> i64 {
+    crate::services::shell_env::user_env_var("GROK_AUTH_EARLY_INVALIDATION_SECS")
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|seconds| *seconds >= 0)
+        .map_or(GROK_CLI_RENEWAL_WINDOW_MS, |seconds| {
+            seconds.saturating_mul(1000)
+        })
+}
+
+/// What a benchmark turn of up to `turn_limit_ms` needs, at `now`, of a
+/// sign-in that expires at `expires_at_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchmarkSignIn {
+    /// It outlasts the turn, or there is no session to outlast it.
+    Ready,
+    /// The CLI counts it as due: any request the CLI makes renews it first,
+    /// so one model listing on the user's chat bridge renews it.
+    Renew,
+    /// Nothing the CLI does renews it before this time, inside its renewal
+    /// window.
+    WaitUntil(i64),
+}
+
+/// See [`BenchmarkSignIn`]; `renewal_window_ms` is
+/// [`cli_renewal_window_ms`].
+pub fn benchmark_sign_in_step(
+    expires_at_ms: Option<i64>,
+    now: i64,
+    turn_limit_ms: u64,
+    renewal_window_ms: i64,
+) -> BenchmarkSignIn {
+    let Some(expires) = expires_at_ms else {
+        return BenchmarkSignIn::Ready;
+    };
+    if !benchmark_sign_in_expiring(Some(expires), now, turn_limit_ms) {
+        return BenchmarkSignIn::Ready;
+    }
+    let renews_from = expires.saturating_sub(renewal_window_ms);
+    if now >= renews_from {
+        BenchmarkSignIn::Renew
+    } else {
+        BenchmarkSignIn::WaitUntil(renews_from.saturating_add(RENEWAL_WINDOW_SLACK_MS))
+    }
+}
+
 /// The fields of a sign-in entry a benchmark process gets: the access token
 /// (`key`), how and when it was issued, when it expires and whose it is. The
 /// pinned Grok runs a session on exactly these (the policy probe signs in
@@ -622,6 +696,47 @@ mod tests {
             now,
             hour
         ));
+    }
+
+    /// The Grok CLI renews a sign-in before any request once it is within
+    /// its renewal window (five minutes by default), never earlier, while a
+    /// benchmark turn needs fifteen minutes or more left. Measured on the
+    /// pinned 1.0.40 against a loopback stub: a sign-in ten minutes from
+    /// expiry was used as it was through a start and a session; three minutes
+    /// from expiry, every request renewed it first.
+    #[test]
+    fn a_sign_in_is_renewed_inside_the_cli_window_and_waited_for_before_it() {
+        let now = 1_000_000_000;
+        let minute = 60 * 1000;
+        let window = GROK_CLI_RENEWAL_WINDOW_MS;
+        let turn = 10 * 60 * 1000;
+        assert_eq!(
+            benchmark_sign_in_step(None, now, turn, window),
+            BenchmarkSignIn::Ready
+        );
+        assert_eq!(
+            benchmark_sign_in_step(Some(now + 20 * minute), now, turn, window),
+            BenchmarkSignIn::Ready
+        );
+        // Ten minutes left: too little for the turn, too much for the CLI to
+        // renew it yet; the run waits until half a minute into its window.
+        assert_eq!(
+            benchmark_sign_in_step(Some(now + 10 * minute), now, turn, window),
+            BenchmarkSignIn::WaitUntil(now + 5 * minute + RENEWAL_WINDOW_SLACK_MS)
+        );
+        // Inside the window, or past expiry, a listing renews it.
+        for left in [5 * minute, 3 * minute, 0, -minute] {
+            assert_eq!(
+                benchmark_sign_in_step(Some(now + left), now, turn, window),
+                BenchmarkSignIn::Renew,
+                "{left}"
+            );
+        }
+        // A user who turned the early renewal off: the CLI renews at expiry.
+        assert_eq!(
+            benchmark_sign_in_step(Some(now + 10 * minute), now, turn, 0),
+            BenchmarkSignIn::WaitUntil(now + 10 * minute + RENEWAL_WINDOW_SLACK_MS)
+        );
     }
 
     #[test]

@@ -356,7 +356,7 @@ impl Store {
         let mut cards: std::collections::BTreeMap<(String, String), (u8, usize)> =
             std::collections::BTreeMap::new();
         for row in rows {
-            let attempt: Attempt = serde_json::from_str(&row.get::<String, _>(0))?;
+            let mut attempt: Attempt = serde_json::from_str(&row.get::<String, _>(0))?;
             // A candidate that authored the brief is not an entry of it.
             if attempt.outcome.as_deref() == Some("excluded")
                 || super::effort::effort_unknown(&attempt, &defaulted)
@@ -364,6 +364,12 @@ impl Store {
                 continue;
             }
             let manifest: BenchmarkDraft = serde_json::from_str(&row.get::<String, _>(1))?;
+            // A rendering its event record stopped is unscored, as on every
+            // board (see `evidence`).
+            super::evidence::rendering_with_answer_cap(
+                &mut attempt,
+                manifest.limits.max_artifact_bytes,
+            );
             let key = (
                 attempt.version_id.clone(),
                 super::analysis::leaderboard_key(&card_configuration(&attempt)),
@@ -937,6 +943,67 @@ mod tests {
             .await
             .unwrap();
         assert!(none.is_empty());
+    }
+    /// A rendering the old runner stopped for the size of its event record
+    /// scored a fixed 0 and, being the newest scored one, took the card. Read
+    /// as unscored, it leaves the card to the older scored rendering, and its
+    /// own run shows it unscored.
+    #[tokio::test]
+    async fn a_rendering_stopped_by_its_event_record_is_unscored_in_the_gallery() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = json!({"id":"candidate","providerId":"provider","accountId":null,"modelId":"native-model","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let reviewed = json!([{"id":"objective","evaluatorRevision":"1","verdict":"pending_review","score":null,"reason":"waiting","createdAt":5,"provenance":"objective","artifacts":[]},{"id":"review","evaluatorRevision":"1","verdict":"fail","score":0.7,"reason":"ok","createdAt":6,"provenance":"human","artifacts":[]}]);
+        let mut tx = store.pool.begin().await.unwrap();
+        for (run, created_at) in [("run-1", 1), ("run-2", 2)] {
+            let request = json!({"requestKey":run,"versionIds":[version.id],"configurations":[configuration],"repetitions":1,"timeoutSeconds":600,"maxExecutions":1,"preview":false});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'completed',1,?,?,?)")
+                .bind(run).bind(run).bind(created_at).bind(created_at).bind(request.to_string())
+                .execute(&mut *tx).await.unwrap();
+            let mut attempt = json!({"id":format!("attempt-{run}"),"runId":run,"versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pending_review","output":format!("<svg data-run='{run}'/>"),"usage":{"schema":"native"},"evaluations":reviewed,"eventCursor":0,"workflowSteps":[]});
+            if run == "run-2" {
+                attempt["outcome"] = json!("budget_reached");
+                attempt["reason"] = json!(super::super::evidence::LEGACY_CAP_REASON);
+                attempt["evaluations"] = json!([]);
+            }
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'candidate',0,'terminal',?)")
+                .bind(format!("attempt-{run}")).bind(run).bind(&version.id).bind(attempt.to_string())
+                .execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].attempt_id, "attempt-run-1");
+        assert_eq!(entries[0].score, Some(0.7));
+        let stopped = store
+            .list_designs(&ResultQuery {
+                run_id: Some("run-2".into()),
+                ..ResultQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(stopped[0].attempt_id, "attempt-run-2");
+        assert_eq!(
+            stopped[0].outcome.as_deref(),
+            Some("infrastructure_failure")
+        );
+        assert_eq!(stopped[0].score, None);
+        // The store keeps what it settled with, for run detail.
+        assert_eq!(
+            store
+                .attempt("attempt-run-2")
+                .await
+                .unwrap()
+                .outcome
+                .as_deref(),
+            Some("budget_reached")
+        );
     }
     #[tokio::test]
     async fn one_gallery_card_per_model_shows_its_scored_rendering_and_generation_cost() {

@@ -353,6 +353,12 @@ export interface LeaderboardRow {
   axes: LeaderboardAxis[];
   /** Pool cases without a scored result: the gap a catch-up run fills. */
   missingVersionIds: string[];
+  /**
+   * Pool cases without a scored result that the provider refused
+   * (`unsupported`): no catch-up offers them, a run of the whole pool does.
+   * Rows recorded before it was kept have none.
+   */
+  unsupportedVersionIds?: string[];
   /** Every model the counted attempts' usage named, sorted. */
   resolvedModels?: string[];
 }

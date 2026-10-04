@@ -383,6 +383,16 @@ fn judge_abstention(
     }
 }
 
+/// A judge's Grok sign-in as its panel takes it: one the Grok CLI renews only
+/// later answers like a busy account, so the batch waits for it and records
+/// nothing, instead of losing the seat to an abstention.
+fn judge_sign_in(gate: GrokSignInGate) -> Result<()> {
+    match gate {
+        GrokSignInGate::Ready => Ok(()),
+        GrokSignInGate::WaitUntil(_) => Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGE_SIGN_IN_WAIT)),
+    }
+}
+
 fn valid_vote(evaluation: &Evaluation) -> bool {
     evaluation.provenance == "judge"
         && evaluation
@@ -426,6 +436,48 @@ fn hold_for_quota(run_id: &str, error: &str) {
         .insert(run_id.to_owned(), until);
 }
 
+/// The error code of a Grok turn held back, before any session, until the
+/// Grok CLI renews the user's sign-in (see [`grok_sign_in_gate`]). The run's
+/// cells of that provider wait on their own, as for a quota wait, while its
+/// other providers' cells go on.
+const SIGN_IN_WAIT: &str = "sign_in_wait";
+const SIGN_IN_WAIT_REASON: &str = "Waiting for the Grok CLI to renew its sign-in, which it does in the last minutes before the sign-in expires; the run continues on its own";
+/// A due Grok sign-in that a listing on the chat bridge did not renew.
+const GROK_NOT_RENEWED: &str = "the Grok sign-in expires before this turn could end and the Grok CLI did not renew it; open a Grok chat to sign in again";
+/// Why a judge whose Grok sign-in waits for the Grok CLI defers its batch.
+const JUDGE_SIGN_IN_WAIT: &str = "the judge's Grok sign-in waits for the Grok CLI to renew it";
+
+/// One provider's cells of a run, held until a time the runner knows: a Grok
+/// sign-in the Grok CLI renews only later holds the run's Grok cells, and
+/// nothing else of the run. Kept in memory, like [`QUOTA_HOLDS`].
+static PROVIDER_HOLDS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Sends no cell of `provider_id` in `run_id` before `until`; the next
+/// dispatch after it asks again.
+fn hold_provider_until(run_id: &str, provider_id: &str, until: i64) {
+    PROVIDER_HOLDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((run_id.to_owned(), provider_id.to_owned()), until);
+}
+
+fn provider_held(run_id: &str, provider_id: &str) -> bool {
+    let mut holds = PROVIDER_HOLDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (run_id.to_owned(), provider_id.to_owned());
+    match holds.get(&key) {
+        Some(until) if *until > now() => true,
+        Some(_) => {
+            holds.remove(&key);
+            false
+        }
+        None => false,
+    }
+}
+
 fn held_for_quota(run_id: &str) -> bool {
     let mut holds = QUOTA_HOLDS
         .lock()
@@ -443,12 +495,19 @@ fn held_for_quota(run_id: &str) -> bool {
 /// Whether a turn that failed with `code`, while its attempt was saved in
 /// `phase`, never reached the provider, so its cell goes back to the queue
 /// instead of settling: a quota wait the host refused before any provider
-/// call, and anything refused while the attempt was still being prepared,
-/// before its prompt was dispatched: a selection the provider would not make,
-/// or a runtime, sign-in, preflight or policy the host would not start.
+/// call, a wait for the Grok CLI to renew its sign-in, and anything refused
+/// while the attempt was still being prepared, before its prompt was
+/// dispatched: a selection the provider would not make, or a runtime,
+/// sign-in, preflight or policy the host would not start.
 pub(super) fn returns_to_queue(code: &str, phase: &str) -> bool {
-    code == QUOTA_WAIT
+    is_wait(code)
         || (phase == "preparing" && matches!(code, "selection_changed" | "capability_missing"))
+}
+
+/// Whether `code` holds its run until a time it already knows, rather than
+/// asking the operator.
+fn is_wait(code: &str) -> bool {
+    matches!(code, QUOTA_WAIT | SIGN_IN_WAIT)
 }
 
 /// Whether `error` refuses `attempt`, as it was dispatched, for the very
@@ -457,10 +516,10 @@ pub(super) fn returns_to_queue(code: &str, phase: &str) -> bool {
 /// (a Codex account whose model list is not cached, a Kimi home that cannot
 /// be found, a profile changed since its probe); holding the run again would
 /// refuse the same cell on every resume, so it settles with that outcome
-/// instead, and the run goes on with its other cells. A quota wait always
-/// waits.
+/// instead, and the run goes on with its other cells. A quota wait and a
+/// sign-in renewal wait always wait.
 fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
-    error.code != QUOTA_WAIT && attempt.reason.as_deref() == Some(error.message.as_str())
+    !is_wait(&error.code) && attempt.reason.as_deref() == Some(error.message.as_str())
 }
 
 /// Puts `attempt` back in the queue with `reason`, without anything of the
@@ -674,6 +733,153 @@ impl PanelJudges for NativePanel<'_> {
     }
 }
 
+/// What a Grok session may do about the user's sign-in now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrokSignInGate {
+    /// The sign-in outlasts the turn: open the session.
+    Ready,
+    /// Nothing the Grok CLI does renews it before this time; the turn waits
+    /// for it, holding only what needs the sign-in.
+    WaitUntil(i64),
+}
+
+/// The user's Grok sign-in as [`grok_sign_in_gate`] sees it: its expiry, and
+/// a request on the user's own chat bridge, which the Grok CLI precedes with
+/// a renewal once the sign-in is due.
+trait GrokSignInSource: Sync {
+    fn expiry(&self) -> std::result::Result<Option<i64>, String>;
+    fn list(&self) -> BoxFuture<'_, Result<()>>;
+}
+
+/// The chat bridge the user's Grok chats run: the user's real `GROK_HOME`,
+/// as `benchmark_get_inventory` lists it.
+struct ChatBridgeSignIn<'a> {
+    host: &'a Arc<crate::services::agent_host::router::Inner>,
+    provider_id: &'a str,
+    account: &'a str,
+}
+
+impl GrokSignInSource for ChatBridgeSignIn<'_> {
+    fn expiry(&self) -> std::result::Result<Option<i64>, String> {
+        crate::services::provider_rate_limits::grok::benchmark_sign_in_expiry()
+    }
+    fn list(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            log::info!(
+                "[benchmarks] the Grok sign-in is due; listing models on the chat bridge so the Grok CLI renews it"
+            );
+            self.host
+                .benchmark_inventory(self.provider_id, self.account, true)
+                .await
+                .map(|_| ())
+                .map_err(host_error)
+        })
+    }
+}
+
+/// How long a sign-in the Grok CLI renewed lasted, as last seen in this
+/// process, when it fell short of the turn that asked for it. In memory: a
+/// restart measures it again with the next renewal.
+static GROK_RENEWED_LIFETIME: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+
+/// Why a Grok turn of `turn_limit_ms` is refused when the sign-in the Grok
+/// CLI renews does not outlast it. The same words every time for the same
+/// limit, so a resumed run settles the cell instead of asking again.
+fn grok_renewal_too_short(turn_limit_ms: u64) -> String {
+    let minutes =
+        crate::services::provider_rate_limits::grok::benchmark_sign_in_margin_ms(turn_limit_ms)
+            / 60_000;
+    format!(
+        "the Grok CLI renewed its sign-in, but a renewed sign-in expires before the {minutes} minutes a turn of this time limit needs; run Grok with a shorter time limit"
+    )
+}
+
+/// A Grok session runs on the user's own sign-in, which the owned process
+/// cannot renew: benchmarks hold no refresh token. The Grok CLI the user's
+/// chats run renews it, in its own home, before any request it makes once the
+/// sign-in is within `renewal_window_ms` of expiry
+/// ([`grok::cli_renewal_window_ms`]). So a sign-in that would not outlast a
+/// turn of `turn_limit_ms` is renewed the way a chat renews it: one listing on
+/// the chat bridge, then the expiry is read again every `poll` for up to ten
+/// reads. Before that window nothing the CLI does renews it, so the turn
+/// waits for the window ([`GrokSignInGate::WaitUntil`]) instead of asking the
+/// operator, unless a renewal was already seen to fall short of this turn,
+/// which waiting would only repeat. A renewal that fell short is refused for
+/// what it is, with its lifetime kept in `renewed_lifetime`, and a due
+/// sign-in the listing did not move is refused as not renewed: both for the
+/// operator.
+///
+/// [`grok::cli_renewal_window_ms`]: crate::services::provider_rate_limits::grok::cli_renewal_window_ms
+async fn grok_sign_in_gate(
+    source: &impl GrokSignInSource,
+    turn_limit_ms: u64,
+    renewal_window_ms: i64,
+    renewed_lifetime: &std::sync::Mutex<Option<i64>>,
+    poll: Duration,
+) -> Result<GrokSignInGate> {
+    use crate::services::provider_rate_limits::grok::{self, BenchmarkSignIn};
+    let read = || {
+        source.expiry().map_err(|error| {
+            BenchmarkError::new(
+                "capability_missing",
+                format!("the Grok sign-in cannot be read: {error}"),
+            )
+        })
+    };
+    let step =
+        |expiry| grok::benchmark_sign_in_step(expiry, now(), turn_limit_ms, renewal_window_ms);
+    let remember = |lifetime: Option<i64>| {
+        *renewed_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = lifetime;
+    };
+    let before = read()?;
+    match step(before) {
+        BenchmarkSignIn::Ready => return Ok(GrokSignInGate::Ready),
+        BenchmarkSignIn::WaitUntil(at) => {
+            let known = *renewed_lifetime
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if known
+                .is_some_and(|lifetime| lifetime < grok::benchmark_sign_in_margin_ms(turn_limit_ms))
+            {
+                return Err(BenchmarkError::new(
+                    "capability_missing",
+                    grok_renewal_too_short(turn_limit_ms),
+                ));
+            }
+            return Ok(GrokSignInGate::WaitUntil(at));
+        }
+        BenchmarkSignIn::Renew => {}
+    }
+    source.list().await?;
+    // The CLI renews before the request that needs the session and writes
+    // its home's auth file under a lock; allow it a few seconds.
+    for read_count in 0..10 {
+        if read_count > 0 {
+            tokio::time::sleep(poll).await;
+        }
+        let after = read()?;
+        if step(after) == BenchmarkSignIn::Ready {
+            log::info!("[benchmarks] the Grok CLI renewed its sign-in");
+            remember(None);
+            return Ok(GrokSignInGate::Ready);
+        }
+        // Renewed, but for less than the turn needs: no wait or listing
+        // makes it longer.
+        if let (Some(before), Some(after)) = (before, after) {
+            if after > before {
+                remember(Some(after - now()));
+                return Err(BenchmarkError::new(
+                    "capability_missing",
+                    grok_renewal_too_short(turn_limit_ms),
+                ));
+            }
+        }
+    }
+    Err(BenchmarkError::new("capability_missing", GROK_NOT_RENEWED))
+}
+
 impl NativeBackend {
     /// `result`, the host inventory of `provider` on `account`, as the rows a
     /// configuration is chosen from: each pinned to its runtime identity, and
@@ -780,6 +986,30 @@ impl NativeBackend {
         self.inventories
             .keep(run, provider, account, inventory.clone());
         Ok(inventory)
+    }
+
+    /// [`grok_sign_in_gate`] for a Grok session of up to `turn_limit_ms` on
+    /// `account`, renewing through the user's own chat bridge: a candidate
+    /// turn and a judge turn alike.
+    async fn renew_grok_sign_in(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        provider_id: &str,
+        account: &str,
+        turn_limit_ms: u64,
+    ) -> Result<GrokSignInGate> {
+        grok_sign_in_gate(
+            &ChatBridgeSignIn {
+                host,
+                provider_id,
+                account,
+            },
+            turn_limit_ms,
+            crate::services::provider_rate_limits::grok::cli_renewal_window_ms(),
+            &GROK_RENEWED_LIFETIME,
+            Duration::from_millis(500),
+        )
+        .await
     }
 
     /// The panel for one rendering from every enabled account's available models.
@@ -901,6 +1131,20 @@ impl NativeBackend {
             .join(format!("judge-{batch}-{index}"));
         tokio::fs::create_dir_all(&cwd).await?;
         let timeout = Duration::from_secs(180);
+        // A Grok judge's sign-in is renewed as a candidate's is. One the
+        // Grok CLI renews only later defers the batch like a busy account,
+        // rather than costing it this judge's seat; a refusal abstains.
+        if NativeProvider::for_harness(&judge.provider_id) == Some(NativeProvider::Grok) {
+            let gate = self
+                .renew_grok_sign_in(
+                    &host,
+                    &judge.provider_id,
+                    &account,
+                    timeout.as_millis() as u64,
+                )
+                .await?;
+            judge_sign_in(gate)?;
+        }
         let session = host
             .create_owned_session(
                 OwnedSessionRequest {
@@ -1428,6 +1672,21 @@ impl ExecutionBackend for NativeBackend {
             }
             busy().await?;
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
+            if provider == NativeProvider::Grok {
+                let gate = self
+                    .renew_grok_sign_in(
+                        &host,
+                        &attempt.configuration.provider_id,
+                        &account,
+                        u64::from(timeout_seconds) * 1000,
+                    )
+                    .await?;
+                if let GrokSignInGate::WaitUntil(at) = gate {
+                    // Only this run's Grok cells wait; its other providers go on.
+                    hold_provider_until(&attempt.run_id, &attempt.configuration.provider_id, at);
+                    return Err(BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON));
+                }
+            }
             let cwd = store
                 .root
                 .join("runs")
@@ -1504,11 +1763,10 @@ impl ExecutionBackend for NativeBackend {
             let mut cancelled = false;
             let mut timed_out = false;
             let mut cancellation_started = None;
-            let mut output_capped = false;
-            let mut evidence = Vec::new();
-            let mut evidence_bytes = 0usize;
-            let mut output = String::new();
-            let mut violation = None;
+            let mut capture = TurnCapture::new(version.manifest.limits.max_artifact_bytes);
+            // The host's terminal dispatch record; every way out of the loop
+            // but an error sets it.
+            let terminal;
             loop {
                 if (*cancel.borrow()
                     || started.elapsed() > Duration::from_secs(u64::from(timeout_seconds)))
@@ -1530,33 +1788,14 @@ impl ExecutionBackend for NativeBackend {
                     .await
                     .map_err(host_error)?;
                 for event in page.events {
-                    consume_event(&event.payload, &mut output, &mut attempt.usage);
-                    if let Some(model) = resolved_model_of(&event.payload) {
-                        attempt.resolved_model = Some(model);
-                    }
-                    if violation.is_none() {
-                        violation = violation_of(&event.payload);
-                    }
-                    let bytes = serde_json::to_vec(&event.payload)?.len();
-                    evidence_bytes = evidence_bytes.saturating_add(bytes);
-                    if evidence_bytes <= version.manifest.limits.max_artifact_bytes as usize {
-                        evidence.push(event.payload);
-                    } else {
-                        output_capped = true;
-                    }
+                    capture.read(event.payload, &mut attempt)?;
                 }
                 attempt.event_cursor = page.cursor;
-                if output.len() > version.manifest.limits.max_artifact_bytes as usize {
-                    output_capped = true;
-                    let mut end = version.manifest.limits.max_artifact_bytes as usize;
-                    while !output.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    output.truncate(end);
-                }
-                // A broken no-tool policy has already decided the attempt; stop
-                // paying for the rest of the turn.
-                if (output_capped || violation.is_some()) && !cancelled {
+                // An answer past the published cap, or a broken no-tool
+                // policy, has already decided the attempt; stop paying for
+                // the rest of the turn. The size of the event record never
+                // does (see `evidence`).
+                if (capture.cap_answer() || capture.violation.is_some()) && !cancelled {
                     host.cancel_owned_turn(&key).await.map_err(host_error)?;
                     cancelled = true;
                     cancellation_started = Some(Instant::now());
@@ -1578,11 +1817,11 @@ impl ExecutionBackend for NativeBackend {
                     if let Some(error) = status.error.as_ref().filter(|e| is_quota_wait(e)) {
                         return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
                     }
-                    evidence.push(json!({"terminalDispatch":status}));
+                    terminal = json!({"terminalDispatch":status});
                     if let Some(result) = status.result.as_ref() {
                         consume_terminal_result(result, &mut attempt);
                     }
-                    if let Some(violation) = violation.take() {
+                    if let Some(violation) = capture.violation.take() {
                         attempt.outcome = Some("execution_violation".into());
                         attempt.reason = Some(violation);
                         break;
@@ -1617,11 +1856,12 @@ impl ExecutionBackend for NativeBackend {
                             break;
                         }
                     }
-                    if output_capped {
+                    if capture.answer_capped {
                         attempt.outcome = Some("budget_reached".into());
-                        attempt.reason=Some("Output/evidence exceeded the published artifact cap; cancellation acknowledged".into());
+                        attempt.reason = Some(ANSWER_CAP_REASON.into());
                     } else if let Some(error) = status.error {
-                        attempt.outcome = Some(terminal_error_outcome(&error).into());
+                        attempt.outcome =
+                            Some(terminal_outcome(&error, &attempt.configuration.model_id).into());
                         attempt.reason = Some(error.to_string());
                     } else if cancelled {
                         attempt.outcome = Some(
@@ -1647,13 +1887,13 @@ impl ExecutionBackend for NativeBackend {
                     tokio::select! {_ = tokio::time::sleep(Duration::from_millis(250))=>{},_ = cancel.changed()=>{}}
                 }
             }
-            attempt.output = Some(output);
+            attempt.output = Some(std::mem::take(&mut capture.output));
             attempt.duration_ms = Some(started.elapsed().as_millis() as u64);
             attempt.finished_at = Some(now());
             attempt.phase = "collecting".into();
             mark_auxiliary_profile(&mut attempt);
-            attempt.evidence_hash =
-                Some(fixtures::seal(&store.root, &attempt, &json!(evidence)).await?);
+            let evidence = capture.evidence.close(terminal);
+            attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             store.save_attempt(&attempt).await?;
             Ok(attempt)
         })
@@ -1700,31 +1940,25 @@ impl ExecutionBackend for NativeBackend {
             attempt.event_cursor = 0;
             attempt.usage = TokenUsage::default();
             attempt.resolved_model = None;
-            let mut output = String::new();
-            let mut evidence = Vec::new();
-            let mut violation = None;
+            // The same caps as a turn the runner watched: the published one
+            // on the answer, the evidence ceiling on the record.
+            let cap = store
+                .version(&attempt.version_id)
+                .await?
+                .manifest
+                .limits
+                .max_artifact_bytes;
+            let mut capture = TurnCapture::new(cap);
             loop {
                 let page = host
                     .read_owned_events(&status.session_id, attempt.event_cursor, 200)
                     .await
                     .map_err(host_error)?;
                 for event in page.events {
-                    consume_event(&event.payload, &mut output, &mut attempt.usage);
-                    if let Some(model) = resolved_model_of(&event.payload) {
-                        attempt.resolved_model = Some(model);
-                    }
-                    if violation.is_none() {
-                        violation = violation_of(&event.payload);
-                    }
-                    evidence.push(event.payload);
+                    capture.read(event.payload, &mut attempt)?;
                 }
                 attempt.event_cursor = page.cursor;
-                if output.len() > 16 * 1024 * 1024 {
-                    return Err(BenchmarkError::new(
-                        "budget_reached",
-                        "Recovered evidence exceeds artifact cap",
-                    ));
-                }
+                capture.cap_answer();
                 if !page.has_more && attempt.event_cursor >= status.event_cursor {
                     break;
                 }
@@ -1732,18 +1966,22 @@ impl ExecutionBackend for NativeBackend {
             if let Some(result) = status.result.as_ref() {
                 consume_terminal_result(result, &mut attempt);
             }
-            evidence.push(json!({"terminalDispatch":status}));
-            attempt.output = Some(output);
+            let terminal = json!({"terminalDispatch":status});
+            attempt.output = Some(std::mem::take(&mut capture.output));
             attempt.finished_at = Some(now());
             attempt.outcome = Some(
                 status
                     .error
                     .as_ref()
-                    .map(terminal_error_outcome)
+                    .map(|error| terminal_outcome(error, &attempt.configuration.model_id))
                     .unwrap_or("completed")
                     .into(),
             );
             attempt.reason = status.error.map(|v| v.to_string());
+            if capture.answer_capped {
+                attempt.outcome = Some("budget_reached".into());
+                attempt.reason = Some(RECOVERED_ANSWER_CAP_REASON.into());
+            }
             if let Some(selection) = status
                 .result
                 .as_ref()
@@ -1771,15 +2009,76 @@ impl ExecutionBackend for NativeBackend {
                 attempt.reason =
                     Some("Recovered terminal state lacks acknowledged selection".into());
             }
-            if let Some(violation) = violation {
+            if let Some(violation) = capture.violation.take() {
                 attempt.outcome = Some("execution_violation".into());
                 attempt.reason = Some(violation);
             }
             mark_auxiliary_profile(&mut attempt);
-            attempt.evidence_hash =
-                Some(fixtures::seal(&store.root, &attempt, &json!(evidence)).await?);
+            let evidence = capture.evidence.close(terminal);
+            attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             Ok(Some(attempt))
         })
+    }
+}
+
+/// Why an attempt whose answer passed the published artifact cap settled as
+/// a budget failure.
+pub(crate) const ANSWER_CAP_REASON: &str =
+    "The answer exceeded the published artifact cap; cancellation acknowledged";
+/// The same, found while recovering a turn a restart cut off.
+const RECOVERED_ANSWER_CAP_REASON: &str = "The recovered answer exceeds the published artifact cap";
+
+/// What a turn's events add up to as the runner reads them: the answer, the
+/// first policy violation and the record to seal, with the usage and the
+/// model that answered written on the attempt. Only the answer counts
+/// against the published artifact cap; the record has a ceiling of its own
+/// (see [`super::evidence::EvidenceLog`]) and never ends the turn.
+struct TurnCapture {
+    cap: usize,
+    output: String,
+    violation: Option<String>,
+    answer_capped: bool,
+    evidence: super::evidence::EvidenceLog,
+}
+
+impl TurnCapture {
+    fn new(max_artifact_bytes: u64) -> Self {
+        Self::with_evidence(max_artifact_bytes, super::evidence::EvidenceLog::default())
+    }
+
+    fn with_evidence(max_artifact_bytes: u64, evidence: super::evidence::EvidenceLog) -> Self {
+        Self {
+            cap: usize::try_from(max_artifact_bytes).unwrap_or(usize::MAX),
+            output: String::new(),
+            violation: None,
+            answer_capped: false,
+            evidence,
+        }
+    }
+
+    fn read(&mut self, payload: Value, attempt: &mut Attempt) -> Result<()> {
+        consume_event(&payload, &mut self.output, &mut attempt.usage);
+        if let Some(model) = resolved_model_of(&payload) {
+            attempt.resolved_model = Some(model);
+        }
+        if self.violation.is_none() {
+            self.violation = violation_of(&payload);
+        }
+        self.evidence.push(payload)
+    }
+
+    /// Cuts an answer that passed the cap back to it, on a character
+    /// boundary, and says whether it ever passed it.
+    fn cap_answer(&mut self) -> bool {
+        if self.output.len() > self.cap {
+            self.answer_capped = true;
+            let mut end = self.cap;
+            while !self.output.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.output.truncate(end);
+        }
+        self.answer_capped
     }
 }
 
@@ -2271,6 +2570,74 @@ fn effective_timeout_seconds(requested: u32, draft: &BenchmarkDraft) -> u32 {
     )
 }
 
+/// ACP's `auth_required` error code.
+const ACP_AUTH_REQUIRED: i64 = -32000;
+
+/// The outcome of a turn that ended with `error` on `model_id`: a provider
+/// that refuses the model to this account ([`refuses_model`]) makes the
+/// configuration unsupported; anything else as [`terminal_error_outcome`]
+/// reads it.
+fn terminal_outcome(error: &Value, model_id: &str) -> &'static str {
+    if refuses_model(error, model_id) {
+        "unsupported"
+    } else {
+        terminal_error_outcome(error)
+    }
+}
+
+/// The words with which a provider's message refuses the model it names:
+/// Kimi's API, forwarded verbatim by the pinned Kimi Code bundle, says the
+/// subscription "does not have access to" the model.
+const MODEL_REFUSAL: &str = "does not have access to";
+
+/// Whether a turn's error is the provider refusing the requested model to
+/// the account: ACP's `auth_required` code with a provider message that
+/// refuses that very model, in [`MODEL_REFUSAL`]'s words right before its
+/// name. Kimi Code maps a 401 from its API to `auth_required` with the API's
+/// message, which for a model the plan leaves out reads "Authentication
+/// required: 401 Your current subscription does not have access to
+/// kimi-for-coding-highspeed. ...". A sign-in that failed or expired refuses
+/// no model, even when its message mentions one, and stays an
+/// infrastructure failure; the attempt's reason keeps the whole message
+/// either way.
+fn refuses_model(error: &Value, model_id: &str) -> bool {
+    let code = error["code"]
+        .as_i64()
+        .or_else(|| error.pointer("/data/code").and_then(Value::as_i64));
+    if code != Some(ACP_AUTH_REQUIRED) {
+        return false;
+    }
+    let Some(message) = error["message"].as_str() else {
+        return false;
+    };
+    // A model is named by its id or, for an id the bridge scopes
+    // (`kimi-code/kimi-for-coding-highspeed`), by the provider's own name for
+    // it after the last slash.
+    let message = message.to_lowercase();
+    let model = model_id.to_lowercase();
+    let own = model.rsplit('/').next().unwrap_or(&model);
+    let refuses = |name: &str| names(&message, &format!("{MODEL_REFUSAL} {name}"));
+    refuses(&model) || refuses(own)
+}
+
+/// Whether `text` holds `name` as a whole name: not inside a longer model id
+/// (`kimi-for-coding` in `kimi-for-coding-highspeed`, `grok-4` in `grok-4.7`).
+fn names(text: &str, name: &str) -> bool {
+    if name.len() < 3 {
+        return false;
+    }
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/');
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let mut after = text[at + name.len()..].chars();
+        let next = after.next();
+        before.is_none_or(|c| !part(c) && c != '.')
+            && next.is_none_or(|c| {
+                !part(c) && (c != '.' || after.next().is_none_or(|c| !c.is_ascii_alphanumeric()))
+            })
+    })
+}
+
 fn terminal_error_outcome(error: &Value) -> &'static str {
     match error["kind"]
         .as_str()
@@ -2620,7 +2987,12 @@ impl BenchmarkService {
                 }
             }
             let Some((mut a, version)) = self.next_dispatchable(&run).await? else {
-                if !judges_busy {
+                // Cells held for their provider still wait for it; the run
+                // completes only once none is pending.
+                let held = run.attempts.iter().any(|a| {
+                    a.phase == "pending" && provider_held(&run.id, &a.configuration.provider_id)
+                });
+                if !judges_busy && !held {
                     self.finish_measurement(&run).await?;
                     self.store.set_run_state(&run.id, "completed").await?;
                     self.changed().await;
@@ -2692,7 +3064,8 @@ impl BenchmarkService {
                         return Ok(());
                     }
                     // A turn the provider never saw keeps its cell: a quota wait
-                    // holds the run until the reset, and a refusal before the
+                    // holds the run until the reset, a sign-in wait until the
+                    // Grok CLI renews the sign-in, and a refusal before the
                     // prompt (a model the provider would not select, a runtime,
                     // sign-in or policy the host would not start) waits for the
                     // operator with its reason. The same refusal again after the
@@ -2708,9 +3081,11 @@ impl BenchmarkService {
                             requeue(&mut failed, error.message.clone());
                         }
                         self.store.save_attempt(&failed).await?;
+                        // A sign-in wait already held its provider's cells in
+                        // the backend, which knows when the Grok CLI renews it.
                         if error.code == QUOTA_WAIT {
                             hold_for_quota(&run.id, &error.message);
-                        } else {
+                        } else if error.code != SIGN_IN_WAIT {
                             self.store.set_run_state(&run.id, "needs_attention").await?;
                         }
                         self.changed().await;
@@ -2733,14 +3108,17 @@ impl BenchmarkService {
         Ok(())
     }
     /// The next pending attempt to dispatch. A pending cell whose candidate
-    /// authored the case settles as excluded here, without any model call.
+    /// authored the case settles as excluded here, without any model call. A
+    /// cell whose provider is held (see [`hold_provider_until`]) waits.
     async fn next_dispatchable(
         &self,
         run: &BenchmarkRun,
     ) -> Result<Option<(Attempt, BenchmarkVersion)>> {
         let mut versions: std::collections::HashMap<String, BenchmarkVersion> =
             std::collections::HashMap::new();
-        for pending in run.attempts.iter().filter(|a| a.phase == "pending") {
+        for pending in run.attempts.iter().filter(|a| {
+            a.phase == "pending" && !provider_held(&run.id, &a.configuration.provider_id)
+        }) {
             if !versions.contains_key(&pending.version_id) {
                 let version = self.store.version(&pending.version_id).await?;
                 versions.insert(pending.version_id.clone(), version);
@@ -3123,6 +3501,8 @@ pub struct FakeBackend {
     /// Sessions the host refuses to open before any provider call (a sign-in
     /// near expiry, a refused preflight).
     pub capability_refusals: std::sync::atomic::AtomicU64,
+    /// Turns held back until the Grok CLI renews its sign-in.
+    pub sign_in_waits: std::sync::atomic::AtomicU64,
     /// The effort levels every fake model lists: none, so no effort control,
     /// unless a test gives them some.
     pub effort_levels: std::sync::Mutex<Vec<String>>,
@@ -3215,6 +3595,10 @@ impl ExecutionBackend for FakeBackend {
                     "capability_missing",
                     "the Grok sign-in expires within 15 minutes; open a Grok chat so the Grok CLI refreshes it",
                 ));
+            }
+            if take(&self.sign_in_waits) {
+                hold_provider_until(&a.run_id, &a.configuration.provider_id, now() + 60_000);
+                return Err(BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON));
             }
             if take(&self.refused_selections) {
                 let mut observed = a.configuration.clone();
@@ -3866,6 +4250,411 @@ mod tests {
             &attempt,
             &BenchmarkError::new(QUOTA_WAIT, "held")
         ));
+        attempt.reason = Some(SIGN_IN_WAIT_REASON.into());
+        assert!(!refused_again(
+            &attempt,
+            &BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON)
+        ));
+    }
+    /// A Grok sign-in the CLI renews only later holds the provider's cells
+    /// until then, without the operator, however often it comes up; the run
+    /// then goes on with every cell.
+    #[tokio::test]
+    async fn a_sign_in_the_cli_renews_later_holds_the_run_on_its_own() {
+        let (_dir, s, fake) = setup().await;
+        fake.sign_in_waits.store(2, Ordering::SeqCst);
+        let run = s.start_run(request(&s).await).await.unwrap();
+        let release = || {
+            PROVIDER_HOLDS
+                .lock()
+                .unwrap()
+                .remove(&(run.id.clone(), "fake".to_owned()))
+        };
+        s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        assert!(held
+            .attempts
+            .iter()
+            .all(|a| a.phase == "pending" && a.outcome.is_none()));
+        assert!(held
+            .attempts
+            .iter()
+            .any(|a| a.reason.as_deref() == Some(SIGN_IN_WAIT_REASON)));
+        // Nothing is sent while it waits, and the run does not complete.
+        s.tick().await.unwrap();
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "running");
+        // The same wait again settles nothing and asks nobody.
+        assert!(release().is_some());
+        s.tick().await.unwrap();
+        let again = s.store.run(&run.id).await.unwrap();
+        assert_eq!(again.state, "running");
+        assert!(again.attempts.iter().all(|a| a.phase == "pending"));
+        assert!(release().is_some());
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("pass")));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+    }
+    /// Run 607f8612 mixed Grok and Kimi: a Grok sign-in wait holds the Grok
+    /// cells alone. The other provider's cells run meanwhile, and the run
+    /// does not complete while a held cell is pending.
+    #[tokio::test]
+    async fn a_sign_in_wait_holds_only_that_providers_cells() {
+        let (_dir, s, fake) = setup().await;
+        let mut req = request(&s).await;
+        let mut grok = req.configurations[0].clone();
+        grok.id = "grok-pass".into();
+        grok.provider_id = "grok".into();
+        req.configurations.push(grok);
+        req.max_executions = 4;
+        let run = s.start_run(req).await.unwrap();
+        hold_provider_until(&run.id, "grok", now() + 60_000);
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        for attempt in &held.attempts {
+            if attempt.configuration.provider_id == "grok" {
+                assert_eq!(attempt.phase, "pending");
+            } else {
+                assert_eq!(attempt.outcome.as_deref(), Some("pass"));
+            }
+        }
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        PROVIDER_HOLDS
+            .lock()
+            .unwrap()
+            .remove(&(run.id.clone(), "grok".to_owned()));
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 4);
+    }
+    /// The user's Grok sign-in as a test sets it: the expiry it reads, and
+    /// the one a listing leaves (`None`: the listing changes nothing).
+    struct TestSignIn {
+        expiry: std::sync::Mutex<Option<i64>>,
+        renewed: Option<i64>,
+        listings: std::sync::atomic::AtomicU64,
+    }
+    impl TestSignIn {
+        fn new(expiry: i64, renewed: Option<i64>) -> Self {
+            Self {
+                expiry: std::sync::Mutex::new(Some(expiry)),
+                renewed,
+                listings: Default::default(),
+            }
+        }
+    }
+    impl GrokSignInSource for TestSignIn {
+        fn expiry(&self) -> std::result::Result<Option<i64>, String> {
+            Ok(*self.expiry.lock().unwrap())
+        }
+        fn list(&self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async move {
+                self.listings.fetch_add(1, Ordering::SeqCst);
+                if let Some(renewed) = self.renewed {
+                    *self.expiry.lock().unwrap() = Some(renewed);
+                }
+                Ok(())
+            })
+        }
+    }
+    const MINUTE: i64 = 60_000;
+    /// A turn of `minutes` needs five more of sign-in, and never less than
+    /// fifteen; the Grok CLI renews in the last five.
+    async fn gate_for(
+        source: &TestSignIn,
+        lifetime: &std::sync::Mutex<Option<i64>>,
+        minutes: i64,
+    ) -> Result<GrokSignInGate> {
+        grok_sign_in_gate(
+            source,
+            (minutes * MINUTE) as u64,
+            5 * MINUTE,
+            lifetime,
+            Duration::from_millis(1),
+        )
+        .await
+    }
+    /// A ten-minute turn, which needs fifteen minutes of sign-in.
+    async fn gate(
+        source: &TestSignIn,
+        lifetime: &std::sync::Mutex<Option<i64>>,
+    ) -> Result<GrokSignInGate> {
+        gate_for(source, lifetime, 10).await
+    }
+    #[tokio::test]
+    async fn a_due_grok_sign_in_is_renewed_through_one_listing() {
+        let lifetime = std::sync::Mutex::new(None);
+        // Outlasts the turn: nothing is listed.
+        let fresh = TestSignIn::new(now() + 60 * MINUTE, None);
+        assert_eq!(
+            gate(&fresh, &lifetime).await.unwrap(),
+            GrokSignInGate::Ready
+        );
+        assert_eq!(fresh.listings.load(Ordering::SeqCst), 0);
+        // Before the CLI's window: wait for it, without listing.
+        let early = TestSignIn::new(now() + 10 * MINUTE, None);
+        assert!(matches!(
+            gate(&early, &lifetime).await.unwrap(),
+            GrokSignInGate::WaitUntil(_)
+        ));
+        assert_eq!(early.listings.load(Ordering::SeqCst), 0);
+        // Inside it: one listing, and the renewed sign-in runs the turn.
+        let due = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 60 * MINUTE));
+        assert_eq!(gate(&due, &lifetime).await.unwrap(), GrokSignInGate::Ready);
+        assert_eq!(due.listings.load(Ordering::SeqCst), 1);
+        // A listing that renewed nothing is refused as not renewed.
+        let stuck = TestSignIn::new(now() + 3 * MINUTE, None);
+        let error = gate(&stuck, &lifetime).await.unwrap_err();
+        assert_eq!(error.code, "capability_missing");
+        assert_eq!(error.message, GROK_NOT_RENEWED);
+        assert_eq!(*lifetime.lock().unwrap(), None);
+    }
+    /// The CLI renewed the sign-in, but for eighteen minutes, short of the
+    /// twenty a fifteen-minute turn needs: refused for that, not as "did not
+    /// renew it"; and with that seen, a later wait for the window is refused
+    /// at once, the same way, since it would end the same.
+    #[tokio::test]
+    async fn a_renewal_shorter_than_the_turn_is_refused_for_that_and_not_waited_for() {
+        let lifetime = std::sync::Mutex::new(None);
+        let short = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 18 * MINUTE));
+        let error = gate_for(&short, &lifetime, 15).await.unwrap_err();
+        assert_eq!(error.code, "capability_missing");
+        assert_ne!(error.message, GROK_NOT_RENEWED);
+        assert_eq!(error.message, grok_renewal_too_short(15 * MINUTE as u64));
+        assert!(error.message.contains("20 minutes"), "{}", error.message);
+        assert_eq!(short.listings.load(Ordering::SeqCst), 1);
+        let seen = lifetime.lock().unwrap().unwrap();
+        assert!((17 * MINUTE..=18 * MINUTE).contains(&seen), "{seen}");
+        // The renewed sign-in, sixteen minutes on: no wait for the window.
+        let renewed = TestSignIn::new(now() + 16 * MINUTE, None);
+        let again = gate_for(&renewed, &lifetime, 15).await.unwrap_err();
+        assert_eq!(again.message, error.message);
+        assert_eq!(renewed.listings.load(Ordering::SeqCst), 0);
+        // A ten-minute turn, which such a renewal outlasts, still waits.
+        let ripening = TestSignIn::new(now() + 12 * MINUTE, None);
+        assert!(matches!(
+            gate(&ripening, &lifetime).await,
+            Ok(GrokSignInGate::WaitUntil(_))
+        ));
+        // A renewal that outlasts the turn forgets the short one.
+        let long = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 60 * MINUTE));
+        assert_eq!(
+            gate_for(&long, &lifetime, 15).await.unwrap(),
+            GrokSignInGate::Ready
+        );
+        assert_eq!(*lifetime.lock().unwrap(), None);
+    }
+    /// A Grok judge whose sign-in the CLI renews only later answers like a
+    /// busy account, so the panel defers the batch instead of recording an
+    /// abstention that costs the seat.
+    #[test]
+    fn a_judge_waiting_for_its_grok_sign_in_defers_the_batch() {
+        assert!(judge_sign_in(GrokSignInGate::Ready).is_ok());
+        let deferred = judge_sign_in(GrokSignInGate::WaitUntil(now() + MINUTE)).unwrap_err();
+        assert_eq!(deferred.code, ACCOUNT_BUSY);
+    }
+    /// One Grok answer chunk as the host stores it, with Grok's per-chunk
+    /// telemetry and the host's stamp.
+    fn telemetry_chunk(kind: &str, text: &str, n: usize) -> Value {
+        json!({
+            "_meta": {"agentTimestampMs": 1_791_142_991_804u64 + n as u64, "chunkId": n,
+                "eventId": format!("01a10871-0ea6-7042-b71f-98eb341afd73-{n}"),
+                "promptId": "ddf932fe-1f3b-47f4-a036-120ad519f902",
+                "streamStartMs": 1_791_142_990_182u64, "totalTokens": 207,
+                "turnStartMs": 1_791_142_989_637u64, "updateType": "AgentMessageChunk"},
+            "sessionId": "7ce99634-5aee-4928-9ab8-57085d4c26a3",
+            "update": {"_meta": {
+                    "distill": {"assistantMessageId": "c373d081-b2d1-4b26-93d4-7e9c8f400d74",
+                        "created": "2026-10-04T19:43:15.247Z",
+                        "messageId": "30b2e7ec-a1c6-484a-8316-affdf9f8bca1",
+                        "runId": "808dd1f8-1cc5-4ba8-964e-da06df71a147"},
+                    "executionOwner": {"id": "89663cb7-d49e-4dca-a9cf-6a7637dc82e1:1791142989445",
+                        "kind": "benchmark"}},
+                "content": {"text": text, "type": "text"}, "sessionUpdate": kind}
+        })
+    }
+    fn blank_attempt() -> Attempt {
+        let (data, _) = super::super::analysis::tests::dataset();
+        let mut attempt = data.attempts[0].clone();
+        attempt.usage = TokenUsage::default();
+        attempt.resolved_model = None;
+        attempt
+    }
+    /// Run 607f8612: a Grok answer of 3,844 bytes and its reasoning came in
+    /// some 1,450 chunks that, with their telemetry, passed the 1 MiB cap;
+    /// the old runner cancelled the turn and settled a budget failure. The
+    /// cap is the answer's: the turn runs on and its record is kept whole.
+    #[test]
+    fn the_artifact_cap_counts_the_answer_not_the_events() {
+        let mut capture = TurnCapture::new(1024 * 1024);
+        let mut attempt = blank_attempt();
+        let mut events_bytes = 0;
+        let mut answer = String::new();
+        for n in 0..1_500 {
+            let (kind, text) = if n % 10 == 0 {
+                ("agent_thought_chunk", " thinking")
+            } else {
+                ("agent_message_chunk", "<b>")
+            };
+            if kind == "agent_message_chunk" {
+                answer.push_str(text);
+            }
+            let event = telemetry_chunk(kind, text, n);
+            events_bytes += serde_json::to_vec(&event).unwrap().len();
+            capture.read(event, &mut attempt).unwrap();
+        }
+        assert!(events_bytes > 1024 * 1024, "{events_bytes}");
+        assert!(!capture.cap_answer());
+        assert_eq!(capture.output, answer);
+        assert!(capture.violation.is_none());
+        let record = capture.evidence.close(json!({"terminalDispatch": {}}));
+        let events = record.as_array().unwrap();
+        assert_eq!(events.len(), 1_501);
+        assert!(events.iter().all(|e| e.get("evidenceTruncated").is_none()));
+        assert!(events[1].get("_meta").is_none() && events[1]["update"].get("_meta").is_none());
+    }
+    #[test]
+    fn an_answer_past_the_cap_is_cut_back_to_it_and_ends_the_turn() {
+        let mut capture = TurnCapture::new(4);
+        let mut attempt = blank_attempt();
+        capture
+            .read(
+                telemetry_chunk("agent_message_chunk", "ab€€", 0),
+                &mut attempt,
+            )
+            .unwrap();
+        assert!(capture.cap_answer());
+        // Cut on a character boundary, never inside "€".
+        assert_eq!(capture.output, "ab");
+        // Once past it, the answer stays capped.
+        capture
+            .read(telemetry_chunk("agent_message_chunk", "c", 1), &mut attempt)
+            .unwrap();
+        assert!(capture.cap_answer());
+        assert_eq!(capture.output, "abc");
+    }
+    /// The record's ceiling stops the record, not the turn: the answer, the
+    /// usage and a violation tag after it are still read.
+    #[test]
+    fn a_record_past_its_ceiling_still_reads_the_turn() {
+        let mut capture = TurnCapture::with_evidence(
+            1024,
+            super::super::evidence::EvidenceLog::with_ceiling(2_000),
+        );
+        let mut attempt = blank_attempt();
+        for n in 0..50 {
+            capture
+                .read(telemetry_chunk("agent_message_chunk", "x", n), &mut attempt)
+                .unwrap();
+        }
+        capture
+            .read(
+                json!({"update": {"sessionUpdate": "tool_call",
+                    "_meta": {"executionViolation": "native tool activity in no-tool profile"}}}),
+                &mut attempt,
+            )
+            .unwrap();
+        capture
+            .read(
+                json!({"update": {"sessionUpdate": "usage_update",
+                    "cost": {"amount": 0.25, "currency": "USD"}}}),
+                &mut attempt,
+            )
+            .unwrap();
+        assert!(!capture.cap_answer());
+        assert_eq!(capture.output, "x".repeat(50));
+        assert_eq!(
+            capture.violation.as_deref(),
+            Some("native tool activity in no-tool profile")
+        );
+        assert_eq!(attempt.usage.cost, Some(0.25));
+        let record = capture.evidence.close(json!({"terminalDispatch": {}}));
+        let events = record.as_array().unwrap();
+        let marker = events
+            .iter()
+            .find_map(|e| e.get("evidenceTruncated"))
+            .expect("truncation marker");
+        assert!(marker["droppedEvents"].as_u64().unwrap() >= 2);
+        assert!(events.last().unwrap().get("terminalDispatch").is_some());
+    }
+    /// Run 607f8612: Kimi answered every attempt on a model its plan leaves
+    /// out with a 401 that names the model. That is the configuration being
+    /// unsupported, not a broken bridge; a sign-in failure names no model.
+    #[test]
+    fn a_provider_refusing_the_model_makes_the_configuration_unsupported() {
+        let refused = json!({"code": -32000,
+            "data": {"accountId": "cli-login-kimi-acp", "dispatchStarted": true, "promptNotAccepted": false},
+            "message": "Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed. Upgrade to higher-tier Kimi Code plans. Upgrade: Upgrade: https://www.kimi.com/code?from=server_highspeed_error#pricing"});
+        assert_eq!(
+            terminal_outcome(&refused, "kimi-code/kimi-for-coding-highspeed"),
+            "unsupported"
+        );
+        // The same refusal does not name the plan's own model.
+        assert_eq!(
+            terminal_outcome(&refused, "kimi-code/kimi-for-coding"),
+            "infrastructure_failure"
+        );
+        // A sign-in that failed names no model.
+        let signed_out = json!({"code": -32000, "message": "Authentication required"});
+        assert_eq!(
+            terminal_outcome(&signed_out, "kimi-code/kimi-for-coding"),
+            "infrastructure_failure"
+        );
+        // Nor does one that mentions the model without refusing it.
+        for message in [
+            "Authentication required: 401 sign in again to keep using kimi-for-coding-highspeed",
+            "Authentication required: your subscription for kimi-for-coding-highspeed renews today; log in again",
+        ] {
+            assert_eq!(
+                terminal_outcome(
+                    &json!({"code": -32000, "message": message}),
+                    "kimi-code/kimi-for-coding-highspeed"
+                ),
+                "infrastructure_failure",
+                "{message}"
+            );
+        }
+        // The refusal reads the same in another case, and by the full id.
+        let shouting = json!({"code": -32000,
+            "message": "401 YOUR CURRENT SUBSCRIPTION DOES NOT HAVE ACCESS TO KIMI-CODE/KIMI-FOR-CODING-HIGHSPEED"});
+        assert_eq!(
+            terminal_outcome(&shouting, "kimi-code/kimi-for-coding-highspeed"),
+            "unsupported"
+        );
+        // Another error that names the model is not a refusal of it.
+        let crashed = json!({"code": -32603,
+            "message": "Internal error: kimi-for-coding-highspeed stream reset"});
+        assert_eq!(
+            terminal_outcome(&crashed, "kimi-code/kimi-for-coding-highspeed"),
+            "infrastructure_failure"
+        );
+        // Typed outcomes are read as before.
+        assert_eq!(
+            terminal_outcome(&json!({"kind": "budget_timeout"}), "m"),
+            "budget_timeout"
+        );
+        assert!(names("no access to grok-4.", "grok-4"));
+        assert!(!names("no access to grok-4.7", "grok-4"));
+        assert!(!names("no access to grok-4-fast", "grok-4"));
+        assert!(!names("no access to xgrok-4", "grok-4"));
     }
     /// Listing a bridge's models opens a session on the bridge the user's
     /// chats use; a run does it once per provider and account, again only

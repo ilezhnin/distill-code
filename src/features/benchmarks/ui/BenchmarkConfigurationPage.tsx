@@ -162,9 +162,16 @@ export function BenchmarkConfigurationPage({
       ? { attemptIds: shownRow.attemptIds, asOf: selected.snapshot.createdAt }
       : { attemptIds: shownRow.attemptIds };
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
-  // Every case of the current pool this configuration is measured on.
+  // Every case of the current pool this configuration is measured on,
+  // including those its provider refused, which only a whole run asks again.
   const pool = useMemo(
-    () => [...new Set([...row.scoredVersionIds, ...row.missingVersionIds])],
+    () => [
+      ...new Set([
+        ...row.scoredVersionIds,
+        ...row.missingVersionIds,
+        ...(row.unsupportedVersionIds ?? []),
+      ]),
+    ],
     [row],
   );
   const queuedRunId = catchUp.queuedRunId;

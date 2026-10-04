@@ -496,9 +496,14 @@ pub struct LeaderboardRow {
     /// Success per work class of the suite, in the cohort's class order.
     pub axes: Vec<LeaderboardAxis>,
     /// Pool cases this configuration has no scored result for: the gap a
-    /// catch-up run fills.
+    /// catch-up run fills. Cases the provider refused are listed apart.
     #[serde(default)]
     pub missing_version_ids: Vec<String>,
+    /// Pool cases without a scored result whose standing cell the provider
+    /// refused (`unsupported`): no catch-up offers them again, while a run
+    /// of the whole pool still includes them.
+    #[serde(default)]
+    pub unsupported_version_ids: Vec<String>,
     /// Every model the scored attempts' usage names as the one that
     /// answered, sorted; more than one means the id moved between models.
     #[serde(default)]

@@ -597,6 +597,35 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByRole("button", { name: "Queued in run active-r" }),
     ).toBeInTheDocument();
   });
+  it("leaves a case the provider refused to a run of the whole pool", async () => {
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    const run = vi.fn();
+    const refused = leaderboardRow({
+      status: "preliminary",
+      scoredVersionIds: ["version-1"],
+      missingVersionIds: [],
+      unsupportedVersionIds: ["version-2"],
+    });
+    wrap(
+      <BenchmarkConfigurationPage
+        row={refused}
+        report={{ cohort, rows: [refused] }}
+        runs={[]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={run}
+        onOpenRun={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /missing case/ }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Run all 2 cases again" }),
+    );
+    expect(run).toHaveBeenCalledWith(["version-1", "version-2"]);
+  });
   it("starts a catch-up from the model page on today's runtime", async () => {
     const stale = {
       ...configuration,

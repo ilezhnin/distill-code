@@ -3,6 +3,7 @@ pub mod campaigns;
 pub mod catalog;
 pub mod effort;
 pub mod evaluation;
+pub mod evidence;
 pub mod export;
 pub mod fixtures;
 pub mod generated;
@@ -190,13 +191,17 @@ impl BenchmarkService {
         let runs = self.store.all_runs().await?;
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
         // Every analysis reads this data, so a measurement of an unknown
-        // effort is left out of all of them alike; the store keeps it.
-        Ok(effort::with_known_effort(QueryData {
-            definitions,
-            versions,
-            runs,
-            attempts,
-        }))
+        // effort is left out of all of them alike, and an attempt its event
+        // record stopped is unscored in all of them alike; the store keeps
+        // both as they settled.
+        Ok(evidence::with_answer_caps(effort::with_known_effort(
+            QueryData {
+                definitions,
+                versions,
+                runs,
+                attempts,
+            },
+        )))
     }
     /// Executions a saved plan owes, read from the stored manifests alone.
     pub(super) async fn planned_executions(&self, request: &RunRequest) -> Result<usize> {

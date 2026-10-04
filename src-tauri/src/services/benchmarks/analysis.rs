@@ -848,6 +848,7 @@ fn leaderboard_from_attempts(
                     attempt_ids: Vec::new(),
                     axes: Vec::new(),
                     missing_version_ids: Vec::new(),
+                    unsupported_version_ids: Vec::new(),
                     scored_version_ids: Vec::new(),
                     resolved_models: Vec::new(),
                 };
@@ -893,11 +894,22 @@ fn leaderboard_from_attempts(
                     }
                 })
                 .collect();
-            let missing_version_ids: Vec<String> = eligible
+            // A case without a score whose standing cell the provider refused
+            // (an `unsupported` outcome, such as a model the account's plan
+            // leaves out) is no gap a catch-up fills: asking again would
+            // only pay for the same refusal. It is listed apart, for a run
+            // the operator asks for.
+            let unscored: Vec<&BenchmarkVersion> = eligible
                 .iter()
+                .copied()
                 .filter(|v| !scored_attempts.iter().any(|a| a.version_id == v.id))
-                .map(|v| v.id.clone())
                 .collect();
+            let (unsupported_version_ids, missing_version_ids): (Vec<String>, Vec<String>) =
+                unscored.iter().map(|v| v.id.clone()).partition(|id| {
+                    attempts.iter().any(|a| {
+                        &a.version_id == id && a.outcome.as_deref() == Some("unsupported")
+                    })
+                });
             LeaderboardRow {
                 comparison_key: comparison_key(&scored_attempts, &runs, &pool, query.as_of),
                 configuration,
@@ -949,6 +961,7 @@ fn leaderboard_from_attempts(
                 attempt_ids: attempts.iter().map(|a| a.id.clone()).collect(),
                 axes,
                 missing_version_ids,
+                unsupported_version_ids,
                 scored_version_ids: scored_attempts.iter().map(|a| a.version_id.clone())
                     .collect::<BTreeSet<_>>().into_iter().collect(),
                 resolved_models: scored_attempts.iter().filter_map(|a| a.resolved_model.clone())
@@ -1871,6 +1884,31 @@ pub(super) mod tests {
         // Later the second run supersedes every case.
         let late = leaderboard(&data, &ResultQuery::default());
         assert_eq!(late.rows[0].points, Some(0));
+    }
+    /// Run 607f8612: every attempt on a model the account's plan leaves out
+    /// ended `unsupported`. Such a case is no gap for a catch-up, which would
+    /// only pay for the same refusal again; it is listed apart. A newer cell
+    /// that is merely unscored (an infrastructure failure) makes it a gap
+    /// again.
+    #[test]
+    fn a_case_the_provider_refused_is_no_catch_up_gap() {
+        let (mut data, _) = dataset();
+        for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v0") {
+            attempt.outcome = Some("unsupported".into());
+        }
+        let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
+        assert!(row.missing_version_ids.is_empty());
+        assert_eq!(row.unsupported_version_ids, vec!["v0".to_string()]);
+        assert_eq!((row.scored, row.planned), (5, 6));
+        assert_eq!(row.status, "preliminary");
+        data.attempts
+            .iter_mut()
+            .find(|a| a.id == "after-v0")
+            .unwrap()
+            .outcome = Some("infrastructure_failure".into());
+        let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
+        assert_eq!(row.missing_version_ids, vec!["v0".to_string()]);
+        assert!(row.unsupported_version_ids.is_empty());
     }
     #[test]
     fn a_new_case_adds_a_gap_instead_of_resetting_history() {
