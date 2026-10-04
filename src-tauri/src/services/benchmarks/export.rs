@@ -707,7 +707,7 @@ mod tests {
             store: Store::open(directory.path()).await.unwrap(),
             backend: std::sync::Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
-            active: tokio::sync::Mutex::new(None),
+            active: Default::default(),
             app: None,
         };
         let definition = service

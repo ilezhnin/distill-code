@@ -6201,7 +6201,9 @@ impl Inner {
         let mut active_sessions: Vec<String> = sessions
             .iter()
             .filter(|(_, runtime)| {
+                // Benchmark turns are not the user's work; they run side by side.
                 runtime.harness == provider
+                    && runtime.execution_profile.is_none()
                     && activity_scope_matches(
                         &account_route_key(&runtime.harness, runtime.account_id.as_deref()),
                         provider,

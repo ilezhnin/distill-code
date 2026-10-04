@@ -404,16 +404,24 @@ const PANEL_INCOMPLETE: &str =
     "The judge panel is incomplete; every judge must return a valid score sheet";
 /// The error code a judge whose account turned busy answers with.
 const ACCOUNT_BUSY: &str = "account_busy";
+/// Attempts in flight at once on one account, and across the app.
+const ACCOUNT_SLOTS: usize = 4;
+const TOTAL_SLOTS: usize = 12;
+
+/// An attempt or a judge panel in flight, keyed in `BenchmarkService::active`
+/// by its lane (a configuration, or a run's panel): its run, its account and
+/// the signal that cancels it.
+pub struct Flight {
+    pub run_id: String,
+    pub account: String,
+    pub exclusive: bool,
+    pub cancel: watch::Sender<bool>,
+}
 /// The error code of a turn the host refused before any provider call because
 /// every eligible account waits for quota.
 const QUOTA_WAIT: &str = "account_quota_wait";
 /// How long a run waits when the host names no quota reset.
 const QUOTA_RETRY_MS: i64 = 5 * 60 * 1000;
-
-/// Runs whose account waits for quota, with the time to try again. Kept in
-/// memory: after a restart the next dispatch asks the host again, at no cost.
-static QUOTA_HOLDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
-    std::sync::LazyLock::new(Default::default);
 
 /// Whether a host error is a quota wait that never reached the provider.
 fn is_quota_wait(error: &Value) -> bool {
@@ -422,18 +430,14 @@ fn is_quota_wait(error: &Value) -> bool {
         && data["dispatchStarted"] == Value::Bool(false)
 }
 
-/// Holds a run until the quota reset the host named, or a short retry.
-fn hold_for_quota(run_id: &str, error: &str) {
-    let reset = serde_json::from_str::<Value>(error)
+/// When a turn the host refused for quota may try again: the reset the host
+/// named, or a short retry.
+fn quota_until(error: &str) -> i64 {
+    serde_json::from_str::<Value>(error)
         .ok()
-        .and_then(|e| e.pointer("/data/nextReset").and_then(Value::as_i64));
-    let until = reset
+        .and_then(|e| e.pointer("/data/nextReset").and_then(Value::as_i64))
         .filter(|at| *at > now())
-        .unwrap_or_else(|| now() + QUOTA_RETRY_MS);
-    QUOTA_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(run_id.to_owned(), until);
+        .unwrap_or_else(|| now() + QUOTA_RETRY_MS)
 }
 
 /// The error code of a Grok turn held back, before any session, until the
@@ -472,20 +476,6 @@ fn provider_held(run_id: &str, provider_id: &str) -> bool {
         Some(until) if *until > now() => true,
         Some(_) => {
             holds.remove(&key);
-            false
-        }
-        None => false,
-    }
-}
-
-fn held_for_quota(run_id: &str) -> bool {
-    let mut holds = QUOTA_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match holds.get(run_id) {
-        Some(until) if *until > now() => true,
-        Some(_) => {
-            holds.remove(run_id);
             false
         }
         None => false,
@@ -2887,7 +2877,36 @@ impl BenchmarkService {
             tokio::select! {_ = self.wake.notified()=>{},_ = tokio::time::sleep(Duration::from_secs(1))=>{}}
         }
     }
-    async fn tick(&self) -> Result<()> {
+    async fn tick(self: &Arc<Self>) -> Result<()> {
+        self.recover_interrupted().await?;
+        super::campaigns::tick(self).await?;
+        // Attempts and judge panels in flight, each its own task; each settles
+        // its own attempt and frees its slot, and the next fill takes the slot
+        // up again.
+        let mut flights = tokio::task::JoinSet::new();
+        // Each attempt and panel starts at most once a tick, so one that goes
+        // straight back to the queue waits for the next tick.
+        let mut tried = std::collections::HashSet::new();
+        // A failed dispatch still lets what already flies land.
+        let dispatched = self.fill(&mut flights, &mut tried).await;
+        // The tick lasts while anything flies; the next one settles runs left
+        // with nothing to do.
+        while !flights.is_empty() {
+            tokio::select! {
+                _ = flights.join_next() => {}
+                _ = self.wake.notified() => {}
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
+            if flights.is_empty() {
+                break;
+            }
+            if let Err(error) = self.fill(&mut flights, &mut tried).await {
+                log::warn!("[benchmarks] dispatch paused: {}", error.message);
+            }
+        }
+        dispatched
+    }
+    async fn recover_interrupted(&self) -> Result<()> {
         let interrupted = sqlx::query_scalar::<_, String>(
             "SELECT data_json FROM attempts WHERE phase='interrupted'",
         )
@@ -2947,14 +2966,30 @@ impl BenchmarkService {
                 }
             }
         }
-        super::campaigns::tick(self).await?;
+        Ok(())
+    }
+    /// Starts what may run now and settles runs that paused, were cancelled or
+    /// have nothing left. Runs take turns, so a newer run never waits behind
+    /// an older one.
+    async fn fill(
+        self: &Arc<Self>,
+        flights: &mut tokio::task::JoinSet<()>,
+        tried: &mut std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let mut queues = Vec::new();
         for run in self.store.active_runs().await? {
+            let flying = self.flying(&run.id).await;
             if run.state == "pausing" {
-                self.store.set_run_state(&run.id, "paused").await?;
-                self.changed().await;
+                if flying == 0 {
+                    self.store.set_run_state(&run.id, "paused").await?;
+                    self.changed().await;
+                }
                 continue;
             }
             if run.state == "cancelling" {
+                if flying > 0 {
+                    continue;
+                }
                 for mut a in run.attempts {
                     if a.phase == "pending" {
                         a.phase = "terminal".into();
@@ -2973,147 +3008,270 @@ impl BenchmarkService {
                 self.changed().await;
                 continue;
             }
-            if run.state != "running" || held_for_quota(&run.id) {
+            if run.state != "running" {
                 continue;
             }
-            // A rendering a pause or busy judges held back is judged before any
-            // new generation; the run completes only once none is waiting.
-            let mut judges_busy = false;
-            if let Some(waiting) = run.attempts.iter().find(|a| a.phase == AWAITING_JUDGES) {
-                judges_busy = self.resume_judging(&run, &waiting.id).await?;
-                if !judges_busy {
-                    self.changed().await;
-                    break;
+            // A rendering a pause or busy judges held back is judged beside the
+            // run's generations; the run completes only once none is waiting.
+            let waiting = run
+                .attempts
+                .iter()
+                .find(|a| a.phase == AWAITING_JUDGES)
+                .map(|a| a.id.clone());
+            if let Some(id) = waiting.clone().filter(|id| !tried.contains(id)) {
+                let lane = format!("judges\u{1f}{}", run.id);
+                if let Some(cancel) = self.claim(&run.id, &lane, "", false).await {
+                    tried.insert(id.clone());
+                    let (service, run) = (self.clone(), run.clone());
+                    flights.spawn(async move {
+                        if let Err(error) = service.resume_judging(&run, &id, cancel).await {
+                            log::warn!("[benchmarks] judging stopped: {}", error.message);
+                        }
+                        service.release(&lane).await;
+                        service.changed().await;
+                    });
                 }
             }
-            let Some((mut a, version)) = self.next_dispatchable(&run).await? else {
+            let ready = self.dispatchable(&run).await?;
+            if ready.is_empty() {
                 // Cells held for their provider still wait for it; the run
                 // completes only once none is pending.
                 let held = run.attempts.iter().any(|a| {
                     a.phase == "pending" && provider_held(&run.id, &a.configuration.provider_id)
                 });
-                if !judges_busy && !held {
+                if flying == 0 && waiting.is_none() && !held {
                     self.finish_measurement(&run).await?;
                     self.store.set_run_state(&run.id, "completed").await?;
                     self.changed().await;
                 }
                 continue;
-            };
+            }
+            queues.push((run, ready.into_iter()));
+        }
+        loop {
+            let mut started = false;
+            for (run, ready) in &mut queues {
+                for (a, version) in ready.by_ref() {
+                    if tried.contains(&a.id) {
+                        continue;
+                    }
+                    if self.start(run, a, version, flights, tried).await? {
+                        started = true;
+                        break;
+                    }
+                }
+            }
+            if !started {
+                return Ok(());
+            }
+        }
+    }
+    /// Attempts and panels of `run_id` in flight.
+    async fn flying(&self, run_id: &str) -> usize {
+        self.active
+            .lock()
+            .await
+            .values()
+            .filter(|flight| flight.run_id == run_id)
+            .count()
+    }
+    /// Takes a slot for `lane` on `account` if one is free: one flight per
+    /// lane, [`ACCOUNT_SLOTS`] per account, [`TOTAL_SLOTS`] in all; an
+    /// exclusive flight shares its account with nothing. Returns its cancel
+    /// signal.
+    async fn claim(
+        &self,
+        run_id: &str,
+        lane: &str,
+        account: &str,
+        exclusive: bool,
+    ) -> Option<watch::Receiver<bool>> {
+        let mut active = self.active.lock().await;
+        let on_account: Vec<&Flight> = active
+            .values()
+            .filter(|flight| !account.is_empty() && flight.account == account)
+            .collect();
+        if active.len() >= TOTAL_SLOTS
+            || active.contains_key(lane)
+            || on_account.len() >= ACCOUNT_SLOTS
+            || on_account.iter().any(|flight| flight.exclusive)
+            || (exclusive && !on_account.is_empty())
+        {
+            return None;
+        }
+        let (cancel, signal) = watch::channel(false);
+        active.insert(
+            lane.to_owned(),
+            Flight {
+                run_id: run_id.to_owned(),
+                account: account.to_owned(),
+                exclusive,
+                cancel,
+            },
+        );
+        Some(signal)
+    }
+    async fn release(&self, lane: &str) {
+        self.active.lock().await.remove(lane);
+    }
+    /// Starts `a` if its configuration, account and the app have a free slot.
+    async fn start(
+        self: &Arc<Self>,
+        run: &BenchmarkRun,
+        mut a: Attempt,
+        version: BenchmarkVersion,
+        flights: &mut tokio::task::JoinSet<()>,
+        tried: &mut std::collections::HashSet<String>,
+    ) -> Result<bool> {
+        // One attempt per configuration at a time keeps its timing and quota
+        // its own.
+        let lane = super::analysis::configuration_key(&a.configuration);
+        let account = format!(
+            "{}\u{1f}{}",
+            a.configuration.provider_id,
+            a.configuration.account_id.as_deref().unwrap_or_default()
+        );
+        // An account measured around a run must not see anyone else's turns.
+        let exclusive = version.manifest.measurement_profile != "task_metrics";
+        let Some(cancel_rx) = self.claim(&run.id, &lane, &account, exclusive).await else {
+            return Ok(false);
+        };
+        let ready = async {
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
                 .await?;
-            if version.manifest.measurement_profile != "task_metrics"
-                && !self.begin_measurement(&run).await?
-            {
-                continue;
-            }
-            // Judges run only where the saved plan reserved their calls; known
-            // before the paid turn.
-            let judge_budget = self.judge_budget(&run, &version).await;
-            a.phase = "preparing".into();
-            a.started_at = Some(now());
+            Ok::<bool, BenchmarkError>(!exclusive || self.begin_measurement(run).await?)
+        }
+        .await;
+        if !matches!(ready, Ok(true)) {
+            self.release(&lane).await;
+            return ready;
+        }
+        // Judges run only where the saved plan reserved their calls; known
+        // before the paid turn.
+        let judge_budget = self.judge_budget(run, &version).await;
+        tried.insert(a.id.clone());
+        a.phase = "preparing".into();
+        a.started_at = Some(now());
+        self.store.save_attempt(&a).await?;
+        if self.store.run_state(&run.id).await? != "running" {
+            a.phase = "pending".into();
+            a.started_at = None;
             self.store.save_attempt(&a).await?;
-            let (cancel_tx, cancel_rx) = watch::channel(false);
-            *self.active.lock().await = Some((run.id.clone(), cancel_tx));
-            if self.store.run_state(&run.id).await? != "running" {
-                a.phase = "pending".into();
-                a.started_at = None;
-                self.store.save_attempt(&a).await?;
-                *self.active.lock().await = None;
-                continue;
+            self.release(&lane).await;
+            return Ok(false);
+        }
+        let (service, run) = (self.clone(), run.clone());
+        flights.spawn(async move {
+            if let Err(error) = service
+                .run_attempt(&run, a, version, judge_budget, cancel_rx)
+                .await
+            {
+                log::warn!("[benchmarks] attempt stopped: {}", error.message);
             }
-            let result = if version.manifest.workflow.is_some() {
-                super::workflow::execute(
-                    self,
+            service.release(&lane).await;
+            service.changed().await;
+        });
+        Ok(true)
+    }
+    /// Runs one attempt to its settlement, as the runner always has.
+    async fn run_attempt(
+        &self,
+        run: &BenchmarkRun,
+        a: Attempt,
+        version: BenchmarkVersion,
+        judge_budget: Option<std::result::Result<bool, String>>,
+        cancel_rx: watch::Receiver<bool>,
+    ) -> Result<()> {
+        let result = if version.manifest.workflow.is_some() {
+            super::workflow::execute(
+                self,
+                a.clone(),
+                version.clone(),
+                run.request.timeout_seconds,
+                cancel_rx.clone(),
+            )
+            .await
+        } else {
+            self.backend
+                .execute(
+                    &self.store,
                     a.clone(),
                     version.clone(),
                     run.request.timeout_seconds,
                     cancel_rx.clone(),
                 )
                 .await
-            } else {
-                self.backend
-                    .execute(
-                        &self.store,
-                        a.clone(),
-                        version.clone(),
-                        run.request.timeout_seconds,
-                        cancel_rx.clone(),
-                    )
-                    .await
-            };
-            // The cancel signal stays live through judging.
-            let result = match result {
-                Ok(completed) => {
-                    let stop = JudgeStop::run(&run.id, cancel_rx);
-                    self.settle(completed, &version, judge_budget, stop).await
+        };
+        // The cancel signal stays live through judging.
+        let result = match result {
+            Ok(completed) => {
+                let stop = JudgeStop::run(&run.id, cancel_rx);
+                self.settle(completed, &version, judge_budget, stop).await
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(mut completed) => {
+                completed.phase = self.settled_phase(run, &completed).await?.into();
+                self.store.save_attempt(&completed).await?;
+            }
+            Err(error) => {
+                let mut failed = self.store.attempt(&a.id).await?;
+                if error.code == "account_busy" {
+                    failed.phase = "pending".into();
+                    failed.started_at = None;
+                    self.store.save_attempt(&failed).await?;
+                    return Ok(());
                 }
-                Err(error) => Err(error),
-            };
-            *self.active.lock().await = None;
-            match result {
-                Ok(mut completed) => {
-                    completed.phase = self.settled_phase(&run, &completed).await?.into();
-                    self.store.save_attempt(&completed).await?;
-                }
-                Err(error) => {
-                    let mut failed = self.store.attempt(&a.id).await?;
-                    if error.code == "account_busy" {
+                // A turn the provider never saw keeps its cell: a quota wait
+                // holds the run until the reset, a sign-in wait until the
+                // Grok CLI renews the sign-in, and a refusal before the
+                // prompt (a model the provider would not select, a runtime,
+                // sign-in or policy the host would not start) waits for the
+                // operator with its reason. The same refusal again after the
+                // operator resumed settles the cell instead.
+                if returns_to_queue(&error.code, &failed.phase) && !refused_again(&a, &error) {
+                    if version.manifest.workflow.is_some() {
+                        // Its saved steps keep their sessions and usage, and
+                        // the root's sums of them stand.
                         failed.phase = "pending".into();
                         failed.started_at = None;
-                        self.store.save_attempt(&failed).await?;
-                        return Ok(());
+                        failed.reason = Some(error.message.clone());
+                    } else {
+                        requeue(&mut failed, error.message.clone());
                     }
-                    // A turn the provider never saw keeps its cell: a quota wait
-                    // holds the run until the reset, a sign-in wait until the
-                    // Grok CLI renews the sign-in, and a refusal before the
-                    // prompt (a model the provider would not select, a runtime,
-                    // sign-in or policy the host would not start) waits for the
-                    // operator with its reason. The same refusal again after the
-                    // operator resumed settles the cell instead.
-                    if returns_to_queue(&error.code, &failed.phase) && !refused_again(&a, &error) {
-                        if version.manifest.workflow.is_some() {
-                            // Its saved steps keep their sessions and usage, and
-                            // the root's sums of them stand.
-                            failed.phase = "pending".into();
-                            failed.started_at = None;
-                            failed.reason = Some(error.message.clone());
-                        } else {
-                            requeue(&mut failed, error.message.clone());
-                        }
-                        self.store.save_attempt(&failed).await?;
-                        // A sign-in wait already held its provider's cells in
-                        // the backend, which knows when the Grok CLI renews it.
-                        if error.code == QUOTA_WAIT {
-                            hold_for_quota(&run.id, &error.message);
-                        } else if error.code != SIGN_IN_WAIT {
-                            self.store.set_run_state(&run.id, "needs_attention").await?;
-                        }
-                        self.changed().await;
-                        return Ok(());
-                    }
-                    failed.phase = "terminal".into();
-                    failed.outcome = Some(error.code.clone());
-                    failed.reason = Some(error.message);
-                    failed.finished_at = Some(now());
                     self.store.save_attempt(&failed).await?;
-                    if ["dispatch_uncertain", "storage_unavailable"].contains(&error.code.as_str())
-                    {
+                    // A sign-in wait already held its provider's cells in
+                    // the backend, which knows when the Grok CLI renews it.
+                    if error.code == QUOTA_WAIT {
+                        hold_provider_until(
+                            &run.id,
+                            &a.configuration.provider_id,
+                            quota_until(&error.message),
+                        );
+                    } else if error.code != SIGN_IN_WAIT {
                         self.store.set_run_state(&run.id, "needs_attention").await?;
                     }
+                    self.changed().await;
+                    return Ok(());
+                }
+                failed.phase = "terminal".into();
+                failed.outcome = Some(error.code.clone());
+                failed.reason = Some(error.message);
+                failed.finished_at = Some(now());
+                self.store.save_attempt(&failed).await?;
+                if ["dispatch_uncertain", "storage_unavailable"].contains(&error.code.as_str()) {
+                    self.store.set_run_state(&run.id, "needs_attention").await?;
                 }
             }
-            self.changed().await;
-            break;
         }
         Ok(())
     }
-    /// The next pending attempt to dispatch. A pending cell whose candidate
+    /// The pending attempts ready to dispatch. A pending cell whose candidate
     /// authored the case settles as excluded here, without any model call. A
     /// cell whose provider is held (see [`hold_provider_until`]) waits.
-    async fn next_dispatchable(
-        &self,
-        run: &BenchmarkRun,
-    ) -> Result<Option<(Attempt, BenchmarkVersion)>> {
+    async fn dispatchable(&self, run: &BenchmarkRun) -> Result<Vec<(Attempt, BenchmarkVersion)>> {
+        let mut ready = Vec::new();
         let mut versions: std::collections::HashMap<String, BenchmarkVersion> =
             std::collections::HashMap::new();
         for pending in run.attempts.iter().filter(|a| {
@@ -3125,7 +3283,8 @@ impl BenchmarkService {
             }
             let version = &versions[&pending.version_id];
             if !super::routing::authored_by_candidate(&version.manifest, &pending.configuration) {
-                return Ok(Some((pending.clone(), version.clone())));
+                ready.push((pending.clone(), version.clone()));
+                continue;
             }
             let mut excluded = pending.clone();
             excluded.phase = "terminal".into();
@@ -3135,7 +3294,7 @@ impl BenchmarkService {
             self.store.save_attempt(&excluded).await?;
             self.changed().await;
         }
-        Ok(None)
+        Ok(ready)
     }
     /// Evaluates a finished generation and, for a creative brief, asks the
     /// judge panel. Evaluator and judge failures stay on the attempt.
@@ -3239,9 +3398,13 @@ impl BenchmarkService {
                 .map_err(|error| error.message),
         )
     }
-    /// Asks the panel of one rendering a pause or busy judges held back. True
-    /// when the panel is still held back by busy judges.
-    async fn resume_judging(&self, run: &BenchmarkRun, id: &str) -> Result<bool> {
+    /// Asks the panel of one rendering a pause or busy judges held back.
+    async fn resume_judging(
+        &self,
+        run: &BenchmarkRun,
+        id: &str,
+        cancel_rx: watch::Receiver<bool>,
+    ) -> Result<()> {
         let waiting = self.store.attempt(id).await?;
         let version = self.store.version(&waiting.version_id).await?;
         let mut settled = waiting.clone();
@@ -3252,7 +3415,7 @@ impl BenchmarkService {
             settled.outcome = Some("excluded".into());
             settled.reason = Some("authored by this candidate".into());
             self.store.save_attempt(&settled).await?;
-            return Ok(false);
+            return Ok(());
         }
         // Every vote of the batch landed before the final save: the panel
         // already settled it, and only an explicit evaluation asks again.
@@ -3262,23 +3425,19 @@ impl BenchmarkService {
             }
             settled.reason = None;
             self.store.save_attempt(&settled).await?;
-            return Ok(false);
+            return Ok(());
         }
         let judge_budget = self.judge_budget(run, &version).await;
-        let (cancel_tx, cancel_rx) = watch::channel(false);
-        *self.active.lock().await = Some((run.id.clone(), cancel_tx));
         let mut attempt = waiting.clone();
         attempt.reason = None;
         let stop = JudgeStop::run(&run.id, cancel_rx);
         let mut judged = self.ask_judges(attempt, &version, judge_budget, stop).await;
-        *self.active.lock().await = None;
         judged.phase = self.settled_phase(run, &judged).await?.into();
-        let busy = judged.phase == AWAITING_JUDGES && judged.reason.as_deref() == Some(JUDGES_BUSY);
         // A panel still waiting on busy judges records nothing new.
         if serde_json::to_value(&judged)? != serde_json::to_value(&waiting)? {
             self.store.save_attempt(&judged).await?;
         }
-        Ok(busy)
+        Ok(())
     }
     /// Whether a recovered attempt is a rendering still owed its panel: a
     /// judged brief, a renderable output with no verdict yet, and a run that
@@ -3506,6 +3665,9 @@ pub struct FakeBackend {
     /// The effort levels every fake model lists: none, so no effort control,
     /// unless a test gives them some.
     pub effort_levels: std::sync::Mutex<Vec<String>>,
+    /// Turns in flight now, and the most ever at once.
+    pub in_flight: std::sync::atomic::AtomicU64,
+    pub peak_in_flight: std::sync::atomic::AtomicU64,
 }
 impl ExecutionBackend for FakeBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
@@ -3619,11 +3781,14 @@ impl ExecutionBackend for FakeBackend {
                 return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
+            let flying = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak_in_flight.fetch_max(flying, Ordering::SeqCst);
             a.phase = "running".into();
             a.host_run_id = Some(format!("fake-{}", a.id));
             a.observed = Some(a.configuration.clone());
             store.save_attempt(&a).await?;
             tokio::select! {_=tokio::time::sleep(Duration::from_millis(300))=>{},_=cancel.changed()=>{}}
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
             if *cancel.borrow() {
                 a.outcome = Some("cancelled".into());
             } else {
@@ -3842,7 +4007,7 @@ mod tests {
     }
     use super::*;
     use std::sync::atomic::Ordering;
-    use tokio::sync::{Mutex, Notify};
+    use tokio::sync::Notify;
     async fn setup() -> (tempfile::TempDir, Arc<BenchmarkService>, Arc<FakeBackend>) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).await.unwrap();
@@ -3851,7 +4016,7 @@ mod tests {
             store,
             backend: backend.clone(),
             wake: Notify::new(),
-            active: Mutex::new(None),
+            active: Default::default(),
             app: None,
         });
         (dir, service, backend)
@@ -4101,7 +4266,7 @@ mod tests {
         let background = s.clone();
         let tick = tokio::spawn(async move { background.tick().await });
         for _ in 0..100 {
-            if s.active.lock().await.is_some() {
+            if !s.active.lock().await.is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -4113,6 +4278,74 @@ mod tests {
         assert_eq!(run.state, "cancelled");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert!(run.attempts[0].evidence_hash.is_some());
+    }
+    /// Five efforts of both fake models on each of two accounts, two turns
+    /// each: 20 configurations, 40 turns.
+    async fn wide_request(s: &BenchmarkService, backend: &FakeBackend) -> RunRequest {
+        let efforts = ["low", "medium", "high", "xhigh", "max"];
+        *backend.effort_levels.lock().unwrap() = efforts.map(String::from).to_vec();
+        let mut req = request(s).await;
+        let base = req.configurations.remove(0);
+        for account in ["one", "two"] {
+            for model in ["fake-pass", "fake-fail"] {
+                for effort in efforts {
+                    let mut c = base.clone();
+                    c.id = format!("{account}-{model}-{effort}");
+                    c.account_id = Some(account.into());
+                    c.model_id = model.into();
+                    c.effort = Some(effort.into());
+                    req.configurations.push(c);
+                }
+            }
+        }
+        req.max_executions = 40;
+        req
+    }
+    #[tokio::test]
+    async fn a_run_flies_its_configurations_side_by_side_within_account_slots() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(wide_request(&s, &backend).await).await.unwrap();
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
+        let run = s.store.run(&run.id).await.unwrap();
+        assert_eq!(run.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 40);
+        assert_eq!(
+            backend.peak_in_flight.load(Ordering::SeqCst),
+            2 * ACCOUNT_SLOTS as u64
+        );
+        // A configuration's own turns never overlap.
+        for a in &run.attempts {
+            for b in &run.attempts {
+                if a.id != b.id && a.configuration.id == b.configuration.id {
+                    assert!(a.finished_at <= b.started_at || b.finished_at <= a.started_at);
+                }
+            }
+        }
+    }
+    #[tokio::test]
+    async fn cancel_stops_every_turn_in_flight() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(wide_request(&s, &backend).await).await.unwrap();
+        let background = s.clone();
+        let tick = tokio::spawn(async move { background.tick().await });
+        while backend.in_flight.load(Ordering::SeqCst) < 2 * ACCOUNT_SLOTS as u64 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        s.control(&run.id, "cancel").await.unwrap();
+        tick.await.unwrap().unwrap();
+        s.tick().await.unwrap();
+        let run = s.store.run(&run.id).await.unwrap();
+        assert_eq!(run.state, "cancelled");
+        assert_eq!(
+            backend.calls.load(Ordering::SeqCst),
+            2 * ACCOUNT_SLOTS as u64
+        );
+        assert!(run
+            .attempts
+            .iter()
+            .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("cancelled")));
     }
     #[tokio::test]
     async fn a_baseline_leaves_out_cells_settled_as_excluded() {
@@ -4144,7 +4377,10 @@ mod tests {
         // Nothing is sent before the reset.
         s.tick().await.unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
-        QUOTA_HOLDS.lock().unwrap().remove(&run.id);
+        PROVIDER_HOLDS
+            .lock()
+            .unwrap()
+            .retain(|(held, _), _| held != &run.id);
         for _ in 0..3 {
             s.tick().await.unwrap();
         }
@@ -5869,13 +6105,13 @@ mod tests {
         let tick = tokio::spawn(async move { background.tick().await });
         backend.judge_entered.notified().await;
         // The cancel signal stays live while the panel runs.
-        assert!(s.active.lock().await.is_some());
+        assert!(!s.active.lock().await.is_empty());
         s.control(&run.id, action).await.unwrap();
         backend.hold_judges.store(false, Ordering::SeqCst);
         backend.judge_release.notify_one();
         tick.await.unwrap().unwrap();
         assert_eq!(backend.stopped_judges.load(Ordering::SeqCst), 1, "{action}");
-        assert!(s.active.lock().await.is_none());
+        assert!(s.active.lock().await.is_empty());
         run
     }
     #[tokio::test]
@@ -5951,7 +6187,7 @@ mod tests {
     /// mid-panel with a render marker and an in-flight judge turn, or sealed
     /// but not yet evaluated. Then the app restarts.
     async fn restart_during_the_first_panel(
-        s: &BenchmarkService,
+        s: &Arc<BenchmarkService>,
         backend: &FakeBackend,
         evaluated: bool,
     ) -> String {

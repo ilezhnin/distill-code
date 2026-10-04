@@ -496,7 +496,7 @@ mod tests {
                 .unwrap(),
             backend,
             wake: tokio::sync::Notify::new(),
-            active: tokio::sync::Mutex::new(None),
+            active: Default::default(),
             app: None,
         };
         let draft = super::super::runner::seed_definitions().remove(0);
@@ -548,7 +548,7 @@ mod tests {
                 .unwrap(),
             backend: Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
-            active: tokio::sync::Mutex::new(None),
+            active: Default::default(),
             app: None,
         };
         let mut draft = super::super::runner::seed_definitions().remove(0);
@@ -599,7 +599,7 @@ mod tests {
                 .unwrap(),
             backend: Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
-            active: tokio::sync::Mutex::new(None),
+            active: Default::default(),
             app: None,
         };
         // The saved candidate, first in inventory order, wrote the only case.
@@ -648,7 +648,7 @@ mod tests {
                 .unwrap(),
             backend: Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
-            active: tokio::sync::Mutex::new(None),
+            active: Default::default(),
             app: None,
         };
         let definition = service

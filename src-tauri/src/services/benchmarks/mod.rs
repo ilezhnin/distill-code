@@ -129,7 +129,7 @@ impl BenchmarkState {
                     store,
                     backend,
                     wake: Notify::new(),
-                    active: Mutex::new(None),
+                    active: Default::default(),
                     app: Some(app.clone()),
                 });
                 service.seed().await?;
@@ -158,7 +158,8 @@ pub struct BenchmarkService {
     pub store: Store,
     pub backend: Arc<dyn runner::ExecutionBackend>,
     pub wake: Notify,
-    pub active: Mutex<Option<(String, tokio::sync::watch::Sender<bool>)>>,
+    /// Attempts and judge panels in flight, by lane (see [`runner::Flight`]).
+    pub active: Mutex<std::collections::HashMap<String, runner::Flight>>,
     #[cfg_attr(test, allow(dead_code))]
     app: Option<tauri::AppHandle>,
 }
@@ -492,9 +493,9 @@ impl BenchmarkService {
         };
         self.store.set_run_state(id, next).await?;
         if action == "cancel" {
-            if let Some((run_id, signal)) = self.active.lock().await.as_ref() {
-                if run_id == id {
-                    let _ = signal.send(true);
+            for flight in self.active.lock().await.values() {
+                if flight.run_id == id {
+                    let _ = flight.cancel.send(true);
                 }
             }
         }

@@ -578,7 +578,7 @@ mod tests {
     use super::super::runner::FakeBackend;
     use super::*;
     use std::sync::{atomic::Ordering, Arc};
-    use tokio::sync::{Mutex, Notify};
+    use tokio::sync::Notify;
 
     async fn setup() -> (
         tempfile::TempDir,
@@ -594,7 +594,7 @@ mod tests {
             store,
             backend: backend.clone(),
             wake: Notify::new(),
-            active: Mutex::new(None),
+            active: Default::default(),
             app: None,
         };
         let mut draft = super::super::runner::seed_definitions().remove(0);
