@@ -547,6 +547,10 @@
     "missing": "Esta configuración no está en la selección actual.",
     "catchUp_one": "Ejecutar el {{count}} caso que falta",
     "catchUp_other": "Ejecutar los {{count}} casos que faltan",
+    "runAgain_one": "Volver a ejecutar el caso",
+    "runAgain_other": "Volver a ejecutar los {{count}} casos",
+    "run": "Ejecutar",
+    "queuedShort": "En cola",
     "queued": "En cola en la ejecución {{id}}",
     "current": "Mostrar resultados actuales",
     "statusHint": {
@@ -567,7 +571,23 @@
     "revised_one": "{{count}} caso revisado después",
     "revised_other": "{{count}} casos revisados después",
     "chartLabel": "Puntos globales por medición",
-    "pointLabel": "{{date}}: {{points}} puntos · {{scored}}/{{planned}} casos"
+    "pointLabel": "{{date}}: {{points}} puntos · {{scored}}/{{planned}} casos",
+    "zoom": "Zoom",
+    "ranges": {
+      "1w": "1 sem",
+      "1m": "1 mes",
+      "6m": "6 meses",
+      "1y": "1 año",
+      "max": "Todo"
+    },
+    "span": "{{start}} – {{end}}",
+    "series": "Puntos",
+    "cases": "{{scored}}/{{planned}} casos",
+    "localTime": "{{time}} UTC{{offset}}",
+    "utcTime": "{{time}} UTC",
+    "navigator": "Rango visible",
+    "navigatorStart": "Inicio del rango visible",
+    "navigatorEnd": "Fin del rango visible"
   },
   "elapsed": {
     "seconds_one": "{{count}} s",

@@ -135,6 +135,7 @@ export const DESIGN_SYSTEM_COMPONENT_SECTIONS: Array<{
   { id: "component-split-button", label: "Split Button" },
   { id: "component-table", label: "Table" },
   { id: "component-textarea", label: "Textarea" },
+  { id: "component-toggle", label: "Toggle" },
   { id: "component-toggle-group", label: "Toggle Group" },
   { id: "component-tooltip", label: "Tooltip" },
 ];
@@ -160,7 +161,6 @@ export const DESIGN_SYSTEM_UNUSED_COMPONENT_SECTIONS: Array<{
   { id: "component-pagination", label: "Pagination" },
   { id: "component-resizable-handle", label: "Resizable Handle" },
   { id: "component-separator", label: "Separator" },
-  { id: "component-toggle", label: "Toggle" },
 ];
 
 export const DESIGN_SYSTEM_ALL_COMPONENT_SECTIONS = [

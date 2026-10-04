@@ -256,21 +256,47 @@ export function LeaderboardView({
   );
   return (
     <section className="space-y-4">
+      {/* Boards on the left; the model filter and the view switch on the right. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <ModelFilter
-          options={rows.map((entry) => ({
-            key: rowKey(entry),
-            name: nameOf(entry),
-            vendor: vendorOf(entry),
-            terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
-          }))}
-          selected={chosen}
-          onChange={(next) => {
-            setChosen(next);
-            onPageChange(0);
-          }}
-        />
+        <Tabs
+          value={board.id}
+          onValueChange={(value) => chooseBoard(value as BoardId)}
+        >
+          <TabsList variant="buttons" className="flex-wrap justify-start">
+            {boards.map((entry) => (
+              <Tooltip key={entry.id} delayDuration={TOOLTIP_DELAY.held}>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value={entry.id}
+                    variant="buttons"
+                    className="size-8 flex-none px-0 data-[state=active]:bg-chart-1/15 data-[state=active]:text-chart-1"
+                    aria-label={boardLabel(entry)}
+                  >
+                    <BoardIcon board={entry} className="size-4" />
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-64">
+                  <p className="font-medium">{boardLabel(entry)}</p>
+                  <p className="opacity-80">{boardDescription(t, entry)}</p>
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </TabsList>
+        </Tabs>
         <div className="flex min-w-0 items-center gap-2">
+          <ModelFilter
+            options={rows.map((entry) => ({
+              key: rowKey(entry),
+              name: nameOf(entry),
+              vendor: vendorOf(entry),
+              terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
+            }))}
+            selected={chosen}
+            onChange={(next) => {
+              setChosen(next);
+              onPageChange(0);
+            }}
+          />
           <ToggleGroup
             type="single"
             size="sm"
@@ -289,31 +315,6 @@ export function LeaderboardView({
           </ToggleGroup>
         </div>
       </div>
-      <Tabs
-        value={board.id}
-        onValueChange={(value) => chooseBoard(value as BoardId)}
-      >
-        <TabsList variant="buttons" className="flex-wrap justify-start">
-          {boards.map((entry) => (
-            <Tooltip key={entry.id} delayDuration={TOOLTIP_DELAY.held}>
-              <TooltipTrigger asChild>
-                <TabsTrigger
-                  value={entry.id}
-                  variant="buttons"
-                  className="size-8 flex-none px-0 data-[state=active]:bg-chart-1/15 data-[state=active]:text-chart-1"
-                  aria-label={boardLabel(entry)}
-                >
-                  <BoardIcon board={entry} className="size-4" />
-                </TabsTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-64">
-                <p className="font-medium">{boardLabel(entry)}</p>
-                <p className="opacity-80">{boardDescription(t, entry)}</p>
-              </TooltipContent>
-            </Tooltip>
-          ))}
-        </TabsList>
-      </Tabs>
       {loading ? (
         <BenchmarkEmpty title={t("loading")} compact />
       ) : visible.length === 0 ? (

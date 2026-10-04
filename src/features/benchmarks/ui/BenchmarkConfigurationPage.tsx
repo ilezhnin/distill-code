@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconChevronLeft } from "@tabler/icons-react";
+import { IconChevronLeft, IconPlayerPlay } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
+import { toggleVariants } from "@/shared/ui/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
@@ -156,7 +157,19 @@ export function BenchmarkConfigurationPage({
       ? { attemptIds: shownRow.attemptIds, asOf: selected.snapshot.createdAt }
       : { attemptIds: shownRow.attemptIds };
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
+  // Every case of the current pool this configuration is measured on.
+  const pool = useMemo(
+    () => [...new Set([...row.scoredVersionIds, ...row.missingVersionIds])],
+    [row],
+  );
   const queuedRunId = catchUp.queuedRunId;
+  // Missing cases first; with none missing and none queued, the whole pool again.
+  const runCases =
+    catchUp.owed.length > 0 ? catchUp.owed : queuedRunId ? [] : pool;
+  const runAction =
+    catchUp.owed.length > 0
+      ? t("configuration.catchUp", { count: catchUp.owed.length })
+      : t("configuration.runAgain", { count: pool.length });
   const statusHint = t(
     `configuration.statusHint.${selected && !recorded ? "retrospective" : shownRow.status}`,
     { defaultValue: "" },
@@ -260,66 +273,112 @@ export function BenchmarkConfigurationPage({
             <p className="text-sm text-muted-foreground">{vendor}</p>
           </div>
         </div>
-        <dl className="flex shrink-0 gap-8 text-right">
-          <div>
-            <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("configuration.rankLabel")}
-            </dt>
-            <dd className="font-display text-2xl tabular-nums">
-              {overall?.rank == null ? (
-                <span className="text-muted-foreground">–</span>
-              ) : (
-                <>
-                  <span className={cn(overall.rank === 1 && "text-chart-1")}>
-                    {overall.rank}
-                  </span>
-                  <span className="ml-1 text-sm text-muted-foreground">
-                    {t("configuration.of", { of: overall.of })}
-                  </span>
-                </>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("configuration.ratingLabel")}
-            </dt>
-            <dd className="font-display text-2xl tabular-nums">
-              {overall?.points ?? "–"}
-            </dd>
-          </div>
-        </dl>
+        <div className="flex shrink-0 items-center gap-8">
+          <dl className="flex gap-8 text-right">
+            <div>
+              <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("configuration.rankLabel")}
+              </dt>
+              <dd className="font-display text-2xl tabular-nums">
+                {overall?.rank == null ? (
+                  <span className="text-muted-foreground">–</span>
+                ) : (
+                  <>
+                    <span className={cn(overall.rank === 1 && "text-chart-1")}>
+                      {overall.rank}
+                    </span>
+                    <span className="ml-1 text-sm text-muted-foreground">
+                      {t("configuration.of", { of: overall.of })}
+                    </span>
+                  </>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("configuration.ratingLabel")}
+              </dt>
+              <dd className="font-display text-2xl tabular-nums">
+                {overall?.points ?? "–"}
+              </dd>
+            </div>
+          </dl>
+          {runCases.length > 0 ? (
+            <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  leftIcon={<IconPlayerPlay />}
+                  aria-label={runAction}
+                  onClick={() => onRun(runCases)}
+                >
+                  {t("configuration.run")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{runAction}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {queuedRunId ? (
+            <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("configuration.queued", {
+                    id: shortId(queuedRunId),
+                  })}
+                  onClick={() => onOpenRun(queuedRunId)}
+                >
+                  {t("configuration.queuedShort")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {t("configuration.queued", { id: shortId(queuedRunId) })}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
       </header>
       {modes.length > 0 ? (
-        <section className="space-y-3" aria-label={t("history.title")}>
-          <div className="flex flex-wrap items-center gap-2">
-            {modes.map((mode) => (
-              <Tooltip key={String(mode)} delayDuration={TOOLTIP_DELAY.held}>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={recorded === mode ? "subtle" : "ghost"}
-                    aria-pressed={recorded === mode}
-                    onClick={() => {
-                      setRecorded(mode);
-                      setSelection(null);
-                    }}
-                  >
-                    {t(mode ? "history.recorded" : "history.recalculated")}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-72">
-                  {t(
-                    mode
-                      ? "history.recordedDescription"
-                      : "history.recalculatedDescription",
-                  )}
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
+        <section aria-label={t("history.title")}>
           <PointsHistoryChart
+            toolbar={
+              <div className="flex items-center gap-0.5">
+                {modes.map((mode) => (
+                  <Tooltip
+                    key={String(mode)}
+                    delayDuration={TOOLTIP_DELAY.held}
+                  >
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-pressed={recorded === mode}
+                        data-state={recorded === mode ? "on" : "off"}
+                        className={cn(
+                          toggleVariants({ size: "sm" }),
+                          "h-7 px-2.5 text-xs",
+                        )}
+                        onClick={() => {
+                          setRecorded(mode);
+                          setSelection(null);
+                        }}
+                      >
+                        {t(mode ? "history.recorded" : "history.recalculated")}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-72">
+                      {t(
+                        mode
+                          ? "history.recordedDescription"
+                          : "history.recalculatedDescription",
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
+            }
             points={measurements.map((entry) => ({
               id: pointId(entry.snapshot),
               at: entry.snapshot.createdAt,
@@ -360,30 +419,6 @@ export function BenchmarkConfigurationPage({
           ) : (
             <StateBadge state={shownRow.status} />
           )}
-        </div>
-      ) : null}
-      {catchUp.owed.length > 0 || queuedRunId ? (
-        <div className="flex flex-wrap items-center gap-2">
-          {catchUp.owed.length > 0 ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => onRun(catchUp.owed)}
-            >
-              {t("configuration.catchUp", { count: catchUp.owed.length })}
-            </Button>
-          ) : null}
-          {queuedRunId ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => onOpenRun(queuedRunId)}
-            >
-              {t("configuration.queued", { id: shortId(queuedRunId) })}
-            </Button>
-          ) : null}
         </div>
       ) : null}
       <div className="grid gap-10 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">

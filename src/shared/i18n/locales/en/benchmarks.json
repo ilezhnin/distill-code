@@ -547,6 +547,10 @@
     "missing": "This configuration is not in the current selection.",
     "catchUp_one": "Run the {{count}} missing case",
     "catchUp_other": "Run the {{count}} missing cases",
+    "runAgain_one": "Run the {{count}} case again",
+    "runAgain_other": "Run all {{count}} cases again",
+    "run": "Run",
+    "queuedShort": "Queued",
     "queued": "Queued in run {{id}}",
     "current": "Show current results",
     "statusHint": {
@@ -567,7 +571,23 @@
     "revised_one": "{{count}} case reviewed later",
     "revised_other": "{{count}} cases reviewed later",
     "chartLabel": "Overall points per measurement",
-    "pointLabel": "{{date}}: {{points}} points · {{scored}}/{{planned}} cases"
+    "pointLabel": "{{date}}: {{points}} points · {{scored}}/{{planned}} cases",
+    "zoom": "Zoom",
+    "ranges": {
+      "1w": "1w",
+      "1m": "1m",
+      "6m": "6m",
+      "1y": "1y",
+      "max": "All"
+    },
+    "span": "{{start}} – {{end}}",
+    "series": "Points",
+    "cases": "{{scored}}/{{planned}} cases",
+    "localTime": "{{time}} UTC{{offset}}",
+    "utcTime": "{{time}} UTC",
+    "navigator": "Visible range",
+    "navigatorStart": "Start of the visible range",
+    "navigatorEnd": "End of the visible range"
   },
   "elapsed": {
     "seconds_one": "{{count}} s",
