@@ -357,11 +357,14 @@ fn held_for_quota(run_id: &str) -> bool {
 /// refused before any provider call returns the attempt to the queue, and the
 /// next dispatch starts at a new time, so it never meets the refused record.
 fn dispatch_key(attempt: &Attempt) -> String {
-    format!(
-        "benchmark:{}:{}",
-        attempt.id,
-        attempt.started_at.unwrap_or_default()
-    )
+    format!("benchmark:{}", turn_owner(attempt))
+}
+
+/// The owner of an attempt's candidate session. The host keeps one session
+/// and one turn per owner, so a turn tried again after a refusal needs a new
+/// owner as well as a new key; both carry the start time.
+fn turn_owner(attempt: &Attempt) -> String {
+    format!("{}:{}", attempt.id, attempt.started_at.unwrap_or_default())
 }
 
 /// How a panel's pass over its judges ended.
@@ -1218,7 +1221,7 @@ impl ExecutionBackend for NativeBackend {
             tokio::fs::create_dir_all(&cwd).await?;
             let session = host
                 .create_owned_session(OwnedSessionRequest {
-                    owner_id: attempt.id.clone(),
+                    owner_id: turn_owner(&attempt),
                     provider_id: attempt.configuration.provider_id.clone(),
                     account_id: account,
                     model_id: attempt.configuration.model_id.clone(),
@@ -3216,6 +3219,17 @@ mod tests {
             .iter()
             .all(|a| a.phase == "pending" && a.observed.is_none()));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn a_retried_turn_gets_a_new_owner_and_key() {
+        let (_dir, s, _) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        let mut attempt = s.store.run(&run.id).await.unwrap().attempts.remove(0);
+        attempt.started_at = Some(1);
+        let (owner, key) = (turn_owner(&attempt), dispatch_key(&attempt));
+        attempt.started_at = Some(2);
+        assert_ne!(turn_owner(&attempt), owner);
+        assert_ne!(dispatch_key(&attempt), key);
     }
     #[test]
     fn only_an_identifier_before_the_colon_is_a_host_error_code() {
