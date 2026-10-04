@@ -27,10 +27,13 @@ pub fn candidate_key(c: &Configuration) -> String {
 }
 /// A candidate that helped write a test must not be scored on it. Authors are
 /// declared as lowercase needles in `environment.authoredBy`; a needle matches
-/// when it appears in the model or provider ID of the candidate.
+/// when it appears in the model or provider ID of the candidate, or in the
+/// model a declared alias stands for, as for judges.
 pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configuration) -> bool {
     let model = configuration.model_id.to_lowercase();
     let provider = configuration.provider_id.to_lowercase();
+    let target = super::runner::concrete_model(&configuration.provider_id, &configuration.model_id)
+        .unwrap_or_default();
     draft
         .environment
         .get("authoredBy")
@@ -41,7 +44,10 @@ pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configurati
                 .filter_map(serde_json::Value::as_str)
                 .any(|needle| {
                     let needle = needle.trim().to_lowercase();
-                    !needle.is_empty() && (model.contains(&needle) || provider.contains(&needle))
+                    !needle.is_empty()
+                        && (model.contains(&needle)
+                            || provider.contains(&needle)
+                            || target.contains(&needle))
                 })
         })
 }
@@ -971,6 +977,18 @@ mod tests {
         ));
         data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([" native "]);
         assert!(authored_by_candidate(&data.versions[0].manifest, &other));
+    }
+    #[test]
+    fn an_alias_authors_what_its_target_wrote() {
+        let (data, _) = matrix();
+        let mut draft = data.versions[0].manifest.clone();
+        draft.environment["authoredBy"] = serde_json::json!(["opus"]);
+        let mut alias = config("low");
+        alias.provider_id = "claude-acp".into();
+        alias.model_id = "default".into();
+        assert!(authored_by_candidate(&draft, &alias));
+        alias.model_id = "sonnet".into();
+        assert!(!authored_by_candidate(&draft, &alias));
     }
     #[test]
     fn a_newer_run_outside_the_protocol_never_hides_an_older_compliant_cell() {

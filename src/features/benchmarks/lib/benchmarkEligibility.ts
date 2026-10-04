@@ -9,6 +9,12 @@ import type { Configuration, Evaluation } from "../types";
  * Authors are lowercase needles in `environment.authoredBy`; one matches when
  * it appears in the model or provider ID.
  */
+// Declared harness aliases (`alias_of` in agent_host/harness.rs): an alias is
+// the author of whatever the model it stands for wrote.
+const MODEL_ALIASES: Record<string, Record<string, string>> = {
+  "claude-acp": { default: "opus[1m]" },
+};
+
 export function authoredByCandidate(
   environment: unknown,
   configuration: Pick<Configuration, "modelId" | "providerId">,
@@ -18,11 +24,15 @@ export function authoredByCandidate(
   if (!Array.isArray(authors)) return false;
   const model = configuration.modelId.toLowerCase();
   const provider = configuration.providerId.toLowerCase();
+  const target = MODEL_ALIASES[configuration.providerId]?.[model] ?? "";
   return authors.some((author) => {
     if (typeof author !== "string") return false;
     const needle = author.trim().toLowerCase();
     return (
-      needle.length > 0 && (model.includes(needle) || provider.includes(needle))
+      needle.length > 0 &&
+      (model.includes(needle) ||
+        provider.includes(needle) ||
+        target.includes(needle))
     );
   });
 }
