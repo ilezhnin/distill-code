@@ -37,10 +37,11 @@ function keepsEvery(previous: string[] | null, next: string[] | null) {
 }
 
 /**
- * Paged attempt rows for one query: case, outcome, duration, tokens, cost,
- * evidence. `resetKey` names what the reader chose to list; a new choice or
- * filter starts on the first page, the same choice keeps its page while its
- * attempts change. Without a key, an attempt set that only grows keeps it.
+ * Paged attempt rows for one query: case, the model that answered, outcome,
+ * duration, tokens, cost, evidence. `resetKey` names what the reader chose to
+ * list; a new choice or filter starts on the first page, the same choice keeps
+ * its page while its attempts change. Without a key, an attempt set that only
+ * grows keeps it.
  */
 export function BenchmarkAttemptList({
   query,
@@ -97,6 +98,7 @@ export function BenchmarkAttemptList({
             <TableRow>
               <TableHead>{t("fields.case")}</TableHead>
               {showModel ? <TableHead>{t("fields.model")}</TableHead> : null}
+              <TableHead>{t("fields.resolvedModel")}</TableHead>
               <TableHead>{t("fields.status")}</TableHead>
               <TableHead className="text-right">
                 {t("fields.durationShort")}
@@ -133,6 +135,9 @@ export function BenchmarkAttemptList({
                     </p>
                   </TableCell>
                   {showModel ? <TableCell>{row.modelId}</TableCell> : null}
+                  <TableCell className="text-muted-foreground">
+                    {row.resolvedModel ?? t("unknown")}
+                  </TableCell>
                   <TableCell>
                     <StateBadge state={row.outcome ?? row.phase} />
                   </TableCell>

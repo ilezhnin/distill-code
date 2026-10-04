@@ -112,8 +112,11 @@ fn refresh_candidates(schedule: &Schedule, inventory: &[InventoryModel]) -> Vec<
         {
             continue;
         }
+        // Re-pinned to today's runtime under today's name: a model id its
+        // vendor moved to another model is a new runtime and a new name.
         let mut current = saved.clone();
         current.inventory_revision = model.configuration.inventory_revision.clone();
+        current.model_name = model.configuration.model_name.clone();
         configurations.push(current);
     }
     if rule.include_new_models {
@@ -313,6 +316,18 @@ mod tests {
         assert_eq!(discovered.len(), 2);
         assert_eq!(discovered[0].effort, Some("medium".into()));
         assert_eq!(discovered[1], new);
+        // A saved model whose id now names another model is re-pinned to the
+        // new runtime under its new name.
+        let mut moved = inventory.clone();
+        moved[0].configuration.inventory_revision = Some("moved-runtime".into());
+        moved[0].configuration.model_name = Some("Moved Model".into());
+        let repinned = refresh_candidates(&schedule, &moved);
+        assert_eq!(
+            repinned[0].inventory_revision.as_deref(),
+            Some("moved-runtime")
+        );
+        assert_eq!(repinned[0].model_name.as_deref(), Some("Moved Model"));
+        assert_eq!(repinned[0].effort, Some("medium".into()));
         schedule.discovery.as_mut().unwrap().include_new_models = false;
         assert_eq!(refresh_candidates(&schedule, &inventory), vec![existing]);
         schedule.max_runs = 0;

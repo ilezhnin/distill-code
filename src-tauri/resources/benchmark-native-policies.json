@@ -1,0 +1,221 @@
+{
+  "systemPrompt": "Complete the supplied benchmark task. Return only the requested answer.",
+  "codex": {
+    "revision": "distill-native-text-codex-v1",
+    "runtime": {
+      "label": "codex-acp:1.13.0:cli:0.155.1",
+      "files": {
+        "entrypoint": "cb4b021dfe1ea1b579b02800ac03c057273803535dad9ac2cd262eb174152269",
+        "nativeCli": "eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316"
+      }
+    },
+    "permissionMode": "read-only",
+    "excludedEfforts": ["ultra"],
+    "env": { "INITIAL_AGENT_MODE": "read-only" },
+    "config": {
+      "project_doc_max_bytes": 0,
+      "project_doc_fallback_filenames": [],
+      "project_root_markers": [],
+      "include_permissions_instructions": false,
+      "include_environment_context": false,
+      "include_apps_instructions": false,
+      "include_collaboration_mode_instructions": false,
+      "skills": {
+        "include_instructions": false,
+        "bundled": { "enabled": false }
+      },
+      "web_search": "disabled",
+      "agents": { "enabled": false },
+      "tools": {
+        "update_plan": { "enabled": false },
+        "experimental_request_user_input": { "enabled": false }
+      },
+      "history": { "persistence": "none" },
+      "check_for_update_on_startup": false,
+      "features": {
+        "shell_tool": false,
+        "unified_exec": false,
+        "unified_exec_tty": false,
+        "shell_snapshot": false,
+        "view_image": false,
+        "image_generation": false,
+        "apps": false,
+        "plugins": false,
+        "remote_plugin": false,
+        "plugin_sharing": false,
+        "browser_use": false,
+        "browser_use_external": false,
+        "browser_use_full_cdp_access": false,
+        "in_app_browser": false,
+        "in_app_local_automation": false,
+        "computer_use": false,
+        "multi_agent": false,
+        "multi_agent_v2": false,
+        "code_mode_host": false,
+        "goals": false,
+        "hooks": false,
+        "memories": false,
+        "personality": false,
+        "skill_search": false,
+        "skill_mcp_dependency_install": false,
+        "tool_suggest": false,
+        "tool_call_mcp_elicitation": false,
+        "sleep_tool": false,
+        "workspace_dependencies": false,
+        "guardian_approval": false
+      }
+    },
+    "modelCatalog": {
+      "tool_mode": null,
+      "experimental_supported_tools": [],
+      "apply_patch_tool_type": null
+    },
+    "verified": {
+      "date": "2026-10-04",
+      "runtime": {
+        "label": "codex-acp:1.13.0:cli:0.155.1",
+        "files": {
+          "entrypoint": "cb4b021dfe1ea1b579b02800ac03c057273803535dad9ac2cd262eb174152269",
+          "nativeCli": "eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316"
+        }
+      },
+      "policy": "76d8a7cd1626d8194c0d576436d929329fc331e5f5d9619aa24aff018b6d1381",
+      "adapter": "133821a1f8fcbc4cad57582dbd7e598064655e7ab19b1fea5687e20066d27822"
+    }
+  },
+  "grok": {
+    "revision": "distill-native-text-grok-v1",
+    "runtime": {
+      "label": "grok:1.0.40",
+      "files": {
+        "executable": "be64017f7f5f5b85cd10b59eebcb596af8d3dcde077aad08aa8eae8defdc5e2a"
+      }
+    },
+    "args": ["agent", "--no-leader", "stdio"],
+    "env": {
+      "GROK_DISABLE_AUTOUPDATER": "1",
+      "GROK_BACKEND_SEARCH": "0",
+      "GROK_WEB_FETCH": "0",
+      "GROK_SUBAGENTS": "0",
+      "GROK_MEMORY": "0",
+      "GROK_SESSION_RECAP": "0",
+      "GROK_TURN_SUMMARY": "0",
+      "GROK_TITLE_REFRESH": "0",
+      "GROK_PROMPT_SUGGESTIONS": "0",
+      "GROK_CAMPAIGNS": "0",
+      "GROK_MANAGED_MCPS_ENABLED": "0",
+      "GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED": "0",
+      "GROK_ASK_USER_QUESTION": "0",
+      "GROK_LSP_TOOLS": "0",
+      "GROK_WRITE_FILE": "0",
+      "GROK_AUTO_WAKE": "0",
+      "GROK_SESSION_SEARCH": "0",
+      "GROK_MCP_RECURSIVE_CONFIG_WATCH": "0",
+      "GROK_CLAUDE_AGENTS_ENABLED": "0",
+      "GROK_CLAUDE_HOOKS_ENABLED": "0",
+      "GROK_CLAUDE_MCPS_ENABLED": "0",
+      "GROK_CLAUDE_RULES_ENABLED": "0",
+      "GROK_CLAUDE_SKILLS_ENABLED": "0",
+      "GROK_CURSOR_AGENTS_ENABLED": "0",
+      "GROK_CURSOR_HOOKS_ENABLED": "0",
+      "GROK_CURSOR_MCPS_ENABLED": "0",
+      "GROK_CURSOR_RULES_ENABLED": "0",
+      "GROK_CURSOR_SKILLS_ENABLED": "0",
+      "GROK_CODEX_AGENTS_ENABLED": "0",
+      "GROK_CODEX_HOOKS_ENABLED": "0",
+      "GROK_CODEX_RULES_ENABLED": "0",
+      "GROK_CODEX_SKILLS_ENABLED": "0",
+      "GROK_TELEMETRY_ENABLED": "0",
+      "GROK_FEEDBACK_ENABLED": "0",
+      "GROK_MODELS_BASE_URL": "https://cli-chat-proxy.grok.com/v1",
+      "GROK_CLI_CHAT_PROXY_BASE_URL": "http://127.0.0.1:0",
+      "GROK_CLI_BASE_URL": "http://127.0.0.1:0",
+      "GROK_SKILLS_BASE_URL": "http://127.0.0.1:0",
+      "GROK_MODES_BASE_URL": "http://127.0.0.1:0",
+      "GROK_CONVERSATIONS_BASE_URL": "http://127.0.0.1:0",
+      "GROK_WORKSPACES_BASE_URL": "http://127.0.0.1:0",
+      "GROK_FEEDBACK_BASE_URL": "http://127.0.0.1:0",
+      "GROK_MANAGED_CONFIG_URL": "http://127.0.0.1:0"
+    },
+    "configToml": "disable_web_search = true\n\n[cli]\nauto_update = false\nuse_leader = false\n\n[features]\nbackend_tools = false\nweb_fetch = false\nsession_recap = false\nturn_summary = false\ntitle_refresh = false\nimage_gen = false\nvideo_gen = false\nask_user_question = false\nlsp_tools = false\nwrite_file = false\ncampaigns = false\nmanaged_config = false\nsession_search = false\nauto_wake = false\ncodebase_indexing = false\n\n[subagents]\nenabled = false\n\n[memory]\nenabled = false\n\n[memory_v2]\nenabled = false\n\n[managed_mcps]\nenabled = false\n\n[doom_loop_recovery]\nenabled = false\n\n[goal]\nenabled = false\n\n[workflows]\nenabled = false\n\n[ui]\nyolo = false\nprompt_suggestions = false\n\n[compat.claude]\nagents = false\nhooks = false\nmcps = false\nrules = false\nskills = false\n\n[compat.cursor]\nagents = false\nhooks = false\nmcps = false\nrules = false\nskills = false\n\n[compat.codex]\nhooks = false\nskills = false\n\n[marketplace]\ndefault_skills_installs_purged = true\nofficial_marketplace_auto_installed = true\n\n[models]\nsession_summary = \"distill-title-disabled\"\n\n[model.distill-title-disabled]\nmodel = \"distill-title-disabled\"\nname = \"Distill title disabled\"\nbase_url = \"http://127.0.0.1:0/v1\"\napi_backend = \"responses\"\napi_key = \"none\"\nhidden = true\nmax_retries = 0\n",
+    "sessionMeta": {
+      "systemPromptOverride": "Complete the supplied benchmark task. Return only the requested answer.",
+      "rules": "",
+      "yoloMode": false,
+      "autoMode": false,
+      "agentProfile": {
+        "name": "distill-benchmark",
+        "description": "Distill benchmark turn: one answer, no tools",
+        "tools": [],
+        "disallowedTools": [
+          "Agent",
+          "run_terminal_cmd",
+          "read_file",
+          "search_replace",
+          "list_dir",
+          "grep",
+          "kill_command_or_subagent",
+          "todo_write",
+          "get_command_or_subagent_output",
+          "wait_commands_or_subagents",
+          "scheduler_create",
+          "scheduler_delete",
+          "scheduler_list",
+          "monitor",
+          "search_tool",
+          "use_tool",
+          "update_goal",
+          "enter_plan_mode",
+          "exit_plan_mode",
+          "send_feedback",
+          "image_edit",
+          "web_search",
+          "web_fetch"
+        ],
+        "injectDefaultTools": false,
+        "skills": [],
+        "discoverSkills": false,
+        "inheritSkills": false,
+        "agentsMd": false,
+        "mcpServers": [],
+        "mcpInheritance": "none",
+        "hooks": {},
+        "maxTurns": 1,
+        "userMessageTemplate": ""
+      }
+    },
+    "promptMeta": { "verbatim": true },
+    "verified": {
+      "date": "2026-10-04",
+      "runtime": {
+        "label": "grok:1.0.40",
+        "files": {
+          "executable": "be64017f7f5f5b85cd10b59eebcb596af8d3dcde077aad08aa8eae8defdc5e2a"
+        }
+      },
+      "policy": "b93232ee921370b27b8b0fd219f0e2c91bfe89586c65dfc3e564fa17d053f5ef"
+    }
+  },
+  "kimi": {
+    "revision": "distill-native-text-kimi-v1",
+    "runtime": {
+      "label": "kimi-code:2.1.0",
+      "files": {
+        "entrypoint": "6f801a114b5a5d708d9fec1ea0002ac42ec19841c088a96aecd7e6117b8b1d59"
+      }
+    },
+    "permissionMode": "default",
+    "env": { "KIMI_CODE_NO_AUTO_UPDATE": "1" },
+    "verified": {
+      "date": "2026-10-04",
+      "runtime": {
+        "label": "kimi-code:2.1.0",
+        "files": {
+          "entrypoint": "6f801a114b5a5d708d9fec1ea0002ac42ec19841c088a96aecd7e6117b8b1d59"
+        }
+      },
+      "policy": "22745085402d29498340f352793947eab3ee9171b66747f197aa10e010bc66fd",
+      "adapter": "c4771c3172bbac9a868e1049db6425bdbd39fb5c5107091560b16a0b4b2f20bb"
+    }
+  }
+}

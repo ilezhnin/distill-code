@@ -250,7 +250,8 @@ impl Store {
                 json_extract(a.data_json,'$.usage.output'),
                 json_extract(a.data_json,'$.usage.cost'),
                 COALESCE(json_extract(a.data_json,'$.evaluations'),'[]'),
-                json_extract(a.data_json,'$.startedAt')
+                json_extract(a.data_json,'$.startedAt'),
+                json_extract(a.data_json,'$.resolvedModel')
              FROM selected p JOIN attempts a ON a.rowid=p.attempt_rowid
              ORDER BY p.created_at DESC,p.run_id,p.attempt_rowid",
         )
@@ -288,6 +289,7 @@ impl Store {
                     duration_ms: r.get(8),
                     output_tokens: r.get(9),
                     cost: r.get(10),
+                    resolved_model: r.get(13),
                 };
                 if let Some(at) = q.as_of.filter(|at| finished_at.is_none_or(|end| end > *at)) {
                     summary.phase = if started_at.is_some_and(|start| start <= at) {
@@ -300,6 +302,7 @@ impl Store {
                     summary.duration_ms = None;
                     summary.output_tokens = None;
                     summary.cost = None;
+                    summary.resolved_model = None;
                 }
                 summary
             })
@@ -582,19 +585,47 @@ impl Store {
         self.json_rows("SELECT data_json FROM baselines ORDER BY rowid DESC")
             .await
     }
-    /// Every catalog entry, newest effective date first; an empty catalog is
-    /// seeded once from the published vendor rates.
+    /// Every catalog entry, newest effective date first. Each vendor seed set
+    /// is added once, together with the record that it was, so a set shipped
+    /// later reaches an existing catalog and a seed the user deleted never
+    /// comes back.
     pub async fn catalog_entries(&self) -> Result<Vec<CatalogEntry>> {
-        const LIST: &str =
-            "SELECT data_json FROM catalog_entries ORDER BY effective_from DESC, created_at DESC";
-        let entries: Vec<CatalogEntry> = self.json_rows(LIST).await?;
-        if !entries.is_empty() {
-            return Ok(entries);
+        let seeded: Vec<String> = sqlx::query_scalar("SELECT id FROM catalog_seed_sets")
+            .fetch_all(&self.pool)
+            .await?;
+        for (set, entries) in super::model_catalog::seed_sets() {
+            if seeded.iter().any(|id| id == set) {
+                continue;
+            }
+            let mut tx = self.pool.begin().await?;
+            let recorded = sqlx::query(
+                "INSERT INTO catalog_seed_sets(id,seeded_at) VALUES(?,?) ON CONFLICT(id) DO NOTHING",
+            )
+            .bind(set)
+            .bind(now())
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            // Another caller seeded it meanwhile.
+            if recorded == 0 {
+                continue;
+            }
+            for entry in entries {
+                sqlx::query("INSERT INTO catalog_entries(id,kind,effective_from,created_at,data_json) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING")
+                    .bind(&entry.id)
+                    .bind(&entry.kind)
+                    .bind(entry.effective_from)
+                    .bind(entry.created_at)
+                    .bind(serde_json::to_string(&entry)?)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
         }
-        for entry in super::model_catalog::seeds() {
-            self.save_catalog_entry(&entry).await?;
-        }
-        self.json_rows(LIST).await
+        self.json_rows(
+            "SELECT data_json FROM catalog_entries ORDER BY effective_from DESC, created_at DESC",
+        )
+        .await
     }
     pub async fn save_catalog_entry(&self, entry: &CatalogEntry) -> Result<()> {
         sqlx::query("INSERT INTO catalog_entries(id,kind,effective_from,created_at,data_json) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,effective_from=excluded.effective_from,data_json=excluded.data_json")
@@ -764,7 +795,13 @@ fn card_tier(attempt: &Attempt) -> u8 {
         .is_some_and(|o| !o.trim().is_empty())
         && !matches!(
             attempt.outcome.as_deref(),
-            Some("cancelled" | "selection_changed" | "interrupted" | "dispatch_uncertain")
+            Some(
+                "cancelled"
+                    | "selection_changed"
+                    | "execution_violation"
+                    | "interrupted"
+                    | "dispatch_uncertain"
+            )
         );
     match (rendering, super::analysis::score(attempt).is_some()) {
         (true, true) => 3,
@@ -791,6 +828,36 @@ pub async fn event(
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+
+    /// sqlx stores the checksum of every migration it applies and refuses to
+    /// open a database whose applied migration no longer matches its file,
+    /// comments included; every benchmark surface would then fail to open. A
+    /// migration that has shipped is frozen; this says so at test time
+    /// instead of at the operator's next launch. New migrations are appended
+    /// here once they ship.
+    #[test]
+    fn a_shipped_migration_is_never_edited() {
+        const SHIPPED: &[(i64, &str)] = &[
+            (20260930000000, "9eeb1cf55d05eedf82f94eb8009fbcd480b0ddc74877111f1c91b30009c4cf147ec120098b50f1bedbc850c990c05d4c"),
+            (20261001000000, "971a3d5b40baa96b542add5ac54841ed9592a59a58cdf79fc11c65db8f918fcce210966a05aa2e0a2fc8f9da47cacf02"),
+            (20261002000000, "82d4743341e09aa8ef814312ac1ca61dd9b0db4de8d534357c04f0a1c3c642ba583e861e6fae6551804ec1761fc42fad"),
+            (20261003000000, "31579022d9cc8b18e883bd695f77a4613a2e596d9726d201400a399b89ae9970132e38d19a5f027b19970c29e647883c"),
+            (20261003000001, "168178b0ce15869346cc3d80450b00b6c7bd097ee87e168d8051410ed83cdad2f02bcd9d8627818302b4c1989d719ccd"),
+            (20261004000000, "e962b9e07105c1df071a37c7c2d76913bc38a622bf4f37eda08fdaeb9c4ff097c1be29046eee9fd12832e2e74f921d8c"),
+        ];
+        let migrator = sqlx::migrate!("./migrations_benchmarks");
+        for (version, checksum) in SHIPPED {
+            let migration = migrator
+                .iter()
+                .find(|migration| migration.version == *version)
+                .unwrap_or_else(|| panic!("shipped migration {version} is gone"));
+            assert_eq!(
+                hex::encode(&migration.checksum),
+                *checksum,
+                "migration {version} changed after it shipped; restore the file and add a new migration instead"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn the_design_gallery_keeps_the_newest_rendering_per_brief_and_configuration() {
@@ -1032,6 +1099,66 @@ mod tests {
         attempt.observed.as_mut().unwrap().fast_mode = Some(false);
         assert_eq!(card_configuration(&attempt).fast_mode, Some(true));
     }
+    #[tokio::test]
+    async fn catalog_seed_sets_insert_new_vendors_once() {
+        let directory = tempfile::tempdir().unwrap();
+        // A catalog seeded before seed sets were recorded, whose user then
+        // deleted one Anthropic seed.
+        {
+            let options = SqliteConnectOptions::new()
+                .filename(directory.path().join("benchmarks.db"))
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .connect_with(options)
+                .await
+                .unwrap();
+            let mut migrator = sqlx::migrate!("./migrations_benchmarks");
+            migrator.migrations = std::borrow::Cow::Owned(
+                migrator
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.version < 20261004000000)
+                    .cloned()
+                    .collect(),
+            );
+            migrator.run(&pool).await.unwrap();
+            let store = Store {
+                pool,
+                root: directory.path().to_owned(),
+            };
+            let (_, anthropic) = super::super::model_catalog::seed_sets().remove(0);
+            for entry in anthropic.iter().skip(1) {
+                store.save_catalog_entry(entry).await.unwrap();
+            }
+            store.pool.close().await;
+        }
+        let store = Store::open(directory.path()).await.unwrap();
+        let entries = store.catalog_entries().await.unwrap();
+        assert!(!entries.iter().any(|e| e.id == "seed-anthropic-fable-5-1"));
+        assert_eq!(entries.len(), 4 + 14);
+        assert!(entries.iter().any(|e| e.id == "seed-moonshot-k3"));
+        // A vendor seed the user deletes stays deleted.
+        store
+            .delete_catalog_entry("seed-xai-grok-4-5")
+            .await
+            .unwrap();
+        let again = store.catalog_entries().await.unwrap();
+        assert_eq!(again.len(), 17);
+        assert!(!again.iter().any(|e| e.id == "seed-xai-grok-4-5"));
+        // A new catalog gets every set.
+        let fresh_directory = tempfile::tempdir().unwrap();
+        let fresh = Store::open(fresh_directory.path()).await.unwrap();
+        assert_eq!(fresh.catalog_entries().await.unwrap().len(), 5 + 14);
+    }
+    #[test]
+    fn a_policy_violation_never_stands_as_a_rendering() {
+        let attempt = |outcome: &str| -> Attempt {
+            serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v","configuration":{"id":"c","providerId":"claude-acp","accountId":"x","modelId":"m","billingMode":"subscription","executionProfile":"native_text"},"repetition":0,"phase":"terminal","outcome":outcome,"output":"<svg/>","usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).unwrap()
+        };
+        assert_eq!(card_tier(&attempt("pending_review")), 2);
+        assert_eq!(card_tier(&attempt("execution_violation")), 1);
+        assert_eq!(card_tier(&attempt("selection_changed")), 1);
+    }
     #[test]
     fn a_card_shows_the_newest_settled_judge_batch() {
         let evaluation = |provenance: &str, score: Option<f64>| -> Evaluation {
@@ -1136,7 +1263,10 @@ mod tests {
             } else {
                 None
             };
-            let attempt = json!({"id":id,"runId":run_id,"versionId":version_id,"configuration":configuration,"repetition":index,"phase":phase,"outcome":outcome,"output":output,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            let mut attempt = json!({"id":id,"runId":run_id,"versionId":version_id,"configuration":configuration,"repetition":index,"phase":phase,"outcome":outcome,"output":output,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            if outcome.is_some() {
+                attempt["resolvedModel"] = json!("native-model-2026");
+            }
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'candidate',?,?,?)")
                 .bind(&id).bind(run_id).bind(version_id).bind(index).bind(phase).bind(attempt.to_string())
                 .execute(&mut *tx).await.unwrap();
@@ -1158,8 +1288,14 @@ mod tests {
         assert_eq!(first_page.len(), 50);
         assert_eq!(first_page[0].id, "attempt-0");
         assert_eq!(first_page[0].model_id, "native-model");
+        // The model the attempt's usage named, beside the one it asked for.
+        assert_eq!(
+            first_page[0].resolved_model.as_deref(),
+            Some("native-model-2026")
+        );
+        assert_eq!(first_page[1].resolved_model, None);
         let projection = serde_json::to_value(&first_page[0]).unwrap();
-        assert_eq!(projection.as_object().unwrap().len(), 11);
+        assert_eq!(projection.as_object().unwrap().len(), 12);
         assert!(projection.get("output").is_none());
         assert!(projection.get("evaluations").is_none());
         assert_eq!(
@@ -1285,7 +1421,7 @@ mod tests {
             ),
         ];
         for (id, outcome, finished, evaluations) in attempts {
-            let a = json!({"id":id,"runId":"run","versionId":version.id,"configuration":config,"repetition":0,"phase":"terminal","outcome":outcome,"startedAt":1,"finishedAt":finished,"durationMs":10,"usage":{"output":4,"cost":0.5,"schema":"native"},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
+            let a = json!({"id":id,"runId":"run","versionId":version.id,"configuration":config,"repetition":0,"phase":"terminal","outcome":outcome,"startedAt":1,"finishedAt":finished,"durationMs":10,"usage":{"output":4,"cost":0.5,"schema":"native"},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[],"resolvedModel":"native-2026"});
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,?,0,'terminal',?)").bind(id).bind(&version.id).bind(id).bind(a.to_string()).execute(&store.pool).await.unwrap();
         }
         let listed = |as_of: Option<i64>| {
@@ -1321,6 +1457,12 @@ mod tests {
             (None, "running")
         );
         assert_eq!((later.finished_at, later.cost), (None, None));
+        // Which model answered is known only once it has.
+        assert_eq!(later.resolved_model, None);
+        assert_eq!(
+            then["reviewed"].resolved_model.as_deref(),
+            Some("native-2026")
+        );
     }
 
     #[tokio::test]

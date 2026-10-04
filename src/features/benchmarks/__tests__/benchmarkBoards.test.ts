@@ -102,6 +102,42 @@ describe("leaderboard boards", () => {
     ).not.toBe(rowKey(row));
   });
 
+  it("keeps one row per display name of a model id its vendor moves", () => {
+    const kimi = {
+      ...configuration,
+      providerId: "kimi-acp",
+      accountId: "cli-login-kimi-acp",
+      modelId: "kimi-code/kimi-for-coding",
+      modelName: "K2.7 Code",
+    };
+    const moved = { ...kimi, modelName: "K2.8 Preview" };
+    expect(configurationKey(moved)).not.toBe(configurationKey(kimi));
+    // The same key the service builds (analysis::leaderboard_key).
+    expect(configurationKey({ ...moved, effort: null })).toBe(
+      JSON.stringify([
+        [
+          "kimi-acp",
+          "cli-login-kimi-acp",
+          "kimi-code/kimi-for-coding",
+          "default",
+          false,
+          "subscription",
+          "native_text",
+        ],
+        "K2.8 Preview",
+      ]),
+    );
+    // Every other id keeps one row whatever its display name.
+    const k3 = { ...kimi, modelId: "kimi-code/k3", modelName: "K3" };
+    expect(configurationKey({ ...k3, modelName: "K3 Turbo" })).toBe(
+      configurationKey(k3),
+    );
+    const sonnet = { ...configuration, modelId: "sonnet", modelName: "Sonnet" };
+    expect(configurationKey({ ...sonnet, modelName: null })).toBe(
+      configurationKey(sonnet),
+    );
+  });
+
   it("builds one board per shared measurement plus one per work class", () => {
     expect(boardsFor(cohort).map((board) => board.id)).toEqual([
       "overall",

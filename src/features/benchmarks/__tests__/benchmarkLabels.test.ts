@@ -1,10 +1,17 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { formatElapsed } from "../lib/benchmarkLabels";
+import {
+  accountDisplay,
+  formatElapsed,
+  modelDisplayName,
+  stateLabel,
+  stateTone,
+} from "../lib/benchmarkLabels";
 
 interface BenchmarkStrings {
   states: Record<string, string>;
+  run: Record<string, string>;
   leaderboard: { boardDescriptions: Record<string, string> };
 }
 
@@ -28,6 +35,41 @@ describe("benchmark copy", () => {
       expect(es[verdict]).toBeTruthy();
       expect(es[verdict]).not.toBe(en[verdict]);
     }
+  });
+
+  it("names a policy violation as its own negative outcome", () => {
+    expect(stateTone("execution_violation")).toBe("negative");
+    expect(strings("en").states.execution_violation).toBe("Policy violation");
+    expect(strings("es").states.execution_violation).toBe(
+      "Infracción de la política",
+    );
+    const t = ((key: string) =>
+      key === "states.execution_violation"
+        ? "Policy violation"
+        : key) as Parameters<typeof stateLabel>[0];
+    expect(stateLabel(t, "execution_violation")).toBe("Policy violation");
+  });
+
+  it("shows the CLI sign-in identity by name, never by its id", () => {
+    expect(strings("en").run.cliLogin).toBe("CLI sign-in");
+    expect(strings("es").run.cliLogin).toBe("Sesión de la CLI");
+    const t = ((key: string) =>
+      ({ "run.cliLogin": "CLI sign-in", "run.noAccount": "No account" })[key] ??
+      key) as Parameters<typeof accountDisplay>[0];
+    expect(accountDisplay(t, "cli-login-grok-acp")).toBe("CLI sign-in");
+    expect(accountDisplay(t, null)).toBe("No account");
+    expect(accountDisplay(t, "account-1")).toBe("account-1");
+  });
+
+  it("puts the vendor in front of the names Claude Code and Kimi Code list", () => {
+    const name = (providerId: string, modelName: string) =>
+      modelDisplayName({ providerId, modelId: "id", modelName });
+    expect(name("kimi-acp", "K3")).toBe("Kimi K3");
+    expect(name("kimi-acp", "K2.8 Preview")).toBe("Kimi K2.8 Preview");
+    expect(name("kimi-acp", "Kimi K3")).toBe("Kimi K3");
+    expect(name("claude-acp", "Opus 5.5")).toBe("Claude Opus 5.5");
+    expect(name("codex-acp", "GPT-6-Astra")).toBe("GPT-6-Astra");
+    expect(name("grok-acp", "Grok 4.7")).toBe("Grok 4.7");
   });
 
   it("describes the Cost board as the model's own generation cost", () => {

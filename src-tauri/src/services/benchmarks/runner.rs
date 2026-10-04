@@ -145,6 +145,55 @@ pub trait ExecutionBackend: Send + Sync {
 }
 pub struct NativeBackend {
     pub app: tauri::AppHandle,
+    inventories: RunInventories,
+}
+
+impl NativeBackend {
+    pub fn new(app: tauri::AppHandle) -> Self {
+        Self {
+            app,
+            inventories: RunInventories::default(),
+        }
+    }
+}
+
+/// The model inventories a run's attempts are checked against. Listing a
+/// bridge's models opens a session on the bridge the user's own chats use,
+/// which for Grok runs their session hooks and for Kimi files a session in
+/// their history, so it happens once per run, provider and account, and
+/// again only once the executable serving them changes.
+#[derive(Default)]
+struct RunInventories(std::sync::Mutex<std::collections::HashMap<(String, String, String), Value>>);
+
+impl RunInventories {
+    /// How many inventories are kept before those of other runs are dropped.
+    const LIMIT: usize = 32;
+
+    /// The inventory kept for `run` on `provider` and `account`, if the
+    /// executable `serving` them now is the one that listed it.
+    fn current(&self, run: &str, provider: &str, account: &str, serving: &Value) -> Option<Value> {
+        let kept = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        kept.get(&(run.to_owned(), provider.to_owned(), account.to_owned()))
+            .filter(|inventory| !serving.is_null() && inventory.get("executable") == Some(serving))
+            .cloned()
+    }
+
+    fn keep(&self, run: &str, provider: &str, account: &str, inventory: Value) {
+        let mut kept = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.len() >= Self::LIMIT {
+            kept.retain(|(kept_run, _, _), _| kept_run == run);
+        }
+        kept.insert(
+            (run.to_owned(), provider.to_owned(), account.to_owned()),
+            inventory,
+        );
+    }
 }
 /// Host errors read "code: reason". Any other text, such as a provider's own
 /// "Internal error: ..." message, is an infrastructure failure.
@@ -213,6 +262,44 @@ pub(crate) fn select_judges(
     panel.sort_by_key(|(judge, _)| Some(judge.provider_id.as_str()) == provider);
     panel.truncate(MAX_JUDGES);
     panel.into_iter().map(|(judge, _)| judge).collect()
+}
+
+/// Whether a provider's models may judge renderings (see
+/// [`NativeProvider::judges_images`]).
+fn judge_provider_allowed(provider_id: &str) -> bool {
+    NativeProvider::for_harness(provider_id).is_some_and(NativeProvider::judges_images)
+}
+
+/// What an inventory without an account asks for: a managed account, or the
+/// CLI sign-in of a provider whose CLI keeps its own.
+fn account_refusal(provider: &str) -> &'static str {
+    if crate::services::provider_accounts::uses_cli_login(provider) {
+        "Choose the CLI sign-in"
+    } else {
+        "Choose a managed account"
+    }
+}
+
+/// Why a configuration cannot run under any verified native profile: an
+/// unknown provider, no account (worded for what the provider signs in
+/// with), or an effort its profile refuses.
+fn profile_refusal(c: &Configuration) -> Option<String> {
+    let Some(provider) = NativeProvider::for_harness(&c.provider_id) else {
+        return Some("This provider/account has no verified native text execution policy".into());
+    };
+    if c.account_id.as_deref().is_none_or(str::is_empty) {
+        return Some(account_refusal(&c.provider_id).into());
+    }
+    provider.effort_refusal(c.effort.as_deref())
+}
+
+/// Why a configuration cannot run natively: [`profile_refusal`], or a profile
+/// whose policy probe has not passed on what this build ships, which runs
+/// nothing.
+fn native_refusal(c: &Configuration) -> Option<String> {
+    profile_refusal(c).or_else(|| {
+        NativeProvider::for_harness(&c.provider_id).and_then(NativeProvider::admission_issue)
+    })
 }
 
 /// Why a panel cannot settle a rendering, before any judge is asked.
@@ -351,6 +438,43 @@ fn held_for_quota(run_id: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// Whether a turn that failed with `code`, while its attempt was saved in
+/// `phase`, never reached the provider, so its cell goes back to the queue
+/// instead of settling: a quota wait the host refused before any provider
+/// call, and anything refused while the attempt was still being prepared,
+/// before its prompt was dispatched: a selection the provider would not make,
+/// or a runtime, sign-in, preflight or policy the host would not start.
+pub(super) fn returns_to_queue(code: &str, phase: &str) -> bool {
+    code == QUOTA_WAIT
+        || (phase == "preparing" && matches!(code, "selection_changed" | "capability_missing"))
+}
+
+/// Whether `error` refuses `attempt`, as it was dispatched, for the very
+/// reason an earlier refusal returned it to the queue with: the operator
+/// resumed the run and nothing changed. Some refusals last as long as the run
+/// (a Codex account whose model list is not cached, a Kimi home that cannot
+/// be found, a profile changed since its probe); holding the run again would
+/// refuse the same cell on every resume, so it settles with that outcome
+/// instead, and the run goes on with its other cells. A quota wait always
+/// waits.
+fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
+    error.code != QUOTA_WAIT && attempt.reason.as_deref() == Some(error.message.as_str())
+}
+
+/// Puts `attempt` back in the queue with `reason`, without anything of the
+/// try the provider never saw.
+pub(super) fn requeue(attempt: &mut Attempt, reason: String) {
+    attempt.phase = "pending".into();
+    attempt.started_at = None;
+    attempt.session_id = None;
+    attempt.host_run_id = None;
+    attempt.observed = None;
+    attempt.event_cursor = 0;
+    attempt.usage = TokenUsage::default();
+    attempt.resolved_model = None;
+    attempt.reason = Some(reason);
 }
 
 /// The host request key of an attempt's candidate turn. A turn the host
@@ -551,6 +675,113 @@ impl PanelJudges for NativePanel<'_> {
 }
 
 impl NativeBackend {
+    /// `result`, the host inventory of `provider` on `account`, as the rows a
+    /// configuration is chosen from: each pinned to its runtime identity, and
+    /// unavailable, with the reason, where the profile may not run.
+    async fn inventory_rows(
+        &self,
+        provider: &str,
+        account: &str,
+        result: &Value,
+    ) -> Result<Vec<InventoryModel>> {
+        let record =
+            crate::services::provider_accounts::account(&self.app, account).map_err(host_error)?;
+        let billing = record.auth_method;
+        // A provider with no verified profile is listed but never pinned
+        // or admitted.
+        let native = NativeProvider::for_harness(provider);
+        let native_cli = crate::services::managed_acp_tools::native_cli_path(&self.app, provider);
+        let identity = match native {
+            Some(native) => Some(runtime_identity(result, native, native_cli.clone()).await?),
+            None => None,
+        };
+        let unavailable = match native {
+            None => Some("Native execution restrictions have not been verified".to_string()),
+            Some(native) => match native.admission_issue() {
+                Some(issue) => Some(issue),
+                None => match runtime_issue(result, native, native_cli).await {
+                    Some(issue) => Some(issue),
+                    // Every Codex thread loads the account's home, and the
+                    // personal skills of the user's own profile.
+                    None if native == NativeProvider::Codex => {
+                        crate::services::provider_accounts::account_home(&self.app, &record)
+                            .and_then(|home| codex_home_preflight(&home))
+                            .and_then(|()| {
+                                codex_user_skills_preflight(codex_user_profile().as_deref())
+                            })
+                            .err()
+                    }
+                    None => None,
+                },
+            },
+        };
+        let excluded = native.map_or(&[][..], NativeProvider::excluded_efforts);
+        Ok(result["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| {
+                let id = row
+                    .get("modelId")
+                    .or_else(|| row.get("id"))
+                    .and_then(Value::as_str)?;
+                let efforts = offered_efforts(row, excluded);
+                let name = row["name"].as_str().unwrap_or(id);
+                Some(InventoryModel {
+                    configuration: Configuration {
+                        id: format!("{provider}:{account}:{id}"),
+                        provider_id: provider.into(),
+                        account_id: Some(account.into()),
+                        model_id: id.into(),
+                        effort: None,
+                        fast_mode: None,
+                        billing_mode: if billing
+                            == crate::services::provider_accounts::AuthMethod::ApiKey
+                        {
+                            "api"
+                        } else {
+                            "subscription"
+                        }
+                        .into(),
+                        execution_profile: "native_text".into(),
+                        inventory_revision: identity
+                            .as_ref()
+                            .map(|identity| identity.revision(result, id)),
+                        model_name: (name != id).then(|| name.to_string()),
+                    },
+                    name: name.into(),
+                    efforts,
+                    supports_fast_mode: row["supportsFast"].as_bool().unwrap_or(false),
+                    available: unavailable.is_none(),
+                    reason: unavailable.clone(),
+                })
+            })
+            .collect())
+    }
+
+    /// The inventory `run`'s attempts on `provider` and `account` are checked
+    /// against: listed once for the run, and again only once another
+    /// executable serves them (see [`RunInventories`]).
+    async fn run_inventory(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        run: &str,
+        provider: &str,
+        account: &str,
+    ) -> Result<Value> {
+        let serving = host.benchmark_serving_executable(provider, account).await;
+        if let Some(inventory) = self.inventories.current(run, provider, account, &serving) {
+            return Ok(inventory);
+        }
+        let inventory = host
+            .benchmark_inventory(provider, account, true)
+            .await
+            .map_err(host_error)?;
+        self.inventories
+            .keep(run, provider, account, inventory.clone());
+        Ok(inventory)
+    }
+
     /// The panel for one rendering from every enabled account's available models.
     async fn judge_panel(
         &self,
@@ -559,12 +790,29 @@ impl NativeBackend {
     ) -> Result<Vec<Configuration>> {
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
+        let host = self
+            .app
+            .state::<AgentHost>()
+            .get_or_start(&self.app)
+            .await
+            .map_err(host_error)?;
         let mut offered = Vec::new();
-        for account in snapshot.accounts.iter().filter(|account| account.enabled) {
-            let Ok(models) = self
-                .inventory(&account.provider_id, Some(&account.id), false)
-                .await
-            else {
+        for account in snapshot
+            .accounts
+            .iter()
+            .filter(|account| account.enabled && judge_provider_allowed(&account.provider_id))
+        {
+            // Listed once per run, like the candidates' own bridges.
+            let listed = self
+                .run_inventory(&host, &attempt.run_id, &account.provider_id, &account.id)
+                .await;
+            let Ok(models) = (match listed {
+                Ok(listed) => {
+                    self.inventory_rows(&account.provider_id, &account.id, &listed)
+                        .await
+                }
+                Err(error) => Err(error),
+            }) else {
                 continue;
             };
             offered.extend(
@@ -652,18 +900,22 @@ impl NativeBackend {
             .join(&attempt.id)
             .join(format!("judge-{batch}-{index}"));
         tokio::fs::create_dir_all(&cwd).await?;
+        let timeout = Duration::from_secs(180);
         let session = host
-            .create_owned_session(OwnedSessionRequest {
-                owner_id: format!("{}:judge:{batch}:{index}", attempt.id),
-                provider_id: judge.provider_id.clone(),
-                account_id: account,
-                model_id: judge.model_id.clone(),
-                reasoning_effort: judge.effort.clone(),
-                fast_mode: judge.fast_mode,
-                cwd: cwd.to_string_lossy().into_owned(),
-                title: format!("Benchmark judge: {}", version.manifest.name),
-                profile: ExecutionProfile::NativeTextV1,
-            })
+            .create_owned_session(
+                OwnedSessionRequest {
+                    owner_id: format!("{}:judge:{batch}:{index}", attempt.id),
+                    provider_id: judge.provider_id.clone(),
+                    account_id: account,
+                    model_id: judge.model_id.clone(),
+                    reasoning_effort: judge.effort.clone(),
+                    fast_mode: judge.fast_mode,
+                    cwd: cwd.to_string_lossy().into_owned(),
+                    title: format!("Benchmark judge: {}", version.manifest.name),
+                    profile: ExecutionProfile::NativeTextV1,
+                },
+                timeout.as_millis() as u64,
+            )
             .await
             .map_err(host_error)?;
         let mut acknowledged = judge.clone();
@@ -694,7 +946,6 @@ impl NativeBackend {
             attempt.evaluations.pop();
             return Err(error);
         }
-        let timeout = Duration::from_secs(180);
         let dispatch = host
             .dispatch_owned_turn(OwnedTurnRequest {
                 session_id: session.session_id.clone(),
@@ -1005,10 +1256,8 @@ impl ExecutionBackend for NativeBackend {
         })
     }
     fn unsupported(&self, c: &Configuration, d: &BenchmarkDraft) -> Option<String> {
-        if c.provider_id != "claude-acp" || c.account_id.as_deref().is_none_or(str::is_empty) {
-            return Some(
-                "This provider/account has no verified native text execution policy".into(),
-            );
+        if let Some(reason) = native_refusal(c) {
+            return Some(reason);
         }
         if c.execution_profile != "native_text" {
             return Some(
@@ -1079,7 +1328,7 @@ impl ExecutionBackend for NativeBackend {
     ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
         Box::pin(async move {
             let account = account.ok_or_else(|| {
-                BenchmarkError::new("capability_missing", "Choose a managed account")
+                BenchmarkError::new("capability_missing", account_refusal(provider))
             })?;
             let host = self
                 .app
@@ -1091,73 +1340,7 @@ impl ExecutionBackend for NativeBackend {
                 .benchmark_inventory(provider, account, refresh)
                 .await
                 .map_err(host_error)?;
-            let billing = crate::services::provider_accounts::account(&self.app, account)
-                .map_err(host_error)?
-                .auth_method;
-            let revision = Some(inventory_fingerprint(&result).await?);
-            let unavailable = if provider != "claude-acp" {
-                Some("Native execution restrictions have not been verified".to_string())
-            } else {
-                result
-                    .pointer("/executable/path")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "Native executable provenance is missing".to_string())
-                    .and_then(|path| validate_native_runtime(std::path::Path::new(path)))
-                    .err()
-            };
-            Ok(result["models"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|row| {
-                    let id = row
-                        .get("modelId")
-                        .or_else(|| row.get("id"))
-                        .and_then(Value::as_str)?;
-                    let efforts = row
-                        .get("reasoningEfforts")
-                        .or_else(|| row.get("efforts"))
-                        .and_then(Value::as_array)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .filter_map(|v| {
-                                    v.as_str()
-                                        .or_else(|| v["value"].as_str())
-                                        .map(str::to_owned)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let name = row["name"].as_str().unwrap_or(id);
-                    Some(InventoryModel {
-                        configuration: Configuration {
-                            id: format!("{provider}:{account}:{id}"),
-                            provider_id: provider.into(),
-                            account_id: Some(account.into()),
-                            model_id: id.into(),
-                            effort: None,
-                            fast_mode: None,
-                            billing_mode: if billing
-                                == crate::services::provider_accounts::AuthMethod::ApiKey
-                            {
-                                "api"
-                            } else {
-                                "subscription"
-                            }
-                            .into(),
-                            execution_profile: "native_text".into(),
-                            inventory_revision: revision.clone(),
-                            model_name: (name != id).then(|| name.to_string()),
-                        },
-                        name: name.into(),
-                        efforts,
-                        supports_fast_mode: row["supportsFast"].as_bool().unwrap_or(false),
-                        available: unavailable.is_none(),
-                        reason: unavailable.clone(),
-                    })
-                })
-                .collect())
+            self.inventory_rows(provider, account, &result).await
         })
     }
     fn execute<'a>(
@@ -1187,13 +1370,54 @@ impl ExecutionBackend for NativeBackend {
                 .await
                 .map_err(host_error)?;
             let account = attempt.configuration.account_id.clone().ok_or_else(|| {
-                BenchmarkError::new("capability_missing", "Managed account is required")
+                BenchmarkError::new(
+                    "capability_missing",
+                    account_refusal(&attempt.configuration.provider_id),
+                )
             })?;
-            let inventory = host
-                .benchmark_inventory(&attempt.configuration.provider_id, &account, true)
-                .await
-                .map_err(host_error)?;
-            let runtime_revision = inventory_fingerprint(&inventory).await?;
+            let provider = NativeProvider::for_harness(&attempt.configuration.provider_id)
+                .ok_or_else(|| {
+                    BenchmarkError::new(
+                        "capability_missing",
+                        "This provider has no verified native no-tool execution profile",
+                    )
+                })?;
+            // Interactive work has priority, before anything touches the
+            // bridge that serves it, and again once the runtime is checked.
+            let busy = || async {
+                let activity = host
+                    .account_activity(&attempt.configuration.provider_id, &account)
+                    .await
+                    .map_err(host_error)?;
+                if activity.active_sessions.is_empty() {
+                    Ok(())
+                } else {
+                    Err(BenchmarkError::new(
+                        "account_busy",
+                        "Interactive work has priority; account is active",
+                    ))
+                }
+            };
+            busy().await?;
+            let inventory = self
+                .run_inventory(
+                    &host,
+                    &attempt.run_id,
+                    &attempt.configuration.provider_id,
+                    &account,
+                )
+                .await?;
+            let native_cli = crate::services::managed_acp_tools::native_cli_path(
+                &self.app,
+                &attempt.configuration.provider_id,
+            );
+            let runtime_revision = inventory_fingerprint(
+                &inventory,
+                provider,
+                native_cli,
+                &attempt.configuration.model_id,
+            )
+            .await?;
             if attempt
                 .configuration
                 .inventory_revision
@@ -1202,16 +1426,8 @@ impl ExecutionBackend for NativeBackend {
             {
                 return Err(BenchmarkError::new("selection_changed","Installed runtime or model capabilities changed since configuration selection; refresh inventory"));
             }
-            let activity = host
-                .account_activity(&attempt.configuration.provider_id, &account)
-                .await
-                .map_err(host_error)?;
-            if !activity.active_sessions.is_empty() {
-                return Err(BenchmarkError::new(
-                    "account_busy",
-                    "Interactive work has priority; account is active",
-                ));
-            }
+            busy().await?;
+            let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
             let cwd = store
                 .root
                 .join("runs")
@@ -1220,21 +1436,24 @@ impl ExecutionBackend for NativeBackend {
                 .join("workspace");
             tokio::fs::create_dir_all(&cwd).await?;
             let session = host
-                .create_owned_session(OwnedSessionRequest {
-                    owner_id: turn_owner(&attempt),
-                    provider_id: attempt.configuration.provider_id.clone(),
-                    account_id: account,
-                    model_id: attempt.configuration.model_id.clone(),
-                    reasoning_effort: attempt.configuration.effort.clone(),
-                    fast_mode: attempt.configuration.fast_mode,
-                    cwd: cwd.to_string_lossy().into_owned(),
-                    title: format!(
-                        "Benchmark: {} [{}]",
-                        version.manifest.name,
-                        attempt.repetition + 1
-                    ),
-                    profile: ExecutionProfile::NativeTextV1,
-                })
+                .create_owned_session(
+                    OwnedSessionRequest {
+                        owner_id: turn_owner(&attempt),
+                        provider_id: attempt.configuration.provider_id.clone(),
+                        account_id: account,
+                        model_id: attempt.configuration.model_id.clone(),
+                        reasoning_effort: attempt.configuration.effort.clone(),
+                        fast_mode: attempt.configuration.fast_mode,
+                        cwd: cwd.to_string_lossy().into_owned(),
+                        title: format!(
+                            "Benchmark: {} [{}]",
+                            version.manifest.name,
+                            attempt.repetition + 1
+                        ),
+                        profile: ExecutionProfile::NativeTextV1,
+                    },
+                    u64::from(timeout_seconds) * 1000,
+                )
                 .await
                 .map_err(host_error)?;
             attempt.session_id = Some(session.session_id.clone());
@@ -1267,7 +1486,6 @@ impl ExecutionBackend for NativeBackend {
             }
             store.save_attempt(&attempt).await?;
             let key = dispatch_key(&attempt);
-            let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
             let started = Instant::now();
             let dispatch = host
                 .dispatch_owned_turn(OwnedTurnRequest {
@@ -1290,6 +1508,7 @@ impl ExecutionBackend for NativeBackend {
             let mut evidence = Vec::new();
             let mut evidence_bytes = 0usize;
             let mut output = String::new();
+            let mut violation = None;
             loop {
                 if (*cancel.borrow()
                     || started.elapsed() > Duration::from_secs(u64::from(timeout_seconds)))
@@ -1312,6 +1531,12 @@ impl ExecutionBackend for NativeBackend {
                     .map_err(host_error)?;
                 for event in page.events {
                     consume_event(&event.payload, &mut output, &mut attempt.usage);
+                    if let Some(model) = resolved_model_of(&event.payload) {
+                        attempt.resolved_model = Some(model);
+                    }
+                    if violation.is_none() {
+                        violation = violation_of(&event.payload);
+                    }
                     let bytes = serde_json::to_vec(&event.payload)?.len();
                     evidence_bytes = evidence_bytes.saturating_add(bytes);
                     if evidence_bytes <= version.manifest.limits.max_artifact_bytes as usize {
@@ -1329,7 +1554,9 @@ impl ExecutionBackend for NativeBackend {
                     }
                     output.truncate(end);
                 }
-                if output_capped && !cancelled {
+                // A broken no-tool policy has already decided the attempt; stop
+                // paying for the rest of the turn.
+                if (output_capped || violation.is_some()) && !cancelled {
                     host.cancel_owned_turn(&key).await.map_err(host_error)?;
                     cancelled = true;
                     cancellation_started = Some(Instant::now());
@@ -1354,6 +1581,11 @@ impl ExecutionBackend for NativeBackend {
                     evidence.push(json!({"terminalDispatch":status}));
                     if let Some(result) = status.result.as_ref() {
                         consume_terminal_result(result, &mut attempt);
+                    }
+                    if let Some(violation) = violation.take() {
+                        attempt.outcome = Some("execution_violation".into());
+                        attempt.reason = Some(violation);
+                        break;
                     }
                     if let Some(selection) = status
                         .result
@@ -1467,8 +1699,10 @@ impl ExecutionBackend for NativeBackend {
             attempt.host_run_id = Some(status.run_id.clone());
             attempt.event_cursor = 0;
             attempt.usage = TokenUsage::default();
+            attempt.resolved_model = None;
             let mut output = String::new();
             let mut evidence = Vec::new();
+            let mut violation = None;
             loop {
                 let page = host
                     .read_owned_events(&status.session_id, attempt.event_cursor, 200)
@@ -1476,6 +1710,12 @@ impl ExecutionBackend for NativeBackend {
                     .map_err(host_error)?;
                 for event in page.events {
                     consume_event(&event.payload, &mut output, &mut attempt.usage);
+                    if let Some(model) = resolved_model_of(&event.payload) {
+                        attempt.resolved_model = Some(model);
+                    }
+                    if violation.is_none() {
+                        violation = violation_of(&event.payload);
+                    }
                     evidence.push(event.payload);
                 }
                 attempt.event_cursor = page.cursor;
@@ -1531,6 +1771,10 @@ impl ExecutionBackend for NativeBackend {
                 attempt.reason =
                     Some("Recovered terminal state lacks acknowledged selection".into());
             }
+            if let Some(violation) = violation {
+                attempt.outcome = Some("execution_violation".into());
+                attempt.reason = Some(violation);
+            }
             mark_auxiliary_profile(&mut attempt);
             attempt.evidence_hash =
                 Some(fixtures::seal(&store.root, &attempt, &json!(evidence)).await?);
@@ -1563,6 +1807,9 @@ fn consume_event(event: &Value, output: &mut String, usage: &mut TokenUsage) {
         }
         Some("message_usage") => {
             consume_usage(update.get("usage").unwrap_or(update), usage);
+            if let Some(raw) = update.pointer("/_meta/xaiTurnUsage") {
+                consume_xai_turn_usage(raw, usage);
+            }
         }
         Some("benchmark_turn_result") => {
             if let Some(raw) = update.pointer("/_meta/benchmarkRawResult/usage") {
@@ -1577,6 +1824,37 @@ fn consume_event(event: &Value, output: &mut String, usage: &mut TokenUsage) {
         }
         _ => {}
     }
+}
+/// The parts of Grok's raw turn usage the host's rewrite leaves out. Its cost
+/// counts only when Grok reports it complete: session sign-ins often leave
+/// calls unpriced, and an undercounted cost is worse than none (D1). More than
+/// one model call in the turn is auxiliary work inside it.
+fn consume_xai_turn_usage(raw: &Value, usage: &mut TokenUsage) {
+    if let Some(v) = raw["reasoningTokens"].as_u64() {
+        usage.reasoning = Some(v);
+    }
+    let missing_calls = match raw.get("costMissingCalls") {
+        None | Some(Value::Null) => Some(0),
+        Some(count) => count.as_u64(),
+    };
+    let complete = raw["costIsPartial"].as_bool() != Some(true) && missing_calls == Some(0);
+    if let Some(ticks) = raw["costUsdTicks"].as_u64().filter(|_| complete) {
+        // 1 USD = 1e10 ticks.
+        let amount = ticks as f64 / 1e10;
+        usage.cost = Some(usage.cost.map_or(amount, |previous| previous.max(amount)));
+    }
+    if raw["modelCalls"].as_u64().is_some_and(|calls| calls > 1) {
+        usage.schema = "provider_turn_with_auxiliary_v2".into();
+    }
+}
+/// What the host found broken in the no-tool policy, if this event shows it.
+fn violation_of(event: &Value) -> Option<String> {
+    let params = event.get("params").unwrap_or(event);
+    let update = params.get("update").unwrap_or(params);
+    update
+        .pointer("/_meta/executionViolation")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 fn mark_auxiliary_profile(attempt: &mut Attempt) {
     if attempt.usage.schema == "provider_turn_with_auxiliary_v2" {
@@ -1595,7 +1873,53 @@ fn consume_terminal_result(result: &Value, attempt: &mut Attempt) {
     {
         consume_model_usage(models, &mut attempt.usage);
     }
+    if let Some(model) = resolved_model_of(result) {
+        attempt.resolved_model = Some(model);
+    }
     mark_auxiliary_profile(attempt);
+}
+/// The model a provider's usage names as the one that answered, if this
+/// prompt response or event reports usage by model: Claude's, Codex's and
+/// Kimi's `_meta.quota.model_usage[].model` (in a prompt response, or the
+/// host's `benchmark_turn_result` copy of it), or the keys of `modelUsage` in
+/// Grok's raw turn usage. Claude names what an alias such as `sonnet` ran
+/// (`claude-sonnet-5`); Codex and Grok name the selected model; Kimi names
+/// its own model alias, never the K2.x behind it. Where several models
+/// worked, the one that wrote the most output answered.
+fn resolved_model_of(value: &Value) -> Option<String> {
+    let params = value.get("params").unwrap_or(value);
+    let update = params.get("update").unwrap_or(params);
+    let named: Vec<(&str, u64)> = if let Some(models) = value
+        .pointer("/_meta/quota/model_usage")
+        .or_else(|| update.pointer("/_meta/benchmarkRawResult/quota/model_usage"))
+        .and_then(Value::as_array)
+    {
+        models
+            .iter()
+            .filter_map(|row| {
+                let model = row["model"].as_str()?;
+                Some((
+                    model,
+                    row["token_count"]["outputTokens"].as_u64().unwrap_or(0),
+                ))
+            })
+            .collect()
+    } else if let Some(models) = update
+        .pointer("/_meta/xaiTurnUsage/modelUsage")
+        .and_then(Value::as_object)
+    {
+        models
+            .iter()
+            .map(|(model, usage)| (model.as_str(), usage["outputTokens"].as_u64().unwrap_or(0)))
+            .collect()
+    } else {
+        return None;
+    };
+    named
+        .into_iter()
+        .filter(|(model, _)| !model.is_empty())
+        .max_by_key(|(_, output)| *output)
+        .map(|(model, _)| model.to_owned())
 }
 fn consume_model_usage(models: &[Value], usage: &mut TokenUsage) {
     // Disjoint per-model turn deltas include auxiliary native calls. Replace the
@@ -1662,19 +1986,216 @@ fn consume_usage(data: &Value, usage: &mut TokenUsage) {
     if let Some(v) = data["outputTokens"].as_u64() {
         usage.output = Some(v);
     }
-    if let Some(v) = data["cachedReadTokens"].as_u64() {
+    // Bridges spell the cache counters differently: ACP's `cachedReadTokens`,
+    // the host's rewrite of Grok's turn usage `cacheReadTokens`.
+    if let Some(v) = data["cachedReadTokens"]
+        .as_u64()
+        .or_else(|| data["cacheReadTokens"].as_u64())
+    {
         usage.cache_read = Some(v);
     }
     if let Some(v) = data["cachedWriteTokens"]
         .as_u64()
         .or_else(|| data["cacheCreationTokens"].as_u64())
+        .or_else(|| data["cacheWriteTokens"].as_u64())
     {
         usage.cache_write = Some(v);
     }
-    // Native Claude reasoning is included in output; synthetic zero in quota metadata is not a separate measurement.
+    // Reasoning is informational and never added to output. Claude and Codex
+    // count it inside output; Claude reports none separately, and its
+    // synthetic zero in quota metadata is not a measurement.
+    if let Some(v) = data["thoughtTokens"]
+        .as_u64()
+        .or_else(|| data["reasoningTokens"].as_u64())
+    {
+        usage.reasoning = Some(v);
+    }
     usage.schema = "provider_turn_usage_v1".into();
 }
-async fn inventory_fingerprint(inventory: &Value) -> Result<String> {
+/// The runtime identity the configurations of one inventory are pinned to.
+enum RuntimeIdentity {
+    /// Claude: one revision for every row, the way its configurations were
+    /// first pinned.
+    Shared(String),
+    /// A profile configured by the policy resource: the runtime, which each
+    /// row completes with its own model, so a change to another row of the
+    /// vendor's list leaves a configuration's revision alone.
+    PerModel(Sha256),
+}
+
+impl RuntimeIdentity {
+    /// The revision of a configuration on `model_id`.
+    fn revision(&self, inventory: &Value, model_id: &str) -> String {
+        match self {
+            Self::Shared(revision) => revision.clone(),
+            Self::PerModel(runtime) => {
+                let mut hash = runtime.clone();
+                match model_row_identity(inventory, model_id) {
+                    Some(row) => {
+                        hash.update(b"model\0");
+                        hash.update(row.as_bytes());
+                    }
+                    None => {
+                        hash.update(b"unlisted\0");
+                        hash.update(model_id.as_bytes());
+                    }
+                }
+                hex::encode(hash.finalize())
+            }
+        }
+    }
+}
+
+/// The runtime identity of `inventory` under `provider`'s profile.
+/// `native_cli` is the managed native CLI, for a profile that pins it.
+async fn runtime_identity(
+    inventory: &Value,
+    provider: NativeProvider,
+    native_cli: Option<std::path::PathBuf>,
+) -> Result<RuntimeIdentity> {
+    Ok(match provider {
+        NativeProvider::Claude => {
+            RuntimeIdentity::Shared(claude_inventory_fingerprint(inventory).await?)
+        }
+        NativeProvider::Codex | NativeProvider::Grok | NativeProvider::Kimi => {
+            RuntimeIdentity::PerModel(
+                configured_runtime_hash(inventory, provider, native_cli).await?,
+            )
+        }
+    })
+}
+
+/// The runtime identity a configuration on `model_id` is pinned to.
+async fn inventory_fingerprint(
+    inventory: &Value,
+    provider: NativeProvider,
+    native_cli: Option<std::path::PathBuf>,
+    model_id: &str,
+) -> Result<String> {
+    Ok(runtime_identity(inventory, provider, native_cli)
+        .await?
+        .revision(inventory, model_id))
+}
+/// The entrypoint an inventory's executable fingerprint names.
+fn inventory_entrypoint(inventory: &Value) -> Result<std::path::PathBuf> {
+    inventory
+        .pointer("/executable/path")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| {
+            BenchmarkError::new(
+                "capability_missing",
+                "Host inventory has no executable provenance",
+            )
+        })
+}
+/// The file `provider`'s entrypoint pin describes behind `executable`, the
+/// file an inventory names: that file itself, except for Kimi, whose chat
+/// bridge runs the npm shim of the package entrypoint the profile pins.
+fn pinned_entrypoint(
+    provider: NativeProvider,
+    executable: std::path::PathBuf,
+) -> std::result::Result<std::path::PathBuf, String> {
+    match provider {
+        NativeProvider::Kimi => kimi_entrypoint(&executable),
+        _ => Ok(executable),
+    }
+}
+/// Why `provider`'s pinned runtime behind `inventory` cannot run, if it
+/// cannot. Hashing a native CLI the first time takes a moment, so it runs off
+/// the async workers.
+async fn runtime_issue(
+    inventory: &Value,
+    provider: NativeProvider,
+    native_cli: Option<std::path::PathBuf>,
+) -> Option<String> {
+    let Ok(executable) = inventory_entrypoint(inventory) else {
+        return Some("Native executable provenance is missing".into());
+    };
+    let entrypoint = match pinned_entrypoint(provider, executable) {
+        Ok(entrypoint) => entrypoint,
+        Err(issue) => return Some(issue),
+    };
+    tokio::task::spawn_blocking(move || {
+        provider
+            .verify_runtime(&RuntimePaths {
+                entrypoint: &entrypoint,
+                native_cli: native_cli.as_deref(),
+            })
+            .err()
+    })
+    .await
+    .unwrap_or_else(|error| Some(error.to_string()))
+}
+/// The runtime half of a profile configured by the policy resource: the
+/// digest of each pinned file as it is now, the managed bridge's own lock
+/// entry, the policy and the adapter. [`RuntimeIdentity::revision`] adds the
+/// configured model with its name, so an alias whose name changes is a new
+/// runtime.
+async fn configured_runtime_hash(
+    inventory: &Value,
+    provider: NativeProvider,
+    native_cli: Option<std::path::PathBuf>,
+) -> Result<Sha256> {
+    let executable = inventory_entrypoint(inventory)?;
+    // An install the profile does not recognize is pinned to what it is; its
+    // rows say why it cannot run.
+    let entrypoint = pinned_entrypoint(provider, executable.clone()).unwrap_or(executable);
+    let digests = tokio::task::spawn_blocking(move || {
+        provider.pinned_digests(&RuntimePaths {
+            entrypoint: &entrypoint,
+            native_cli: native_cli.as_deref(),
+        })
+    })
+    .await
+    .map_err(|error| BenchmarkError::new("infrastructure_failure", error.to_string()))?;
+    let mut hash = Sha256::new();
+    hash.update(b"distill-native-runtime-v1\0");
+    for (role, digest) in digests {
+        hash.update(role.as_bytes());
+        hash.update(b"\0");
+        hash.update(digest.as_deref().unwrap_or("unavailable").as_bytes());
+        hash.update(b"\0");
+    }
+    if crate::services::managed_acp_tools::is_managed(provider.harness_id()) {
+        if let Some(entry) = managed_lock_entry(provider.harness_id()) {
+            hash.update(entry.as_bytes());
+        }
+    }
+    hash.update(provider.policy_revision().as_bytes());
+    hash.update(provider.policy_bytes());
+    if let Some(adapter) = provider.adapter() {
+        hash.update(adapter.as_bytes());
+    }
+    Ok(hash)
+}
+/// A managed bridge's own entry in `acp-tools.lock.json` (package, version,
+/// native executables and npm lock), canonical. Another bridge's pin bump
+/// leaves it as it is.
+fn managed_lock_entry(harness_id: &str) -> Option<String> {
+    static LOCK: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+        serde_json::from_slice(include_bytes!("../../../../acp-tools.lock.json"))
+            .unwrap_or(Value::Null)
+    });
+    LOCK.get("tools")
+        .and_then(|tools| tools.get(harness_id))
+        .map(canonical_json)
+}
+/// The efforts a bridge row offers that the profile does not refuse.
+fn offered_efforts(row: &Value, excluded: &[String]) -> Vec<String> {
+    row.get("reasoningEfforts")
+        .or_else(|| row.get("efforts"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().or_else(|| v["value"].as_str()))
+        .filter(|effort| !excluded.iter().any(|refused| refused == effort))
+        .map(str::to_owned)
+        .collect()
+}
+/// The launcher entrypoint, the bridge lock, the policy and adapter, and the
+/// model set. Existing Claude configurations are pinned to exactly this.
+async fn claude_inventory_fingerprint(inventory: &Value) -> Result<String> {
     use sha2::{Digest, Sha256};
     use tokio::io::AsyncReadExt;
     let path = inventory
@@ -1721,6 +2242,22 @@ fn model_identity(inventory: &Value) -> Vec<String> {
     ids.dedup();
     ids
 }
+/// The row of `model_id` in an inventory as `id` and display name, for
+/// profiles configured by the policy resource; `None` when it is not listed.
+fn model_row_identity(inventory: &Value, model_id: &str) -> Option<String> {
+    inventory["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|row| {
+            let id = row
+                .get("modelId")
+                .or_else(|| row.get("id"))
+                .and_then(Value::as_str)
+                .filter(|id| *id == model_id)?;
+            Some(format!("{id}\u{1f}{}", row["name"].as_str().unwrap_or(id)))
+        })
+}
 fn effective_timeout_seconds(requested: u32, draft: &BenchmarkDraft) -> u32 {
     requested.min(draft.limits.timeout_seconds).min(
         draft
@@ -1738,6 +2275,7 @@ fn terminal_error_outcome(error: &Value) -> &'static str {
         Some("budget_timeout") => "budget_timeout",
         Some("cancelled") => "cancelled",
         Some("selection_changed") => "selection_changed",
+        Some("execution_violation") => "execution_violation",
         Some("quota_blocked" | "quota_exhausted") => "quota_blocked",
         Some("dispatch_uncertain") => "dispatch_uncertain",
         Some("policy_violation" | "capability_missing") => "unsupported",
@@ -2150,23 +2688,26 @@ impl BenchmarkService {
                         return Ok(());
                     }
                     // A turn the provider never saw keeps its cell: a quota wait
-                    // holds the run until the reset, and a model the provider
-                    // refused to select waits for the operator.
-                    let refused = error.code == "selection_changed" && failed.phase == "preparing";
-                    if error.code == QUOTA_WAIT || refused {
-                        failed.phase = "pending".into();
-                        failed.started_at = None;
-                        failed.session_id = None;
-                        failed.host_run_id = None;
-                        failed.observed = None;
-                        failed.event_cursor = 0;
-                        failed.usage = TokenUsage::default();
-                        failed.reason = Some(error.message.clone());
-                        self.store.save_attempt(&failed).await?;
-                        if refused {
-                            self.store.set_run_state(&run.id, "needs_attention").await?;
+                    // holds the run until the reset, and a refusal before the
+                    // prompt (a model the provider would not select, a runtime,
+                    // sign-in or policy the host would not start) waits for the
+                    // operator with its reason. The same refusal again after the
+                    // operator resumed settles the cell instead.
+                    if returns_to_queue(&error.code, &failed.phase) && !refused_again(&a, &error) {
+                        if version.manifest.workflow.is_some() {
+                            // Its saved steps keep their sessions and usage, and
+                            // the root's sums of them stand.
+                            failed.phase = "pending".into();
+                            failed.started_at = None;
+                            failed.reason = Some(error.message.clone());
                         } else {
+                            requeue(&mut failed, error.message.clone());
+                        }
+                        self.store.save_attempt(&failed).await?;
+                        if error.code == QUOTA_WAIT {
                             hold_for_quota(&run.id, &error.message);
+                        } else {
+                            self.store.set_run_state(&run.id, "needs_attention").await?;
                         }
                         self.changed().await;
                         return Ok(());
@@ -2575,6 +3116,9 @@ pub struct FakeBackend {
     pub quota_waits: std::sync::atomic::AtomicU64,
     /// Sessions whose provider refuses the requested model before dispatch.
     pub refused_selections: std::sync::atomic::AtomicU64,
+    /// Sessions the host refuses to open before any provider call (a sign-in
+    /// near expiry, a refused preflight).
+    pub capability_refusals: std::sync::atomic::AtomicU64,
 }
 impl ExecutionBackend for FakeBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
@@ -2652,6 +3196,12 @@ impl ExecutionBackend for FakeBackend {
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                     .is_ok()
             };
+            if take(&self.capability_refusals) {
+                return Err(BenchmarkError::new(
+                    "capability_missing",
+                    "the Grok sign-in expires within 15 minutes; open a Grok chat so the Grok CLI refreshes it",
+                ));
+            }
             if take(&self.refused_selections) {
                 let mut observed = a.configuration.clone();
                 observed.model_id = "default".into();
@@ -2850,8 +3400,8 @@ mod tests {
         assert!(judge_turn_failure(&judge, &status(acknowledged("sonnet"), None)).is_none());
         let violated = status(
             None,
-            Some(json!({"kind": "selection_changed",
-                "message": "capability_missing: native execution violated the declared no-tool policy"})),
+            Some(json!({"kind": "execution_violation",
+                "message": "execution_violation: native execution violated the declared no-tool policy"})),
         );
         assert!(judge_turn_failure(&judge, &violated)
             .unwrap()
@@ -3220,6 +3770,130 @@ mod tests {
             .all(|a| a.phase == "pending" && a.observed.is_none()));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
     }
+    /// A sign-in near expiry, a refused preflight or a missing runtime stops
+    /// the session before any provider call. The cell keeps its place and
+    /// the reason, and the run waits for the operator instead of settling
+    /// every remaining cell within seconds.
+    #[tokio::test]
+    async fn a_refusal_before_the_session_keeps_the_cell_for_the_operator() {
+        let (_dir, s, fake) = setup().await;
+        fake.capability_refusals.store(1, Ordering::SeqCst);
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let stopped = s.store.run(&run.id).await.unwrap();
+        assert_eq!(stopped.state, "needs_attention");
+        assert!(stopped
+            .attempts
+            .iter()
+            .all(|a| a.phase == "pending" && a.outcome.is_none() && a.started_at.is_none()));
+        assert!(stopped.attempts.iter().any(|a| a
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Grok sign-in expires"))));
+        // Nothing more is tried until the operator resumes.
+        s.tick().await.unwrap();
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        s.store.set_run_state(&run.id, "running").await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.phase == "terminal" && a.outcome.as_deref() != Some("capability_missing")));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+    }
+    /// A refusal that lasts as long as the run (a model list never cached, a
+    /// profile changed since its probe) would refuse the same cell on every
+    /// resume. Refused again for the same reason after the operator resumed,
+    /// the cell settles with it, and the run goes on with its other cells.
+    #[tokio::test]
+    async fn a_refusal_repeated_after_a_resume_settles_its_cell() {
+        let (_dir, s, fake) = setup().await;
+        fake.capability_refusals.store(2, Ordering::SeqCst);
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "needs_attention");
+        s.store.set_run_state(&run.id, "running").await.unwrap();
+        for _ in 0..5 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done.attempts.iter().all(|a| a.phase == "terminal"));
+        let settled: Vec<&Attempt> = done
+            .attempts
+            .iter()
+            .filter(|a| a.outcome.as_deref() == Some("capability_missing"))
+            .collect();
+        assert_eq!(settled.len(), 1);
+        assert!(settled[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Grok sign-in expires")));
+        // The other cell ran; the settled one never reached the provider.
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn only_the_same_refusal_after_a_resume_settles_a_cell() {
+        let (_dir, s, _) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        let mut attempt = s.store.run(&run.id).await.unwrap().attempts.remove(0);
+        attempt.reason = Some("the Codex model list is not cached".into());
+        let again = BenchmarkError::new("capability_missing", "the Codex model list is not cached");
+        assert!(refused_again(&attempt, &again));
+        let other = BenchmarkError::new("capability_missing", "the Grok sign-in expires soon");
+        assert!(!refused_again(&attempt, &other));
+        attempt.reason = None;
+        assert!(!refused_again(&attempt, &again));
+        attempt.reason = Some("held".into());
+        assert!(!refused_again(
+            &attempt,
+            &BenchmarkError::new(QUOTA_WAIT, "held")
+        ));
+    }
+    /// Listing a bridge's models opens a session on the bridge the user's
+    /// chats use; a run does it once per provider and account, again only
+    /// when another executable serves them.
+    #[test]
+    fn a_run_lists_each_bridge_once_until_another_executable_serves_it() {
+        let kept = RunInventories::default();
+        let on = |len: u64| json!({"path":"bridge.js","len":len,"modified":1});
+        let inventory = json!({"executable": on(1), "models": [{"modelId":"m"}]});
+        assert_eq!(kept.current("run", "p", "a", &on(1)), None);
+        kept.keep("run", "p", "a", inventory.clone());
+        assert_eq!(
+            kept.current("run", "p", "a", &on(1)),
+            Some(inventory.clone())
+        );
+        // Another executable, account or run is listed again; nothing serving
+        // is never a match.
+        assert_eq!(kept.current("run", "p", "a", &on(2)), None);
+        assert_eq!(kept.current("run", "p", "b", &on(1)), None);
+        assert_eq!(kept.current("next", "p", "a", &on(1)), None);
+        assert_eq!(kept.current("run", "p", "a", &Value::Null), None);
+        // Bounded: past the limit, other runs' inventories go.
+        for n in 0..RunInventories::LIMIT {
+            kept.keep(&format!("old-{n}"), "p", "a", inventory.clone());
+        }
+        kept.keep("run", "p", "b", inventory.clone());
+        assert_eq!(kept.current("old-0", "p", "a", &on(1)), None);
+        assert!(kept.current("run", "p", "b", &on(1)).is_some());
+    }
+    #[test]
+    fn only_a_turn_the_provider_never_saw_returns_to_the_queue() {
+        assert!(returns_to_queue(QUOTA_WAIT, "running"));
+        for code in ["selection_changed", "capability_missing"] {
+            assert!(returns_to_queue(code, "preparing"), "{code}");
+            // Once the prompt is on its way, the turn is the provider's.
+            assert!(!returns_to_queue(code, "dispatching"), "{code}");
+            assert!(!returns_to_queue(code, "running"), "{code}");
+        }
+        for code in ["infrastructure_failure", "cancelled", "dispatch_uncertain"] {
+            assert!(!returns_to_queue(code, "preparing"), "{code}");
+        }
+    }
     #[tokio::test]
     async fn a_retried_turn_gets_a_new_owner_and_key() {
         let (_dir, s, _) = setup().await;
@@ -3310,6 +3984,546 @@ mod tests {
         assert_eq!(usage.output, Some(5));
         assert_eq!(usage.cache_write, Some(2));
         assert_eq!(usage.reasoning, None);
+    }
+    #[test]
+    fn consume_usage_reads_both_cache_spellings_and_reasoning() {
+        // The host's rewrite of a Grok turn.
+        let mut grok = TokenUsage::default();
+        let mut output = String::new();
+        consume_event(
+            &json!({"update":{"sessionUpdate":"message_usage","usage":{"inputTokens":40,"outputTokens":9,"cacheReadTokens":300,"cacheWriteTokens":7,"elapsedMs":12}}}),
+            &mut output,
+            &mut grok,
+        );
+        assert_eq!(
+            (grok.input, grok.output, grok.cache_read, grok.cache_write),
+            (Some(40), Some(9), Some(300), Some(7))
+        );
+        assert_eq!(grok.reasoning, None);
+        // ACP's own spelling wins where a bridge sends both.
+        let mut both = TokenUsage::default();
+        consume_usage(
+            &json!({"cachedReadTokens":5,"cacheReadTokens":6,"cacheCreationTokens":1,"cacheWriteTokens":2}),
+            &mut both,
+        );
+        assert_eq!((both.cache_read, both.cache_write), (Some(5), Some(1)));
+        // Reasoning is kept apart and never added to output.
+        let mut codex = TokenUsage::default();
+        consume_usage(
+            &json!({"inputTokens":100,"outputTokens":50,"thoughtTokens":30}),
+            &mut codex,
+        );
+        assert_eq!((codex.output, codex.reasoning), (Some(50), Some(30)));
+        let mut reported = TokenUsage::default();
+        consume_usage(&json!({"reasoningTokens":4}), &mut reported);
+        assert_eq!(reported.reasoning, Some(4));
+    }
+    #[test]
+    fn execution_violation_is_its_own_unscored_outcome() {
+        assert_eq!(
+            terminal_error_outcome(
+                &json!({"kind":"execution_violation","message":"execution_violation: native execution violated the declared no-tool policy"})
+            ),
+            "execution_violation"
+        );
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind":"capability_missing"})),
+            "unsupported"
+        );
+        let tagged = json!({"params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","_meta":{"executionViolation":"native tool activity in no-tool profile"}}}});
+        assert_eq!(
+            violation_of(&tagged).as_deref(),
+            Some("native tool activity in no-tool profile")
+        );
+        assert_eq!(
+            violation_of(&tagged["params"]).as_deref(),
+            Some("native tool activity in no-tool profile")
+        );
+        assert_eq!(
+            violation_of(&json!({"update":{"sessionUpdate":"agent_message_chunk"}})),
+            None
+        );
+        let attempt = |outcome: &str| -> Attempt {
+            serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+                "configuration":{"id":"c","providerId":"claude-acp","accountId":"x","modelId":"m","billingMode":"subscription","executionProfile":"native_text"},
+                "repetition":0,"phase":"terminal","outcome":outcome,"output":"answer","finishedAt":1,
+                "usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],
+                "evaluations":[{"id":"e","evaluatorRevision":"r","verdict":"pass","score":1.0,"reason":"","createdAt":1,"provenance":"deterministic"}]}))
+            .unwrap()
+        };
+        assert_eq!(super::super::analysis::score(&attempt("pass")), Some(1.0));
+        assert_eq!(
+            super::super::analysis::score(&attempt("execution_violation")),
+            None
+        );
+    }
+    #[test]
+    fn judge_provider_allowed_only_for_claude() {
+        assert!(judge_provider_allowed("claude-acp"));
+        for provider in ["codex-acp", "grok-acp", "kimi-acp", "unknown"] {
+            assert!(!judge_provider_allowed(provider), "{provider}");
+        }
+    }
+    /// Today's formula, inline: a configuration pinned before provider
+    /// profiles existed must keep matching its runtime.
+    #[tokio::test]
+    async fn claude_inventory_fingerprint_is_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let entrypoint = directory.path().join("index.js");
+        tokio::fs::write(&entrypoint, "launcher entrypoint")
+            .await
+            .unwrap();
+        let inventory = json!({"executable":{"path":entrypoint.to_string_lossy()},"models":[{"modelId":"sonnet"},{"id":"opus","name":"Opus 5.5"},{"modelId":"sonnet"}]});
+        let mut hash = Sha256::new();
+        hash.update(b"launcher entrypoint");
+        hash.update(include_bytes!("../../../../acp-tools.lock.json"));
+        hash.update(b"distill-native-text-policy-v2");
+        hash.update(NATIVE_TEXT_ADAPTER.as_bytes());
+        hash.update(serde_json::to_vec(&json!(["opus", "sonnet"])).unwrap());
+        let expected = hex::encode(hash.finalize());
+        // One revision for every row, as Claude configurations were pinned.
+        for model in ["sonnet", "opus", "unlisted"] {
+            assert_eq!(
+                inventory_fingerprint(&inventory, NativeProvider::Claude, None, model)
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+    #[tokio::test]
+    async fn codex_fingerprint_follows_pinned_files_and_model_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let entrypoint = directory.path().join("index.js");
+        let native = directory.path().join("codex.exe");
+        tokio::fs::write(&entrypoint, "bridge").await.unwrap();
+        tokio::fs::write(&native, "cli").await.unwrap();
+        let path = entrypoint.to_string_lossy();
+        let inventory = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol"}]});
+        let codex = NativeProvider::Codex;
+        let fingerprint = |inventory: Value, native: Option<std::path::PathBuf>| async move {
+            inventory_fingerprint(&inventory, codex, native, "gpt-6-sol")
+                .await
+                .unwrap()
+        };
+        let first = fingerprint(inventory.clone(), Some(native.clone())).await;
+        assert_eq!(
+            first,
+            fingerprint(inventory.clone(), Some(native.clone())).await
+        );
+        assert_ne!(first, fingerprint(inventory.clone(), None).await);
+        assert_ne!(
+            first,
+            inventory_fingerprint(
+                &inventory,
+                NativeProvider::Claude,
+                Some(native.clone()),
+                "gpt-6-sol"
+            )
+            .await
+            .unwrap()
+        );
+        // A moving alias: same id, another name.
+        let renamed = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol Preview"}]});
+        assert_ne!(first, fingerprint(renamed, Some(native.clone())).await);
+        // The vendor's list growing, or another row changing, leaves this
+        // configuration's runtime alone; its own row leaving the list does not.
+        let grown = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol"},
+            {"modelId":"gpt-6-luna","name":"GPT-6-Luna Preview"}]});
+        assert_eq!(
+            first,
+            fingerprint(grown.clone(), Some(native.clone())).await
+        );
+        let other = inventory_fingerprint(&grown, codex, Some(native.clone()), "gpt-6-luna")
+            .await
+            .unwrap();
+        assert_ne!(first, other);
+        let without = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-luna","name":"GPT-6-Luna"}]});
+        assert_ne!(first, fingerprint(without, Some(native.clone())).await);
+        // Only the bridge's own lock entry counts: a Claude bridge pin bump is
+        // not a Codex runtime change.
+        let lock = managed_lock_entry("codex-acp").unwrap();
+        assert!(lock.contains("@agentclientprotocol/codex-acp"));
+        assert!(!lock.contains("claude-agent-acp"));
+        assert_eq!(managed_lock_entry("grok-acp"), None);
+        tokio::fs::write(&native, "updated cli").await.unwrap();
+        assert_ne!(
+            first,
+            fingerprint(inventory.clone(), Some(native.clone())).await
+        );
+        // The runtime differs from the pins, so the rows say why.
+        let issue = runtime_issue(&inventory, codex, Some(native))
+            .await
+            .unwrap();
+        assert!(issue.contains("installed Codex runtime changed"), "{issue}");
+        assert_eq!(
+            runtime_issue(&json!({"models":[]}), codex, None)
+                .await
+                .as_deref(),
+            Some("Native executable provenance is missing")
+        );
+    }
+    /// What a Codex configuration's revision is made of, in order: the
+    /// pinned files as installed, codex-acp's own lock entry, the policy and
+    /// adapter, and the configuration's own model with its name.
+    #[tokio::test]
+    async fn codex_revision_is_its_own_pins_lock_entry_policy_and_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let entrypoint = directory.path().join("index.js");
+        let native = directory.path().join("codex.exe");
+        tokio::fs::write(&entrypoint, "bridge").await.unwrap();
+        tokio::fs::write(&native, "cli").await.unwrap();
+        let inventory = json!({"executable":{"path":entrypoint.to_string_lossy()},
+            "models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol"},{"modelId":"gpt-6-luna","name":"GPT-6-Luna"}]});
+        let codex = NativeProvider::Codex;
+        let mut hash = Sha256::new();
+        hash.update(b"distill-native-runtime-v1\0");
+        for (role, content) in [("entrypoint", "bridge"), ("nativeCli", "cli")] {
+            hash.update(role.as_bytes());
+            hash.update(b"\0");
+            hash.update(hex::encode(Sha256::digest(content)).as_bytes());
+            hash.update(b"\0");
+        }
+        if crate::services::managed_acp_tools::is_managed("codex-acp") {
+            hash.update(managed_lock_entry("codex-acp").unwrap().as_bytes());
+        }
+        hash.update(codex.policy_revision().as_bytes());
+        hash.update(codex.policy_bytes());
+        hash.update(codex.adapter().unwrap().as_bytes());
+        hash.update(b"model\0");
+        hash.update("gpt-6-sol\u{1f}GPT-6-Sol".as_bytes());
+        assert_eq!(
+            inventory_fingerprint(&inventory, codex, Some(native), "gpt-6-sol")
+                .await
+                .unwrap(),
+            hex::encode(hash.finalize())
+        );
+    }
+    #[test]
+    fn codex_inventory_drops_ultra() {
+        let excluded = NativeProvider::Codex.excluded_efforts();
+        let row = json!({"modelId":"gpt-6-astra","reasoningEfforts":["low","medium","high","xhigh","max","ultra"]});
+        assert_eq!(
+            offered_efforts(&row, excluded),
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        let described = json!({"id":"gpt-6-sol","efforts":[{"value":"ultra"},{"value":"low"}]});
+        assert_eq!(offered_efforts(&described, excluded), ["low"]);
+        assert_eq!(
+            offered_efforts(&row, NativeProvider::Claude.excluded_efforts()).len(),
+            6
+        );
+        assert!(offered_efforts(&json!({"modelId":"m"}), excluded).is_empty());
+    }
+    #[test]
+    fn codex_configurations_refuse_ultra_and_need_an_account() {
+        let configuration = |effort: Option<&str>, account: Option<&str>| -> Configuration {
+            serde_json::from_value(json!({"id":"c","providerId":"codex-acp","accountId":account,
+                "modelId":"gpt-6-sol","effort":effort,"billingMode":"subscription","executionProfile":"native_text"}))
+            .unwrap()
+        };
+        assert_eq!(
+            profile_refusal(&configuration(Some("max"), Some("a"))),
+            None
+        );
+        assert_eq!(
+            profile_refusal(&configuration(Some("ultra"), Some("a"))).as_deref(),
+            Some("effort 'ultra' delegates to subagents and is not a single-model no-tool configuration")
+        );
+        assert_eq!(
+            profile_refusal(&configuration(None, None)).as_deref(),
+            Some("Choose a managed account")
+        );
+        // Grok and Kimi run on their CLI sign-in identities.
+        let mut grok = configuration(Some("xhigh"), Some("cli-login-grok-acp"));
+        grok.provider_id = "grok-acp".into();
+        assert_eq!(profile_refusal(&grok), None);
+        let mut kimi = configuration(Some("max"), Some("cli-login-kimi-acp"));
+        kimi.provider_id = "kimi-acp".into();
+        assert_eq!(profile_refusal(&kimi), None);
+        kimi.account_id = None;
+        assert_eq!(
+            profile_refusal(&kimi).as_deref(),
+            Some("Choose the CLI sign-in")
+        );
+        kimi.account_id = Some(String::new());
+        assert_eq!(
+            profile_refusal(&kimi).as_deref(),
+            Some("Choose the CLI sign-in")
+        );
+        let mut unknown = configuration(None, Some("a"));
+        unknown.provider_id = "copilot-acp".into();
+        assert_eq!(
+            profile_refusal(&unknown).as_deref(),
+            Some("This provider/account has no verified native text execution policy")
+        );
+        unknown.account_id = None;
+        assert_eq!(
+            profile_refusal(&unknown).as_deref(),
+            Some("This provider/account has no verified native text execution policy")
+        );
+        // Kimi's, Codex's and Grok's profiles have passed their policy
+        // probes (NativeProvider::admission_issue covers one that has not).
+        kimi.account_id = Some("cli-login-kimi-acp".into());
+        assert_eq!(native_refusal(&kimi), None);
+        let mut codex = configuration(Some("max"), Some("a"));
+        codex.provider_id = "codex-acp".into();
+        assert_eq!(native_refusal(&codex), None);
+        assert_eq!(native_refusal(&grok), None);
+        let mut claude = configuration(Some("high"), Some("a"));
+        claude.provider_id = "claude-acp".into();
+        assert_eq!(native_refusal(&claude), None);
+        // An inventory without an account asks for what the provider uses.
+        assert_eq!(account_refusal("grok-acp"), "Choose the CLI sign-in");
+        assert_eq!(account_refusal("kimi-acp"), "Choose the CLI sign-in");
+        assert_eq!(account_refusal("codex-acp"), "Choose a managed account");
+    }
+    #[test]
+    fn kimi_prompt_usage_and_model_usage_are_read() {
+        // A Kimi prompt response under the adapter: the engine's turn usage
+        // with uncached input apart from the cache, and the same per model.
+        let result = json!({"stopReason":"end_turn",
+            "usage":{"inputTokens":812,"outputTokens":95,"cachedReadTokens":3072,"cachedWriteTokens":0,"totalTokens":3979},
+            "_meta":{"quota":{"model_usage":[{"model":"kimi-code/k3","token_count":{"inputTokens":812,"outputTokens":95,"cachedWriteTokens":0,"totalTokens":3979,"cachedInputTokens":3072}}]}}});
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":{"id":"c","providerId":"kimi-acp","accountId":"cli-login-kimi-acp","modelId":"kimi-code/k3","billingMode":"subscription","executionProfile":"native_text"},
+            "repetition":0,"phase":"dispatching","usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],"evaluations":[]}))
+        .unwrap();
+        consume_terminal_result(&result, &mut attempt);
+        let usage = &attempt.usage;
+        assert_eq!(
+            (
+                usage.input,
+                usage.output,
+                usage.cache_read,
+                usage.cache_write
+            ),
+            (Some(812), Some(95), Some(3072), Some(0))
+        );
+        // Kimi reports no reasoning apart and no cost.
+        assert_eq!((usage.reasoning, usage.cost), (None, None));
+        assert_eq!(usage.schema, "provider_turn_usage_v1");
+        // The same response as the host's turn result event.
+        let mut evented = TokenUsage::default();
+        let mut output = String::new();
+        consume_event(
+            &json!({"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"benchmarkRawResult":{"usage":result["usage"],"quota":result["_meta"]["quota"]}}}}),
+            &mut output,
+            &mut evented,
+        );
+        assert_eq!(
+            (evented.input, evented.output, evented.cache_read),
+            (Some(812), Some(95), Some(3072))
+        );
+        // A second model in the session is auxiliary work, and its tokens
+        // count.
+        let mut auxiliary = attempt.clone();
+        auxiliary.usage = TokenUsage::default();
+        let mut two = result.clone();
+        two["_meta"]["quota"]["model_usage"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"model":"kimi-code/kimi-for-coding","token_count":{"inputTokens":100,"outputTokens":10,"cachedInputTokens":0,"cachedWriteTokens":0,"totalTokens":110}}));
+        consume_terminal_result(&two, &mut auxiliary);
+        assert_eq!(auxiliary.usage.schema, "provider_turn_with_auxiliary_v2");
+        assert_eq!(auxiliary.usage.input, Some(912));
+    }
+    #[tokio::test]
+    async fn kimi_fingerprint_follows_the_bundle_behind_the_shim() {
+        let prefix = tempfile::tempdir().unwrap();
+        let shim = prefix.path().join("kimi.cmd");
+        tokio::fs::write(&shim, "@ECHO off").await.unwrap();
+        // The chat bridge's inventory names the shim.
+        let inventory = json!({"executable":{"path":shim.to_string_lossy()},
+            "models":[{"modelId":"kimi-code/kimi-for-coding","name":"K2.8 Preview"}]});
+        let kimi = NativeProvider::Kimi;
+        let fingerprint = |inventory: Value| async move {
+            inventory_fingerprint(&inventory, kimi, None, "kimi-code/kimi-for-coding")
+                .await
+                .unwrap()
+        };
+        // Without the package beside it the rows say why, and the listing
+        // still has a revision.
+        assert_eq!(
+            runtime_issue(&inventory, kimi, None).await.as_deref(),
+            Some("capability_missing: Kimi Code is not a recognized npm install")
+        );
+        let unrecognized = fingerprint(inventory.clone()).await;
+        let dist = prefix
+            .path()
+            .join("node_modules")
+            .join("@moonshot-ai")
+            .join("kimi-code")
+            .join("dist");
+        tokio::fs::create_dir_all(&dist).await.unwrap();
+        tokio::fs::write(dist.join("main.mjs"), "kimi build")
+            .await
+            .unwrap();
+        let first = fingerprint(inventory.clone()).await;
+        assert_ne!(first, unrecognized);
+        // The shim is not what is pinned; the bundle is.
+        tokio::fs::write(&shim, "@ECHO on").await.unwrap();
+        assert_eq!(first, fingerprint(inventory.clone()).await);
+        tokio::fs::write(dist.join("main.mjs"), "updated kimi build")
+            .await
+            .unwrap();
+        assert_ne!(first, fingerprint(inventory.clone()).await);
+        let issue = runtime_issue(&inventory, kimi, None).await.unwrap();
+        assert!(
+            issue.contains("installed Kimi Code runtime changed"),
+            "{issue}"
+        );
+        // A moving alias: the same id under a new name is a new runtime.
+        let renamed = json!({"executable":{"path":shim.to_string_lossy()},
+            "models":[{"modelId":"kimi-code/kimi-for-coding","name":"K2.9 Preview"}]});
+        assert_ne!(
+            fingerprint(inventory.clone()).await,
+            fingerprint(renamed).await
+        );
+    }
+    #[test]
+    fn grok_ticks_become_cost_only_when_complete() {
+        let turn = |meta: Value| {
+            let mut usage = TokenUsage::default();
+            let mut output = String::new();
+            consume_event(
+                &json!({"update":{"sessionUpdate":"message_usage",
+                    "usage":{"inputTokens":14098,"outputTokens":168,"cacheReadTokens":2944,"cacheWriteTokens":0,"elapsedMs":3899},
+                    "_meta":{"xaiTurnUsage":meta}}}),
+                &mut output,
+                &mut usage,
+            );
+            usage
+        };
+        let raw = json!({"inputTokens":17042,"outputTokens":168,"cachedReadTokens":2944,
+            "reasoningTokens":159,"modelCalls":1,"costUsdTicks":104_298_400u64});
+        let usage = turn(raw.clone());
+        assert_eq!(
+            (usage.input, usage.output, usage.cache_read, usage.reasoning),
+            (Some(14098), Some(168), Some(2944), Some(159))
+        );
+        // 1 USD = 1e10 ticks.
+        assert_eq!(usage.cost, Some(0.01042984));
+        assert_eq!(usage.schema, "provider_turn_usage_v1");
+        for incomplete in [
+            json!({"costIsPartial": true}),
+            json!({"costMissingCalls": 1}),
+            json!({"costMissingCalls": "unknown"}),
+        ] {
+            let mut partial = raw.clone();
+            partial
+                .as_object_mut()
+                .unwrap()
+                .extend(incomplete.as_object().unwrap().clone());
+            assert_eq!(turn(partial).cost, None, "{incomplete}");
+        }
+        let mut complete = raw.clone();
+        complete["costIsPartial"] = json!(false);
+        complete["costMissingCalls"] = json!(0);
+        assert_eq!(turn(complete).cost, Some(0.01042984));
+        // A session sign-in that stamps no cost leaves it unknown, never zero.
+        let mut unpriced = raw;
+        unpriced.as_object_mut().unwrap().remove("costUsdTicks");
+        assert_eq!(turn(unpriced).cost, None);
+    }
+    #[test]
+    fn grok_multiple_model_calls_mark_auxiliary() {
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":{"id":"c","providerId":"grok-acp","accountId":"cli-login-grok-acp","modelId":"grok-4.7","billingMode":"subscription","executionProfile":"native_text"},
+            "observed":{"id":"c","providerId":"grok-acp","accountId":"cli-login-grok-acp","modelId":"grok-4.7","billingMode":"subscription","executionProfile":"native_text"},
+            "repetition":0,"phase":"dispatching","usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],"evaluations":[]}))
+        .unwrap();
+        let mut output = String::new();
+        consume_event(
+            &json!({"update":{"sessionUpdate":"message_usage",
+                "usage":{"inputTokens":900,"outputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"elapsedMs":10},
+                "_meta":{"xaiTurnUsage":{"inputTokens":900,"outputTokens":40,"modelCalls":2}}}}),
+            &mut output,
+            &mut attempt.usage,
+        );
+        assert_eq!(attempt.usage.schema, "provider_turn_with_auxiliary_v2");
+        assert_eq!(
+            (attempt.usage.input, attempt.usage.output),
+            (Some(900), Some(40))
+        );
+        mark_auxiliary_profile(&mut attempt);
+        assert_eq!(
+            attempt.observed.unwrap().execution_profile,
+            "native_text_auxiliary"
+        );
+    }
+    /// Each provider's usage names the model that answered, which for an
+    /// alias is its target; a retry starts without it.
+    #[test]
+    fn the_resolved_model_comes_from_each_providers_usage() {
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":{"id":"c","providerId":"claude-acp","accountId":"x","modelId":"sonnet","billingMode":"subscription","executionProfile":"native_text"},
+            "repetition":0,"phase":"dispatching","usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],"evaluations":[]}))
+        .unwrap();
+        // Claude's prompt response: the `sonnet` alias ran Sonnet 5, beside
+        // a smaller auxiliary call.
+        let claude = json!({"stopReason":"end_turn","usage":{"inputTokens":40,"outputTokens":30},
+            "_meta":{"quota":{"model_usage":[
+                {"model":"claude-haiku-4-5-20251001","token_count":{"inputTokens":5,"outputTokens":2}},
+                {"model":"claude-sonnet-5","token_count":{"inputTokens":35,"outputTokens":28}}]}}});
+        consume_terminal_result(&claude, &mut attempt);
+        assert_eq!(attempt.resolved_model.as_deref(), Some("claude-sonnet-5"));
+        // The host's copy of a prompt response among the events (Codex).
+        let codex = json!({"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"benchmarkRawResult":{
+            "usage":{"inputTokens":80,"outputTokens":60},
+            "quota":{"model_usage":[{"model":"gpt-6-sol","token_count":{"inputTokens":80,"outputTokens":60}}]}}}}});
+        assert_eq!(resolved_model_of(&codex).as_deref(), Some("gpt-6-sol"));
+        // Grok's raw turn usage, keyed by model.
+        let grok = json!({"params":{"update":{"sessionUpdate":"message_usage","usage":{"inputTokens":8,"outputTokens":5},
+            "_meta":{"xaiTurnUsage":{"inputTokens":10,"outputTokens":5,"modelCalls":1,
+                "modelUsage":{"grok-4.7":{"inputTokens":10,"outputTokens":5,"modelCalls":1}}}}}}});
+        assert_eq!(resolved_model_of(&grok).as_deref(), Some("grok-4.7"));
+        // Kimi names its own model alias.
+        let kimi = json!({"stopReason":"end_turn","_meta":{"quota":{"model_usage":[
+            {"model":"kimi-code/kimi-for-coding","token_count":{"inputTokens":8,"outputTokens":5}}]}}});
+        assert_eq!(
+            resolved_model_of(&kimi).as_deref(),
+            Some("kimi-code/kimi-for-coding")
+        );
+        // Usage without models, or no usage, names nothing and keeps what an
+        // earlier report named.
+        for silent in [
+            json!({"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1}}),
+            json!({"stopReason":"end_turn","_meta":{"quota":{"model_usage":[]}}}),
+            json!({"update":{"sessionUpdate":"message_usage","usage":{"inputTokens":1},"_meta":{"xaiTurnUsage":{"inputTokens":1}}}}),
+            json!({"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"hi"}}}),
+        ] {
+            assert_eq!(resolved_model_of(&silent), None, "{silent}");
+            consume_terminal_result(&silent, &mut attempt);
+        }
+        assert_eq!(attempt.resolved_model.as_deref(), Some("claude-sonnet-5"));
+        requeue(&mut attempt, "refused".into());
+        assert_eq!(attempt.resolved_model, None);
+        // Kept only where present, so earlier attempts read back unchanged.
+        let serialized = serde_json::to_value(&attempt).unwrap();
+        assert!(serialized.get("resolvedModel").is_none());
+    }
+    #[test]
+    fn codex_thought_tokens_become_reasoning() {
+        // A Codex prompt response under the adapter: thread totals, with
+        // cached input outside `inputTokens` and reasoning inside output.
+        let result = json!({"stopReason":"end_turn",
+            "usage":{"totalTokens":160,"inputTokens":80,"cachedReadTokens":20,"outputTokens":60,"thoughtTokens":25},
+            "_meta":{"quota":{"token_count":{"totalTokens":160,"inputTokens":80,"cachedInputTokens":20,"outputTokens":60,"reasoningOutputTokens":25},
+                "model_usage":[{"model":"gpt-6-sol","token_count":{"totalTokens":160,"inputTokens":80,"cachedInputTokens":20,"outputTokens":60,"reasoningOutputTokens":25}}]}}});
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":{"id":"c","providerId":"codex-acp","accountId":"x","modelId":"gpt-6-sol","billingMode":"subscription","executionProfile":"native_text"},
+            "repetition":0,"phase":"dispatching","usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],"evaluations":[]}))
+        .unwrap();
+        consume_terminal_result(&result, &mut attempt);
+        let usage = &attempt.usage;
+        assert_eq!(
+            (usage.input, usage.output, usage.cache_read, usage.reasoning),
+            (Some(80), Some(60), Some(20), Some(25))
+        );
+        // One model whose counters match the turn's is not auxiliary work.
+        assert_eq!(usage.schema, "provider_turn_usage_v1");
+        assert_eq!(usage.cost, None);
     }
     #[tokio::test]
     async fn native_auxiliary_usage_is_inclusive_and_kept_out_of_pure_profile() {
@@ -3521,13 +4735,32 @@ mod tests {
         let before = json!({"executable":{"path":path},"models":[{"modelId":"sonnet","reasoningEfforts":[]},{"modelId":"opus","reasoningEfforts":["low"]}]});
         let learned = json!({"executable":{"path":path},"models":[{"modelId":"opus","reasoningEfforts":["low","high"],"supportsFast":true},{"modelId":"sonnet","reasoningEfforts":["low"]}]});
         let grown = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus"},{"modelId":"haiku"}]});
-        let first = inventory_fingerprint(&before).await.unwrap();
-        assert_eq!(first, inventory_fingerprint(&learned).await.unwrap());
-        assert_ne!(first, inventory_fingerprint(&grown).await.unwrap());
-        tokio::fs::write(&executable, "updated bridge")
-            .await
-            .unwrap();
-        assert_ne!(first, inventory_fingerprint(&before).await.unwrap());
+        let renamed = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus","name":"Opus Next"}]});
+        for provider in NativeProvider::ALL.iter().copied() {
+            tokio::fs::write(&executable, "bridge").await.unwrap();
+            let fingerprint = |inventory: &Value| {
+                let inventory = inventory.clone();
+                async move {
+                    inventory_fingerprint(&inventory, provider, None, "opus")
+                        .await
+                        .unwrap()
+                }
+            };
+            let first = fingerprint(&before).await;
+            assert_eq!(first, fingerprint(&learned).await, "{provider:?}");
+            // Claude's configurations were pinned to the whole model set;
+            // the others to their own model and its name.
+            if provider == NativeProvider::Claude {
+                assert_ne!(first, fingerprint(&grown).await, "{provider:?}");
+            } else {
+                assert_eq!(first, fingerprint(&grown).await, "{provider:?}");
+                assert_ne!(first, fingerprint(&renamed).await, "{provider:?}");
+            }
+            tokio::fs::write(&executable, "updated bridge")
+                .await
+                .unwrap();
+            assert_ne!(first, fingerprint(&before).await, "{provider:?}");
+        }
     }
     #[test]
     fn exact_selection_accepts_only_unspecified_native_defaults() {

@@ -234,9 +234,12 @@ fn has_auxiliary_usage(attempt: &Attempt) -> bool {
 }
 
 /// Runtime probes, omitted defaults and auxiliary-call markers do not create
-/// new leaderboard candidates.
+/// new leaderboard candidates. A model id its vendor moves to another model
+/// (`NativeProvider::moving_aliases`) is a candidate per display name, so
+/// Kimi's `kimi-for-coding` as K2.7 Code and as K2.8 Preview are two rows;
+/// every other key is unchanged by that.
 pub(super) fn leaderboard_key(configuration: &Configuration) -> String {
-    serde_json::to_string(&(
+    let identity = (
         &configuration.provider_id,
         &configuration.account_id,
         &configuration.model_id,
@@ -248,8 +251,23 @@ pub(super) fn leaderboard_key(configuration: &Configuration) -> String {
         configuration.fast_mode.unwrap_or(false),
         &configuration.billing_mode,
         ledger_profile(&configuration.execution_profile),
-    ))
+    );
+    if on_moving_alias(configuration) {
+        serde_json::to_string(&(identity, &configuration.model_name))
+    } else {
+        serde_json::to_string(&identity)
+    }
     .unwrap_or_default()
+}
+
+/// Whether a configuration is on a model id its vendor moves between models.
+fn on_moving_alias(configuration: &Configuration) -> bool {
+    crate::services::agent_host::execution::NativeProvider::for_harness(&configuration.provider_id)
+        .is_some_and(|provider| {
+            provider
+                .moving_aliases()
+                .contains(&configuration.model_id.as_str())
+        })
 }
 
 /// Whether an acknowledged selection is the one asked for: the same model,
@@ -831,6 +849,7 @@ fn leaderboard_from_attempts(
                     axes: Vec::new(),
                     missing_version_ids: Vec::new(),
                     scored_version_ids: Vec::new(),
+                    resolved_models: Vec::new(),
                 };
             }
             let planned = eligible.len() as u32;
@@ -931,6 +950,8 @@ fn leaderboard_from_attempts(
                 axes,
                 missing_version_ids,
                 scored_version_ids: scored_attempts.iter().map(|a| a.version_id.clone())
+                    .collect::<BTreeSet<_>>().into_iter().collect(),
+                resolved_models: scored_attempts.iter().filter_map(|a| a.resolved_model.clone())
                     .collect::<BTreeSet<_>>().into_iter().collect(),
             }
         })
@@ -1712,6 +1733,7 @@ pub(super) mod tests {
                     evaluations: vec![],
                     event_cursor: 1,
                     workflow_steps: Vec::new(),
+                    resolved_model: None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -1996,6 +2018,89 @@ pub(super) mod tests {
             .unwrap()
             .effort = Some("high".into());
         assert_eq!(leaderboard(&data, &ResultQuery::default()).rows.len(), 2);
+    }
+
+    /// Claude's key is pinned byte for byte, so a running campaign never
+    /// splits. A Kimi id its vendor moves between models is a row per
+    /// display name, while a display name changes no other key. Each row
+    /// lists the models its counted attempts' usage named.
+    #[test]
+    fn a_moving_alias_is_a_row_per_name_and_rows_name_the_models_that_ran() {
+        let claude = Configuration {
+            id: "label".into(),
+            provider_id: "claude-acp".into(),
+            account_id: Some("account".into()),
+            model_id: "sonnet".into(),
+            effort: None,
+            fast_mode: None,
+            billing_mode: "subscription".into(),
+            execution_profile: "native_text_auxiliary".into(),
+            inventory_revision: Some("runtime".into()),
+            model_name: Some("Sonnet".into()),
+        };
+        assert_eq!(
+            leaderboard_key(&claude),
+            r#"["claude-acp","account","sonnet","default",false,"subscription","native_text"]"#
+        );
+        let mut renamed = claude.clone();
+        renamed.model_name = Some("Sonnet 5.5".into());
+        assert_eq!(leaderboard_key(&renamed), leaderboard_key(&claude));
+        let mut k27 = claude.clone();
+        k27.provider_id = "kimi-acp".into();
+        k27.account_id = Some("cli-login-kimi-acp".into());
+        k27.model_id = "kimi-code/kimi-for-coding".into();
+        k27.model_name = Some("K2.7 Code".into());
+        let mut k28 = k27.clone();
+        k28.model_name = Some("K2.8 Preview".into());
+        assert_ne!(leaderboard_key(&k27), leaderboard_key(&k28));
+        assert_eq!(
+            leaderboard_key(&k28),
+            r#"[["kimi-acp","cli-login-kimi-acp","kimi-code/kimi-for-coding","default",false,"subscription","native_text"],"K2.8 Preview"]"#
+        );
+        let mut k3 = k27.clone();
+        k3.model_id = "kimi-code/k3".into();
+        k3.model_name = Some("K3".into());
+        let mut k3_renamed = k3.clone();
+        k3_renamed.model_name = Some("K3 Turbo".into());
+        assert_eq!(leaderboard_key(&k3), leaderboard_key(&k3_renamed));
+
+        let (mut data, _) = dataset();
+        for attempt in &mut data.attempts {
+            attempt.resolved_model = Some(format!("model-{}", attempt.run_id));
+        }
+        data.attempts.last_mut().unwrap().resolved_model = Some("model-moved".into());
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(
+            report.rows[0].resolved_models,
+            ["model-after", "model-moved"]
+        );
+        let early = leaderboard(
+            &data,
+            &ResultQuery {
+                as_of: Some(3),
+                ..ResultQuery::default()
+            },
+        );
+        assert_eq!(early.rows[0].resolved_models, ["model-before"]);
+        // The alias as K2.7 in one run and as K2.8 in the next: two rows.
+        for attempt in &mut data.attempts {
+            let configuration = if attempt.run_id == "before" {
+                &k27
+            } else {
+                &k28
+            };
+            attempt.configuration = configuration.clone();
+            attempt.observed = Some(configuration.clone());
+        }
+        let moved = leaderboard(&data, &ResultQuery::default());
+        let mut names: Vec<_> = moved
+            .rows
+            .iter()
+            .map(|row| row.configuration.model_name.clone().unwrap_or_default())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["K2.7 Code", "K2.8 Preview"]);
     }
 
     #[test]

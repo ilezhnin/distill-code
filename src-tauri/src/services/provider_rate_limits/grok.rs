@@ -63,6 +63,106 @@ pub fn read_grok_auth_session_at(path: &Path) -> GrokAuthReadResult {
     parse_grok_auth_session(&raw)
 }
 
+/// How long a Grok session handed to a benchmark process must stay valid at
+/// least, whatever the turn: longer than the default ten-minute attempt
+/// timeout. That process cannot refresh it; a benchmark bridge whose session
+/// comes too close to expiry is replaced before its next session. A turn that
+/// outlives the session would fail at sign-in rather than produce a result,
+/// so a longer turn needs a longer margin (see
+/// [`benchmark_sign_in_margin_ms`]).
+pub const BENCHMARK_SIGN_IN_MARGIN_MS: i64 = 15 * 60 * 1000;
+
+/// What a turn needs beyond its own time limit: opening its session, and the
+/// wait for a cancellation to be confirmed when the limit is reached.
+const BENCHMARK_SIGN_IN_SLACK_MS: i64 = 5 * 60 * 1000;
+
+/// How long the session must stay valid for a benchmark turn that may run
+/// `turn_limit_ms`: the turn and its slack, and never less than
+/// [`BENCHMARK_SIGN_IN_MARGIN_MS`].
+pub fn benchmark_sign_in_margin_ms(turn_limit_ms: u64) -> i64 {
+    i64::try_from(turn_limit_ms)
+        .unwrap_or(i64::MAX)
+        .saturating_add(BENCHMARK_SIGN_IN_SLACK_MS)
+        .max(BENCHMARK_SIGN_IN_MARGIN_MS)
+}
+
+/// The user's Grok sign-in as a benchmark process may use it: the auth
+/// document reduced to the fields a session runs on (see
+/// [`benchmark_sign_in_document`]), and when the session Grok picks from it
+/// expires. Without a refresh token that process can use the session but
+/// never rotate it, so the user's own Grok keeps the only refreshable copy.
+/// `None` when there is no session (Grok then signs in with `XAI_API_KEY`, if
+/// the user has one). Read into memory; nothing is written.
+pub fn benchmark_auth_document() -> Result<Option<(String, Option<i64>)>, String> {
+    match fs::read_to_string(grok_auth_path()) {
+        Ok(raw) => benchmark_auth_from(&raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Grok auth file cannot be read".into()),
+    }
+}
+
+fn benchmark_auth_from(raw: &str) -> Result<Option<(String, Option<i64>)>, String> {
+    match parse_grok_auth_session(raw) {
+        GrokAuthReadResult::Missing => Ok(None),
+        GrokAuthReadResult::Error(error) => Err(error),
+        GrokAuthReadResult::Ok(session) => Ok(Some((
+            benchmark_sign_in_document(raw)?,
+            session.expires_at_ms,
+        ))),
+    }
+}
+
+/// Whether a session expiring at `expires_at_ms` is too close to expiry, at
+/// `now`, for a benchmark process to start or run a turn of up to
+/// `turn_limit_ms` on it.
+pub fn benchmark_sign_in_expiring(
+    expires_at_ms: Option<i64>,
+    now: i64,
+    turn_limit_ms: u64,
+) -> bool {
+    expires_at_ms.is_some_and(|expires| expires - now < benchmark_sign_in_margin_ms(turn_limit_ms))
+}
+
+/// The fields of a sign-in entry a benchmark process gets: the access token
+/// (`key`), how and when it was issued, when it expires and whose it is. The
+/// pinned Grok runs a session on exactly these (the policy probe signs in
+/// with nothing else).
+const BENCHMARK_SIGN_IN_FIELDS: &[&str] = &[
+    "key",
+    "auth_mode",
+    "create_time",
+    "expires_at",
+    "user_id",
+    "email",
+];
+
+/// The auth document `raw` with each sign-in entry reduced to
+/// [`BENCHMARK_SIGN_IN_FIELDS`] holding plain values. Everything else stays
+/// with the user's own Grok: refresh, ID and other session tokens under any
+/// name, nested objects, and anything that is not an entry.
+pub fn benchmark_sign_in_document(raw: &str) -> Result<String, String> {
+    let invalid = || "Grok auth file is invalid".to_string();
+    let document: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
+    let entries = document.as_object().ok_or_else(invalid)?;
+    let kept: serde_json::Map<String, Value> = entries
+        .iter()
+        .filter_map(|(issuer, entry)| {
+            let fields = entry
+                .as_object()?
+                .iter()
+                .filter(|(field, value)| {
+                    BENCHMARK_SIGN_IN_FIELDS.contains(&field.as_str())
+                        && !value.is_object()
+                        && !value.is_array()
+                })
+                .map(|(field, value)| (field.clone(), value.clone()))
+                .collect();
+            Some((issuer.clone(), Value::Object(fields)))
+        })
+        .collect();
+    serde_json::to_string(&Value::Object(kept)).map_err(|error| error.to_string())
+}
+
 /// Whether the auth file holds a session Grok will accept without signing in
 /// again. The Grok agent check decides from this with the same issuer
 /// preference and freshness rule the usage fetch applies, so the provider card
@@ -418,6 +518,110 @@ mod tests {
             .error
             .unwrap_or_default()
             .contains("test-access-token"));
+    }
+
+    #[test]
+    fn grok_auth_document_drops_refresh_tokens() {
+        let raw = r#"{
+            "https://auth.x.ai::scope": {
+                "key": "fabricated-access",
+                "auth_mode": "oidc",
+                "create_time": "2026-10-01T00:00:00Z",
+                "user_id": "fabricated-user",
+                "refresh_token": "fabricated-refresh",
+                "id_token": "fabricated-id-token",
+                "session_token": "fabricated-session-token",
+                "access_token": "fabricated-second-access",
+                "email": "dev@example.com",
+                "expires_at": "2030-01-01T00:00:00Z",
+                "source": {"refreshToken": "nested-refresh", "issuer": "https://auth.x.ai"},
+                "history": [{"refresh_token": "listed-refresh", "kept": 1}]
+            },
+            "version": 2
+        }"#;
+        let stripped = benchmark_sign_in_document(raw).unwrap();
+        // Only the fields a session runs on are handed over: no other token
+        // under any name, and nothing nested.
+        for gone in [
+            "refresh",
+            "id-token",
+            "session-token",
+            "second-access",
+            "source",
+            "history",
+            "version",
+        ] {
+            assert!(!stripped.contains(gone), "{gone}: {stripped}");
+        }
+        let document: Value = serde_json::from_str(&stripped).unwrap();
+        let entry = document["https://auth.x.ai::scope"].as_object().unwrap();
+        let mut fields: Vec<&str> = entry.keys().map(String::as_str).collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            [
+                "auth_mode",
+                "create_time",
+                "email",
+                "expires_at",
+                "key",
+                "user_id"
+            ]
+        );
+        assert_eq!(entry["key"], "fabricated-access");
+        assert_eq!(entry["email"], "dev@example.com");
+        assert!(benchmark_sign_in_document("not json").is_err());
+        assert!(benchmark_sign_in_document("[]").is_err());
+
+        // The session Grok would use, with its expiry; no session is not an
+        // error, an unreadable document is.
+        let (document, expires) = benchmark_auth_from(raw).unwrap().unwrap();
+        assert_eq!(document, stripped);
+        assert_eq!(
+            expires,
+            parse_reset_timestamp(&Value::String("2030-01-01T00:00:00Z".into()))
+        );
+        assert_eq!(benchmark_auth_from("{}").unwrap(), None);
+        assert!(benchmark_auth_from("[").is_err());
+    }
+
+    #[test]
+    fn a_benchmark_sign_in_must_outlive_the_margin() {
+        let now = 1_000_000_000;
+        let ten_minutes = 10 * 60 * 1000;
+        assert!(!benchmark_sign_in_expiring(None, now, ten_minutes));
+        assert!(!benchmark_sign_in_expiring(
+            Some(now + BENCHMARK_SIGN_IN_MARGIN_MS),
+            now,
+            ten_minutes
+        ));
+        assert!(benchmark_sign_in_expiring(
+            Some(now + BENCHMARK_SIGN_IN_MARGIN_MS - 1),
+            now,
+            ten_minutes
+        ));
+        assert!(benchmark_sign_in_expiring(Some(now - 1), now, 0));
+    }
+
+    /// A run may allow an hour per turn; the sign-in must outlast the whole
+    /// turn and the time to open and cancel it, not just the default margin.
+    #[test]
+    fn a_long_turn_needs_its_whole_limit_and_slack_left_on_the_sign_in() {
+        let hour = 60 * 60 * 1000;
+        let slack = BENCHMARK_SIGN_IN_SLACK_MS;
+        assert_eq!(benchmark_sign_in_margin_ms(0), BENCHMARK_SIGN_IN_MARGIN_MS);
+        assert_eq!(benchmark_sign_in_margin_ms(hour), hour as i64 + slack);
+        assert_eq!(benchmark_sign_in_margin_ms(u64::MAX), i64::MAX);
+        let now = 1_000_000_000;
+        // Thirty minutes left is enough for a ten-minute turn, not an hour.
+        let expires = Some(now + 30 * 60 * 1000);
+        assert!(!benchmark_sign_in_expiring(expires, now, 10 * 60 * 1000));
+        assert!(benchmark_sign_in_expiring(expires, now, hour));
+        assert!(!benchmark_sign_in_expiring(
+            Some(now + hour as i64 + slack),
+            now,
+            hour
+        ));
     }
 
     #[test]

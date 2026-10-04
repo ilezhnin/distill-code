@@ -20,7 +20,7 @@ import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
-import { shortId } from "../lib/benchmarkLabels";
+import { accountDisplay, shortId } from "../lib/benchmarkLabels";
 import type {
   BenchmarkDraft,
   ExportResult,
@@ -619,7 +619,7 @@ export function BenchmarkSchedulesDialog({
                   {scope
                     ? t("schedules.scope", {
                         provider: scope.providerId,
-                        account: scope.accountId ?? t("run.noAccount"),
+                        account: accountDisplay(t, scope.accountId),
                       })
                     : t("schedules.chooseRun")}{" "}
                   {t("schedules.discoveryHelp")}

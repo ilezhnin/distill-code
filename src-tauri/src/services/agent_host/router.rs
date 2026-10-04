@@ -16,8 +16,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::bridge::{error_text, Bridge, BridgeEvent, SpawnEnv};
 use super::execution::{
-    self, AccountActivity, ExecutionDispatch, ObservedSelection, OwnedEventPage, OwnedSession,
-    OwnedSessionRequest, OwnedTurnRequest,
+    self, AccountActivity, ExecutionDispatch, NativeProvider, ObservedSelection, OwnedEventPage,
+    OwnedSession, OwnedSessionRequest, OwnedTurnImage, OwnedTurnRequest,
 };
 use super::ext;
 use super::harness::{self, HarnessSpec};
@@ -29,6 +29,7 @@ use super::sources::SourceRoots;
 use super::store::{ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo};
 use crate::services::managed_acp_tools;
 use crate::services::provider_accounts;
+use crate::services::provider_rate_limits::grok;
 
 /// Each account gets an isolated bridge, including when native session IDs match.
 pub(super) fn account_route_key(harness: &str, account_id: Option<&str>) -> String {
@@ -46,6 +47,82 @@ fn account_validation_id<'a>(
         return Err(invalid_params("Choose a signed-in account for this chat"));
     }
     Ok(account_id)
+}
+
+/// The prompt of an owned turn: the task text first, behind a fixed marker, so
+/// a task that starts with `/plan` or `$skill` is never read as a native slash
+/// command or skill mention; then the images.
+fn owned_prompt_blocks(prompt: &str, images: &[OwnedTurnImage]) -> Vec<Value> {
+    let mut blocks = vec![json!({"type":"text","text":format!("Benchmark task:\n{prompt}")})];
+    for image in images {
+        blocks.push(json!({"type":"image","data":image.data,"mimeType":image.mime_type}));
+    }
+    blocks
+}
+
+/// The `session/prompt` of an owned turn of session `session_id` for owner
+/// `owner_id`: its blocks, the owner, and what the `provider`'s profile adds
+/// to every prompt (Grok: the task as written, without its wrapper).
+fn owned_prompt_params(
+    session_id: &str,
+    blocks: Vec<Value>,
+    owner_id: &str,
+    provider: Option<NativeProvider>,
+) -> Value {
+    let mut meta = provider
+        .and_then(NativeProvider::prompt_meta)
+        .cloned()
+        .unwrap_or_default();
+    meta.insert(
+        "executionOwner".into(),
+        json!({"kind":"benchmark","id":owner_id}),
+    );
+    json!({"sessionId":session_id,"prompt":blocks,"_meta":meta})
+}
+
+/// The error kind an owned turn settles with when its terminal check fails: a
+/// broken no-tool policy is its own outcome, any other failure a selection
+/// the bridge did not keep.
+fn terminal_error_kind(reason: &str) -> &'static str {
+    if reason.starts_with("execution_violation:") {
+        "execution_violation"
+    } else {
+        "selection_changed"
+    }
+}
+
+/// What marks a bridge route as a host-owned benchmark bridge.
+const BENCHMARK_ROUTE: &str = "\u{1f}benchmark:";
+
+/// The host-owned benchmark bridge a session is opened on: its profile's
+/// route key, its provider, and the longest turn the session may run, which a
+/// sign-in the bridge cannot refresh (Grok's) must outlast.
+#[derive(Clone, Copy)]
+struct OwnedBridge<'a> {
+    profile_key: &'a str,
+    provider: NativeProvider,
+    turn_limit_ms: u64,
+}
+
+/// Where owned bridges of every provider run from, under the Distill root
+/// `root` (see [`execution::prepare_owned_runtime`]).
+fn owned_runtime_root(root: &std::path::Path) -> PathBuf {
+    root.join("benchmarks").join("runtime")
+}
+
+/// Removes the sign-in copy an owned bridge on `route_key` may have left in
+/// its runtime directory under `runtime_root`; nothing for any other route.
+fn discard_route_sign_in(runtime_root: &std::path::Path, route_key: &str) -> std::io::Result<()> {
+    if !route_key.contains(BENCHMARK_ROUTE) {
+        return Ok(());
+    }
+    let harness_id = route_key.split('\u{1f}').next().unwrap_or_default();
+    match NativeProvider::for_harness(harness_id) {
+        Some(provider) => {
+            execution::discard_owned_sign_in(provider, &runtime_root.join(harness_id))
+        }
+        None => Ok(()),
+    }
 }
 
 const SESSION_PAGE_SIZE: i64 = 200;
@@ -362,11 +439,15 @@ struct ActivityGenerations {
     by_account: HashMap<String, u64>,
 }
 
+/// Whether work on `route` counts for `account`. The CLI sign-in identity is
+/// the sign-in the user's own chats of that provider run on without an
+/// account, so their work counts for it too.
 fn activity_scope_matches(route: &str, provider: &str, account: &str) -> bool {
     if account == "*" {
         route == provider || route.starts_with(&format!("{provider}\u{1f}"))
     } else {
         route == account_route_key(provider, Some(account))
+            || (route == provider && provider_accounts::is_cli_login_account(provider, account))
     }
 }
 
@@ -579,6 +660,10 @@ pub struct Inner {
     shutdown_prepared: AtomicBool,
     owned_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     activity_generations: StdMutex<ActivityGenerations>,
+    /// When the sign-in an owned bridge was started with expires, by route,
+    /// with the generation of that bridge, for a provider whose sign-in the
+    /// bridge cannot refresh (Grok).
+    owned_sign_in_expiry: StdMutex<HashMap<String, (u64, i64)>>,
 }
 
 /// Tauri-managed handle; the host starts lazily on the first URL request.
@@ -671,8 +756,9 @@ impl AgentHost {
         sessions.retain(|runtime| runtime.account_id.as_deref() != Some(account_id));
         drop(sessions);
         inner.bridges.lock().await.retain(|route, bridge| {
-            if route == &key || route.starts_with(&format!("{key}\u{1f}benchmark:")) {
+            if route == &key || route.starts_with(&format!("{key}{BENCHMARK_ROUTE}")) {
                 bridge.kill();
+                inner.forget_owned_bridge(route, bridge.generation());
                 false
             } else {
                 true
@@ -718,6 +804,11 @@ impl Inner {
             && std::env::var_os("DISTILL_ROOT").is_none()
         {
             crate::services::root_migration::adopt_sessions(&distill_root, &app_data_dir).await?;
+        }
+        // A sign-in an owned bridge was starting with when Distill stopped
+        // goes now, not with the next Grok benchmark.
+        if let Err(error) = execution::discard_left_sign_ins(&owned_runtime_root(&distill_root)) {
+            log::warn!("[agent-host] benchmark sign-in copies were not removed: {error}");
         }
         let host_dir = distill_root.join("sessions");
         let store = SessionStore::open(&host_dir.join("agent-host.db")).await?;
@@ -783,6 +874,7 @@ impl Inner {
             shutdown_prepared: AtomicBool::new(false),
             owned_locks: Mutex::new(HashMap::new()),
             activity_generations: StdMutex::new(ActivityGenerations::default()),
+            owned_sign_in_expiry: StdMutex::new(HashMap::new()),
         });
 
         tokio::spawn(Arc::clone(&inner).accept_loop(listener, token));
@@ -796,11 +888,21 @@ impl Inner {
         &self.ws_url
     }
 
+    /// Stops every bridge as the app quits, and with each owned one what the
+    /// host kept for it: the event loop that would otherwise do that may not
+    /// run again. A sign-in a bridge still starting was handed goes too.
     pub fn kill_bridges(&self) {
         if let Ok(bridges) = self.bridges.try_lock() {
-            for bridge in bridges.values() {
+            for (route, bridge) in bridges.iter() {
                 bridge.kill();
+                self.forget_owned_bridge(route, bridge.generation());
             }
+        }
+        if let Err(error) = crate::services::distill_root::app_root(&self.app).and_then(|root| {
+            execution::discard_left_sign_ins(&owned_runtime_root(&root))
+                .map_err(|error| error.to_string())
+        }) {
+            log::warn!("[agent-host] benchmark sign-in copies were not removed: {error}");
         }
     }
 
@@ -1155,25 +1257,28 @@ impl Inner {
             .await
     }
 
+    /// The bridge for `harness_id` and `account_id`, or with `profile` a
+    /// separate host-owned benchmark bridge.
     async fn ensure_execution_bridge(
         &self,
         harness_id: &str,
         account_id: Option<&str>,
-        profile: Option<&str>,
+        profile: Option<OwnedBridge<'_>>,
     ) -> Result<Arc<Bridge>, Value> {
         let spec: &HarnessSpec = harness::harness(harness_id)
             .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
         let base_key = account_route_key(harness_id, account_id);
         let route_key = profile.map_or_else(
             || base_key.clone(),
-            |profile| format!("{base_key}\u{1f}benchmark:{profile}"),
+            |owned| format!("{base_key}{BENCHMARK_ROUTE}{}", owned.profile_key),
         );
+        let turn_limit_ms = profile.map_or(0, |owned| owned.turn_limit_ms);
         let validation_id = account_validation_id(harness_id, account_id)?;
         if let Some(id) = validation_id {
             provider_accounts::resolve_account(&self.app, harness_id, Some(id))
                 .map_err(invalid_params)?;
         }
-        if let Some(bridge) = self.live_bridge(&route_key).await {
+        if let Some(bridge) = self.reusable_bridge(&route_key, turn_limit_ms).await? {
             bridge.touch();
             return Ok(bridge);
         }
@@ -1197,14 +1302,19 @@ impl Inner {
                     .map_err(invalid_params)
             })
             .transpose()?;
-        if let Some(bridge) = self.live_bridge(&route_key).await {
+        if let Some(bridge) = self.reusable_bridge(&route_key, turn_limit_ms).await? {
             bridge.touch();
             return Ok(bridge);
         }
-        let mut env = if profile.is_some() {
-            super::harness_env::build_owned_spawn_env(&self.app).await
-        } else {
-            (*self.spawn_env().await).clone()
+        let mut env = match profile {
+            Some(owned) => {
+                super::harness_env::build_owned_spawn_env(
+                    &self.app,
+                    owned.provider.inherited_env_keys(),
+                )
+                .await
+            }
+            None => (*self.spawn_env().await).clone(),
         };
         if let Some(account) = account.as_ref() {
             let base = env.shell_env.into_iter().collect();
@@ -1216,6 +1326,68 @@ impl Inner {
                 .iter()
                 .map(|key| (*key).to_string())
                 .collect();
+        }
+        // When the sign-in this bridge is handed expires (Grok).
+        let mut sign_in_expiry = None;
+        // The sign-in document an owned Grok starts with, and where it reads
+        // it from (written just before the spawn).
+        let mut sign_in = None;
+        if let Some(OwnedBridge { provider, .. }) = profile {
+            // What the profile tells the process; `extra_env` is applied after
+            // the managed credential keys are removed, so `CODEX_CONFIG`
+            // survives that.
+            let (root, dir) = self
+                .owned_runtime_dir(harness_id)
+                .map_err(protocol::internal)?;
+            execution::prepare_owned_runtime(provider, &root, &dir).map_err(protocol::internal)?;
+            if provider == NativeProvider::Grok {
+                sign_in = Self::owned_grok_sign_in(turn_limit_ms)?.map(|(document, expiry)| {
+                    sign_in_expiry = expiry;
+                    (
+                        root.clone(),
+                        execution::OwnedSignIn::path_in(&dir),
+                        document,
+                    )
+                });
+            }
+            // Kimi runs on the user's own Kimi home, found before the OS home
+            // is redirected.
+            let cli_home = if provider == NativeProvider::Kimi {
+                Some(execution::kimi_home(&env.shell_env).ok_or_else(|| {
+                    protocol::internal("capability_missing: the Kimi Code home cannot be located")
+                })?)
+            } else {
+                None
+            };
+            // Codex starts on the account's own model list without the tools
+            // its entries declare.
+            let catalog = if provider == NativeProvider::Codex {
+                let account = account.as_ref().ok_or_else(|| {
+                    protocol::internal("capability_missing: Codex benchmarks need an account")
+                })?;
+                let home = provider_accounts::account_home(&self.app, account)
+                    .map_err(protocol::internal)?;
+                Some(
+                    execution::prepare_codex_model_catalog(&root, &dir, &account.id, &home)
+                        .map_err(protocol::internal)?,
+                )
+            } else {
+                None
+            };
+            let process_env = provider.process_env(
+                &dir,
+                cli_home.as_deref(),
+                sign_in.as_ref().map(|(_, path, _)| path.as_path()),
+                catalog.as_deref(),
+            );
+            if process_env.iter().any(|(key, _)| key == "USERPROFILE") {
+                // The redirected profile must be the only home it can find.
+                env.shell_env.retain(|key, _| {
+                    !crate::services::env_key::matches(key, "HOMEDRIVE")
+                        && !crate::services::env_key::matches(key, "HOMEPATH")
+                });
+            }
+            env.extra_env.extend(process_env);
         }
         // Startup reconciliation and the first model picker race. Waiting
         // only for an install already in flight could start yesterday's
@@ -1244,14 +1416,179 @@ impl Inner {
         } else {
             None
         };
-        let bridge = Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route_key)
-            .await
-            .map_err(protocol::internal)?;
+        // Built under the install lock, so the runtime it verifies is the one
+        // that starts. Hashing a native CLI the first time takes a moment.
+        let owned = match profile {
+            Some(OwnedBridge { provider, .. }) => {
+                let managed_node = crate::services::managed_node::managed_node_bin_dir(&self.app)
+                    .map(|dir| dir.join(if cfg!(windows) { "node.exe" } else { "node" }));
+                let native_cli = managed_acp_tools::native_cli_path(&self.app, harness_id);
+                let launch_env = env.clone();
+                let launch = tokio::task::spawn_blocking(move || {
+                    super::bridge::owned_launch(
+                        provider,
+                        spec,
+                        &launch_env,
+                        managed_node.as_deref(),
+                        native_cli.as_deref(),
+                    )
+                })
+                .await
+                .map_err(|error| protocol::internal(error.to_string()))?
+                .map_err(protocol::internal)?;
+                Some(launch)
+            }
+            None => None,
+        };
+        // On disk only until the bridge has answered `initialize`, which is
+        // when Grok reads it; dropped on every path out of this function.
+        let sign_in_file = sign_in
+            .map(|(root, path, document)| execution::OwnedSignIn::write(&root, &path, &document))
+            .transpose()
+            .map_err(|error| {
+                protocol::internal(format!(
+                    "capability_missing: the Grok sign-in cannot be handed over: {error}"
+                ))
+            })?;
+        let bridge = Bridge::spawn_scoped(
+            spec,
+            &env,
+            self.events_tx.clone(),
+            &route_key,
+            owned.as_ref(),
+        )
+        .await
+        .map_err(protocol::internal)?;
+        drop(sign_in_file);
+        if let Ok(mut expiries) = self.owned_sign_in_expiry.lock() {
+            match sign_in_expiry {
+                Some(expiry) => expiries.insert(route_key.clone(), (bridge.generation(), expiry)),
+                None => expiries.remove(&route_key),
+            };
+        }
         self.bridges
             .lock()
             .await
             .insert(route_key, Arc::clone(&bridge));
         Ok(bridge)
+    }
+
+    /// The live bridge on `route_key`, unless it is an owned bridge whose
+    /// sign-in would not outlast a turn of `turn_limit_ms`: that one is shut
+    /// down, so the next spawn starts on the sign-in the user's own CLI has
+    /// refreshed since. While it still has requests in flight it can be
+    /// neither replaced nor trusted with the turn, so the session is refused.
+    async fn reusable_bridge(
+        &self,
+        route_key: &str,
+        turn_limit_ms: u64,
+    ) -> Result<Option<Arc<Bridge>>, Value> {
+        let Some(bridge) = self.live_bridge(route_key).await else {
+            return Ok(None);
+        };
+        let expiring = self
+            .owned_sign_in_expiry
+            .lock()
+            .ok()
+            .and_then(|expiries| expiries.get(route_key).copied())
+            .filter(|(generation, _)| *generation == bridge.generation())
+            .is_some_and(|(_, expiry)| {
+                grok::benchmark_sign_in_expiring(
+                    Some(expiry),
+                    chrono::Utc::now().timestamp_millis(),
+                    turn_limit_ms,
+                )
+            });
+        if !expiring {
+            return Ok(Some(bridge));
+        }
+        if bridge.in_flight() > 0 {
+            return Err(protocol::internal(format!(
+                "capability_missing: the Grok sign-in of the busy benchmark bridge expires within {} minutes",
+                grok::benchmark_sign_in_margin_ms(turn_limit_ms).saturating_add(59_999) / 60_000
+            )));
+        }
+        log::info!("[agent-host] {route_key} bridge sign-in is about to expire; replacing it");
+        let mut bridges = self.bridges.lock().await;
+        if bridges
+            .get(route_key)
+            .is_some_and(|current| current.generation() == bridge.generation())
+        {
+            bridges.remove(route_key);
+        }
+        drop(bridges);
+        bridge.kill();
+        self.forget_owned_bridge(route_key, bridge.generation());
+        Ok(None)
+    }
+
+    /// The Distill root and the runtime directory under it that owned bridges
+    /// of `harness_id` run from (see [`execution::prepare_owned_runtime`]).
+    fn owned_runtime_dir(&self, harness_id: &str) -> Result<(PathBuf, PathBuf), String> {
+        let root = crate::services::distill_root::app_root(&self.app)?;
+        let dir = owned_runtime_root(&root).join(harness_id);
+        Ok((root, dir))
+    }
+
+    /// Drops what the host kept for the owned bridge of `generation` on
+    /// `route_key` once it is stopped or gone: the expiry of the sign-in it
+    /// ran on, and any copy of that sign-in its CLI left in the runtime
+    /// directory. Every path that stops one calls this, the idle reaper, a
+    /// sign-in replacement, a credential change and app quit as well as its
+    /// exit, so no copy outlives the bridge. Nothing for a chat route.
+    fn forget_owned_bridge(&self, route_key: &str, generation: u64) {
+        if !route_key.contains(BENCHMARK_ROUTE) {
+            return;
+        }
+        if let Ok(mut expiries) = self.owned_sign_in_expiry.lock() {
+            // A replacement may already have recorded its own.
+            if expiries
+                .get(route_key)
+                .is_some_and(|(owner, _)| *owner == generation)
+            {
+                expiries.remove(route_key);
+            }
+        }
+        if let Err(error) = crate::services::distill_root::app_root(&self.app).and_then(|root| {
+            discard_route_sign_in(&owned_runtime_root(&root), route_key)
+                .map_err(|error| error.to_string())
+        }) {
+            log::warn!("[agent-host] {route_key} benchmark sign-in copy was not removed: {error}");
+        }
+    }
+
+    /// Whether the exit of the bridge of `exited` generation ends its route,
+    /// given the generation of the bridge the map holds there now (`live`):
+    /// it does unless a replacement already serves it. A bridge the host
+    /// stopped itself is no longer in the map when it exits.
+    fn exit_ends_route(live: Option<u64>, exited: u64) -> bool {
+        live.is_none_or(|generation| generation == exited)
+    }
+
+    /// The user's Grok session for an owned bridge to run on, as
+    /// [`grok::benchmark_auth_document`] gives it; `None` when Grok signs in
+    /// with `XAI_API_KEY` instead. A session that would not outlast a turn of
+    /// `turn_limit_ms` and its slack is refused: the owned process cannot
+    /// refresh it.
+    fn owned_grok_sign_in(turn_limit_ms: u64) -> Result<Option<(String, Option<i64>)>, Value> {
+        let sign_in = grok::benchmark_auth_document().map_err(|error| {
+            protocol::internal(format!(
+                "capability_missing: the Grok sign-in cannot be read: {error}"
+            ))
+        })?;
+        if sign_in.as_ref().is_some_and(|(_, expiry)| {
+            grok::benchmark_sign_in_expiring(
+                *expiry,
+                chrono::Utc::now().timestamp_millis(),
+                turn_limit_ms,
+            )
+        }) {
+            return Err(protocol::internal(format!(
+                "capability_missing: the Grok sign-in expires within {} minutes; open a Grok chat so the Grok CLI refreshes it",
+                grok::benchmark_sign_in_margin_ms(turn_limit_ms).saturating_add(59_999) / 60_000
+            )));
+        }
+        Ok(sign_in)
     }
 
     /// Every [`BRIDGE_REAP_INTERVAL`], shut down the bridges nothing is using.
@@ -1444,17 +1781,18 @@ impl Inner {
                     now,
                 );
             if reapable {
-                idle.push(Arc::clone(bridge));
+                idle.push((harness.clone(), Arc::clone(bridge)));
             }
             !reapable
         });
-        for bridge in idle {
+        for (route, bridge) in idle {
             log::info!(
                 "[agent-host] {} bridge idle for {}s with no chats; shutting it down",
                 bridge.harness,
                 now.saturating_duration_since(bridge.last_used()).as_secs()
             );
             bridge.kill();
+            self.forget_owned_bridge(&route, bridge.generation());
         }
     }
 
@@ -1569,13 +1907,14 @@ impl Inner {
                     // rest keep working instead of silently losing the agent's
                     // context on their next prompt.
                     let mut bridges = self.bridges.lock().await;
-                    if bridges
-                        .get(&harness)
-                        .is_some_and(|bridge| bridge.generation() == generation)
-                    {
+                    let live = bridges.get(&harness).map(|bridge| bridge.generation());
+                    if live == Some(generation) {
                         bridges.remove(&harness);
                     }
                     drop(bridges);
+                    if Self::exit_ends_route(live, generation) {
+                        self.forget_owned_bridge(&harness, generation);
+                    }
                     let mut sessions = self.sessions.lock().await;
                     sessions.retain(|runtime| !runtime.served_by(&harness, generation));
                 }
@@ -1688,13 +2027,18 @@ impl Inner {
         if self.bridges.lock().await.get(harness)?.generation() != generation {
             return None;
         }
-        let method = if Self::normalize_xai_turn_usage(method, &mut params) {
+        let benchmark = harness.contains("\u{1f}benchmark:");
+        // An owned session also keeps grok's other session extension updates:
+        // they are evidence, and grok reports its hooks and subagents there.
+        let method = if Self::normalize_xai_turn_usage(method, &mut params)
+            || (benchmark && Self::is_xai_session_extension(method))
+        {
             "session/update"
         } else {
             method
         };
         if method != "session/update" {
-            if harness.contains("\u{1f}benchmark:") {
+            if benchmark {
                 return None;
             }
             self.notify_frontend(method, params);
@@ -1718,14 +2062,13 @@ impl Inner {
                 if runtime.execution_profile.is_some() {
                     params["update"]["_meta"]["executionOwner"] =
                         runtime.snapshot["_meta"]["executionOwner"].clone();
-                    if matches!(
+                    if let Some(violation) = Self::owned_violation(
                         params
                             .pointer("/update/sessionUpdate")
                             .and_then(Value::as_str),
-                        Some("tool_call" | "tool_call_update")
+                        runtime.run.is_some(),
                     ) {
-                        params["update"]["_meta"]["executionViolation"] =
-                            json!("native tool activity in no-tool profile");
+                        params["update"]["_meta"]["executionViolation"] = json!(violation);
                     }
                     if params
                         .pointer("/update/sessionUpdate")
@@ -1840,6 +2183,25 @@ impl Inner {
         }
     }
 
+    /// What an update of an owned session shows the no-tool policy broken by,
+    /// if anything: work no single clean answer does, or a mode change while
+    /// the turn runs.
+    fn owned_violation(update: Option<&str>, running: bool) -> Option<&'static str> {
+        match update? {
+            "tool_call" | "tool_call_update" => Some("native tool activity in no-tool profile"),
+            "plan" => Some("native plan activity in no-tool profile"),
+            kind if kind.starts_with("subagent") => {
+                Some("native subagent activity in no-tool profile")
+            }
+            // Grok's hook runs.
+            "hook_run_started" | "hook_execution" => {
+                Some("native hook activity in no-tool profile")
+            }
+            "current_mode_update" if running => Some("native mode changed during owned execution"),
+            _ => None,
+        }
+    }
+
     fn is_turn_update(params: &Value) -> bool {
         matches!(
             params
@@ -1858,15 +2220,28 @@ impl Inner {
         )
     }
 
-    /// Rewrites grok's `_x.ai/session/update` `turn_completed` into the
+    /// Whether `method` is one of grok's per-session extension notifications.
+    /// Grok 1.0.40 sends `turn_completed`, retries and its other session
+    /// events on `_x.ai/session_notification`; earlier builds sent the turn
+    /// on `_x.ai/session/update`, which still carries tool and content
+    /// updates.
+    fn is_xai_session_extension(method: &str) -> bool {
+        matches!(
+            method,
+            "_x.ai/session/update" | "_x.ai/session_notification"
+        )
+    }
+
+    /// Rewrites grok's `turn_completed` session extension update into the
     /// standard `message_usage` update, so grok turns reach the usage ledger
     /// the way claude's and codex's do; every other `_x.ai` extension keeps
     /// its raw passthrough. Grok's `inputTokens` includes the cached share,
     /// which `message_usage` counts separately, so the cache is subtracted.
-    /// `costUsdTicks` is dropped: its scale is unpublished, and a wrong
-    /// dollar amount in the ledger is worse than none.
+    /// The raw usage stays under `_meta.xaiTurnUsage`: its `costUsdTicks`
+    /// (1 USD = 1e10 ticks) is complete only when grok says so, which
+    /// benchmarks check before counting it; chats show no cost from it.
     fn normalize_xai_turn_usage(method: &str, params: &mut Value) -> bool {
-        if method != "_x.ai/session/update" {
+        if !Self::is_xai_session_extension(method) {
             return false;
         }
         let Some(update) = params.get("update") else {
@@ -1886,6 +2261,7 @@ impl Inner {
         if input == 0 && output == 0 && cache_read == 0 && cache_write == 0 {
             return false;
         }
+        let raw = usage.clone();
         params["update"] = json!({
             "sessionUpdate": "message_usage",
             "usage": {
@@ -1895,6 +2271,7 @@ impl Inner {
                 "cacheWriteTokens": cache_write,
                 "elapsedMs": read("apiDurationMs"),
             },
+            "_meta": { "xaiTurnUsage": raw },
         });
         true
     }
@@ -5359,20 +5736,21 @@ impl Inner {
         }))
     }
 
+    /// Opens the owned session `request` names, or returns the one its owner
+    /// already has. `turn_limit_ms` is the longest its turn may run, which the
+    /// sign-in of a bridge that cannot refresh it must outlast.
     pub async fn create_owned_session(
         self: &Arc<Self>,
         request: OwnedSessionRequest,
+        turn_limit_ms: u64,
     ) -> Result<OwnedSession, String> {
-        execution::validate_request(&request)?;
-        let policy_hash = execution::digest(
-            serde_json::to_vec(&json!({
-                "request":request,
-                "nativePolicy":execution::native_text_meta(&request.model_id),
-                "processPolicy":"clear-environment-no-distill-shims-v1",
-                "bridgeVersion":"0.81.0", "sdkVersion":"0.3.280"
-            }))
-            .map_err(|e| e.to_string())?,
-        );
+        let provider = execution::validate_request(&request)?;
+        // Fail closed: a profile the policy probe has not passed on what this
+        // build ships never starts.
+        if let Some(issue) = provider.admission_issue() {
+            return Err(format!("capability_missing: {issue}"));
+        }
+        let policy_hash = provider.policy_hash(&request)?;
         let lock = self
             .owned_lock(&format!("owner:{}", request.owner_id))
             .await;
@@ -5402,26 +5780,44 @@ impl Inner {
             &request.provider_id,
             Some(&request.account_id),
         )?;
-        let profile_key = execution::digest("native_text_v1:claude:0.81.0:sdk:0.3.280");
+        if provider == NativeProvider::Codex {
+            // Every thread loads the account's home; it must add nothing.
+            execution::codex_home_preflight(&provider_accounts::account_home(
+                &self.app, &account,
+            )?)?;
+            // Nor may the user's own profile, which the redirect cannot hide.
+            execution::codex_user_skills_preflight(execution::codex_user_profile().as_deref())?;
+        }
+        let profile_key = provider.profile_key();
         let bridge = self
-            .ensure_execution_bridge(&request.provider_id, Some(&account.id), Some(&profile_key))
-            .await
-            .map_err(|e| error_text(&e))?;
-        let opened = bridge.request("session/new",json!({"cwd":request.cwd,"mcpServers":[],"_meta":execution::native_text_meta(&request.model_id)})).await.map_err(|e|error_text(&e))?;
-        let bridge_session_id =
-            protocol::session_id(&opened).ok_or("bridge returned no sessionId")?;
-        if let Err(error) = bridge
-            .request(
-                "session/set_mode",
-                json!({"sessionId":bridge_session_id,"modeId":"default"}),
+            .ensure_execution_bridge(
+                &request.provider_id,
+                Some(&account.id),
+                Some(OwnedBridge {
+                    profile_key: &profile_key,
+                    provider,
+                    turn_limit_ms,
+                }),
             )
             .await
-        {
-            bridge.close_session(&bridge_session_id).await;
-            return Err(format!(
-                "capability_missing: explicit permission mode was rejected: {}",
-                error_text(&error)
-            ));
+            .map_err(|e| error_text(&e))?;
+        let opened = bridge.request("session/new",json!({"cwd":request.cwd,"mcpServers":[],"_meta":provider.session_meta(&request.model_id)})).await.map_err(|e|error_text(&e))?;
+        let bridge_session_id =
+            protocol::session_id(&opened).ok_or("bridge returned no sessionId")?;
+        if let Some(mode) = provider.permission_mode() {
+            if let Err(error) = bridge
+                .request(
+                    "session/set_mode",
+                    json!({"sessionId":bridge_session_id,"modeId":mode}),
+                )
+                .await
+            {
+                bridge.close_session(&bridge_session_id).await;
+                return Err(format!(
+                    "capability_missing: explicit permission mode was rejected: {}",
+                    error_text(&error)
+                ));
+            }
         }
         let wanted = Selection {
             model: Some(request.model_id.clone()),
@@ -5440,6 +5836,11 @@ impl Inner {
             )
             .await;
         let acknowledged = Self::selection_from(&snapshot["configOptions"]);
+        // A bridge that lands on a refused effort by itself must not run it.
+        if let Some(reason) = provider.effort_refusal(acknowledged.effort.as_deref()) {
+            bridge.close_session(&bridge_session_id).await;
+            return Err(format!("capability_missing: {reason}"));
+        }
         let matches = substitutions.is_empty()
             && acknowledged.model.as_deref() == Some(request.model_id.as_str())
             && request
@@ -5601,6 +6002,7 @@ impl Inner {
                 "dispatch_uncertain: owned runtime is unavailable; create an explicit rerun".into(),
             );
         }
+        let provider = NativeProvider::for_harness(&current.harness);
         let ids = TurnIds::new();
         let dispatch = ExecutionDispatch {
             request_key: request.request_key.clone(),
@@ -5642,12 +6044,9 @@ impl Inner {
                     .await;
                 return;
             }
-            let mut blocks =
-                vec![json!({"type":"text","text":format!("Benchmark task:\n{}",request.prompt)})];
-            for image in &request.images {
-                blocks.push(json!({"type":"image","data":image.data,"mimeType":image.mime_type}));
-            }
-            let prompt = json!({"sessionId":request.session_id,"prompt":blocks,"_meta":{"executionOwner":{"kind":"benchmark","id":owner.owner_id}}});
+            let blocks = owned_prompt_blocks(&request.prompt, &request.images);
+            let prompt =
+                owned_prompt_params(&request.session_id, blocks, &owner.owner_id, provider);
             let task = host.start_turn(prompt, ids, false);
             tokio::pin!(task);
             let mut timed_out = false;
@@ -5716,7 +6115,7 @@ impl Inner {
             match host.session_record(&request.session_id).await {
                 Ok(record) => {
                     if let Err(reason) = host.require_owned_selection(&owner, &record).await {
-                        error = Some(json!({"kind":"selection_changed","message":reason}));
+                        error = Some(json!({"kind":terminal_error_kind(&reason),"message":reason}));
                         result = None;
                     } else if let Some(value) = result.as_mut() {
                         value["observedSelection"] = json!(ObservedSelection {
@@ -5754,7 +6153,7 @@ impl Inner {
     ) -> Result<(), String> {
         if self.store.execution_policy_violation(&record.id).await? {
             return Err(
-                "capability_missing: native execution violated the declared no-tool policy".into(),
+                "execution_violation: native execution violated the declared no-tool policy".into(),
             );
         }
         if record.harness != owner.provider_id
@@ -5813,7 +6212,11 @@ impl Inner {
             .iter()
             .filter(|(_, runtime)| {
                 runtime.harness == provider
-                    && (account == "*" || runtime.account_id.as_deref() == Some(account))
+                    && activity_scope_matches(
+                        &account_route_key(&runtime.harness, runtime.account_id.as_deref()),
+                        provider,
+                        account,
+                    )
                     && (runtime.loading || runtime.run.is_some())
             })
             .map(|(id, _)| id.clone())
@@ -5846,12 +6249,28 @@ impl Inner {
         _refresh: bool,
     ) -> Result<Value, String> {
         let (models, executable) = self
-            .probe_models(provider, Some(account))
+            .probe_models(provider, Self::inventory_account(provider, account))
             .await
             .map_err(|e| error_text(&e))?;
         Ok(
             json!({"models":models,"executable":executable,"providerId":provider,"accountId":account,"observedAt":now_iso()}),
         )
+    }
+
+    /// The account whose bridge lists `provider`'s models for the benchmark
+    /// account `account`. The CLI sign-in is the one the user's chats run on:
+    /// their bridge, with no account.
+    fn inventory_account<'a>(provider: &str, account: &'a str) -> Option<&'a str> {
+        (!provider_accounts::is_cli_login_account(provider, account)).then_some(account)
+    }
+
+    /// The executable that would answer [`Self::benchmark_inventory`] for
+    /// `provider` and `account` now, found without a session or a new
+    /// process (see [`Self::serving_executable`]). An inventory listed by the
+    /// same executable still describes the runtime.
+    pub async fn benchmark_serving_executable(&self, provider: &str, account: &str) -> Value {
+        self.serving_executable(provider, Self::inventory_account(provider, account))
+            .await
     }
 
     /// A stored session, with any model id that still carries a folded effort
@@ -6528,6 +6947,156 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn cli_login_activity_counts_chats_without_an_account() {
+        let mut generations = ActivityGenerations::default();
+        // A Grok chat runs without an account; a benchmark on the CLI sign-in.
+        generations.record("grok-acp", None);
+        generations.record("grok-acp", Some("cli-login-grok-acp"));
+        assert_eq!(generations.snapshot("grok-acp", "cli-login-grok-acp"), 2);
+        assert_eq!(generations.snapshot("grok-acp", "*"), 2);
+        assert!(activity_scope_matches(
+            "grok-acp",
+            "grok-acp",
+            "cli-login-grok-acp"
+        ));
+        // Another provider's identity, or a managed account, never borrows the
+        // provider's account-less chats.
+        assert!(!activity_scope_matches(
+            "grok-acp",
+            "grok-acp",
+            "cli-login-kimi-acp"
+        ));
+        assert!(!activity_scope_matches("claude-acp", "claude-acp", "a"));
+    }
+
+    /// The idle reaper, a sign-in replacement and a credential change take a
+    /// bridge out of the map before it exits; its exit still ends the route
+    /// and drops what the host kept for it, unless a replacement serves it.
+    #[test]
+    fn a_bridge_the_host_stopped_ends_its_route_when_it_exits() {
+        assert!(Inner::exit_ends_route(None, 3));
+        assert!(Inner::exit_ends_route(Some(3), 3));
+        assert!(!Inner::exit_ends_route(Some(4), 3));
+    }
+
+    #[test]
+    fn a_stopped_owned_grok_bridge_leaves_no_sign_in_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = owned_runtime_root(root.path());
+        let copy = |harness: &str| runtime.join(harness).join("home").join("auth.json");
+        for harness in ["grok-acp", "codex-acp"] {
+            std::fs::create_dir_all(copy(harness).parent().unwrap()).unwrap();
+            std::fs::write(copy(harness), "{}").unwrap();
+        }
+        // A chat route is the user's own Grok; nothing there is the host's.
+        discard_route_sign_in(&runtime, "grok-acp").unwrap();
+        discard_route_sign_in(&runtime, "codex-acp\u{1f}a\u{1f}benchmark:p").unwrap();
+        assert!(copy("grok-acp").exists());
+        assert!(copy("codex-acp").exists());
+        discard_route_sign_in(
+            &runtime,
+            "grok-acp\u{1f}cli-login-grok-acp\u{1f}benchmark:p",
+        )
+        .unwrap();
+        assert!(!copy("grok-acp").exists());
+        // Already gone is fine.
+        discard_route_sign_in(
+            &runtime,
+            "grok-acp\u{1f}cli-login-grok-acp\u{1f}benchmark:p",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn terminal_error_kind_names_execution_violation() {
+        assert_eq!(
+            terminal_error_kind(
+                "execution_violation: native execution violated the declared no-tool policy"
+            ),
+            "execution_violation"
+        );
+        assert_eq!(
+            terminal_error_kind(
+                "selection_changed: requested benchmark selection was not acknowledged"
+            ),
+            "selection_changed"
+        );
+        assert_eq!(
+            Inner::owned_violation(Some("tool_call_update"), false),
+            Some("native tool activity in no-tool profile")
+        );
+        assert!(Inner::owned_violation(Some("plan"), false).is_some());
+        assert!(Inner::owned_violation(Some("subagent_started"), false).is_some());
+        // Grok's extension updates: hook runs and subagents break the policy,
+        // its status reports do not.
+        assert_eq!(
+            Inner::owned_violation(Some("hook_execution"), false),
+            Some("native hook activity in no-tool profile")
+        );
+        assert!(Inner::owned_violation(Some("hook_run_started"), true).is_some());
+        assert!(Inner::owned_violation(Some("subagent_spawned"), true).is_some());
+        assert_eq!(Inner::owned_violation(Some("session_status"), true), None);
+        assert!(Inner::owned_violation(Some("current_mode_update"), true).is_some());
+        assert_eq!(
+            Inner::owned_violation(Some("current_mode_update"), false),
+            None
+        );
+        assert_eq!(
+            Inner::owned_violation(Some("agent_message_chunk"), true),
+            None
+        );
+        assert_eq!(Inner::owned_violation(None, true), None);
+    }
+
+    #[test]
+    fn owned_prompt_starts_with_the_task_marker() {
+        for prompt in ["/plan rewrite everything", "$skill hostile", "plain task"] {
+            let blocks = owned_prompt_blocks(
+                prompt,
+                &[OwnedTurnImage {
+                    data: "aW1hZ2U=".into(),
+                    mime_type: "image/png".into(),
+                }],
+            );
+            assert_eq!(blocks[0]["type"], "text");
+            assert_eq!(
+                blocks[0]["text"].as_str(),
+                Some(format!("Benchmark task:\n{prompt}").as_str())
+            );
+            assert_eq!(blocks[1]["type"], "image");
+            assert_eq!(blocks.len(), 2);
+        }
+    }
+
+    /// Grok wraps a prompt in `<user_query>` unless it is sent verbatim; the
+    /// other profiles' prompts are what they were.
+    #[test]
+    fn owned_grok_prompts_go_verbatim() {
+        let blocks = owned_prompt_blocks("task", &[]);
+        let grok = owned_prompt_params("s", blocks.clone(), "o", Some(NativeProvider::Grok));
+        assert_eq!(
+            grok["_meta"],
+            json!({"verbatim": true, "executionOwner": {"kind": "benchmark", "id": "o"}})
+        );
+        assert_eq!(grok["prompt"], json!(blocks));
+        assert_eq!(grok["sessionId"], "s");
+        for provider in [
+            Some(NativeProvider::Claude),
+            Some(NativeProvider::Codex),
+            Some(NativeProvider::Kimi),
+            None,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&owned_prompt_params("s", blocks.clone(), "o", provider))
+                    .unwrap(),
+                serde_json::to_string(&json!({"sessionId":"s","prompt":blocks,"_meta":{"executionOwner":{"kind":"benchmark","id":"o"}}}))
+                    .unwrap(),
+                "{provider:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn owned_runtime_registration_drains_intermediate_setup_notifications() {
         let sessions = Arc::new(Mutex::new(SessionTable::default()));
@@ -6724,6 +7293,63 @@ mod tests {
         assert_eq!(usage["cacheWriteTokens"], 0);
         assert_eq!(usage["elapsedMs"], 3899);
         assert!(usage.get("cost").is_none());
+        // The raw usage is kept whole for benchmarks.
+        let raw = &params["update"]["_meta"]["xaiTurnUsage"];
+        assert_eq!(raw["costUsdTicks"], 104_298_400u64);
+        assert_eq!(raw["reasoningTokens"], 159);
+        assert_eq!(raw["modelCalls"], 1);
+        assert_eq!(raw["inputTokens"], 17042);
+    }
+
+    /// Grok 1.0.40 reports the turn on `_x.ai/session_notification` (seen in
+    /// the policy probe), not on `_x.ai/session/update`.
+    #[test]
+    fn grok_turn_completed_notification_becomes_message_usage() {
+        let mut params = json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "turn_completed",
+                "prompt_id": "p",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "inputTokens": 10,
+                    "outputTokens": 5,
+                    "totalTokens": 15,
+                    "cachedReadTokens": 2,
+                    "cacheCreationTokens": 0,
+                    "reasoningTokens": 1,
+                    "modelCalls": 1,
+                    "apiDurationMs": 8
+                }
+            }
+        });
+        assert!(Inner::normalize_xai_turn_usage(
+            "_x.ai/session_notification",
+            &mut params
+        ));
+        assert_eq!(params["update"]["sessionUpdate"], "message_usage");
+        assert_eq!(params["update"]["usage"]["inputTokens"], 8);
+        assert_eq!(params["update"]["usage"]["cacheReadTokens"], 2);
+        assert_eq!(
+            params["update"]["_meta"]["xaiTurnUsage"]["reasoningTokens"],
+            1
+        );
+        // Its other session events stay grok's own.
+        let mut retry = json!({
+            "sessionId": "s1",
+            "update": { "sessionUpdate": "retry_state", "attempt": 1 }
+        });
+        assert!(!Inner::normalize_xai_turn_usage(
+            "_x.ai/session_notification",
+            &mut retry
+        ));
+        assert_eq!(retry["update"]["sessionUpdate"], "retry_state");
+        // Both channels are kept as evidence of an owned session.
+        assert!(Inner::is_xai_session_extension(
+            "_x.ai/session_notification"
+        ));
+        assert!(Inner::is_xai_session_extension("_x.ai/session/update"));
+        assert!(!Inner::is_xai_session_extension("_x.ai/sessions/changed"));
     }
 
     #[test]

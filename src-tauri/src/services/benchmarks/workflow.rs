@@ -169,6 +169,7 @@ async fn prepare_step(
     child.output = None;
     child.evidence_hash = None;
     child.usage = TokenUsage::default();
+    child.resolved_model = None;
     child.evaluations.clear();
     child.event_cursor = 0;
     child.workflow_steps.clear();
@@ -246,6 +247,12 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
                 .and_then(|value| total.checked_add(value))
         })
     };
+    // Every step runs the root's configuration; the newest step that named
+    // the model that answered speaks for the task.
+    root.resolved_model = executed
+        .iter()
+        .rev()
+        .find_map(|step| step.attempt.resolved_model.clone());
     if let Some(last) = executed.last() {
         root.started_at = executed
             .iter()
@@ -444,6 +451,13 @@ pub async fn execute(
             }
             Err(error) => {
                 saved.attempt = service.store.attempt(&saved.attempt.id).await?;
+                // A step the provider never saw waits in the queue with its
+                // workflow, as a single turn would.
+                if super::runner::returns_to_queue(&error.code, &saved.attempt.phase) {
+                    super::runner::requeue(&mut saved.attempt, error.message.clone());
+                    service.store.save_attempt(&saved.attempt).await?;
+                    return Err(error);
+                }
                 saved.attempt.phase = "terminal".into();
                 saved.attempt.outcome = Some(error.code);
                 saved.attempt.reason = Some(error.message);
@@ -644,7 +658,11 @@ mod tests {
             .unwrap()
             .execution_profile = "native_text_auxiliary".into();
         steps[1].attempt.outcome = Some("cancelled".into());
+        // The newest step whose usage named the model that answered speaks
+        // for the task.
+        steps[0].attempt.resolved_model = Some("fake-pass-2026".into());
         aggregate(&mut result, &steps);
+        assert_eq!(result.resolved_model.as_deref(), Some("fake-pass-2026"));
         assert_eq!(result.usage.schema, "workflow_sum_with_auxiliary_v2");
         assert_eq!(
             result.observed.unwrap().execution_profile,
@@ -717,6 +735,29 @@ mod tests {
         assert_eq!(result.outcome.as_deref(), Some("cancelled"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(result.workflow_steps.len(), 1);
+    }
+
+    /// A step the host refused before any provider call goes back to the
+    /// queue with its workflow, which the runner holds for the operator; the
+    /// next pass runs that step, never settles it.
+    #[tokio::test]
+    async fn a_step_refused_before_its_session_waits_with_its_workflow() {
+        let (_directory, service, backend, root, version) = setup().await;
+        backend.capability_refusals.store(1, Ordering::SeqCst);
+        let (_tx, cancel) = watch::channel(false);
+        let refused = execute(&service, root.clone(), version.clone(), 30, cancel.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "capability_missing");
+        let steps = saved_steps(&service.store, &root.id).await.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].attempt.phase, "pending");
+        assert_eq!(steps[0].attempt.outcome, None);
+        assert_eq!(steps[0].attempt.started_at, None);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        let result = execute(&service, root, version, 30, cancel).await.unwrap();
+        assert_eq!(result.outcome.as_deref(), Some("completed"));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

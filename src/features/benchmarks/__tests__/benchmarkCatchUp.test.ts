@@ -82,6 +82,41 @@ describe("catch-up configuration", () => {
       ]),
     ).toEqual({ issue: "changed" });
   });
+
+  it("never fills a moving alias's row with the model it points at now", () => {
+    const k27 = {
+      ...configuration,
+      providerId: "kimi-acp",
+      accountId: "cli-login-kimi-acp",
+      modelId: "kimi-code/kimi-for-coding",
+      modelName: "K2.7 Code",
+    };
+    const listed = (modelName: string): InventoryModel => ({
+      ...current,
+      configuration: {
+        ...k27,
+        effort: null,
+        fastMode: null,
+        inventoryRevision: "runtime-now",
+        modelName,
+      },
+    });
+    expect(resolveCatchUpConfiguration(k27, [listed("K2.8 Preview")])).toEqual({
+      issue: "missing",
+    });
+    expect(pinned(k27, [listed("K2.7 Code")]).inventoryRevision).toBe(
+      "runtime-now",
+    );
+    // Any other id keeps its row under a new display name.
+    expect(
+      pinned({ ...configuration, modelName: "Model one" }, [
+        {
+          ...current,
+          configuration: { ...current.configuration, modelName: "Model 1.1" },
+        },
+      ]).modelName,
+    ).toBe("Model 1.1");
+  });
 });
 
 describe("catch-up cases", () => {

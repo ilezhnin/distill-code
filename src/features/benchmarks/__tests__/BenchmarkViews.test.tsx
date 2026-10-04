@@ -413,6 +413,57 @@ describe("benchmark authoring and saved evidence", () => {
       limit: 50,
     });
   });
+  it("names the model an alias resolved to on its page and in its attempts", async () => {
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
+      {
+        ...attemptSummary,
+        modelId: "sonnet",
+        resolvedModel: "claude-sonnet-5",
+      },
+      { ...attemptSummary, id: "attempt-2", resolvedModel: null },
+    ]);
+    const sonnet = leaderboardRow({
+      configuration: { ...configuration, modelId: "sonnet" },
+      attemptIds: ["attempt-1", "attempt-2"],
+      resolvedModels: ["claude-sonnet-5"],
+    });
+    const page = (row: typeof sonnet) => (
+      <BenchmarkConfigurationPage
+        row={row}
+        report={{ cohort, rows: [row] }}
+        runs={[]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+        onBack={vi.fn()}
+      />
+    );
+    wrap(page(sonnet));
+    const spec = (label: string) =>
+      screen.getByText(label, { selector: "dt" }).nextElementSibling;
+    expect(spec("Resolved model")).toHaveTextContent("claude-sonnet-5");
+    expect(spec("API model ID")).toHaveTextContent("sonnet");
+    const header = await screen.findByRole("columnheader", {
+      name: "Resolved model",
+    });
+    const column = Array.from(header.parentElement?.children ?? []).indexOf(
+      header,
+    );
+    const cells = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell")[column]);
+    expect(cells.map((cell) => cell.textContent)).toEqual([
+      "claude-sonnet-5",
+      "Not reported",
+    ]);
+    cleanup();
+    // A row recorded before attempts kept the model names none.
+    wrap(page({ ...sonnet, resolvedModels: undefined }));
+    expect(spec("Resolved model")).toHaveTextContent("Not reported");
+  });
   it("does not offer gaps an unfinished run already plans again", async () => {
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
     const catchUp = vi.fn();

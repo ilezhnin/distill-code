@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use super::bridge::SpawnEnv;
-use crate::services::managed_acp_tools;
+use crate::services::{env_key, managed_acp_tools};
 
 pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
     let shell_env = managed_acp_tools::provider_env(app).await;
@@ -31,36 +31,41 @@ pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
     }
 }
 
-/// Minimum runtime environment for a separate no-tool bridge. Authentication
-/// is installed afterwards by the existing managed-account adapter.
-pub async fn build_owned_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
+/// Minimum runtime environment for a separate no-tool bridge: the fixed
+/// allowlist plus the `inherited` keys the provider's own sign-in needs.
+/// Authentication is installed afterwards by the existing managed-account
+/// adapter.
+pub async fn build_owned_spawn_env(app: &tauri::AppHandle, inherited: &[&str]) -> SpawnEnv {
     let mut shell_env = managed_acp_tools::provider_env(app).await;
-    shell_env.retain(|key, _| {
-        matches!(
-            key.to_ascii_uppercase().as_str(),
-            "PATH"
-                | "SYSTEMROOT"
-                | "WINDIR"
-                | "COMSPEC"
-                | "PATHEXT"
-                | "TEMP"
-                | "TMP"
-                | "USERPROFILE"
-                | "APPDATA"
-                | "LOCALAPPDATA"
-                | "PROGRAMFILES"
-                | "PROGRAMFILES(X86)"
-                | "HOMEDRIVE"
-                | "HOMEPATH"
-                | "HOME"
-        )
-    });
+    shell_env.retain(|key, _| owned_env_keeps(key, inherited));
     SpawnEnv {
         shell_env,
         prepend_dirs: Vec::new(),
         extra_env: Vec::new(),
         remove_env: Vec::new(),
     }
+}
+
+/// Whether an owned bridge keeps the shell variable `key`.
+fn owned_env_keeps(key: &str, inherited: &[&str]) -> bool {
+    matches!(
+        key.to_ascii_uppercase().as_str(),
+        "PATH"
+            | "SYSTEMROOT"
+            | "WINDIR"
+            | "COMSPEC"
+            | "PATHEXT"
+            | "TEMP"
+            | "TMP"
+            | "USERPROFILE"
+            | "APPDATA"
+            | "LOCALAPPDATA"
+            | "PROGRAMFILES"
+            | "PROGRAMFILES(X86)"
+            | "HOMEDRIVE"
+            | "HOMEPATH"
+            | "HOME"
+    ) || inherited.iter().any(|kept| env_key::matches(key, kept))
 }
 
 #[cfg(feature = "distillctl")]
@@ -202,4 +207,29 @@ fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
             cli_path.display()
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_env_keeps_only_the_allowlist_and_requested_keys() {
+        for key in ["Path", "SystemRoot", "TEMP", "USERPROFILE", "HomeDrive"] {
+            assert!(owned_env_keeps(key, &[]), "{key}");
+        }
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "CODEX_HOME",
+            "XAI_API_KEY",
+            "GROK_HOME",
+            "NODE_OPTIONS",
+            "DISTILLCTL_LOCK",
+        ] {
+            assert!(!owned_env_keeps(key, &[]), "{key}");
+        }
+        assert!(owned_env_keeps("xai_api_key", &["XAI_API_KEY"]));
+        assert!(!owned_env_keeps("XAI_API_KEY_FILE", &["XAI_API_KEY"]));
+        assert!(!owned_env_keeps("GROK_HOME", &["XAI_API_KEY"]));
+    }
 }

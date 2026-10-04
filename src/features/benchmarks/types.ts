@@ -198,6 +198,8 @@ export interface AttemptSummary {
   durationMs: number | null;
   outputTokens: number | null;
   cost: number | null;
+  /** The model the attempt's usage named as the one that answered. */
+  resolvedModel?: string | null;
 }
 export interface TokenUsage {
   input: number | null;
@@ -250,6 +252,11 @@ export interface Attempt {
   evaluations: Evaluation[];
   eventCursor: number;
   workflowSteps: WorkflowStepEvidence[];
+  /**
+   * The model the provider's usage named as the one that answered: what an
+   * alias such as Claude's `sonnet` resolved to. Absent where it named none.
+   */
+  resolvedModel?: string | null;
 }
 export interface WorkflowStepEvidence {
   rootTaskId: string;
@@ -273,6 +280,8 @@ export interface Capability {
   executionProfile: string;
   supported: boolean;
   reason: string;
+  /** The fixed account id of the provider CLI's own sign-in, if it has one. */
+  cliAccountId?: string | null;
 }
 /** One effective-dated fact about a model: list prices, context size, display overrides. */
 export interface CatalogEntry {
@@ -344,6 +353,8 @@ export interface LeaderboardRow {
   axes: LeaderboardAxis[];
   /** Pool cases without a scored result: the gap a catch-up run fills. */
   missingVersionIds: string[];
+  /** Every model the counted attempts' usage named, sorted. */
+  resolvedModels?: string[];
 }
 export interface LeaderboardAxis {
   id: string;

@@ -7,6 +7,7 @@ import {
 } from "../lib/modelCatalog";
 import type { CatalogEntry } from "../types";
 import { configuration } from "./fixtures";
+import vendorSeeds from "./fixtures/catalog-seeds-2026-10-03.json";
 
 function entry(overrides: Partial<CatalogEntry>): CatalogEntry {
   return {
@@ -88,5 +89,72 @@ describe("model catalog resolution", () => {
     expect(
       latestCheckedAt([entry({ checkedAt: 10 }), entry({ checkedAt: 30 })]),
     ).toBe(30);
+  });
+});
+
+describe("vendor seed sets", () => {
+  // The rows the Rust catalog seeds; its test compares them field by field.
+  const seeds = vendorSeeds as CatalogEntry[];
+
+  it("each seed resolves only its models", () => {
+    const cases: [string, string, string, string | null][] = [
+      ["codex-acp", "gpt-6-astra", "GPT-6-Astra", "seed-openai-gpt-6-astra"],
+      ["codex-acp", "gpt-6-sol", "GPT-6-Sol", "seed-openai-gpt-6-sol"],
+      ["codex-acp", "gpt-6-luna", "GPT-6-Luna", "seed-openai-gpt-6-luna"],
+      ["codex-acp", "gpt-6.1-sol", "GPT-6.1-Sol", "seed-openai-gpt-6-1-sol"],
+      ["codex-acp", "gpt-5.6-sol", "GPT-5.6-Sol", "seed-openai-gpt-5-6-sol"],
+      [
+        "codex-acp",
+        "gpt-5.6-terra",
+        "GPT-5.6-Terra",
+        "seed-openai-gpt-5-6-terra",
+      ],
+      ["codex-acp", "gpt-5.6-luna", "GPT-5.6-Luna", "seed-openai-gpt-5-6-luna"],
+      ["codex-acp", "gpt-5.5", "GPT-5.5", "seed-openai-gpt-5-5"],
+      ["grok-acp", "grok-4.7", "Grok 4.7", "seed-xai-grok-4-7"],
+      [
+        "grok-acp",
+        "grok-4.7-build-fast",
+        "Grok 4.7 Fast",
+        "seed-xai-grok-4-7-build-fast",
+      ],
+      ["grok-acp", "grok-4.6", "Grok 4.6", "seed-xai-grok-4-6"],
+      ["grok-acp", "grok-4.5", "Grok 4.5", "seed-xai-grok-4-5"],
+      ["kimi-acp", "kimi-code/k3", "K3", "seed-moonshot-k3"],
+      ["kimi-acp", "kimi-code/k3-256k", "K3-256k", "seed-moonshot-k3"],
+      ["kimi-acp", "kimi-code/kimi-for-coding", "K2.8 Preview", null],
+      [
+        "kimi-acp",
+        "kimi-code/kimi-for-coding-highspeed",
+        "K2.7 Code Highspeed",
+        "seed-moonshot-k2-7-code-highspeed",
+      ],
+      // A vendor's entry never prices another provider's row.
+      ["grok-acp", "gpt-6-sol", "GPT-6-Sol", null],
+      ["claude-acp", "kimi-code/k3", "K3", null],
+    ];
+    for (const [providerId, modelId, name, expected] of cases) {
+      expect(
+        resolveCatalogEntry(
+          seeds,
+          { ...configuration, providerId, modelId },
+          name,
+          null,
+        )?.id ?? null,
+        `${providerId} ${modelId}`,
+      ).toBe(expected);
+    }
+    // The Fast row resolves to unknown prices, not Grok 4.7's.
+    const fast = resolveCatalogEntry(
+      seeds,
+      {
+        ...configuration,
+        providerId: "grok-acp",
+        modelId: "grok-4.7-build-fast",
+      },
+      "Grok 4.7 Fast",
+      null,
+    );
+    expect(formatPrice(fast)).toBeNull();
   });
 });

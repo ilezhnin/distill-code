@@ -275,6 +275,8 @@ pub struct AttemptSummary {
     pub duration_ms: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cost: Option<f64>,
+    /// See [`Attempt::resolved_model`].
+    pub resolved_model: Option<String>,
 }
 /// The human verdict behind a creative rendering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +401,11 @@ pub struct Attempt {
     pub event_cursor: i64,
     #[serde(default)]
     pub workflow_steps: Vec<WorkflowStepEvidence>,
+    /// The model the provider's usage names as the one that answered: what
+    /// an alias such as Claude's `sonnet` resolved to. Absent where the usage
+    /// names none, and on attempts recorded before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -428,6 +435,9 @@ pub struct Capability {
     pub execution_profile: String,
     pub supported: bool,
     pub reason: String,
+    /// The fixed account id of the provider CLI's own sign-in, for a
+    /// provider that has no managed accounts.
+    pub cli_account_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +499,10 @@ pub struct LeaderboardRow {
     /// catch-up run fills.
     #[serde(default)]
     pub missing_version_ids: Vec<String>,
+    /// Every model the scored attempts' usage names as the one that
+    /// answered, sorted; more than one means the id moved between models.
+    #[serde(default)]
+    pub resolved_models: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

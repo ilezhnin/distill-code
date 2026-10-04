@@ -15,6 +15,7 @@ const NEGATIVE = new Set([
   "budget_timeout",
   "budget_reached",
   "selection_changed",
+  "execution_violation",
   "quota_blocked",
   "dispatch_uncertain",
   "infrastructure_failure",
@@ -50,6 +51,16 @@ export function stateLabel(
 
 export function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+/** An account as a reader knows it: the provider CLI's own sign-in, none, or its id. */
+export function accountDisplay(
+  t: Translate,
+  accountId: string | null | undefined,
+): string {
+  if (!accountId) return t("run.noAccount");
+  if (accountId.startsWith("cli-login-")) return t("run.cliLogin");
+  return accountId;
 }
 
 export function formatQuality(
@@ -190,7 +201,8 @@ export function providerVendor(providerId: string): string {
 
 /**
  * The bridge's display name with the vendor in front where the bridge omits
- * it (Claude Code lists "Opus 5.5"); the raw id when nothing names it.
+ * it (Claude Code lists "Opus 5.5", Kimi Code "K3"); the raw id when nothing
+ * names it.
  */
 export function modelDisplayName(
   configuration: {
@@ -207,6 +219,11 @@ export function modelDisplayName(
     /^(opus|sonnet|haiku|fable)\b/i.test(raw)
   )
     return `Claude ${raw}`;
+  if (
+    providerVendor(configuration.providerId) === "Moonshot AI" &&
+    /^K\d/.test(raw)
+  )
+    return `Kimi ${raw}`;
   return raw;
 }
 

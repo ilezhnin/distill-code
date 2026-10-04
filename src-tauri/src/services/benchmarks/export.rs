@@ -61,7 +61,7 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                     json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
                         "excluded":authored.then_some("authored_by_candidate"),
                         "outcome":attempt.and_then(|a|super::analysis::effective_outcome(a.outcome.as_deref(),&a.evaluations)),"phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),
-                        "usage":attempt.map(|a|&a.usage),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
+                        "usage":attempt.map(|a|&a.usage),"resolvedModel":attempt.and_then(|a|a.resolved_model.as_ref()),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
                         "observedConfiguration":attempt.and_then(|a|a.observed.as_ref()).map(|c|public_configuration(c,salt)),
                         "workflowSteps":attempt.map(|a|&a.workflow_steps),
                         "evaluationRevisions":attempt.map(|a|a.evaluations.iter().map(|e|json!({"id":e.id,"revision":e.evaluator_revision,"provenance":e.provenance,"verdict":e.verdict,"score":e.score,"createdAt":e.created_at,"usage":e.usage,
@@ -738,6 +738,7 @@ mod tests {
         attempt.finished_at = Some(now());
         attempt.output = Some("private-answer-not-a-feature".into());
         attempt.evidence_hash = Some("sealed".into());
+        attempt.resolved_model = Some("fake-pass-2026".into());
         service.store.save_attempt(&attempt).await.unwrap();
         assert_eq!(
             serde_json::to_value(&snapshot).unwrap(),
@@ -752,6 +753,21 @@ mod tests {
         assert_eq!(row["decision"]["id"], snapshot.id);
         assert_eq!(row["matrix"].as_array().unwrap().len(), 2);
         assert!(row["matrix"][0]["outcomes"][0]["usage"]["cost"].is_null());
+        // Each outcome names the model that answered, where its usage did.
+        let outcomes: Vec<&Value> = row["matrix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|cell| cell["outcomes"].as_array().unwrap())
+            .collect();
+        for outcome in &outcomes {
+            let expected = if outcome["attemptId"] == json!(attempt.id) {
+                json!("fake-pass-2026")
+            } else {
+                Value::Null
+            };
+            assert_eq!(outcome["resolvedModel"], expected);
+        }
         assert!(!body.contains("private-account"));
         assert!(!body.contains("private-answer-not-a-feature"));
         let manifest: Value =
@@ -765,6 +781,7 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(ledger.contains(r#""resolvedModel":"fake-pass-2026""#));
         assert!(ledger.ends_with('\n'));
         assert!(ledger
             .lines()

@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
+import type { Capability } from "../types";
 import { BenchmarkRunDialog } from "../ui/BenchmarkRunDialog";
 import { configuration, definition, run } from "./fixtures";
 
@@ -369,4 +370,111 @@ it("requires a fresh validated plan and sends the pinned account with a stable r
   expect(benchmarkApi.startRun).toHaveBeenCalledWith(checked);
   expect(checked?.repetitions).toBe(2);
   expect(screen.getByText("Expected spend: Not reported")).toBeInTheDocument();
+});
+
+it("offers the CLI sign-in of a provider without managed accounts and preselects it", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([
+    {
+      providerId: "claude-acp",
+      executionProfile: "native_text",
+      supported: true,
+      reason: "Verified",
+      cliAccountId: null,
+    },
+    {
+      providerId: "grok-acp",
+      executionProfile: "native_text",
+      supported: true,
+      reason: "Verified",
+      cliAccountId: "cli-login-grok-acp",
+    },
+  ]);
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(await screen.findByRole("option", { name: /Grok/ }));
+  await waitFor(() =>
+    expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
+      "grok-acp",
+      "cli-login-grok-acp",
+    ),
+  );
+  expect(screen.getByRole("combobox", { name: "Account" })).toHaveTextContent(
+    "CLI sign-in",
+  );
+  // A provider with managed accounts keeps the explicit choice, and has no
+  // CLI identity to offer.
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
+  expect(screen.getByRole("combobox", { name: "Account" })).toHaveTextContent(
+    "No account",
+  );
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  expect(screen.getByRole("option", { name: "Test account" })).toBeVisible();
+  expect(screen.queryByRole("option", { name: "CLI sign-in" })).toBeNull();
+});
+
+it("selects the CLI sign-in whenever the capabilities naming it arrive", async () => {
+  const user = userEvent.setup();
+  let arrive: (capabilities: Capability[]) => void = () => {};
+  vi.mocked(benchmarkApi.getCapabilities).mockReturnValue(
+    new Promise((resolve) => {
+      arrive = resolve;
+    }),
+  );
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  // Grok is chosen before the capabilities are known.
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(await screen.findByRole("option", { name: /Grok/ }));
+  arrive([
+    {
+      providerId: "grok-acp",
+      executionProfile: "native_text",
+      supported: true,
+      reason: "Verified",
+      cliAccountId: "cli-login-grok-acp",
+    },
+  ]);
+  await waitFor(() =>
+    expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
+      "grok-acp",
+      "cli-login-grok-acp",
+    ),
+  );
+  // No inventory was asked for without the sign-in.
+  expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("combobox", { name: "Account" })).toHaveTextContent(
+    "CLI sign-in",
+  );
+  // "No account" can only be refused for a provider that signs in through
+  // its CLI, so it is not offered.
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  expect(screen.getByRole("option", { name: "CLI sign-in" })).toBeVisible();
+  expect(screen.queryByRole("option", { name: "No account" })).toBeNull();
 });

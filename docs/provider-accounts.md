@@ -137,8 +137,36 @@ inventories and native session IDs are scoped to the provider and account.
 Inherited credentials from a different account are removed for managed entries.
 Updating credentials or removing an account is blocked while it runs a turn.
 
+Benchmarks run Codex on the same account home, and Codex loads that home into
+every thread. A Codex account is benchmarked only while its home holds no
+`AGENTS.md`, `AGENTS.override.md`, `hooks.json` or `hooks/` and its
+`config.toml` sets nothing but the `cli_auth_credentials_store` Distill writes;
+otherwise its benchmark rows say why they are unavailable. Chats are unaffected.
+
 There is no system CLI account or fallback to credentials from another app.
-Both providers use the same account flow and isolated storage. The v2 account
+Both providers use the same account flow and isolated storage.
+
+Grok and Kimi have no managed accounts; their CLI keeps the sign-in. Benchmarks
+still need an account id to key configurations, bridge routes and account
+activity, so each of these providers has one fixed CLI sign-in identity,
+`cli-login-grok-acp` and `cli-login-kimi-acp`. It is never stored, never
+appears in Settings, and has no home, key file or usage source of its own:
+the account environment for it is the shell environment unchanged. Chats keep
+running on the CLI without an account, and their activity counts as the
+identity's activity, since both share one sign-in and one allowance. A Grok
+benchmark bridge runs on a private Grok home and is handed the user's session
+reduced to its access token, issue and expiry times and identity (`key`,
+`auth_mode`, `create_time`, `expires_at`, `user_id`, `email`), with no refresh
+or other token, so it can never rotate the sign-in the user's own Grok keeps:
+Grok reads it once, while it answers `initialize`, from a file in an
+owner-only folder outside that home (`GROK_AUTH_PATH`), which the host removes
+as soon as the bridge has answered, and again when the agent host starts or
+the app quits should Distill have stopped in between; Grok 1.0.40 does not
+accept a session through `GROK_AUTH`. The user's `auth.json` is read, never written. A Kimi benchmark bridge runs on the user's own Kimi home
+(`KIMI_CODE_HOME`), which keeps and refreshes the sign-in as in chats; only its
+OS home and application data folders are redirected, and what it would load
+from the Kimi home besides the
+sign-in, models and settings is removed in process. The v2 account
 index drops the old external-login entries while retaining saved Distill
 accounts, their credentials and routing preferences. The database migration
 clears external account references without changing transcripts. Selecting a

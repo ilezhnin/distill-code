@@ -8,6 +8,7 @@ import type {
   LeaderboardRow,
   RunSummary,
 } from "../types";
+import { onMovingAlias } from "./benchmarkBoards";
 
 export type CatchUpResolution =
   | { configuration: Configuration }
@@ -23,6 +24,13 @@ export function resolveCatchUpConfiguration(
     (entry) => entry.configuration.modelId === row.modelId,
   );
   if (!model) return { issue: "missing" };
+  // A moving alias under another name serves another model now, which is
+  // another row: the row's own model cannot run again.
+  if (
+    onMovingAlias(row) &&
+    (model.configuration.modelName ?? null) !== (row.modelName ?? null)
+  )
+    return { issue: "missing" };
   // Listed but blocked, for example while a changed runtime awaits verification.
   if (!model.available)
     return { issue: "unavailable", reason: model.reason ?? null };

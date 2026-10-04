@@ -703,6 +703,7 @@ mod tests {
                         }],
                         event_cursor: 1,
                         workflow_steps: vec![],
+                        resolved_model: None,
                     });
                 }
             }

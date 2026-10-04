@@ -121,7 +121,7 @@ impl BenchmarkState {
                     if app.try_state::<super::e2e_mode::E2eMode>().is_some() {
                         Arc::new(runner::FakeBackend::default())
                     } else {
-                        Arc::new(runner::NativeBackend { app: app.clone() })
+                        Arc::new(runner::NativeBackend::new(app.clone()))
                     };
                 let service = Arc::new(BenchmarkService {
                     store,
@@ -423,6 +423,7 @@ impl BenchmarkService {
                 evaluations: Vec::new(),
                 event_cursor: 0,
                 workflow_steps: Vec::new(),
+                resolved_model: None,
             };
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,?,'pending',?)").bind(&attempt.id).bind(&id).bind(&version).bind(&config.id).bind(repetition as i64).bind(serde_json::to_string(&attempt)?).execute(&mut *tx).await?;
         }

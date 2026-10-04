@@ -214,6 +214,14 @@ export function BenchmarkConfigurationPage({
     fact?.vendor ?? providerVendor(shownRow.configuration.providerId);
   const specs: [string, string][] = [
     [t("configuration.apiModelId"), shownRow.configuration.modelId],
+    // What the id ran as, by the attempts' own usage: an alias names its
+    // target, and more than one means the id moved between models.
+    [
+      t("fields.resolvedModel"),
+      shownRow.resolvedModels?.length
+        ? shownRow.resolvedModels.join(", ")
+        : t("unknown"),
+    ],
     [t("fields.provider"), shownRow.configuration.providerId],
     [t("fields.effort"), shownRow.configuration.effort ?? t("unknown")],
     [

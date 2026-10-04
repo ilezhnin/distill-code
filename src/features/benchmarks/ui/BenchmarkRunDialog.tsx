@@ -159,14 +159,33 @@ export function BenchmarkRunDialog({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Managed accounts, and for a provider whose CLI keeps its own sign-in the
+  // fixed identity that names it.
+  const managedAccounts = (id: string) =>
+    accounts.data?.accounts.filter(
+      (entry) => entry.providerId === id && entry.enabled,
+    ) ?? [];
+  const cliAccount = (id: string) =>
+    capabilities.data?.find(
+      (entry) =>
+        entry.providerId === id && entry.executionProfile === "native_text",
+    )?.cliAccountId ?? null;
+  const providerCliAccount = cliAccount(providerId);
+  // A provider whose only sign-in is its CLI's has nothing else to choose,
+  // so that sign-in is selected whenever its capability arrives.
+  const onlyCliAccount =
+    managedAccounts(providerId).length === 0 ? providerCliAccount : null;
+  const selectedAccount =
+    accountId === "none" ? (onlyCliAccount ?? accountId) : accountId;
   const inventory = useQuery({
-    queryKey: [...benchmarkKeys, "inventory", providerId, accountId],
+    queryKey: [...benchmarkKeys, "inventory", providerId, selectedAccount],
     queryFn: () =>
       benchmarkApi.getInventory(
         providerId,
-        accountId === "none" ? null : accountId,
+        selectedAccount === "none" ? null : selectedAccount,
       ),
-    enabled: Boolean(providerId),
+    // Without capabilities the account a provider signs in with is unknown.
+    enabled: Boolean(providerId) && !capabilities.isPending,
     staleTime: 30_000,
   });
   const model = inventory.data?.[Number(modelIndex)];
@@ -344,22 +363,29 @@ export function BenchmarkRunDialog({
                 {(id) => (
                   <SelectField
                     id={id}
-                    value={accountId}
+                    value={selectedAccount}
                     onChange={(value) => {
                       setAccountId(value);
                       setModelIndex("none");
                     }}
                     options={[
-                      { value: "none", label: t("run.noAccount") },
-                      ...(accounts.data?.accounts
-                        .filter(
-                          (entry) =>
-                            entry.providerId === providerId && entry.enabled,
-                        )
-                        .map((entry) => ({
-                          value: entry.id,
-                          label: entry.label,
-                        })) ?? []),
+                      // An inventory without an account is refused; a
+                      // provider with only its CLI sign-in never offers it.
+                      ...(onlyCliAccount
+                        ? []
+                        : [{ value: "none", label: t("run.noAccount") }]),
+                      ...managedAccounts(providerId).map((entry) => ({
+                        value: entry.id,
+                        label: entry.label,
+                      })),
+                      ...(providerCliAccount
+                        ? [
+                            {
+                              value: providerCliAccount,
+                              label: t("run.cliLogin"),
+                            },
+                          ]
+                        : []),
                     ]}
                   />
                 )}

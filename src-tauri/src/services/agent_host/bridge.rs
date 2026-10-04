@@ -13,6 +13,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
+use super::execution::{NativeProvider, RuntimePaths};
 use super::harness::HarnessSpec;
 use super::protocol::{self, Message};
 use crate::services::path_env::resolve_executable;
@@ -262,106 +263,206 @@ fn cmd_launcher_target(quoted: &str, shim_dir: &Path) -> PathBuf {
     }
 }
 
+/// What a host-owned benchmark bridge runs in place of the harness command.
+pub struct OwnedLaunch {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    /// The file the executable fingerprint describes: the pinned entrypoint or
+    /// binary the profile was verified against.
+    pub fingerprint_target: PathBuf,
+}
+
+fn missing_bridge(spec: &HarnessSpec) -> String {
+    format!(
+        "The {} bridge (`{}`) is not installed. Set it up from Settings → AI providers.",
+        spec.label, spec.command
+    )
+}
+
+/// Builds the launch for `provider` from what `spec.command` resolves to on
+/// `env`'s PATH, verifying the pinned runtime first. `managed_node` is
+/// Distill's Node runtime and `native_cli` the managed native CLI the bridge
+/// drives, for a profile that needs them. Reads and hashes the runtime, so
+/// call it off the async workers.
+pub(super) fn owned_launch(
+    provider: NativeProvider,
+    spec: &HarnessSpec,
+    env: &SpawnEnv,
+    managed_node: Option<&Path>,
+    native_cli: Option<&Path>,
+) -> Result<OwnedLaunch, String> {
+    // Refused before anything starts, like every other missing runtime.
+    let executable = resolve_executable(
+        spec.command,
+        &env.prepend_dirs,
+        env_key::get(&env.shell_env, "PATH"),
+    )
+    .ok_or_else(|| format!("capability_missing: {}", missing_bridge(spec)))?;
+    // The rest run a node entrypoint with the adapter preloaded: the managed
+    // launcher's own, or Kimi's npm package under Distill's Node.
+    let (node, entrypoint) = match provider {
+        NativeProvider::Claude | NativeProvider::Codex => managed_launcher(spec.id, &executable)
+            .ok_or_else(|| {
+                format!(
+                    "capability_missing: benchmark execution requires the managed {} launcher",
+                    spec.label
+                )
+            })?,
+        NativeProvider::Kimi => {
+            let entrypoint = super::execution::kimi_entrypoint(&executable)?;
+            let node = managed_node.filter(|node| node.is_file()).ok_or(
+                "capability_missing: benchmark execution requires the managed Node runtime",
+            )?;
+            (node.to_path_buf(), entrypoint)
+        }
+        // The native CLI chats run, verified byte for byte, with the
+        // profile's own arguments.
+        NativeProvider::Grok => {
+            provider.verify_runtime(&RuntimePaths {
+                entrypoint: &executable,
+                native_cli: None,
+            })?;
+            return Ok(OwnedLaunch {
+                program: executable.clone(),
+                args: provider.launch_args().to_vec(),
+                fingerprint_target: executable,
+            });
+        }
+    };
+    let runtime = RuntimePaths {
+        entrypoint: &entrypoint,
+        native_cli,
+    };
+    let mut args = vec![
+        "--import".to_string(),
+        super::execution::native_preload_argument(provider, &runtime)?,
+        entrypoint.to_string_lossy().into_owned(),
+    ];
+    args.extend(spec.args.iter().map(|arg| (*arg).to_string()));
+    Ok(OwnedLaunch {
+        program: node,
+        args,
+        fingerprint_target: entrypoint,
+    })
+}
+
+/// Installs `env` on a bridge `command`. An `owned` launch starts from a
+/// cleared environment, so nothing of Distill's own process reaches it, and
+/// the launcher-identity scrub is skipped: it removes by name, after
+/// everything below, and would also take away what the host set under such a
+/// name (a provider home that Orca redirects for Distill itself, say).
+fn apply_env(command: &mut std::process::Command, spec: &HarnessSpec, env: &SpawnEnv, owned: bool) {
+    if owned {
+        command.env_clear();
+    }
+    // Remove inherited credentials before installing this account's own
+    // environment. Filtering only shell_env would still inherit the host.
+    for key in &env.remove_env {
+        command.env_remove(key);
+    }
+    let extended_path = crate::services::path_env::build_extended_path_with_prepended_dirs(
+        env_key::get(&env.shell_env, "PATH"),
+        &env.prepend_dirs,
+    );
+    for (key, value) in &env.shell_env {
+        if env_key::matches(key, "PATH") {
+            continue;
+        }
+        command.env(key, value);
+    }
+    command.env("PATH", extended_path);
+    for (key, value) in &env.extra_env {
+        command.env(key, value);
+    }
+    for key in spec.env_remove {
+        command.env_remove(key);
+    }
+    // `RUST_LOG` configures Distill's own log. Handed down, it turns a
+    // Rust-built bridge (grok) into an INFO firehose whose stderr lands in
+    // distill.log and rotates it every few minutes, taking crash history
+    // with it.
+    command.env_remove("RUST_LOG");
+    if !owned {
+        crate::services::shell_env::remove_inherited_launcher_env(command);
+    }
+}
+
 impl Bridge {
     pub async fn spawn(
         spec: &HarnessSpec,
         env: &SpawnEnv,
         events: mpsc::UnboundedSender<BridgeEvent>,
     ) -> Result<Arc<Bridge>, String> {
-        Self::spawn_scoped(spec, env, events, spec.id).await
+        Self::spawn_scoped(spec, env, events, spec.id, None).await
     }
 
+    /// Starts the bridge for `route_key`. A benchmark route runs only an
+    /// `owned` launch, in a cleared environment.
     pub async fn spawn_scoped(
         spec: &HarnessSpec,
         env: &SpawnEnv,
         events: mpsc::UnboundedSender<BridgeEvent>,
         route_key: &str,
+        owned: Option<&OwnedLaunch>,
     ) -> Result<Arc<Bridge>, String> {
-        let executable = resolve_executable(
-            spec.command,
-            &env.prepend_dirs,
-            env_key::get(&env.shell_env, "PATH"),
-        )
-        .ok_or_else(|| {
-            format!(
-                "The {} bridge (`{}`) is not installed. Set it up from Settings → AI providers.",
-                spec.label, spec.command
-            )
-        })?;
-        // A managed bridge resolves to a `.cmd` launcher we wrote ourselves; run
-        // what it runs, so the child we hold (and kill) is node rather than the
-        // `cmd.exe` that would leave node behind. Only for harnesses we
-        // installed: a third-party `.cmd` on the user's PATH whose last line
-        // happens to hold two quoted paths must keep being launched the way
-        // `cmd.exe` reads it, arguments and all.
-        let executable_fingerprint = fingerprint_of(spec.id, &executable);
-        let launcher = managed_launcher(spec.id, &executable);
-        let program = launcher
-            .as_ref()
-            .map_or(executable.as_path(), |(node, _)| node.as_path());
-        let mut command = Command::new(program);
-        if route_key.contains("\u{1f}benchmark:") {
-            command.env_clear();
-            if spec.id != "claude-acp" {
-                return Err(
-                    "capability_missing: native benchmark adapter is unavailable for this provider"
-                        .into(),
-                );
+        if route_key.contains("\u{1f}benchmark:") && owned.is_none() {
+            return Err("capability_missing: benchmark execution requires an owned launch".into());
+        }
+        let (program, args, executable_fingerprint) = match owned {
+            Some(launch) => (
+                launch.program.clone(),
+                launch.args.clone(),
+                fingerprint_of(spec.id, &launch.fingerprint_target),
+            ),
+            None => {
+                let executable = resolve_executable(
+                    spec.command,
+                    &env.prepend_dirs,
+                    env_key::get(&env.shell_env, "PATH"),
+                )
+                .ok_or_else(|| missing_bridge(spec))?;
+                // A managed bridge resolves to a `.cmd` launcher we wrote
+                // ourselves; run what it runs, so the child we hold (and kill)
+                // is node rather than the `cmd.exe` that would leave node
+                // behind. Only for harnesses we installed: a third-party `.cmd`
+                // on the user's PATH whose last line happens to hold two quoted
+                // paths must keep being launched the way `cmd.exe` reads it,
+                // arguments and all.
+                let fingerprint = fingerprint_of(spec.id, &executable);
+                let mut args = Vec::new();
+                let program = match managed_launcher(spec.id, &executable) {
+                    Some((node, entrypoint)) => {
+                        args.push(entrypoint.to_string_lossy().into_owned());
+                        node
+                    }
+                    None => executable,
+                };
+                args.extend(spec.args.iter().map(|arg| (*arg).to_string()));
+                (program, args, fingerprint)
             }
-            let (_, entrypoint) = launcher.as_ref().ok_or(
-                "capability_missing: benchmark execution requires the managed Claude launcher",
-            )?;
-            command
-                .arg("--import")
-                .arg(super::execution::native_preload_argument(entrypoint)?);
-        }
-        if let Some((_, entrypoint)) = &launcher {
-            command.arg(entrypoint);
-        }
-        command.args(spec.args);
-        // Remove inherited credentials before installing this account's own
-        // environment. Filtering only shell_env would still inherit the host.
-        for key in &env.remove_env {
-            command.env_remove(key);
-        }
-        let extended_path = crate::services::path_env::build_extended_path_with_prepended_dirs(
-            env_key::get(&env.shell_env, "PATH"),
-            &env.prepend_dirs,
-        );
-        for (key, value) in &env.shell_env {
-            if env_key::matches(key, "PATH") {
-                continue;
-            }
-            command.env(key, value);
-        }
-        command.env("PATH", extended_path);
-        for (key, value) in &env.extra_env {
-            command.env(key, value);
-        }
-        for key in spec.env_remove {
-            command.env_remove(key);
-        }
-        // `RUST_LOG` configures Distill's own log. Handed down, it turns a
-        // Rust-built bridge (grok) into an INFO firehose whose stderr lands in
-        // distill.log and rotates it every few minutes, taking crash history
-        // with it.
-        command.env_remove("RUST_LOG");
-        crate::services::shell_env::remove_inherited_launcher_env(command.as_std_mut());
+        };
+        let mut command = Command::new(&program);
+        apply_env(command.as_std_mut(), spec, env, owned.is_some());
+        command.args(&args);
         crate::services::process::apply_no_window_async(&mut command);
         command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        // An owned launch's arguments include the preload, a long data URL.
         log::info!(
-            "[agent-host] spawning {} bridge: {}{} {}",
+            "[agent-host] spawning {} bridge: {} {}",
             spec.id,
             program.display(),
-            launcher
-                .as_ref()
-                .map(|(_, entrypoint)| format!(" {}", entrypoint.display()))
-                .unwrap_or_default(),
-            spec.args.join(" ")
+            args.iter()
+                .map(|arg| if arg.starts_with("data:") {
+                    "<preload>"
+                } else {
+                    arg.as_str()
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
         );
         let mut child = command.spawn().map_err(|error| {
             format!(
@@ -1010,6 +1111,154 @@ pub(super) mod tests {
         let plain = dir.path().join("claude-agent-acp");
         std::fs::write(&plain, b"#!/bin/sh\nexec node x\n").expect("write");
         assert!(managed_cmd_launcher(&plain).is_none());
+    }
+
+    #[tokio::test]
+    async fn benchmark_route_without_owned_launch_is_refused() {
+        let spec = super::super::harness::harness("claude-acp").unwrap();
+        let env = SpawnEnv {
+            shell_env: HashMap::new(),
+            prepend_dirs: Vec::new(),
+            extra_env: Vec::new(),
+            remove_env: Vec::new(),
+        };
+        let (events, _received) = mpsc::unbounded_channel();
+        let refused = Bridge::spawn_scoped(
+            spec,
+            &env,
+            events,
+            "claude-acp\u{1f}account\u{1f}benchmark:profile",
+            None,
+        )
+        .await
+        .err();
+        assert_eq!(
+            refused.as_deref(),
+            Some("capability_missing: benchmark execution requires an owned launch")
+        );
+    }
+
+    /// Distill started from an Orca pane carries Orca's redirect of a
+    /// provider home with its `ORCA_` twin. The owned process must still get
+    /// the private home the host set, not lose it to the launcher scrub.
+    #[test]
+    fn an_owned_launch_keeps_what_the_host_set_under_a_launcher_name() {
+        const NAME: &str = "DISTILL_OWNED_HOME_TEST_5E2B";
+        const TWIN: &str = "ORCA_DISTILL_OWNED_HOME_TEST_5E2B";
+        std::env::set_var(NAME, "orca-redirect");
+        std::env::set_var(TWIN, "orca-redirect");
+        let spec = super::super::harness::harness("grok-acp").unwrap();
+        let env = SpawnEnv {
+            shell_env: HashMap::new(),
+            prepend_dirs: Vec::new(),
+            extra_env: vec![(NAME.to_string(), "private-home".to_string())],
+            remove_env: Vec::new(),
+        };
+        let value = |command: &std::process::Command| {
+            command
+                .get_envs()
+                .find(|(key, _)| *key == NAME)
+                .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+        };
+        let mut owned = std::process::Command::new("grok");
+        apply_env(&mut owned, spec, &env, true);
+        assert_eq!(value(&owned), Some(Some("private-home".to_string())));
+        // A chat bridge inherits Distill's own environment, so the scrub stays.
+        let mut chat = std::process::Command::new("grok");
+        apply_env(&mut chat, spec, &env, false);
+        assert_eq!(value(&chat), Some(None));
+        std::env::remove_var(NAME);
+        std::env::remove_var(TWIN);
+    }
+
+    #[test]
+    fn grok_launch_runs_only_the_verified_binary_with_the_profile_arguments() {
+        let bin = tempfile::tempdir().expect("temp dir");
+        let executable = bin
+            .path()
+            .join(if cfg!(windows) { "grok.exe" } else { "grok" });
+        std::fs::write(&executable, "another grok build").unwrap();
+        let spec = super::super::harness::harness("grok-acp").unwrap();
+        let env = SpawnEnv {
+            shell_env: HashMap::from([(
+                "PATH".to_string(),
+                bin.path().to_string_lossy().into_owned(),
+            )]),
+            prepend_dirs: Vec::new(),
+            extra_env: Vec::new(),
+            remove_env: Vec::new(),
+        };
+        let refused = owned_launch(NativeProvider::Grok, spec, &env, None, None).err();
+        assert_eq!(
+            refused.as_deref(),
+            Some("capability_missing: installed Grok runtime changed; benchmark profile requires verification")
+        );
+        let missing = SpawnEnv {
+            shell_env: HashMap::new(),
+            ..env
+        };
+        assert!(
+            owned_launch(NativeProvider::Grok, spec, &missing, None, None)
+                .err()
+                .is_some_and(|error| error.contains("is not installed"))
+        );
+        // What the verified build is started with.
+        assert_eq!(
+            NativeProvider::Grok.launch_args(),
+            ["agent", "--no-leader", "stdio"]
+        );
+        assert_eq!(spec.args, ["agent", "stdio"]);
+    }
+
+    #[test]
+    fn kimi_launch_runs_the_npm_package_under_the_managed_node() {
+        let prefix = tempfile::tempdir().expect("temp dir");
+        let shim = prefix
+            .path()
+            .join(if cfg!(windows) { "kimi.cmd" } else { "kimi" });
+        std::fs::write(&shim, "@ECHO off\r\n").unwrap();
+        let spec = super::super::harness::harness("kimi-acp").unwrap();
+        let env = SpawnEnv {
+            shell_env: HashMap::from([(
+                "PATH".to_string(),
+                prefix.path().to_string_lossy().into_owned(),
+            )]),
+            prepend_dirs: Vec::new(),
+            extra_env: Vec::new(),
+            remove_env: Vec::new(),
+        };
+        let node = prefix.path().join("node.exe");
+        std::fs::write(&node, "node").unwrap();
+        let launch = |managed_node: Option<&Path>| {
+            owned_launch(NativeProvider::Kimi, spec, &env, managed_node, None).err()
+        };
+        // A shim with no package beside it is not an install the profile knows.
+        assert_eq!(
+            launch(Some(&node)).as_deref(),
+            Some("capability_missing: Kimi Code is not a recognized npm install")
+        );
+        let dist = prefix
+            .path()
+            .join("node_modules")
+            .join("@moonshot-ai")
+            .join("kimi-code")
+            .join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("main.mjs"), "another kimi build").unwrap();
+        assert_eq!(
+            launch(None).as_deref(),
+            Some("capability_missing: benchmark execution requires the managed Node runtime")
+        );
+        assert_eq!(
+            launch(Some(&prefix.path().join("missing-node.exe"))).as_deref(),
+            Some("capability_missing: benchmark execution requires the managed Node runtime")
+        );
+        // The bundle is verified before anything starts.
+        assert_eq!(
+            launch(Some(&node)).as_deref(),
+            Some("capability_missing: installed Kimi Code runtime changed; benchmark profile requires verification")
+        );
+        assert_eq!(spec.args, ["acp"]);
     }
 
     #[test]

@@ -144,6 +144,64 @@ pub fn supports_managed_accounts(provider_id: &str) -> bool {
     matches!(provider_id, "codex-acp" | "claude-acp")
 }
 
+/// Providers whose own CLI keeps the sign-in (Grok, Kimi). Distill names that
+/// sign-in with a fixed identity so benchmark configurations, routes and
+/// activity can refer to it; it is never stored, and chats keep using the CLI
+/// without an account.
+pub fn uses_cli_login(provider_id: &str) -> bool {
+    matches!(provider_id, "grok-acp" | "kimi-acp")
+}
+
+const CLI_LOGIN_PREFIX: &str = "cli-login-";
+
+pub fn cli_login_account_id(provider_id: &str) -> Option<String> {
+    uses_cli_login(provider_id).then(|| format!("{CLI_LOGIN_PREFIX}{provider_id}"))
+}
+
+pub fn is_cli_login_account(provider_id: &str, account_id: &str) -> bool {
+    cli_login_account_id(provider_id).as_deref() == Some(account_id)
+}
+
+/// The CLI sign-in identity `account_id` names, whichever provider it is for.
+fn cli_login_account(account_id: &str) -> Option<ProviderAccount> {
+    cli_login_account_as(account_id, grok_cli_auth_method)
+}
+
+fn cli_login_account_as(
+    account_id: &str,
+    grok_auth_method: fn() -> AuthMethod,
+) -> Option<ProviderAccount> {
+    let provider_id = account_id.strip_prefix(CLI_LOGIN_PREFIX)?;
+    let (label, auth_method) = match provider_id {
+        "grok-acp" => ("Grok CLI sign-in", grok_auth_method()),
+        "kimi-acp" => ("Kimi Code sign-in", AuthMethod::OAuth),
+        _ => return None,
+    };
+    Some(ProviderAccount {
+        id: account_id.into(),
+        provider_id: provider_id.into(),
+        label: label.into(),
+        auth_method,
+        enabled: true,
+        auto_switch: false,
+        created_at: 0,
+        updated_at: 0,
+    })
+}
+
+/// Grok signs in with its own session, or with `XAI_API_KEY` when it has
+/// none. Without either an attempt fails at sign-in, not here.
+fn grok_cli_auth_method() -> AuthMethod {
+    use super::provider_rate_limits::grok::{read_grok_auth_session, GrokAuthReadResult};
+    if !matches!(read_grok_auth_session(), GrokAuthReadResult::Ok(_))
+        && super::shell_env::user_env_var("XAI_API_KEY").is_some_and(|key| !key.trim().is_empty())
+    {
+        AuthMethod::ApiKey
+    } else {
+        AuthMethod::OAuth
+    }
+}
+
 fn validate_provider(provider_id: &str) -> Result<(), String> {
     if supports_managed_accounts(provider_id) {
         Ok(())
@@ -317,6 +375,9 @@ pub fn snapshot(app: &AppHandle) -> Result<ProviderAccountsSnapshot, String> {
 }
 
 pub fn account(app: &AppHandle, id: &str) -> Result<ProviderAccount, String> {
+    if let Some(identity) = cli_login_account(id) {
+        return Ok(identity);
+    }
     snapshot(app)?
         .accounts
         .into_iter()
@@ -347,11 +408,22 @@ fn resolve_from(
     Ok(account.clone())
 }
 
+fn cli_login_for(identity: ProviderAccount, provider_id: &str) -> Result<ProviderAccount, String> {
+    if identity.provider_id == provider_id {
+        Ok(identity)
+    } else {
+        Err("Account belongs to a different provider".into())
+    }
+}
+
 pub fn resolve_account(
     app: &AppHandle,
     provider_id: &str,
     explicit_id: Option<&str>,
 ) -> Result<ProviderAccount, String> {
+    if let Some(identity) = explicit_id.and_then(cli_login_account) {
+        return cli_login_for(identity, provider_id);
+    }
     let account = resolve_from(&snapshot(app)?, provider_id, explicit_id)?;
     if account_change_in_progress(&account.id) {
         return Err("Account authorization is being changed; try again when it completes".into());
@@ -415,6 +487,10 @@ fn scoped_env_at(
     account: &ProviderAccount,
     mut base: Vec<(String, String)>,
 ) -> Result<Vec<(String, String)>, String> {
+    // The CLI keeps this sign-in itself: nothing to install or prepare.
+    if is_cli_login_account(&account.provider_id, &account.id) {
+        return Ok(base);
+    }
     validate_identity(account)?;
     base.retain(|(key, _)| {
         !MANAGED_AUTH_ENV_KEYS
@@ -874,7 +950,9 @@ mod windows_security {
     }
 }
 
-fn protect_directory(path: &Path) -> Result<(), String> {
+/// Restricts `path` to its owner (and SYSTEM on Windows), inherited by what
+/// is created in it.
+pub(crate) fn protect_directory(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         windows_security::directory(path)
@@ -1333,5 +1411,121 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(env["ANTHROPIC_API_KEY"], key);
+    }
+
+    #[test]
+    fn cli_login_identity_resolves_without_the_store() {
+        // Built without any store, and with Grok's sign-in kind supplied here
+        // instead of read from the user's Grok home.
+        let grok = cli_login_account_as("cli-login-grok-acp", || AuthMethod::ApiKey).unwrap();
+        assert_eq!(grok.provider_id, "grok-acp");
+        assert_eq!(grok.label, "Grok CLI sign-in");
+        assert_eq!(grok.auth_method, AuthMethod::ApiKey);
+        assert!(grok.enabled && !grok.auto_switch);
+        let kimi = cli_login_account("cli-login-kimi-acp").unwrap();
+        assert_eq!(kimi.provider_id, "kimi-acp");
+        assert_eq!(kimi.auth_method, AuthMethod::OAuth);
+        assert_eq!(cli_login_for(kimi.clone(), "kimi-acp"), Ok(kimi.clone()));
+        assert_eq!(
+            cli_login_for(kimi, "grok-acp"),
+            Err("Account belongs to a different provider".into())
+        );
+        // Managed providers have no CLI identity; their ids go to the store.
+        for id in [
+            "cli-login-codex-acp",
+            "cli-login-claude-acp",
+            "cli-login-",
+            "kimi-acp",
+        ] {
+            assert!(cli_login_account(id).is_none(), "{id}");
+        }
+        assert_eq!(
+            cli_login_account_id("grok-acp").as_deref(),
+            Some("cli-login-grok-acp")
+        );
+        assert_eq!(cli_login_account_id("claude-acp"), None);
+        assert!(is_cli_login_account("kimi-acp", "cli-login-kimi-acp"));
+        assert!(!is_cli_login_account("grok-acp", "cli-login-kimi-acp"));
+    }
+
+    #[test]
+    fn cli_login_identity_resolves_for_grok_only() {
+        let grok = cli_login_account_as("cli-login-grok-acp", || AuthMethod::OAuth).unwrap();
+        assert_eq!(cli_login_for(grok.clone(), "grok-acp"), Ok(grok.clone()));
+        for other in ["kimi-acp", "codex-acp", "claude-acp"] {
+            assert_eq!(
+                cli_login_for(grok.clone(), other),
+                Err("Account belongs to a different provider".into()),
+                "{other}"
+            );
+        }
+        // Grok's sign-in kind follows what its CLI would use.
+        assert_eq!(
+            cli_login_account_as("cli-login-grok-acp", || AuthMethod::ApiKey)
+                .unwrap()
+                .auth_method,
+            AuthMethod::ApiKey
+        );
+    }
+
+    #[test]
+    fn cli_login_identity_resolves_for_kimi() {
+        let kimi = cli_login_account("cli-login-kimi-acp").unwrap();
+        assert_eq!(kimi.label, "Kimi Code sign-in");
+        assert_eq!(kimi.auth_method, AuthMethod::OAuth);
+        assert_eq!(cli_login_for(kimi.clone(), "kimi-acp"), Ok(kimi.clone()));
+        for other in ["grok-acp", "codex-acp", "claude-acp"] {
+            assert_eq!(
+                cli_login_for(kimi.clone(), other),
+                Err("Account belongs to a different provider".into()),
+                "{other}"
+            );
+        }
+        assert_eq!(
+            cli_login_account_id("kimi-acp").as_deref(),
+            Some("cli-login-kimi-acp")
+        );
+    }
+
+    #[test]
+    fn cli_login_scoped_env_is_the_base_env() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = cli_login_account("cli-login-kimi-acp").unwrap();
+        let base = vec![
+            ("PATH".to_string(), r"C:\bin".to_string()),
+            ("KIMI_API_KEY".to_string(), "user-key".to_string()),
+        ];
+        assert_eq!(
+            scoped_env_at(root.path(), &identity, base.clone()).unwrap(),
+            base
+        );
+        // Nothing is prepared for it: no account directory, no key file.
+        assert!(!root.path().join("provider-accounts").exists());
+    }
+
+    #[test]
+    fn managed_accounts_unchanged_for_grok_and_kimi() {
+        let root = tempfile::tempdir().unwrap();
+        for provider in ["grok-acp", "kimi-acp"] {
+            assert!(!supports_managed_accounts(provider));
+            assert!(uses_cli_login(provider));
+            assert!(add_account_at(
+                root.path(),
+                provider.into(),
+                "CLI".into(),
+                AuthMethod::OAuth,
+                None
+            )
+            .is_err());
+            let snapshot = read_store(root.path()).unwrap();
+            assert!(resolve_from(&snapshot, provider, None).is_err());
+            // The identity never enters the stored snapshot Settings lists.
+            assert!(snapshot.accounts.is_empty());
+            assert!(!snapshot.defaults.contains_key(provider));
+        }
+        for provider in ["codex-acp", "claude-acp"] {
+            assert!(supports_managed_accounts(provider));
+            assert!(!uses_cli_login(provider));
+        }
     }
 }

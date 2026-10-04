@@ -60,13 +60,34 @@ export function rowKey(row: LeaderboardRow): string {
   return configurationKey(row.configuration);
 }
 
+// Model ids a vendor points at another model without changing the id, whose
+// display name says which one it is now (NativeProvider::moving_aliases in
+// agent_host/execution.rs): each display name is its own candidate.
+const MOVING_ALIASES: Record<string, string[]> = {
+  "kimi-acp": [
+    "kimi-code/kimi-for-coding",
+    "kimi-code/kimi-for-coding-highspeed",
+  ],
+};
+
+/** Whether a configuration is on a model id its vendor moves between models. */
+export function onMovingAlias(
+  configuration: Pick<Configuration, "providerId" | "modelId">,
+): boolean {
+  return (
+    MOVING_ALIASES[configuration.providerId]?.includes(configuration.modelId) ??
+    false
+  );
+}
+
 /**
  * Matches the service's leaderboard identity, independent of runtime probes.
  * The runner marks an attempt that made auxiliary calls with an `_auxiliary`
- * profile; that is attempt evidence, not another candidate.
+ * profile; that is attempt evidence, not another candidate. A moving alias
+ * adds its display name; no other key carries one.
  */
 export function configurationKey(configuration: Configuration): string {
-  return JSON.stringify([
+  const identity = [
     configuration.providerId,
     configuration.accountId ?? null,
     configuration.modelId,
@@ -74,7 +95,12 @@ export function configurationKey(configuration: Configuration): string {
     configuration.fastMode ?? false,
     configuration.billingMode,
     configuration.executionProfile.replace(/_auxiliary$/, ""),
-  ]);
+  ];
+  return JSON.stringify(
+    onMovingAlias(configuration)
+      ? [identity, configuration.modelName ?? null]
+      : identity,
+  );
 }
 
 /**

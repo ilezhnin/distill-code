@@ -293,6 +293,10 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
         empty.state = AccountState::Disabled;
         return empty;
     }
+    // A CLI sign-in has no Distill-held credentials or usage source.
+    if provider_accounts::is_cli_login_account(&account.provider_id, &account.id) {
+        return empty;
+    }
     if account.auth_method == provider_accounts::AuthMethod::ApiKey {
         empty.subscription = Some("API".into());
         empty.state = match provider_accounts::account_has_credentials(app, account) {

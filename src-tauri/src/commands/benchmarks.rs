@@ -1,5 +1,7 @@
 //! Typed IPC boundary. The durable service owns all admission and execution.
+use crate::services::agent_host::execution::NativeProvider;
 use crate::services::benchmarks::{self, types::*, BenchmarkState};
+use crate::services::provider_accounts;
 use tauri::{AppHandle, Manager};
 
 async fn service(app: &AppHandle) -> Result<std::sync::Arc<benchmarks::BenchmarkService>> {
@@ -162,12 +164,43 @@ pub async fn benchmark_get_candidate_observations(
 ) -> Result<Vec<CandidateObservation>> {
     service(&app).await?.store.candidate_observations().await
 }
+/// What a provider's verified native text profile guarantees.
+fn native_text_reason(provider: NativeProvider) -> &'static str {
+    match provider {
+        NativeProvider::Claude => "Fresh owned sessions with tools, personal context, hooks and MCP disabled; exact selection required",
+        NativeProvider::Codex => "Fresh owned sessions with Codex tools, code mode, subagents, skills, AGENTS.md, apps and web search disabled; exact selection required; 'ultra' effort excluded",
+        NativeProvider::Grok => "Fresh owned sessions on a private Grok home with tools, rules, hooks, skills and web search disabled; uses the Grok CLI sign-in",
+        NativeProvider::Kimi => "Fresh owned sessions with Kimi tools, SYSTEM.md, AGENTS.md, hooks, reminders, MCP and search disabled in process; uses the Kimi Code sign-in",
+    }
+}
+
+/// A provider's native text capability: supported only once its policy probe
+/// has passed on what this build ships, and otherwise saying why not.
+fn native_text_capability(provider: NativeProvider) -> Capability {
+    capability_with_issue(provider, provider.admission_issue())
+}
+
+/// The native text capability of `provider`, unsupported for `issue` when
+/// there is one.
+fn capability_with_issue(provider: NativeProvider, issue: Option<String>) -> Capability {
+    Capability {
+        provider_id: provider.harness_id().into(),
+        execution_profile: "native_text".into(),
+        supported: issue.is_none(),
+        reason: issue.unwrap_or_else(|| native_text_reason(provider).into()),
+        cli_account_id: provider_accounts::cli_login_account_id(provider.harness_id()),
+    }
+}
+
 #[tauri::command]
 pub fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
     let _ = benchmarks::worker::configure(&app);
-    let mut capabilities=vec![Capability{provider_id:"claude-acp".into(),execution_profile:"native_text".into(),supported:true,reason:"Fresh owned sessions with tools, personal context, hooks and MCP disabled; exact selection required".into()},Capability{provider_id:"codex-acp".into(),execution_profile:"native_text".into(),supported:false,reason:"Native no-tool and context restrictions require verification".into()}];
+    let mut capabilities: Vec<Capability> = NativeProvider::ALL
+        .iter()
+        .map(|provider| native_text_capability(*provider))
+        .collect();
     for profile in ["protected_repository", "isolated_ui"] {
-        capabilities.push(Capability{provider_id:"claude-acp".into(),execution_profile:profile.into(),supported:benchmarks::worker::available(),reason:if benchmarks::worker::available(){"Bounded JavaScript/HTML artifacts generated as text and evaluated in a separate Chromium sandbox; general native repository execution is unavailable"}else{"Isolated artifact worker prerequisites are unavailable"}.into()});
+        capabilities.push(Capability{provider_id:"claude-acp".into(),execution_profile:profile.into(),supported:benchmarks::worker::available(),reason:if benchmarks::worker::available(){"Bounded JavaScript/HTML artifacts generated as text and evaluated in a separate Chromium sandbox; general native repository execution is unavailable"}else{"Isolated artifact worker prerequisites are unavailable"}.into(),cli_account_id:None});
     }
     if app
         .try_state::<crate::services::e2e_mode::E2eMode>()
@@ -178,6 +211,7 @@ pub fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
             execution_profile: "native_text".into(),
             supported: true,
             reason: "Deterministic fake provider in validated isolated E2E mode".into(),
+            cli_account_id: None,
         });
     }
     capabilities
@@ -382,5 +416,42 @@ mod tests {
         .unwrap();
         assert!(received);
         ping.await.unwrap();
+    }
+
+    /// A profile whose policy probe has not passed is listed with the reason
+    /// and never offered as supported.
+    #[test]
+    fn only_a_probed_profile_is_a_supported_capability() {
+        let claude = native_text_capability(NativeProvider::Claude);
+        assert!(claude.supported);
+        assert_eq!(claude.cli_account_id, None);
+        let kimi = native_text_capability(NativeProvider::Kimi);
+        assert!(kimi.supported);
+        assert_eq!(kimi.reason, native_text_reason(NativeProvider::Kimi));
+        assert_eq!(kimi.cli_account_id.as_deref(), Some("cli-login-kimi-acp"));
+        // Codex runs on managed accounts, so it names no CLI sign-in.
+        let codex = native_text_capability(NativeProvider::Codex);
+        assert!(codex.supported);
+        assert_eq!(codex.reason, native_text_reason(NativeProvider::Codex));
+        assert_eq!(codex.cli_account_id, None);
+        let grok = native_text_capability(NativeProvider::Grok);
+        assert!(grok.supported);
+        assert_eq!(grok.reason, native_text_reason(NativeProvider::Grok));
+        assert_eq!(grok.cli_account_id.as_deref(), Some("cli-login-grok-acp"));
+        // A profile the probe has not passed says why, and keeps naming its
+        // CLI sign-in, so its rows still list.
+        let unprobed = capability_with_issue(
+            NativeProvider::Grok,
+            Some("The Grok benchmark profile has not passed its policy probe".into()),
+        );
+        assert!(!unprobed.supported);
+        assert_eq!(
+            unprobed.reason,
+            "The Grok benchmark profile has not passed its policy probe"
+        );
+        assert_eq!(
+            unprobed.cli_account_id.as_deref(),
+            Some("cli-login-grok-acp")
+        );
     }
 }
