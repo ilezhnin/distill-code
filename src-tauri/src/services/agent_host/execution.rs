@@ -636,6 +636,32 @@ pub fn kimi_home(shell_env: &HashMap<String, String>) -> Option<PathBuf> {
     })
 }
 
+/// The Grok binary that chats run behind `executable`. Distill's Node
+/// installs Grok's npm package, whose `grok` shim starts the binary in
+/// `<GROK_HOME>/bin` (else `~/.grok/bin`), as its bootstrap does; the profile
+/// pins and runs that binary itself. An executable already named `grok` is
+/// that binary.
+pub fn grok_binary(executable: &Path) -> PathBuf {
+    grok_binary_in(executable, std::env::var_os("GROK_HOME").map(PathBuf::from))
+}
+
+fn grok_binary_in(executable: &Path, grok_home: Option<PathBuf>) -> PathBuf {
+    let name = if cfg!(windows) { "grok.exe" } else { "grok" };
+    if executable
+        .file_name()
+        .is_some_and(|file| file.eq_ignore_ascii_case(name))
+    {
+        return executable.to_path_buf();
+    }
+    grok_home
+        .or_else(|| {
+            dirs::home_dir().map(|home| std::fs::canonicalize(&home).unwrap_or(home).join(".grok"))
+        })
+        .unwrap_or_default()
+        .join("bin")
+        .join(name)
+}
+
 /// The package entrypoint the npm shim `shim` runs:
 /// `<shim dir>/node_modules/@moonshot-ai/kimi-code/dist/main.mjs`, which the
 /// Kimi profile pins and starts under Node with its adapter. A `kimi` that is
@@ -1229,6 +1255,24 @@ pub(super) fn validate_request(request: &OwnedSessionRequest) -> Result<NativePr
         );
     }
     Ok(provider)
+}
+
+#[cfg(test)]
+mod grok_binary_tests {
+    use super::*;
+
+    #[test]
+    fn the_npm_shim_runs_the_binary_in_grok_home() {
+        let name = if cfg!(windows) { "grok.exe" } else { "grok" };
+        let home = PathBuf::from("C:/grok-home");
+        let shim = Path::new("C:/distill/node/grok.cmd");
+        assert_eq!(
+            grok_binary_in(shim, Some(home.clone())),
+            home.join("bin").join(name)
+        );
+        let native = Path::new("C:/somewhere/bin").join(name);
+        assert_eq!(grok_binary_in(&native, Some(home)), native);
+    }
 }
 
 #[cfg(test)]

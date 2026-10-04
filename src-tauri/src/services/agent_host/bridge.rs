@@ -318,6 +318,7 @@ pub(super) fn owned_launch(
         // The native CLI chats run, verified byte for byte, with the
         // profile's own arguments.
         NativeProvider::Grok => {
+            let executable = super::execution::grok_binary(&executable);
             provider.verify_runtime(&RuntimePaths {
                 entrypoint: &executable,
                 native_cli: None,

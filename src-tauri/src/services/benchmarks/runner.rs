@@ -2098,6 +2098,7 @@ fn pinned_entrypoint(
 ) -> std::result::Result<std::path::PathBuf, String> {
     match provider {
         NativeProvider::Kimi => kimi_entrypoint(&executable),
+        NativeProvider::Grok => Ok(grok_binary(&executable)),
         _ => Ok(executable),
     }
 }
@@ -4729,14 +4730,20 @@ mod tests {
     #[tokio::test]
     async fn runtime_identity_ignores_lazily_learned_efforts_but_not_the_model_set() {
         let directory = tempfile::tempdir().unwrap();
-        let executable = directory.path().join("bridge.js");
-        tokio::fs::write(&executable, "bridge").await.unwrap();
-        let path = executable.to_string_lossy().into_owned();
-        let before = json!({"executable":{"path":path},"models":[{"modelId":"sonnet","reasoningEfforts":[]},{"modelId":"opus","reasoningEfforts":["low"]}]});
-        let learned = json!({"executable":{"path":path},"models":[{"modelId":"opus","reasoningEfforts":["low","high"],"supportsFast":true},{"modelId":"sonnet","reasoningEfforts":["low"]}]});
-        let grown = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus"},{"modelId":"haiku"}]});
-        let renamed = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus","name":"Opus Next"}]});
         for provider in NativeProvider::ALL.iter().copied() {
+            // Grok's runtime is its native binary; any other name is the npm
+            // shim, which stands for the binary in the Grok home.
+            let name = match provider {
+                NativeProvider::Grok if cfg!(windows) => "grok.exe",
+                NativeProvider::Grok => "grok",
+                _ => "bridge.js",
+            };
+            let executable = directory.path().join(name);
+            let path = executable.to_string_lossy().into_owned();
+            let before = json!({"executable":{"path":path},"models":[{"modelId":"sonnet","reasoningEfforts":[]},{"modelId":"opus","reasoningEfforts":["low"]}]});
+            let learned = json!({"executable":{"path":path},"models":[{"modelId":"opus","reasoningEfforts":["low","high"],"supportsFast":true},{"modelId":"sonnet","reasoningEfforts":["low"]}]});
+            let grown = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus"},{"modelId":"haiku"}]});
+            let renamed = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus","name":"Opus Next"}]});
             tokio::fs::write(&executable, "bridge").await.unwrap();
             let fingerprint = |inventory: &Value| {
                 let inventory = inventory.clone();
