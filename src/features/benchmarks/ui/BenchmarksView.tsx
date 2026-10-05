@@ -31,7 +31,7 @@ import {
   useBenchmarkRuns,
 } from "../hooks/useBenchmarks";
 import { shortId } from "../lib/benchmarkLabels";
-import type { Configuration } from "../types";
+import type { LeaderboardRow } from "../types";
 import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import { BenchDevelopmentView } from "./BenchDevelopmentView";
@@ -102,9 +102,9 @@ export function BenchmarksView({
     versions: string[];
     preview: boolean;
   } | null>(null);
-  // A model page's run: its configuration, and the run measuring it now.
+  // A model page's run: its leaderboard row, and the run measuring it now.
   const [modelRun, setModelRun] = useState<{
-    configuration: Configuration;
+    row: LeaderboardRow;
     runId: string | null;
   } | null>(null);
   const [scope, setScope] = useState<ResultScope>({
@@ -335,7 +335,7 @@ export function BenchmarksView({
               onRun={(runId) =>
                 guarded(() =>
                   setModelRun({
-                    configuration: openedRow.configuration,
+                    row: openedRow,
                     runId,
                   }),
                 )
@@ -442,7 +442,11 @@ export function BenchmarksView({
       ) : null}
       {modelRun ? (
         <BenchmarkModelRunDialog
-          configuration={modelRun.configuration}
+          row={
+            leaderboard.data?.rows.find(
+              (row) => rowKey(row) === rowKey(modelRun.row),
+            ) ?? modelRun.row
+          }
           definitions={definitions.data ?? []}
           runId={modelRun.runId}
           onClose={() => setModelRun(null)}

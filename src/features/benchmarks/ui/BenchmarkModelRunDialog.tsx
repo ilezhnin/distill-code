@@ -33,9 +33,11 @@ import { plannedTurns } from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   Attempt,
+  AttemptSummary,
   BenchmarkDefinition,
   BenchmarkVersion,
   Configuration,
+  LeaderboardRow,
   RunRequest,
 } from "../types";
 import { BenchmarkAlert } from "./BenchmarkPrimitives";
@@ -53,6 +55,20 @@ type TestStatus =
   | { kind: "judging"; startedAt: number | null }
   | { kind: "scored"; score: number; durationMs: number | null }
   | { kind: "unscored"; outcome: string | null; durationMs: number | null };
+
+/** Attempt summaries by id; one listing returns at most 100. */
+async function listByIds(ids: readonly string[]): Promise<AttemptSummary[]> {
+  const pages: AttemptSummary[][] = [];
+  for (let start = 0; start < ids.length; start += 100) {
+    pages.push(
+      await benchmarkApi.listAttempts({
+        attemptIds: ids.slice(start, start + 100),
+        limit: 100,
+      }),
+    );
+  }
+  return pages.flat();
+}
 
 /** Whether an attempt ran on the model, effort and fast mode a row names. */
 function sameConfiguration(a: Configuration, b: Configuration): boolean {
@@ -109,17 +125,19 @@ function testStatus(
 
 /**
  * Runs one leaderboard model on the current tests. The model is the one the
- * page shows; every test it can be measured on starts checked. The list is in
+ * page shows; every test it can be measured on and has no score on yet starts
+ * checked, so a run asks only for what is missing. The list is in
  * the order the run takes the tests, and each row follows its test from
  * queued to running, with its elapsed time, to passed or failed.
  */
 export function BenchmarkModelRunDialog({
-  configuration,
+  row,
   definitions,
   runId: activeRunId,
   onClose,
 }: {
-  configuration: Configuration;
+  /** The model's leaderboard row, as the leaderboard stands now. */
+  row: LeaderboardRow;
   definitions: BenchmarkDefinition[];
   /** A run measuring this model now, followed instead of starting another. */
   runId: string | null;
@@ -127,6 +145,7 @@ export function BenchmarkModelRunDialog({
 }) {
   const { t } = useTranslation("benchmarks");
   const client = useQueryClient();
+  const configuration = row.configuration;
   const name = modelDisplayName(configuration);
   const effort = explicitEffort(configuration.effort);
   // The current pool: the newest published version of every live test, the
@@ -147,8 +166,15 @@ export function BenchmarkModelRunDialog({
       authored: current.filter(wrote),
     };
   }, [definitions, configuration]);
-  const [unchecked, setUnchecked] = useState<Set<string>>(() => new Set());
-  const chosen = eligible.filter((version) => !unchecked.has(version.id));
+  // A test the model already has a score on starts unchecked; a click
+  // overrides that until a run finishes.
+  const measured = useMemo(
+    () => new Set(row.scoredVersionIds),
+    [row.scoredVersionIds],
+  );
+  const [overrides, setOverrides] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
   // The row carries the runtime of its newest attempt; run its model as
   // today's inventory lists it, so the runner does not refuse a stale pin.
   const inventory = useQuery({
@@ -199,20 +225,6 @@ export function BenchmarkModelRunDialog({
       ),
     [run.data, configuration],
   );
-  // Followed from the model page, the checks show which tests the run holds.
-  const seeded = useRef(false);
-  useEffect(() => {
-    if (seeded.current || mine.length === 0) return;
-    seeded.current = true;
-    const planned = new Set(mine.map((attempt) => attempt.versionId));
-    setUnchecked(
-      new Set(
-        eligible
-          .filter((version) => !planned.has(version.id))
-          .map((version) => version.id),
-      ),
-    );
-  }, [mine, eligible]);
   // Before a run, the plan names the order: the request key seeds it, and
   // leaving a test out never reorders the rest.
   const plan = useQuery({
@@ -241,24 +253,36 @@ export function BenchmarkModelRunDialog({
         (position.get(a.id) ?? UNORDERED) - (position.get(b.id) ?? UNORDERED),
     );
   }, [eligible, mine, plan.data]);
-  // Summaries carry each attempt's score; a listing returns at most 100.
+  // Summaries carry each attempt's score.
   const attemptIds = useMemo(() => mine.map((attempt) => attempt.id), [mine]);
   const summaries = useQuery({
     queryKey: [...benchmarkKeys, "run-attempts", runId, attemptIds],
-    queryFn: async () => {
-      const pages = [];
-      for (let start = 0; start < attemptIds.length; start += 100) {
-        pages.push(
-          await benchmarkApi.listAttempts({
-            attemptIds: attemptIds.slice(start, start + 100),
-            limit: 100,
-          }),
-        );
-      }
-      return pages.flat();
-    },
+    queryFn: () => listByIds(attemptIds),
     enabled: attemptIds.length > 0,
   });
+  // The result each test stands at on the leaderboard, shown until a run
+  // reports a newer one.
+  const standingAttempts = useQuery({
+    queryKey: [...benchmarkKeys, "standing", row.attemptIds],
+    queryFn: () => listByIds(row.attemptIds),
+    enabled: row.attemptIds.length > 0,
+  });
+  const standing = useMemo(() => {
+    const byVersion = new Map<string, number[]>();
+    for (const summary of standingAttempts.data ?? []) {
+      if (summary.score == null) continue;
+      byVersion.set(summary.versionId, [
+        ...(byVersion.get(summary.versionId) ?? []),
+        summary.score,
+      ]);
+    }
+    return new Map(
+      [...byVersion].map(([versionId, values]) => [
+        versionId,
+        values.reduce((sum, value) => sum + value, 0) / values.length,
+      ]),
+    );
+  }, [standingAttempts.data]);
   const scores = useMemo(
     () =>
       new Map(
@@ -271,6 +295,24 @@ export function BenchmarkModelRunDialog({
   );
   const runActive = run.data ? ACTIVE_RUN.has(run.data.state) : false;
   const stopping = run.data?.state === "cancelling";
+  // Following a run, the checks show the tests it holds.
+  const inRunIds = useMemo(
+    () => new Set(mine.map((attempt) => attempt.versionId)),
+    [mine],
+  );
+  const following = runActive && mine.length > 0;
+  const isChecked = (versionId: string) =>
+    following
+      ? inRunIds.has(versionId)
+      : (overrides.get(versionId) ?? !measured.has(versionId));
+  const chosen = eligible.filter((version) => isChecked(version.id));
+  // A finished run measured its tests: the next one starts from what is
+  // still missing, as the refreshed leaderboard row names it.
+  const wasActive = useRef(runActive);
+  useEffect(() => {
+    if (wasActive.current && !runActive) setOverrides(new Map());
+    wasActive.current = runActive;
+  }, [runActive]);
   const statuses = useMemo(() => {
     const byVersion = new Map<string, Attempt[]>();
     for (const attempt of mine) {
@@ -319,7 +361,7 @@ export function BenchmarkModelRunDialog({
     setError(null);
     // The checked tests in list order, so the plan order stays the queue.
     const request = requestFor(
-      ordered.filter((version) => !unchecked.has(version.id)),
+      ordered.filter((version) => isChecked(version.id)),
       pinned,
     );
     try {
@@ -405,10 +447,10 @@ export function BenchmarkModelRunDialog({
                     : "indeterminate"
               }
               onCheckedChange={(checked) =>
-                setUnchecked(
-                  checked === true
-                    ? new Set()
-                    : new Set(eligible.map((version) => version.id)),
+                setOverrides(
+                  new Map(
+                    eligible.map((version) => [version.id, checked === true]),
+                  ),
                 )
               }
             />
@@ -440,20 +482,30 @@ export function BenchmarkModelRunDialog({
                   <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
                     <Checkbox
                       disabled={runActive}
-                      checked={!unchecked.has(version.id)}
+                      checked={isChecked(version.id)}
                       onCheckedChange={(checked) =>
-                        setUnchecked((previous) => {
-                          const next = new Set(previous);
-                          if (checked === true) next.delete(version.id);
-                          else next.add(version.id);
-                          return next;
-                        })
+                        setOverrides((previous) =>
+                          new Map(previous).set(version.id, checked === true),
+                        )
                       }
                     />
                     <span className="min-w-0 flex-1 truncate">
                       {version.manifest.name}
                     </span>
-                    <TestStatusMark status={status} now={now} />
+                    {status ? (
+                      <TestStatusMark status={status} now={now} />
+                    ) : standing.has(version.id) ? (
+                      <span className="opacity-60">
+                        <TestStatusMark
+                          status={{
+                            kind: "scored",
+                            score: standing.get(version.id) as number,
+                            durationMs: null,
+                          }}
+                          now={now}
+                        />
+                      </span>
+                    ) : null}
                   </Label>
                 </li>
               );

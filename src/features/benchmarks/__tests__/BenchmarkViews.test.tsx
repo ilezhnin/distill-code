@@ -598,6 +598,7 @@ describe("benchmark authoring and saved evidence", () => {
     const unfinished = leaderboardRow({
       configuration: stale,
       status: "preliminary",
+      scoredVersionIds: [],
       missingVersionIds: ["version-1"],
     });
     vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({

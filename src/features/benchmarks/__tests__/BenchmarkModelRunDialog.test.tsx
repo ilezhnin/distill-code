@@ -16,7 +16,13 @@ import type {
   Configuration,
 } from "../types";
 import { BenchmarkModelRunDialog } from "../ui/BenchmarkModelRunDialog";
-import { attempt, configuration, definition, run } from "./fixtures";
+import {
+  attempt,
+  configuration,
+  definition,
+  leaderboardRow,
+  run,
+} from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: String,
@@ -78,7 +84,12 @@ const definitions: BenchmarkDefinition[] = [
 ];
 
 function show(
-  options: { configuration?: Configuration; runId?: string | null } = {},
+  options: {
+    configuration?: Configuration;
+    runId?: string | null;
+    /** Tests the model already has a score on, by version and attempt. */
+    measured?: { versionIds: string[]; attemptIds: string[] };
+  } = {},
 ) {
   render(
     <QueryClientProvider
@@ -87,7 +98,11 @@ function show(
       }
     >
       <BenchmarkModelRunDialog
-        configuration={options.configuration ?? configuration}
+        row={leaderboardRow({
+          configuration: options.configuration ?? configuration,
+          scoredVersionIds: options.measured?.versionIds ?? [],
+          attemptIds: options.measured?.attemptIds ?? [],
+        })}
         definitions={definitions}
         runId={options.runId ?? null}
         onClose={vi.fn()}
@@ -397,7 +412,7 @@ it("lists the tests in the order the run takes them and times the one running no
   const row = (name: string) =>
     within(screen.getByText(name).closest("li") as HTMLElement);
   expect(row("Charlie").getByText("7 s")).toBeInTheDocument();
-  expect(row("Charlie").getByLabelText("Pass")).toBeInTheDocument();
+  expect(await row("Charlie").findByLabelText("Pass")).toBeInTheDocument();
   expect(row("Echo").getByLabelText("Running")).toBeInTheDocument();
   expect(row("Echo").getByText(/^2 min [5-7] s$/)).toBeInTheDocument();
   expect(screen.getByText("Echo").closest("li")).toHaveAttribute(
@@ -406,4 +421,37 @@ it("lists the tests in the order the run takes them and times the one running no
   );
   expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
   expect(row("Alpha").getByText("Queued")).toBeInTheDocument();
+});
+
+it("leaves the tests the model already has a score on unchecked, showing that score", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
+    { ...summary("version-1", "terminal", "pass", 1), id: "s-1" },
+    { ...summary("version-3", "terminal", "fail", 0), id: "s-3" },
+  ]);
+  show({
+    measured: {
+      versionIds: ["version-1", "version-3"],
+      attemptIds: ["s-1", "s-3"],
+    },
+  });
+  const row = (name: string) =>
+    within(screen.getByText(name).closest("label") as HTMLElement);
+  // A passed and a failed test both have their measurement; the rest are due.
+  expect(await screen.findByText("4 of 6 selected")).toBeInTheDocument();
+  expect(row("Alpha").getByRole("checkbox")).not.toBeChecked();
+  expect(row("Charlie").getByRole("checkbox")).not.toBeChecked();
+  for (const name of ["Bravo", "Delta", "Echo", "Hotel"])
+    expect(row(name).getByRole("checkbox")).toBeChecked();
+  expect(await row("Alpha").findByLabelText("Pass")).toBeInTheDocument();
+  expect(row("Charlie").getByLabelText("Fail")).toBeInTheDocument();
+  expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
+    attemptIds: ["s-1", "s-3"],
+    limit: 100,
+  });
+  // Measuring again stays one click away.
+  await user.click(row("Alpha").getByRole("checkbox"));
+  expect(screen.getByText("5 of 6 selected")).toBeInTheDocument();
+  await user.click(screen.getByText("All tests"));
+  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
 });
