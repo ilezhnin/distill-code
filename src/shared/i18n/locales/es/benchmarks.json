@@ -282,7 +282,7 @@
   "activity": {
     "title": "Ejecuciones en curso",
     "progress": "{{settled}} / {{total}}",
-    "now": "En curso: {{models}}",
+    "more": "+{{count}}",
     "sidebar": "{{settled}} de {{total}} intentos resueltos",
     "left": "Quedan {{open}}",
     "running": "En curso, quedan {{open}}"

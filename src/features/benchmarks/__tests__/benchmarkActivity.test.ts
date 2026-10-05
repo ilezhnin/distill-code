@@ -5,6 +5,7 @@ import {
   runProgress,
   runningConfigurations,
   stalledRuns,
+  workingConfigurations,
 } from "../lib/benchmarkActivity";
 import type { RunSummary } from "../types";
 import { configuration, leaderboardRow, runSummary } from "./fixtures";
@@ -55,6 +56,26 @@ describe("benchmark activity", () => {
       running: 4,
     });
     expect(runningConfigurations(run).map((entry) => entry.id)).toEqual([
+      "config-1",
+      "config-2",
+    ]);
+  });
+
+  it("names what a run works on while nothing of it is running", () => {
+    const ids = (run: RunSummary) =>
+      workingConfigurations(run).map((entry) => entry.id);
+    // The models running now, where any is.
+    expect(ids(summary({}))).toEqual(["config-1", "config-2"]);
+    // A run that waits for a usage limit: the model with tests left.
+    expect(
+      ids(
+        summary({
+          openCells: [{ configurationId: "config-2", versionId: "version-2" }],
+        }),
+      ),
+    ).toEqual(["config-2"]);
+    // An older summary lists no open cells: every model it asked for.
+    expect(ids(summary({ openCells: undefined }))).toEqual([
       "config-1",
       "config-2",
     ]);

@@ -47,6 +47,22 @@ export function runningConfigurations(run: RunSummary): Configuration[] {
 }
 
 /**
+ * The configurations `run` is working on: those with a cell running now, or,
+ * while none runs (a wait for a usage limit, the gap between two tests),
+ * those with cells left.
+ */
+export function workingConfigurations(run: RunSummary): Configuration[] {
+  const running = runningConfigurations(run);
+  if (running.length > 0) return running;
+  const open = new Set(
+    (run.openCells ?? []).map((cell) => cell.configurationId),
+  );
+  const left = run.request.configurations.filter((entry) => open.has(entry.id));
+  // Older summaries list no open cells.
+  return left.length > 0 ? left : run.request.configurations;
+}
+
+/**
  * A row's cells still open in active runs, those running now, and the newest
  * such run.
  */

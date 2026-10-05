@@ -1,22 +1,28 @@
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
+import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import { Spinner } from "@/shared/ui/spinner";
 import { modelNameKey, useModelNames } from "../hooks/useBenchmarks";
 import {
   activeRuns,
   runProgress,
-  runningConfigurations,
   stalledRuns,
+  workingConfigurations,
 } from "../lib/benchmarkActivity";
+import { explicitEffort } from "../lib/benchmarkEffort";
 import { modelDisplayName } from "../lib/benchmarkLabels";
 import type { RunSummary } from "../types";
 import { StateBadge } from "./BenchmarkPrimitives";
 
+/** The models one run names before the rest are counted. */
+const SHOWN_MODELS = 3;
+
 /**
- * Runs that dispatch, each with its progress and the models running now, and
- * one line of runs that wait for the operator. Each opens its run.
+ * Runs that dispatch, each with the models it is working on and its progress,
+ * and one line of runs that wait for the operator. Each opens its run.
  */
 export function BenchmarkActivity({
   runs,
@@ -35,14 +41,7 @@ export function BenchmarkActivity({
     <section aria-label={t("activity.title")} className="flex flex-col gap-2">
       {active.map((run) => {
         const { settled, total } = runProgress([run]);
-        const now = runningConfigurations(run).map((entry) =>
-          [
-            modelDisplayName(entry, names.get(modelNameKey(entry))),
-            entry.effort,
-          ]
-            .filter(Boolean)
-            .join(" "),
-        );
+        const models = workingConfigurations(run);
         return (
           <button
             key={run.id}
@@ -55,6 +54,35 @@ export function BenchmarkActivity({
             ) : (
               <StateBadge state={run.state} />
             )}
+            <span className="flex min-w-0 items-center gap-3">
+              {models.slice(0, SHOWN_MODELS).map((entry) => {
+                const effort = explicitEffort(entry.effort);
+                return (
+                  <span
+                    key={entry.id}
+                    className="flex min-w-0 items-center gap-1.5"
+                  >
+                    <span className="shrink-0">
+                      {getProviderIcon(entry.providerId, "size-4")}
+                    </span>
+                    <span className="truncate text-sm font-medium">
+                      {modelDisplayName(entry, names.get(modelNameKey(entry)))}
+                    </span>
+                    {effort ? <Badge variant="outline">{effort}</Badge> : null}
+                    {entry.fastMode ? (
+                      <Badge variant="outline">{t("fastMode")}</Badge>
+                    ) : null}
+                  </span>
+                );
+              })}
+              {models.length > SHOWN_MODELS ? (
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {t("activity.more", {
+                    count: models.length - SHOWN_MODELS,
+                  })}
+                </span>
+              ) : null}
+            </span>
             <span className="shrink-0 text-sm tabular-nums">
               {t("activity.progress", { settled, total })}
             </span>
@@ -63,11 +91,6 @@ export function BenchmarkActivity({
               aria-label={t("runs.progressLabel")}
               className="h-1.5 w-32 shrink-0"
             />
-            <span className="min-w-0 truncate text-xs text-muted-foreground">
-              {now.length > 0
-                ? t("activity.now", { models: now.join(", ") })
-                : null}
-            </span>
           </button>
         );
       })}

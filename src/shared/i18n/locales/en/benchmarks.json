@@ -282,7 +282,7 @@
   "activity": {
     "title": "Runs in progress",
     "progress": "{{settled}} / {{total}}",
-    "now": "Running now: {{models}}",
+    "more": "+{{count}}",
     "sidebar": "{{settled}} of {{total}} attempts settled",
     "left": "{{open}} left",
     "running": "Running, {{open}} left"
