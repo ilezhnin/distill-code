@@ -492,6 +492,34 @@ describe("benchmark authoring and saved evidence", () => {
       limit: 50,
     });
   });
+  it("lists only the attempts that measured something", async () => {
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
+    // attempt-2 is a call the provider refused: kept for its spend, no result.
+    const row = leaderboardRow({
+      attemptIds: ["attempt-1", "attempt-2"],
+      resultAttemptIds: ["attempt-1"],
+    });
+    wrap(
+      <BenchmarkConfigurationPage
+        row={row}
+        report={{ cohort, rows: [row] }}
+        runs={[]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Attempts (1)")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+        attemptIds: ["attempt-1"],
+        offset: 0,
+        limit: 50,
+      }),
+    );
+  });
   it("names the model an alias resolved to on its page, not on every attempt", async () => {
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([

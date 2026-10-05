@@ -171,3 +171,64 @@ it("keeps a paused run's waiting tests queued and names each model of a matrix",
   expect(row("Charlie").getByText(/model-2/)).toBeInTheDocument();
   expect(row("Alpha").getByText(/model-1/)).toBeInTheDocument();
 });
+
+it("shows a test the provider's usage limit put back as waiting, not queued", async () => {
+  const limit = JSON.stringify({
+    code: -32000,
+    message:
+      "Authentication required: 403 You've reached your 5-hour usage limit.",
+  });
+  show({
+    ...run,
+    state: "running",
+    attempts: [
+      ...attempts().slice(0, 1),
+      at({
+        id: "a-3",
+        versionId: "version-c",
+        phase: "pending",
+        outcome: null,
+        reason: limit,
+        startedAt: null,
+        finishedAt: null,
+        durationMs: null,
+      }),
+    ],
+  });
+  expect(await screen.findByText("Charlie")).toBeInTheDocument();
+  const waiting = row("Charlie").getByText("Usage limit, waiting");
+  expect(waiting).toHaveAttribute("title", limit);
+  expect(row("Charlie").queryByText("Queued")).not.toBeInTheDocument();
+  // The run's place in the queue is the waiting test.
+  expect(screen.getByText("Charlie").closest("li")).toHaveAttribute(
+    "aria-current",
+    "step",
+  );
+});
+
+it("shows a run the usage limit stopped as stopped, for the operator", async () => {
+  const stopped =
+    "A test did not finish: the usage limit ran out and does not reset in time for the run to wait. You've reached your weekly usage limit.";
+  show({
+    ...run,
+    state: "needs_attention",
+    attempts: [
+      at({
+        id: "a-3",
+        versionId: "version-c",
+        phase: "pending",
+        outcome: null,
+        reason: stopped,
+        startedAt: null,
+        finishedAt: null,
+        durationMs: null,
+      }),
+    ],
+  });
+  expect(await screen.findByText("Charlie")).toBeInTheDocument();
+  expect(row("Charlie").getByText("Usage limit, stopped")).toHaveAttribute(
+    "title",
+    stopped,
+  );
+  expect(screen.getByText("Needs attention")).toBeInTheDocument();
+});

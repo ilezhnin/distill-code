@@ -852,6 +852,7 @@ fn leaderboard_from_attempts(
                     status: "excluded".into(),
                     reason: format!("{excluded} cases excluded: this candidate helped author every case in the pool"),
                     attempt_ids: Vec::new(),
+                    result_attempt_ids: Vec::new(),
                     axes: Vec::new(),
                     missing_version_ids: Vec::new(),
                     unsupported_version_ids: Vec::new(),
@@ -965,6 +966,7 @@ fn leaderboard_from_attempts(
                     if standard_budgets { "" } else { "; a run shortened the published task budget, so no shared rank is assigned" }
                 ),
                 attempt_ids: attempts.iter().map(|a| a.id.clone()).collect(),
+                result_attempt_ids: scored_attempts.iter().map(|a| a.id.clone()).collect(),
                 axes,
                 missing_version_ids,
                 unsupported_version_ids,

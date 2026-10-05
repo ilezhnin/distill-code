@@ -35,7 +35,6 @@ import type {
 import { BenchmarkAlert } from "./BenchmarkPrimitives";
 import {
   ACTIVE_RUN,
-  FINISHED_RUN,
   listByIds,
   passed,
   TestStatusMark,
@@ -266,11 +265,7 @@ export function BenchmarkModelRunDialog({
     return new Map(
       [...byVersion].map(([versionId, attempts]) => [
         versionId,
-        testStatus(
-          attempts,
-          scores,
-          run.data ? FINISHED_RUN.has(run.data.state) : false,
-        ),
+        testStatus(attempts, scores, run.data?.state ?? null),
       ]),
     );
   }, [mine, scores, run.data]);
@@ -286,8 +281,8 @@ export function BenchmarkModelRunDialog({
   const now = useNow(busyTest != null);
   // Keep the test that runs now in view as the run moves down the list.
   const rows = useRef(new Map<string, HTMLLIElement>());
-  const runningId = ordered.find(
-    (version) => statuses.get(version.id)?.kind === "running",
+  const runningId = ordered.find((version) =>
+    ["running", "waiting"].includes(statuses.get(version.id)?.kind ?? ""),
   )?.id;
   useEffect(() => {
     if (runningId)
@@ -408,7 +403,9 @@ export function BenchmarkModelRunDialog({
             {ordered.map((version) => {
               const status = statuses.get(version.id) ?? null;
               const current =
-                status?.kind === "running" || status?.kind === "judging";
+                status?.kind === "running" ||
+                status?.kind === "judging" ||
+                status?.kind === "waiting";
               return (
                 <li
                   key={version.id}

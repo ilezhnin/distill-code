@@ -113,10 +113,10 @@ export function BenchmarkRunDrawer({
       new Map(
         attempts.map((attempt) => [
           attempt.id,
-          testStatus([attempt], scores, terminal),
+          testStatus([attempt], scores, run?.state ?? null),
         ]),
       ),
-    [attempts, scores, terminal],
+    [attempts, scores, run?.state],
   );
   const working = attempts.filter((attempt) => {
     const kind = statuses.get(attempt.id)?.kind;
@@ -125,8 +125,8 @@ export function BenchmarkRunDrawer({
   const now = useNow(working.length > 0);
   // Keep the attempt that runs now in view as the run moves down the list.
   const rows = useRef(new Map<string, HTMLLIElement>());
-  const runningId = attempts.find(
-    (attempt) => statuses.get(attempt.id)?.kind === "running",
+  const runningId = attempts.find((attempt) =>
+    ["running", "waiting"].includes(statuses.get(attempt.id)?.kind ?? ""),
   )?.id;
   useEffect(() => {
     if (runningId)
@@ -202,7 +202,9 @@ export function BenchmarkRunDrawer({
                 {attempts.map((attempt) => {
                   const status = statuses.get(attempt.id) ?? null;
                   const current =
-                    status?.kind === "running" || status?.kind === "judging";
+                    status?.kind === "running" ||
+                    status?.kind === "judging" ||
+                    status?.kind === "waiting";
                   const details = [
                     single ? null : configurationLabel(attempt.configuration),
                     repeated

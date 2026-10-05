@@ -504,6 +504,10 @@ pub struct LeaderboardRow {
     pub status: String,
     pub reason: String,
     pub attempt_ids: Vec<String>,
+    /// The attempts of `attempt_ids` whose cases have a score: what the row
+    /// measured, without the cells kept only for their spend.
+    #[serde(default)]
+    pub result_attempt_ids: Vec<String>,
     /// Success per work class of the suite, in the cohort's class order.
     pub axes: Vec<LeaderboardAxis>,
     /// Pool cases this configuration has no scored result for: the gap a

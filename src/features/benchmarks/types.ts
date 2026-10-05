@@ -355,6 +355,8 @@ export interface LeaderboardRow {
   status: string;
   reason: string;
   attemptIds: string[];
+  /** The attempts whose cases have a score; absent on older snapshots. */
+  resultAttemptIds?: string[];
   /** Success per work class of the suite, in the cohort's class order. */
   axes: LeaderboardAxis[];
   /** Pool cases without a scored result: the gap a catch-up run fills. */

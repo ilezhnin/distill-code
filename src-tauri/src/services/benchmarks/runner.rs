@@ -441,14 +441,77 @@ fn refused_for_quota(error: &Value, output: &str, usage: &TokenUsage) -> bool {
         && usage.output.unwrap_or(0) == 0
 }
 
-/// When a turn the host refused for quota may try again: the reset the host
-/// named, or a short retry.
-fn quota_until(error: &str) -> i64 {
-    serde_json::from_str::<Value>(error)
-        .ok()
+/// The longest a run waits on one provider's usage limit. A 5-hour window
+/// resets within it, so a reset further off, or refusals that go on past it,
+/// are a limit the run cannot wait out.
+const QUOTA_WAIT_LIMIT_MS: i64 = (5 * 60 + 15) * 60 * 1000;
+
+/// When each run's provider first refused for quota, while the run waits on
+/// it. Kept in memory: a restart begins the wait again.
+static QUOTA_SINCE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Why a run stopped instead of waiting on a provider's usage limit; the
+/// provider's own words follow it.
+const QUOTA_STOPPED: &str =
+    "A test did not finish: the usage limit ran out and does not reset in time for the run to wait";
+
+/// What a run does once its provider refused a turn for quota.
+#[derive(Debug, PartialEq)]
+enum QuotaPlan {
+    /// Hold the provider's cells until this time and try again.
+    WaitUntil(i64),
+    /// Stop the run for the operator: the limit will not reset soon.
+    Stop,
+}
+
+/// Waits for a reset the run can reach: one the host names within
+/// [`QUOTA_WAIT_LIMIT_MS`], or, with no time named, a retry every
+/// [`QUOTA_RETRY_MS`] while the refusals last no longer than that. A weekly or
+/// longer window, a reset further off, or refusals past the limit stop it.
+fn quota_plan(run_id: &str, provider_id: &str, error: &str, at: i64) -> QuotaPlan {
+    let parsed = serde_json::from_str::<Value>(error).ok();
+    let next_reset = parsed
+        .as_ref()
         .and_then(|e| e.pointer("/data/nextReset").and_then(Value::as_i64))
-        .filter(|at| *at > now())
-        .unwrap_or_else(|| now() + QUOTA_RETRY_MS)
+        .filter(|reset| *reset > at);
+    let words = parsed
+        .as_ref()
+        .and_then(|e| e["message"].as_str())
+        .unwrap_or(error)
+        .to_lowercase();
+    let long_window = [
+        "weekly",
+        "per week",
+        "monthly",
+        "per month",
+        "daily",
+        "per day",
+    ]
+    .iter()
+    .any(|window| words.contains(window));
+    let key = (run_id.to_owned(), provider_id.to_owned());
+    let mut since = QUOTA_SINCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let first = *since.entry(key.clone()).or_insert(at);
+    if long_window
+        || next_reset.is_some_and(|reset| reset - at > QUOTA_WAIT_LIMIT_MS)
+        || at - first > QUOTA_WAIT_LIMIT_MS
+    {
+        since.remove(&key);
+        return QuotaPlan::Stop;
+    }
+    QuotaPlan::WaitUntil(next_reset.unwrap_or(at + QUOTA_RETRY_MS))
+}
+
+/// A turn of `provider_id` finished: the run no longer waits on its limit.
+fn quota_recovered(run_id: &str, provider_id: &str) {
+    QUOTA_SINCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&(run_id.to_owned(), provider_id.to_owned()));
 }
 
 /// The error code of a Grok turn held back, before any session, until the
@@ -3232,6 +3295,7 @@ impl BenchmarkService {
         };
         match result {
             Ok(mut completed) => {
+                quota_recovered(&run.id, &a.configuration.provider_id);
                 completed.phase = self.settled_phase(run, &completed).await?.into();
                 self.store.save_attempt(&completed).await?;
             }
@@ -3251,26 +3315,40 @@ impl BenchmarkService {
                 // operator with its reason. The same refusal again after the
                 // operator resumed settles the cell instead.
                 if returns_to_queue(&error.code, &failed.phase) && !refused_again(&a, &error) {
+                    // A limit that ran out mid-run discards the unfinished
+                    // turn; the run waits for a reset it can reach, or stops
+                    // for the operator with the reason on the test.
+                    let plan = (error.code == QUOTA_WAIT).then(|| {
+                        quota_plan(&run.id, &a.configuration.provider_id, &error.message, now())
+                    });
+                    let reason = if plan == Some(QuotaPlan::Stop) {
+                        format!("{QUOTA_STOPPED}. {}", error.message)
+                    } else {
+                        error.message.clone()
+                    };
                     if version.manifest.workflow.is_some() {
                         // Its saved steps keep their sessions and usage, and
                         // the root's sums of them stand.
                         failed.phase = "pending".into();
                         failed.started_at = None;
-                        failed.reason = Some(error.message.clone());
+                        failed.reason = Some(reason);
                     } else {
-                        requeue(&mut failed, error.message.clone());
+                        requeue(&mut failed, reason);
                     }
                     self.store.save_attempt(&failed).await?;
                     // A sign-in wait already held its provider's cells in
                     // the backend, which knows when the Grok CLI renews it.
-                    if error.code == QUOTA_WAIT {
-                        hold_provider_until(
-                            &run.id,
-                            &a.configuration.provider_id,
-                            quota_until(&error.message),
-                        );
-                    } else if error.code != SIGN_IN_WAIT {
-                        self.store.set_run_state(&run.id, "needs_attention").await?;
+                    match plan {
+                        Some(QuotaPlan::WaitUntil(until)) => {
+                            hold_provider_until(&run.id, &a.configuration.provider_id, until)
+                        }
+                        Some(QuotaPlan::Stop) => {
+                            self.store.set_run_state(&run.id, "needs_attention").await?
+                        }
+                        None if error.code != SIGN_IN_WAIT => {
+                            self.store.set_run_state(&run.id, "needs_attention").await?
+                        }
+                        None => {}
                     }
                     self.changed().await;
                     return Ok(());
@@ -5794,6 +5872,53 @@ mod tests {
         assert_eq!(samples[0].status, "lower_bound");
         assert_eq!(samples[0].attempt_ids, vec![run.attempts[0].id.clone()]);
         assert!(samples[0].used_percentage_points.is_none());
+    }
+    #[test]
+    fn a_usage_limit_waits_for_a_reset_it_can_reach_and_stops_otherwise() {
+        let at = 1_800_000_000_000i64;
+        let hour = 3_600_000i64;
+        let five_hour = r#"{"code":-32000,"message":"Authentication required: 403 You've reached your 5-hour usage limit."}"#;
+        // No reset named: try again shortly, as long as the refusals last no
+        // longer than a 5-hour window can.
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, at),
+            QuotaPlan::WaitUntil(at + QUOTA_RETRY_MS)
+        );
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, at + 3 * hour),
+            QuotaPlan::WaitUntil(at + 3 * hour + QUOTA_RETRY_MS)
+        );
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, at + QUOTA_WAIT_LIMIT_MS + 1),
+            QuotaPlan::Stop
+        );
+        // After a stop, or a turn that went through, a refusal starts a new wait.
+        let later = at + QUOTA_WAIT_LIMIT_MS + 2;
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, later),
+            QuotaPlan::WaitUntil(later + QUOTA_RETRY_MS)
+        );
+        quota_recovered("run-a", "kimi-acp");
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, later + 6 * hour),
+            QuotaPlan::WaitUntil(later + 6 * hour + QUOTA_RETRY_MS)
+        );
+        // A reset the host names: wait for it when near, stop when far.
+        let reset = |next: i64| {
+            json!({"code":-32010,"data":{"kind":QUOTA_WAIT,"dispatchStarted":false,"nextReset":next}})
+                .to_string()
+        };
+        assert_eq!(
+            quota_plan("run-b", "claude-acp", &reset(at + hour), at),
+            QuotaPlan::WaitUntil(at + hour)
+        );
+        assert_eq!(
+            quota_plan("run-c", "claude-acp", &reset(at + 72 * hour), at),
+            QuotaPlan::Stop
+        );
+        // A weekly or monthly limit is never waited out.
+        let weekly = r#"{"message":"You've reached your weekly usage limit."}"#;
+        assert_eq!(quota_plan("run-d", "kimi-acp", weekly, at), QuotaPlan::Stop);
     }
     #[test]
     fn typed_terminal_outcomes_and_public_fixtures_are_preserved() {

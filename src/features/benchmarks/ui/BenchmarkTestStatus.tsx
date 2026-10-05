@@ -2,7 +2,7 @@
 // clock, judged, then a check, a cross or points with the time it took.
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconCheck, IconX } from "@tabler/icons-react";
+import { IconCheck, IconHourglass, IconX } from "@tabler/icons-react";
 import { Spinner } from "@/shared/ui/spinner";
 import { benchmarkApi } from "../api/benchmarks";
 import { formatElapsed, stateLabel } from "../lib/benchmarkLabels";
@@ -32,6 +32,7 @@ export const FINISHED_RUN = new Set(["completed", "cancelled"]);
 
 export type TestStatus =
   | { kind: "queued" }
+  | { kind: "waiting"; reason: string; stopped: boolean }
   | { kind: "running"; startedAt: number | null }
   | { kind: "judging"; startedAt: number | null }
   | { kind: "scored"; score: number; durationMs: number | null }
@@ -57,15 +58,26 @@ export async function listByIds(
 export function testStatus(
   attempts: Attempt[],
   scores: Map<string, number | null>,
-  runFinished: boolean,
+  runState: string | null,
 ): TestStatus | null {
   if (attempts.length === 0) return null;
+  const runFinished = runState != null && FINISHED_RUN.has(runState);
   const working = attempts.find((a) => WORKING.has(a.phase));
   if (working) return { kind: "running", startedAt: working.startedAt };
   const judging = attempts.find(
     (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
   );
   if (judging) return { kind: "judging", startedAt: judging.startedAt };
+  // A test the runner put back in the queue with a reason waits on its
+  // provider: a usage limit, a sign-in renewal or the operator.
+  const returned = attempts.find((a) => a.phase === "pending" && a.reason);
+  if (returned?.reason && !runFinished)
+    return {
+      kind: "waiting",
+      reason: returned.reason,
+      // A run that stopped for the operator no longer waits on its own.
+      stopped: runState == null || !ACTIVE_RUN.has(runState),
+    };
   if (attempts.some((a) => a.phase === "pending"))
     return runFinished
       ? { kind: "unscored", outcome: "cancelled", durationMs: null }
@@ -93,6 +105,15 @@ export function testStatus(
       durationMs,
     };
   return { kind: "unscored", outcome: attempts[0].outcome, durationMs };
+}
+
+/** What a returned test waits for, from the reason the runner recorded. */
+function waitingLabel(reason: string, stopped: boolean): string {
+  if (/usage limit|quota/i.test(reason))
+    return stopped ? "modelRun.stoppedQuota" : "modelRun.waitingQuota";
+  if (stopped) return "modelRun.stopped";
+  if (/sign-in/i.test(reason)) return "modelRun.waitingSignIn";
+  return "modelRun.waiting";
 }
 
 /** Now, ticking every second while `active`, for a running test's clock. */
@@ -130,6 +151,16 @@ export function TestStatusMark({
       return (
         <span className="shrink-0 text-xs text-muted-foreground">
           {t("modelRun.queued")}
+        </span>
+      );
+    case "waiting":
+      return (
+        <span
+          title={status.reason}
+          className="flex shrink-0 items-center gap-1.5 text-xs text-chart-1"
+        >
+          {t(waitingLabel(status.reason, status.stopped))}
+          <IconHourglass aria-hidden className="size-4" />
         </span>
       );
     case "running":

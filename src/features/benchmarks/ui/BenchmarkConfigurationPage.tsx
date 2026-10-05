@@ -153,10 +153,13 @@ export function BenchmarkConfigurationPage({
   // A point is dated by its observation, not by later evidence it borrows.
   const shownAt = selected ? selected.snapshot.createdAt : shownRow.measuredAt;
   // A dated point lists the verdicts that stood at its date.
+  // The attempts that measured something: a cell kept only for its spend,
+  // such as a call the provider refused, is no result to list.
+  const results = shownRow.resultAttemptIds ?? shownRow.attemptIds;
   const attemptQuery: ResultQuery =
     recorded && selected
-      ? { attemptIds: shownRow.attemptIds, asOf: selected.snapshot.createdAt }
-      : { attemptIds: shownRow.attemptIds };
+      ? { attemptIds: results, asOf: selected.snapshot.createdAt }
+      : { attemptIds: results };
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(() => rowActivity(row, runs), [row, runs]);
   const queuedRunId = catchUp.queuedRunId;
@@ -530,9 +533,9 @@ export function BenchmarkConfigurationPage({
       ) : null}
       <section className="space-y-3">
         <SectionHeading
-          title={t("attempts.title", { count: shownRow.attemptIds.length })}
+          title={t("attempts.title", { count: results.length })}
         />
-        {shownRow.attemptIds.length === 0 ? (
+        {results.length === 0 ? (
           <p className="text-xs text-muted-foreground">{t("results.empty")}</p>
         ) : (
           <BenchmarkAttemptList
