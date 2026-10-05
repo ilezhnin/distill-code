@@ -202,6 +202,8 @@ export interface AttemptSummary {
   cost: number | null;
   /** The model the attempt's usage named as the one that answered. */
   resolvedModel?: string | null;
+  /** The score the leaderboard counts, 0 to 1; null while unscored. */
+  score?: number | null;
 }
 export interface TokenUsage {
   input: number | null;

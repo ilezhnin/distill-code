@@ -74,6 +74,7 @@ vi.mock("../api/benchmarks", () => ({
     listCatalog: vi.fn(),
     startRun: vi.fn(),
     previewRun: vi.fn(),
+    cancelRun: vi.fn(),
     eventsSince: vi.fn(),
     listen: vi.fn(),
     exportDataset: vi.fn(),
@@ -469,10 +470,8 @@ describe("benchmark authoring and saved evidence", () => {
     expect(screen.getByText("Preliminary")).toBeInTheDocument();
     // The service's English reason is not page text; the badge explains on hold.
     expect(screen.queryByText("No valid evidence")).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Run the 1 missing case" }),
-    );
-    expect(catchUp).toHaveBeenCalledWith(["version-1"]);
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(catchUp).toHaveBeenCalledWith(null);
     expect(
       screen.queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
@@ -538,97 +537,60 @@ describe("benchmark authoring and saved evidence", () => {
     wrap(page({ ...sonnet, resolvedModels: undefined }));
     expect(spec("Resolved model")).toHaveTextContent("Not reported");
   });
-  it("does not offer gaps an unfinished run already plans again", async () => {
+  it("opens the run dialog, following a run that measures the model now", async () => {
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
-    const catchUp = vi.fn();
+    const openDialog = vi.fn();
     const openRun = vi.fn();
     const gaps = leaderboardRow({
       status: "preliminary",
       missingVersionIds: ["version-1", "version-2"],
     });
-    const queued = {
+    const paused = {
       ...runSummary,
-      id: "active-run-1",
+      id: "paused-run-1",
       state: "paused",
       request: { ...runSummary.request, versionIds: ["version-1"] },
     };
-    const { rerender } = wrap(
+    const page = (runs: (typeof runSummary)[]) => (
       <BenchmarkConfigurationPage
         row={gaps}
         report={{ cohort, rows: [gaps] }}
-        runs={[queued, runSummary]}
+        runs={runs}
         versions={definition.versions}
         onEvidence={vi.fn()}
-        onRun={catchUp}
+        onRun={openDialog}
         onOpenRun={openRun}
         onBack={vi.fn()}
-      />,
+      />
     );
+    const { rerender } = wrap(page([paused, runSummary]));
+    // A paused run plans gaps but measures nothing now: a fresh dialog.
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(openDialog).toHaveBeenLastCalledWith(null);
     await userEvent.click(
-      screen.getByRole("button", { name: "Run the 1 missing case" }),
+      screen.getByRole("button", { name: "Queued in run paused-r" }),
     );
-    expect(catchUp).toHaveBeenCalledWith(["version-2"]);
-    await userEvent.click(
-      screen.getByRole("button", { name: "Queued in run active-r" }),
-    );
-    expect(openRun).toHaveBeenCalledWith("active-run-1");
+    expect(openRun).toHaveBeenCalledWith("paused-run-1");
     rerender(
-      <BenchmarkConfigurationPage
-        row={gaps}
-        report={{ cohort, rows: [gaps] }}
-        runs={[
-          {
-            ...queued,
-            request: {
-              ...queued.request,
-              versionIds: ["version-1", "version-2"],
+      page([
+        {
+          ...paused,
+          id: "running-run-1",
+          state: "running",
+          openCells: [
+            {
+              configurationId: configuration.id,
+              versionId: "version-1",
+              running: true,
             },
-          },
-        ]}
-        versions={definition.versions}
-        onEvidence={vi.fn()}
-        onRun={catchUp}
-        onOpenRun={openRun}
-        onBack={vi.fn()}
-      />,
+          ],
+        },
+      ]),
     );
-    expect(
-      screen.queryByRole("button", { name: /missing case/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Queued in run active-r" }),
-    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(openDialog).toHaveBeenLastCalledWith("running-run-1");
   });
-  it("leaves a case the provider refused to a run of the whole pool", async () => {
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
-    const run = vi.fn();
-    const refused = leaderboardRow({
-      status: "preliminary",
-      scoredVersionIds: ["version-1"],
-      missingVersionIds: [],
-      unsupportedVersionIds: ["version-2"],
-    });
-    wrap(
-      <BenchmarkConfigurationPage
-        row={refused}
-        report={{ cohort, rows: [refused] }}
-        runs={[]}
-        versions={definition.versions}
-        onEvidence={vi.fn()}
-        onRun={run}
-        onOpenRun={vi.fn()}
-        onBack={vi.fn()}
-      />,
-    );
-    expect(
-      screen.queryByRole("button", { name: /missing case/ }),
-    ).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Run all 2 cases again" }),
-    );
-    expect(run).toHaveBeenCalledWith(["version-1", "version-2"]);
-  });
-  it("starts a catch-up from the model page on today's runtime", async () => {
+  it("runs the model page's model from its dialog on today's runtime", async () => {
     const stale = {
       ...configuration,
       inventoryRevision: "runtime-of-the-last-attempt",
@@ -677,18 +639,18 @@ describe("benchmark authoring and saved evidence", () => {
         onSelectSession={vi.fn()}
       />,
     );
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Run the 1 missing case" }),
-    );
-    const dialog = await screen.findByRole("dialog", {
-      name: "Run benchmarks",
-    });
-    expect(await within(dialog).findByText("1 execution")).toBeInTheDocument();
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Check plan" }),
-    );
+    vi.mocked(benchmarkApi.startRun).mockResolvedValue(run);
+    vi.mocked(benchmarkApi.getRun).mockResolvedValue(run);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    await userEvent.click(await screen.findByRole("button", { name: "Run" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading")).toHaveTextContent("model-1");
+    expect(within(dialog).getByText("1 of 1 selected")).toBeInTheDocument();
+    const start = within(dialog).getByRole("button", { name: "Start" });
+    await waitFor(() => expect(start).toBeEnabled());
+    await userEvent.click(start);
     await waitFor(() =>
-      expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+      expect(benchmarkApi.startRun).toHaveBeenCalledWith(
         expect.objectContaining({
           versionIds: ["version-1"],
           configurations: [
@@ -705,7 +667,6 @@ describe("benchmark authoring and saved evidence", () => {
       "claude-acp",
       "account-1",
     );
-    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   });
   it("starts a different attempt set on its first page", async () => {
     serveListedPages();
@@ -1452,11 +1413,9 @@ describe("configuration history", () => {
       offset: 0,
       limit: 50,
     });
-    // Catch-up fills today's gaps, whichever point is shown.
-    await userEvent.click(
-      screen.getByRole("button", { name: "Run the 1 missing case" }),
-    );
-    expect(catchUp).toHaveBeenCalledWith(["version-1"]);
+    // Run measures today's model, whichever point is shown.
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(catchUp).toHaveBeenCalledWith(null);
     expect(benchmarkApi.getHistory).toHaveBeenCalledWith(configuration);
     await userEvent.click(
       screen.getByRole("button", { name: "Show current results" }),

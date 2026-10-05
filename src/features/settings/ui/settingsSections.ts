@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import {
   Archive,
   BarChart3,
+  Gauge,
   Bell,
   Brain,
   Keyboard,
@@ -99,6 +100,7 @@ export const SETTINGS_SECTIONS = [
   { id: "memory", labelKey: "nav.memory", icon: Brain },
   { id: "extensions", labelKey: "nav.extensions", icon: IconPlug },
   { id: "providers", labelKey: "nav.providers", icon: IconServer },
+  { id: "benchmarks", labelKey: "nav.benchmarks", icon: Gauge },
   { id: "notifications", labelKey: "nav.notifications", icon: Bell },
   { id: "shortcuts", labelKey: "nav.shortcuts", icon: Keyboard },
   { id: "stats", labelKey: "nav.stats", icon: BarChart3 },

@@ -242,6 +242,7 @@
     "general": "General",
     "notifications": "Notificaciones",
     "providers": "Proveedores de IA",
+    "benchmarks": "Benchmarks",
     "providersUpdateAvailable": "Actualización disponible",
     "security": "Seguridad",
     "shortcuts": "Atajos de teclado",
@@ -639,5 +640,14 @@
     "queuedWaitAccount": "Tu mensaje está en cola. Se comprobará {{label}} en {{hours}} h {{minutes}} min y se cambiará cuando esté disponible.",
     "reconnect": "Reconectar en el navegador",
     "reconnectDescription": "Si se revocó el acceso guardado de esta cuenta, puedes reconectarla aquí. Esto vuelve a abrir la autorización del navegador. El cambio habitual de cuenta usa el acceso guardado."
+  },
+  "benchmarks": {
+    "title": "Benchmarks",
+    "description": "Ajustes que comparten todas las ejecuciones de benchmarks.",
+    "timeLimit": {
+      "label": "Tiempo máximo por prueba",
+      "description": "Detiene una prueba que nunca termina. La velocidad de un modelo se mide en su propio tablero.",
+      "unit": "min"
+    }
   }
 }

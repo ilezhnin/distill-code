@@ -100,8 +100,8 @@ export function BenchmarkConfigurationPage({
   runs: RunSummary[];
   versions: BenchmarkVersion[];
   onEvidence: (id: string) => void;
-  /** Starts a run over the given cases, for the gaps this row has. */
-  onRun: (versionIds: string[]) => void;
+  /** Opens this model's run dialog, following the run measuring it now. */
+  onRun: (activeRunId: string | null) => void;
   /** Opens an unfinished run that already covers some of the gaps. */
   onOpenRun: (runId: string) => void;
   onBack: () => void;
@@ -165,28 +165,9 @@ export function BenchmarkConfigurationPage({
       : { attemptIds: shownRow.attemptIds };
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(() => rowActivity(row, runs), [row, runs]);
-  // Every case of the current pool this configuration is measured on,
-  // including those its provider refused, which only a whole run asks again.
-  const pool = useMemo(
-    () => [
-      ...new Set([
-        ...row.scoredVersionIds,
-        ...row.missingVersionIds,
-        ...(row.unsupportedVersionIds ?? []),
-      ]),
-    ],
-    [row],
-  );
   const queuedRunId = catchUp.queuedRunId;
   // The run measuring this model now, else one that plans its gaps.
   const openRunId = activity.runId ?? queuedRunId;
-  // Missing cases first; with none missing and none queued, the whole pool again.
-  const runCases =
-    catchUp.owed.length > 0 ? catchUp.owed : queuedRunId ? [] : pool;
-  const runAction =
-    catchUp.owed.length > 0
-      ? t("configuration.catchUp", { count: catchUp.owed.length })
-      : t("configuration.runAgain", { count: pool.length });
   const statusHint = t(
     `configuration.statusHint.${selected && !recorded ? "retrospective" : shownRow.status}`,
     { defaultValue: "" },
@@ -336,22 +317,14 @@ export function BenchmarkConfigurationPage({
               </dd>
             </div>
           </dl>
-          {runCases.length > 0 ? (
-            <Tooltip delayDuration={TOOLTIP_DELAY.held}>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  size="sm"
-                  leftIcon={<IconPlayerPlay />}
-                  aria-label={runAction}
-                  onClick={() => onRun(runCases)}
-                >
-                  {t("configuration.run")}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">{runAction}</TooltipContent>
-            </Tooltip>
-          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            leftIcon={<IconPlayerPlay />}
+            onClick={() => onRun(activity.runId)}
+          >
+            {t("configuration.run")}
+          </Button>
           {openRunId ? (
             <Tooltip delayDuration={TOOLTIP_DELAY.held}>
               <TooltipTrigger asChild>

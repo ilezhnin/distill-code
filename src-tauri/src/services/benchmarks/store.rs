@@ -270,6 +270,9 @@ impl Store {
             .map(|r| {
                 let finished_at: Option<i64> = r.get(7);
                 let started_at: Option<i64> = r.get(12);
+                let outcome: Option<&str> = r.get(5);
+                let evaluations = serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
+                    .unwrap_or_default();
                 let mut summary = AttemptSummary {
                     id: r.get(0),
                     run_id: r.get(1),
@@ -278,12 +281,12 @@ impl Store {
                     phase: r.get(4),
                     // A dated listing shows each attempt as it stood then.
                     outcome: super::analysis::outcome_as_of(
-                        r.get::<Option<&str>, _>(5),
+                        outcome,
                         finished_at,
-                        &serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
-                            .unwrap_or_default(),
+                        &evaluations,
                         q.as_of,
                     ),
+                    score: super::analysis::score_of(outcome, finished_at, &evaluations, q.as_of),
                     repetition: r.get::<Option<u32>, _>(6).unwrap_or(0),
                     finished_at,
                     duration_ms: r.get(8),
@@ -303,6 +306,7 @@ impl Store {
                     summary.output_tokens = None;
                     summary.cost = None;
                     summary.resolved_model = None;
+                    summary.score = None;
                 }
                 summary
             })
@@ -1442,8 +1446,11 @@ mod tests {
             Some("native-model-2026")
         );
         assert_eq!(first_page[1].resolved_model, None);
+        // A pass scores 1; a pending attempt has no score yet.
+        assert_eq!(first_page[0].score, Some(1.0));
+        assert_eq!(first_page[1].score, None);
         let projection = serde_json::to_value(&first_page[0]).unwrap();
-        assert_eq!(projection.as_object().unwrap().len(), 12);
+        assert_eq!(projection.as_object().unwrap().len(), 13);
         assert!(projection.get("output").is_none());
         assert!(projection.get("evaluations").is_none());
         assert_eq!(

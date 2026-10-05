@@ -55,6 +55,7 @@ import {
   type Option,
 } from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
+import { BenchmarkModelRunDialog } from "./BenchmarkModelRunDialog";
 import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
 import { BenchmarkRunDrawer } from "./BenchmarkRunDrawer";
 import { BenchmarkRunsDialog } from "./BenchmarkRunsDialog";
@@ -100,8 +101,11 @@ export function BenchmarksView({
   const [runSelection, setRunSelection] = useState<{
     versions: string[];
     preview: boolean;
-    /** A catch-up row; the dialog re-selects it from today's inventory. */
-    configuration?: Configuration;
+  } | null>(null);
+  // A model page's run: its configuration, and the run measuring it now.
+  const [modelRun, setModelRun] = useState<{
+    configuration: Configuration;
+    runId: string | null;
   } | null>(null);
   const [scope, setScope] = useState<ResultScope>({
     versionId: "all",
@@ -328,12 +332,11 @@ export function BenchmarksView({
               runs={runs.data ?? []}
               versions={versions}
               onEvidence={openEvidence}
-              onRun={(ids) =>
+              onRun={(runId) =>
                 guarded(() =>
-                  setRunSelection({
-                    versions: ids,
-                    preview: false,
+                  setModelRun({
                     configuration: openedRow.configuration,
+                    runId,
                   }),
                 )
               }
@@ -432,10 +435,17 @@ export function BenchmarksView({
         <BenchmarkRunDialog
           definitions={definitions.data ?? []}
           selectedVersionIds={runSelection.versions}
-          selectedConfiguration={runSelection.configuration}
           previewOnly={runSelection.preview}
           onClose={() => setRunSelection(null)}
           onStarted={openRun}
+        />
+      ) : null}
+      {modelRun ? (
+        <BenchmarkModelRunDialog
+          configuration={modelRun.configuration}
+          definitions={definitions.data ?? []}
+          runId={modelRun.runId}
+          onClose={() => setModelRun(null)}
         />
       ) : null}
       {location.runId && !location.attemptId ? (

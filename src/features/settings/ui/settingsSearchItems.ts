@@ -118,6 +118,16 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     labelKey: "nav.shortcuts",
   },
   {
+    id: "benchmarks",
+    sectionId: "benchmarks",
+    labelKey: "nav.benchmarks",
+  },
+  {
+    id: "benchmarks-time-limit",
+    sectionId: "benchmarks",
+    labelKey: "benchmarks.timeLimit.label",
+  },
+  {
     id: "stats",
     sectionId: "stats",
     labelKey: "nav.stats",

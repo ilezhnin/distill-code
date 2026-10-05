@@ -4,6 +4,7 @@ import { AppearanceSettings } from "./AppearanceSettings";
 import { ArchiveSettings } from "./ArchiveSettings";
 import { MemorySettings } from "@/features/memory/ui/MemorySettings";
 import { BehaviorSettings } from "./BehaviorSettings";
+import { BenchmarkSettings } from "./BenchmarkSettings";
 import { ProvidersSettings } from "./ProvidersSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { SecuritySettings } from "./SecuritySettings";
@@ -71,6 +72,7 @@ export function SettingsView({
           onStartTroubleshootingChat={onStartTroubleshootingChat}
         />
       )}
+      {activeSection === "benchmarks" && <BenchmarkSettings />}
       {activeSection === "notifications" && <NotificationSettings />}
       {activeSection === "shortcuts" && <KeyboardShortcutsSettings />}
       {activeSection === "stats" && <StatsSettings />}

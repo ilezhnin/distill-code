@@ -282,6 +282,9 @@ pub struct AttemptSummary {
     pub cost: Option<f64>,
     /// See [`Attempt::resolved_model`].
     pub resolved_model: Option<String>,
+    /// The score the leaderboard counts for this attempt, 0 to 1; none while
+    /// it is unscored.
+    pub score: Option<f64>,
 }
 /// The human verdict behind a creative rendering.
 #[derive(Debug, Clone, Serialize, Deserialize)]

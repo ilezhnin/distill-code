@@ -242,6 +242,7 @@
     "general": "General",
     "notifications": "Notifications",
     "providers": "AI providers",
+    "benchmarks": "Benchmarks",
     "providersUpdateAvailable": "Update available",
     "security": "Security",
     "shortcuts": "Keyboard shortcuts",
@@ -639,5 +640,14 @@
     "queuedWaitAccount": "Your message is queued. Checking {{label}} again in {{hours}} h {{minutes}} min, then switching when it is available.",
     "reconnect": "Reconnect in browser",
     "reconnectDescription": "If this account's saved sign-in was revoked, reconnect it here. This opens browser authorization again. Ordinary account switching uses the saved sign-in."
+  },
+  "benchmarks": {
+    "title": "Benchmarks",
+    "description": "Settings every benchmark run shares.",
+    "timeLimit": {
+      "label": "Time limit per test",
+      "description": "Stops a test that never finishes. A model's speed is measured on its own board.",
+      "unit": "min"
+    }
   }
 }

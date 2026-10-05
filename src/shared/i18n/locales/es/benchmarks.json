@@ -97,7 +97,6 @@
     "executionProfile": "Perfil de ejecución",
     "measurementProfile": "Perfil de medición",
     "timeoutSeconds": "Tiempo mínimo (segundos)",
-    "timeLimitMinutes": "Tiempo máximo (minutos)",
     "maxArtifactBytes": "Límite de artefacto (bytes)",
     "repetitions": "Repeticiones",
     "fixtures": "Fixtures públicos",
@@ -230,10 +229,7 @@
   "run": {
     "title": "Ejecutar benchmarks",
     "description": "Elige pruebas publicadas y configuraciones fijadas. El número de ejecuciones y el presupuesto se comprueban antes de empezar.",
-    "pinnedDescription": "Estos casos se ejecutan con esta configuración. El número de ejecuciones y el presupuesto se comprueban antes de empezar.",
     "tests": "Pruebas publicadas",
-    "cases_one": "{{count}} caso",
-    "cases_other": "{{count}} casos",
     "noPublished": "Publica una prueba en Desarrollo de pruebas antes de ejecutarla.",
     "configurations": "Configuraciones",
     "noConfigurations": "Añade al menos una configuración.",
@@ -253,6 +249,18 @@
     "start": "Iniciar lote",
     "preview": "Vista previa de desarrollo. Excluida de comparaciones oficiales y líneas base.",
     "budgetTitle": "Presupuesto"
+  },
+  "modelRun": {
+    "allTests": "Todas las pruebas",
+    "selected": "{{selected}} de {{total}} seleccionadas",
+    "finished": "{{settled}} de {{total}} terminadas",
+    "authored": "Escrita por este modelo",
+    "queued": "En cola",
+    "running": "En curso",
+    "judging": "Jueces",
+    "start": "Iniciar",
+    "stop": "Detener",
+    "stopping": "Deteniendo…"
   },
   "runs": {
     "title": "Ejecuciones e historial",
@@ -558,10 +566,6 @@
     "source": "Fuente: {{source}} · comprobado el {{date}}",
     "back": "Clasificación",
     "missing": "Esta configuración no está en la selección actual.",
-    "catchUp_one": "Ejecutar el {{count}} caso que falta",
-    "catchUp_other": "Ejecutar los {{count}} casos que faltan",
-    "runAgain_one": "Volver a ejecutar el caso",
-    "runAgain_other": "Volver a ejecutar los {{count}} casos",
     "run": "Ejecutar",
     "queuedShort": "En cola",
     "queued": "En cola en la ejecución {{id}}",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconX } from "@tabler/icons-react";
@@ -20,15 +20,11 @@ import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
-import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
-import { authoredByCandidate } from "../lib/benchmarkEligibility";
-import {
-  modelDisplayName,
-  providerVendor,
-  shortId,
-} from "../lib/benchmarkLabels";
+import { shortId } from "../lib/benchmarkLabels";
+import { plannedTurns } from "../lib/benchmarkPlan";
+import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   BenchmarkDefinition,
   Configuration,
@@ -39,22 +35,9 @@ import {
   BenchmarkAlert,
   BenchmarkEmpty,
   Field,
-  ModelIdentity,
   SectionHeading,
   SelectField,
 } from "./BenchmarkPrimitives";
-
-/** Judge calls reserved per judged case (runner::MAX_JUDGES). */
-const JUDGE_CALLS = 3;
-
-/**
- * A new run's time limit in minutes. It only stops a turn that never ends:
- * a model on its highest effort may work an hour or two on one case.
- */
-const DEFAULT_TIME_LIMIT_MINUTES = 4 * 60;
-
-/** The longest time limit a run may set (`benchmarks::MAX_TIME_LIMIT_SECONDS`). */
-const MAX_TIME_LIMIT_MINUTES = 24 * 60;
 
 /** The effort field's one value for a model without an effort control. */
 const NO_EFFORT = "no-effort-setting";
@@ -62,14 +45,12 @@ const NO_EFFORT = "no-effort-setting";
 export function BenchmarkRunDialog({
   definitions,
   selectedVersionIds = [],
-  selectedConfiguration,
   previewOnly = false,
   onClose,
   onStarted,
 }: {
   definitions: BenchmarkDefinition[];
   selectedVersionIds?: string[];
-  selectedConfiguration?: Configuration;
   previewOnly?: boolean;
   onClose: () => void;
   onStarted: (id: string) => void;
@@ -94,88 +75,18 @@ export function BenchmarkRunDialog({
   const [fastMode, setFastMode] = useState(false);
   const [versions, setVersions] = useState(selectedVersionIds);
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
-  // A catch-up row carries the runtime of its newest attempt; re-select its
-  // model from today's inventory so the runner does not refuse a stale pin.
-  const catchUpInventory = useQuery({
-    queryKey: [
-      "benchmark-catch-up-inventory",
-      selectedConfiguration?.providerId ?? "",
-      selectedConfiguration?.accountId ?? null,
-    ],
-    queryFn: () =>
-      selectedConfiguration
-        ? benchmarkApi.getInventory(
-            selectedConfiguration.providerId,
-            selectedConfiguration.accountId ?? null,
-          )
-        : Promise.resolve([]),
-    enabled: Boolean(selectedConfiguration),
-    staleTime: Number.POSITIVE_INFINITY,
-    gcTime: 0,
-  });
-  const catchUp = useMemo(
-    () =>
-      selectedConfiguration && catchUpInventory.data
-        ? resolveCatchUpConfiguration(
-            selectedConfiguration,
-            catchUpInventory.data,
-          )
-        : null,
-    [selectedConfiguration, catchUpInventory.data],
-  );
-  const catchUpSeeded = useRef(false);
-  useEffect(() => {
-    if (catchUpSeeded.current || !catchUp || !("configuration" in catchUp))
-      return;
-    catchUpSeeded.current = true;
-    const pinned = catchUp.configuration;
-    setConfigurations((previous) =>
-      previous.some((entry) => entry.id === pinned.id)
-        ? previous
-        : [pinned, ...previous],
-    );
-  }, [catchUp]);
-  const resolvingCatchUp = Boolean(
-    selectedConfiguration && catchUpInventory.isPending,
-  );
   const [repetitions, setRepetitions] = useState(1);
-  const [timeLimitMinutes, setTimeLimitMinutes] = useState(
-    DEFAULT_TIME_LIMIT_MINUTES,
-  );
-  // A case declares the least time a run must allow it.
-  const longest = Math.max(
-    0,
-    ...definitions
-      .flatMap((definition) => definition.versions)
-      .filter((version) => versions.includes(version.id))
-      .map((version) => Math.ceil(version.manifest.limits.timeoutSeconds / 60)),
-  );
-  useEffect(() => {
-    if (longest > 0)
-      setTimeLimitMinutes((current) => Math.max(current, longest));
-  }, [longest]);
-  const timeoutSeconds = timeLimitMinutes * 60;
   const published = definitions.filter(
     (entry) => !entry.archived && entry.versions.length > 0,
   );
   const chosenVersions = published
     .flatMap((definition) => definition.versions)
     .filter((version) => versions.includes(version.id));
-  // Mirrors preview_run: every owed cell's turns plus the judge reservation;
-  // a candidate owes nothing on a case it wrote.
   const owedTurns = (configuration: Configuration) =>
-    chosenVersions.reduce(
-      (total, version) =>
-        authoredByCandidate(version.manifest.environment, configuration)
-          ? total
-          : total +
-            (version.manifest.workflow?.steps.length ?? 1) +
-            (version.manifest.evaluator.kind === "rubric" ? JUDGE_CALLS : 0),
-      0,
-    );
-  const [maxExecutions, setMaxExecutions] = useState(() =>
-    selectedConfiguration ? Math.max(20, owedTurns(selectedConfiguration)) : 20,
-  );
+    plannedTurns(chosenVersions, configuration);
+  // The run's limit only stops a turn that never ends (Settings).
+  const timeoutSeconds = runTimeLimitSeconds(chosenVersions);
+  const [maxExecutions, setMaxExecutions] = useState(20);
   const [requestKey] = useState(() => crypto.randomUUID());
   const [preview, setPreview] = useState<{
     signature: string;
@@ -299,10 +210,9 @@ export function BenchmarkRunDialog({
     );
   };
   const budgetField = (
-    key: "repetitions" | "timeLimitMinutes" | "maxExecutions",
+    key: "repetitions" | "maxExecutions",
     value: number,
     set: (value: number) => void,
-    max?: number,
   ) => (
     <Field key={key} label={t(`fields.${key}`)}>
       {(id) => (
@@ -310,7 +220,6 @@ export function BenchmarkRunDialog({
           id={id}
           type="number"
           min={1}
-          max={max}
           disabled={previewOnly && key === "repetitions"}
           value={value}
           onChange={(event) => set(Number(event.target.value))}
@@ -329,287 +238,231 @@ export function BenchmarkRunDialog({
         <DialogHeader>
           <DialogTitle>{t("run.title")}</DialogTitle>
           <DialogDescription>
-            {previewOnly
-              ? t("run.preview")
-              : selectedConfiguration
-                ? t("run.pinnedDescription")
-                : t("run.description")}
+            {previewOnly ? t("run.preview") : t("run.description")}
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-6">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
-          {selectedConfiguration ? (
-            <section className="space-y-2">
-              <SectionHeading
-                title={t("run.cases", { count: chosenVersions.length })}
-              />
-              <ul className="max-h-48 space-y-1 overflow-y-auto text-sm">
-                {chosenVersions.map((version) => (
-                  <li key={version.id} className="truncate">
-                    {version.manifest.name}
+          <fieldset className="space-y-2">
+            <legend className="mb-2">
+              <SectionHeading title={t("run.tests")} />
+            </legend>
+            {published.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("run.noPublished")}
+              </p>
+            ) : null}
+            {published.flatMap((definition) =>
+              definition.versions.map((version) => (
+                <Label
+                  key={version.id}
+                  className="flex items-center gap-2 py-1 text-sm"
+                >
+                  <Checkbox
+                    disabled={previewOnly}
+                    checked={versions.includes(version.id)}
+                    onCheckedChange={(checked) =>
+                      setVersions((previous) =>
+                        checked
+                          ? [...previous, version.id]
+                          : previous.filter((id) => id !== version.id),
+                      )
+                    }
+                  />
+                  <span className="min-w-0 truncate">
+                    {version.manifest.name} (
+                    {t(`split.${version.manifest.split}`)})
+                  </span>
+                  <code className="text-xs text-muted-foreground">
+                    {shortId(version.contentHash)}
+                  </code>
+                </Label>
+              )),
+            )}
+          </fieldset>
+          <section className="space-y-3">
+            <SectionHeading title={t("run.configurations")} />
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label={t("fields.provider")}>
+                {(id) => (
+                  <SelectField
+                    id={id}
+                    value={providerId || "none"}
+                    onChange={(value) => {
+                      setProviderId(value === "none" ? "" : value);
+                      setAccountId("none");
+                      setModelIndex("none");
+                      setEffort(null);
+                    }}
+                    options={[
+                      { value: "none", label: t("run.chooseProvider") },
+                      ...providerOptions,
+                    ]}
+                  />
+                )}
+              </Field>
+              <Field label={t("fields.account")}>
+                {(id) => (
+                  <SelectField
+                    id={id}
+                    value={selectedAccount}
+                    onChange={(value) => {
+                      setAccountId(value);
+                      setModelIndex("none");
+                    }}
+                    options={[
+                      // An inventory without an account is refused; a
+                      // provider with only its CLI sign-in never offers it.
+                      ...(onlyCliAccount
+                        ? []
+                        : [{ value: "none", label: t("run.noAccount") }]),
+                      ...managedAccounts(providerId).map((entry) => ({
+                        value: entry.id,
+                        label: entry.label,
+                      })),
+                      ...(providerCliAccount
+                        ? [
+                            {
+                              value: providerCliAccount,
+                              label: t("run.cliLogin"),
+                            },
+                          ]
+                        : []),
+                    ]}
+                  />
+                )}
+              </Field>
+              {providerId ? (
+                <Field label={t("fields.model")}>
+                  {(id) => (
+                    <SelectField
+                      id={id}
+                      value={modelIndex}
+                      onChange={(value) => {
+                        setModelIndex(value);
+                        const chosen = inventory.data?.[Number(value)];
+                        setEffort(
+                          chosen ? preselectedEffort(chosen.efforts) : null,
+                        );
+                        setFastMode(false);
+                      }}
+                      options={[
+                        { value: "none", label: t("run.chooseModel") },
+                        ...(inventory.data?.map((entry, index) => ({
+                          value: String(index),
+                          label: entry.name,
+                        })) ?? []),
+                      ]}
+                    />
+                  )}
+                </Field>
+              ) : null}
+              {model ? (
+                <Field label={t("fields.effort")}>
+                  {(id) => (
+                    <SelectField
+                      id={id}
+                      value={modelEfforts.length ? (effort ?? "") : NO_EFFORT}
+                      onChange={(value) =>
+                        setEffort(value === NO_EFFORT ? null : value)
+                      }
+                      options={
+                        modelEfforts.length
+                          ? modelEfforts.map((value) => ({
+                              value,
+                              label: value,
+                            }))
+                          : [{ value: NO_EFFORT, label: t("run.noEffort") }]
+                      }
+                    />
+                  )}
+                </Field>
+              ) : null}
+            </div>
+            {providerId && inventory.isPending ? (
+              <BenchmarkEmpty title={t("loading")} compact />
+            ) : null}
+            {inventory.error ? (
+              <BenchmarkAlert>
+                {benchmarkErrorMessage(inventory.error)}
+              </BenchmarkAlert>
+            ) : null}
+            {providerReasons.map((entry) => (
+              <p
+                key={entry.executionProfile}
+                className="text-xs text-muted-foreground"
+              >
+                {t(`profiles.${entry.executionProfile}`, {
+                  defaultValue: entry.executionProfile,
+                })}
+                : {entry.reason}
+              </p>
+            ))}
+            {model && !model.available ? (
+              <p className="text-xs text-muted-foreground">
+                {model.reason ?? t("states.unsupported")}
+              </p>
+            ) : null}
+            {model ? (
+              <div className="flex flex-wrap items-center gap-4">
+                {model.supportsFastMode ? (
+                  <Label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={fastMode}
+                      onCheckedChange={(checked) =>
+                        setFastMode(checked === true)
+                      }
+                    />
+                    {t("fields.fastMode")}
+                  </Label>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!model.available || !effortChosen}
+                  onClick={addConfiguration}
+                >
+                  {t("run.addConfiguration")}
+                </Button>
+              </div>
+            ) : null}
+            {configurations.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("run.noConfigurations")}
+              </p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {configurations.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="flex items-center justify-between gap-2 py-1.5 text-sm"
+                  >
+                    <span className="min-w-0 truncate">
+                      {configurationLabel(entry)}
+                    </span>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={t("actions.remove")}
+                      onClick={() =>
+                        setConfigurations((previous) =>
+                          previous.filter((config) => config.id !== entry.id),
+                        )
+                      }
+                    >
+                      <IconX />
+                    </Button>
                   </li>
                 ))}
               </ul>
-            </section>
-          ) : (
-            <fieldset className="space-y-2">
-              <legend className="mb-2">
-                <SectionHeading title={t("run.tests")} />
-              </legend>
-              {published.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {t("run.noPublished")}
-                </p>
-              ) : null}
-              {published.flatMap((definition) =>
-                definition.versions.map((version) => (
-                  <Label
-                    key={version.id}
-                    className="flex items-center gap-2 py-1 text-sm"
-                  >
-                    <Checkbox
-                      disabled={previewOnly}
-                      checked={versions.includes(version.id)}
-                      onCheckedChange={(checked) =>
-                        setVersions((previous) =>
-                          checked
-                            ? [...previous, version.id]
-                            : previous.filter((id) => id !== version.id),
-                        )
-                      }
-                    />
-                    <span className="min-w-0 truncate">
-                      {version.manifest.name} (
-                      {t(`split.${version.manifest.split}`)})
-                    </span>
-                    <code className="text-xs text-muted-foreground">
-                      {shortId(version.contentHash)}
-                    </code>
-                  </Label>
-                )),
-              )}
-            </fieldset>
-          )}
-          {selectedConfiguration ? (
-            <section className="space-y-3">
-              <SectionHeading title={t("fields.configuration")} />
-              <ModelIdentity
-                configuration={selectedConfiguration}
-                name={modelDisplayName(selectedConfiguration)}
-                vendor={providerVendor(selectedConfiguration.providerId)}
-              />
-              {resolvingCatchUp ? (
-                <BenchmarkEmpty title={t("loading")} compact />
-              ) : null}
-              {catchUpInventory.error ? (
-                <BenchmarkAlert>
-                  {benchmarkErrorMessage(catchUpInventory.error)}
-                </BenchmarkAlert>
-              ) : null}
-              {catchUp && "issue" in catchUp ? (
-                <BenchmarkAlert>
-                  {catchUp.issue === "unavailable"
-                    ? (catchUp.reason ?? t("states.unsupported"))
-                    : t(
-                        catchUp.issue === "missing"
-                          ? "run.catchUpMissing"
-                          : "run.catchUpChanged",
-                        { model: modelDisplayName(selectedConfiguration) },
-                      )}
-                </BenchmarkAlert>
-              ) : null}
-            </section>
-          ) : (
-            <section className="space-y-3">
-              <SectionHeading title={t("run.configurations")} />
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label={t("fields.provider")}>
-                  {(id) => (
-                    <SelectField
-                      id={id}
-                      value={providerId || "none"}
-                      onChange={(value) => {
-                        setProviderId(value === "none" ? "" : value);
-                        setAccountId("none");
-                        setModelIndex("none");
-                        setEffort(null);
-                      }}
-                      options={[
-                        { value: "none", label: t("run.chooseProvider") },
-                        ...providerOptions,
-                      ]}
-                    />
-                  )}
-                </Field>
-                <Field label={t("fields.account")}>
-                  {(id) => (
-                    <SelectField
-                      id={id}
-                      value={selectedAccount}
-                      onChange={(value) => {
-                        setAccountId(value);
-                        setModelIndex("none");
-                      }}
-                      options={[
-                        // An inventory without an account is refused; a
-                        // provider with only its CLI sign-in never offers it.
-                        ...(onlyCliAccount
-                          ? []
-                          : [{ value: "none", label: t("run.noAccount") }]),
-                        ...managedAccounts(providerId).map((entry) => ({
-                          value: entry.id,
-                          label: entry.label,
-                        })),
-                        ...(providerCliAccount
-                          ? [
-                              {
-                                value: providerCliAccount,
-                                label: t("run.cliLogin"),
-                              },
-                            ]
-                          : []),
-                      ]}
-                    />
-                  )}
-                </Field>
-                {providerId ? (
-                  <Field label={t("fields.model")}>
-                    {(id) => (
-                      <SelectField
-                        id={id}
-                        value={modelIndex}
-                        onChange={(value) => {
-                          setModelIndex(value);
-                          const chosen = inventory.data?.[Number(value)];
-                          setEffort(
-                            chosen ? preselectedEffort(chosen.efforts) : null,
-                          );
-                          setFastMode(false);
-                        }}
-                        options={[
-                          { value: "none", label: t("run.chooseModel") },
-                          ...(inventory.data?.map((entry, index) => ({
-                            value: String(index),
-                            label: entry.name,
-                          })) ?? []),
-                        ]}
-                      />
-                    )}
-                  </Field>
-                ) : null}
-                {model ? (
-                  <Field label={t("fields.effort")}>
-                    {(id) => (
-                      <SelectField
-                        id={id}
-                        value={modelEfforts.length ? (effort ?? "") : NO_EFFORT}
-                        onChange={(value) =>
-                          setEffort(value === NO_EFFORT ? null : value)
-                        }
-                        options={
-                          modelEfforts.length
-                            ? modelEfforts.map((value) => ({
-                                value,
-                                label: value,
-                              }))
-                            : [{ value: NO_EFFORT, label: t("run.noEffort") }]
-                        }
-                      />
-                    )}
-                  </Field>
-                ) : null}
-              </div>
-              {providerId && inventory.isPending ? (
-                <BenchmarkEmpty title={t("loading")} compact />
-              ) : null}
-              {inventory.error ? (
-                <BenchmarkAlert>
-                  {benchmarkErrorMessage(inventory.error)}
-                </BenchmarkAlert>
-              ) : null}
-              {providerReasons.map((entry) => (
-                <p
-                  key={entry.executionProfile}
-                  className="text-xs text-muted-foreground"
-                >
-                  {t(`profiles.${entry.executionProfile}`, {
-                    defaultValue: entry.executionProfile,
-                  })}
-                  : {entry.reason}
-                </p>
-              ))}
-              {model && !model.available ? (
-                <p className="text-xs text-muted-foreground">
-                  {model.reason ?? t("states.unsupported")}
-                </p>
-              ) : null}
-              {model ? (
-                <div className="flex flex-wrap items-center gap-4">
-                  {model.supportsFastMode ? (
-                    <Label className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={fastMode}
-                        onCheckedChange={(checked) =>
-                          setFastMode(checked === true)
-                        }
-                      />
-                      {t("fields.fastMode")}
-                    </Label>
-                  ) : null}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!model.available || !effortChosen}
-                    onClick={addConfiguration}
-                  >
-                    {t("run.addConfiguration")}
-                  </Button>
-                </div>
-              ) : null}
-              {configurations.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {t("run.noConfigurations")}
-                </p>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {configurations.map((entry) => (
-                    <li
-                      key={entry.id}
-                      className="flex items-center justify-between gap-2 py-1.5 text-sm"
-                    >
-                      <span className="min-w-0 truncate">
-                        {configurationLabel(entry)}
-                      </span>
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant="ghost"
-                        aria-label={t("actions.remove")}
-                        onClick={() =>
-                          setConfigurations((previous) =>
-                            previous.filter((config) => config.id !== entry.id),
-                          )
-                        }
-                      >
-                        <IconX />
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          )}
+            )}
+          </section>
           <section className="space-y-3">
             <SectionHeading title={t("run.budgetTitle")} />
             <div className="grid gap-3 md:grid-cols-3">
               {budgetField("repetitions", repetitions, setRepetitions)}
-              {budgetField(
-                "timeLimitMinutes",
-                timeLimitMinutes,
-                setTimeLimitMinutes,
-                MAX_TIME_LIMIT_MINUTES,
-              )}
               {budgetField("maxExecutions", maxExecutions, setMaxExecutions)}
             </div>
             <p className="text-sm">

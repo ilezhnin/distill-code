@@ -11,6 +11,7 @@
  * changes stay in memory, and the next start tries again.
  */
 
+import { hydrateBenchmarkSettingsStore } from "@/features/benchmarks/stores/benchmarkSettingsStore";
 import {
   flushRoutingPolicyWrites,
   hydrateRoutingPolicyStore,
@@ -190,6 +191,8 @@ export async function hydrateDistillStores(): Promise<void> {
     // a session starts on, and a session started before it lands would use the
     // shipped defaults rather than the operator's thresholds.
     hydrateRoutingPolicyStore(),
+    // The benchmark time limit, read before any run is planned with it.
+    hydrateBenchmarkSettingsStore(),
   ]);
   for (const result of results) {
     if (result.status === "rejected") {

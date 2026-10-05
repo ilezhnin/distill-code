@@ -145,17 +145,32 @@ fn has_quality_outcome(outcome: Option<&str>) -> bool {
 }
 
 pub(super) fn score_as_of(attempt: &Attempt, as_of: Option<i64>) -> Option<f64> {
-    if !has_quality_outcome(attempt.outcome.as_deref()) {
+    score_of(
+        attempt.outcome.as_deref(),
+        attempt.finished_at,
+        &attempt.evaluations,
+        as_of,
+    )
+}
+
+/// [`score_as_of`] from the parts of an attempt it reads, for a listing that
+/// holds no full attempt.
+pub(super) fn score_of(
+    outcome: Option<&str>,
+    finished_at: Option<i64>,
+    recorded: &[Evaluation],
+    as_of: Option<i64>,
+) -> Option<f64> {
+    if !has_quality_outcome(outcome) {
         return None;
     }
-    if as_of.is_some_and(|at| attempt.finished_at.is_none_or(|finished| finished > at)) {
+    if as_of.is_some_and(|at| finished_at.is_none_or(|finished| finished > at)) {
         return None;
     }
-    if is_budget_failure(attempt.outcome.as_deref()) {
+    if is_budget_failure(outcome) {
         return Some(0.0);
     }
-    let evaluations: Vec<_> = attempt
-        .evaluations
+    let evaluations: Vec<_> = recorded
         .iter()
         .filter(|e| as_of.is_none_or(|at| e.created_at <= at))
         .collect();
@@ -186,14 +201,10 @@ pub(super) fn score_as_of(attempt: &Attempt, as_of: Option<i64>) -> Option<f64> 
     }
     // Evaluated attempts get their score only from evidence available at the
     // cutoff. Today's mutable outcome cannot fill an earlier missing verdict.
-    if attempt
-        .evaluations
-        .iter()
-        .any(|e| e.provenance != "human_visual")
-    {
+    if recorded.iter().any(|e| e.provenance != "human_visual") {
         return None;
     }
-    match attempt.outcome.as_deref()? {
+    match outcome? {
         "pass" => Some(1.0),
         "fail" => Some(0.0),
         _ => None,
