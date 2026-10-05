@@ -267,7 +267,6 @@
     "description": "Every frozen plan with its progress. Open a run to pause, resume or cancel it.",
     "empty": "No benchmark runs yet.",
     "runTitle": "Run {{id}}",
-    "controls": "Pause finishes active attempts and stops new dispatch. Cancel also requests active cancellation.",
     "progress": "{{completed}} / {{total}} attempts settled",
     "progressLabel": "Settled attempts",
     "preview": "Development preview"

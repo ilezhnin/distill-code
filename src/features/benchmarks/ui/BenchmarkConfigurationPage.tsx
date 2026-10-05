@@ -318,7 +318,13 @@ export function BenchmarkConfigurationPage({
                   aria-label={t("configuration.queued", {
                     id: shortId(openRunId),
                   })}
-                  onClick={() => onOpenRun(openRunId)}
+                  // A run measuring the model now opens the model's own run
+                  // view; a waiting run opens with its controls.
+                  onClick={() =>
+                    activity.runId
+                      ? onRun(activity.runId)
+                      : onOpenRun(openRunId)
+                  }
                 >
                   {activity.running > 0 ? (
                     <Spinner decorative className="size-3.5 text-chart-1" />

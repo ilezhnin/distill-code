@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { cn } from "@/shared/lib/cn";
 import { useLocaleFormatting } from "@/shared/i18n";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import {
   Dialog,
@@ -12,26 +14,30 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/shared/ui/table";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
-import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
-import { shortId } from "../lib/benchmarkLabels";
+import { explicitEffort } from "../lib/benchmarkEffort";
+import { modelDisplayName, shortId } from "../lib/benchmarkLabels";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
   StateBadge,
 } from "./BenchmarkPrimitives";
+import {
+  FINISHED_RUN,
+  listByIds,
+  TestStatusMark,
+  testStatus,
+  useNow,
+} from "./BenchmarkTestStatus";
 
-/** One frozen run: progress, per-attempt outcomes and pause/resume/cancel. */
+/**
+ * One frozen run: its progress, every test in the order the run takes them
+ * with its state and clock, and pause, resume and cancel.
+ */
 export function BenchmarkRunDrawer({
   runId,
   onClose,
@@ -48,6 +54,19 @@ export function BenchmarkRunDrawer({
     queryKey: [...benchmarkKeys, "run", runId],
     queryFn: () => benchmarkApi.getRun(runId),
   });
+  const definitions = useBenchmarkDefinitions();
+  const names = useMemo(
+    () =>
+      new Map(
+        (definitions.data ?? []).flatMap((definition) =>
+          definition.versions.map((version) => [
+            version.id,
+            version.manifest.name,
+          ]),
+        ),
+      ),
+    [definitions.data],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const control = async (operation: (id: string) => Promise<unknown>) => {
@@ -63,10 +82,61 @@ export function BenchmarkRunDrawer({
     }
   };
   const run = query.data;
-  const terminal = run && ["completed", "cancelled"].includes(run.state);
-  const settled =
-    run?.attempts.filter((attempt) => attempt.phase === "terminal").length ?? 0;
-  const total = run?.attempts.length ?? 0;
+  const terminal = run ? FINISHED_RUN.has(run.state) : false;
+  const attempts = run?.attempts ?? [];
+  const settled = attempts.filter(
+    (attempt) => attempt.phase === "terminal",
+  ).length;
+  const total = attempts.length;
+  // Summaries carry each attempt's score.
+  const attemptIds = useMemo(
+    () => attempts.map((attempt) => attempt.id),
+    [attempts],
+  );
+  const summaries = useQuery({
+    queryKey: [...benchmarkKeys, "run-attempts", runId, attemptIds],
+    queryFn: () => listByIds(attemptIds),
+    enabled: attemptIds.length > 0,
+  });
+  const scores = useMemo(
+    () =>
+      new Map(
+        (summaries.data ?? []).map((summary) => [
+          summary.id,
+          summary.score ?? null,
+        ]),
+      ),
+    [summaries.data],
+  );
+  const statuses = useMemo(
+    () =>
+      new Map(
+        attempts.map((attempt) => [
+          attempt.id,
+          testStatus([attempt], scores, terminal),
+        ]),
+      ),
+    [attempts, scores, terminal],
+  );
+  const working = attempts.filter((attempt) => {
+    const kind = statuses.get(attempt.id)?.kind;
+    return kind === "running" || kind === "judging";
+  });
+  const now = useNow(working.length > 0);
+  // Keep the attempt that runs now in view as the run moves down the list.
+  const rows = useRef(new Map<string, HTMLLIElement>());
+  const runningId = attempts.find(
+    (attempt) => statuses.get(attempt.id)?.kind === "running",
+  )?.id;
+  useEffect(() => {
+    if (runningId)
+      rows.current.get(runningId)?.scrollIntoView?.({ block: "nearest" });
+  }, [runningId]);
+  // One model's run is titled by the model, a matrix by its id.
+  const configurations = run?.request.configurations ?? [];
+  const single = configurations.length === 1 ? configurations[0] : null;
+  const repeated = (run?.request.repetitions ?? 1) > 1;
+  const effort = single ? explicitEffort(single.effort) : null;
   return (
     <Dialog
       open
@@ -74,17 +144,27 @@ export function BenchmarkRunDrawer({
         if (!open) onClose();
       }}
     >
-      <DialogContent size="xl">
+      <DialogContent size="lg">
         <DialogHeader>
-          <DialogTitle>
-            {t("runs.runTitle", { id: shortId(runId) })}
+          <DialogTitle className="flex items-center gap-2">
+            {single ? (
+              <>
+                <span className="shrink-0">
+                  {getProviderIcon(single.providerId, "size-5")}
+                </span>
+                <span>{modelDisplayName(single)}</span>
+                {effort ? <Badge variant="outline">{effort}</Badge> : null}
+              </>
+            ) : (
+              t("runs.runTitle", { id: shortId(runId) })
+            )}
           </DialogTitle>
           <DialogDescription>
             {run
-              ? formatDate(run.createdAt, {
+              ? `${formatDate(run.createdAt, {
                   dateStyle: "medium",
                   timeStyle: "short",
-                })
+                })}${single ? ` · ${shortId(runId)}` : ""}`
               : t("loading")}
           </DialogDescription>
         </DialogHeader>
@@ -118,49 +198,58 @@ export function BenchmarkRunDrawer({
                   aria-label={t("runs.progressLabel")}
                 />
               </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("fields.configuration")}</TableHead>
-                    <TableHead>{t("fields.repetition")}</TableHead>
-                    <TableHead>{t("fields.status")}</TableHead>
-                    <TableHead>{t("evidence.title")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {run.attempts.map((attempt) => (
-                    <TableRow key={attempt.id}>
-                      <TableCell>
-                        {configurationLabel(attempt.configuration)}
-                      </TableCell>
-                      <TableCell>{attempt.repetition + 1}</TableCell>
-                      <TableCell className="whitespace-normal">
-                        <StateBadge state={attempt.outcome ?? attempt.phase} />
-                        {attempt.reason ? (
-                          <p className="mt-1 max-w-80 text-xs text-muted-foreground">
-                            {attempt.reason}
-                          </p>
+              <ol className="max-h-[55vh] overflow-y-auto">
+                {attempts.map((attempt) => {
+                  const status = statuses.get(attempt.id) ?? null;
+                  const current =
+                    status?.kind === "running" || status?.kind === "judging";
+                  const details = [
+                    single ? null : configurationLabel(attempt.configuration),
+                    repeated
+                      ? t("fields.repetitionValue", {
+                          value: attempt.repetition + 1,
+                        })
+                      : null,
+                    status?.kind === "unscored" ? attempt.reason : null,
+                  ].filter(Boolean);
+                  return (
+                    <li
+                      key={attempt.id}
+                      ref={(element) => {
+                        if (element) rows.current.set(attempt.id, element);
+                        else rows.current.delete(attempt.id);
+                      }}
+                      aria-current={current ? "step" : undefined}
+                      className={cn(
+                        "flex items-center gap-3 rounded-md px-2 py-1.5 text-sm",
+                        current && "bg-muted",
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate">
+                          {names.get(attempt.versionId) ??
+                            shortId(attempt.versionId)}
+                        </div>
+                        {details.length > 0 ? (
+                          <div className="truncate text-xs text-muted-foreground">
+                            {details.join(" · ")}
+                          </div>
                         ) : null}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant="ghost"
-                          onClick={() => onEvidence(attempt.id)}
-                        >
-                          {t("actions.inspect")}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              {!terminal ? (
-                <p className="text-xs text-muted-foreground">
-                  {t("runs.controls")}
-                </p>
-              ) : null}
+                      </div>
+                      <TestStatusMark status={status} now={now} />
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="ghost"
+                        disabled={attempt.phase === "pending"}
+                        onClick={() => onEvidence(attempt.id)}
+                      >
+                        {t("actions.inspect")}
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ol>
             </>
           ) : null}
         </DialogBody>

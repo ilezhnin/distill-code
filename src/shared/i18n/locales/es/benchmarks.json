@@ -267,7 +267,6 @@
     "description": "Cada plan congelado con su progreso. Abre una ejecución para pausarla, reanudarla o cancelarla.",
     "empty": "Todavía no hay ejecuciones de benchmark.",
     "runTitle": "Ejecución {{id}}",
-    "controls": "Pausar termina los intentos activos y detiene nuevos envíos. Cancelar también solicita la cancelación activa.",
     "progress": "{{completed}} / {{total}} intentos resueltos",
     "progressLabel": "Intentos resueltos",
     "preview": "Vista previa de desarrollo"
