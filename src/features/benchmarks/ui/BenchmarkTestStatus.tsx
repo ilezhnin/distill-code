@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconCheck, IconHourglass, IconX } from "@tabler/icons-react";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { Spinner } from "@/shared/ui/spinner";
 import { benchmarkApi } from "../api/benchmarks";
 import { formatElapsed, stateLabel } from "../lib/benchmarkLabels";
@@ -32,7 +33,13 @@ export const FINISHED_RUN = new Set(["completed", "cancelled"]);
 
 export type TestStatus =
   | { kind: "queued" }
-  | { kind: "waiting"; reason: string; stopped: boolean }
+  | {
+      kind: "waiting";
+      reason: string;
+      stopped: boolean;
+      /** When the runner tries the test again, where it knows. */
+      until: number | null;
+    }
   | { kind: "running"; startedAt: number | null }
   | { kind: "judging"; startedAt: number | null }
   | { kind: "scored"; score: number; durationMs: number | null }
@@ -77,6 +84,7 @@ export function testStatus(
       reason: returned.reason,
       // A run that stopped for the operator no longer waits on its own.
       stopped: runState == null || !ACTIVE_RUN.has(runState),
+      until: returned.waitUntil ?? null,
     };
   if (attempts.some((a) => a.phase === "pending"))
     return runFinished
@@ -107,12 +115,22 @@ export function testStatus(
   return { kind: "unscored", outcome: attempts[0].outcome, durationMs };
 }
 
-/** What a returned test waits for, from the reason the runner recorded. */
-function waitingLabel(reason: string, stopped: boolean): string {
-  if (/usage limit|quota/i.test(reason))
-    return stopped ? "modelRun.stoppedQuota" : "modelRun.waitingQuota";
+/**
+ * What a returned test waits for, from the reason the runner recorded; with
+ * `timed`, the wording that names when the runner tries it again.
+ */
+function waitingLabel(
+  reason: string,
+  stopped: boolean,
+  timed: boolean,
+): string {
+  if (/usage limit|quota/i.test(reason)) {
+    if (stopped) return "modelRun.stoppedQuota";
+    return timed ? "modelRun.waitingQuotaUntil" : "modelRun.waitingQuota";
+  }
   if (stopped) return "modelRun.stopped";
-  if (/sign-in/i.test(reason)) return "modelRun.waitingSignIn";
+  if (/sign-in/i.test(reason))
+    return timed ? "modelRun.waitingSignInUntil" : "modelRun.waitingSignIn";
   return "modelRun.waiting";
 }
 
@@ -137,6 +155,7 @@ export function TestStatusMark({
   now: number;
 }) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   if (!status) return null;
   const time = (milliseconds: number | null) =>
     milliseconds == null ? null : (
@@ -153,16 +172,27 @@ export function TestStatusMark({
           {t("modelRun.queued")}
         </span>
       );
-    case "waiting":
+    case "waiting": {
+      // A time already behind is one the runner is about to act on.
+      const until =
+        !status.stopped && status.until != null && status.until > now
+          ? status.until
+          : null;
       return (
         <span
           title={status.reason}
           className="flex shrink-0 items-center gap-1.5 text-xs text-chart-1"
         >
-          {t(waitingLabel(status.reason, status.stopped))}
+          {t(waitingLabel(status.reason, status.stopped, until != null), {
+            time:
+              until == null
+                ? undefined
+                : formatDate(until, { timeStyle: "short" }),
+          })}
           <IconHourglass aria-hidden className="size-4" />
         </span>
       );
+    }
     case "running":
       return (
         <span className="flex shrink-0 items-center gap-2">

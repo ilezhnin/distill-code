@@ -673,6 +673,7 @@ mod tests {
                         phase: "terminal".into(),
                         outcome: Some(if pass { "pass" } else { "fail" }.into()),
                         reason: None,
+                        wait_until: None,
                         session_id: None,
                         host_run_id: None,
                         observed: Some(configuration.clone()),

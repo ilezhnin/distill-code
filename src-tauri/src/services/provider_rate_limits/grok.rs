@@ -145,9 +145,18 @@ pub fn benchmark_sign_in_expiry() -> Result<Option<i64>, String> {
     }
 }
 
-/// How long before expiry the Grok CLI renews a sign-in by default:
-/// `GROK_AUTH_EARLY_INVALIDATION_SECS` unset is 300 seconds.
-const GROK_CLI_RENEWAL_WINDOW_MS: i64 = 5 * 60 * 1000;
+/// The Grok CLI's setting for how many seconds before expiry it counts a
+/// sign-in as due and renews it; unset is 300 seconds.
+const RENEWAL_WINDOW_ENV: &str = "GROK_AUTH_EARLY_INVALIDATION_SECS";
+
+/// The renewal window Distill starts the user's Grok chat bridge with: the
+/// longest a benchmark turn asks a sign-in to last
+/// ([`benchmark_sign_in_margin_ms`]). A sign-in too short for a turn is then
+/// always one the CLI renews on its next request. With Grok's own five
+/// minutes, a run started in the last hour of a sign-in waited for that
+/// window.
+const CHAT_BRIDGE_RENEWAL_WINDOW_MS: i64 =
+    BENCHMARK_SIGN_IN_TURN_CAP_MS + BENCHMARK_SIGN_IN_SLACK_MS;
 
 /// How far into the CLI's renewal window a waiting run starts again, so the
 /// CLI already counts the sign-in as due when the run lists its models.
@@ -158,15 +167,30 @@ const RENEWAL_WINDOW_SLACK_MS: i64 = 30 * 1000;
 /// its own home with its own refresh token, before any request it makes
 /// (the pinned 1.0.40 logs "oidc refresh enter" with reason `PreRequest`).
 /// `GROK_AUTH_EARLY_INVALIDATION_SECS` as the user's environment sets it,
-/// else Grok's default.
+/// else the window the chat bridge is started with
+/// ([`chat_bridge_renewal_env`]).
 pub fn cli_renewal_window_ms() -> i64 {
-    crate::services::shell_env::user_env_var("GROK_AUTH_EARLY_INVALIDATION_SECS")
+    crate::services::shell_env::user_env_var(RENEWAL_WINDOW_ENV)
         .and_then(|value| value.trim().parse::<i64>().ok())
         .filter(|seconds| *seconds >= 0)
-        .map_or(GROK_CLI_RENEWAL_WINDOW_MS, |seconds| {
+        .map_or(CHAT_BRIDGE_RENEWAL_WINDOW_MS, |seconds| {
             seconds.saturating_mul(1000)
         })
 }
+
+/// What the user's Grok chat bridge is started with, so its CLI renews a
+/// sign-in exactly when [`cli_renewal_window_ms`] says it does.
+pub fn chat_bridge_renewal_env() -> (String, String) {
+    (
+        RENEWAL_WINDOW_ENV.into(),
+        (cli_renewal_window_ms() / 1000).to_string(),
+    )
+}
+
+/// Why a Grok turn waits while a benchmark bridge still runs a turn on the
+/// sign-in that is due: a renewal, and the bridge that replaces this one,
+/// wait for that turn to end.
+pub const BENCHMARK_BRIDGE_BUSY: &str = "another Grok test still runs on the sign-in that is due for renewal; this test starts when it finishes";
 
 /// What a benchmark turn of up to `turn_limit_ms` needs, at `now`, of a
 /// sign-in that expires at `expires_at_ms`.
@@ -706,17 +730,41 @@ mod tests {
         ));
     }
 
+    /// The chat bridge's renewal window covers the longest margin a turn
+    /// asks for, so a sign-in too short for any turn is renewed at once
+    /// instead of waited for.
+    #[test]
+    fn a_sign_in_too_short_for_a_turn_is_inside_the_chat_bridge_window() {
+        let now = 1_000_000_000;
+        let window = CHAT_BRIDGE_RENEWAL_WINDOW_MS;
+        assert_eq!(window, benchmark_sign_in_margin_ms(u64::MAX));
+        for turn in [0, 10 * 60 * 1000, 4 * 60 * 60 * 1000] {
+            let margin = benchmark_sign_in_margin_ms(turn);
+            assert_eq!(
+                benchmark_sign_in_step(Some(now + margin - 1), now, turn, window),
+                BenchmarkSignIn::Renew,
+                "{turn}"
+            );
+            assert_eq!(
+                benchmark_sign_in_step(Some(now + margin), now, turn, window),
+                BenchmarkSignIn::Ready,
+                "{turn}"
+            );
+        }
+    }
+
     /// The Grok CLI renews a sign-in before any request once it is within
-    /// its renewal window (five minutes by default), never earlier, while a
-    /// benchmark turn needs fifteen minutes or more left. Measured on the
-    /// pinned 1.0.40 against a loopback stub: a sign-in ten minutes from
-    /// expiry was used as it was through a start and a session; three minutes
-    /// from expiry, every request renewed it first.
+    /// its renewal window (five minutes where the user's environment keeps
+    /// Grok's own), never earlier, while a benchmark turn needs fifteen
+    /// minutes or more left. Measured on the pinned 1.0.40 against a
+    /// loopback stub: a sign-in ten minutes from expiry was used as it was
+    /// through a start and a session; three minutes from expiry, every
+    /// request renewed it first.
     #[test]
     fn a_sign_in_is_renewed_inside_the_cli_window_and_waited_for_before_it() {
         let now = 1_000_000_000;
         let minute = 60 * 1000;
-        let window = GROK_CLI_RENEWAL_WINDOW_MS;
+        let window = 5 * minute;
         let turn = 10 * 60 * 1000;
         assert_eq!(
             benchmark_sign_in_step(None, now, turn, window),

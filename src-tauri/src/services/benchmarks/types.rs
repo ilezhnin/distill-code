@@ -399,6 +399,10 @@ pub struct Attempt {
     pub phase: String,
     pub outcome: Option<String>,
     pub reason: Option<String>,
+    /// When the runner tries a test it put back in the queue again, where it
+    /// knows: a usage limit's reset or retry, a sign-in's renewal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_until: Option<i64>,
     pub session_id: Option<String>,
     pub host_run_id: Option<String>,
     pub observed: Option<Configuration>,

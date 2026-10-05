@@ -1742,6 +1742,7 @@ pub(super) mod tests {
                     phase: "terminal".into(),
                     outcome: Some(outcome.into()),
                     reason: None,
+                    wait_until: None,
                     session_id: Some(format!("session-{run}-{}", version.id)),
                     host_run_id: None,
                     observed: Some(config.clone()),

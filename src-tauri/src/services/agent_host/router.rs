@@ -1307,7 +1307,15 @@ impl Inner {
                 )
                 .await
             }
-            None => (*self.spawn_env().await).clone(),
+            None => {
+                let mut env = (*self.spawn_env().await).clone();
+                if harness_id == NativeProvider::Grok.harness_id() {
+                    // The user's own Grok renews its sign-in as early as a
+                    // benchmark turn needs it to.
+                    env.extra_env.push(grok::chat_bridge_renewal_env());
+                }
+                env
+            }
         };
         if let Some(account) = account.as_ref() {
             let base = env.shell_env.into_iter().collect();
@@ -1497,8 +1505,8 @@ impl Inner {
         }
         if bridge.in_flight() > 0 {
             return Err(protocol::internal(format!(
-                "capability_missing: the Grok sign-in of the busy benchmark bridge expires within {} minutes",
-                grok::benchmark_sign_in_margin_ms(turn_limit_ms).saturating_add(59_999) / 60_000
+                "sign_in_wait: {}",
+                grok::BENCHMARK_BRIDGE_BUSY
             )));
         }
         log::info!("[agent-host] {route_key} bridge sign-in is about to expire; replacing it");
@@ -6257,6 +6265,21 @@ impl Inner {
     /// their bridge, with no account.
     fn inventory_account<'a>(provider: &str, account: &'a str) -> Option<&'a str> {
         (!provider_accounts::is_cli_login_account(provider, account)).then_some(account)
+    }
+
+    /// Whether a benchmark bridge of `provider`'s `account` has a turn in
+    /// flight. That turn runs on the sign-in the bridge was started with, so
+    /// a renewal waits for it.
+    pub async fn benchmark_bridge_busy(&self, provider: &str, account: &str) -> bool {
+        let prefix = format!(
+            "{}{BENCHMARK_ROUTE}",
+            account_route_key(provider, Some(account))
+        );
+        self.bridges
+            .lock()
+            .await
+            .iter()
+            .any(|(route, bridge)| route.starts_with(&prefix) && bridge.in_flight() > 0)
     }
 
     /// The executable that would answer [`Self::benchmark_inventory`] for

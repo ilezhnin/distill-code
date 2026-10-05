@@ -389,7 +389,9 @@ fn judge_abstention(
 fn judge_sign_in(gate: GrokSignInGate) -> Result<()> {
     match gate {
         GrokSignInGate::Ready => Ok(()),
-        GrokSignInGate::WaitUntil(_) => Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGE_SIGN_IN_WAIT)),
+        GrokSignInGate::WaitUntil(_) | GrokSignInGate::Busy => {
+            Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGE_SIGN_IN_WAIT))
+        }
     }
 }
 
@@ -519,7 +521,15 @@ fn quota_recovered(run_id: &str, provider_id: &str) {
 /// cells of that provider wait on their own, as for a quota wait, while its
 /// other providers' cells go on.
 const SIGN_IN_WAIT: &str = "sign_in_wait";
-const SIGN_IN_WAIT_REASON: &str = "Waiting for the Grok CLI to renew its sign-in, which it does in the last minutes before the sign-in expires; the run continues on its own";
+/// A sign-in too short for the turn that the Grok CLI renews only later: the
+/// user's environment keeps its renewal window narrower than a turn needs
+/// (see [`grok::cli_renewal_window_ms`]).
+///
+/// [`grok::cli_renewal_window_ms`]: crate::services::provider_rate_limits::grok::cli_renewal_window_ms
+const SIGN_IN_WAIT_REASON: &str = "The Grok sign-in expires too soon for this test, and GROK_AUTH_EARLY_INVALIDATION_SECS in your environment lets the Grok CLI renew it only later; the run continues on its own once it does";
+/// How soon a Grok turn that waits for another to leave the sign-in asks
+/// again.
+const SIGN_IN_RETRY_MS: i64 = 15 * 1000;
 /// A due Grok sign-in that a listing on the chat bridge did not renew.
 const GROK_NOT_RENEWED: &str = "the Grok sign-in expires before this turn could end and the Grok CLI did not renew it; open a Grok chat to sign in again";
 /// Why a judge whose Grok sign-in waits for the Grok CLI defers its batch.
@@ -541,19 +551,24 @@ fn hold_provider_until(run_id: &str, provider_id: &str, until: i64) {
         .insert((run_id.to_owned(), provider_id.to_owned()), until);
 }
 
-fn provider_held(run_id: &str, provider_id: &str) -> bool {
+/// Until when `provider_id`'s cells of `run_id` are held, while they are.
+fn provider_hold(run_id: &str, provider_id: &str) -> Option<i64> {
     let mut holds = PROVIDER_HOLDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = (run_id.to_owned(), provider_id.to_owned());
     match holds.get(&key) {
-        Some(until) if *until > now() => true,
+        Some(until) if *until > now() => Some(*until),
         Some(_) => {
             holds.remove(&key);
-            false
+            None
         }
-        None => false,
+        None => None,
     }
+}
+
+fn provider_held(run_id: &str, provider_id: &str) -> bool {
+    provider_hold(run_id, provider_id).is_some()
 }
 
 /// Whether a turn that failed with `code`, while its attempt was saved in
@@ -598,6 +613,7 @@ pub(super) fn requeue(attempt: &mut Attempt, reason: String) {
     attempt.usage = TokenUsage::default();
     attempt.resolved_model = None;
     attempt.reason = Some(reason);
+    attempt.wait_until = None;
 }
 
 /// The host request key of an attempt's candidate turn. A turn the host
@@ -805,6 +821,9 @@ enum GrokSignInGate {
     /// Nothing the Grok CLI does renews it before this time; the turn waits
     /// for it, holding only what needs the sign-in.
     WaitUntil(i64),
+    /// It is due, and a benchmark turn still runs on it: the renewal, and
+    /// this turn, wait for that one to end.
+    Busy,
 }
 
 /// The user's Grok sign-in as [`grok_sign_in_gate`] sees it: its expiry, and
@@ -812,6 +831,8 @@ enum GrokSignInGate {
 /// a renewal once the sign-in is due.
 trait GrokSignInSource: Sync {
     fn expiry(&self) -> std::result::Result<Option<i64>, String>;
+    /// Whether a benchmark turn is running on the sign-in now.
+    fn busy(&self) -> BoxFuture<'_, bool>;
     fn list(&self) -> BoxFuture<'_, Result<()>>;
 }
 
@@ -826,6 +847,12 @@ struct ChatBridgeSignIn<'a> {
 impl GrokSignInSource for ChatBridgeSignIn<'_> {
     fn expiry(&self) -> std::result::Result<Option<i64>, String> {
         crate::services::provider_rate_limits::grok::benchmark_sign_in_expiry()
+    }
+    fn busy(&self) -> BoxFuture<'_, bool> {
+        Box::pin(
+            self.host
+                .benchmark_bridge_busy(self.provider_id, self.account),
+        )
     }
     fn list(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
@@ -865,15 +892,20 @@ fn grok_renewal_too_short(turn_limit_ms: u64) -> String {
 /// ([`grok::cli_renewal_window_ms`]). So a sign-in that would not outlast a
 /// turn of `turn_limit_ms` is renewed the way a chat renews it: one listing on
 /// the chat bridge, then the expiry is read again every `poll` for up to ten
-/// reads. Before that window nothing the CLI does renews it, so the turn
-/// waits for the window ([`GrokSignInGate::WaitUntil`]) instead of asking the
-/// operator, unless a renewal was already seen to fall short of this turn,
-/// which waiting would only repeat. A renewal that fell short is refused for
+/// reads. The chat bridge is started with a window as long as the longest
+/// turn's margin ([`grok::chat_bridge_renewal_env`]), so that listing follows
+/// at once. Only a user whose environment narrows the window has turns wait
+/// for it ([`GrokSignInGate::WaitUntil`]) instead of asking the operator,
+/// unless a renewal was already seen to fall short of this turn, which
+/// waiting would only repeat. A due sign-in that another benchmark turn still
+/// runs on is not renewed under it ([`GrokSignInGate::Busy`]). A renewal that
+/// fell short is refused for
 /// what it is, with its lifetime kept in `renewed_lifetime`, and a due
 /// sign-in the listing did not move is refused as not renewed: both for the
 /// operator.
 ///
 /// [`grok::cli_renewal_window_ms`]: crate::services::provider_rate_limits::grok::cli_renewal_window_ms
+/// [`grok::chat_bridge_renewal_env`]: crate::services::provider_rate_limits::grok::chat_bridge_renewal_env
 async fn grok_sign_in_gate(
     source: &impl GrokSignInSource,
     turn_limit_ms: u64,
@@ -915,6 +947,11 @@ async fn grok_sign_in_gate(
             return Ok(GrokSignInGate::WaitUntil(at));
         }
         BenchmarkSignIn::Renew => {}
+    }
+    // A turn in flight keeps the sign-in it started on. It also keeps its
+    // bridge, which no later turn may use, so nothing is lost by waiting.
+    if source.busy().await {
+        return Ok(GrokSignInGate::Busy);
     }
     source.list().await?;
     // The CLI renews before the request that needs the session and writes
@@ -1745,10 +1782,23 @@ impl ExecutionBackend for NativeBackend {
                         u64::from(timeout_seconds) * 1000,
                     )
                     .await?;
-                if let GrokSignInGate::WaitUntil(at) = gate {
-                    // Only this run's Grok cells wait; its other providers go on.
-                    hold_provider_until(&attempt.run_id, &attempt.configuration.provider_id, at);
-                    return Err(BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON));
+                // Only this run's Grok cells wait; its other providers go on.
+                match gate {
+                    GrokSignInGate::Ready => {}
+                    GrokSignInGate::WaitUntil(at) => {
+                        hold_provider_until(
+                            &attempt.run_id,
+                            &attempt.configuration.provider_id,
+                            at,
+                        );
+                        return Err(BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON));
+                    }
+                    GrokSignInGate::Busy => {
+                        return Err(BenchmarkError::new(
+                            SIGN_IN_WAIT,
+                            crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
+                        ));
+                    }
                 }
             }
             let cwd = store
@@ -3332,23 +3382,33 @@ impl BenchmarkService {
                         failed.phase = "pending".into();
                         failed.started_at = None;
                         failed.reason = Some(reason);
+                        failed.wait_until = None;
                     } else {
                         requeue(&mut failed, reason);
                     }
-                    self.store.save_attempt(&failed).await?;
-                    // A sign-in wait already held its provider's cells in
-                    // the backend, which knows when the Grok CLI renews it.
+                    let provider = &a.configuration.provider_id;
+                    let mut stop = false;
                     match plan {
                         Some(QuotaPlan::WaitUntil(until)) => {
-                            hold_provider_until(&run.id, &a.configuration.provider_id, until)
+                            hold_provider_until(&run.id, provider, until);
+                            failed.wait_until = Some(until);
                         }
-                        Some(QuotaPlan::Stop) => {
-                            self.store.set_run_state(&run.id, "needs_attention").await?
-                        }
-                        None if error.code != SIGN_IN_WAIT => {
-                            self.store.set_run_state(&run.id, "needs_attention").await?
-                        }
-                        None => {}
+                        Some(QuotaPlan::Stop) => stop = true,
+                        None if error.code != SIGN_IN_WAIT => stop = true,
+                        // A sign-in the Grok CLI renews later already held
+                        // its provider's cells in the backend, which knows
+                        // when. One that another turn still runs on names no
+                        // time: ask again shortly.
+                        None => match provider_hold(&run.id, provider) {
+                            Some(until) => failed.wait_until = Some(until),
+                            None => {
+                                hold_provider_until(&run.id, provider, now() + SIGN_IN_RETRY_MS)
+                            }
+                        },
+                    }
+                    self.store.save_attempt(&failed).await?;
+                    if stop {
+                        self.store.set_run_state(&run.id, "needs_attention").await?;
                     }
                     self.changed().await;
                     return Ok(());
@@ -3760,6 +3820,8 @@ pub struct FakeBackend {
     pub capability_refusals: std::sync::atomic::AtomicU64,
     /// Turns held back until the Grok CLI renews its sign-in.
     pub sign_in_waits: std::sync::atomic::AtomicU64,
+    /// Turns held back while another still runs on the due sign-in.
+    pub busy_sign_ins: std::sync::atomic::AtomicU64,
     /// The effort levels every fake model lists: none, so no effort control,
     /// unless a test gives them some.
     pub effort_levels: std::sync::Mutex<Vec<String>>,
@@ -3859,6 +3921,12 @@ impl ExecutionBackend for FakeBackend {
             if take(&self.sign_in_waits) {
                 hold_provider_until(&a.run_id, &a.configuration.provider_id, now() + 60_000);
                 return Err(BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON));
+            }
+            if take(&self.busy_sign_ins) {
+                return Err(BenchmarkError::new(
+                    SIGN_IN_WAIT,
+                    crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
+                ));
             }
             if take(&self.refused_selections) {
                 let mut observed = a.configuration.clone();
@@ -4640,10 +4708,11 @@ mod tests {
             .attempts
             .iter()
             .all(|a| a.phase == "pending" && a.outcome.is_none()));
-        assert!(held
-            .attempts
-            .iter()
-            .any(|a| a.reason.as_deref() == Some(SIGN_IN_WAIT_REASON)));
+        // The returned test says when the run tries it again.
+        assert!(held.attempts.iter().any(|a| {
+            a.reason.as_deref() == Some(SIGN_IN_WAIT_REASON)
+                && a.wait_until.is_some_and(|until| until > now())
+        }));
         // Nothing is sent while it waits, and the run does not complete.
         s.tick().await.unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
@@ -4665,6 +4734,44 @@ mod tests {
             .iter()
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("pass")));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+    }
+    /// A Grok turn that finds another still running on the due sign-in goes
+    /// back to the queue without the operator and without a time to show,
+    /// and is asked again shortly.
+    #[tokio::test]
+    async fn a_turn_waits_for_another_on_the_due_sign_in() {
+        let (_dir, s, fake) = setup().await;
+        fake.busy_sign_ins.store(1, Ordering::SeqCst);
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        let waiting = held
+            .attempts
+            .iter()
+            .find(|a| a.reason.is_some())
+            .expect("a returned test");
+        assert_eq!(waiting.phase, "pending");
+        assert_eq!(
+            waiting.reason.as_deref(),
+            Some(crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY)
+        );
+        assert_eq!(waiting.wait_until, None);
+        let until = provider_hold(&run.id, "fake").expect("a short hold");
+        assert!(until <= now() + SIGN_IN_RETRY_MS);
+        PROVIDER_HOLDS
+            .lock()
+            .unwrap()
+            .remove(&(run.id.clone(), "fake".to_owned()));
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
     }
     /// Run 607f8612 mixed Grok and Kimi: a Grok sign-in wait holds the Grok
     /// cells alone. The other provider's cells run meanwhile, and the run
@@ -4714,6 +4821,8 @@ mod tests {
         expiry: std::sync::Mutex<Option<i64>>,
         renewed: Option<i64>,
         listings: std::sync::atomic::AtomicU64,
+        /// Whether a benchmark turn still runs on it.
+        busy: bool,
     }
     impl TestSignIn {
         fn new(expiry: i64, renewed: Option<i64>) -> Self {
@@ -4721,12 +4830,16 @@ mod tests {
                 expiry: std::sync::Mutex::new(Some(expiry)),
                 renewed,
                 listings: Default::default(),
+                busy: false,
             }
         }
     }
     impl GrokSignInSource for TestSignIn {
         fn expiry(&self) -> std::result::Result<Option<i64>, String> {
             Ok(*self.expiry.lock().unwrap())
+        }
+        fn busy(&self) -> BoxFuture<'_, bool> {
+            Box::pin(async move { self.busy })
         }
         fn list(&self) -> BoxFuture<'_, Result<()>> {
             Box::pin(async move {
@@ -4789,6 +4902,34 @@ mod tests {
         assert_eq!(error.code, "capability_missing");
         assert_eq!(error.message, GROK_NOT_RENEWED);
         assert_eq!(*lifetime.lock().unwrap(), None);
+        // Due while another turn still runs on it: not renewed under that turn.
+        let mut shared = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 60 * MINUTE));
+        shared.busy = true;
+        assert_eq!(
+            gate(&shared, &lifetime).await.unwrap(),
+            GrokSignInGate::Busy
+        );
+        assert_eq!(shared.listings.load(Ordering::SeqCst), 0);
+    }
+    /// With the window the chat bridge is started with, a sign-in too short
+    /// for a turn of any time limit is renewed at once, never waited for.
+    #[tokio::test]
+    async fn a_sign_in_too_short_for_a_turn_is_renewed_at_once() {
+        let lifetime = std::sync::Mutex::new(None);
+        let window = crate::services::provider_rate_limits::grok::cli_renewal_window_ms();
+        // Run 32d04afb: fifteen minutes left for a turn of up to four hours.
+        let short = TestSignIn::new(now() + 15 * MINUTE, Some(now() + 360 * MINUTE));
+        let gate = grok_sign_in_gate(
+            &short,
+            (240 * MINUTE) as u64,
+            window,
+            &lifetime,
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gate, GrokSignInGate::Ready);
+        assert_eq!(short.listings.load(Ordering::SeqCst), 1);
     }
     /// The CLI renewed the sign-in, but for eighteen minutes, short of the
     /// twenty a fifteen-minute turn needs: refused for that, not as "did not
@@ -4833,6 +4974,8 @@ mod tests {
         assert!(judge_sign_in(GrokSignInGate::Ready).is_ok());
         let deferred = judge_sign_in(GrokSignInGate::WaitUntil(now() + MINUTE)).unwrap_err();
         assert_eq!(deferred.code, ACCOUNT_BUSY);
+        let shared = judge_sign_in(GrokSignInGate::Busy).unwrap_err();
+        assert_eq!(shared.code, ACCOUNT_BUSY);
     }
     /// One Grok answer chunk as the host stores it, with Grok's per-chunk
     /// telemetry and the host's stamp.

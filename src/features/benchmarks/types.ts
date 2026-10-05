@@ -246,6 +246,11 @@ export interface Attempt {
   phase: string;
   outcome: string | null;
   reason: string | null;
+  /**
+   * When the runner tries a test it put back in the queue again, where it
+   * knows: a usage limit's reset or retry, a sign-in's renewal.
+   */
+  waitUntil?: number | null;
   sessionId: string | null;
   hostRunId: string | null;
   observed: Configuration | null;

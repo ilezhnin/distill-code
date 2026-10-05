@@ -462,6 +462,7 @@ impl BenchmarkService {
                 phase: "pending".into(),
                 outcome: None,
                 reason: None,
+                wait_until: None,
                 session_id: None,
                 host_run_id: None,
                 observed: None,

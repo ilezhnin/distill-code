@@ -206,6 +206,50 @@ it("shows a test the provider's usage limit put back as waiting, not queued", as
   );
 });
 
+it("says when a waiting test is tried again, where the runner knows", async () => {
+  const waitingOn = (id: string, versionId: string, more: Partial<Attempt>) =>
+    at({
+      id,
+      versionId,
+      phase: "pending",
+      outcome: null,
+      startedAt: null,
+      finishedAt: null,
+      durationMs: null,
+      ...more,
+    });
+  const until = Date.now() + 10 * 60_000;
+  const time = new Date(until).toLocaleTimeString("en", { timeStyle: "short" });
+  const busy =
+    "another Grok test still runs on the sign-in that is due for renewal; this test starts when it finishes";
+  show({
+    ...run,
+    state: "running",
+    attempts: [
+      waitingOn("a-1", "version-a", {
+        reason: "You've reached your 5-hour usage limit.",
+        waitUntil: until,
+      }),
+      waitingOn("a-2", "version-b", {
+        reason: "The Grok sign-in expires too soon for this test",
+        waitUntil: until,
+      }),
+      waitingOn("a-3", "version-c", { reason: busy }),
+    ],
+  });
+  expect(await screen.findByText("Charlie")).toBeInTheDocument();
+  expect(
+    row("Alpha").getByText(`Usage limit, next try at ${time}`),
+  ).toBeInTheDocument();
+  expect(
+    row("Bravo").getByText(`Grok sign-in renews at ${time}`),
+  ).toBeInTheDocument();
+  // A wait for another test names what it waits for instead of a time.
+  expect(
+    row("Charlie").getByText("Waits for a running Grok test"),
+  ).toHaveAttribute("title", busy);
+});
+
 it("shows a run the usage limit stopped as stopped, for the operator", async () => {
   const stopped =
     "A test did not finish: the usage limit ran out and does not reset in time for the run to wait. You've reached your weekly usage limit.";
