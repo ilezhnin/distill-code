@@ -1,5 +1,10 @@
 import type { FormEventHandler, ReactNode } from "react";
 import { cn } from "@/shared/lib/cn";
+import {
+  PAGE_GUTTER_CLASS,
+  PAGE_SCROLL_CLASS,
+  PAGE_TOP_CLASS,
+} from "@/shared/ui/page-shell";
 
 interface AgentProfileLayoutProps {
   animateSections?: boolean;
@@ -14,9 +19,17 @@ interface AgentProfileLayoutProps {
   sectionEnterClassName?: string;
 }
 
+// The profile is a page like any other: content on the page gutters, the
+// first row at the page top. Rail plus fields fill the width between the
+// gutters instead of centering in a fixed-width column.
 const SURFACE_CLASS = cn(
-  "agents-transition-surface relative min-h-full bg-dot-grid py-6 pl-6 pr-8",
+  "agents-transition-surface relative min-h-full bg-dot-grid pb-6",
+  PAGE_GUTTER_CLASS,
+  PAGE_TOP_CLASS,
 );
+
+const PROFILE_COLUMNS_CLASS =
+  "md:grid-cols-[220px_minmax(0,1fr)] lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]";
 
 function AgentProfileContent({
   animateSections = true,
@@ -30,13 +43,9 @@ function AgentProfileContent({
     sectionEnterClassName ?? "agents-profile-section-enter";
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-var(--spacing-app-top-bar)-3rem)] w-full max-w-[1180px] flex-col justify-start gap-8 pb-20 pt-4">
-      {header ? (
-        <div data-agent-layout-slot="header" className="-mt-8">
-          {header}
-        </div>
-      ) : null}
-      <div className="grid items-start gap-8 md:grid-cols-[220px_minmax(0,1fr)] lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,760px)]">
+    <div className="flex min-h-[calc(100vh-var(--spacing-app-top-bar)-3rem)] w-full flex-col justify-start gap-8 pb-20">
+      {header ? <div data-agent-layout-slot="header">{header}</div> : null}
+      <div className={cn("grid items-start gap-8", PROFILE_COLUMNS_CLASS)}>
         <section
           data-agent-layout-slot="identity-rail"
           className={cn(
@@ -96,7 +105,7 @@ export function AgentProfileLayout({
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className={PAGE_SCROLL_CLASS}>
         {onSubmit ? (
           <form
             id={formId}
@@ -112,9 +121,16 @@ export function AgentProfileLayout({
       {bottomBar ? (
         <div
           data-agent-layout-slot="bottom-bar-shell"
-          className="shrink-0 bg-canvas-base/95 px-6 backdrop-blur-xl"
+          // Outside the scroller there is no scrollbar track to give back,
+          // so both sides take the full page gutter.
+          className="shrink-0 bg-canvas-base/95 px-app-page-gutter backdrop-blur-xl"
         >
-          <div className="mx-auto grid w-full max-w-[1180px] items-center gap-8 md:grid-cols-[220px_minmax(0,1fr)] lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,760px)]">
+          <div
+            className={cn(
+              "grid w-full items-center gap-8",
+              PROFILE_COLUMNS_CLASS,
+            )}
+          >
             <div className="hidden md:block" aria-hidden="true" />
             <div
               data-agent-layout-slot="bottom-bar"

@@ -298,10 +298,7 @@ export function BenchmarksView({
   );
   return (
     <PageShell contentWidth="full">
-      <section
-        aria-label={t("title")}
-        className="mx-auto flex w-full max-w-[120rem] flex-col gap-6"
-      >
+      <section aria-label={t("title")} className="flex w-full flex-col gap-6">
         {errors.map((error) => (
           <BenchmarkAlert key={error}>{error}</BenchmarkAlert>
         ))}

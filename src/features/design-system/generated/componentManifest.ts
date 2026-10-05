@@ -2148,8 +2148,16 @@ export const designSystemComponentManifest = [
   {
     name: "Page Shell",
     source: "src/shared/ui/page-shell.tsx",
-    description: "",
-    exports: ["PageHeader", "PageShell"],
+    description:
+      "Top-level page framing: the scroll frame every page sits in, plus the page\nheader. Content keeps the page gutter (`--app-page-gutter`) from the sidebar\nand from the window's right edge, the first row starts at the page top, and\na content width only caps the column without re-centering it. Pages with a\nframe of their own use PAGE_SCROLL_CLASS, PAGE_GUTTER_CLASS and\nPAGE_TOP_CLASS; panel cards use PANEL_PAGE_GUTTER_CLASS. A first row starts\non the gutter, back button included: its box, not its icon, sits on the\nline.",
+    exports: [
+      "PAGE_GUTTER_CLASS",
+      "PAGE_SCROLL_CLASS",
+      "PAGE_TOP_CLASS",
+      "PageHeader",
+      "PageShell",
+      "PANEL_PAGE_GUTTER_CLASS",
+    ],
     slots: [],
     cva: [],
     tokenClasses: ["text-foreground", "text-muted-foreground"],

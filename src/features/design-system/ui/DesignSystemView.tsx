@@ -129,7 +129,12 @@ import {
   NavigationMenuList,
   NavigationMenuTrigger,
 } from "@/shared/ui/navigation-menu";
-import { PageHeader } from "@/shared/ui/page-shell";
+import {
+  PAGE_GUTTER_CLASS,
+  PAGE_SCROLL_CLASS,
+  PAGE_TOP_CLASS,
+  PageHeader,
+} from "@/shared/ui/page-shell";
 import {
   Pagination,
   PaginationContent,
@@ -297,7 +302,7 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
   "Navigation Menu":
     "Structured navigation primitives for larger destination sets and nested menus.",
   "Page Shell":
-    "Detail-page framing for back navigation, headers, metadata, and main content.",
+    "Top-level page framing: a scroll frame that keeps content on the page gutter (--app-page-gutter) on both sides, plus the page header. A content width only caps the column; it never re-centers it.",
   Pagination:
     "Paged navigation controls with active, previous, next, and overflow affordances.",
   Popover:
@@ -492,6 +497,11 @@ const spacingTokens: RuntimeToken[] = [
     name: "--spacing-app-panel-gutter-bottom",
     description:
       "Bottom gutter between resizable app panels and the window edge.",
+  },
+  {
+    name: "--app-page-gutter",
+    description:
+      "The page gutter: the one distance between page content and the sidebar, and between page content and the window's right edge, on every page. 24px, 48px from a 1024px window, 72px from 1280px. PageShell applies it; custom pages use PAGE_GUTTER_CLASS and panel cards PANEL_PAGE_GUTTER_CLASS.",
   },
   {
     name: "--spacing-app-status-bar",
@@ -5758,8 +5768,14 @@ export function DesignSystemView({
             </div>
           </nav>
         </aside>
-        <div className="min-w-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]">
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-6 py-6 page-transition">
+        <div className={cn("min-w-0", PAGE_SCROLL_CLASS)}>
+          <div
+            className={cn(
+              "flex w-full flex-col gap-5 pb-6 page-transition",
+              PAGE_GUTTER_CLASS,
+              PAGE_TOP_CLASS,
+            )}
+          >
             <ThemeControls />
             {renderSection(activeSection)}
           </div>

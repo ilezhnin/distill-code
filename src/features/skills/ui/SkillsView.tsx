@@ -517,7 +517,7 @@ export function SkillsView({
     <PageShell contentWidth="full">
       <section
         aria-labelledby="skills-heading"
-        className="mx-auto flex w-full max-w-[70rem] flex-col gap-10"
+        className="flex w-full flex-col gap-10"
       >
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">

@@ -247,12 +247,15 @@ export function PersonaGallery({
     return [...builtins, ...custom];
   }, [personas]);
 
-  // Cards stay a fixed size when the sidebar collapses; `justify-evenly`
-  // distributes the extra width between and around them. Mirrors SkillsGrid.
+  // Cards stay a fixed size when the sidebar collapses; `justify-between`
+  // puts the extra width between them, so the outer columns stay on the page
+  // gutters. Mirrors SkillsGrid. Every tile pads its portrait by 8px (`p-2`,
+  // the active ring's room); `-mx-2` hangs that padding into the gutters so
+  // the portraits themselves sit on the gutter lines.
   const gridClass = cn(
-    "grid gap-x-8 gap-y-10",
+    "-mx-2 grid gap-x-8 gap-y-10",
     "grid-cols-2 sm:grid-cols-3",
-    "xl:grid-cols-[repeat(4,minmax(0,16rem))] xl:justify-evenly",
+    "xl:grid-cols-[repeat(4,minmax(0,16rem))] xl:justify-between",
   );
 
   if (isLoading) {

@@ -83,7 +83,10 @@ export function SkillCard({
         {skill.name}
       </span>
       {skill.description ? (
-        <p className="line-clamp-5 text-[14px] font-light leading-5 text-muted-foreground">
+        // Full card width with long words broken: as a flex item the text
+        // would otherwise be as wide as its longest word and push past a
+        // narrow card.
+        <p className="line-clamp-5 w-full min-w-0 break-words text-[14px] font-light leading-5 text-muted-foreground">
           {skill.description}
         </p>
       ) : null}

@@ -2,16 +2,13 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ChatLoadingSkeleton } from "@/features/chat/ui/ChatLoadingSkeleton";
 import { cn } from "@/shared/lib/cn";
+import {
+  PAGE_GUTTER_CLASS,
+  PAGE_TOP_CLASS,
+  PANEL_PAGE_GUTTER_CLASS,
+} from "@/shared/ui/page-shell";
 import { Skeleton } from "@/shared/ui/skeleton";
 import type { AppNavigationLocation } from "../types/appNavigation";
-
-type PlaceholderWidth = "narrow" | "default" | "full";
-
-const pageWidthClassName: Record<PlaceholderWidth, string> = {
-  narrow: "max-w-3xl",
-  default: "max-w-5xl",
-  full: "max-w-none",
-};
 
 const placeholderKeys = [
   "one",
@@ -31,11 +28,11 @@ const placeholderKeys = [
 const galleryGridClassName = cn(
   "grid gap-x-8 gap-y-10",
   "grid-cols-2 sm:grid-cols-3",
-  "xl:grid-cols-[repeat(4,minmax(0,16rem))] xl:justify-evenly",
+  "xl:grid-cols-[repeat(4,minmax(0,16rem))] xl:justify-between",
 );
 
 const sessionGridClassName =
-  "grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[repeat(4,minmax(0,235px))] 2xl:grid-cols-[repeat(5,minmax(0,235px))] xl:justify-evenly";
+  "grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[repeat(4,minmax(0,235px))] 2xl:grid-cols-[repeat(5,minmax(0,235px))] xl:justify-between";
 
 export function AppContentPlaceholder({
   location,
@@ -99,18 +96,19 @@ function renderLocationPlaceholder(location: AppNavigationLocation): ReactNode {
 function PagePlaceholder({
   children,
   contentClassName,
-  width = "default",
 }: {
   children: ReactNode;
   contentClassName?: string;
-  width?: PlaceholderWidth;
 }) {
   return (
-    <div className="min-h-0 flex-1 overflow-hidden">
+    // Mirrors PageShell's frame (scrollbar track reserved) so the skeleton
+    // sits on the same page gutters as the page it stands in for.
+    <div className="min-h-0 flex-1 overflow-hidden [scrollbar-gutter:stable]">
       <div
         className={cn(
-          "mx-auto flex h-full w-full flex-col px-6 pb-app-page-bottom pt-8 page-transition",
-          pageWidthClassName[width],
+          "flex h-full w-full flex-col pb-app-page-bottom page-transition",
+          PAGE_GUTTER_CLASS,
+          PAGE_TOP_CLASS,
         )}
       >
         <div className={cn("flex w-full flex-col gap-8", contentClassName)}>
@@ -154,7 +152,7 @@ function SearchPillPlaceholder({ className }: { className?: string }) {
 function HomePromptPlaceholder() {
   return (
     <div className="h-full w-full overflow-hidden">
-      <div className="page-transition relative flex min-h-full flex-col items-center justify-center px-6 pb-4">
+      <div className="page-transition relative flex min-h-full flex-col items-center justify-center px-app-page-gutter pb-4">
         <div className="flex w-full max-w-[600px] flex-col">
           <div className="mb-2 flex items-end gap-2 pl-4">
             <Skeleton className="h-16 w-48 rounded-sm" />
@@ -193,7 +191,7 @@ function HomeCanvasPlaceholder() {
 
 function SkillsPlaceholder() {
   return (
-    <PagePlaceholder width="full" contentClassName="gap-10">
+    <PagePlaceholder contentClassName="gap-10">
       <div className={galleryGridClassName}>
         <div className="col-span-full sm:col-span-2">
           <SearchPillPlaceholder className="w-full" />
@@ -206,7 +204,7 @@ function SkillsPlaceholder() {
 
 function AgentsPlaceholder() {
   return (
-    <PagePlaceholder width="full" contentClassName="justify-center">
+    <PagePlaceholder contentClassName="justify-center">
       <GalleryGridPlaceholder variant="avatar" />
     </PagePlaceholder>
   );
@@ -270,7 +268,7 @@ function ProjectsPlaceholder() {
 
 function SessionHistoryPlaceholder() {
   return (
-    <PagePlaceholder width="full" contentClassName="gap-5">
+    <PagePlaceholder contentClassName="gap-5">
       <div className={sessionGridClassName}>
         <div className="col-span-full sm:col-span-2">
           <SearchPillPlaceholder className="w-full" />
@@ -301,8 +299,14 @@ function SessionHistoryPlaceholder() {
 function SettingsPlaceholder() {
   return (
     <div className="page-transition flex h-full min-h-0 flex-col px-[var(--spacing-app-panel-gutter-inline)] pt-[var(--spacing-app-panel-gutter-top)] pb-[var(--spacing-app-panel-gutter-bottom)]">
-      <div className="min-h-0 flex-1 overflow-hidden rounded-md bg-card">
-        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pt-8 pb-app-page-bottom">
+      <div className="min-h-0 flex-1 overflow-hidden rounded-md bg-card [scrollbar-gutter:stable]">
+        <div
+          className={cn(
+            "flex min-h-full w-full flex-col pb-app-page-bottom",
+            PANEL_PAGE_GUTTER_CLASS,
+            PAGE_TOP_CLASS,
+          )}
+        >
           <div className="space-y-2">
             <Skeleton className="h-10 w-44 rounded-sm" />
             <Skeleton className="h-4 w-80 max-w-full rounded-sm" />

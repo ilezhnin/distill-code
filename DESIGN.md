@@ -70,6 +70,7 @@ spacing:
   h-button-sm: "2rem"
   max-w-3xl: "48rem"
   max-w-5xl: "64rem"
+  app-page-gutter: "1.5rem; 3rem from 64rem; 4.5rem from 80rem"
   px-6: "1.5rem"
   py-8: "2rem"
 components:
@@ -248,6 +249,17 @@ Corner radii use a 5-step scale built on Tailwind's standard utility names: `rou
 - `rounded-xs` (6px) — surfaces nested inside `sm` containers, micro chips, dense controls.
 
 **Authoring rule.** Always use Tailwind's standard radius utility names. Do not invent new class names like `rounded-m` or `rounded-pill`; override values in `@theme inline` instead.
+
+## 5a. Page Layout
+
+**The Page Gutter Rule.** Every top-level page keeps its content the same distance from the sidebar and from the window's right edge: the page gutter, `--app-page-gutter`. It steps on the 24px dot grid — 24px in a narrow window, 48px from a 1024px window, 72px from 1280px — and is the same on every page at a given window size.
+
+- `PageShell` applies it. A page that builds its own frame uses `PAGE_SCROLL_CLASS` with `PAGE_GUTTER_CLASS` and `PAGE_TOP_CLASS` from `src/shared/ui/page-shell.tsx`; the scroller always reserves its scrollbar track, and the trailing padding gives that width back, so both gutters read the same.
+- Content between the gutters uses the available width. A page does not center itself in a fixed `max-w-*` column; a reading width (`PageShell` `contentWidth`, a text column) caps the column but starts at the gutter, never re-centered. Card grids keep fixed card sizes and put spare width between the columns (`justify-between`), so the outer columns stay on the gutters.
+- A page's first row starts on the gutter, and so does a back button's box: a flush text back button ("‹ Back", the benchmark model page) and an icon-only one (`size="icon-sm"`, the agent profile and editor) both start on the line, with no negative margin hanging into the gutter.
+- Settings and the full-page agent editor are panel cards: the card sits in the 12px panel gutter like the chat panel, and its content uses `PANEL_PAGE_GUTTER_CLASS`, which puts it on the page gutter line. Settings rows have no inline padding of their own, so labels start and controls end on the gutters.
+- A rail beside the content (the chat history date scrubber) is a column of the page: its right edge sits on the right gutter like any page's last box, and the list beside it ends short of the rail and its labels, so a label never lies over content.
+- Home stays a centered invitation; the page gutter is its minimum side inset. The chat transcript keeps its own reading column.
 
 ## 6. Components
 

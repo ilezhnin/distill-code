@@ -2,7 +2,12 @@ import { useState, type ReactNode } from "react";
 import { cn } from "@/shared/lib/cn";
 import { BottomFade } from "@/shared/ui/BottomFade";
 import { MainPanelLayout } from "@/shared/ui/MainPanelLayout";
-import { PageHeader } from "@/shared/ui/page-shell";
+import {
+  PageHeader,
+  PAGE_SCROLL_CLASS,
+  PAGE_TOP_CLASS,
+  PANEL_PAGE_GUTTER_CLASS,
+} from "@/shared/ui/page-shell";
 
 interface SettingsPaneProps {
   children: ReactNode;
@@ -27,13 +32,14 @@ export function SettingsPane({
       )}
     >
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-md bg-card">
-        <div
-          ref={setScrollElement}
-          className="min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]"
-        >
+        <div ref={setScrollElement} className={PAGE_SCROLL_CLASS}>
+          {/* The card sits in the panel gutter like the chat panel; its
+              content starts on the page gutter line like every other page. */}
           <div
             className={cn(
-              "mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pt-8 pb-app-page-bottom",
+              "flex min-h-full w-full flex-col pb-app-page-bottom",
+              PANEL_PAGE_GUTTER_CLASS,
+              PAGE_TOP_CLASS,
               contentClassName,
             )}
           >

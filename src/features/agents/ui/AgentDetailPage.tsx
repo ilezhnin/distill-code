@@ -317,7 +317,7 @@ export function AgentDetailPage({
 
   const profileHeader = (
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
-      <div className="flex min-w-0 items-center gap-1 md:-ml-4">
+      <div className="flex min-w-0 items-center gap-1">
         <Button
           type="button"
           variant="ghost"

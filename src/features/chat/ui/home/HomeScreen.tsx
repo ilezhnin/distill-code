@@ -1,3 +1,5 @@
+import { cn } from "@/shared/lib/cn";
+import { PAGE_GUTTER_CLASS } from "@/shared/ui/page-shell";
 import { HomeComposer } from "./HomeComposer";
 import type { WorkspaceNameRequest } from "@/features/chat/hooks/useChatSessionController";
 
@@ -19,8 +21,16 @@ export function HomeScreen({
   onCreateProject,
 }: HomeScreenProps) {
   return (
-    <div className="h-full w-full overflow-y-auto">
-      <div className="page-transition relative flex min-h-full flex-col items-center justify-center px-6 pb-4">
+    // The scroller always reserves its scrollbar track and the inner padding
+    // gives it back (the page frame's gutters), so the centered column stays
+    // centered whether or not the page scrolls.
+    <div className="h-full w-full overflow-y-scroll [scrollbar-gutter:stable]">
+      <div
+        className={cn(
+          "page-transition relative flex min-h-full flex-col items-center justify-center pb-4",
+          PAGE_GUTTER_CLASS,
+        )}
+      >
         <div className="flex w-full max-w-[600px] flex-col antialiased">
           <HomeComposer
             sessionId={sessionId}

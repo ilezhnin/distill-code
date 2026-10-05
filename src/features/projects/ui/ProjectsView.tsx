@@ -9,6 +9,11 @@ import {
   FolderKanban,
 } from "lucide-react";
 import { SearchBar } from "@/shared/ui/SearchBar";
+import {
+  PAGE_GUTTER_CLASS,
+  PAGE_SCROLL_CLASS,
+  PAGE_TOP_CLASS,
+} from "@/shared/ui/page-shell";
 import { Button, buttonVariants } from "@/shared/ui/button";
 import { cn } from "@/shared/lib/cn";
 import {
@@ -163,8 +168,14 @@ export function ProjectsView({ onStartChat }: ProjectsViewProps) {
 
   return (
     <div className="flex flex-1 flex-col h-full min-h-0">
-      <div className="flex-1 overflow-y-auto min-h-0">
-        <div className="max-w-5xl mx-auto w-full px-6 py-8 space-y-5 page-transition">
+      <div className={PAGE_SCROLL_CLASS}>
+        <div
+          className={cn(
+            "w-full space-y-5 pb-8 page-transition",
+            PAGE_GUTTER_CLASS,
+            PAGE_TOP_CLASS,
+          )}
+        >
           {/* Header */}
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>

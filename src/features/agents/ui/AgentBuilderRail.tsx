@@ -25,6 +25,10 @@ import { Textarea } from "@/shared/ui/textarea";
 import { AvatarMedia } from "@/shared/ui/avatar-media";
 import { Spinner } from "@/shared/ui/spinner";
 import {
+  PAGE_SCROLL_CLASS,
+  PANEL_PAGE_GUTTER_CLASS,
+} from "@/shared/ui/page-shell";
+import {
   usePersonaSource,
   type PersonaSourcePatch,
 } from "@/features/agents/hooks/usePersonaSource";
@@ -56,7 +60,7 @@ import { deleteUserAvatar, importAgentAvatarFile } from "@/shared/api/avatars";
 const FIELD_CLASS = cn(FORM_FIELD_CLASS, "bg-muted/40");
 const FIELD_LABEL_CLASS = "mb-2 block text-xs text-muted-foreground";
 const STICKY_HEADER_CLASS =
-  "relative z-10 bg-card px-8 py-4 text-sm text-foreground after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-6 after:bg-gradient-to-b after:from-card after:to-transparent";
+  "relative z-10 bg-card py-4 text-sm text-foreground after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-6 after:bg-gradient-to-b after:from-card after:to-transparent";
 
 /**
  * Design width of the builder rail. Containers that host the rail should size
@@ -393,7 +397,14 @@ export function AgentBuilderRail({
 
   const headerNode = (
     <div
-      className={cn(STICKY_HEADER_CLASS, "flex items-center justify-between")}
+      className={cn(
+        STICKY_HEADER_CLASS,
+        // Full page, the editor is a panel card like Settings: header, body
+        // and footer start on the page gutter line. The rail keeps its own
+        // compact insets.
+        fullPage ? PANEL_PAGE_GUTTER_CLASS : "px-8",
+        "flex items-center justify-between",
+      )}
     >
       <span className="flex min-w-0 items-center gap-2">
         {fullPage && onBackToLibrary ? (
@@ -403,7 +414,7 @@ export function AgentBuilderRail({
             type="button"
             variant="ghost"
             size="icon-sm"
-            className="-ml-1 shrink-0"
+            className="shrink-0"
             aria-label={t("view.backToAgents")}
             tooltip={t("view.backToAgents")}
             onClick={onBackToLibrary}
@@ -551,11 +562,28 @@ export function AgentBuilderRail({
       data-testid="agent-builder-rail"
       data-full-page={fullPage ? "true" : undefined}
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div
+        className={cn(
+          "flex flex-col",
+          fullPage ? PAGE_SCROLL_CLASS : "min-h-0 flex-1 overflow-y-auto",
+        )}
+      >
         <div className="sticky top-0 z-10">{header}</div>
-        <div className="mt-4 flex min-h-0 flex-1 flex-col px-5">{body}</div>
+        <div
+          className={cn(
+            "mt-4 flex min-h-0 flex-1 flex-col",
+            fullPage ? PANEL_PAGE_GUTTER_CLASS : "px-5",
+          )}
+        >
+          {body}
+        </div>
       </div>
-      {footer ? <div className="px-5">{footer}</div> : null}
+      {footer ? (
+        // Outside the scroller there is no scrollbar track to give back.
+        <div className={fullPage ? "px-app-panel-page-gutter" : "px-5"}>
+          {footer}
+        </div>
+      ) : null}
     </aside>
   );
 
@@ -839,7 +867,7 @@ export function AgentBuilderRail({
     // as the remaining full-width surface.
     return shell(
       headerNode,
-      <div className="flex min-h-0 flex-1 flex-col gap-6 px-4 py-6 xl:px-8">
+      <div className="flex min-h-0 flex-1 flex-col gap-6 py-6">
         <div
           className="grid grid-cols-[10rem_minmax(0,1fr)] items-start gap-6"
           data-testid="builder-identity-band"

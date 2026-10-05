@@ -2,7 +2,9 @@ import { IconFolderPlus } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 
 import { ReviewQueuePanel } from "@/features/review/ui/ReviewQueuePanel";
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import { PAGE_GUTTER_CLASS } from "@/shared/ui/page-shell";
 
 import { HomeComposer } from "./HomeComposer";
 import type { HomeScreenProps } from "./HomeScreen";
@@ -28,8 +30,19 @@ export function WelcomeView({
 }: HomeScreenProps) {
   const { t } = useTranslation("home");
   return (
-    <div className="h-full w-full overflow-y-auto" data-testid="home-welcome">
-      <div className="page-transition relative flex min-h-full flex-col items-center justify-center gap-8 px-6 py-8">
+    // The scroller always reserves its scrollbar track and the inner padding
+    // gives it back (the page frame's gutters), so the centered column stays
+    // centered whether or not the page scrolls.
+    <div
+      className="h-full w-full overflow-y-scroll [scrollbar-gutter:stable]"
+      data-testid="home-welcome"
+    >
+      <div
+        className={cn(
+          "page-transition relative flex min-h-full flex-col items-center justify-center gap-8 py-8",
+          PAGE_GUTTER_CLASS,
+        )}
+      >
         <div className="flex w-full max-w-[600px] flex-col gap-6 antialiased">
           <div className="flex flex-col items-center gap-1.5 text-center">
             <h1 className="text-2xl font-semibold text-foreground">

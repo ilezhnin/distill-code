@@ -293,9 +293,11 @@ export function SessionTimelineScrubber({
               style={{ top: `${positions[position] * 100}%` }}
             >
               {showLabel ? (
+                // One line up to 6rem, wrapping past it: the page reserves
+                // room for that much label beside the rail.
                 <span
                   className={cn(
-                    "whitespace-nowrap text-right text-[10px] leading-none",
+                    "w-max max-w-24 text-right text-[10px] leading-none",
                     focused
                       ? "font-medium text-foreground"
                       : "text-muted-foreground",

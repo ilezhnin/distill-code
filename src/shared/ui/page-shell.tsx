@@ -4,6 +4,17 @@ import { BottomFade } from "./BottomFade";
 import { TopFade } from "./TopFade";
 import { MainPanelLayout } from "./MainPanelLayout";
 
+/**
+ * Top-level page framing: the scroll frame every page sits in, plus the page
+ * header. Content keeps the page gutter (`--app-page-gutter`) from the sidebar
+ * and from the window's right edge, the first row starts at the page top, and
+ * a content width only caps the column without re-centering it. Pages with a
+ * frame of their own use PAGE_SCROLL_CLASS, PAGE_GUTTER_CLASS and
+ * PAGE_TOP_CLASS; panel cards use PANEL_PAGE_GUTTER_CLASS. A first row starts
+ * on the gutter, back button included: its box, not its icon, sits on the
+ * line.
+ */
+
 interface ShellProps {
   children: ReactNode;
   className?: string;
@@ -14,6 +25,38 @@ interface ShellProps {
   showTopFade?: boolean;
 }
 
+/**
+ * The page gutter, applied by every top-level page: the same distance between
+ * the content and the sidebar and between the content and the window's right
+ * edge, on every page. The value is the responsive `--app-page-gutter` token
+ * in globals.css (24px, 48px from 1024px, 72px from 1280px). Use it on the
+ * element inside a scroller with PAGE_SCROLL_CLASS: that scroller always
+ * reserves its scrollbar track, and the trailing padding gives the track's
+ * width back so both gutters read the same.
+ */
+export const PAGE_GUTTER_CLASS = "pl-app-page-gutter pr-app-page-gutter-end";
+
+/** The page scroller PAGE_GUTTER_CLASS is measured against. */
+export const PAGE_SCROLL_CLASS =
+  "min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]";
+
+/** Space above a page's first row, the same on every page. */
+export const PAGE_TOP_CLASS = "pt-8";
+
+/**
+ * The gutter inside a panel card (Settings, the full-page agent editor). The
+ * card itself sits in the panel gutter like the chat panel; this padding puts
+ * the card's content on the page gutter line, where every other page's content
+ * starts. Use it inside a scroller with PAGE_SCROLL_CLASS.
+ */
+export const PANEL_PAGE_GUTTER_CLASS =
+  "pl-app-panel-page-gutter pr-app-panel-page-gutter-end";
+
+/**
+ * Reading widths for a page's content column. They cap the column only: the
+ * column always starts at the page gutter and is never re-centered, so the
+ * gutter is the same whatever width a page asks for.
+ */
 const SHELL_WIDTH_CLASSES = {
   narrow: "max-w-3xl",
   default: "max-w-5xl",
@@ -82,21 +125,21 @@ function PageScrollFrame({
           className="absolute inset-x-0 top-0 z-10"
         />
       ) : null}
-      <div
-        ref={setScrollElement}
-        className="min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]"
-      >
+      <div ref={setScrollElement} className={PAGE_SCROLL_CLASS}>
         <div
+          data-page-gutter=""
           className={cn(
-            "mx-auto flex w-full flex-col px-6 pt-8 page-transition",
+            "flex w-full flex-col page-transition",
+            PAGE_GUTTER_CLASS,
+            PAGE_TOP_CLASS,
             minContentHeight && "min-h-full",
             showBottomFade ? "pb-app-page-bottom" : "pb-8",
-            widthClassName,
           )}
         >
           <div
             className={cn(
               "flex w-full flex-col gap-8",
+              widthClassName,
               contentAlign === "center" && "my-auto",
               contentClassName,
             )}

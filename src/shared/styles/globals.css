@@ -1205,6 +1205,26 @@
   --spacing-app-panel-gutter-bottom: 12px;
   --spacing-app-status-bar: 1.75rem;
   --spacing-app-page-bottom: 6rem;
+  /* Page gutter (runtime --app-page-gutter, responsive; see :root below).
+     The `-end` forms are for scrollers that always reserve their scrollbar
+     track: the empty track already reads as gutter, so the trailing padding
+     gives its width back and both sides show the same distance. The `panel`
+     forms pad content inside a panel card that sits in the panel gutter, so
+     the content starts where page content starts. */
+  --spacing-app-page-gutter: var(--app-page-gutter);
+  --spacing-app-page-gutter-end: calc(
+    var(--app-page-gutter) -
+    var(--scrollbar-size)
+  );
+  --spacing-app-panel-page-gutter: calc(
+    var(--app-page-gutter) -
+    var(--spacing-app-panel-gutter-inline)
+  );
+  --spacing-app-panel-page-gutter-end: calc(
+    var(--app-page-gutter) -
+    var(--spacing-app-panel-gutter-inline) -
+    var(--scrollbar-size)
+  );
   --toast-bottom-offset: calc(1.75rem + 8px);
   --toast-mobile-bottom-offset: 16px;
   --spacing-input: 3.25rem;
@@ -1450,6 +1470,18 @@
 :root {
   /* Runtime status-bar height for surfaces positioned above it. */
   --app-status-bar-height: 1.75rem;
+  /* The page gutter: the one distance every top-level page keeps between its
+     content and the sidebar, and between its content and the window's right
+     edge. It steps on the 24px dot grid (--dot-spacing): 24px in a narrow
+     window, 48px from a 1024px window, 72px from 1280px (a maximized one).
+     One declaration, no media blocks (the token contract keeps :root
+     unconditional): 9.375vw - 3rem reaches 48px at 1024px and 72px at
+     1280px, round(down, ..., 1.5rem) snaps it to the 24px grid, clamp()
+     holds the ends. Pages read it through PageShell or PAGE_GUTTER_CLASS
+     (src/shared/ui/page-shell.tsx); panel cards (Settings, the agent editor)
+     through PANEL_PAGE_GUTTER_CLASS, which lines their content up with the
+     same edge. */
+  --app-page-gutter: clamp(1.5rem, round(down, 9.375vw - 3rem, 1.5rem), 4.5rem);
 }
 
 @keyframes active-chat-dot-pulse {

@@ -63,9 +63,11 @@ export function SettingsRow({
   return (
     <div
       data-slot="settings-row"
+      // No inline padding of its own: the page around the row sets both
+      // edges, so labels start and controls end on the page gutters.
       className={cn(
-        "min-w-0 pr-4",
-        density === "default" ? "py-4" : "py-2.5 pr-3.5",
+        "min-w-0",
+        density === "default" ? "py-4" : "py-2.5",
         className,
       )}
       {...props}

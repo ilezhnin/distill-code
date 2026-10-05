@@ -12,6 +12,11 @@ import { Button } from "@/shared/ui/button";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import type { SessionAction } from "@/features/sessions/lib/sessionSelection";
 import { SearchBar } from "@/shared/ui/SearchBar";
+import {
+  PAGE_GUTTER_CLASS,
+  PAGE_SCROLL_CLASS,
+  PAGE_TOP_CLASS,
+} from "@/shared/ui/page-shell";
 import { SessionCard } from "./SessionCard";
 import { groupSessionsByDate } from "../lib/groupSessionsByDate";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
@@ -68,6 +73,16 @@ const SESSION_VIEW_COLS = {
   list: "grid grid-cols-1",
   grid: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3",
 } as const;
+
+// The date scrubber (xl and up) is a column of the page: its rail ends on the
+// right page gutter like every page's last box, below the header row, whose
+// controls end on the same line. Its labels reach left of the rail (dash and
+// gap 1.625rem, up to 6rem of text, SessionTimelineScrubber), so while it
+// shows, the list beside it ends 8.5rem short of the gutter and a label never
+// lies over a card.
+const TIMELINE_SCRUBBER_CLASS =
+  "absolute bottom-24 right-app-page-gutter top-32 z-10 hidden xl:flex";
+const TIMELINE_SCRUBBER_ROOM_CLASS = "xl:w-[calc(100%-8.5rem)]";
 
 const SESSION_VIEW_STORAGE_KEY = "sessions.history.view";
 
@@ -1038,6 +1053,9 @@ export function SessionHistoryView({
     setScrollElement(node);
   }, []);
 
+  // Mirrors SessionTimelineScrubber, which draws nothing below two markers.
+  const showTimeline = !submittedQuery && timelineMarkers.length >= 2;
+
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col">
       {!submittedQuery && (
@@ -1048,18 +1066,22 @@ export function SessionHistoryView({
           hasMore={hasMoreSessions}
           onLoadOlder={() => void loadNextPageIfNeeded()}
           isLoadingOlder={isLoadingAdditionalSessions}
-          className="absolute bottom-24 right-2 top-32 z-10 hidden xl:flex"
+          className={TIMELINE_SCRUBBER_CLASS}
         />
       )}
       <div
         ref={setScrollNode}
         data-testid="session-history-scroll"
         onScroll={handleScroll}
-        className="min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]"
+        className={PAGE_SCROLL_CLASS}
       >
         <div
           ref={pageContentRef}
-          className="page-transition mx-auto flex w-full max-w-5xl flex-col gap-5 px-6 pb-app-page-bottom pt-8"
+          className={cn(
+            "page-transition flex w-full flex-col gap-5 pb-app-page-bottom",
+            PAGE_GUTTER_CLASS,
+            PAGE_TOP_CLASS,
+          )}
         >
           <div className="flex flex-col gap-3">
             <div className="max-w-md">
@@ -1123,6 +1145,7 @@ export function SessionHistoryView({
             className={cn(
               SESSION_VIEW_COLS.grid,
               "pointer-events-none invisible h-0 overflow-hidden",
+              showTimeline && TIMELINE_SCRUBBER_ROOM_CLASS,
             )}
           />
 
@@ -1177,7 +1200,10 @@ export function SessionHistoryView({
           ) : dateGroups.length > 0 ? (
             <div
               ref={setVirtualListElement}
-              className="relative w-full"
+              className={cn(
+                "relative w-full",
+                showTimeline && TIMELINE_SCRUBBER_ROOM_CLASS,
+              )}
               style={{ height: `${groupedVirtualizer.getTotalSize()}px` }}
             >
               {groupedVirtualItems.map((virtualRow) => {
