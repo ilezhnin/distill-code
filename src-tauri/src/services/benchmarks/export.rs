@@ -228,7 +228,7 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
                 "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"outcomes":outcomes,
                 "meanCost":super::analysis::mean_case_cost(&selected,None),
                 "runId":selected.first().map(|a|&a.run_id),
-                "effectiveTimeoutSeconds":selected.first().map(|a|runs[a.run_id.as_str()].request.timeout_seconds.min(version.manifest.limits.timeout_seconds)),
+                "effectiveTimeoutSeconds":selected.first().map(|a|super::runner::effective_timeout_seconds(runs[a.run_id.as_str()].request.timeout_seconds,&version.manifest)),
                 "repetitions":selected.len()}));
         }
         // Complete means every owed cell is observed, and at least one is owed.

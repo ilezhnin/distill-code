@@ -185,6 +185,8 @@ fn unscored_retests_keep_the_previous_cell() {
         &["selection_changed"],
         &["pass", "cancelled"],
         &["fail", "interrupted"],
+        &["budget_timeout"],
+        &["pass", "budget_timeout"],
     ] {
         let mut data = before_only();
         settled_retest(&mut data, "cancelled", outcomes);
@@ -210,7 +212,7 @@ fn unscored_retests_keep_the_previous_cell() {
 #[test]
 fn scored_failures_and_complete_retests_replace_the_previous_cell() {
     let mut data = before_only();
-    settled_retest(&mut data, "completed", &["fail", "budget_timeout"]);
+    settled_retest(&mut data, "completed", &["fail", "budget_reached"]);
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
     assert_eq!(row.points, Some(0));
     assert_eq!(row.status, "comparable");
@@ -225,20 +227,23 @@ fn scored_failures_and_complete_retests_replace_the_previous_cell() {
 
 #[test]
 fn a_case_without_any_scored_cell_stays_a_gap() {
-    let mut data = before_only();
-    settled_retest(&mut data, "cancelled", &["cancelled"]);
-    // v0 was only ever cancelled; the other cases passed earlier.
-    data.attempts.retain(|a| {
-        if a.run_id == "before" {
-            a.version_id != "v0"
-        } else {
-            a.version_id == "v0"
-        }
-    });
-    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!(row.status, "preliminary");
-    assert_eq!(row.missing_version_ids, vec!["v0"]);
-    assert_eq!((row.scored, row.planned), (5, 6));
+    // A turn the run's time limit stopped measured nothing either.
+    for (state, outcome) in [("cancelled", "cancelled"), ("completed", "budget_timeout")] {
+        let mut data = before_only();
+        settled_retest(&mut data, state, &[outcome]);
+        // v0 only ever ended so; the other cases passed earlier.
+        data.attempts.retain(|a| {
+            if a.run_id == "before" {
+                a.version_id != "v0"
+            } else {
+                a.version_id == "v0"
+            }
+        });
+        let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+        assert_eq!(row.status, "preliminary", "{outcome}");
+        assert_eq!(row.missing_version_ids, vec!["v0"], "{outcome}");
+        assert_eq!((row.scored, row.planned), (5, 6), "{outcome}");
+    }
 }
 
 #[test]
@@ -1344,22 +1349,25 @@ fn missing_repeat_score_does_not_count_as_complete_case() {
 }
 
 #[test]
-fn budget_failures_score_zero_whatever_is_evaluated_later() {
-    for outcome in ["budget_timeout", "budget_reached"] {
-        let mut a = before_only().attempts.remove(0);
-        a.outcome = Some(outcome.into());
-        // A legacy rescore of the partial output, recorded after the run.
-        a.evaluations = vec![evaluation(10, Some(1.0), "objective", "pass")];
-        assert_eq!(score(&a), Some(0.0), "{outcome}");
-        assert_eq!(score_as_of(&a, Some(3)), Some(0.0), "{outcome}");
-        assert_eq!(score_as_of(&a, Some(20)), Some(0.0), "{outcome}");
-        // A result that finished after the cutoff was not known then.
-        assert_eq!(score_as_of(&a, Some(1)), None, "{outcome}");
-        assert_eq!(
-            effective_outcome(a.outcome.as_deref(), &a.evaluations).as_deref(),
-            Some(outcome)
-        );
-    }
+fn an_artifact_cap_failure_scores_zero_and_a_timeout_nothing() {
+    let mut timed_out = before_only().attempts.remove(0);
+    timed_out.outcome = Some("budget_timeout".into());
+    timed_out.evaluations = vec![evaluation(10, Some(1.0), "objective", "pass")];
+    assert_eq!(score(&timed_out), None);
+    assert_eq!(score_as_of(&timed_out, Some(20)), None);
+    let mut a = before_only().attempts.remove(0);
+    a.outcome = Some("budget_reached".into());
+    // A legacy rescore of the partial output, recorded after the run.
+    a.evaluations = vec![evaluation(10, Some(1.0), "objective", "pass")];
+    assert_eq!(score(&a), Some(0.0));
+    assert_eq!(score_as_of(&a, Some(3)), Some(0.0));
+    assert_eq!(score_as_of(&a, Some(20)), Some(0.0));
+    // A result that finished after the cutoff was not known then.
+    assert_eq!(score_as_of(&a, Some(1)), None);
+    assert_eq!(
+        effective_outcome(a.outcome.as_deref(), &a.evaluations).as_deref(),
+        Some("budget_reached")
+    );
 }
 
 #[test]
@@ -1686,10 +1694,10 @@ fn evaluate_objectively(data: &mut QueryData) {
     }
 }
 
-/// Settles attempt `id` as a timeout: no evaluation, a fixed 0.
-fn time_out(data: &mut QueryData, id: &str) {
+/// Settles attempt `id` past the artifact cap: no evaluation, a fixed 0.
+fn exceed_artifact_cap(data: &mut QueryData, id: &str) {
     let a = data.attempts.iter_mut().find(|a| a.id == id).unwrap();
-    a.outcome = Some("budget_timeout".into());
+    a.outcome = Some("budget_reached".into());
     a.evaluations.clear();
 }
 
@@ -1699,14 +1707,14 @@ fn a_budget_failure_is_paired_nerf_evidence() {
     let (mut data, mut baseline) = super::tests::dataset();
     evaluate_objectively(&mut data);
     refreeze(&data, &mut baseline);
-    time_out(&mut data, "after-v0");
+    exceed_artifact_cap(&mut data, "after-v0");
     let result = compare(&data, &baseline, &query);
     assert_eq!(result[0].status, "confirmed_change");
     assert_eq!(result[0].quality_change, Some(-1.0));
-    // The frozen run timed out on v0 instead, so that family did not change.
+    // The frozen run failed v0 instead, so that family did not change.
     let (mut data, mut baseline) = super::tests::dataset();
     evaluate_objectively(&mut data);
-    time_out(&mut data, "before-v0");
+    exceed_artifact_cap(&mut data, "before-v0");
     refreeze(&data, &mut baseline);
     let result = compare(&data, &baseline, &query);
     assert_eq!(result[0].status, "preliminary");

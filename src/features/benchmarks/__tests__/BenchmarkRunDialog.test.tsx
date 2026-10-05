@@ -70,7 +70,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("pins a catch-up configuration to today's runtime and budgets the selected cases before preview", async () => {
+it("runs a model page's configuration on its cases without asking for it again", async () => {
   const definitions = Array.from({ length: 21 }, (_, index) => ({
     ...definition,
     id: `definition-${index}`,
@@ -121,9 +121,16 @@ it("pins a catch-up configuration to today's runtime and budgets the selected ca
     "claude-acp",
     "account-1",
   );
+  // The row names the configuration and its cases; nothing is chosen again.
+  expect(screen.getByText("21 cases")).toBeInTheDocument();
+  expect(screen.getByText("model-1")).toBeInTheDocument();
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  expect(screen.queryByText("Choose a provider")).not.toBeInTheDocument();
+  // The time limit only stops a turn that never ends: hours, not the
+  // ten minutes a case asks for at least.
   expect(
-    screen.getByRole("spinbutton", { name: "Time limit (seconds)" }),
-  ).toHaveValue(600);
+    screen.getByRole("spinbutton", { name: "Time limit (minutes)" }),
+  ).toHaveValue(240);
   expect(
     screen.getByRole("spinbutton", { name: "Maximum executions" }),
   ).toHaveValue(21);
@@ -143,7 +150,7 @@ it("pins a catch-up configuration to today's runtime and budgets the selected ca
         ],
         versionIds: selectedVersionIds,
         repetitions: 1,
-        timeoutSeconds: 600,
+        timeoutSeconds: 14_400,
         maxExecutions: 21,
       }),
     ),

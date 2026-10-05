@@ -2564,8 +2564,12 @@ fn model_row_identity(inventory: &Value, model_id: &str) -> Option<String> {
             Some(format!("{id}\u{1f}{}", row["name"].as_str().unwrap_or(id)))
         })
 }
-fn effective_timeout_seconds(requested: u32, draft: &BenchmarkDraft) -> u32 {
-    requested.min(draft.limits.timeout_seconds).min(
+/// The time a turn of `draft` gets from a run that allows `requested` seconds:
+/// the run's limit, or a continuation's frozen remaining budget when that is
+/// shorter. The case's own `limits.timeout_seconds` is the least a run must
+/// allow it, never a stop: a model takes the time it needs.
+pub(super) fn effective_timeout_seconds(requested: u32, draft: &BenchmarkDraft) -> u32 {
+    requested.min(
         draft
             .entry_state
             .as_ref()
@@ -4168,9 +4172,11 @@ mod tests {
         assert_eq!(run.id, service.start_run(req).await.unwrap().id);
     }
     #[test]
-    fn continuation_timeout_is_the_smallest_frozen_budget() {
+    fn a_turn_gets_the_run_limit_or_a_shorter_frozen_budget() {
         let mut draft = seed_definitions().remove(0);
+        // The case's own limit is the least a run must allow, not a stop.
         draft.limits.timeout_seconds = 120;
+        assert_eq!(effective_timeout_seconds(14_400, &draft), 14_400);
         assert_eq!(effective_timeout_seconds(90, &draft), 90);
         draft.entry_state = Some(EntryState {
             schema_version: 1,
@@ -4186,7 +4192,7 @@ mod tests {
         assert_eq!(effective_timeout_seconds(90, &draft), 30);
         assert_eq!(effective_timeout_seconds(10, &draft), 10);
         draft.limits.timeout_seconds = 5;
-        assert_eq!(effective_timeout_seconds(90, &draft), 5);
+        assert_eq!(effective_timeout_seconds(90, &draft), 30);
     }
     #[tokio::test]
     async fn workflow_tick_dispatches_children_once_and_evaluates_only_root() {
@@ -6586,7 +6592,8 @@ mod tests {
             "validation"
         );
         assert_eq!(backend.judges.load(Ordering::SeqCst), asked);
-        // A human override cannot turn a budget failure into a verdict either.
+        // A human override cannot turn a timeout into a verdict either; it
+        // measured nothing, so its case stays a gap.
         let mut timed_out = s.store.attempt(&creative.attempts[0].id).await.unwrap();
         timed_out.outcome = Some("budget_timeout".into());
         timed_out.evaluations.clear();
@@ -6598,7 +6605,7 @@ mod tests {
         assert_eq!(refused.message, "Only an evaluated result can be reviewed");
         let kept = s.store.attempt(&timed_out.id).await.unwrap();
         assert_eq!(kept.outcome.as_deref(), Some("budget_timeout"));
-        assert_eq!(super::super::analysis::score(&kept), Some(0.0));
+        assert_eq!(super::super::analysis::score(&kept), None);
     }
     #[tokio::test]
     async fn evaluating_again_persists_the_new_verdict_of_a_finished_attempt() {

@@ -64,7 +64,7 @@ describe("design gallery", () => {
     vi.mocked(benchmarkApi.listCatalog).mockResolvedValue([]);
   });
 
-  it("shows every rendering per brief, names a model only after its blind review", async () => {
+  it("shows every rendering per brief under the model that made it", async () => {
     const onEvidence = show([
       entry({
         attemptId: "attempt-1",
@@ -110,7 +110,9 @@ describe("design gallery", () => {
     ]);
     expect(screen.getByText("Development color swatch")).toBeInTheDocument();
     expect(screen.getByText("4 designs")).toBeInTheDocument();
-    const reviewed = screen.getByRole("button", { name: "Open design 1" });
+    const reviewed = screen.getByRole("button", {
+      name: "Open the design by alpha · high",
+    });
     expect(within(reviewed).getByText("alpha")).toBeInTheDocument();
     expect(within(reviewed).getByText("700")).toBeInTheDocument();
     expect(within(reviewed).getByText("$0.02")).toBeInTheDocument();
@@ -119,21 +121,26 @@ describe("design gallery", () => {
     expect(image.getAttribute("src")).toMatch(/^data:image\/svg\+xml/);
     expect(image.getAttribute("src")).not.toContain("%60%60%60");
     expect(image.getAttribute("src")).toContain("xmlns");
-    const pending = screen.getByRole("button", { name: "Open design 2" });
-    expect(within(pending).getByText("Entry 2")).toBeInTheDocument();
+    // A rendering the panel has not judged yet still names its model.
+    const pending = screen.getByRole("button", {
+      name: "Open the design by beta · high",
+    });
+    expect(within(pending).getByText("beta")).toBeInTheDocument();
     expect(
       within(pending).getByText("Awaiting the judge panel"),
     ).toBeInTheDocument();
-    expect(screen.queryByText("beta")).not.toBeInTheDocument();
-    const failed = screen.getByRole("button", { name: "Open design 3" });
-    expect(
-      within(failed).getByText("Time budget exceeded"),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Entry/)).not.toBeInTheDocument();
+    const failed = screen.getByRole("button", {
+      name: "Open the design by gamma · high",
+    });
+    expect(within(failed).getByText("gamma")).toBeInTheDocument();
+    expect(within(failed).getByText("Time limit reached")).toBeInTheDocument();
     expect(
       within(failed).queryByText("Awaiting the judge panel"),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("gamma")).not.toBeInTheDocument();
-    const judged = screen.getByRole("button", { name: "Open design 4" });
+    const judged = screen.getByRole("button", {
+      name: "Open the design by delta · high",
+    });
     expect(within(judged).getByText("delta")).toBeInTheDocument();
     expect(within(judged).getByText("650")).toBeInTheDocument();
     expect(within(judged).getByText("2 judges")).toBeInTheDocument();
@@ -156,12 +163,16 @@ describe("design gallery", () => {
         outcome: "pending_review",
       }),
     ]);
-    const excluded = screen.getByRole("button", { name: "Open design 1" });
-    expect(within(excluded).getByText("Entry 1")).toBeInTheDocument();
+    const excluded = screen.getByRole("button", {
+      name: "Open the design by alpha · high",
+    });
+    expect(within(excluded).getByText("alpha")).toBeInTheDocument();
     expect(
       within(excluded).queryByText("Awaiting the judge panel"),
     ).not.toBeInTheDocument();
-    const waiting = screen.getByRole("button", { name: "Open design 2" });
+    const waiting = screen.getByRole("button", {
+      name: "Open the design by beta · high",
+    });
     expect(
       within(waiting).getByText("Awaiting the judge panel"),
     ).toBeInTheDocument();

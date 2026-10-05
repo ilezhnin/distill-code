@@ -107,7 +107,7 @@ pub fn validate_draft(d: &BenchmarkDraft) -> Vec<String> {
             || e.root_task_id.trim().is_empty()
             || e.step_id.trim().is_empty()
             || e.remaining_budget_seconds == 0
-            || e.remaining_budget_seconds > 3600
+            || e.remaining_budget_seconds > super::MAX_TIME_LIMIT_SECONDS
             || e.conversation_prefix.len()
                 + e.previous_reports.iter().map(String::len).sum::<usize>()
                 > 128 * 1024
@@ -271,7 +271,8 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
         || q.candidates.len() > 200
         || q.max_age_ms > 10 * 365 * 24 * 3600 * 1000u64
         || q.cutoff_at > now()
-        || q.timeout_seconds.is_some_and(|v| v == 0 || v > 3600)
+        || q.timeout_seconds
+            .is_some_and(|v| v == 0 || v > super::MAX_TIME_LIMIT_SECONDS)
         || q.constraints
             .max_cost
             .is_some_and(|v| !v.is_finite() || v < 0.0)

@@ -76,12 +76,19 @@ pub const BENCHMARK_SIGN_IN_MARGIN_MS: i64 = 15 * 60 * 1000;
 /// wait for a cancellation to be confirmed when the limit is reached.
 const BENCHMARK_SIGN_IN_SLACK_MS: i64 = 5 * 60 * 1000;
 
+/// The longest part of a turn a sign-in is required to outlast. A run's time
+/// limit is a safety stop of hours; asking a sign-in of a few hours to outlast
+/// all of it would idle Grok for most of each sign-in. A turn that runs past
+/// the sign-in ends with it, unscored, and a catch-up runs it again.
+const BENCHMARK_SIGN_IN_TURN_CAP_MS: i64 = 60 * 60 * 1000;
+
 /// How long the session must stay valid for a benchmark turn that may run
-/// `turn_limit_ms`: the turn and its slack, and never less than
-/// [`BENCHMARK_SIGN_IN_MARGIN_MS`].
+/// `turn_limit_ms`: the turn, up to [`BENCHMARK_SIGN_IN_TURN_CAP_MS`], and its
+/// slack, and never less than [`BENCHMARK_SIGN_IN_MARGIN_MS`].
 pub fn benchmark_sign_in_margin_ms(turn_limit_ms: u64) -> i64 {
     i64::try_from(turn_limit_ms)
         .unwrap_or(i64::MAX)
+        .min(BENCHMARK_SIGN_IN_TURN_CAP_MS)
         .saturating_add(BENCHMARK_SIGN_IN_SLACK_MS)
         .max(BENCHMARK_SIGN_IN_MARGIN_MS)
 }
@@ -677,15 +684,16 @@ mod tests {
         assert!(benchmark_sign_in_expiring(Some(now - 1), now, 0));
     }
 
-    /// A run may allow an hour per turn; the sign-in must outlast the whole
-    /// turn and the time to open and cancel it, not just the default margin.
+    /// A run may allow hours per turn; the sign-in must outlast up to an hour
+    /// of it and the time to open and cancel it, not just the default margin.
     #[test]
     fn a_long_turn_needs_its_whole_limit_and_slack_left_on_the_sign_in() {
         let hour = 60 * 60 * 1000;
         let slack = BENCHMARK_SIGN_IN_SLACK_MS;
         assert_eq!(benchmark_sign_in_margin_ms(0), BENCHMARK_SIGN_IN_MARGIN_MS);
         assert_eq!(benchmark_sign_in_margin_ms(hour), hour as i64 + slack);
-        assert_eq!(benchmark_sign_in_margin_ms(u64::MAX), i64::MAX);
+        assert_eq!(benchmark_sign_in_margin_ms(4 * hour), hour as i64 + slack);
+        assert_eq!(benchmark_sign_in_margin_ms(u64::MAX), hour as i64 + slack);
         let now = 1_000_000_000;
         // Thirty minutes left is enough for a ten-minute turn, not an hour.
         let expires = Some(now + 30 * 60 * 1000);

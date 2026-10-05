@@ -127,25 +127,20 @@ pub(super) fn effective_outcome(
     }
 }
 
-/// Exceeding the published time or artifact budget is a task failure, not an
+/// An answer past the published artifact cap is a task failure, not an
 /// infrastructure exclusion: the candidate chose that behavior. It scores a
-/// fixed 0 that no later evaluation of the partial output can change.
+/// fixed 0 that no later evaluation of the partial output can change. A turn
+/// the run's time limit stopped measured nothing (`budget_timeout` is no
+/// quality outcome): the limit is a safety stop, so the case stays a gap a
+/// catch-up runs again.
 fn is_budget_failure(outcome: Option<&str>) -> bool {
-    matches!(outcome, Some("budget_timeout" | "budget_reached"))
+    outcome == Some("budget_reached")
 }
 
 fn has_quality_outcome(outcome: Option<&str>) -> bool {
     matches!(
         outcome,
-        Some(
-            "pass"
-                | "fail"
-                | "judged"
-                | "pending_review"
-                | "completed"
-                | "budget_timeout"
-                | "budget_reached"
-        )
+        Some("pass" | "fail" | "judged" | "pending_review" | "completed" | "budget_reached")
     )
 }
 

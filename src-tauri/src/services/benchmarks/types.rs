@@ -46,6 +46,8 @@ pub struct Evaluator {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Limits {
+    /// The least time a run must allow this case, in seconds. The run's own
+    /// time limit stops a turn; this one never does.
     pub timeout_seconds: u32,
     pub max_turns: u32,
     pub max_artifact_bytes: u64,

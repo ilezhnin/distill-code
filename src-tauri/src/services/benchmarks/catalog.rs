@@ -39,17 +39,17 @@ pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
         issues.push("Benchmark context must be clean".into());
     }
     if d.limits.timeout_seconds == 0
-        || d.limits.timeout_seconds > 3600
+        || d.limits.timeout_seconds > super::MAX_TIME_LIMIT_SECONDS
         || d.limits.max_turns != 1
         || d.limits.max_artifact_bytes == 0
         || d.limits.max_artifact_bytes > 16 * 1024 * 1024
         || d.repetitions == 0
         || d.repetitions > 100
     {
-        issues.push(
-            "Limits require 1–3600 seconds, one turn, 1–16 MiB artifacts and 1–100 repetitions"
-                .into(),
-        );
+        issues.push(format!(
+            "Limits require 1–{} seconds, one turn, 1–16 MiB artifacts and 1–100 repetitions",
+            super::MAX_TIME_LIMIT_SECONDS
+        ));
     }
     if d.prompt.len() > 128 * 1024 {
         issues.push("Prompt exceeds 128 KiB".into());

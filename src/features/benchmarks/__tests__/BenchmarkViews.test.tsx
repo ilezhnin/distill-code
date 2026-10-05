@@ -278,7 +278,9 @@ describe("benchmark authoring and saved evidence", () => {
       screen.queryByRole("checkbox", { name: /network/i }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("spinbutton", { name: "Time limit (seconds)" }),
+      screen.getByRole("spinbutton", {
+        name: "Minimum time limit (seconds)",
+      }),
     ).toHaveValue(120);
   });
   it("opens every view without probing inventory or starting inference", async () => {

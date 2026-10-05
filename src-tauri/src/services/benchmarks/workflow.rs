@@ -355,7 +355,9 @@ pub async fn execute(
             step.attempt.duration_ms.and_then(|ms| sum.checked_add(ms))
         });
     let start = Instant::now();
-    let budget_ms = u64::from(timeout.min(version.manifest.limits.timeout_seconds)) * 1000;
+    // The run's limit bounds the steps together; the case's own limit is the
+    // least a run must allow, never a stop.
+    let budget_ms = u64::from(timeout) * 1000;
     if let Some((code, reason)) = prefix_violation(&steps, budget_ms) {
         root.outcome = Some(code.into());
         root.reason = Some(reason.into());
@@ -548,7 +550,9 @@ pub async fn recover(
         .await?
         .request
         .timeout_seconds;
-    let budget_ms = u64::from(timeout.min(version.manifest.limits.timeout_seconds)) * 1000;
+    // The run's limit bounds the steps together; the case's own limit is the
+    // least a run must allow, never a stop.
+    let budget_ms = u64::from(timeout) * 1000;
     if let Some((code, reason)) = prefix_violation(&steps, budget_ms) {
         root.outcome = Some(code.into());
         root.reason = Some(reason.into());

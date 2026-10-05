@@ -18,6 +18,7 @@ import {
   renderable,
   type RenderableMarkup,
 } from "../lib/benchmarkPreview";
+import { explicitEffort } from "../lib/benchmarkEffort";
 import { resolveCatalogEntry } from "../lib/modelCatalog";
 import type { DesignEntry } from "../types";
 import {
@@ -38,8 +39,8 @@ interface Brief {
 
 /**
  * The design gallery: every brief with the newest rendering per
- * configuration side by side. A rendering stays anonymous until its blind
- * review is recorded; opening a card opens that review.
+ * configuration side by side, each under the model that made it. Opening a
+ * card opens its evidence.
  */
 export function DesignBenchView({
   entries,
@@ -122,13 +123,12 @@ export function DesignBenchView({
               </span>
             </div>
             <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {group.entries.map((entry, index) => {
+              {group.entries.map((entry) => {
                 const { name, vendor } = identity(entry);
                 return (
                   <DesignCard
                     key={entry.attemptId}
                     entry={entry}
-                    number={index + 1}
                     name={name}
                     vendor={vendor}
                     onOpen={() => onEvidence(entry.attemptId)}
@@ -145,13 +145,11 @@ export function DesignBenchView({
 
 function DesignCard({
   entry,
-  number,
   name,
   vendor,
   onOpen,
 }: {
   entry: DesignEntry;
-  number: number;
   name: string;
   vendor: string;
   onOpen: () => void;
@@ -169,12 +167,15 @@ function DesignCard({
     (entry.phase === "terminal"
       ? state === "pending_review"
       : entry.outcome === "pending_review");
+  const effort = explicitEffort(entry.configuration.effort);
   return (
     <li>
       <button
         type="button"
         onClick={onOpen}
-        aria-label={t("design.open", { number })}
+        aria-label={t("design.open", {
+          model: effort ? `${name} · ${effort}` : name,
+        })}
         className="group w-full overflow-hidden rounded-lg border border-border bg-card text-left transition-colors hover:border-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <div className="relative aspect-[4/3] w-full overflow-hidden bg-white">
@@ -187,22 +188,17 @@ function DesignCard({
           )}
         </div>
         <div className="flex items-center justify-between gap-3 p-3">
-          {points != null ? (
-            <ModelIdentity
-              configuration={entry.configuration}
-              name={name}
-              vendor={vendor}
-            />
-          ) : (
-            <div className="min-w-0">
-              <div className="font-medium">{t("design.entry", { number })}</div>
-              {awaitingPanel ? (
-                <div className="text-xs text-muted-foreground">
-                  {t("design.awaitingReview")}
-                </div>
-              ) : null}
-            </div>
-          )}
+          <ModelIdentity
+            configuration={entry.configuration}
+            name={name}
+            vendor={vendor}
+          >
+            {awaitingPanel ? (
+              <p className="text-xs text-muted-foreground">
+                {t("design.awaitingReview")}
+              </p>
+            ) : null}
+          </ModelIdentity>
           <div className="shrink-0 text-right">
             <div
               className={cn(

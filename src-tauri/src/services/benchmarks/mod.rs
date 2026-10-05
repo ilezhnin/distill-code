@@ -25,6 +25,10 @@ use tokio::sync::{Mutex, Notify, OnceCell};
 use types::*;
 
 const MATRIX_ORDER_ALGORITHM: &str = "sha256-cell-order-v1";
+/// The longest time limit a run may give one turn, in seconds. A time limit
+/// only stops a turn that never ends; it is no part of what a case measures.
+pub const MAX_TIME_LIMIT_SECONDS: u32 =
+    (crate::services::agent_host::router::MAX_OWNED_TURN_MS / 1000) as u32;
 
 /// One evaluation writer per attempt: a judge panel on one rendering never
 /// blocks a review of another.
@@ -292,8 +296,10 @@ impl BenchmarkService {
         {
             issues.push("Select cases and configurations within the explicit execution budget (maximum 1000)".into());
         }
-        if request.timeout_seconds == 0 || request.timeout_seconds > 3600 {
-            issues.push("Run timeout must be between 1 and 3600 seconds".into());
+        if request.timeout_seconds == 0 || request.timeout_seconds > MAX_TIME_LIMIT_SECONDS {
+            issues.push(format!(
+                "Run time limit must be between 1 and {MAX_TIME_LIMIT_SECONDS} seconds"
+            ));
         }
         let mut ids = std::collections::HashSet::new();
         for v in &request.version_ids {

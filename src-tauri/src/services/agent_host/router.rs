@@ -93,6 +93,9 @@ fn terminal_error_kind(reason: &str) -> &'static str {
 
 /// What marks a bridge route as a host-owned benchmark bridge.
 const BENCHMARK_ROUTE: &str = "\u{1f}benchmark:";
+/// The longest an owned (benchmark) turn may run. It only stops a turn that
+/// never ends; models on the highest efforts can work for hours.
+pub const MAX_OWNED_TURN_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// The host-owned benchmark bridge a session is opened on: its profile's
 /// route key, its provider, and the longest turn the session may run, which a
@@ -5958,7 +5961,7 @@ impl Inner {
                 .sum::<usize>()
                 > 6 * 1024 * 1024
             || request.timeout_ms == 0
-            || request.timeout_ms > 3_600_000
+            || request.timeout_ms > MAX_OWNED_TURN_MS
         {
             return Err("validation: invalid dispatch key, prompt size or time limit".into());
         }
