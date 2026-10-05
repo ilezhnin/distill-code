@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconCheck, IconX } from "@tabler/icons-react";
-import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
 import { benchmarkApi } from "../api/benchmarks";
 import { formatElapsed, stateLabel } from "../lib/benchmarkLabels";
@@ -18,6 +17,11 @@ export const WORKING = new Set([
 ]);
 /** Run states in which attempts still start or finish. */
 export const ACTIVE_RUN = new Set(["planned", "running", "pausing"]);
+/**
+ * The points from which a finished test reads as passed: an objective check
+ * scores all or nothing, a judged design anywhere between.
+ */
+const PASS_POINTS = 500;
 /** Run states after which no attempt starts. */
 export const FINISHED_RUN = new Set(["completed", "cancelled"]);
 
@@ -141,32 +145,30 @@ export function TestStatusMark({
           <Spinner decorative className="size-4" />
         </span>
       );
-    case "scored":
+    case "scored": {
+      // Every result reads the same: its points on the boards' 0 to 1000
+      // scale, then a check or a cross where the spinner was.
+      const points = Math.round(status.score * 1000);
       return (
         <span className="flex shrink-0 items-center gap-2">
           {time(status.durationMs)}
-          {status.score >= 1 ? (
+          <span className="w-[4ch] text-right text-sm tabular-nums">
+            {points}
+          </span>
+          {points >= PASS_POINTS ? (
             <IconCheck
               aria-label={t("states.pass")}
               className="size-4 text-success"
             />
-          ) : status.score <= 0 ? (
+          ) : (
             <IconX
               aria-label={t("states.fail")}
               className="size-4 text-destructive"
             />
-          ) : (
-            <span
-              className={cn(
-                "text-sm font-medium tabular-nums",
-                status.score >= 0.5 ? "text-success" : "text-destructive",
-              )}
-            >
-              {Math.round(status.score * 1000)}
-            </span>
           )}
         </span>
       );
+    }
     case "unscored":
       return (
         <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">

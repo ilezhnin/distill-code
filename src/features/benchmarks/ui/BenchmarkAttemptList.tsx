@@ -20,6 +20,7 @@ import {
   workClassLabel,
 } from "../lib/benchmarkLabels";
 import type { BenchmarkVersion, ResultQuery } from "../types";
+import { TestStatusMark } from "./BenchmarkTestStatus";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -37,8 +38,10 @@ function keepsEvery(previous: string[] | null, next: string[] | null) {
 }
 
 /**
- * Paged attempt rows for one query: case, the model that answered, outcome,
- * duration, tokens, cost, evidence. `resetKey` names what the reader chose to
+ * Paged attempt rows for one query: case, outcome, duration, tokens, cost,
+ * evidence; with `showModel`, a listing of several models also names the
+ * model asked and the one that answered. A scored outcome reads as points out
+ * of 1000 with a check or a cross, as in the run views. `resetKey` names what the reader chose to
  * list; a new choice or filter starts on the first page, the same choice keeps
  * its page while its attempts change. Without a key, an attempt set that only
  * grows keeps it.
@@ -97,8 +100,12 @@ export function BenchmarkAttemptList({
           <TableHeader>
             <TableRow>
               <TableHead>{t("fields.case")}</TableHead>
-              {showModel ? <TableHead>{t("fields.model")}</TableHead> : null}
-              <TableHead>{t("fields.resolvedModel")}</TableHead>
+              {showModel ? (
+                <>
+                  <TableHead>{t("fields.model")}</TableHead>
+                  <TableHead>{t("fields.resolvedModel")}</TableHead>
+                </>
+              ) : null}
               <TableHead>{t("fields.status")}</TableHead>
               <TableHead className="text-right">
                 {t("fields.durationShort")}
@@ -134,12 +141,27 @@ export function BenchmarkAttemptList({
                         .join(" · ")}
                     </p>
                   </TableCell>
-                  {showModel ? <TableCell>{row.modelId}</TableCell> : null}
-                  <TableCell className="text-muted-foreground">
-                    {row.resolvedModel ?? t("unknown")}
-                  </TableCell>
+                  {showModel ? (
+                    <>
+                      <TableCell>{row.modelId}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {row.resolvedModel ?? t("unknown")}
+                      </TableCell>
+                    </>
+                  ) : null}
                   <TableCell>
-                    <StateBadge state={row.outcome ?? row.phase} />
+                    {row.score != null ? (
+                      <TestStatusMark
+                        status={{
+                          kind: "scored",
+                          score: row.score,
+                          durationMs: null,
+                        }}
+                        now={0}
+                      />
+                    ) : (
+                      <StateBadge state={row.outcome ?? row.phase} />
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatSeconds(t, row.durationMs)}

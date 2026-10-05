@@ -193,7 +193,18 @@ impl BenchmarkService {
             .iter()
             .flat_map(|d| d.versions.clone())
             .collect();
-        let runs = self.store.all_runs().await?;
+        let mut runs = self.store.all_runs().await?;
+        // A cost the provider left out is its tokens at the list prices of the
+        // day, so every board and the model page price every provider alike.
+        let catalog = self.store.catalog_entries().await?;
+        for attempt in runs.iter_mut().flat_map(|run| run.attempts.iter_mut()) {
+            attempt.usage.cost = model_catalog::attempt_cost(
+                &catalog,
+                &attempt.configuration,
+                &attempt.usage,
+                attempt.finished_at.or(attempt.started_at),
+            );
+        }
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
         // Every analysis reads this data, so a measurement of an unknown
         // effort is left out of all of them alike, and an attempt its event

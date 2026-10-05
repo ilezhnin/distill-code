@@ -251,7 +251,9 @@ impl Store {
                 json_extract(a.data_json,'$.usage.cost'),
                 COALESCE(json_extract(a.data_json,'$.evaluations'),'[]'),
                 json_extract(a.data_json,'$.startedAt'),
-                json_extract(a.data_json,'$.resolvedModel')
+                json_extract(a.data_json,'$.resolvedModel'),
+                json_extract(a.data_json,'$.configuration'),
+                json_extract(a.data_json,'$.usage')
              FROM selected p JOIN attempts a ON a.rowid=p.attempt_rowid
              ORDER BY p.created_at DESC,p.run_id,p.attempt_rowid",
         )
@@ -265,11 +267,25 @@ impl Store {
         .bind(q.offset.unwrap_or(0))
         .fetch_all(&self.pool)
         .await?;
+        let catalog = self.catalog_entries().await?;
         Ok(rows
             .into_iter()
             .map(|r| {
                 let finished_at: Option<i64> = r.get(7);
                 let started_at: Option<i64> = r.get(12);
+                // An unreported cost is priced from the catalog (see `model_catalog`).
+                let cost = r.get::<Option<f64>, _>(10).or_else(|| {
+                    let configuration: Configuration =
+                        serde_json::from_str(r.get::<Option<&str>, _>(14)?).ok()?;
+                    let usage: TokenUsage =
+                        serde_json::from_str(r.get::<Option<&str>, _>(15)?).ok()?;
+                    super::model_catalog::attempt_cost(
+                        &catalog,
+                        &configuration,
+                        &usage,
+                        finished_at.or(started_at),
+                    )
+                });
                 let outcome: Option<&str> = r.get(5);
                 let evaluations = serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
                     .unwrap_or_default();
@@ -291,7 +307,7 @@ impl Store {
                     finished_at,
                     duration_ms: r.get(8),
                     output_tokens: r.get(9),
-                    cost: r.get(10),
+                    cost,
                     resolved_model: r.get(13),
                 };
                 if let Some(at) = q.as_of.filter(|at| finished_at.is_none_or(|end| end > *at)) {
@@ -315,6 +331,7 @@ impl Store {
     /// The newest rendering per creative brief and configuration, newest
     /// run first, with the markup and any recorded review.
     pub async fn list_designs(&self, q: &ResultQuery) -> Result<Vec<DesignEntry>> {
+        let catalog = self.catalog_entries().await?;
         let versions = q
             .version_ids
             .as_ref()
@@ -439,7 +456,12 @@ impl Store {
                 duration_ms: attempt.duration_ms,
                 output_tokens: attempt.usage.output,
                 // The candidate's own generation; judge calls are the benchmark's expense.
-                cost: attempt.usage.cost,
+                cost: super::model_catalog::attempt_cost(
+                    &catalog,
+                    &attempt.configuration,
+                    &attempt.usage,
+                    attempt.finished_at.or(attempt.started_at),
+                ),
                 review,
                 judges,
                 score,
@@ -1529,6 +1551,28 @@ mod tests {
             store.attempt("attempt-0").await.unwrap().output.as_deref(),
             Some(output.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn a_listed_attempt_without_a_reported_cost_is_priced_from_the_catalog() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let config = json!({"id":"c","providerId":"kimi-acp","accountId":null,"modelId":"kimi-code/k3","effort":"low","fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1","modelName":"Kimi K3"});
+        let req = json!({"requestKey":"priced","versionIds":[version.id],"configurations":[config],"repetitions":1,"timeoutSeconds":30,"maxExecutions":3});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','priced','completed',1,0,0,?)").bind(req.to_string()).execute(&store.pool).await.unwrap();
+        // The shipped Moonshot seed prices K3 at $3 in and $15 out per million.
+        let finished = 1_800_000_000_000i64;
+        for (id, cost) in [("unpriced", Value::Null), ("reported", json!(0.42))] {
+            let a = json!({"id":id,"runId":"run","versionId":version.id,"configuration":config,"repetition":0,"phase":"terminal","outcome":"pass","startedAt":finished - 10,"finishedAt":finished,"durationMs":10,"usage":{"input":1_000_000,"output":100_000,"cacheRead":0,"cacheWrite":0,"cost":cost,"schema":"provider_turn_usage_v1"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,?,0,'terminal',?)").bind(id).bind(&version.id).bind(id).bind(a.to_string()).execute(&store.pool).await.unwrap();
+        }
+        let listed = store.list_attempts(&ResultQuery::default()).await.unwrap();
+        let cost = |id: &str| listed.iter().find(|a| a.id == id).unwrap().cost;
+        assert!((cost("unpriced").unwrap() - 4.5).abs() < 1e-9);
+        assert_eq!(cost("reported"), Some(0.42));
     }
 
     #[tokio::test]

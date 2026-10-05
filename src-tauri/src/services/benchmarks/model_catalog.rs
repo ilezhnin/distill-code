@@ -2,7 +2,7 @@
 //! overrides. Measurements never store these; a report resolves the entry that
 //! applied when the measurement was taken, so a later price change adds an
 //! entry instead of rewriting history.
-use super::types::CatalogEntry;
+use super::types::{CatalogEntry, Configuration, TokenUsage};
 
 pub const ANTHROPIC_PRICING: &str = "https://platform.claude.com/docs/en/about-claude/pricing";
 pub const ANTHROPIC_MODELS: &str = "https://platform.claude.com/docs/en/models/overview";
@@ -15,6 +15,68 @@ pub const MOONSHOT_PRICING: &str = "https://platform.kimi.ai/docs/pricing/chat";
 const SEED_CHECKED_AT: i64 = 1_790_942_400_000;
 /// 2026-10-03T12:00:00Z: the day the OpenAI, xAI and Moonshot sources were read.
 const VENDOR_SEEDS_CHECKED_AT: i64 = 1_791_028_800_000;
+
+/// The model entry that applied to `configuration` at `at`, as
+/// `lib/modelCatalog.ts` resolves it: an entry of its provider or of none,
+/// whose needle is in the model's name or id, with the latest effective date
+/// not after `at`. A price recorded afterwards is no evidence about a run.
+pub fn resolve<'a>(
+    entries: &'a [CatalogEntry],
+    configuration: &Configuration,
+    at: i64,
+) -> Option<&'a CatalogEntry> {
+    let haystack = format!(
+        "{} {}",
+        configuration.model_name.as_deref().unwrap_or(""),
+        configuration.model_id
+    )
+    .to_lowercase();
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == "model"
+                && entry
+                    .provider_id
+                    .as_deref()
+                    .is_none_or(|provider| provider == configuration.provider_id)
+                && haystack.contains(&entry.needle.to_lowercase())
+                && entry.effective_from <= at
+        })
+        .max_by_key(|entry| (entry.effective_from, entry.created_at))
+}
+
+/// What `usage` costs at `entry`'s list prices, in USD: uncached input,
+/// output, cache reads and cache writes, each at its price per million tokens.
+/// Input counts the uncached prompt and output includes reasoning, as the
+/// host records a turn's usage. Unknown without both counts, or when tokens
+/// of a kind have no price.
+pub fn list_cost(entry: &CatalogEntry, usage: &TokenUsage) -> Option<f64> {
+    let part = |tokens: Option<u64>, price: Option<f64>| match tokens {
+        None | Some(0) => Some(0.0),
+        Some(count) => price.map(|per_million| count as f64 * per_million / 1_000_000.0),
+    };
+    usage.input?;
+    usage.output?;
+    Some(
+        part(usage.input, entry.input_per_million)?
+            + part(usage.output, entry.output_per_million)?
+            + part(usage.cache_read, entry.cache_read_per_million)?
+            + part(usage.cache_write, entry.cache_write_per_million)?,
+    )
+}
+
+/// An attempt's cost as every report reads it: what the provider reported,
+/// else its tokens at the list prices that applied when it ran (`at`).
+pub fn attempt_cost(
+    entries: &[CatalogEntry],
+    configuration: &Configuration,
+    usage: &TokenUsage,
+    at: Option<i64>,
+) -> Option<f64> {
+    usage
+        .cost
+        .or_else(|| list_cost(resolve(entries, configuration, at?)?, usage))
+}
 
 /// The seed sets in the order they shipped, by id. A store adds each set once.
 pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
@@ -387,5 +449,91 @@ mod tests {
         broken.output_per_million = Some(1.0);
         broken.needle = " ".into();
         assert!(validate(&broken).is_err());
+    }
+
+    fn kimi(at: i64, input: f64) -> CatalogEntry {
+        CatalogEntry {
+            id: format!("kimi-{at}"),
+            kind: "model".into(),
+            provider_id: Some("kimi-acp".into()),
+            needle: "kimi-code/k3".into(),
+            display_name: None,
+            vendor: None,
+            input_per_million: Some(input),
+            output_per_million: Some(15.0),
+            cache_read_per_million: Some(0.3),
+            cache_write_per_million: None,
+            context_tokens: None,
+            effective_from: at,
+            checked_at: at,
+            source: "https://example.test".into(),
+            created_at: at,
+        }
+    }
+
+    fn k3() -> Configuration {
+        Configuration {
+            id: "k3".into(),
+            provider_id: "kimi-acp".into(),
+            account_id: None,
+            model_id: "kimi-code/k3".into(),
+            effort: Some("low".into()),
+            fast_mode: None,
+            billing_mode: "subscription".into(),
+            execution_profile: "native_text".into(),
+            inventory_revision: None,
+            model_name: Some("Kimi K3".into()),
+        }
+    }
+
+    fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> TokenUsage {
+        TokenUsage {
+            input: Some(input),
+            output: Some(output),
+            cache_read: Some(cache_read),
+            cache_write: Some(cache_write),
+            reasoning: None,
+            cost: None,
+            schema: "provider_turn_usage_v1".into(),
+        }
+    }
+
+    #[test]
+    fn an_unreported_cost_is_the_tokens_at_the_prices_of_the_day() {
+        let entries = [kimi(100, 3.0), kimi(200, 4.0)];
+        let configuration = k3();
+        // 1,000,000 input at $3, 100,000 output at $15, 10,000 cached at $0.30.
+        let spent = usage(1_000_000, 100_000, 10_000, 0);
+        let cost = attempt_cost(&entries, &configuration, &spent, Some(150)).unwrap();
+        assert!((cost - (3.0 + 1.5 + 0.003)).abs() < 1e-9, "{cost}");
+        // A later price applies only from its own date on.
+        let later = attempt_cost(&entries, &configuration, &spent, Some(250)).unwrap();
+        assert!((later - (4.0 + 1.5 + 0.003)).abs() < 1e-9, "{later}");
+        // Before any price, after a price-less kind or without counts: unknown.
+        assert_eq!(
+            attempt_cost(&entries, &configuration, &spent, Some(50)),
+            None
+        );
+        assert_eq!(attempt_cost(&entries, &configuration, &spent, None), None);
+        assert_eq!(
+            attempt_cost(&entries, &configuration, &usage(1, 1, 0, 5), Some(150)),
+            None
+        );
+        let mut silent = spent.clone();
+        silent.output = None;
+        assert_eq!(
+            attempt_cost(&entries, &configuration, &silent, Some(150)),
+            None
+        );
+        // A reported cost stands; another provider's entry never prices it.
+        let mut reported = spent.clone();
+        reported.cost = Some(0.42);
+        assert_eq!(
+            attempt_cost(&entries, &configuration, &reported, Some(150)),
+            Some(0.42)
+        );
+        let mut other = configuration.clone();
+        other.provider_id = "grok-acp".into();
+        assert_eq!(attempt_cost(&entries, &other, &spent, Some(150)), None);
     }
 }

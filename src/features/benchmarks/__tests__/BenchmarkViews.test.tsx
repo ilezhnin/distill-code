@@ -492,7 +492,7 @@ describe("benchmark authoring and saved evidence", () => {
       limit: 50,
     });
   });
-  it("names the model an alias resolved to on its page and in its attempts", async () => {
+  it("names the model an alias resolved to on its page, not on every attempt", async () => {
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
       {
@@ -523,20 +523,13 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByText(label, { selector: "dt" }).nextElementSibling;
     expect(spec("Resolved model")).toHaveTextContent("claude-sonnet-5");
     expect(spec("API model ID")).toHaveTextContent("sonnet");
-    const header = await screen.findByRole("columnheader", {
-      name: "Resolved model",
-    });
-    const column = Array.from(header.parentElement?.children ?? []).indexOf(
-      header,
-    );
-    const cells = screen
-      .getAllByRole("row")
-      .slice(1)
-      .map((row) => within(row).getAllByRole("cell")[column]);
-    expect(cells.map((cell) => cell.textContent)).toEqual([
-      "claude-sonnet-5",
-      "Not reported",
-    ]);
+    // Every attempt on the page ran this one model, so no column repeats it.
+    expect(
+      await screen.findByRole("columnheader", { name: "Status" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Resolved model" }),
+    ).not.toBeInTheDocument();
     cleanup();
     // A row recorded before attempts kept the model names none.
     wrap(page({ ...sonnet, resolvedModels: undefined }));

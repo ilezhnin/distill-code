@@ -247,8 +247,12 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
   const stop = await screen.findByRole("button", { name: "Stop" });
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
+  // Every result in one form: points out of 1000, then a check or a cross.
   expect(row("Alpha").getByLabelText("Pass")).toBeInTheDocument();
+  expect(row("Alpha").getByText("1000")).toBeInTheDocument();
   expect(row("Bravo").getByText("650")).toBeInTheDocument();
+  expect(row("Bravo").getByLabelText("Pass")).toBeInTheDocument();
+  expect(row("Charlie").getByText("0")).toBeInTheDocument();
   expect(row("Charlie").getByLabelText("Fail")).toBeInTheDocument();
   expect(row("Echo").getByLabelText("Running")).toBeInTheDocument();
   expect(row("Hotel").getByText("Queued")).toBeInTheDocument();
