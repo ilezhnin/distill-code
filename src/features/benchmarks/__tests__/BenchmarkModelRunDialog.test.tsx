@@ -427,7 +427,7 @@ it("lists the tests in the order the run takes them and times the one running no
   expect(row("Alpha").getByText("Queued")).toBeInTheDocument();
 });
 
-it("leaves the tests the model already has a score on unchecked, showing that score", async () => {
+it("leaves the tests the model passed unchecked and checks the failed ones, showing each score", async () => {
   const user = userEvent.setup();
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
     { ...summary("version-1", "terminal", "pass", 1), id: "s-1" },
@@ -441,11 +441,10 @@ it("leaves the tests the model already has a score on unchecked, showing that sc
   });
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
-  // A passed and a failed test both have their measurement; the rest are due.
-  expect(await screen.findByText("4 of 6 selected")).toBeInTheDocument();
+  // The passed test is done; the failed one runs again with the unmeasured.
+  expect(await screen.findByText("5 of 6 selected")).toBeInTheDocument();
   expect(row("Alpha").getByRole("checkbox")).not.toBeChecked();
-  expect(row("Charlie").getByRole("checkbox")).not.toBeChecked();
-  for (const name of ["Bravo", "Delta", "Echo", "Hotel"])
+  for (const name of ["Bravo", "Charlie", "Delta", "Echo", "Hotel"])
     expect(row(name).getByRole("checkbox")).toBeChecked();
   expect(await row("Alpha").findByLabelText("Pass")).toBeInTheDocument();
   expect(row("Charlie").getByLabelText("Fail")).toBeInTheDocument();
@@ -453,9 +452,10 @@ it("leaves the tests the model already has a score on unchecked, showing that sc
     attemptIds: ["s-1", "s-3"],
     limit: 100,
   });
-  // Measuring again stays one click away.
+  // Measuring a passed test again stays one click away.
   await user.click(row("Alpha").getByRole("checkbox"));
-  expect(screen.getByText("5 of 6 selected")).toBeInTheDocument();
+  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
+  await user.click(row("Alpha").getByRole("checkbox"));
   await user.click(screen.getByText("All tests"));
   expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
 });

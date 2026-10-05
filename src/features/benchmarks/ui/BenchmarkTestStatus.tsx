@@ -22,6 +22,11 @@ export const ACTIVE_RUN = new Set(["planned", "running", "pausing"]);
  * scores all or nothing, a judged design anywhere between.
  */
 const PASS_POINTS = 500;
+
+/** Whether a score reads as passed, its check rather than its cross. */
+export function passed(score: number): boolean {
+  return Math.round(score * 1000) >= PASS_POINTS;
+}
 /** Run states after which no attempt starts. */
 export const FINISHED_RUN = new Set(["completed", "cancelled"]);
 

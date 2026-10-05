@@ -37,6 +37,7 @@ import {
   ACTIVE_RUN,
   FINISHED_RUN,
   listByIds,
+  passed,
   TestStatusMark,
   testStatus,
   useNow,
@@ -58,8 +59,8 @@ function sameConfiguration(a: Configuration, b: Configuration): boolean {
 
 /**
  * Runs one leaderboard model on the current tests. The model is the one the
- * page shows; every test it can be measured on and has no score on yet starts
- * checked, so a run asks only for what is missing. The list is in
+ * page shows; every test it can be measured on and has not passed yet starts
+ * checked, so a run asks for what failed or is missing. The list is in
  * the order the run takes the tests, and each row follows its test from
  * queued to running, with its elapsed time, to passed or failed.
  */
@@ -99,12 +100,7 @@ export function BenchmarkModelRunDialog({
       authored: current.filter(wrote),
     };
   }, [definitions, configuration]);
-  // A test the model already has a score on starts unchecked; a click
-  // overrides that until a run finishes.
-  const measured = useMemo(
-    () => new Set(row.scoredVersionIds),
-    [row.scoredVersionIds],
-  );
+  // A click overrides a test's default until a run finishes.
   const [overrides, setOverrides] = useState<Map<string, boolean>>(
     () => new Map(),
   );
@@ -216,6 +212,19 @@ export function BenchmarkModelRunDialog({
       ]),
     );
   }, [standingAttempts.data]);
+  // A test the model already passed starts unchecked; a failed, unscored or
+  // never measured one starts checked. Until the results arrive nothing starts.
+  const done = useMemo(
+    () =>
+      new Set(
+        [...standing]
+          .filter(([, score]) => passed(score))
+          .map(([versionId]) => versionId),
+      ),
+    [standing],
+  );
+  const resolvingStanding =
+    row.attemptIds.length > 0 && standingAttempts.isPending;
   const scores = useMemo(
     () =>
       new Map(
@@ -237,7 +246,7 @@ export function BenchmarkModelRunDialog({
   const isChecked = (versionId: string) =>
     following
       ? inRunIds.has(versionId)
-      : (overrides.get(versionId) ?? !measured.has(versionId));
+      : (overrides.get(versionId) ?? !done.has(versionId));
   const chosen = eligible.filter((version) => isChecked(version.id));
   // A finished run measured its tests: the next one starts from what is
   // still missing, as the refreshed leaderboard row names it.
@@ -470,7 +479,9 @@ export function BenchmarkModelRunDialog({
             <Button
               type="button"
               variant="primary"
-              disabled={busy || !pinned || chosen.length === 0}
+              disabled={
+                busy || !pinned || resolvingStanding || chosen.length === 0
+              }
               onClick={() => void start()}
             >
               {t("modelRun.start")}
