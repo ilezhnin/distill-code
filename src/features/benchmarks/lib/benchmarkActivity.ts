@@ -3,12 +3,19 @@
 import type { Configuration, LeaderboardRow, RunSummary } from "../types";
 import { requests } from "./benchmarkCatchUp";
 
-/** Runs that dispatch now, or stopped on their own and wait for the operator. */
-const ACTIVE_RUN_STATES = new Set(["running", "pausing", "needs_attention"]);
-
+/** Runs that dispatch now. */
 export function activeRuns(runs: RunSummary[]): RunSummary[] {
   return runs.filter(
-    (run) => !run.request.preview && ACTIVE_RUN_STATES.has(run.state),
+    (run) =>
+      !run.request.preview &&
+      (run.state === "running" || run.state === "pausing"),
+  );
+}
+
+/** Runs that stopped on their own and wait for the operator. */
+export function stalledRuns(runs: RunSummary[]): RunSummary[] {
+  return runs.filter(
+    (run) => !run.request.preview && run.state === "needs_attention",
   );
 }
 

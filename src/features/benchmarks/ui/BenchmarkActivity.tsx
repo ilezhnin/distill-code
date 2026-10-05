@@ -1,4 +1,6 @@
 import { useTranslation } from "react-i18next";
+import { useLocaleFormatting } from "@/shared/i18n";
+import { Button } from "@/shared/ui/button";
 import { Progress } from "@/shared/ui/progress";
 import { Spinner } from "@/shared/ui/spinner";
 import { modelNameKey, useModelNames } from "../hooks/useBenchmarks";
@@ -6,12 +8,16 @@ import {
   activeRuns,
   runProgress,
   runningConfigurations,
+  stalledRuns,
 } from "../lib/benchmarkActivity";
 import { modelDisplayName } from "../lib/benchmarkLabels";
 import type { RunSummary } from "../types";
 import { StateBadge } from "./BenchmarkPrimitives";
 
-/** Runs with work left: their progress, the models running now, and a way in. */
+/**
+ * Runs that dispatch, each with its progress and the models running now, and
+ * one line of runs that wait for the operator. Each opens its run.
+ */
 export function BenchmarkActivity({
   runs,
   onOpenRun,
@@ -20,9 +26,11 @@ export function BenchmarkActivity({
   onOpenRun: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   const names = useModelNames();
   const active = activeRuns(runs);
-  if (active.length === 0) return null;
+  const stalled = stalledRuns(runs);
+  if (active.length === 0 && stalled.length === 0) return null;
   return (
     <section aria-label={t("activity.title")} className="flex flex-col gap-2">
       {active.map((run) => {
@@ -63,6 +71,31 @@ export function BenchmarkActivity({
           </button>
         );
       })}
+      {stalled.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <StateBadge state="needs_attention" />
+          {stalled.map((run) => (
+            <Button
+              key={run.id}
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="tabular-nums"
+              onClick={() => onOpenRun(run.id)}
+            >
+              {formatDate(run.createdAt, {
+                dateStyle: "short",
+                timeStyle: "short",
+              })}
+              {" · "}
+              {t("activity.progress", {
+                settled: run.settledCount,
+                total: run.attemptCount,
+              })}
+            </Button>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

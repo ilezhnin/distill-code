@@ -4,6 +4,7 @@ import {
   rowActivity,
   runProgress,
   runningConfigurations,
+  stalledRuns,
 } from "../lib/benchmarkActivity";
 import type { RunSummary } from "../types";
 import { configuration, leaderboardRow, runSummary } from "./fixtures";
@@ -31,7 +32,7 @@ function summary(overrides: Partial<RunSummary>): RunSummary {
 }
 
 describe("benchmark activity", () => {
-  it("shows runs that dispatch or wait for the operator, never previews", () => {
+  it("tells runs that dispatch from runs that wait, never previews", () => {
     const runs = [
       summary({ id: "running" }),
       summary({ id: "attention", state: "needs_attention" }),
@@ -42,10 +43,8 @@ describe("benchmark activity", () => {
         request: { ...summary({}).request, preview: true },
       }),
     ];
-    expect(activeRuns(runs).map((run) => run.id)).toEqual([
-      "running",
-      "attention",
-    ]);
+    expect(activeRuns(runs).map((run) => run.id)).toEqual(["running"]);
+    expect(stalledRuns(runs).map((run) => run.id)).toEqual(["attention"]);
   });
 
   it("sums attempts and names the models running now", () => {

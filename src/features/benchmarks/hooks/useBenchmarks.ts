@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
-import { runProgress } from "../lib/benchmarkActivity";
+import { activeRuns, runProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
@@ -110,9 +110,7 @@ export function useBenchmarkProgress() {
     enabled: isDesktopRuntime(),
   });
   return useMemo(() => {
-    const dispatching = (runs.data ?? []).filter(
-      (run) => run.state === "running" || run.state === "pausing",
-    );
+    const dispatching = activeRuns(runs.data ?? []);
     return dispatching.length > 0 ? runProgress(dispatching) : null;
   }, [runs.data]);
 }
