@@ -1,6 +1,6 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconChevronLeft, IconPlayerPlay } from "@tabler/icons-react";
+import { IconPlayerPlay } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
@@ -41,7 +41,6 @@ import type {
 } from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import {
-  BenchmarkToolbar,
   BoardIcon,
   ScoreBar,
   SectionHeading,
@@ -92,8 +91,6 @@ export function BenchmarkConfigurationPage({
   onEvidence,
   onRun,
   onOpenRun,
-  onBack,
-  actions,
 }: {
   row: LeaderboardRow;
   report: LeaderboardReport;
@@ -104,9 +101,6 @@ export function BenchmarkConfigurationPage({
   onRun: (activeRunId: string | null) => void;
   /** Opens an unfinished run that already covers some of the gaps. */
   onOpenRun: (runId: string) => void;
-  onBack: () => void;
-  /** The page actions, on the right of the back row. */
-  actions?: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -264,17 +258,6 @@ export function BenchmarkConfigurationPage({
   ];
   return (
     <div className="space-y-8">
-      <BenchmarkToolbar actions={actions}>
-        <Button
-          type="button"
-          variant="ghost"
-          flush
-          leftIcon={<IconChevronLeft />}
-          onClick={onBack}
-        >
-          {t("configuration.back")}
-        </Button>
-      </BenchmarkToolbar>
       <header className="flex flex-wrap items-start justify-between gap-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex size-12 shrink-0 items-center justify-center rounded-md bg-muted">

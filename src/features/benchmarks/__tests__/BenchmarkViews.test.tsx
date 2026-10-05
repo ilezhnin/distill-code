@@ -340,11 +340,18 @@ describe("benchmark authoring and saved evidence", () => {
     // A failure banner sits above the row, never beside the actions.
     expect(toolbar).not.toContainElement(await screen.findByRole("alert"));
     rerender(view({ section: "leaderboard", configurationId: rowKey(row) }));
-    const back = await screen.findByRole("button", { name: "Leaderboard" });
-    expect(screen.getByTestId("benchmark-toolbar")).toContainElement(back);
-    expect(screen.getByTestId("benchmark-toolbar")).toContainElement(
-      screen.getByRole("button", { name: "Run tests" }),
-    );
+    // A model page carries only its own controls: the sidebar and the top
+    // bar lead back, and the page actions belong to the sections.
+    expect(
+      await screen.findByRole("button", { name: "Run" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Leaderboard" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Run tests" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("benchmark-toolbar")).not.toBeInTheDocument();
   });
   it("opens a section switched to from outside the page on its first page", async () => {
     const rows = Array.from({ length: 55 }, (_, index) =>
@@ -461,7 +468,6 @@ describe("benchmark authoring and saved evidence", () => {
         onEvidence={inspect}
         onRun={catchUp}
         onOpenRun={vi.fn()}
-        onBack={vi.fn()}
       />,
     );
     expect(
@@ -510,7 +516,6 @@ describe("benchmark authoring and saved evidence", () => {
         onEvidence={vi.fn()}
         onRun={vi.fn()}
         onOpenRun={vi.fn()}
-        onBack={vi.fn()}
       />
     );
     wrap(page(sonnet));
@@ -560,7 +565,6 @@ describe("benchmark authoring and saved evidence", () => {
         onEvidence={vi.fn()}
         onRun={openDialog}
         onOpenRun={openRun}
-        onBack={vi.fn()}
       />
     );
     const { rerender } = wrap(page([paused, runSummary]));
@@ -1377,7 +1381,6 @@ describe("configuration history", () => {
         onEvidence={vi.fn()}
         onRun={catchUp}
         onOpenRun={vi.fn()}
-        onBack={vi.fn()}
       />,
     );
     const rating = () =>
@@ -1465,7 +1468,6 @@ describe("configuration history", () => {
         onEvidence={vi.fn()}
         onRun={vi.fn()}
         onOpenRun={vi.fn()}
-        onBack={vi.fn()}
       />,
     );
     expect(
@@ -1506,7 +1508,6 @@ describe("configuration history", () => {
           onEvidence={vi.fn()}
           onRun={vi.fn()}
           onOpenRun={vi.fn()}
-          onBack={vi.fn()}
         />
       </QueryClientProvider>,
     );
@@ -1600,7 +1601,6 @@ describe("post-run evaluation history", () => {
         onEvidence={vi.fn()}
         onRun={vi.fn()}
         onOpenRun={vi.fn()}
-        onBack={vi.fn()}
       />,
     );
     expect(

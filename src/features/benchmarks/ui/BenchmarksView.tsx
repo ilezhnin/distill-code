@@ -51,7 +51,6 @@ import { DesignBenchView } from "./DesignBenchView";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
-  BenchmarkToolbar,
   type Option,
 } from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
@@ -341,29 +340,22 @@ export function BenchmarksView({
                 )
               }
               onOpenRun={openRun}
-              onBack={() => onNavigate({ section: "leaderboard" })}
-              actions={actions}
             />
+          ) : leaderboard.isPending ? (
+            <BenchmarkEmpty title={t("loading")} compact />
           ) : (
-            <>
-              <BenchmarkToolbar actions={actions} />
-              {leaderboard.isPending ? (
-                <BenchmarkEmpty title={t("loading")} compact />
-              ) : (
-                <BenchmarkEmpty
-                  title={t("configuration.missing")}
-                  action={
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={() => onNavigate({ section: "leaderboard" })}
-                    >
-                      {t("configuration.back")}
-                    </Button>
-                  }
-                />
-              )}
-            </>
+            <BenchmarkEmpty
+              title={t("configuration.missing")}
+              action={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => onNavigate({ section: "leaderboard" })}
+                >
+                  {t("configuration.back")}
+                </Button>
+              }
+            />
           )
         ) : null}
         {location.section === "design" ? (
