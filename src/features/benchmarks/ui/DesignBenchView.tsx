@@ -9,7 +9,7 @@ import {
 } from "../hooks/useBenchmarks";
 import {
   formatElapsed,
-  formatUsd,
+  formatSpend,
   modelDisplayName,
   providerVendor,
 } from "../lib/benchmarkLabels";
@@ -220,7 +220,9 @@ function DesignCard({
             <dt>
               <IconCoin className="size-3.5" aria-label={t("fields.cost")} />
             </dt>
-            <dd className="tabular-nums">{formatUsd(t, entry.cost)}</dd>
+            <dd className="tabular-nums">
+              {formatSpend(t, entry.cost, entry.outputTokens)}
+            </dd>
           </div>
           <div className="flex items-center gap-1">
             <dt>

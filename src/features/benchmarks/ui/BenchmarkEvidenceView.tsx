@@ -39,7 +39,7 @@ import {
 } from "../lib/benchmarkPreview";
 import {
   formatElapsed,
-  formatUsd,
+  formatSpend,
   modelDisplayName,
   shortId,
   stateLabel,
@@ -290,7 +290,7 @@ export function BenchmarkEvidenceView({
                     className="size-4 text-muted-foreground"
                     aria-hidden
                   />
-                  {formatUsd(t, attempt.usage.cost)}
+                  {formatSpend(t, attempt.usage.cost, attempt.usage.output)}
                 </dd>
               </div>
               {attempt.reason ? (

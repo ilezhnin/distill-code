@@ -15,7 +15,7 @@ import { benchmarkKeys } from "../hooks/useBenchmarks";
 import {
   formatSeconds,
   formatTokens,
-  formatUsd,
+  formatSpend,
   shortId,
   workClassLabel,
 } from "../lib/benchmarkLabels";
@@ -170,7 +170,7 @@ export function BenchmarkAttemptList({
                     {formatTokens(t, row.outputTokens)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatUsd(t, row.cost)}
+                    {formatSpend(t, row.cost, row.outputTokens)}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button

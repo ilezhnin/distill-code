@@ -2,6 +2,7 @@
   "title": "Benchmarks",
   "loading": "Loading saved results…",
   "unknown": "Not reported",
+  "noPrice": "No price",
   "all": "All",
   "enabled": "Enabled",
   "disabled": "Disabled",

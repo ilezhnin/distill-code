@@ -131,6 +131,20 @@ export function formatUsd(
   return `$${Number(cost.toPrecision(3)).toString()}`;
 }
 
+/**
+ * An attempt's cost, or why it has none. The service prices every counted
+ * token it has a list price for, so counted tokens without a cost mean the
+ * model has no price; nothing counted means the provider reported nothing.
+ */
+export function formatSpend(
+  t: Translate,
+  cost: number | null | undefined,
+  tokens: number | null | undefined,
+): string {
+  if (cost != null) return formatUsd(t, cost);
+  return tokens != null ? t("noPrice") : t("unknown");
+}
+
 /** Signed percent change, for example +12.3% or −4.0%. */
 export function formatChange(
   t: Translate,

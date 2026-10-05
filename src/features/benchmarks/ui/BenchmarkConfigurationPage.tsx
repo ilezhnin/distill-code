@@ -26,7 +26,7 @@ import {
   boardDescription,
   boardTitle,
   formatTokens,
-  formatUsd,
+  formatSpend,
   modelDisplayName,
   providerVendor,
   shortId,
@@ -250,7 +250,10 @@ export function BenchmarkConfigurationPage({
             timeStyle: "short",
           }),
     ],
-    [t("configuration.spend"), formatUsd(t, shownRow.cost)],
+    [
+      t("configuration.spend"),
+      formatSpend(t, shownRow.cost, shownRow.medianOutputTokens),
+    ],
     [
       t("configuration.outputTokens"),
       formatTokens(t, shownRow.medianOutputTokens),

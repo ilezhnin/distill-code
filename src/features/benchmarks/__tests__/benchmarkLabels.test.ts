@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   accountDisplay,
   formatElapsed,
+  formatSpend,
   modelDisplayName,
   stateLabel,
   stateTone,
@@ -99,5 +100,19 @@ describe("formatElapsed", () => {
     expect(formatElapsed(t, 180_000)).toBe("3 min");
     expect(formatElapsed(t, 4_320_000)).toBe("1 h 12 min");
     expect(formatElapsed(t, 183_600_000)).toBe("2 days 3 h");
+  });
+});
+
+describe("formatSpend", () => {
+  const t = ((key: string) =>
+    ({ unknown: "Not reported", noPrice: "No price" })[key] ??
+    key) as Parameters<typeof formatSpend>[0];
+
+  it("names a missing price apart from a provider that reported nothing", () => {
+    expect(formatSpend(t, 0.0125, 800)).toBe("$0.0125");
+    // Tokens were counted, so only a price is missing.
+    expect(formatSpend(t, null, 800)).toBe("No price");
+    // A refused or failed call counted nothing.
+    expect(formatSpend(t, null, null)).toBe("Not reported");
   });
 });

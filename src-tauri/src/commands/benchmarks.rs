@@ -120,7 +120,17 @@ pub async fn benchmark_cancel_run(app: AppHandle, id: String) -> Result<Benchmar
 }
 #[tauri::command]
 pub async fn benchmark_get_evidence(app: AppHandle, id: String) -> Result<Attempt> {
-    service(&app).await?.store.attempt(&id).await
+    let service = service(&app).await?;
+    let mut attempt = service.store.attempt(&id).await?;
+    // Priced as every report prices it: an unreported cost from the catalog.
+    let catalog = service.store.catalog_entries().await?;
+    attempt.usage.cost = benchmarks::model_catalog::attempt_cost(
+        &catalog,
+        &attempt.configuration,
+        &attempt.usage,
+        attempt.finished_at.or(attempt.started_at),
+    );
+    Ok(attempt)
 }
 #[tauri::command]
 pub async fn benchmark_events_since(
