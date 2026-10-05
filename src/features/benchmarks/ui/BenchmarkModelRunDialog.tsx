@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconCheck, IconX } from "@tabler/icons-react";
@@ -24,6 +24,7 @@ import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
 import {
+  formatElapsed,
   modelDisplayName,
   providerVendor,
   stateLabel,
@@ -31,7 +32,7 @@ import {
 import { plannedTurns } from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
-  AttemptSummary,
+  Attempt,
   BenchmarkDefinition,
   BenchmarkVersion,
   Configuration,
@@ -43,13 +44,15 @@ import { BenchmarkAlert } from "./BenchmarkPrimitives";
 const WORKING = new Set(["preparing", "dispatching", "running", "collecting"]);
 /** Run states in which attempts still start or finish. */
 const ACTIVE_RUN = new Set(["planned", "running", "pausing"]);
+/** Sorts a test the plan does not order after every test it does. */
+const UNORDERED = Number.MAX_SAFE_INTEGER;
 
 type TestStatus =
   | { kind: "queued" }
-  | { kind: "running" }
-  | { kind: "judging" }
-  | { kind: "scored"; score: number }
-  | { kind: "unscored"; outcome: string | null };
+  | { kind: "running"; startedAt: number | null }
+  | { kind: "judging"; startedAt: number | null }
+  | { kind: "scored"; score: number; durationMs: number | null }
+  | { kind: "unscored"; outcome: string | null; durationMs: number | null };
 
 /** Whether an attempt ran on the model, effort and fast mode a row names. */
 function sameConfiguration(a: Configuration, b: Configuration): boolean {
@@ -64,34 +67,51 @@ function sameConfiguration(a: Configuration, b: Configuration): boolean {
 
 /** One test's state across its attempts in the run. */
 function testStatus(
-  attempts: AttemptSummary[],
+  attempts: Attempt[],
+  scores: Map<string, number | null>,
   runActive: boolean,
 ): TestStatus | null {
   if (attempts.length === 0) return null;
-  if (attempts.some((a) => WORKING.has(a.phase))) return { kind: "running" };
-  if (
-    attempts.some(
-      (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
-    )
-  )
-    return { kind: "judging" };
+  const working = attempts.find((a) => WORKING.has(a.phase));
+  if (working) return { kind: "running", startedAt: working.startedAt };
+  const judging = attempts.find(
+    (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
+  );
+  if (judging) return { kind: "judging", startedAt: judging.startedAt };
   if (attempts.some((a) => a.phase === "pending"))
     return runActive
       ? { kind: "queued" }
-      : { kind: "unscored", outcome: "cancelled" };
-  const scores = attempts.flatMap((a) => (a.score == null ? [] : [a.score]));
-  if (scores.length > 0)
+      : { kind: "unscored", outcome: "cancelled", durationMs: null };
+  // The same clock the running row showed: from its start to its finish.
+  const durations = attempts.flatMap((a) =>
+    a.startedAt != null && a.finishedAt != null
+      ? [a.finishedAt - a.startedAt]
+      : a.durationMs == null
+        ? []
+        : [a.durationMs],
+  );
+  const durationMs =
+    durations.length > 0
+      ? durations.reduce((sum, value) => sum + value, 0) / durations.length
+      : null;
+  const values = attempts.flatMap((a) => {
+    const score = scores.get(a.id);
+    return score == null ? [] : [score];
+  });
+  if (values.length > 0)
     return {
       kind: "scored",
-      score: scores.reduce((sum, value) => sum + value, 0) / scores.length,
+      score: values.reduce((sum, value) => sum + value, 0) / values.length,
+      durationMs,
     };
-  return { kind: "unscored", outcome: attempts[0].outcome };
+  return { kind: "unscored", outcome: attempts[0].outcome, durationMs };
 }
 
 /**
  * Runs one leaderboard model on the current tests. The model is the one the
- * page shows; every test it can be measured on starts checked, and each row
- * follows its test from queued to passed or failed.
+ * page shows; every test it can be measured on starts checked. The list is in
+ * the order the run takes the tests, and each row follows its test from
+ * queued to running, with its elapsed time, to passed or failed.
  */
 export function BenchmarkModelRunDialog({
   configuration,
@@ -152,72 +172,160 @@ export function BenchmarkModelRunDialog({
     resolution && "configuration" in resolution
       ? resolution.configuration
       : null;
+  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
+  const requestFor = (
+    versions: BenchmarkVersion[],
+    candidate: Configuration,
+  ): RunRequest => ({
+    requestKey,
+    versionIds: versions.map((version) => version.id),
+    configurations: [candidate],
+    repetitions: 1,
+    timeoutSeconds: runTimeLimitSeconds(versions),
+    maxExecutions: Math.max(1, plannedTurns(versions, candidate)),
+    preview: false,
+  });
   const [runId, setRunId] = useState<string | null>(activeRunId);
   const run = useQuery({
     queryKey: [...benchmarkKeys, "run", runId],
     queryFn: () => benchmarkApi.getRun(runId as string),
     enabled: runId != null,
   });
-  const attemptIds = useMemo(
+  // The run's own attempts, in the order it dispatches them.
+  const mine = useMemo(
     () =>
-      (run.data?.attempts ?? [])
-        .filter((attempt) =>
-          sameConfiguration(attempt.configuration, configuration),
-        )
-        .map((attempt) => attempt.id),
+      (run.data?.attempts ?? []).filter((attempt) =>
+        sameConfiguration(attempt.configuration, configuration),
+      ),
     [run.data, configuration],
   );
+  // Followed from the model page, the checks show which tests the run holds.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current || mine.length === 0) return;
+    seeded.current = true;
+    const planned = new Set(mine.map((attempt) => attempt.versionId));
+    setUnchecked(
+      new Set(
+        eligible
+          .filter((version) => !planned.has(version.id))
+          .map((version) => version.id),
+      ),
+    );
+  }, [mine, eligible]);
+  // Before a run, the plan names the order: the request key seeds it, and
+  // leaving a test out never reorders the rest.
+  const plan = useQuery({
+    queryKey: [
+      "benchmark-model-run-order",
+      requestKey,
+      pinned?.id ?? null,
+      eligible.map((version) => version.id),
+    ],
+    queryFn: () =>
+      benchmarkApi.previewRun(requestFor(eligible, pinned as Configuration)),
+    enabled: pinned != null && eligible.length > 0 && mine.length === 0,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const ordered = useMemo(() => {
+    const sequence =
+      mine.length > 0
+        ? mine.map((attempt) => attempt.versionId)
+        : (plan.data?.executionOrder ?? []);
+    const position = new Map<string, number>();
+    sequence.forEach((id, index) => {
+      if (!position.has(id)) position.set(id, index);
+    });
+    return [...eligible].sort(
+      (a, b) =>
+        (position.get(a.id) ?? UNORDERED) - (position.get(b.id) ?? UNORDERED),
+    );
+  }, [eligible, mine, plan.data]);
   // Summaries carry each attempt's score; a listing returns at most 100.
+  const attemptIds = useMemo(() => mine.map((attempt) => attempt.id), [mine]);
   const summaries = useQuery({
     queryKey: [...benchmarkKeys, "run-attempts", runId, attemptIds],
     queryFn: async () => {
-      const pages: AttemptSummary[][] = [];
+      const pages = [];
       for (let start = 0; start < attemptIds.length; start += 100) {
-        const ids = attemptIds.slice(start, start + 100);
         pages.push(
-          await benchmarkApi.listAttempts({ attemptIds: ids, limit: 100 }),
+          await benchmarkApi.listAttempts({
+            attemptIds: attemptIds.slice(start, start + 100),
+            limit: 100,
+          }),
         );
       }
       return pages.flat();
     },
     enabled: attemptIds.length > 0,
   });
+  const scores = useMemo(
+    () =>
+      new Map(
+        (summaries.data ?? []).map((summary) => [
+          summary.id,
+          summary.score ?? null,
+        ]),
+      ),
+    [summaries.data],
+  );
   const runActive = run.data ? ACTIVE_RUN.has(run.data.state) : false;
   const stopping = run.data?.state === "cancelling";
-  const inRun = new Set(
-    (summaries.data ?? []).map((attempt) => attempt.versionId),
-  );
-  const statusOf = (versionId: string) =>
-    testStatus(
-      (summaries.data ?? []).filter(
-        (attempt) => attempt.versionId === versionId,
-      ),
-      runActive,
+  const statuses = useMemo(() => {
+    const byVersion = new Map<string, Attempt[]>();
+    for (const attempt of mine) {
+      byVersion.set(attempt.versionId, [
+        ...(byVersion.get(attempt.versionId) ?? []),
+        attempt,
+      ]);
+    }
+    return new Map(
+      [...byVersion].map(([versionId, attempts]) => [
+        versionId,
+        testStatus(attempts, scores, runActive),
+      ]),
     );
-  const settled = eligible.filter((version) => {
-    const status = statusOf(version.id);
-    return status?.kind === "scored" || status?.kind === "unscored";
-  }).length;
+  }, [mine, scores, runActive]);
+  const inRun = statuses.size;
+  const settled = [...statuses.values()].filter(
+    (status) => status?.kind === "scored" || status?.kind === "unscored",
+  ).length;
+  const busyTest = ordered.find((version) => {
+    const kind = statuses.get(version.id)?.kind;
+    return kind === "running" || kind === "judging";
+  });
+  // A running test's clock ticks every second.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!busyTest) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [busyTest]);
+  // Keep the test that runs now in view as the run moves down the list.
+  const rows = useRef(new Map<string, HTMLLIElement>());
+  const runningId = ordered.find(
+    (version) => statuses.get(version.id)?.kind === "running",
+  )?.id;
+  useEffect(() => {
+    if (runningId)
+      rows.current.get(runningId)?.scrollIntoView?.({ block: "nearest" });
+  }, [runningId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
   const start = async () => {
     if (!pinned || chosen.length === 0) return;
     setBusy(true);
     setError(null);
-    const request: RunRequest = {
-      requestKey,
-      versionIds: chosen.map((version) => version.id),
-      configurations: [pinned],
-      repetitions: 1,
-      timeoutSeconds: runTimeLimitSeconds(chosen),
-      maxExecutions: plannedTurns(chosen, pinned),
-      preview: false,
-    };
+    // The checked tests in list order, so the plan order stays the queue.
+    const request = requestFor(
+      ordered.filter((version) => !unchecked.has(version.id)),
+      pinned,
+    );
     try {
-      const plan = await benchmarkApi.previewRun(request);
-      if (!plan.valid) {
-        setError(plan.issues.join("\n"));
+      const check = await benchmarkApi.previewRun(request);
+      if (!check.valid) {
+        setError(check.issues.join("\n"));
         return;
       }
       const started = await benchmarkApi.startRun(request);
@@ -286,7 +394,7 @@ export function BenchmarkModelRunDialog({
                   )}
             </BenchmarkAlert>
           ) : null}
-          <Label className="flex items-center gap-3 border-b border-border pb-2 text-sm font-medium">
+          <Label className="flex items-center gap-3 border-b border-border px-2 pb-2 text-sm font-medium">
             <Checkbox
               disabled={runActive || eligible.length === 0}
               checked={
@@ -306,43 +414,53 @@ export function BenchmarkModelRunDialog({
             />
             <span className="flex-1">{t("modelRun.allTests")}</span>
             <span className="text-xs font-normal text-muted-foreground tabular-nums">
-              {runActive || inRun.size > 0
-                ? t("modelRun.finished", {
-                    settled,
-                    total: inRun.size,
-                  })
+              {runActive || inRun > 0
+                ? t("modelRun.finished", { settled, total: inRun })
                 : t("modelRun.selected", {
                     selected: chosen.length,
                     total: eligible.length,
                   })}
             </span>
           </Label>
-          <ul className="max-h-[55vh] overflow-y-auto">
-            {eligible.map((version) => (
-              <li key={version.id}>
-                <Label className="flex items-center gap-3 py-1.5 text-sm font-normal">
-                  <Checkbox
-                    disabled={runActive}
-                    checked={!unchecked.has(version.id)}
-                    onCheckedChange={(checked) =>
-                      setUnchecked((previous) => {
-                        const next = new Set(previous);
-                        if (checked === true) next.delete(version.id);
-                        else next.add(version.id);
-                        return next;
-                      })
-                    }
-                  />
-                  <span className="min-w-0 flex-1 truncate">
-                    {version.manifest.name}
-                  </span>
-                  <TestStatusMark status={statusOf(version.id)} />
-                </Label>
-              </li>
-            ))}
+          <ol className="max-h-[55vh] overflow-y-auto">
+            {ordered.map((version) => {
+              const status = statuses.get(version.id) ?? null;
+              const current =
+                status?.kind === "running" || status?.kind === "judging";
+              return (
+                <li
+                  key={version.id}
+                  ref={(element) => {
+                    if (element) rows.current.set(version.id, element);
+                    else rows.current.delete(version.id);
+                  }}
+                  aria-current={current ? "step" : undefined}
+                  className={cn("rounded-md", current && "bg-muted")}
+                >
+                  <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
+                    <Checkbox
+                      disabled={runActive}
+                      checked={!unchecked.has(version.id)}
+                      onCheckedChange={(checked) =>
+                        setUnchecked((previous) => {
+                          const next = new Set(previous);
+                          if (checked === true) next.delete(version.id);
+                          else next.add(version.id);
+                          return next;
+                        })
+                      }
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {version.manifest.name}
+                    </span>
+                    <TestStatusMark status={status} now={now} />
+                  </Label>
+                </li>
+              );
+            })}
             {authored.map((version) => (
               <li key={version.id}>
-                <Label className="flex items-center gap-3 py-1.5 text-sm font-normal text-muted-foreground">
+                <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal text-muted-foreground">
                   <Checkbox disabled checked={false} />
                   <span className="min-w-0 flex-1 truncate">
                     {version.manifest.name}
@@ -353,7 +471,7 @@ export function BenchmarkModelRunDialog({
                 </Label>
               </li>
             ))}
-          </ul>
+          </ol>
         </DialogBody>
         <DialogFooter>
           {runActive || stopping ? (
@@ -381,9 +499,24 @@ export function BenchmarkModelRunDialog({
   );
 }
 
-function TestStatusMark({ status }: { status: TestStatus | null }) {
+/** A test's mark: its clock while it runs, its result and time once done. */
+function TestStatusMark({
+  status,
+  now,
+}: {
+  status: TestStatus | null;
+  now: number;
+}) {
   const { t } = useTranslation("benchmarks");
   if (!status) return null;
+  const time = (milliseconds: number | null) =>
+    milliseconds == null ? null : (
+      <span className="text-xs text-muted-foreground tabular-nums">
+        {formatElapsed(t, Math.max(0, milliseconds))}
+      </span>
+    );
+  const since = (startedAt: number | null) =>
+    startedAt == null ? null : now - startedAt;
   switch (status.kind) {
     case "queued":
       return (
@@ -393,46 +526,52 @@ function TestStatusMark({ status }: { status: TestStatus | null }) {
       );
     case "running":
       return (
-        <Spinner
-          aria-label={t("modelRun.running")}
-          className="size-4 shrink-0 text-chart-1"
-        />
+        <span className="flex shrink-0 items-center gap-2">
+          {time(since(status.startedAt))}
+          <Spinner
+            aria-label={t("modelRun.running")}
+            className="size-4 text-chart-1"
+          />
+        </span>
       );
     case "judging":
       return (
-        <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <Spinner decorative className="size-3.5" />
+        <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           {t("modelRun.judging")}
+          {time(since(status.startedAt))}
+          <Spinner decorative className="size-4" />
         </span>
       );
     case "scored":
-      if (status.score >= 1)
-        return (
-          <IconCheck
-            aria-label={t("states.pass")}
-            className="size-4 shrink-0 text-success"
-          />
-        );
-      if (status.score <= 0)
-        return (
-          <IconX
-            aria-label={t("states.fail")}
-            className="size-4 shrink-0 text-destructive"
-          />
-        );
       return (
-        <span
-          className={cn(
-            "shrink-0 text-sm font-medium tabular-nums",
-            status.score >= 0.5 ? "text-success" : "text-destructive",
+        <span className="flex shrink-0 items-center gap-2">
+          {time(status.durationMs)}
+          {status.score >= 1 ? (
+            <IconCheck
+              aria-label={t("states.pass")}
+              className="size-4 text-success"
+            />
+          ) : status.score <= 0 ? (
+            <IconX
+              aria-label={t("states.fail")}
+              className="size-4 text-destructive"
+            />
+          ) : (
+            <span
+              className={cn(
+                "text-sm font-medium tabular-nums",
+                status.score >= 0.5 ? "text-success" : "text-destructive",
+              )}
+            >
+              {Math.round(status.score * 1000)}
+            </span>
           )}
-        >
-          {Math.round(status.score * 1000)}
         </span>
       );
     case "unscored":
       return (
-        <span className="shrink-0 text-xs text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+          {time(status.durationMs)}
           {stateLabel(t, status.outcome)}
         </span>
       );

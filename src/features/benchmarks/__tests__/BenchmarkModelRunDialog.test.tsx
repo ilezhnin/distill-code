@@ -142,6 +142,7 @@ function liveRun(state: string): BenchmarkRun {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  Element.prototype.scrollIntoView = vi.fn();
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
     {
       configuration: { ...configuration, inventoryRevision: "runtime-now" },
@@ -249,6 +250,17 @@ it("follows the run that measures the model now", async () => {
   expect(
     await screen.findByText("3 of 5 finished", undefined),
   ).toBeInTheDocument();
+  // The checks show the run's tests: Delta is not in it.
+  expect(
+    within(screen.getByText("Delta").closest("label") as HTMLElement).getByRole(
+      "checkbox",
+    ),
+  ).not.toBeChecked();
+  expect(
+    within(screen.getByText("Echo").closest("label") as HTMLElement).getByRole(
+      "checkbox",
+    ),
+  ).toBeChecked();
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
 });
 
@@ -301,4 +313,97 @@ it("does not run a row measured at the CLI's default", async () => {
   );
   expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
   expect(benchmarkApi.previewRun).not.toHaveBeenCalled();
+});
+
+it("lists the tests in the order the run takes them and times the one running now", async () => {
+  vi.mocked(benchmarkApi.previewRun).mockResolvedValue({
+    valid: true,
+    issues: [],
+    executionCount: 6,
+    estimatedCost: null,
+    costReason: "",
+    executionOrder: [
+      "version-5",
+      "version-1",
+      "version-8",
+      "version-3",
+      "version-2",
+      "version-4",
+    ],
+  });
+  show();
+  const names = () =>
+    within(screen.getByRole("list"))
+      .getAllByRole("listitem")
+      .map((item) => item.textContent ?? "");
+  // Before Start, the plan's queue; the model's own tests come last.
+  await waitFor(() =>
+    expect(
+      names()
+        .slice(0, 6)
+        .map((name) => name.match(/^[A-Z][a-z]+/)?.[0]),
+    ).toEqual(["Echo", "Alpha", "Hotel", "Charlie", "Bravo", "Delta"]),
+  );
+  cleanup();
+  // A run that measures the model now: its own order, the running test timed
+  // and in view, finished tests with how long they took.
+  const startedAt = Date.now() - 125_000;
+  const now: BenchmarkRun = {
+    ...liveRun("running"),
+    attempts: [
+      {
+        ...attempt,
+        id: "a-3",
+        versionId: "version-3",
+        // Seven seconds start to finish, six of them the model's turn.
+        startedAt: 10_000,
+        finishedAt: 17_000,
+        durationMs: 6_000,
+      },
+      {
+        ...attempt,
+        id: "a-5",
+        versionId: "version-5",
+        phase: "running",
+        outcome: null,
+        startedAt,
+        finishedAt: null,
+        durationMs: null,
+      },
+      {
+        ...attempt,
+        id: "a-1",
+        versionId: "version-1",
+        phase: "pending",
+        outcome: null,
+        startedAt: null,
+        finishedAt: null,
+        durationMs: null,
+      },
+    ],
+  };
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(now);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
+    { ...summary("version-3", "terminal", "pass", 1), id: "a-3" },
+  ]);
+  show({ runId: "run-2" });
+  await waitFor(() =>
+    expect(
+      names()
+        .slice(0, 3)
+        .map((name) => name.match(/^[A-Z][a-z]+/)?.[0]),
+    ).toEqual(["Charlie", "Echo", "Alpha"]),
+  );
+  const row = (name: string) =>
+    within(screen.getByText(name).closest("li") as HTMLElement);
+  expect(row("Charlie").getByText("7 s")).toBeInTheDocument();
+  expect(row("Charlie").getByLabelText("Pass")).toBeInTheDocument();
+  expect(row("Echo").getByLabelText("Running")).toBeInTheDocument();
+  expect(row("Echo").getByText(/^2 min [5-7] s$/)).toBeInTheDocument();
+  expect(screen.getByText("Echo").closest("li")).toHaveAttribute(
+    "aria-current",
+    "step",
+  );
+  expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  expect(row("Alpha").getByText("Queued")).toBeInTheDocument();
 });

@@ -3177,6 +3177,9 @@ impl BenchmarkService {
             self.release(&lane).await;
             return Ok(false);
         }
+        // Tell the app the attempt started, so a run's view shows which test
+        // runs now and since when, not only which ones finished.
+        self.changed().await;
         let (service, run) = (self.clone(), run.clone());
         flights.spawn(async move {
             if let Err(error) = service
@@ -4127,6 +4130,17 @@ mod tests {
         assert_ne!(
             first,
             identities(super::super::randomized_matrix(&other_seed).unwrap())
+        );
+        // The plan check names the cases in the order the run dispatches them.
+        let mut seen = std::collections::HashSet::new();
+        let cases: Vec<String> = first
+            .iter()
+            .filter(|(version, _, _)| seen.insert(version.clone()))
+            .map(|(version, _, _)| version.clone())
+            .collect();
+        assert_eq!(
+            service.preview_run(&req).await.unwrap().execution_order,
+            cases
         );
         let run = service.start_run(req.clone()).await.unwrap();
         assert_eq!(

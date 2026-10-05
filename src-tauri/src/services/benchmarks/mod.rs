@@ -351,7 +351,12 @@ impl BenchmarkService {
         }
         issues.sort();
         issues.dedup();
-        Ok(RunPreview{valid:issues.is_empty(),issues,execution_count:count.min(u32::MAX as usize) as u32,estimated_cost:None,cost_reason:"Provider does not expose a binding spend estimate; explicit task and time limits apply".into()})
+        let mut seen = std::collections::HashSet::new();
+        let execution_order = randomized_matrix(request)?
+            .into_iter()
+            .filter_map(|(version, _, _)| seen.insert(version.clone()).then_some(version))
+            .collect();
+        Ok(RunPreview{valid:issues.is_empty(),issues,execution_count:count.min(u32::MAX as usize) as u32,estimated_cost:None,cost_reason:"Provider does not expose a binding spend estimate; explicit task and time limits apply".into(),execution_order})
     }
     pub async fn start_run(&self, request: RunRequest) -> Result<BenchmarkRun> {
         if let Some(id) =

@@ -214,6 +214,9 @@ pub struct RunPreview {
     pub execution_count: u32,
     pub estimated_cost: Option<f64>,
     pub cost_reason: String,
+    /// The cases in the order the run would dispatch them, each once: the
+    /// frozen matrix order its request key seeds.
+    pub execution_order: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -114,6 +114,8 @@ export interface RunPreview {
   executionCount: number;
   estimatedCost: number | null;
   costReason: string;
+  /** The cases in the order the run would dispatch them, each once. */
+  executionOrder?: string[];
 }
 export interface BenchmarkRun {
   id: string;
