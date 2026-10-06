@@ -1,0 +1,39 @@
+#!/bin/bash
+# bench-check-prep ID < check.tar
+# check.tar holds snapshot/ (the snapshot's files), answer.patch and hidden/
+# (the check's files). Builds /srv/bench/checks/ID for the checker: the
+# snapshot as one commit, the answer applied, the hidden files added. Exits 2
+# when the answer does not apply.
+set -euo pipefail
+id=${1:-}
+[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-check-prep: bad id" >&2; exit 64; }
+dir=/srv/bench/checks/$id
+staging=/srv/bench/staging/$id
+[[ ! -e $dir && ! -e $staging ]] || { echo "bench-check-prep: $id exists" >&2; exit 73; }
+mkdir -p "$staging" "$dir"
+chmod 700 "$staging" "$dir"
+trap 'rm -rf "$staging"' EXIT
+tar -x -C "$staging" --no-same-owner --no-same-permissions
+cp -a "$staging/snapshot/." "$dir/"
+# The snapshot's single commit is made here, before the checker owns
+# anything; the answer is applied as the checker, inside its own run.
+git=(git -c user.name=Distill -c user.email=bench@distill.invalid -c commit.gpgsign=false
+  -c core.autocrlf=false -c init.defaultBranch=main -C "$dir")
+"${git[@]}" init -q
+"${git[@]}" add -A
+"${git[@]}" commit -q --allow-empty -m snapshot
+install -m 644 "$staging/answer.patch" "$dir/.answer.patch"
+chown -R checker:checker "$dir"
+if [[ -s $dir/.answer.patch ]]; then
+  if ! /usr/local/sbin/bench-run check "$id" -- \
+    git -c core.autocrlf=false apply --binary --whitespace=nowarn .answer.patch; then
+    echo "the answer does not apply to the snapshot" >&2
+    exit 2
+  fi
+fi
+rm -f "$dir/.answer.patch"
+if [[ -d $staging/hidden ]]; then
+  cp -a "$staging/hidden/." "$dir/"
+  chown -R checker:checker "$dir"
+fi
+echo "prepared $id"

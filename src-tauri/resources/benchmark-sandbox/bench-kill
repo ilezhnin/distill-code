@@ -1,0 +1,17 @@
+#!/bin/bash
+# bench-kill MODE ID: ends every process of that run, however it forked.
+set -euo pipefail
+mode=${1:-}
+id=${2:-}
+if [[ ! $mode =~ ^(session|check|login)$ || ! $id =~ ^[A-Za-z0-9_-]{1,80}$ ]]; then
+  echo "bench-kill: bad arguments" >&2
+  exit 64
+fi
+cgroup=/sys/fs/cgroup/distill-bench/$mode-$id
+[[ -d $cgroup ]] || exit 0
+echo 1 >"$cgroup/cgroup.kill"
+for _ in $(seq 50); do
+  [[ -z $(cat "$cgroup/cgroup.procs") ]] && break
+  sleep 0.1
+done
+rmdir "$cgroup" 2>/dev/null || true

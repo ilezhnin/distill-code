@@ -1,0 +1,34 @@
+#!/bin/bash
+# bench-enter USER DIR [NAME=VALUE...] -- COMMAND: the inner half of
+# bench-run, already in the run's cgroup and network namespace and in a
+# private mount namespace. Hides what the run must not see, then drops to
+# USER for good.
+set -euo pipefail
+user=$1
+dir=$2
+shift 2
+vars=()
+while [[ $1 != -- ]]; do
+  vars+=("$1")
+  shift
+done
+shift
+ip link set lo up 2>/dev/null || true
+mount -t tmpfs -o mode=755 none /mnt
+for hidden in /tmp/.X11-unix /run/WSL /run/netns; do
+  if [[ -d $hidden ]]; then mount -t tmpfs -o mode=755 none "$hidden"; fi
+done
+mount -t tmpfs -o mode=1777 none /tmp
+mount -t tmpfs -o mode=1777 none /dev/shm
+cwd=/home/$user
+if [[ -n $dir ]]; then
+  mount --bind "$dir" /workspace
+  cwd=/workspace
+fi
+# Every other attempt's copy, every pristine base and every check.
+mount -t tmpfs -o mode=700 none /srv/bench
+cd "$cwd"
+exec setpriv --reuid "$user" --regid "$user" --init-groups --no-new-privs \
+  --inh-caps=-all --bounding-set=-all \
+  env -i HOME="/home/$user" USER="$user" LOGNAME="$user" LANG=C.UTF-8 \
+  PATH=/opt/distill-tools/bin:/usr/local/bin:/usr/bin:/bin "${vars[@]}" "$@"

@@ -1,0 +1,27 @@
+#!/bin/bash
+# bench-copy ID < snapshot.tar
+# Writes the snapshot's files twice: the candidate's copy in
+# /srv/bench/work/ID (one commit, no history, owned by the candidate) and a
+# pristine base in /srv/bench/base/ID that only root reaches, against which
+# bench-patch reads the answer whatever the candidate did to its own .git.
+set -euo pipefail
+id=${1:-}
+[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-copy: bad id" >&2; exit 64; }
+work=/srv/bench/work/$id
+base=/srv/bench/base/$id
+[[ ! -e $work && ! -e $base ]] || { echo "bench-copy: $id exists" >&2; exit 73; }
+git_commit=(-c user.name=Distill -c user.email=bench@distill.invalid -c commit.gpgsign=false
+  -c core.autocrlf=false -c init.defaultBranch=main)
+mkdir -p "$base" "$work"
+chmod 700 "$base" "$work"
+tar -x -C "$base" --no-same-owner --no-same-permissions
+cp -a "$base/." "$work/"
+# Both start as the same single commit, made here before the candidate owns
+# anything, so no configuration of its runs as root.
+for dir in "$base" "$work"; do
+  git "${git_commit[@]}" -C "$dir" init -q
+  git "${git_commit[@]}" -C "$dir" add -A
+  git "${git_commit[@]}" -C "$dir" commit -q --allow-empty -m snapshot
+done
+chown -R candidate:candidate "$work"
+echo "copied $id"

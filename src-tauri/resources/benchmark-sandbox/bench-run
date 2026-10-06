@@ -1,0 +1,51 @@
+#!/bin/bash
+# bench-run MODE ID [NAME=VALUE...] -- COMMAND [ARG...]
+#
+#   session ID  as candidate, /workspace = /srv/bench/work/ID, public internet only
+#   check ID    as checker, /workspace = /srv/bench/checks/ID, no network
+#   login ID    as candidate, no workspace, public internet only (provider sign-in)
+#
+# Every mode runs in its own cgroup (memory and process caps; bench-kill ends
+# it whole), in a private mount namespace that hides /mnt, the WSL sockets
+# and every other attempt, with its own /tmp, a clean environment holding only
+# the given variables, and no way to gain privileges.
+set -euo pipefail
+mode=${1:-}
+id=${2:-}
+if (($# < 2)); then
+  echo "bench-run: usage: bench-run MODE ID [NAME=VALUE...] -- COMMAND" >&2
+  exit 64
+fi
+shift 2
+[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-run: bad id" >&2; exit 64; }
+case $mode in
+  session) user=candidate dir=/srv/bench/work/$id net=bench ;;
+  check) user=checker dir=/srv/bench/checks/$id net=none ;;
+  login) user=candidate dir= net=bench ;;
+  *) echo "bench-run: unknown mode $mode" >&2; exit 64 ;;
+esac
+vars=()
+while (($#)) && [[ $1 != -- ]]; do
+  [[ $1 =~ ^[A-Z_][A-Z0-9_]*= ]] || { echo "bench-run: bad variable" >&2; exit 64; }
+  vars+=("$1")
+  shift
+done
+[[ ${1:-} == -- ]] && shift
+(($#)) || { echo "bench-run: no command" >&2; exit 64; }
+[[ -z $dir || -d $dir ]] || { echo "bench-run: $dir does not exist" >&2; exit 66; }
+/usr/local/sbin/bench-net
+# Runs that ended leave empty cgroups; only an empty one can be removed.
+for stale in /sys/fs/cgroup/distill-bench/*/; do rmdir "$stale" 2>/dev/null || true; done
+cgroup=/sys/fs/cgroup/distill-bench/$mode-$id
+mkdir -p "$cgroup"
+echo 8G >"$cgroup/memory.max"
+echo 0 >"$cgroup/memory.swap.max" 2>/dev/null || true
+echo 2048 >"$cgroup/pids.max"
+echo $$ >"$cgroup/cgroup.procs"
+if [[ $net == bench ]]; then
+  network=(ip netns exec bench)
+else
+  network=(unshare --net)
+fi
+exec "${network[@]}" unshare --mount --propagation private \
+  /usr/local/sbin/bench-enter "$user" "$dir" "${vars[@]}" -- "$@"

@@ -1,0 +1,26 @@
+#!/bin/bash
+# bench-login PROVIDER ACCOUNT-ID
+# Signs a provider CLI in inside the sandbox, for the Distill account
+# ACCOUNT-ID, into /home/candidate/accounts/ACCOUNT-ID/PROVIDER. Every flow
+# here prints a link or a code to open in a browser on Windows; nothing
+# inside the sandbox can reach a browser or a callback on the host.
+set -euo pipefail
+provider=${1:-}
+account=${2:-}
+[[ $account =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "usage: bench-login claude|codex|grok|kimi ACCOUNT-ID" >&2; exit 64; }
+home=/home/candidate/accounts/$account/$provider
+case $provider in
+  claude) variable=CLAUDE_CONFIG_DIR command=(claude auth login --claudeai) ;;
+  codex) variable=CODEX_HOME command=(codex login --device-auth) ;;
+  grok) variable=GROK_HOME command=(grok login --device-auth) ;;
+  kimi) variable=KIMI_CODE_HOME command=(kimi login) ;;
+  *) echo "bench-login: unknown provider $provider" >&2; exit 64 ;;
+esac
+install -d -o candidate -g candidate -m 700 "/home/candidate/accounts/$account" "$home"
+if [[ $provider == codex && ! -e $home/config.toml ]]; then
+  # No keyring in the sandbox: Codex keeps its sign-in in auth.json.
+  echo 'cli_auth_credentials_store = "file"' >"$home/config.toml"
+  chown candidate:candidate "$home/config.toml"
+fi
+exec /usr/local/sbin/bench-run login "login-$provider" "$variable=$home" "TERM=${TERM:-xterm-256color}" \
+  -- "${command[@]}"

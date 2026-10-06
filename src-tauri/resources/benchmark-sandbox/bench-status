@@ -1,0 +1,27 @@
+#!/bin/bash
+# bench-status: what the host reads before it plans a repository case, one
+# "key value" pair per line: the digest of every sandbox file, the tool
+# versions and the signed-in provider accounts.
+set -uo pipefail
+for file in /usr/local/sbin/bench-* /etc/wsl.conf; do
+  echo "file $(basename "$file") $(sha256sum "$file" | cut -d' ' -f1)"
+done
+echo "node $(node --version 2>/dev/null)"
+echo "git $(git --version 2>/dev/null | cut -d' ' -f3)"
+echo "netns $([[ -e /run/netns/bench ]] && echo up || echo down)"
+for manifest in /opt/distill-tools/*/manifest; do
+  [[ -f $manifest ]] && sed 's/^/tool /' "$manifest"
+done
+for account in /home/candidate/accounts/*/*; do
+  [[ -d $account ]] || continue
+  provider=$(basename "$account")
+  id=$(basename "$(dirname "$account")")
+  signed=no
+  case $provider in
+    claude) [[ -s $account/.credentials.json ]] && signed=yes ;;
+    codex) [[ -s $account/auth.json ]] && signed=yes ;;
+    grok) [[ -s $account/auth.json ]] && signed=yes ;;
+    kimi) [[ -n $(ls -A "$account" 2>/dev/null) ]] && signed=yes ;;
+  esac
+  echo "account $provider $id $signed"
+done

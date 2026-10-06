@@ -1,0 +1,18 @@
+#!/bin/bash
+# bench-patch ID > answer.patch
+# Everything the candidate changed in its copy, new files included, as a
+# binary patch against the pristine base. The candidate's own .git is never
+# read, and no hook, filter or monitor of its configuration runs; the base's
+# index is reset afterwards, so the call can repeat.
+set -euo pipefail
+id=${1:-}
+[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-patch: bad id" >&2; exit 64; }
+work=/srv/bench/work/$id
+base=/srv/bench/base/$id
+[[ -d $work && -d $base/.git ]] || { echo "bench-patch: no copy $id" >&2; exit 66; }
+git=(git --git-dir="$base/.git" --work-tree="$work" -c core.autocrlf=false
+  -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.symlinks=true
+  -c safe.directory="$work")
+"${git[@]}" add -A
+"${git[@]}" diff --cached --binary HEAD
+"${git[@]}" read-tree HEAD

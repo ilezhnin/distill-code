@@ -1,0 +1,9 @@
+#!/bin/bash
+# bench-clean ID: ends the attempt's and its check's processes and removes
+# its copy, its base and its check.
+set -euo pipefail
+id=${1:-}
+[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-clean: bad id" >&2; exit 64; }
+/usr/local/sbin/bench-kill session "$id"
+/usr/local/sbin/bench-kill check "$id"
+rm -rf "/srv/bench/work/$id" "/srv/bench/base/$id" "/srv/bench/checks/$id" "/srv/bench/staging/$id"
