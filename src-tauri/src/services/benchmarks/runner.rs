@@ -4951,7 +4951,7 @@ mod tests {
     async fn a_refusal_before_the_session_keeps_the_cell_for_the_operator() {
         let (_dir, s, fake) = setup().await;
         fake.capability_refusals.store(1, Ordering::SeqCst);
-        let run = s.start_run(request(&s).await).await.unwrap();
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         let stopped = s.store.run(&run.id).await.unwrap();
         assert_eq!(stopped.state, "needs_attention");
