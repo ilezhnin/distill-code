@@ -149,19 +149,21 @@ export function taskCells(
   });
 }
 
-/** How far a measurement got, in the counts a run view leads with. */
+/**
+ * How far a measurement got, in attempts: every case needs three, so the
+ * tiles count dots out of cases times three. Cases are counted elsewhere,
+ * out of the pool; the two units never share a tile.
+ */
 export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   const { t } = useTranslation("benchmarks");
-  // The verdicts the dots add up to; a case short of its repetitions is
-  // neither finished nor in progress, and the rest is what is still to come.
-  const count = (verdict: TaskCell["verdict"]) =>
-    cells.filter((cell) => cell.verdict === verdict).length;
-  const solved = count("solved");
+  const dots = cells.flatMap((cell) => cell.dots);
+  const count = (state: DotState) => dots.filter((dot) => dot === state).length;
+  const passed = count("passed");
   const failed = count("failed");
   const items: [string, number][] = [
     ["grid.inProgress", count("running")],
-    ["grid.finished", solved + failed],
-    ["grid.solved", solved],
+    ["grid.finished", passed + failed],
+    ["grid.passed", passed],
     ["grid.attention", failed],
   ];
   return (
@@ -174,13 +176,13 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
           <dd
             className={cn(
               "font-display text-xl tabular-nums",
-              key === "grid.solved" && value > 0 && "text-success",
+              key === "grid.passed" && value > 0 && "text-success",
               key === "grid.attention" && value > 0 && "text-destructive",
             )}
           >
             {value}
             <span className="ml-1 text-xs text-muted-foreground">
-              / {cells.length}
+              / {dots.length}
             </span>
           </dd>
         </div>

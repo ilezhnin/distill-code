@@ -46,6 +46,7 @@ import type {
   RunSummary,
 } from "../types";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
 import { listByIds } from "./BenchmarkTestStatus";
 import {
@@ -285,6 +286,11 @@ export function BenchmarkConfigurationPage({
     [
       t("configuration.cases"),
       `${shownRow.scored - shownBackfilled} / ${shownRow.planned}`,
+    ],
+    // Attempts out of every case's three: the unit the grid counts in.
+    [
+      t("configuration.attempts"),
+      `${results.length} / ${shownRow.planned * REQUIRED_REPETITIONS}`,
     ],
     [
       t("configuration.measured"),
@@ -592,7 +598,12 @@ export function BenchmarkConfigurationPage({
         </section>
       ) : null}
       <section className="space-y-4">
-        <SectionHeading title={t("grid.title", { count: cells.length })} />
+        <SectionHeading
+          title={t("grid.title", {
+            cases: cells.length,
+            attempts: cells.reduce((sum, cell) => sum + cell.dots.length, 0),
+          })}
+        />
         <TaskSummary cells={cells} />
         <TaskGrid
           cells={cells}

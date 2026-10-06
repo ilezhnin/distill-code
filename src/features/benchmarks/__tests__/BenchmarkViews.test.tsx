@@ -522,7 +522,9 @@ describe("benchmark authoring and saved evidence", () => {
         onOpenRun={vi.fn()}
       />,
     );
-    expect(await screen.findByText("Tests · 1")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Tests · 1 cases · 3 attempts"),
+    ).toBeInTheDocument();
     // Every standing attempt shows in the grid, the refused call as a
     // failed repetition of its case; only the scored one is a result.
     await waitFor(() =>

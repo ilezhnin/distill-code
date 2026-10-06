@@ -322,10 +322,11 @@
   "grid": {
     "repetitions": "{{passes}} of {{scored}} passed, {{of}} repetitions",
     "taskNamed": "Task {{number}}: {{name}}",
-    "title": "Tests · {{count}}",
+    "title": "Tests · {{cases}} cases · {{attempts}} attempts",
     "task": "Task {{number}}",
     "inProgress": "In progress",
     "finished": "Finished",
+    "passed": "Passed",
     "solved": "Solved",
     "attention": "Failed"
   },
@@ -580,7 +581,8 @@
     "apiModelId": "API model ID",
     "runtime": "Runtime revision",
     "context": "Context window",
-    "cases": "Cases scored",
+    "cases": "Cases measured",
+    "attempts": "Attempts scored",
     "measured": "Measured",
     "spend": "Mean cost per task",
     "outputTokens": "Median output tokens",

@@ -155,9 +155,9 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(block("Bravo")).toHaveAttribute("aria-current", "step");
   // A queued test is a block already, its evidence empty until it runs.
   expect(block("Charlie")).toBeEnabled();
-  // The counts a run leads with.
-  expect(screen.getByText("In progress").nextSibling).toHaveTextContent("1");
-  expect(screen.getByText("Solved").nextSibling).toHaveTextContent("0");
+  // The counts a run leads with, in attempts: three tests need nine.
+  expect(screen.getByText("In progress").nextSibling).toHaveTextContent("1/ 9");
+  expect(screen.getByText("Passed").nextSibling).toHaveTextContent("1/ 9");
   // One model's run names it once, in the title, not on every block.
   expect(screen.queryByText(/claude-acp/)).not.toBeInTheDocument();
   expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();

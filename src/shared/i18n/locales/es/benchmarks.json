@@ -322,10 +322,11 @@
   "grid": {
     "repetitions": "{{passes}} de {{scored}} superadas, {{of}} repeticiones",
     "taskNamed": "Tarea {{number}}: {{name}}",
-    "title": "Pruebas · {{count}}",
+    "title": "Pruebas · {{cases}} casos · {{attempts}} intentos",
     "task": "Tarea {{number}}",
     "inProgress": "En curso",
     "finished": "Terminadas",
+    "passed": "Superados",
     "solved": "Resueltas",
     "attention": "Fallidas"
   },
@@ -580,7 +581,8 @@
     "apiModelId": "ID de modelo de la API",
     "runtime": "Revisión del runtime",
     "context": "Ventana de contexto",
-    "cases": "Casos puntuados",
+    "cases": "Casos medidos",
+    "attempts": "Intentos puntuados",
     "measured": "Medido",
     "spend": "Costo medio por tarea",
     "outputTokens": "Mediana de tokens de salida",
