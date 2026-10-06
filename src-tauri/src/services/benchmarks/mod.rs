@@ -642,6 +642,33 @@ impl BenchmarkService {
     /// run already planned is not added again: unfinished, it starts over;
     /// complete, it stands. A case a configuration authored is left out.
     /// With no cases to add this is a resume.
+    /// Sets how many attempts of a configuration a run inside its window
+    /// flies at once from now on, as the operator asks. The request records
+    /// the newest setting, so a run that changed it notes the last one.
+    pub async fn set_parallelism(&self, id: &str, parallelism: u32) -> Result<BenchmarkRun> {
+        if parallelism == 0 || parallelism > runner::PARALLEL_ATTEMPTS {
+            return Err(BenchmarkError::new(
+                "validation",
+                format!(
+                    "Attempts in parallel per configuration must be between 1 and {}",
+                    runner::PARALLEL_ATTEMPTS
+                ),
+            ));
+        }
+        let run = self.store.run(id).await?;
+        if run.baked_at.is_some() || now() >= analysis::window_closes(&run) {
+            return Err(BenchmarkError::new(
+                "validation",
+                window_closed_message(&run),
+            ));
+        }
+        let mut request = run.request.clone();
+        request.parallelism = Some(parallelism);
+        self.store.set_run_request(id, &request).await?;
+        self.wake.notify_one();
+        self.changed().await;
+        self.store.run(id).await
+    }
     pub async fn extend_run(&self, id: &str, version_ids: &[String]) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
         if run.baked_at.is_some() || now() >= analysis::window_closes(&run) {

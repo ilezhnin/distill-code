@@ -315,6 +315,7 @@ pub fn run() {
             commands::benchmarks::benchmark_pause_run,
             commands::benchmarks::benchmark_resume_run,
             commands::benchmarks::benchmark_extend_run,
+            commands::benchmarks::benchmark_set_run_parallelism,
             commands::benchmarks::benchmark_cancel_run,
             commands::benchmarks::benchmark_get_evidence,
             commands::benchmarks::benchmark_events_since,

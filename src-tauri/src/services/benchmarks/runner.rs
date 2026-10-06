@@ -5014,6 +5014,24 @@ mod tests {
         assert_eq!(report.rows[0].parallelism, Some(1));
     }
     #[tokio::test]
+    async fn an_open_run_can_be_set_to_fly_in_parallel() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
+        let mut old = run.request.clone();
+        old.parallelism = None;
+        sqlx::query("UPDATE run_plans SET request_json=? WHERE id=?")
+            .bind(serde_json::to_string(&old).unwrap())
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        assert!(s.set_parallelism(&run.id, 9).await.is_err());
+        let set = s.set_parallelism(&run.id, 4).await.unwrap();
+        assert_eq!(set.request.parallelism, Some(4));
+        drain(&s, &run.id).await;
+        assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 4);
+    }
+    #[tokio::test]
     async fn a_bridge_that_serves_one_session_flies_one_attempt_at_a_time() {
         let (_dir, s, backend) = setup().await;
         let run = s

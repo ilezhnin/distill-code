@@ -349,6 +349,15 @@ pub async fn benchmark_save_catalog_entry(
 pub async fn benchmark_delete_catalog_entry(app: AppHandle, id: String) -> Result<()> {
     service(&app).await?.store.delete_catalog_entry(&id).await
 }
+/// Sets how many attempts of a configuration an open run flies at once.
+#[tauri::command]
+pub async fn benchmark_set_run_parallelism(
+    app: AppHandle,
+    id: String,
+    parallelism: u32,
+) -> Result<BenchmarkRun> {
+    service(&app).await?.set_parallelism(&id, parallelism).await
+}
 #[tauri::command]
 pub async fn benchmark_list_releases(app: AppHandle) -> Result<Vec<PoolRelease>> {
     service(&app).await?.store.releases().await
