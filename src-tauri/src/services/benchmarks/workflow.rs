@@ -21,9 +21,6 @@ pub fn validate(draft: &BenchmarkDraft) -> Vec<String> {
     if !(2..=4).contains(&workflow.steps.len()) {
         issues.push("A bounded workflow requires 2–4 steps".into());
     }
-    if draft.measurement_profile != "task_metrics" {
-        issues.push("Bounded workflows currently support task metrics only".into());
-    }
     if !matches!(
         draft.evaluator.kind.as_str(),
         "exact" | "json" | "javascript" | "browser"

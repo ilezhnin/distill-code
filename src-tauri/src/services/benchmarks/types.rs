@@ -635,37 +635,6 @@ pub struct HistorySnapshot {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Baseline {
-    pub id: String,
-    pub name: String,
-    pub run_ids: Vec<String>,
-    pub created_at: i64,
-    pub threshold: f64,
-    #[serde(default)]
-    pub snapshots: Vec<Attempt>,
-    #[serde(default)]
-    pub run_conditions: Vec<RunRequest>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Comparison {
-    pub baseline_id: String,
-    pub configuration_id: String,
-    pub configuration: Configuration,
-    pub quality_change: Option<f64>,
-    pub retained_quality_percent: Option<f64>,
-    pub interval_low: Option<f64>,
-    pub interval_high: Option<f64>,
-    pub status: String,
-    pub reason: String,
-    pub attempt_ids: Vec<String>,
-    pub duration_change_percent: Option<f64>,
-    pub token_change_percent: Option<f64>,
-    pub method: String,
-    pub measured_at: Option<i64>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UsageSample {
     pub id: String,
     pub run_id: String,

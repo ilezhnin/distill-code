@@ -32,8 +32,8 @@ pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
     {
         issues.push("Invalid execution profile".into());
     }
-    if !["task_metrics", "controlled_quota", "capacity"].contains(&d.measurement_profile.as_str()) {
-        issues.push("Invalid measurement profile".into());
+    if d.measurement_profile != super::TASK_METRICS {
+        issues.push("Invalid measurement profile: only task metrics are measured".into());
     }
     if d.permissions.context != "clean" {
         issues.push("Benchmark context must be clean".into());

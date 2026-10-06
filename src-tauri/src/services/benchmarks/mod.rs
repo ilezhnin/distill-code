@@ -13,7 +13,6 @@ pub mod runner;
 pub mod seeds;
 pub mod store;
 pub mod types;
-pub mod usage;
 pub mod worker;
 pub mod workflow;
 
@@ -25,6 +24,12 @@ use tokio::sync::{Mutex, Notify, OnceCell};
 use types::*;
 
 const MATRIX_ORDER_ALGORITHM: &str = "sha256-cell-order-v1";
+/// The one measurement profile a case is published and run with: tokens,
+/// time and list-price cost per attempt. The quota and capacity batches that
+/// sampled an account around a run are retired.
+pub const TASK_METRICS: &str = "task_metrics";
+const RETIRED_PROFILE: &str =
+    "Quota and capacity measurements are retired; republish the case with task metrics";
 /// The longest time limit a run may give one turn, in seconds. A time limit
 /// only stops a turn that never ends; it is no part of what a case measures.
 pub const MAX_TIME_LIMIT_SECONDS: u32 =
@@ -290,13 +295,13 @@ impl BenchmarkService {
         {
             issues.push("A configuration authored every selected case and owes none".into());
         }
-        // Judge turns share the measured provider, so they cannot sit inside a quota sample.
-        if versions.iter().any(|v| {
-            v.manifest.evaluator.kind == "rubric"
-                && !runner::rubric_criteria(&v.manifest).is_empty()
-                && v.manifest.measurement_profile != "task_metrics"
-        }) {
-            issues.push("Judged creative briefs support task metrics only".into());
+        // Quota and capacity batches are retired; a version published for one
+        // measures nothing the boards read.
+        if versions
+            .iter()
+            .any(|v| v.manifest.measurement_profile != TASK_METRICS)
+        {
+            issues.push(RETIRED_PROFILE.into());
         }
         // A pinned runtime that changed since selection would fail every cell.
         let mut runtimes: HashMap<(String, Option<String>), Vec<InventoryModel>> = HashMap::new();
@@ -398,24 +403,14 @@ impl BenchmarkService {
                 ));
             }
         }
-        let mut profiles = std::collections::HashSet::new();
         for version in &versions {
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
                 .await?;
-            profiles.insert(version.manifest.measurement_profile.clone());
             for config in &request.configurations {
                 if let Some(reason) = self.backend.unsupported(config, &version.manifest) {
                     issues.push(reason);
                 }
             }
-        }
-        if profiles.len() > 1 {
-            issues.push("A run must use one measurement profile".into());
-        }
-        if profiles.iter().any(|p| p != "task_metrics") && request.configurations.len() != 1 {
-            issues.push(
-                "Controlled quota and capacity batches require exactly one configuration".into(),
-            );
         }
         issues.sort();
         issues.dedup();
@@ -810,78 +805,6 @@ impl BenchmarkService {
             .await?;
         event(tx, &run.id, "run_changed").await?;
         Ok(())
-    }
-    pub async fn create_baseline(
-        &self,
-        name: String,
-        run_ids: Vec<String>,
-        threshold: f64,
-    ) -> Result<Baseline> {
-        if name.trim().is_empty()
-            || run_ids.is_empty()
-            || !threshold.is_finite()
-            || !(0.0..=1.0).contains(&threshold)
-        {
-            return Err(BenchmarkError::new(
-                "validation",
-                "Baseline needs a name, runs and a threshold from 0 to 1",
-            ));
-        }
-        let mut snapshots = Vec::new();
-        let mut run_conditions = Vec::new();
-        for id in &run_ids {
-            let run = self.store.run(id).await?;
-            if run.request.preview {
-                return Err(BenchmarkError::new(
-                    "validation",
-                    "Development previews cannot become official baselines",
-                ));
-            }
-            // Cells settled as excluded (authored by their candidate) were never owed.
-            let owed: Vec<Attempt> = run
-                .attempts
-                .into_iter()
-                .filter(|a| a.outcome.as_deref() != Some("excluded"))
-                .collect();
-            if run.state != "completed"
-                || owed
-                    .iter()
-                    .any(|a| a.phase != "terminal" || analysis::score(a).is_none())
-            {
-                return Err(BenchmarkError::new("validation","An official baseline requires a completed matrix with all quality outcomes observed"));
-            }
-            snapshots.extend(owed);
-            run_conditions.push(run.request);
-        }
-        let baseline = Baseline {
-            id: uuid::Uuid::new_v4().to_string(),
-            name,
-            run_ids,
-            created_at: now(),
-            threshold,
-            snapshots,
-            run_conditions,
-        };
-        // One follow-up run reproduces one protocol per configuration, so a
-        // configuration frozen under two could never be compared.
-        if analysis::frozen_conditions(&baseline)
-            .values()
-            .any(|conditions| conditions.len() > 1)
-        {
-            return Err(BenchmarkError::new(
-                "validation",
-                "Each configuration in a baseline needs the same repetitions and timeout in all its runs",
-            ));
-        }
-        let mut tx = self.store.pool.begin().await?;
-        sqlx::query("INSERT INTO baselines(id,data_json) VALUES(?,?)")
-            .bind(&baseline.id)
-            .bind(serde_json::to_string(&baseline)?)
-            .execute(&mut *tx)
-            .await?;
-        event(&mut tx, &baseline.id, "baseline_created").await?;
-        tx.commit().await?;
-        Ok(baseline)
     }
     pub async fn review(
         &self,

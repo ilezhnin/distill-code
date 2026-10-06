@@ -6,7 +6,6 @@ use super::{
     BenchmarkService,
 };
 use crate::services::agent_host::{execution::*, AgentHost};
-use crate::services::provider_account_status::benchmark_sampling::{self, AccountMeasurement};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -123,13 +122,6 @@ pub trait ExecutionBackend: Send + Sync {
         Box::pin(async move {
             Ok((attempt.evidence_hash.is_some() && attempt.output.is_some()).then_some(attempt))
         })
-    }
-    fn sample<'a>(
-        &'a self,
-        _configuration: &'a Configuration,
-        _not_before: i64,
-    ) -> BoxFuture<'a, Result<Option<AccountMeasurement>>> {
-        Box::pin(async { Ok(None) })
     }
     fn activity<'a>(
         &'a self,
@@ -423,7 +415,6 @@ pub struct Flight {
     pub run_id: String,
     pub lane: String,
     pub account: String,
-    pub exclusive: bool,
     pub cancel: watch::Sender<bool>,
 }
 
@@ -436,7 +427,6 @@ struct Seat<'a> {
     lane_slots: usize,
     account: &'a str,
     account_slots: usize,
-    exclusive: bool,
 }
 
 /// How many attempts of one configuration of `provider_id` a run of
@@ -1688,26 +1678,6 @@ impl ExecutionBackend for NativeBackend {
         }
         None
     }
-    fn sample<'a>(
-        &'a self,
-        c: &'a Configuration,
-        not_before: i64,
-    ) -> BoxFuture<'a, Result<Option<AccountMeasurement>>> {
-        Box::pin(async move {
-            match c.account_id.as_deref() {
-                Some(account) => {
-                    match benchmark_sampling::sample_account(&self.app, account, not_before).await {
-                        Ok(sample) => Ok(Some(sample)),
-                        Err(error) => {
-                            log::info!("[benchmarks] quota unavailable: {error}");
-                            Ok(None)
-                        }
-                    }
-                }
-                None => Ok(None),
-            }
-        })
-    }
     fn activity<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<AccountActivity>> {
         Box::pin(async move {
             let host = self
@@ -2904,7 +2874,7 @@ const JUDGE_RENDERER: &str = "chromium-1024x768-v1";
 /// How a rendering is judged: each judge's provider, model, effort and fast
 /// mode, the prompt, the renderer and the panel size. Accounts and runtime
 /// probes do not change a verdict, so they stay out of the hash that the
-/// leaderboard and Nerf compare.
+/// leaderboard and the history chart compare.
 pub(crate) fn judge_protocol_hash(panel: &[Configuration], prompt: &str) -> String {
     let mut judges: Vec<(&str, &str, &str, bool)> = panel
         .iter()
@@ -3112,9 +3082,6 @@ impl BenchmarkService {
                 }
                 continue;
             }
-            if !matches!(run.state.as_str(), "completed" | "cancelled") {
-                self.finish_measurement(&run).await?;
-            }
             self.bake(&run, at).await?;
         }
         Ok(())
@@ -3239,7 +3206,6 @@ impl BenchmarkService {
                     lane_slots: 1,
                     account: "",
                     account_slots: ACCOUNT_SLOTS,
-                    exclusive: false,
                 };
                 if let Some(cancel) = self.claim(&run.id, seat).await {
                     tried.insert(id.clone());
@@ -3261,7 +3227,6 @@ impl BenchmarkService {
                     a.phase == "pending" && provider_held(&run.id, &a.configuration.provider_id)
                 });
                 if flying == 0 && waiting.is_none() && !held {
-                    self.finish_measurement(&run).await?;
                     self.store.set_run_state(&run.id, "completed").await?;
                     self.changed().await;
                 }
@@ -3297,14 +3262,13 @@ impl BenchmarkService {
             .count()
     }
     /// Takes `seat` if it is free: its lane and its account below their
-    /// limits, [`TOTAL_SLOTS`] in all; an exclusive flight shares its account
-    /// with nothing. Returns its cancel signal.
+    /// limits, [`TOTAL_SLOTS`] in all. Returns its cancel signal.
     async fn claim(&self, run_id: &str, seat: Seat<'_>) -> Option<watch::Receiver<bool>> {
         let mut active = self.active.lock().await;
-        let on_account: Vec<&Flight> = active
+        let on_account = active
             .values()
             .filter(|flight| !seat.account.is_empty() && flight.account == seat.account)
-            .collect();
+            .count();
         let on_lane = active
             .values()
             .filter(|flight| flight.lane == seat.lane)
@@ -3312,9 +3276,7 @@ impl BenchmarkService {
         if active.len() >= TOTAL_SLOTS
             || active.contains_key(seat.id)
             || on_lane >= seat.lane_slots
-            || on_account.len() >= seat.account_slots
-            || on_account.iter().any(|flight| flight.exclusive)
-            || (seat.exclusive && !on_account.is_empty())
+            || on_account >= seat.account_slots
         {
             return None;
         }
@@ -3325,7 +3287,6 @@ impl BenchmarkService {
                 run_id: run_id.to_owned(),
                 lane: seat.lane.to_owned(),
                 account: seat.account.to_owned(),
-                exclusive: seat.exclusive,
                 cancel,
             },
         );
@@ -3351,8 +3312,6 @@ impl BenchmarkService {
             "{provider}\u{1f}{}",
             a.configuration.account_id.as_deref().unwrap_or_default()
         );
-        // An account measured around a run must not see anyone else's turns.
-        let exclusive = version.manifest.measurement_profile != "task_metrics";
         let id = a.id.clone();
         let seat = Seat {
             id: &id,
@@ -3360,20 +3319,15 @@ impl BenchmarkService {
             lane_slots: attempts_at_once(&run.request, provider) as usize,
             account: &account,
             account_slots: account_slots(&run.id, provider),
-            exclusive,
         };
         let Some(cancel_rx) = self.claim(&run.id, seat).await else {
             return Ok(false);
         };
-        let ready = async {
-            fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
-                .await?;
-            Ok::<bool, BenchmarkError>(!exclusive || self.begin_measurement(run).await?)
-        }
-        .await;
-        if !matches!(ready, Ok(true)) {
+        if let Err(error) =
+            fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest).await
+        {
             self.release(&id).await;
-            return ready;
+            return Err(error);
         }
         // Judges run only where the saved plan reserved their calls; known
         // before the paid turn.
@@ -3754,147 +3708,6 @@ impl BenchmarkService {
             let attempt = self.backend.reconcile_judges(&self.store, attempt).await?;
             self.store.save_attempt(&attempt).await?;
         }
-        Ok(())
-    }
-    async fn begin_measurement(&self, run: &BenchmarkRun) -> Result<bool> {
-        use sqlx::Row;
-        let config = &run.request.configurations[0];
-        let activity = self.backend.activity(config).await?;
-        let previous=sqlx::query("SELECT activity_generation,attempt_ids_json FROM run_measurements WHERE run_id=? AND finished=0").bind(&run.id).fetch_optional(&self.store.pool).await?;
-        if let Some(row) = previous {
-            let ids: Vec<String> = serde_json::from_str(row.get(1))?;
-            let expected = run
-                .attempts
-                .iter()
-                .filter(|a| ids.contains(&a.id) && a.host_run_id.is_some())
-                .count() as u64;
-            if activity.active_sessions.is_empty()
-                && activity
-                    .generation
-                    .saturating_sub(row.get::<i64, _>(0) as u64)
-                    == expected
-            {
-                return Ok(true);
-            }
-            self.finish_measurement(run).await?;
-            self.store.set_run_state(&run.id, "paused").await?;
-            return Ok(false);
-        }
-        if !activity.active_sessions.is_empty() {
-            return Ok(false);
-        }
-        let sample = self.backend.sample(config, now()).await?;
-        let ids: Vec<&String> = run
-            .attempts
-            .iter()
-            .filter(|a| a.phase == "pending")
-            .map(|a| &a.id)
-            .collect();
-        sqlx::query(
-            "INSERT INTO run_measurements(run_id,group_id,before_json,activity_generation,attempt_ids_json,started_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET group_id=excluded.group_id,before_json=excluded.before_json,activity_generation=excluded.activity_generation,attempt_ids_json=excluded.attempt_ids_json,started_at=excluded.started_at,finished=0",
-        )
-        .bind(&run.id)
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(serde_json::to_string(&sample)?)
-        .bind(activity.generation as i64)
-        .bind(serde_json::to_string(&ids)?)
-        .bind(now())
-        .execute(&self.store.pool)
-        .await?;
-        Ok(true)
-    }
-    async fn finish_measurement(&self, run: &BenchmarkRun) -> Result<()> {
-        use sqlx::Row;
-        let Some(row) = sqlx::query(
-            "SELECT before_json,activity_generation,finished,group_id,attempt_ids_json,started_at FROM run_measurements WHERE run_id=?",
-        )
-        .bind(&run.id)
-        .fetch_optional(&self.store.pool)
-        .await?
-        else {
-            return Ok(());
-        };
-        if row.get::<bool, _>(2) {
-            return Ok(());
-        }
-        let config = &run.request.configurations[0];
-        let member_ids: Vec<String> = serde_json::from_str(row.get(4))?;
-        let attempts: Vec<Attempt> = run
-            .attempts
-            .iter()
-            .filter(|a| member_ids.contains(&a.id) && a.phase == "terminal")
-            .cloned()
-            .collect();
-        let before: Option<AccountMeasurement> = serde_json::from_str(row.get(0))?;
-        let after = self.backend.sample(config, now()).await?;
-        let activity = self.backend.activity(config).await?;
-        let expected = attempts.iter().filter(|a| a.host_run_id.is_some()).count() as u64;
-        let changed = !activity.active_sessions.is_empty()
-            || activity
-                .generation
-                .saturating_sub(row.get::<i64, _>(1) as u64)
-                != expected;
-        let version = self.store.version(&run.request.version_ids[0]).await?;
-        let declared = version.manifest.environment["externalIsolationDeclared"]
-            .as_bool()
-            .unwrap_or(false);
-        let mut samples = match (before, after) {
-            (Some(before), Some(after)) => {
-                super::usage::sample(&run.id, &attempts, &before, &after, changed, declared)
-            }
-            _ => Vec::new(),
-        };
-        if version.manifest.measurement_profile == "capacity" || samples.is_empty() {
-            let (status, reason) = if version.manifest.measurement_profile == "capacity" {
-                super::usage::capacity_result(
-                    run.attempts
-                        .iter()
-                        .filter(|a| a.outcome.as_deref() == Some("pass"))
-                        .count() as u32,
-                    false,
-                    false,
-                    false,
-                )
-            } else {
-                (
-                    "not_measured".into(),
-                    "Provider returned no resolvable quota window".into(),
-                )
-            };
-            samples.push(UsageSample{id:uuid::Uuid::new_v4().to_string(),run_id:run.id.clone(),account_scope:config.account_id.clone().unwrap_or_else(||config.provider_id.clone()),window_id:"unreported".into(),captured_at:now(),before_used_percent:None,after_used_percent:None,resolution_percent:None,reset_at:None,attribution:"unknown".into(),status,completed_tasks:run.attempts.iter().filter(|a|a.outcome.as_deref()==Some("pass")).count() as u32,used_percentage_points:None,reason,attempt_ids:run.attempts.iter().map(|a|a.id.clone()).collect(),evidence:json!({"boundedExecutions":run.request.max_executions,"exhaustionVerified":false,"startingBalance":"unknown"})});
-        }
-        for mut sample in samples {
-            sample.attempt_ids = attempts.iter().map(|a| a.id.clone()).collect();
-            sample.completed_tasks = attempts
-                .iter()
-                .filter(|a| a.outcome.as_deref() == Some("pass"))
-                .count() as u32;
-            sample.evidence["workloadHash"]=json!(fixtures::hash(serde_json::to_string(&json!({"versions":run.request.version_ids,"configuration":config,"observed":attempts.iter().map(|a|&a.observed).collect::<Vec<_>>(),"repetitions":run.request.repetitions}))?.as_bytes()));
-            sample.evidence["measurementPeriod"] = json!(format!(
-                "{}:{}",
-                sample.window_id,
-                sample
-                    .reset_at
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| format!("unknown-{}", row.get::<i64, _>(5)))
-            ));
-            sample.evidence["groupId"] = json!(row.get::<String, _>(3));
-            sample.id = fixtures::hash(
-                format!(
-                    "{}:{}:{}:{}",
-                    run.id,
-                    row.get::<String, _>(3),
-                    sample.window_id,
-                    sample.account_scope
-                )
-                .as_bytes(),
-            );
-            self.store.save_usage(&sample).await?;
-        }
-        sqlx::query("UPDATE run_measurements SET finished=1 WHERE run_id=?")
-            .bind(&run.id)
-            .execute(&self.store.pool)
-            .await?;
         Ok(())
     }
 }
@@ -5091,23 +4904,6 @@ mod tests {
         assert!(!refused_for_quota(&refused, "", &empty));
     }
     #[tokio::test]
-    async fn a_baseline_leaves_out_cells_settled_as_excluded() {
-        let (_dir, s, _) = setup().await;
-        let run = s.start_run(request(&s).await).await.unwrap();
-        for _ in 0..3 {
-            s.tick().await.unwrap();
-        }
-        let mut excluded = s.store.run(&run.id).await.unwrap().attempts[0].clone();
-        excluded.outcome = Some("excluded".into());
-        excluded.evaluations.clear();
-        s.store.save_attempt(&excluded).await.unwrap();
-        let b = s
-            .create_baseline("With an authored cell".into(), vec![run.id.clone()], 0.1)
-            .await
-            .unwrap();
-        assert!(b.snapshots.iter().all(|a| a.id != excluded.id));
-    }
-    #[tokio::test]
     async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {
         let (_dir, s, fake) = setup().await;
         fake.quota_waits.store(1, Ordering::SeqCst);
@@ -5546,7 +5342,7 @@ mod tests {
         })
     }
     fn blank_attempt() -> Attempt {
-        let (data, _) = super::super::analysis::tests::dataset();
+        let data = super::super::analysis::tests::dataset();
         let mut attempt = data.attempts[0].clone();
         attempt.usage = TokenUsage::default();
         attempt.resolved_model = None;
@@ -5774,52 +5570,6 @@ mod tests {
         assert!(!is_quota_wait(
             &json!({"code":-32010,"data":{"kind":QUOTA_WAIT,"dispatchStarted":true}})
         ));
-    }
-    #[tokio::test]
-    async fn a_baseline_refuses_a_configuration_frozen_under_two_protocols() {
-        let (_dir, s, _) = setup().await;
-        let first = s.start_run(request(&s).await).await.unwrap();
-        for _ in 0..3 {
-            s.tick().await.unwrap();
-        }
-        let mut longer = request(&s).await;
-        longer.timeout_seconds += 60;
-        longer.request_key = "longer-key".into();
-        let second = s.start_run(longer).await.unwrap();
-        for _ in 0..3 {
-            s.tick().await.unwrap();
-        }
-        let both = vec![first.id.clone(), second.id.clone()];
-        assert!(s.create_baseline("Mixed".into(), both, 0.1).await.is_err());
-        for id in [first.id, second.id] {
-            assert!(s.create_baseline("One".into(), vec![id], 0.1).await.is_ok());
-        }
-    }
-    #[tokio::test]
-    async fn baseline_is_a_frozen_copy() {
-        let (_dir, s, _) = setup().await;
-        let req = request(&s).await;
-        let run = s.start_run(req).await.unwrap();
-        assert!(s
-            .create_baseline("Early".into(), vec![run.id.clone()], 0.1)
-            .await
-            .is_err());
-        for _ in 0..3 {
-            s.tick().await.unwrap();
-        }
-        let b = s
-            .create_baseline("Reference".into(), vec![run.id.clone()], 0.1)
-            .await
-            .unwrap();
-        let id = b.snapshots[0].id.clone();
-        s.rescore(&id).await.unwrap();
-        assert_eq!(
-            s.store.baselines().await.unwrap()[0].snapshots[0]
-                .evaluations
-                .len(),
-            1
-        );
-        assert_eq!(s.store.attempt(&id).await.unwrap().evaluations.len(), 2);
     }
     #[test]
     fn usage_presence_and_context_occupancy_stay_distinct() {
@@ -6548,25 +6298,6 @@ mod tests {
             .iter()
             .all(|a| a.outcome.as_deref() == Some("pass")));
     }
-    #[tokio::test]
-    async fn capacity_without_exhaustion_is_only_a_lower_bound() {
-        let (_dir, s, _) = setup().await;
-        let mut draft = seed_definitions().remove(0);
-        draft.measurement_profile = "capacity".into();
-        let d = s.store.save_draft(None, None, draft).await.unwrap();
-        let v = s.store.publish(&d.id, 1).await.unwrap();
-        let mut req = request(&s).await;
-        req.version_ids = vec![v.id];
-        req.repetitions = 1;
-        let run = s.start_run(req).await.unwrap();
-        s.tick().await.unwrap();
-        s.tick().await.unwrap();
-        let samples = s.store.usage_samples().await.unwrap();
-        assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0].status, "lower_bound");
-        assert_eq!(samples[0].attempt_ids, vec![run.attempts[0].id.clone()]);
-        assert!(samples[0].used_percentage_points.is_none());
-    }
     #[test]
     fn a_usage_limit_waits_for_a_reset_it_can_reach_and_stops_otherwise() {
         let at = 1_800_000_000_000i64;
@@ -6782,7 +6513,7 @@ mod tests {
         assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
     }
     #[tokio::test]
-    async fn stale_runtime_pins_and_judged_quota_briefs_are_plan_issues() {
+    async fn stale_runtime_pins_are_plan_issues_and_quota_briefs_never_publish() {
         let (_dir, s, _) = setup().await;
         let mut req = request(&s).await;
         assert!(s.preview_run(&req).await.unwrap().valid);
@@ -6791,16 +6522,16 @@ mod tests {
         assert!(!preview.valid);
         assert!(preview.issues.iter().any(|i| i.contains("Runtime changed")));
         assert!(s.start_run(req).await.is_err());
+        // Quota and capacity batches are retired: such a case never publishes.
         let mut quota = creative();
         quota.measurement_profile = "controlled_quota".into();
-        let version = publish(&s, quota).await;
-        let mut req = creative_request(&s).await;
-        req.version_ids = vec![version.id];
-        let preview = s.preview_run(&req).await.unwrap();
-        assert!(preview
-            .issues
-            .iter()
-            .any(|i| i.contains("task metrics only")));
+        let draft = s.store.save_draft(None, None, quota).await.unwrap();
+        let refused = s.store.publish(&draft.id, 1).await.unwrap_err();
+        assert!(
+            refused.message.contains("only task metrics"),
+            "{}",
+            refused.message
+        );
     }
     #[tokio::test]
     async fn a_cli_default_effort_is_refused_at_planning() {

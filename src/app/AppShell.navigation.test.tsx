@@ -225,8 +225,11 @@ vi.mock("@/app/views/NavigationPanesView", () => ({
       <button type="button" onClick={() => onNavigate?.("benchmarks")}>
         Sidebar benchmarks
       </button>
-      <button type="button" onClick={() => onBenchmarkSectionSelect?.("nerf")}>
-        Sidebar Nerf Bench
+      <button
+        type="button"
+        onClick={() => onBenchmarkSectionSelect?.("design")}
+      >
+        Sidebar Design Bench
       </button>
       <button type="button" onClick={() => onNavigate?.("skills")}>
         Sidebar skills
@@ -690,12 +693,12 @@ describe("AppShell global navigation", () => {
     expect(sidebarSection()).toHaveTextContent("leaderboard");
 
     await user.click(
-      screen.getByRole("button", { name: "Sidebar Nerf Bench" }),
+      screen.getByRole("button", { name: "Sidebar Design Bench" }),
     );
     expect(screen.getByTestId("benchmark-route")).toHaveTextContent(
-      '"section":"nerf"',
+      '"section":"design"',
     );
-    expect(sidebarSection()).toHaveTextContent("nerf");
+    expect(sidebarSection()).toHaveTextContent("design");
 
     // A deep location keeps its own section highlighted in the sidebar.
     await user.click(

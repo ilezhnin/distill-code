@@ -19,7 +19,6 @@ import { BenchmarksView } from "../ui/BenchmarksView";
 import { LeaderboardView } from "../ui/LeaderboardView";
 import { BenchmarkConfigurationPage } from "../ui/BenchmarkConfigurationPage";
 import { rowKey } from "../lib/benchmarkBoards";
-import { NerfBenchView } from "../ui/NerfBenchView";
 import { BenchmarkRoutingDialog } from "../ui/BenchmarkRoutingDialog";
 import {
   BenchmarkExportDialog,
@@ -55,14 +54,10 @@ vi.mock("../api/benchmarks", () => ({
     listAttempts: vi.fn(),
     getRun: vi.fn(),
     getEvidence: vi.fn(),
-    listBaselines: vi.fn(),
     getLeaderboard: vi.fn(),
     getHistory: vi.fn().mockResolvedValue([]),
     listDesigns: vi.fn(),
     getRoutingEvidence: vi.fn(),
-    getUsageSeries: vi.fn(),
-    getComparisons: vi.fn(),
-    getUsageComparisons: vi.fn(),
     listSchedules: vi.fn(),
     saveSchedule: vi.fn(),
     saveDraft: vi.fn(),
@@ -185,7 +180,6 @@ describe("benchmark authoring and saved evidence", () => {
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getRun).mockResolvedValue(run);
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
-    vi.mocked(benchmarkApi.listBaselines).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getCandidateObservations).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listCatalog).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listDesigns).mockResolvedValue([]);
@@ -193,7 +187,6 @@ describe("benchmark authoring and saved evidence", () => {
       cohort: null,
       rows: [],
     });
-    vi.mocked(benchmarkApi.getUsageSeries).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listSchedules).mockResolvedValue([]);
     vi.mocked(benchmarkApi.eventsSince).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listen).mockResolvedValue(() => {});
@@ -393,7 +386,7 @@ describe("benchmark authoring and saved evidence", () => {
     await screen.findByText("model-54");
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(firstRank()).toBe("51");
-    rerender(view("nerf"));
+    rerender(view("design"));
     rerender(view("leaderboard"));
     await screen.findByText("model-54");
     expect(firstRank()).toBe("1");
@@ -966,7 +959,7 @@ describe("benchmark authoring and saved evidence", () => {
         onOpen={vi.fn()}
         report={{
           cohort: null,
-          rows: ["budget_reached", "selection_changed", "confirmed_change"].map(
+          rows: ["budget_reached", "selection_changed", "untested"].map(
             (status) =>
               leaderboardRow({
                 configuration: {
@@ -986,58 +979,7 @@ describe("benchmark authoring and saved evidence", () => {
     );
     expect(screen.getByText("Artifact budget exceeded")).toBeInTheDocument();
     expect(screen.getByText("Selection changed")).toBeInTheDocument();
-    expect(screen.getByText("Confirmed change")).toBeInTheDocument();
-  });
-  it("opens the attempts behind a Nerf comparison", async () => {
-    const onEvidence = vi.fn();
-    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
-    wrap(
-      <NerfBenchView
-        {...scopeProps}
-        versions={definition.versions}
-        baseline={null}
-        baselineId="baseline"
-        baselineOptions={[{ value: "baseline", label: "Frozen" }]}
-        onBaselineChange={vi.fn()}
-        onCreateBaseline={vi.fn()}
-        comparisons={[
-          {
-            baselineId: "baseline",
-            configurationId: "model-1",
-            configuration,
-            qualityChange: -0.1,
-            retainedQualityPercent: 90,
-            intervalLow: -0.2,
-            intervalHigh: 0,
-            status: "preliminary",
-            reason: "Synthetic",
-            attemptIds: ["attempt-7", "attempt-8"],
-            durationChangePercent: 12.34,
-            tokenChangePercent: null,
-            method: "paired",
-            measuredAt: null,
-          },
-        ]}
-        onEvidence={onEvidence}
-      />,
-    );
-    const row = screen.getByRole("row", { name: /model-1/ });
-    expect(row).toHaveTextContent("90.0%");
-    expect(row).toHaveTextContent("−10.0 pp");
-    expect(row).toHaveTextContent("+12.3%");
-    await userEvent.click(
-      within(row).getByRole("button", { name: "Open model-1" }),
-    );
-    const dialog = await screen.findByRole("dialog", { name: "model-1" });
-    await userEvent.click(
-      await within(dialog).findByRole("button", { name: "Inspect" }),
-    );
-    expect(onEvidence).toHaveBeenCalledWith("attempt-1");
-    expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
-      attemptIds: ["attempt-7", "attempt-8"],
-      offset: 0,
-      limit: 50,
-    });
+    expect(screen.getByText("Untested")).toBeInTheDocument();
   });
   it("defaults dataset export to exclude held-out outcomes", async () => {
     vi.mocked(benchmarkApi.exportDataset).mockResolvedValue({

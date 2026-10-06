@@ -820,10 +820,6 @@ impl Store {
         }
         Ok(())
     }
-    pub async fn baselines(&self) -> Result<Vec<Baseline>> {
-        self.json_rows("SELECT data_json FROM baselines ORDER BY rowid DESC")
-            .await
-    }
     /// Every catalog entry, newest effective date first. Each vendor seed set
     /// is added once, together with the record that it was, so a set shipped
     /// later reaches an existing catalog and a seed the user deleted never
@@ -889,8 +885,8 @@ impl Store {
             .await
     }
     pub async fn usage_samples(&self) -> Result<Vec<UsageSample>> {
-        // Full historical evidence for comparisons and export, read in bounded
-        // batches. UI reads use list_usage with its SQL filter and page bounds.
+        // Quota samples of the retired Usage Bench, kept as data and read
+        // only by the export, in bounded batches.
         let mut samples = Vec::new();
         let mut before = i64::MAX;
         loop {
@@ -906,19 +902,6 @@ impl Store {
             }
         }
         Ok(samples)
-    }
-    pub async fn list_usage(&self, q: &ResultQuery) -> Result<Vec<UsageSample>> {
-        sqlx::query_scalar::<_,String>("SELECT data_json FROM usage_observations WHERE (? IS NULL OR run_id=?) ORDER BY rowid DESC LIMIT ? OFFSET ?")
-            .bind(&q.run_id).bind(&q.run_id).bind(q.limit.unwrap_or(100).min(500)).bind(q.offset.unwrap_or(0))
-            .fetch_all(&self.pool).await?.into_iter()
-            .map(|data|serde_json::from_str(&data).map_err(Into::into)).collect()
-    }
-    pub async fn save_usage(&self, s: &UsageSample) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO usage_observations(id,run_id,data_json) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING").bind(&s.id).bind(&s.run_id).bind(serde_json::to_string(s)?).execute(&mut *tx).await?;
-        event(&mut tx, &s.run_id, "usage_changed").await?;
-        tx.commit().await?;
-        Ok(())
     }
     async fn json_rows<T: serde::de::DeserializeOwned>(&self, sql: &str) -> Result<Vec<T>> {
         sqlx::query_scalar::<_, String>(sql)
@@ -2177,31 +2160,6 @@ mod tests {
         let samples = store.usage_samples().await.unwrap();
         assert_eq!(samples.len(), 1005);
         assert!(samples.iter().any(|s| s.id == "sample-0"));
-        let old_page = store
-            .list_usage(&ResultQuery {
-                run_id: Some("old-run".into()),
-                limit: Some(10),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(old_page.len(), 1);
-        assert_eq!(old_page[0].id, "sample-0");
-        let latest_page = store
-            .list_usage(&ResultQuery {
-                limit: Some(2),
-                offset: Some(1),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            latest_page
-                .iter()
-                .map(|s| s.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["sample-1003", "sample-1002"]
-        );
     }
 
     #[tokio::test]

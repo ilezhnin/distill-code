@@ -1,4 +1,4 @@
-//! Per-case measurements and frozen baseline comparisons.
+//! Per-case measurements, boards and history.
 use super::types::*;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -418,131 +418,6 @@ fn ledger_configuration<'a>(
         filled.fast_mode = seen.fast_mode;
     }
     Cow::Owned(filled)
-}
-
-/// What ran, as Nerf pairs it: the strict configuration, except that an
-/// attempt which also called an auxiliary model stays its configuration's
-/// evidence.
-fn nerf_configuration(attempt: &Attempt) -> Cow<'_, Configuration> {
-    let mut configuration = execution_configuration(attempt);
-    if configuration.execution_profile.ends_with("_auxiliary") {
-        let profile = ledger_profile(&configuration.execution_profile).to_owned();
-        configuration.to_mut().execution_profile = profile;
-    }
-    configuration
-}
-
-fn nerf_key(attempt: &Attempt) -> String {
-    configuration_key(&nerf_configuration(attempt))
-}
-
-/// The conditions a run measured under: its suite, repetitions and timeout.
-/// The execution cap only admits a plan, so it is not a condition.
-fn conditions<'a>(
-    versions: impl IntoIterator<Item = &'a String>,
-    repetitions: u32,
-    timeout_seconds: u32,
-) -> String {
-    let versions: BTreeSet<&String> = versions.into_iter().collect();
-    serde_json::to_string(&(versions, repetitions, timeout_seconds)).unwrap_or_default()
-}
-
-fn cohort(run: &BenchmarkRun) -> String {
-    let request = &run.request;
-    conditions(
-        &request.version_ids,
-        request.repetitions,
-        request.timeout_seconds,
-    )
-}
-
-/// Each frozen configuration's conditions, taken from the baseline runs that
-/// produced its snapshots. The requested configuration may leave effort or
-/// fast mode unset while the snapshots carry the observed values, so the
-/// request's own configuration list cannot identify them. Runs of one
-/// configuration with the same repetitions and timeout freeze the union of
-/// their suites, so a run and its catch-up pair with one follow-up over both.
-/// A snapshot without a recorded request adds an unmatchable condition.
-pub(super) fn frozen_conditions(baseline: &Baseline) -> BTreeMap<String, BTreeSet<String>> {
-    let requests: BTreeMap<&str, &RunRequest> = baseline
-        .run_ids
-        .iter()
-        .map(String::as_str)
-        .zip(&baseline.run_conditions)
-        .collect();
-    let mut runs: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
-    for attempt in &baseline.snapshots {
-        runs.entry(nerf_key(attempt))
-            .or_default()
-            .insert(attempt.run_id.as_str());
-    }
-    runs.into_iter()
-        .map(|(key, run_ids)| {
-            let mut frozen = BTreeSet::new();
-            let mut suites: BTreeMap<(u32, u32), BTreeSet<&String>> = BTreeMap::new();
-            for id in run_ids {
-                match requests.get(id) {
-                    Some(request) => suites
-                        .entry((request.repetitions, request.timeout_seconds))
-                        .or_default()
-                        .extend(&request.version_ids),
-                    None => {
-                        frozen.insert(String::new());
-                    }
-                }
-            }
-            for ((repetitions, timeout_seconds), versions) in suites {
-                frozen.insert(conditions(versions, repetitions, timeout_seconds));
-            }
-            (key, frozen)
-        })
-        .collect()
-}
-
-/// The follow-up run of each frozen configuration: its newest completed run
-/// after the baseline under that configuration's frozen conditions, else its
-/// newest one, which then reports changed conditions.
-fn selected_runs<'a>(
-    data: &'a QueryData,
-    baseline: &Baseline,
-    frozen: &BTreeMap<String, BTreeSet<String>>,
-    query: &ResultQuery,
-) -> BTreeMap<String, &'a BenchmarkRun> {
-    let mut selected = BTreeMap::new();
-    for (key, conditions) in frozen {
-        let candidates: Vec<_> =
-            data.runs
-                .iter()
-                .filter(|run| {
-                    !run.request.preview
-                        && run.state == "completed"
-                        && run.created_at > baseline.created_at
-                        && !baseline.run_ids.contains(&run.id)
-                        && query.run_id.as_ref().is_none_or(|id| id == &run.id)
-                        && query.as_of.is_none_or(|at| run.updated_at <= at)
-                        && query.version_ids.as_ref().is_none_or(|ids| {
-                            ids.iter().all(|id| run.request.version_ids.contains(id))
-                        })
-                        && data
-                            .attempts
-                            .iter()
-                            .any(|a| a.run_id == run.id && nerf_key(a) == *key)
-                })
-                .collect();
-        let matching = candidates
-            .iter()
-            .copied()
-            .filter(|run| conditions.contains(&cohort(run)))
-            .max_by_key(|run| (run.created_at, &run.id));
-        if let Some(run) = matching.or_else(|| {
-            candidates
-                .into_iter()
-                .max_by_key(|run| (run.created_at, &run.id))
-        }) {
-            selected.insert(key.clone(), run);
-        }
-    }
-    selected
 }
 
 fn median(mut values: Vec<f64>) -> Option<f64> {
@@ -1364,52 +1239,6 @@ fn protocol_evaluation(attempt: &Attempt, as_of: Option<i64>) -> Option<&Evaluat
     })
 }
 
-/// Provenance, evaluator revision and judge protocol hash of that evaluation.
-fn evaluator_identity(attempt: &Attempt) -> String {
-    let evaluation = protocol_evaluation(attempt, None);
-    serde_json::to_string(&(
-        evaluation.map(|e| (&e.provenance, &e.evaluator_revision)),
-        evaluation
-            .and_then(|e| e.details.as_ref())
-            .and_then(|d| d.get("protocolHash")),
-    ))
-    .unwrap_or_default()
-}
-
-/// Whether an attempt scores the same under any evaluator: a budget failure's
-/// fixed 0, or a judged brief answered without markup, which fails before a
-/// panel sees it (its rubric check is otherwise always pending review).
-fn protocol_neutral(data: &QueryData, attempt: &Attempt) -> bool {
-    is_budget_failure(attempt.outcome.as_deref())
-        || protocol_evaluation(attempt, None).is_some_and(|e| {
-            e.provenance == "objective"
-                && e.verdict == "fail"
-                && data
-                    .versions
-                    .iter()
-                    .find(|v| v.id == attempt.version_id)
-                    .is_some_and(|v| v.manifest.evaluator.kind == "rubric")
-        })
-}
-
-/// Each case's evaluator identities. A follow-up is scored by the same
-/// evaluator only when its objective check or judge protocol is unchanged.
-/// Protocol-neutral attempts identify no evaluator, so a case they alone
-/// measured on one side is not compared.
-fn case_evaluators<'a>(
-    data: &QueryData,
-    attempts: &[&'a Attempt],
-) -> BTreeMap<&'a str, BTreeSet<String>> {
-    let mut cases: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for attempt in attempts.iter().filter(|a| !protocol_neutral(data, a)) {
-        cases
-            .entry(attempt.version_id.as_str())
-            .or_default()
-            .insert(evaluator_identity(attempt));
-    }
-    cases
-}
-
 fn comparison_key(
     attempts: &[&Attempt],
     runs: &BTreeMap<&str, &BenchmarkRun>,
@@ -1661,230 +1490,9 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
         .collect()
 }
 
-fn means_by_family(data: &QueryData, attempts: &[&Attempt]) -> BTreeMap<String, f64> {
-    let mut cases: BTreeMap<String, (String, Vec<f64>)> = BTreeMap::new();
-    for attempt in attempts {
-        let Some(value) = score(attempt) else {
-            continue;
-        };
-        let family = data
-            .versions
-            .iter()
-            .find(|v| v.id == attempt.version_id)
-            .map(|v| v.manifest.task_family.clone())
-            .unwrap_or_else(|| attempt.version_id.clone());
-        cases
-            .entry(attempt.version_id.clone())
-            .or_insert_with(|| (family, Vec::new()))
-            .1
-            .push(value);
-    }
-    let mut families: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for (family, scores) in cases.into_values() {
-        families
-            .entry(family)
-            .or_default()
-            .push(scores.iter().sum::<f64>() / scores.len() as f64);
-    }
-    families
-        .into_iter()
-        .map(|(family, scores)| (family, scores.iter().sum::<f64>() / scores.len() as f64))
-        .collect()
-}
-
-fn interval(deltas: &[f64]) -> (f64, f64) {
-    let mut state = 0x6d2b79f5_u64;
-    let mut samples = Vec::with_capacity(2_000);
-    for _ in 0..2_000 {
-        let mut sum = 0.0;
-        for _ in deltas {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            sum += deltas[state as usize % deltas.len()];
-        }
-        samples.push(sum / deltas.len() as f64);
-    }
-    samples.sort_by(f64::total_cmp);
-    (samples[49], samples[1_949])
-}
-
-fn sign_probability(deltas: &[f64], threshold: f64) -> f64 {
-    let n = deltas.len().min(256);
-    let negatives = deltas
-        .iter()
-        .take(n)
-        .filter(|value| **value < -threshold)
-        .count();
-    let mut probability = 2.0_f64.powi(-(n as i32));
-    let mut cumulative = 0.0;
-    for k in 0..=n {
-        if k >= negatives {
-            cumulative += probability;
-        }
-        if k < n {
-            probability *= (n - k) as f64 / (k + 1) as f64;
-        }
-    }
-    cumulative.min(1.0)
-}
-
-pub fn compare(data: &QueryData, baseline: &Baseline, query: &ResultQuery) -> Vec<Comparison> {
-    let frozen = frozen_conditions(baseline);
-    let selected = selected_runs(data, baseline, &frozen, query);
-    let mut configurations: BTreeMap<String, (String, Configuration)> = BTreeMap::new();
-    for attempt in &baseline.snapshots {
-        configurations.insert(
-            nerf_key(attempt),
-            (
-                attempt.configuration.id.clone(),
-                nerf_configuration(attempt).into_owned(),
-            ),
-        );
-    }
-    let mut results = Vec::new();
-    let authored = |attempt: &Attempt| {
-        data.versions
-            .iter()
-            .find(|v| v.id == attempt.version_id)
-            .is_some_and(|v| {
-                super::routing::authored_by_candidate(
-                    &v.manifest,
-                    &execution_configuration(attempt),
-                )
-            })
-    };
-    for (key, (id, configuration)) in configurations {
-        let before: Vec<_> = baseline
-            .snapshots
-            .iter()
-            .filter(|a| nerf_key(a) == key && !authored(a))
-            .collect();
-        // Only the run selected for this configuration is its follow-up; a run
-        // selected for another configuration never adds samples here.
-        let run = selected.get(&key).copied();
-        let after: Vec<_> = data
-            .attempts
-            .iter()
-            .filter(|a| {
-                run.is_some_and(|run| a.run_id == run.id) && nerf_key(a) == key && !authored(a)
-            })
-            .collect();
-        let before_cases: BTreeSet<_> = before.iter().map(|a| &a.version_id).collect();
-        let after_cases: BTreeSet<_> = after.iter().map(|a| &a.version_id).collect();
-        let frozen_evaluators = case_evaluators(data, &before);
-        let changed_evaluator = case_evaluators(data, &after)
-            .iter()
-            .any(|(case, identities)| {
-                frozen_evaluators
-                    .get(case)
-                    .is_some_and(|frozen| frozen != identities)
-            });
-        let conditions = frozen.get(&key);
-        let budgets_match = run.zip(conditions).is_some_and(|(run, conditions)| {
-            conditions.len() == 1 && conditions.contains(&cohort(run))
-        });
-        let same_conditions = budgets_match
-            && before_cases == after_cases
-            && !changed_evaluator
-            && before
-                .iter()
-                .chain(after.iter())
-                .all(|a| score(a).is_some());
-        let old = means_by_family(data, &before);
-        let new = means_by_family(data, &after);
-        let deltas: Vec<_> = old
-            .iter()
-            .filter_map(|(family, value)| new.get(family).map(|latest| latest - value))
-            .collect();
-        let mut result = Comparison {
-            baseline_id: baseline.id.clone(),
-            configuration_id: id,
-            configuration,
-            quality_change: None,
-            retained_quality_percent: None,
-            interval_low: None,
-            interval_high: None,
-            status: "insufficient_evidence".into(),
-            reason: "No complete paired family comparison after this frozen baseline".into(),
-            attempt_ids: after.iter().map(|a| a.id.clone()).collect(),
-            duration_change_percent: None,
-            token_change_percent: None,
-            method: "family-bootstrap-v1/holm-sign-v1".into(),
-            measured_at: after.iter().filter_map(|a| a.finished_at).max(),
-        };
-        let mut p = 1.0;
-        if !after.is_empty() && !same_conditions {
-            result.status = "changed_conditions".into();
-            result.reason = "Case coverage, evaluator protocol, repetitions or timeout differ or are unavailable".into();
-        } else if !deltas.is_empty() {
-            let relative = |old: Option<f64>, new: Option<f64>| {
-                old.zip(new)
-                    .and_then(|(a, b)| (a > 0.0).then_some(100.0 * (b / a - 1.0)))
-            };
-            result.duration_change_percent = relative(
-                median(
-                    before
-                        .iter()
-                        .filter_map(|a| a.duration_ms.map(|v| v as f64))
-                        .collect(),
-                ),
-                median(
-                    after
-                        .iter()
-                        .filter_map(|a| a.duration_ms.map(|v| v as f64))
-                        .collect(),
-                ),
-            );
-            // Auxiliary model calls inflate the counters; keep the figure pure.
-            let tokens = |attempts: &[&Attempt]| {
-                median(
-                    attempts
-                        .iter()
-                        .filter(|a| !has_auxiliary_usage(a))
-                        .filter_map(|a| a.usage.output.map(|v| v as f64))
-                        .collect(),
-                )
-            };
-            result.token_change_percent = relative(tokens(&before), tokens(&after));
-            let change = deltas.iter().sum::<f64>() / deltas.len() as f64;
-            let initial = old.values().sum::<f64>() / old.len() as f64;
-            let (low, high) = interval(&deltas);
-            result.quality_change = Some(change);
-            result.retained_quality_percent =
-                (initial > 0.0).then_some(100.0 * (initial + change) / initial);
-            result.interval_low = Some(low);
-            result.interval_high = Some(high);
-            result.status = "preliminary".into();
-            result.reason = format!("{} independent paired families; family-bootstrap-v1, seed 1831565813, 2000 samples; threshold {}; one-sided sign test with Holm correction", deltas.len(), baseline.threshold);
-            if deltas.len() >= 6 && high < -baseline.threshold {
-                p = sign_probability(&deltas, baseline.threshold);
-            }
-        }
-        results.push((p, result));
-    }
-    results.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let count = results.len();
-    let mut rejected = false;
-    for (index, (p, result)) in results.iter_mut().enumerate() {
-        if !rejected && *p <= 0.05 / (count - index) as f64 {
-            result.status = "confirmed_change".into();
-        } else {
-            rejected = true;
-        }
-    }
-    results.into_iter().map(|(_, result)| result).collect()
-}
-
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    #[test]
-    fn family_interval_does_not_count_repeats_as_families() {
-        assert_eq!(interval(&[-0.5; 8]), (-0.5, -0.5));
-        assert!(sign_probability(&[-0.5; 8], 0.1) < 0.01);
-        assert!(sign_probability(&[0.0; 8], 0.1) > 0.99);
-    }
     #[test]
     fn points_share_one_scale() {
         assert_eq!(share_points(0.929), 929);
@@ -1921,7 +1529,7 @@ pub(super) mod tests {
     /// A cell needs every required repetition scored, every one passing.
     #[test]
     fn a_cell_passes_only_when_every_repetition_passes() {
-        let (data, _) = dataset();
+        let data = dataset();
         let base = &data.attempts[0];
         let attempt = |id: &str, repetition: u32, outcome: &str| Attempt {
             id: id.into(),
@@ -1979,7 +1587,7 @@ pub(super) mod tests {
     }
     #[test]
     fn null_cost_is_not_free() {
-        let (data, _) = dataset();
+        let data = dataset();
         let mut first = data.attempts[0].clone();
         let mut repeat = first.clone();
         repeat.id = "repeat".into();
@@ -1999,7 +1607,7 @@ pub(super) mod tests {
         assert_eq!(mean_case_cost(&[&first], Some(2)), Some(1.0));
     }
 
-    pub fn dataset() -> (QueryData, Baseline) {
+    pub fn dataset() -> QueryData {
         let config = Configuration {
             id: "claude:private-account:model".into(),
             provider_id: "claude".into(),
@@ -2088,31 +1696,19 @@ pub(super) mod tests {
                 attempts: vec![],
             },
         ];
-        let baseline = Baseline {
-            id: "baseline".into(),
-            name: "Frozen".into(),
-            run_ids: vec!["before".into()],
-            created_at: 4,
-            threshold: 0.1,
-            snapshots: before.clone(),
-            run_conditions: vec![request],
-        };
-        (
-            QueryData {
-                definitions: vec![],
-                versions,
-                runs,
-                attempts: before.into_iter().chain(after).collect(),
-                // The fixtures measure one repetition per case; the product
-                // protocol of `REQUIRED_REPETITIONS` has its own tests.
-                required_repetitions: 1,
-            },
-            baseline,
-        )
+        QueryData {
+            definitions: vec![],
+            versions,
+            runs,
+            attempts: before.into_iter().chain(after).collect(),
+            // The fixtures measure one repetition per case; the product
+            // protocol of `REQUIRED_REPETITIONS` has its own tests.
+            required_repetitions: 1,
+        }
     }
     #[test]
-    fn authored_cases_are_excluded_from_rows_and_comparisons() {
-        let (mut data, baseline) = dataset();
+    fn authored_cases_are_excluded_from_rows() {
+        let mut data = dataset();
         let query = ResultQuery::default();
         assert_eq!(leaderboard(&data, &query).rows[0].status, "comparable");
         data.versions[0].manifest.environment["authoredBy"] = serde_json::json!(["model"]);
@@ -2132,15 +1728,12 @@ pub(super) mod tests {
         assert_eq!(report.rows[0].quality, None);
         assert!(report.rows[0].scored_version_ids.is_empty());
         assert!(report.cohort.is_some());
-        let comparison = compare(&data, &baseline, &query);
-        assert_eq!(comparison[0].status, "insufficient_evidence");
-        assert!(comparison[0].attempt_ids.is_empty());
     }
     /// A run is one sitting: the newest run that began stands whole, and
     /// a case it never measured is its gap, however an earlier run scored it.
     #[test]
     fn the_newest_run_stands_whole_and_coverage_follows_the_pool() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         for version in data.versions.iter_mut().take(2) {
             version.manifest.work_class_id = "planning".into();
         }
@@ -2168,7 +1761,7 @@ pub(super) mod tests {
         assert!(row.attempt_ids.iter().all(|id| id.starts_with("after-")));
         assert_eq!(row.measured_at, Some(2));
         // Both runs whole: the newest stands, every case failed.
-        let (whole, _) = dataset();
+        let whole = dataset();
         let row = &leaderboard(&whole, &query).rows[0];
         assert_eq!(
             (row.status.as_str(), row.scored, row.points),
@@ -2192,7 +1785,7 @@ pub(super) mod tests {
     }
     #[test]
     fn the_ledger_as_of_a_date_shows_what_was_measured_by_then() {
-        let (data, _) = dataset();
+        let data = dataset();
         // Before the second run only the first run's passes exist.
         let early = leaderboard(
             &data,
@@ -2217,7 +1810,7 @@ pub(super) mod tests {
     /// again.
     #[test]
     fn a_case_the_provider_refused_is_no_catch_up_gap() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v0") {
             attempt.outcome = Some("unsupported".into());
         }
@@ -2237,7 +1830,7 @@ pub(super) mod tests {
     }
     #[test]
     fn a_new_case_adds_a_gap_instead_of_resetting_history() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         // A seventh case is published; nobody has run it yet.
         let mut extra = data.versions[0].clone();
         extra.id = "v6".into();
@@ -2290,7 +1883,7 @@ pub(super) mod tests {
     }
     #[test]
     fn later_judgments_and_reviews_do_not_rewrite_an_earlier_snapshot() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         let attempt = &mut data.attempts[0];
         attempt.outcome = Some("judged".into());
         let evaluation = |created_at, score, provenance: &str| Evaluation {
@@ -2332,7 +1925,7 @@ pub(super) mod tests {
 
     #[test]
     fn runtime_updates_and_implicit_defaults_share_one_ledger() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         for attempt in &mut data.attempts {
             // Configuration IDs are display labels and differ between runs.
             attempt.configuration.id = format!("label-{}", attempt.run_id);
@@ -2428,7 +2021,7 @@ pub(super) mod tests {
         k3_renamed.model_name = Some("K3 Turbo".into());
         assert_eq!(leaderboard_key(&k3), leaderboard_key(&k3_renamed));
 
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         for attempt in &mut data.attempts {
             attempt.resolved_model = Some(format!("model-{}", attempt.run_id));
         }
@@ -2469,7 +2062,7 @@ pub(super) mod tests {
 
     #[test]
     fn a_judged_rendering_scores_the_panel_median_until_a_human_overrides() {
-        let (data, _) = dataset();
+        let data = dataset();
         let mut attempt = data.attempts[0].clone();
         attempt.outcome = Some("judged".into());
         let judge = |score: f64, provenance: &str| Evaluation {
@@ -2499,7 +2092,7 @@ pub(super) mod tests {
     /// cases a model failed can never lift its row.
     #[test]
     fn a_narrow_follow_up_run_stands_alone() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         let mut follow_up = data.runs[1].clone();
         follow_up.id = "follow-up".into();
         follow_up.created_at = 9;
@@ -2538,38 +2131,8 @@ pub(super) mod tests {
         assert_eq!(report.rows[0].scored, 6);
     }
     #[test]
-    fn matched_families_detect_change_but_changed_budgets_do_not() {
-        let (mut data, baseline) = dataset();
-        assert_eq!(
-            compare(&data, &baseline, &ResultQuery::default())[0].status,
-            "confirmed_change"
-        );
-        data.runs[1].request.timeout_seconds = 1;
-        let result = compare(&data, &baseline, &ResultQuery::default());
-        assert_eq!(result[0].status, "changed_conditions");
-        assert_eq!(result[0].quality_change, None);
-    }
-    #[test]
-    fn repeated_case_family_is_not_independent_evidence() {
-        let (mut data, baseline) = dataset();
-        for version in &mut data.versions {
-            version.manifest.task_family = "same-family".into();
-        }
-        assert_eq!(
-            compare(&data, &baseline, &ResultQuery::default())[0].status,
-            "preliminary"
-        );
-    }
-    #[test]
-    fn observed_selection_and_fractional_rubric_are_preserved() {
-        let (mut data, baseline) = dataset();
-        for attempt in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
-            attempt.observed.as_mut().unwrap().effort = Some("high".into());
-        }
-        assert_eq!(
-            compare(&data, &baseline, &ResultQuery::default())[0].status,
-            "insufficient_evidence"
-        );
+    fn a_fractional_rubric_score_is_preserved() {
+        let mut data = dataset();
         let attempt = &mut data.attempts[0];
         attempt.outcome = Some("fail".into());
         attempt.evaluations.push(Evaluation {

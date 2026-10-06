@@ -126,16 +126,6 @@ pub fn with_known_effort(mut data: QueryData) -> QueryData {
     data
 }
 
-/// A baseline without the frozen attempts whose effort is unknown, so Nerf
-/// never pairs a measurement of an unknown effort.
-pub fn baseline_with_known_effort(mut baseline: Baseline) -> Baseline {
-    let defaulted = DefaultedRequests::of(&baseline.snapshots);
-    baseline
-        .snapshots
-        .retain(|attempt| !effort_unknown(attempt, &defaulted));
-    baseline
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::analysis::{self, tests::dataset};
@@ -160,7 +150,7 @@ mod tests {
     /// One attempt of `requested` in `run`: acknowledged at the effort in
     /// `observed` (and passed), or, for `None`, never acknowledged.
     fn attempt(run: &str, requested: &Configuration, observed: Option<Option<&str>>) -> Attempt {
-        let (data, _) = dataset();
+        let data = dataset();
         let mut attempt = data.attempts[0].clone();
         attempt.id = format!("{run}-{}", requested.model_id);
         attempt.run_id = run.into();
@@ -293,7 +283,7 @@ mod tests {
     /// acknowledged at the default, one refused before a session existed,
     /// the rest never started) and a Haiku run without an effort control.
     fn ledger() -> (QueryData, Configuration, Configuration, Configuration) {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         let sonnet = configuration("sonnet", Some("default"));
         let opus = configuration("opus", None);
         let haiku = configuration("haiku", None);
@@ -398,30 +388,5 @@ mod tests {
             .collect();
         candidates.sort_unstable();
         assert_eq!(candidates, ["haiku", "model"]);
-    }
-
-    #[test]
-    fn nerf_never_pairs_a_frozen_measurement_of_an_unknown_effort() {
-        let (data, mut baseline) = dataset();
-        let sonnet = configuration("sonnet", None);
-        baseline
-            .snapshots
-            .push(attempt("before", &sonnet, Some(Some("default"))));
-        baseline
-            .snapshots
-            .push(attempt("before", &configuration("haiku", None), Some(None)));
-        let frozen = baseline.snapshots.len();
-        let baseline = baseline_with_known_effort(baseline);
-        assert_eq!(baseline.snapshots.len(), frozen - 1);
-        assert!(!baseline
-            .snapshots
-            .iter()
-            .any(|a| a.configuration.model_id == "sonnet"));
-        let compared =
-            analysis::compare(&with_known_effort(data), &baseline, &ResultQuery::default());
-        assert!(!compared.is_empty());
-        assert!(!compared
-            .iter()
-            .any(|c| c.configuration.model_id == "sonnet"));
     }
 }

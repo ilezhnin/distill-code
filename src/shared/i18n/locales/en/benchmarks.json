@@ -8,13 +8,10 @@
   "disabled": "Disabled",
   "seconds": "{{value}} s",
   "percent": "{{value}}%",
-  "percentagePoints": "{{value}} pp",
   "sections": {
     "leaderboard": "Leaderboard",
     "design": "Design Bench",
-    "development": "Bench development",
-    "nerf": "Nerf Bench",
-    "usage": "Usage Bench"
+    "development": "Bench development"
   },
   "actions": {
     "new": "New test",
@@ -54,12 +51,7 @@
     "catalog": "Model catalog"
   },
   "filters": {
-    "suite": "Suite",
-    "allSuites": "All published versions",
     "run": "Run",
-    "allRuns": "All runs",
-    "baseline": "Baseline",
-    "noBaseline": "No baseline",
     "provider": "Provider",
     "effort": "Effort",
     "fastMode": "Fast mode",
@@ -96,7 +88,6 @@
     "knownGood": "Known passing output",
     "knownBad": "Known failing output",
     "executionProfile": "Execution profile",
-    "measurementProfile": "Measurement profile",
     "timeoutSeconds": "Minimum time limit (seconds)",
     "maxArtifactBytes": "Artifact limit (bytes)",
     "repetitions": "Repetitions",
@@ -111,7 +102,6 @@
     "effort": "Native effort",
     "fastMode": "Fast mode",
     "maxExecutions": "Maximum executions",
-    "configuration": "Configuration",
     "repetition": "Repetition",
     "duration": "Median duration",
     "cost": "Measured cost",
@@ -121,20 +111,8 @@
     "versions": "Published",
     "workClass": "Work class",
     "difficulty": "Difficulty",
-    "qualityChange": "Quality change",
-    "retainedQuality": "Quality vs baseline",
-    "retainedQualityValue": "{{value}}% of baseline",
-    "interval": "Uncertainty interval",
-    "intervalValue": "{{low}} … {{high}} pp",
-    "window": "Quota window",
     "before": "Used before",
     "after": "Used after",
-    "quotaDelta": "Used points",
-    "completed": "Completed tasks",
-    "attribution": "Attribution",
-    "durationChange": "Duration change",
-    "tokenChange": "Output token change",
-    "retainedAllowance": "Effective allowance",
     "reviewScore": "Review score (0–1)",
     "reviewReason": "Review evidence",
     "tokens": "Tokens",
@@ -145,9 +123,7 @@
     "durationShort": "Duration",
     "costShort": "Cost",
     "tokensOut": "Output tokens",
-    "measuredAt": "Measured",
     "repetitionValue": "repetition {{value}}",
-    "usedRange": "Used before → after",
     "elapsed": "Duration"
   },
   "split": {
@@ -171,10 +147,7 @@
   "profiles": {
     "native_text": "Clean text, no tools",
     "protected_repository": "Protected code artifact",
-    "isolated_ui": "Isolated UI artifact",
-    "task_metrics": "Task quality, time and tokens",
-    "controlled_quota": "Controlled quota measurement",
-    "capacity": "Bounded capacity experiment"
+    "isolated_ui": "Isolated UI artifact"
   },
   "editor": {
     "tab": "Editor",
@@ -248,7 +221,7 @@
     "estimatedCost": "Expected spend: {{value}}",
     "checkPlan": "Check plan",
     "start": "Start batch",
-    "preview": "Development preview. Excluded from official comparisons and baselines.",
+    "preview": "Development preview. Excluded from the boards and the history chart.",
     "budgetTitle": "Budget"
   },
   "modelRun": {
@@ -372,35 +345,6 @@
     "judges_one": "{{count}} judge",
     "judges_other": "{{count}} judges"
   },
-  "nerf": {
-    "description": "Changes from a frozen Distill baseline. Quality, duration and output tokens stay separate measurements.",
-    "summary": "Baseline {{name}} · frozen {{date}} · practical threshold {{threshold}} pp. Quality, duration and output tokens stay separate measurements.",
-    "empty": "Choose a baseline to compare.",
-    "emptyHint": "Freeze a completed run as a baseline, then collect matched later runs."
-  },
-  "usage": {
-    "description": "Measured work per subscription allowance, by workload and quota window. Opening this view never starts a measurement.",
-    "summary": "Baseline {{name}} · day one {{date}}. Every window is compared with its own first measurement.",
-    "latestMeasurement": "latest measurement {{date}}",
-    "noMeasurement": "no measurement yet",
-    "windows": {
-      "fiveHour": "5-hour limit",
-      "weekly": "Weekly limit",
-      "weeklyModel": "Weekly limit · {{model}}"
-    },
-    "attribution": "Quota belongs to the whole controlled batch. Mixed account activity cannot establish a task-specific charge; missing telemetry is unknown and an unreached limit is only a lower bound.",
-    "empty": "No quota samples for this selection.",
-    "emptyHint": "Run a published controlled-quota or capacity test to collect samples.",
-    "comparisonEmpty": "Choose a baseline to compare effective allowance.",
-    "intervalValue": "Effective allowance · {{low}} … {{high}}%"
-  },
-  "baseline": {
-    "create": "Create baseline",
-    "description": "Freeze repeated completed runs and a meaningful quality threshold before comparing later observations.",
-    "threshold": "Practical quality threshold (percentage points)",
-    "runs": "Completed runs to freeze",
-    "noRuns": "Complete a run first."
-  },
   "import": {
     "title": "Import a definition",
     "description": "Imported content becomes an editable draft. Import never runs setup commands.",
@@ -475,12 +419,6 @@
     "showAttempts": "Show {{count}} attempts",
     "hideAttempts": "Hide attempts"
   },
-  "attribution": {
-    "provider_reported": "Provider-reported",
-    "controlled_batch": "Controlled batch",
-    "mixed": "Mixed account activity",
-    "unknown": "Unknown"
-  },
   "states": {
     "planned": "Planned",
     "running": "Running",
@@ -518,18 +456,9 @@
     "comparable": "Comparable",
     "stale": "Stale",
     "insufficient_evidence": "Insufficient evidence",
-    "changed_conditions": "Conditions changed",
-    "confirmed_change": "Confirmed change",
     "unavailable": "Unavailable",
     "excluded": "Excluded",
     "below_requirement": "Below requirement",
-    "cannot_attribute": "Cannot attribute",
-    "not_measured": "Not measured",
-    "lower_bound": "Lower bound",
-    "remaining_capacity": "Remaining capacity",
-    "measured": "Measured",
-    "mixed": "Mixed",
-    "controlled_batch": "Controlled batch",
     "unknown": "Unknown",
     "judged": "Judged",
     "rendered": "Rendered",

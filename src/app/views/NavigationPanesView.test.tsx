@@ -47,13 +47,7 @@ function mainNavigation() {
   return within(screen.getByRole("navigation", { name: "Main navigation" }));
 }
 
-const SECTION_LABELS = [
-  "Leaderboard",
-  "Design Bench",
-  "Bench development",
-  "Nerf Bench",
-  "Usage Bench",
-];
+const SECTION_LABELS = ["Leaderboard", "Design Bench", "Bench development"];
 
 describe("NavigationPanesView benchmark sections", () => {
   it("lists the sections under Benchmarks while a benchmark page is open", () => {
@@ -87,13 +81,13 @@ describe("NavigationPanesView benchmark sections", () => {
 
     show("benchmarks", "leaderboard");
     await userEvent.click(
-      mainNavigation().getByRole("button", { name: "Nerf Bench" }),
+      mainNavigation().getByRole("button", { name: "Design Bench" }),
     );
-    expect(onBenchmarkSectionSelect).toHaveBeenCalledWith("nerf");
+    expect(onBenchmarkSectionSelect).toHaveBeenCalledWith("design");
 
-    show("benchmarks", "nerf");
+    show("benchmarks", "design");
     const nav = mainNavigation();
-    expect(nav.getByRole("button", { name: "Nerf Bench" })).toHaveAttribute(
+    expect(nav.getByRole("button", { name: "Design Bench" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -130,7 +124,7 @@ describe("NavigationPanesView benchmark sections", () => {
     const onNavigate = vi.fn();
     renderSidebar({
       activeView: "benchmarks",
-      activeBenchmarkSection: "usage",
+      activeBenchmarkSection: "development",
       onNavigate,
     });
     const benchmarks = mainNavigation().getByRole("button", {

@@ -3,13 +3,7 @@
 import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
 export type StateTone = "positive" | "negative" | "neutral";
 
-const POSITIVE = new Set([
-  "pass",
-  "completed",
-  "comparable",
-  "controlled_batch",
-  "measured",
-]);
+const POSITIVE = new Set(["pass", "completed", "comparable"]);
 const NEGATIVE = new Set([
   "fail",
   "budget_timeout",
@@ -21,7 +15,6 @@ const NEGATIVE = new Set([
   "infrastructure_failure",
   "evaluation_error",
   "needs_attention",
-  "confirmed_change",
   "storage_unavailable",
   "capability_missing",
   "unsupported",
@@ -180,17 +173,6 @@ export function workClassLabel(t: Translate, workClass: string): string {
   return t(`settings:routing.classes.${workClass}`, {
     defaultValue: workClass,
   });
-}
-
-export function quotaWindowLabel(t: Translate, windowId: string): string {
-  if (windowId === "five_hour") return t("usage.windows.fiveHour");
-  if (windowId === "seven_day") return t("usage.windows.weekly");
-  if (windowId.startsWith("seven_day_"))
-    return t("usage.windows.weeklyModel", {
-      model: windowId.slice("seven_day_".length),
-    });
-  if (windowId === "unreported") return t("unknown");
-  return windowId;
 }
 
 const VENDORS: [RegExp, string][] = [

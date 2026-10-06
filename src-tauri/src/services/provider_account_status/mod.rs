@@ -1,7 +1,6 @@
 //! Account-scoped quota snapshots and routing. Reset credits are never consumed
 //! by selection, polling, or dispatch; only the operator's explicit IPC can do so.
 
-pub mod benchmark_sampling;
 mod claude;
 mod claude_resets;
 mod codex;

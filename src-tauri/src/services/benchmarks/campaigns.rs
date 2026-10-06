@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     #[test]
     fn discovery_preserves_native_controls_and_never_inherits_a_score() {
-        let (data, _) = super::super::analysis::tests::dataset();
+        let data = super::super::analysis::tests::dataset();
         let mut schedule: Schedule = serde_json::from_value(serde_json::json!({"id":"campaign","name":"Pilot","enabled":false,"intervalMinutes":60,"nextDueAt":0,"request":data.runs[0].request,"missed":false,"discovery":{"providerId":"claude","accountId":"private-account","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":2,"maxTotalExecutions":20,"generatedRunIds":[],"pausedReason":null})).unwrap();
         let existing = schedule.request.configurations[0].clone();
         let mut new = existing.clone();
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn discovery_adds_available_models_or_only_the_named_ones() {
-        let (data, _) = super::super::analysis::tests::dataset();
+        let data = super::super::analysis::tests::dataset();
         let mut schedule: Schedule = serde_json::from_value(serde_json::json!({"id":"campaign","name":"Pilot","enabled":false,"intervalMinutes":60,"nextDueAt":0,"request":data.runs[0].request,"missed":false,"discovery":{"providerId":"claude","accountId":"private-account","includeNewModels":true,"modelIds":[],"maxCandidates":8},"maxRuns":2,"maxTotalExecutions":20,"generatedRunIds":[],"pausedReason":null})).unwrap();
         let saved = schedule.request.configurations[0].clone();
         let row = |id: &str, name: Option<&str>| {
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn discovery_never_leaves_an_effort_to_the_cli() {
-        let (data, _) = super::super::analysis::tests::dataset();
+        let data = super::super::analysis::tests::dataset();
         let mut schedule: Schedule = serde_json::from_value(serde_json::json!({"id":"campaign","name":"Pilot","enabled":false,"intervalMinutes":60,"nextDueAt":0,"request":data.runs[0].request,"missed":false,"discovery":{"providerId":"claude","accountId":"private-account","includeNewModels":true,"modelIds":[],"maxCandidates":8},"maxRuns":2,"maxTotalExecutions":20,"generatedRunIds":[],"pausedReason":null})).unwrap();
         let saved = schedule.request.configurations[0].clone();
         let row = |id: &str, efforts: &[&str]| {

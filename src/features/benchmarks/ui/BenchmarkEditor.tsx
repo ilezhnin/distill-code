@@ -51,7 +51,6 @@ const EXECUTION_PROFILES = [
   "protected_repository",
   "isolated_ui",
 ];
-const MEASUREMENT_PROFILES = ["task_metrics", "controlled_quota", "capacity"];
 const SPLITS = ["development", "train", "held_out"];
 const DIFFICULTIES = ["unspecified", "easy", "medium", "hard"];
 
@@ -189,6 +188,8 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
   const readDraft = (): BenchmarkDraft => {
     const result = {
       ...draft,
+      // A draft saved for a retired quota or capacity batch measures tasks now.
+      measurementProfile: "task_metrics",
       fixtures: fixtures.map(({ path, content }) => ({ path, content })),
       environment: JSON.parse(environment),
       entryState: JSON.parse(entryState),
@@ -626,19 +627,6 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
                 value={draft.executionProfile}
                 onChange={(value) => patch("executionProfile", value)}
                 options={EXECUTION_PROFILES.map((value) => ({
-                  value,
-                  label: t(`benchmarks:profiles.${value}`),
-                }))}
-              />
-            )}
-          </Field>
-          <Field label={t("benchmarks:fields.measurementProfile")}>
-            {(id) => (
-              <SelectField
-                id={id}
-                value={draft.measurementProfile}
-                onChange={(value) => patch("measurementProfile", value)}
-                options={MEASUREMENT_PROFILES.map((value) => ({
                   value,
                   label: t(`benchmarks:profiles.${value}`),
                 }))}

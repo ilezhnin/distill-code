@@ -22,14 +22,10 @@ import type {
   ValidationReport,
 } from "../types";
 import type {
-  Baseline,
-  Comparison,
   ExportResult,
   LeaderboardReport,
   ResultQuery,
   Schedule,
-  UsageSample,
-  UsageComparison,
   UsageLedgerEntry,
   RoutingEvidence,
   RoutingEvidenceQuery,
@@ -177,19 +173,8 @@ export const benchmarkApi = {
     invoke<HistorySnapshot[]>("benchmark_get_history", { configuration }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>
     invoke<RoutingEvidence>("benchmark_get_routing_evidence", { query }),
-  getUsageSeries: (query: ResultQuery) =>
-    invoke<UsageSample[]>("benchmark_get_usage_series", { query }),
   getUsageLedger: () =>
     invoke<UsageLedgerEntry[]>("benchmark_get_usage_ledger"),
-  getUsageComparisons: (baselineId: string) =>
-    invoke<UsageComparison[]>("benchmark_get_usage_comparisons", {
-      baselineId,
-    }),
-  listBaselines: () => invoke<Baseline[]>("benchmark_list_baselines"),
-  createBaseline: (name: string, runIds: string[], threshold: number) =>
-    invoke<Baseline>("benchmark_create_baseline", { name, runIds, threshold }),
-  getComparisons: (baselineId: string, query: ResultQuery) =>
-    invoke<Comparison[]>("benchmark_get_comparisons", { baselineId, query }),
   submitReview: (
     id: string,
     score: number,

@@ -274,13 +274,6 @@ pub async fn benchmark_get_history(
     .await
 }
 #[tauri::command]
-pub async fn benchmark_get_usage_series(
-    app: AppHandle,
-    query: ResultQuery,
-) -> Result<Vec<UsageSample>> {
-    service(&app).await?.store.list_usage(&query).await
-}
-#[tauri::command]
 pub async fn benchmark_get_usage_ledger(app: AppHandle) -> Result<Vec<UsageLedgerEntry>> {
     let root = crate::services::distill_root::app_root(&app)
         .map_err(|e| BenchmarkError::new("storage_unavailable", e))?;
@@ -288,24 +281,6 @@ pub async fn benchmark_get_usage_ledger(app: AppHandle) -> Result<Vec<UsageLedge
         return Ok(Vec::new());
     }
     service(&app).await?.store.usage_ledger().await
-}
-#[tauri::command]
-pub async fn benchmark_get_usage_comparisons(
-    app: AppHandle,
-    baseline_id: String,
-) -> Result<Vec<benchmarks::usage::UsageComparison>> {
-    let s = service(&app).await?;
-    let baseline = s
-        .store
-        .baselines()
-        .await?
-        .into_iter()
-        .find(|b| b.id == baseline_id)
-        .ok_or_else(|| BenchmarkError::new("validation", "Baseline not found"))?;
-    Ok(benchmarks::usage::compare_samples(
-        &s.store.usage_samples().await?,
-        &baseline,
-    ))
 }
 #[tauri::command]
 pub async fn benchmark_list_catalog(app: AppHandle) -> Result<Vec<CatalogEntry>> {
@@ -338,45 +313,6 @@ pub async fn benchmark_save_catalog_entry(
 #[tauri::command]
 pub async fn benchmark_delete_catalog_entry(app: AppHandle, id: String) -> Result<()> {
     service(&app).await?.store.delete_catalog_entry(&id).await
-}
-#[tauri::command]
-pub async fn benchmark_list_baselines(app: AppHandle) -> Result<Vec<Baseline>> {
-    service(&app).await?.store.baselines().await
-}
-#[tauri::command]
-pub async fn benchmark_create_baseline(
-    app: AppHandle,
-    name: String,
-    run_ids: Vec<String>,
-    threshold: f64,
-) -> Result<Baseline> {
-    let s = service(&app).await?;
-    let value = s.create_baseline(name, run_ids, threshold).await?;
-    s.changed().await;
-    Ok(value)
-}
-#[tauri::command]
-pub async fn benchmark_get_comparisons(
-    app: AppHandle,
-    baseline_id: String,
-    query: ResultQuery,
-) -> Result<Vec<Comparison>> {
-    let s = service(&app).await?;
-    let baseline = s
-        .store
-        .baselines()
-        .await?
-        .into_iter()
-        .find(|v| v.id == baseline_id)
-        .ok_or_else(|| BenchmarkError::new("validation", "Baseline not found"))?;
-    // The frozen side leaves out what the follow-up side leaves out, and
-    // reads an attempt its event record stopped as unscored, as that side does.
-    let data = s.query_data().await?;
-    let baseline = benchmarks::evidence::baseline_with_answer_caps(
-        benchmarks::effort::baseline_with_known_effort(baseline),
-        &data.versions,
-    );
-    Ok(benchmarks::analysis::compare(&data, &baseline, &query))
 }
 #[tauri::command]
 pub async fn benchmark_submit_review(

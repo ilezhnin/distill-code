@@ -1,7 +1,7 @@
 use super::*;
 
 fn before_only() -> QueryData {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     data.runs.retain(|r| r.id == "before");
     data.attempts.retain(|a| a.run_id == "before");
     data
@@ -418,216 +418,6 @@ fn new_panel_must_not_mix_with_old_panel_scores() {
     assert_eq!(score(&a), Some(0.3));
 }
 
-#[test]
-fn larger_unrelated_suite_must_not_hide_a_valid_nerf_follow_up() {
-    let (mut data, baseline) = super::tests::dataset();
-    let before = compare(&data, &baseline, &ResultQuery::default());
-    assert_eq!(before[0].quality_change, Some(-1.0));
-    let mut version = data.versions[0].clone();
-    version.id = "v6".into();
-    version.definition_id = "d6".into();
-    version.manifest.task_family = "family-6".into();
-    data.versions.push(version);
-    let mut run = data.runs[1].clone();
-    run.id = "larger".into();
-    run.created_at = 10;
-    run.updated_at = 11;
-    run.request.version_ids.push("v6".into());
-    run.request.max_executions = 7;
-    let template = data.attempts[6].clone();
-    for id in &run.request.version_ids {
-        let mut a = template.clone();
-        a.id = format!("larger-{id}");
-        a.run_id = run.id.clone();
-        a.version_id = id.clone();
-        data.attempts.push(a);
-    }
-    data.runs.push(run);
-    let after = compare(&data, &baseline, &ResultQuery::default());
-    eprintln!(
-        "Nerf after larger suite: {} {:?}",
-        after[0].status, after[0].quality_change
-    );
-    assert_eq!(after[0].quality_change, Some(-1.0));
-}
-
-/// Rebuilds the baseline from its runs, as `create_baseline` freezes them.
-fn refreeze(data: &QueryData, baseline: &mut Baseline) {
-    baseline.snapshots = data
-        .attempts
-        .iter()
-        .filter(|a| baseline.run_ids.contains(&a.run_id))
-        .cloned()
-        .collect();
-    baseline.run_conditions = baseline
-        .run_ids
-        .iter()
-        .map(|id| {
-            data.runs
-                .iter()
-                .find(|r| &r.id == id)
-                .unwrap()
-                .request
-                .clone()
-        })
-        .collect();
-}
-
-/// Adds a completed run of `cases` with no configuration measured yet.
-fn add_run(data: &mut QueryData, id: &str, created_at: i64, cases: &[&str]) {
-    let mut run = data.runs[0].clone();
-    run.id = id.into();
-    run.created_at = created_at;
-    run.updated_at = created_at + 1;
-    run.request.version_ids = cases.iter().map(|case| (*case).to_owned()).collect();
-    run.request.configurations.clear();
-    data.runs.push(run);
-}
-
-/// Settles `model` on every case of `run_id` with `outcome`.
-fn measure(data: &mut QueryData, run_id: &str, model: &str, outcome: &str) {
-    let template = data.attempts[0].clone();
-    let mut config = template.configuration.clone();
-    if config.model_id != model {
-        config.id = model.into();
-        config.model_id = model.into();
-    }
-    let run = data.runs.iter_mut().find(|r| r.id == run_id).unwrap();
-    run.request.configurations.push(config.clone());
-    for case in run.request.version_ids.clone() {
-        let mut a = template.clone();
-        a.id = format!("{run_id}-{model}-{case}");
-        a.run_id = run_id.into();
-        a.version_id = case;
-        a.configuration = config.clone();
-        a.observed = Some(config.clone());
-        a.outcome = Some(outcome.into());
-        data.attempts.push(a);
-    }
-}
-
-fn comparison_of<'a>(results: &'a [Comparison], model: &str) -> &'a Comparison {
-    results
-        .iter()
-        .find(|c| c.configuration.model_id == model)
-        .unwrap()
-}
-
-#[test]
-fn nerf_pairs_runs_whose_request_left_effort_and_fast_mode_to_the_provider() {
-    let (mut data, mut baseline) = super::tests::dataset();
-    // The run dialog sends no effort; the provider reports its default.
-    for run in &mut data.runs {
-        for configuration in &mut run.request.configurations {
-            configuration.effort = None;
-            configuration.fast_mode = None;
-        }
-    }
-    for a in &mut data.attempts {
-        a.configuration.effort = None;
-        a.configuration.fast_mode = None;
-        let observed = a.observed.as_mut().unwrap();
-        observed.effort = Some("default".into());
-        observed.fast_mode = Some(false);
-    }
-    refreeze(&data, &mut baseline);
-    let result = compare(&data, &baseline, &ResultQuery::default());
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].status, "confirmed_change");
-    assert_eq!(result[0].quality_change, Some(-1.0));
-}
-
-#[test]
-fn an_auxiliary_repetition_never_splits_a_nerf_pair() {
-    for run_id in ["before", "after"] {
-        let (mut data, mut baseline) = super::tests::dataset();
-        // The runner relabels a repetition that also called another model.
-        let relabelled = data
-            .attempts
-            .iter_mut()
-            .find(|a| a.run_id == run_id && a.version_id == "v3")
-            .unwrap();
-        relabelled.usage.schema = "provider_turn_with_auxiliary_v2".into();
-        relabelled.observed.as_mut().unwrap().execution_profile = "native_text_auxiliary".into();
-        refreeze(&data, &mut baseline);
-        let result = compare(&data, &baseline, &ResultQuery::default());
-        assert_eq!(result.len(), 1, "{run_id}");
-        assert_eq!(result[0].status, "confirmed_change", "{run_id}");
-        assert_eq!(result[0].quality_change, Some(-1.0), "{run_id}");
-        assert_eq!(
-            result[0].configuration.execution_profile, "native_text",
-            "{run_id}"
-        );
-    }
-}
-
-#[test]
-fn another_configurations_run_never_hides_a_valid_nerf_follow_up() {
-    let (mut data, mut baseline) = super::tests::dataset();
-    let six = data.runs[0].request.version_ids.clone();
-    let mut seven: Vec<&str> = six.iter().map(String::as_str).collect();
-    seven.push("v6");
-    let mut version = data.versions[0].clone();
-    version.id = "v6".into();
-    version.definition_id = "d6".into();
-    version.manifest.task_family = "family-6".into();
-    data.versions.push(version);
-    // The frozen run measured both configurations; "after" re-ran only "model"
-    // under the frozen conditions, and a later larger suite ran both.
-    measure(&mut data, "before", "other", "pass");
-    refreeze(&data, &mut baseline);
-    add_run(&mut data, "larger", 10, &seven);
-    measure(&mut data, "larger", "model", "pass");
-    measure(&mut data, "larger", "other", "fail");
-    let results = compare(&data, &baseline, &ResultQuery::default());
-    let model = comparison_of(&results, "model");
-    assert_eq!(model.status, "confirmed_change");
-    assert_eq!(model.quality_change, Some(-1.0));
-    assert_eq!(model.attempt_ids.len(), 6);
-    assert!(model.attempt_ids.iter().all(|id| id.starts_with("after-")));
-    let other = comparison_of(&results, "other");
-    assert_eq!(other.status, "changed_conditions");
-    assert_eq!(other.quality_change, None);
-    assert!(other.attempt_ids.iter().all(|id| id.starts_with("larger-")));
-}
-
-#[test]
-fn each_configuration_compares_only_its_newest_follow_up() {
-    let (mut data, mut baseline) = super::tests::dataset();
-    let six: Vec<String> = data.runs[0].request.version_ids.clone();
-    let six: Vec<&str> = six.iter().map(String::as_str).collect();
-    measure(&mut data, "before", "other", "pass");
-    refreeze(&data, &mut baseline);
-    // "after" re-ran both configurations; "again" re-ran only "model" later.
-    measure(&mut data, "after", "other", "pass");
-    add_run(&mut data, "again", 10, &six);
-    measure(&mut data, "again", "model", "pass");
-    let results = compare(&data, &baseline, &ResultQuery::default());
-    let model = comparison_of(&results, "model");
-    assert_eq!(model.attempt_ids.len(), 6);
-    assert!(model.attempt_ids.iter().all(|id| id.starts_with("again-")));
-    assert_eq!(model.quality_change, Some(0.0));
-    let other = comparison_of(&results, "other");
-    assert!(other.attempt_ids.iter().all(|id| id.starts_with("after-")));
-    assert_eq!(other.quality_change, Some(0.0));
-}
-
-#[test]
-fn a_larger_execution_cap_is_not_a_changed_nerf_condition() {
-    let (mut data, baseline) = super::tests::dataset();
-    // Judge reservations raise the cap a follow-up must declare; the cap only
-    // admits the plan and measures nothing.
-    data.runs[1].request.max_executions = 24;
-    let result = compare(&data, &baseline, &ResultQuery::default());
-    assert_eq!(result[0].status, "confirmed_change");
-    assert_eq!(result[0].quality_change, Some(-1.0));
-    // Repetitions remain a frozen condition.
-    data.runs[1].request.repetitions = 2;
-    let result = compare(&data, &baseline, &ResultQuery::default());
-    assert_eq!(result[0].status, "changed_conditions");
-    assert_eq!(result[0].quality_change, None);
-}
-
 /// Settles every attempt of `run_id` as a rendering judged `value` by a
 /// two-judge panel whose render marker carries `protocol` when given.
 fn judge_run(data: &mut QueryData, run_id: &str, protocol: Option<&str>, value: f64) {
@@ -643,38 +433,6 @@ fn judge_run(data: &mut QueryData, run_id: &str, protocol: Option<&str>, value: 
             evaluation(4, Some(value), "judge", "judged"),
             evaluation(5, Some(value), "judge", "judged"),
         ];
-    }
-}
-
-#[test]
-fn a_changed_judge_protocol_is_a_changed_nerf_condition() {
-    let (mut data, mut baseline) = super::tests::dataset();
-    judge_run(&mut data, "before", Some("panel-a"), 1.0);
-    refreeze(&data, &mut baseline);
-    judge_run(&mut data, "after", Some("panel-a"), 0.0);
-    let query = ResultQuery::default();
-    assert_eq!(
-        compare(&data, &baseline, &query)[0].status,
-        "confirmed_change"
-    );
-    // A human review overrides one output; it is not a new protocol.
-    data.attempts
-        .iter_mut()
-        .find(|a| a.run_id == "after")
-        .unwrap()
-        .evaluations
-        .push(evaluation(6, Some(0.0), "human", "fail"));
-    assert_eq!(
-        compare(&data, &baseline, &query)[0].status,
-        "confirmed_change"
-    );
-    // Another panel, prompt or renderer is another evaluator, and so is a
-    // legacy batch that recorded no protocol.
-    for protocol in [Some("panel-b"), None] {
-        judge_run(&mut data, "after", protocol, 0.0);
-        let result = compare(&data, &baseline, &query);
-        assert_eq!(result[0].status, "changed_conditions", "{protocol:?}");
-        assert_eq!(result[0].quality_change, None, "{protocol:?}");
     }
 }
 
@@ -721,7 +479,7 @@ fn history_includes_late_reviews_without_global_run_truncation() {
 /// never reads as complete and never borrows a later result.
 #[test]
 fn a_point_counts_only_what_had_finished_by_its_date() {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     data.versions.truncate(3);
     data.attempts.retain(|a| {
         (a.run_id == "before" && a.version_id == "v0")
@@ -783,7 +541,7 @@ fn a_retest_under_a_new_runtime_keeps_earlier_observations() {
     // A full retest, then a retest of v0..v2 only, after a CLI update; the
     // narrower retest is its own sitting and its three fails score 0.
     for (retested, expected) in [("v6", 0), ("v3", 0)] {
-        let (mut data, _) = super::tests::dataset();
+        let mut data = super::tests::dataset();
         let configuration = data.attempts[0].configuration.clone();
         data.attempts
             .retain(|a| a.run_id == "before" || a.version_id.as_str() < retested);
@@ -814,7 +572,7 @@ fn a_retest_under_a_new_runtime_keeps_earlier_observations() {
 
 #[test]
 fn a_point_with_only_later_evidence_is_left_out_of_the_recalculated_series() {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     let configuration = data.attempts[0].configuration.clone();
     // Every case was republished before the second run measured it.
     for version in data.versions.clone() {
@@ -839,7 +597,7 @@ fn a_point_with_only_later_evidence_is_left_out_of_the_recalculated_series() {
 
 #[test]
 fn later_publications_and_archives_never_rewrite_the_dated_archive() {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     let configuration = data.attempts[0].configuration.clone();
     let recorded = |data: &QueryData| {
         history(data, &configuration)
@@ -879,7 +637,7 @@ fn later_publications_and_archives_never_rewrite_the_dated_archive() {
 #[test]
 fn a_review_on_the_current_output_never_rewrites_earlier_points() {
     for provenance in ["human_visual", "human"] {
-        let (mut data, _) = super::tests::dataset();
+        let mut data = super::tests::dataset();
         let configuration = data.attempts[0].configuration.clone();
         for a in &mut data.attempts {
             let passed = a.run_id == "before";
@@ -1031,7 +789,7 @@ fn a_retest_of_one_case_is_a_sitting_of_one_case() {
 
 #[test]
 fn prepared_export_joins_current_cases_across_runs_and_masks_missing_cells() {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     // v0 was re-run later; every other case keeps its first cell.
     data.attempts
         .retain(|a| a.run_id == "before" || a.version_id == "v0");
@@ -1061,7 +819,7 @@ fn prepared_export_joins_current_cases_across_runs_and_masks_missing_cells() {
 
 #[test]
 fn held_out_cases_stay_out_of_the_training_ledger() {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     data.versions[0].manifest.split = "held_out".into();
     let export = crate::services::benchmarks::export::ledger_rows;
     let rows = export(&data, false, "t").unwrap();
@@ -1512,7 +1270,7 @@ fn a_refused_selection_stays_with_the_requested_candidate() {
 
 #[test]
 fn a_recorded_archive_time_retires_the_case_from_that_date_on() {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     let dated = |data: &QueryData, at: i64| {
         pool(
             data,
@@ -1566,7 +1324,7 @@ fn a_recorded_archive_time_retires_the_case_from_that_date_on() {
 
 #[test]
 fn a_display_id_never_splits_a_leaderboard_row() {
-    let (mut data, _) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     for a in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
         a.configuration.id = "relabelled".into();
         a.observed.as_mut().unwrap().id = "relabelled-observed".into();
@@ -1739,9 +1497,8 @@ fn reevaluate(data: &mut QueryData, run_id: &str, protocol: &str) {
 
 #[test]
 fn the_protocol_that_scored_identifies_the_evaluator() {
-    let (mut data, mut baseline) = super::tests::dataset();
+    let mut data = super::tests::dataset();
     judge_run(&mut data, "before", Some("panel-a"), 1.0);
-    refreeze(&data, &mut baseline);
     judge_run(&mut data, "after", Some("panel-a"), 0.0);
     let query = ResultQuery::default();
     let key = leaderboard(&data, &query).rows[0].comparison_key.clone();
@@ -1750,105 +1507,10 @@ fn the_protocol_that_scored_identifies_the_evaluator() {
     let row = leaderboard(&data, &query).rows.remove(0);
     assert_eq!(row.points, Some(0));
     assert_eq!(row.comparison_key, key);
-    assert_eq!(
-        compare(&data, &baseline, &query)[0].status,
-        "confirmed_change"
-    );
     // A follow-up scored by panel-b stays another evaluator, whatever started later.
     judge_run(&mut data, "after", Some("panel-b"), 0.0);
     reevaluate(&mut data, "after", "panel-a");
-    let result = compare(&data, &baseline, &query);
-    assert_eq!(result[0].status, "changed_conditions");
     assert_ne!(leaderboard(&data, &query).rows[0].comparison_key, key);
-}
-
-/// Gives every attempt an objective verdict: the frozen run passed every case
-/// and the follow-up failed it.
-fn evaluate_objectively(data: &mut QueryData) {
-    for a in &mut data.attempts {
-        let (value, verdict) = if a.run_id == "before" {
-            (1.0, "pass")
-        } else {
-            (0.0, "fail")
-        };
-        a.evaluations = vec![evaluation(2, Some(value), "objective", verdict)];
-    }
-}
-
-/// Settles attempt `id` past the artifact cap: no evaluation, a fixed 0.
-fn exceed_artifact_cap(data: &mut QueryData, id: &str) {
-    let a = data.attempts.iter_mut().find(|a| a.id == id).unwrap();
-    a.outcome = Some("budget_reached".into());
-    a.evaluations.clear();
-}
-
-#[test]
-fn a_budget_failure_is_paired_nerf_evidence() {
-    let query = ResultQuery::default();
-    let (mut data, mut baseline) = super::tests::dataset();
-    evaluate_objectively(&mut data);
-    refreeze(&data, &mut baseline);
-    exceed_artifact_cap(&mut data, "after-v0");
-    let result = compare(&data, &baseline, &query);
-    assert_eq!(result[0].status, "confirmed_change");
-    assert_eq!(result[0].quality_change, Some(-1.0));
-    // The frozen run failed v0 instead, so that family did not change.
-    let (mut data, mut baseline) = super::tests::dataset();
-    evaluate_objectively(&mut data);
-    exceed_artifact_cap(&mut data, "before-v0");
-    refreeze(&data, &mut baseline);
-    let result = compare(&data, &baseline, &query);
-    assert_eq!(result[0].status, "preliminary");
-    assert!((result[0].quality_change.unwrap() + 5.0 / 6.0).abs() < 1e-9);
-}
-
-#[test]
-fn a_brief_failed_for_missing_markup_pairs_with_its_judged_case() {
-    let (mut data, mut baseline) = super::tests::dataset();
-    let kind = data.versions[0].manifest.evaluator.kind.clone();
-    data.versions[0].manifest.evaluator.kind = "rubric".into();
-    judge_run(&mut data, "before", Some("panel-a"), 1.0);
-    refreeze(&data, &mut baseline);
-    judge_run(&mut data, "after", Some("panel-a"), 0.0);
-    // The follow-up answered the v0 brief without markup, so no panel saw it.
-    let bare = data
-        .attempts
-        .iter_mut()
-        .find(|a| a.id == "after-v0")
-        .unwrap();
-    bare.outcome = Some("fail".into());
-    bare.evaluations = vec![evaluation(2, Some(0.0), "objective", "fail")];
-    let query = ResultQuery::default();
-    let result = compare(&data, &baseline, &query);
-    assert_eq!(result[0].status, "confirmed_change");
-    assert_eq!(result[0].quality_change, Some(-1.0));
-    // An objective check against a panel stays another evaluator.
-    data.versions[0].manifest.evaluator.kind = kind;
-    let result = compare(&data, &baseline, &query);
-    assert_eq!(result[0].status, "changed_conditions");
-    assert_eq!(result[0].quality_change, None);
-}
-
-#[test]
-fn a_baseline_frozen_from_a_run_and_its_catch_up_pairs_with_one_follow_up() {
-    let (mut data, mut baseline) = super::tests::dataset();
-    // The frozen run measured v0..v2 and its catch-up v3..v5, under the same
-    // repetitions and timeout.
-    data.runs[0].request.version_ids.truncate(3);
-    data.attempts
-        .retain(|a| !(a.run_id == "before" && a.version_id.as_str() >= "v3"));
-    add_run(&mut data, "catch-up", 3, &["v3", "v4", "v5"]);
-    measure(&mut data, "catch-up", "model", "pass");
-    baseline.run_ids.push("catch-up".into());
-    refreeze(&data, &mut baseline);
-    let result = compare(&data, &baseline, &ResultQuery::default());
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].status, "confirmed_change");
-    assert_eq!(result[0].quality_change, Some(-1.0));
-    assert!(result[0]
-        .attempt_ids
-        .iter()
-        .all(|id| id.starts_with("after-")));
 }
 
 #[test]

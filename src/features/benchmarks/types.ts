@@ -425,58 +425,6 @@ export interface LeaderboardReport {
   cohort: LeaderboardCohort | null;
   rows: LeaderboardRow[];
 }
-export interface Baseline {
-  id: string;
-  name: string;
-  runIds: string[];
-  createdAt: number;
-  threshold: number;
-  snapshots: Attempt[];
-}
-export interface Comparison {
-  baselineId: string;
-  configurationId: string;
-  configuration: Configuration;
-  qualityChange: number | null;
-  retainedQualityPercent: number | null;
-  intervalLow: number | null;
-  intervalHigh: number | null;
-  status: string;
-  reason: string;
-  attemptIds: string[];
-  durationChangePercent: number | null;
-  tokenChangePercent: number | null;
-  method: string;
-  measuredAt: number | null;
-}
-export interface UsageComparison {
-  accountScope: string;
-  windowId: string;
-  retainedPercent: number | null;
-  intervalLow: number | null;
-  intervalHigh: number | null;
-  status: string;
-  reason: string;
-  sampleIds: string[];
-}
-export interface UsageSample {
-  id: string;
-  runId: string;
-  accountScope: string;
-  windowId: string;
-  capturedAt: number;
-  beforeUsedPercent: number | null;
-  afterUsedPercent: number | null;
-  resolutionPercent: number | null;
-  resetAt: number | null;
-  attribution: string;
-  status: string;
-  completedTasks: number;
-  usedPercentagePoints: number | null;
-  reason: string;
-  attemptIds: string[];
-  evidence: unknown;
-}
 export interface UsageLedgerEntry {
   attemptId: string;
   sessionId: string;

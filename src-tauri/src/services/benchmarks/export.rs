@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn an_exported_pin_joins_the_candidate_keys_of_its_row() {
-        let (data, _) = dataset();
+        let data = dataset();
         let request = &data.runs[0].request;
         let configuration = &request.configurations[0];
         let mut snapshot = super::super::routing::snapshot("before", &data.versions[0], request);
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn an_author_excluded_cell_is_masked_not_missing() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         let mut author = data.runs[0].request.configurations[0].clone();
         author.id = "author".into();
         author.model_id = "author-model".into();
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn unscored_and_withheld_identities_add_no_column() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         let planned = data.runs[0].request.configurations[0].clone();
         // Another model whose every attempt failed on infrastructure, and one
         // whose run was cancelled before any attempt started.
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn a_one_case_check_never_empties_the_training_set() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         let mut smoke = data.runs[0].request.configurations[0].clone();
         smoke.id = "smoke".into();
         smoke.model_id = "smoke-model".into();
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn cases_a_paused_run_has_not_reached_stay_owed_under_the_acknowledged_selection() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         // The request left effort to the provider, which acknowledged "high".
         let mut asked = data.runs[0].request.configurations[0].clone();
         asked.id = "asked".into();
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn a_display_id_never_splits_a_ledger_column() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         data.runs[1].request.configurations[0].id = "catch-up-label".into();
         for a in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
             a.configuration.id = "catch-up-label".into();
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn a_ledger_column_names_the_runnable_configuration_of_its_newest_run() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         // The newest run made auxiliary calls; the older one ran another runtime.
         for a in &mut data.attempts {
             let observed = a.observed.as_mut().unwrap();
@@ -665,7 +665,7 @@ mod tests {
     }
     #[test]
     fn matrix_roundtrip_preserves_nulls_failures_and_split_boundaries() {
-        let (mut data, _) = super::super::analysis::tests::dataset();
+        let mut data = super::super::analysis::tests::dataset();
         data.versions[0].manifest.split = "held_out".into();
         data.versions[1].manifest.evaluator.expected = "private-evaluator-canary".into();
         data.attempts.retain(|a| a.id != "after-v1");

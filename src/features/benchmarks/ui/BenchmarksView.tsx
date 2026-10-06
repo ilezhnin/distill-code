@@ -13,7 +13,6 @@ import {
   IconRoute,
 } from "@tabler/icons-react";
 import type { AppNavigationUpdateOptions } from "@/app/types/appNavigation";
-import { useLocaleFormatting } from "@/shared/i18n";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import {
   DropdownMenu,
@@ -30,7 +29,6 @@ import {
   useBenchmarkDefinitions,
   useBenchmarkRuns,
 } from "../hooks/useBenchmarks";
-import { shortId } from "../lib/benchmarkLabels";
 import type { LeaderboardRow } from "../types";
 import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
@@ -38,7 +36,6 @@ import { BenchDevelopmentView } from "./BenchDevelopmentView";
 import { BenchmarkCatalogDialog } from "./BenchmarkCatalogDialog";
 import { BenchmarkEvidenceView } from "./BenchmarkEvidenceView";
 import {
-  BenchmarkBaselineDialog,
   BenchmarkExportDialog,
   BenchmarkImportDialog,
   BenchmarkSchedulesDialog,
@@ -48,26 +45,15 @@ import { rowKey } from "../lib/benchmarkBoards";
 import { BenchmarkActivity } from "./BenchmarkActivity";
 import { BenchmarkConfigurationPage } from "./BenchmarkConfigurationPage";
 import { DesignBenchView } from "./DesignBenchView";
-import {
-  BenchmarkAlert,
-  BenchmarkEmpty,
-  type Option,
-} from "./BenchmarkPrimitives";
+import { BenchmarkAlert, BenchmarkEmpty } from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
 import { BenchmarkModelRunDialog } from "./BenchmarkModelRunDialog";
 import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
 import { BenchmarkRunDrawer } from "./BenchmarkRunDrawer";
 import { BenchmarkRunsDialog } from "./BenchmarkRunsDialog";
 import { LeaderboardView } from "./LeaderboardView";
-import { NerfBenchView } from "./NerfBenchView";
-import { UsageBenchView } from "./UsageBenchView";
 
 const PAGE_SIZE = 50;
-
-export interface ResultScope {
-  versionId: string;
-  runId: string;
-}
 
 interface Props {
   location: BenchmarkLocation;
@@ -82,7 +68,6 @@ type DialogKind =
   | "runs"
   | "import"
   | "export"
-  | "baseline"
   | "schedules"
   | "routing"
   | "catalog";
@@ -93,7 +78,6 @@ export function BenchmarksView({
   onSelectSession,
 }: Props) {
   const { t } = useTranslation("benchmarks");
-  const { formatDate } = useLocaleFormatting();
   const definitions = useBenchmarkDefinitions();
   const runs = useBenchmarkRuns();
   const [dialog, setDialog] = useState<DialogKind | null>(null);
@@ -106,11 +90,6 @@ export function BenchmarksView({
     row: LeaderboardRow;
     runId: string | null;
   } | null>(null);
-  const [scope, setScope] = useState<ResultScope>({
-    versionId: "all",
-    runId: "all",
-  });
-  const [baselineId, setBaselineId] = useState("none");
   const [page, setPage] = useState(0);
   // Every section opens on its first page, whoever switched to it.
   const [pageSection, setPageSection] = useState(location.section);
@@ -123,15 +102,6 @@ export function BenchmarksView({
     () => definitions.data?.flatMap((definition) => definition.versions) ?? [],
     [definitions.data],
   );
-  const query = useMemo(
-    () => ({
-      runId: scope.runId === "all" ? null : scope.runId,
-      versionIds: scope.versionId === "all" ? null : [scope.versionId],
-      offset: page * PAGE_SIZE,
-      limit: PAGE_SIZE,
-    }),
-    [scope, page],
-  );
   // Ranks, places and the model filter need every row; the board pages its
   // own rendered list. 500 is the service's cap.
   const leaderboardQuery = useMemo(
@@ -143,31 +113,10 @@ export function BenchmarksView({
     queryFn: () => benchmarkApi.getLeaderboard(leaderboardQuery),
     enabled: location.section === "leaderboard",
   });
-  const usage = useQuery({
-    queryKey: [...benchmarkKeys, "usage", query],
-    queryFn: () => benchmarkApi.getUsageSeries(query),
-    enabled: location.section === "usage",
-  });
   const designs = useQuery({
-    queryKey: [...benchmarkKeys, "designs", query.runId],
-    queryFn: () =>
-      benchmarkApi.listDesigns({ runId: query.runId, versionIds: null }),
+    queryKey: [...benchmarkKeys, "designs", null],
+    queryFn: () => benchmarkApi.listDesigns({ runId: null, versionIds: null }),
     enabled: location.section === "design",
-  });
-  const baselines = useQuery({
-    queryKey: [...benchmarkKeys, "baselines"],
-    queryFn: benchmarkApi.listBaselines,
-    enabled: location.section === "nerf" || location.section === "usage",
-  });
-  const comparisons = useQuery({
-    queryKey: [...benchmarkKeys, "comparisons", baselineId, query],
-    queryFn: () => benchmarkApi.getComparisons(baselineId, query),
-    enabled: location.section === "nerf" && baselineId !== "none",
-  });
-  const usageComparisons = useQuery({
-    queryKey: [...benchmarkKeys, "usageComparisons", baselineId],
-    queryFn: () => benchmarkApi.getUsageComparisons(baselineId),
-    enabled: location.section === "usage" && baselineId !== "none",
   });
   const guarded = (action: () => void) =>
     useBenchmarkViewStore.getState().guardNavigation(action);
@@ -187,59 +136,12 @@ export function BenchmarksView({
     guarded(() =>
       setRunSelection({ versions: version ? [version] : [], preview }),
     );
-  const changeScope = (next: ResultScope) => {
-    setScope(next);
-    setPage(0);
-  };
   const errors = [
     ...new Set(
-      [
-        definitions.error,
-        runs.error,
-        leaderboard.error,
-        designs.error,
-        usage.error,
-        baselines.error,
-        comparisons.error,
-        usageComparisons.error,
-      ]
+      [definitions.error, runs.error, leaderboard.error, designs.error]
         .filter(Boolean)
         .map(benchmarkErrorMessage),
     ),
-  ];
-  const suiteOptions: Option[] = [
-    { value: "all", label: t("filters.allSuites") },
-    ...versions.map((version) => ({
-      value: version.id,
-      label: t("editor.versionLabel", {
-        name: version.manifest.name,
-        hash: shortId(version.contentHash),
-      }),
-    })),
-  ];
-  const runOptions: Option[] = [
-    { value: "all", label: t("filters.allRuns") },
-    ...(runs.data ?? [])
-      .filter((run) => !run.request.preview)
-      .map((run) => ({
-        value: run.id,
-        label: t("filters.runLabel", {
-          date: formatDate(run.createdAt, {
-            dateStyle: "short",
-            timeStyle: "short",
-          }),
-          id: shortId(run.id),
-        }),
-      })),
-  ];
-  const baseline =
-    baselines.data?.find((entry) => entry.id === baselineId) ?? null;
-  const baselineOptions: Option[] = [
-    { value: "none", label: t("filters.noBaseline") },
-    ...(baselines.data ?? []).map((baseline) => ({
-      value: baseline.id,
-      label: baseline.name,
-    })),
   ];
   const menuItems: { kind: DialogKind; label: string; icon: ReactNode }[] = [
     { kind: "runs", label: t("toolbar.runs"), icon: <IconHistory /> },
@@ -385,48 +287,6 @@ export function BenchmarksView({
             actions={actions}
           />
         ) : null}
-        {location.section === "nerf" ? (
-          <NerfBenchView
-            comparisons={comparisons.data ?? []}
-            loading={baselineId !== "none" && comparisons.isPending}
-            scope={scope}
-            onScopeChange={changeScope}
-            suiteOptions={suiteOptions}
-            runOptions={runOptions}
-            baseline={baseline}
-            baselineId={baselineId}
-            baselineOptions={baselineOptions}
-            onBaselineChange={setBaselineId}
-            onCreateBaseline={() => setDialog("baseline")}
-            versions={versions}
-            page={page}
-            pageSize={PAGE_SIZE}
-            onPageChange={setPage}
-            onEvidence={openEvidence}
-            actions={actions}
-          />
-        ) : null}
-        {location.section === "usage" ? (
-          <UsageBenchView
-            comparisons={usageComparisons.data ?? []}
-            samples={usage.data ?? []}
-            loading={usage.isPending}
-            scope={scope}
-            onScopeChange={changeScope}
-            runOptions={runOptions}
-            baseline={baseline}
-            baselineId={baselineId}
-            baselineOptions={baselineOptions}
-            onBaselineChange={setBaselineId}
-            onCreateBaseline={() => setDialog("baseline")}
-            versions={versions}
-            page={page}
-            pageSize={PAGE_SIZE}
-            onPageChange={setPage}
-            onEvidence={openEvidence}
-            actions={actions}
-          />
-        ) : null}
       </section>
       {runSelection ? (
         <BenchmarkRunDialog
@@ -489,16 +349,6 @@ export function BenchmarksView({
       ) : null}
       {dialog === "catalog" ? (
         <BenchmarkCatalogDialog onClose={() => setDialog(null)} />
-      ) : null}
-      {dialog === "baseline" ? (
-        <BenchmarkBaselineDialog
-          runs={runs.data ?? []}
-          onClose={() => setDialog(null)}
-          onCreated={(id) => {
-            setBaselineId(id);
-            setDialog(null);
-          }}
-        />
       ) : null}
       {dialog === "schedules" ? (
         <BenchmarkSchedulesDialog

@@ -2,8 +2,6 @@ export const BENCHMARK_SECTIONS = [
   "leaderboard",
   "design",
   "development",
-  "nerf",
-  "usage",
 ] as const;
 export type BenchmarkSection = (typeof BENCHMARK_SECTIONS)[number];
 export interface BenchmarkLocation {

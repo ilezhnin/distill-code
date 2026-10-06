@@ -199,20 +199,6 @@ pub fn with_answer_caps(mut data: QueryData) -> QueryData {
     data
 }
 
-/// A baseline whose frozen attempts are read the way [`with_answer_caps`]
-/// reads the follow-up side, so Nerf never pairs such an attempt as a
-/// budget failure.
-pub fn baseline_with_answer_caps(
-    mut baseline: Baseline,
-    versions: &[BenchmarkVersion],
-) -> Baseline {
-    let caps = caps(versions);
-    for attempt in &mut baseline.snapshots {
-        read_as_unscored(attempt, &caps);
-    }
-    baseline
-}
-
 /// One Design Bench rendering, read the same way against its brief's cap.
 pub(crate) fn rendering_with_answer_cap(attempt: &mut Attempt, max_artifact_bytes: u64) {
     if stopped_by_evidence(attempt, max_artifact_bytes) {
@@ -340,7 +326,7 @@ mod tests {
     }
 
     fn capped(output: &str) -> Attempt {
-        let (data, _) = dataset();
+        let data = dataset();
         let mut attempt = data.attempts[0].clone();
         attempt.outcome = Some("budget_reached".into());
         attempt.reason = Some(LEGACY_CAP_REASON.into());
@@ -373,7 +359,7 @@ mod tests {
     /// the catch-up offers again, while the store keeps what it settled with.
     #[test]
     fn an_attempt_stopped_by_its_events_is_a_gap_not_a_zero() {
-        let (mut data, _) = dataset();
+        let mut data = dataset();
         let query = ResultQuery::default();
         let version = data.attempts[0].version_id.clone();
         let cap = data
@@ -413,24 +399,10 @@ mod tests {
                 && analysis::score(a).is_none()));
         let after = analysis::leaderboard(&read, &query);
         assert_eq!(after.rows[0].missing_version_ids, vec![version.clone()]);
-        // The data handed in is untouched; a baseline is read the same way.
+        // The data handed in is untouched.
         assert!(data
             .attempts
             .iter()
             .any(|a| a.outcome.as_deref() == Some("budget_reached")));
-        let baseline = Baseline {
-            id: "b".into(),
-            name: "b".into(),
-            run_ids: Vec::new(),
-            created_at: 0,
-            threshold: 0.1,
-            snapshots: vec![stopped],
-            run_conditions: Vec::new(),
-        };
-        let baseline = baseline_with_answer_caps(baseline, &data.versions);
-        assert_eq!(
-            baseline.snapshots[0].outcome.as_deref(),
-            Some("infrastructure_failure")
-        );
     }
 }

@@ -12,7 +12,9 @@ export const benchmarkDraftSchema = z.object({
   source: z.string(),
   license: z.string(),
   executionProfile: z.string().min(1),
-  measurementProfile: z.enum(["task_metrics", "controlled_quota", "capacity"]),
+  // The quota and capacity batches are retired; every case measures tokens,
+  // time and list-price cost per attempt.
+  measurementProfile: z.literal("task_metrics"),
   evaluator: z.object({
     kind: z.string().min(1),
     expected: z.string(),

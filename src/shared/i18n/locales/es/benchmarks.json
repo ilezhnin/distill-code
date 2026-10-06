@@ -8,13 +8,10 @@
   "disabled": "Desactivado",
   "seconds": "{{value}} s",
   "percent": "{{value}}%",
-  "percentagePoints": "{{value}} pp",
   "sections": {
     "leaderboard": "Clasificación",
     "design": "Design Bench",
-    "development": "Desarrollo de pruebas",
-    "nerf": "Nerf Bench",
-    "usage": "Usage Bench"
+    "development": "Desarrollo de pruebas"
   },
   "actions": {
     "new": "Nueva prueba",
@@ -54,12 +51,7 @@
     "catalog": "Catálogo de modelos"
   },
   "filters": {
-    "suite": "Conjunto",
-    "allSuites": "Todas las versiones publicadas",
     "run": "Ejecución",
-    "allRuns": "Todas las ejecuciones",
-    "baseline": "Línea base",
-    "noBaseline": "Sin línea base",
     "provider": "Proveedor",
     "effort": "Esfuerzo",
     "fastMode": "Modo rápido",
@@ -96,7 +88,6 @@
     "knownGood": "Salida correcta de referencia",
     "knownBad": "Salida incorrecta de referencia",
     "executionProfile": "Perfil de ejecución",
-    "measurementProfile": "Perfil de medición",
     "timeoutSeconds": "Tiempo mínimo (segundos)",
     "maxArtifactBytes": "Límite de artefacto (bytes)",
     "repetitions": "Repeticiones",
@@ -111,7 +102,6 @@
     "effort": "Esfuerzo nativo",
     "fastMode": "Modo rápido",
     "maxExecutions": "Ejecuciones máximas",
-    "configuration": "Configuración",
     "repetition": "Repetición",
     "duration": "Duración mediana",
     "cost": "Coste medido",
@@ -121,20 +111,8 @@
     "versions": "Publicadas",
     "workClass": "Clase de trabajo",
     "difficulty": "Dificultad",
-    "qualityChange": "Cambio de calidad",
-    "retainedQuality": "Calidad frente a la línea base",
-    "retainedQualityValue": "{{value}}% de la línea base",
-    "interval": "Intervalo de incertidumbre",
-    "intervalValue": "{{low}} … {{high}} pp",
-    "window": "Ventana de cuota",
     "before": "Usado antes",
     "after": "Usado después",
-    "quotaDelta": "Puntos usados",
-    "completed": "Tareas completadas",
-    "attribution": "Atribución",
-    "durationChange": "Cambio de duración",
-    "tokenChange": "Cambio de tokens de salida",
-    "retainedAllowance": "Asignación efectiva",
     "reviewScore": "Puntuación de revisión (0–1)",
     "reviewReason": "Evidencia de la revisión",
     "tokens": "Tokens",
@@ -145,9 +123,7 @@
     "durationShort": "Duración",
     "costShort": "Coste",
     "tokensOut": "Tokens de salida",
-    "measuredAt": "Medido",
     "repetitionValue": "repetición {{value}}",
-    "usedRange": "Usado antes → después",
     "elapsed": "Duración"
   },
   "split": {
@@ -171,10 +147,7 @@
   "profiles": {
     "native_text": "Texto limpio, sin herramientas",
     "protected_repository": "Artefacto de código protegido",
-    "isolated_ui": "Artefacto de UI aislado",
-    "task_metrics": "Calidad, tiempo y tokens de la tarea",
-    "controlled_quota": "Medición controlada de cuota",
-    "capacity": "Experimento de capacidad acotado"
+    "isolated_ui": "Artefacto de UI aislado"
   },
   "editor": {
     "tab": "Editor",
@@ -248,7 +221,7 @@
     "estimatedCost": "Gasto previsto: {{value}}",
     "checkPlan": "Comprobar plan",
     "start": "Iniciar lote",
-    "preview": "Vista previa de desarrollo. Excluida de comparaciones oficiales y líneas base.",
+    "preview": "Vista previa de desarrollo. Excluida de los tableros y del gráfico histórico.",
     "budgetTitle": "Presupuesto"
   },
   "modelRun": {
@@ -372,35 +345,6 @@
     "judges_one": "{{count}} juez",
     "judges_other": "{{count}} jueces"
   },
-  "nerf": {
-    "description": "Cambios respecto a una línea base congelada de Distill. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
-    "summary": "Línea base {{name}} · congelada el {{date}} · umbral práctico {{threshold}} pp. Calidad, duración y tokens de salida siguen siendo mediciones separadas.",
-    "empty": "Elige una línea base para comparar.",
-    "emptyHint": "Congela una ejecución completada como línea base y luego recopila ejecuciones posteriores comparables."
-  },
-  "usage": {
-    "description": "Trabajo medido por asignación de suscripción, por carga de trabajo y ventana de cuota. Abrir esta vista nunca inicia una medición.",
-    "summary": "Línea base {{name}} · día uno {{date}}. Cada ventana se compara con su propia primera medición.",
-    "latestMeasurement": "última medición {{date}}",
-    "noMeasurement": "todavía sin medición",
-    "windows": {
-      "fiveHour": "Límite de 5 horas",
-      "weekly": "Límite semanal",
-      "weeklyModel": "Límite semanal · {{model}}"
-    },
-    "attribution": "La cuota pertenece al lote controlado completo. La actividad mixta de la cuenta no puede establecer un cargo por tarea; la telemetría ausente es desconocida y un límite no alcanzado es solo una cota inferior.",
-    "empty": "No hay muestras de cuota para esta selección.",
-    "emptyHint": "Ejecuta una prueba publicada de cuota controlada o de capacidad para recopilar muestras.",
-    "comparisonEmpty": "Elige una línea base para comparar la asignación efectiva.",
-    "intervalValue": "Asignación efectiva · {{low}} … {{high}}%"
-  },
-  "baseline": {
-    "create": "Crear línea base",
-    "description": "Congela ejecuciones completadas repetidas y un umbral de calidad significativo antes de comparar observaciones posteriores.",
-    "threshold": "Umbral práctico de calidad (puntos porcentuales)",
-    "runs": "Ejecuciones completadas a congelar",
-    "noRuns": "Completa primero una ejecución."
-  },
   "import": {
     "title": "Importar una definición",
     "description": "El contenido importado se convierte en un borrador editable. Importar nunca ejecuta comandos de configuración.",
@@ -475,12 +419,6 @@
     "showAttempts": "Mostrar {{count}} intentos",
     "hideAttempts": "Ocultar intentos"
   },
-  "attribution": {
-    "provider_reported": "Informado por el proveedor",
-    "controlled_batch": "Lote controlado",
-    "mixed": "Actividad mixta de la cuenta",
-    "unknown": "Desconocido"
-  },
   "states": {
     "planned": "Planificado",
     "running": "En ejecución",
@@ -518,18 +456,9 @@
     "comparable": "Comparable",
     "stale": "Obsoleto",
     "insufficient_evidence": "Evidencia insuficiente",
-    "changed_conditions": "Condiciones cambiadas",
-    "confirmed_change": "Cambio confirmado",
     "unavailable": "No disponible",
     "excluded": "Excluido",
     "below_requirement": "Por debajo del requisito",
-    "cannot_attribute": "No atribuible",
-    "not_measured": "No medido",
-    "lower_bound": "Cota inferior",
-    "remaining_capacity": "Capacidad restante",
-    "measured": "Medido",
-    "mixed": "Mixto",
-    "controlled_batch": "Lote controlado",
     "unknown": "Desconocido",
     "judged": "Juzgado",
     "rendered": "Renderizado",
