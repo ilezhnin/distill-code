@@ -270,8 +270,10 @@ impl Store {
     pub async fn runs(&self) -> Result<Vec<RunSummary>> {
         let rows = sqlx::query(
             "SELECT r.id,r.state,r.revision,r.created_at,r.updated_at,r.request_json,
-                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id),
-                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal'),
+                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id
+                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'),
+                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal'
+                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'),
                 CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
                 (SELECT json_group_array(json_array(a.configuration_id,
                         json_extract(a.data_json,'$.observed.effort'),
@@ -1811,7 +1813,10 @@ mod tests {
             } else {
                 "pending"
             };
-            let outcome = if phase == "terminal" {
+            // Two settled repetitions a resume set aside count nowhere.
+            let outcome = if index == 2 || index == 4 {
+                Some("superseded")
+            } else if phase == "terminal" {
                 Some("pass")
             } else {
                 None
@@ -1829,8 +1834,8 @@ mod tests {
         let summaries = store.runs().await.unwrap();
         assert_eq!(summaries.len(), 100);
         assert_eq!(summaries[0].id, "run-104");
-        assert_eq!(summaries[0].attempt_count, 125);
-        assert_eq!(summaries[0].settled_count, 63);
+        assert_eq!(summaries[0].attempt_count, 123);
+        assert_eq!(summaries[0].settled_count, 61);
         assert_eq!(summaries[1].attempt_count, 0);
         assert!(!summaries.iter().any(|r| r.id == "run-0"));
         let serialized = serde_json::to_value(&summaries).unwrap();

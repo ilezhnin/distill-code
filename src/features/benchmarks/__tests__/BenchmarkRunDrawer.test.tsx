@@ -163,6 +163,19 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
 });
 
+it("counts no repetition a resume set aside", async () => {
+  show({
+    ...run,
+    state: "running",
+    attempts: [
+      ...attempts(),
+      at({ id: "a-old", versionId: "version-c", outcome: "superseded" }),
+    ],
+  });
+  expect(await found("Alpha")).toBeInTheDocument();
+  expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
+});
+
 it("keeps a paused run's waiting tests queued and names each model of a matrix", async () => {
   const second = { ...configuration, id: "config-2", modelId: "model-2" };
   show({

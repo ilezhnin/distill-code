@@ -89,10 +89,14 @@ export function BenchmarkRunDrawer({
   const run = query.data;
   const terminal = run ? FINISHED_RUN.has(run.state) : false;
   const attempts = run?.attempts ?? [];
-  const settled = attempts.filter(
+  // Repetitions a resume set aside keep their evidence and count nowhere.
+  const counted = attempts.filter(
+    (attempt) => attempt.outcome !== "superseded",
+  );
+  const settled = counted.filter(
     (attempt) => attempt.phase === "terminal",
   ).length;
-  const total = attempts.length;
+  const total = counted.length;
   // Summaries carry each attempt's score.
   const attemptIds = useMemo(
     () => attempts.map((attempt) => attempt.id),
