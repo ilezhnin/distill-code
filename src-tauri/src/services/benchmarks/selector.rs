@@ -97,7 +97,8 @@ pub struct Selection {
     pub facets: TaskFacets,
     pub chosen: Option<Configuration>,
     pub chosen_key: Option<String>,
-    /// `evidence`, `prior`, or `none` when neither names an available candidate.
+    /// `evidence`, `prior`, `only` for the one available candidate, or
+    /// `none` when neither names one.
     pub source: String,
     pub reason: String,
     pub shared_cases: u32,
@@ -356,6 +357,12 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
                     "prior",
                     format!("{short}; the persona's ranking decides"),
                 ),
+                // With one candidate there is nothing to choose between.
+                None if available.len() == 1 => (
+                    available.first().cloned(),
+                    "only",
+                    format!("{short}; one candidate is available"),
+                ),
                 None => (
                     None,
                     "none",
@@ -520,8 +527,10 @@ pub fn harness(data: &QueryData, query: &HarnessQuery) -> Result<HarnessReport> 
             mean_reward: mean(&|row| row[index]),
         });
     }
-    // The selector chooses per case, from train evidence and the case's facets.
+    // The selector chooses per case, from train evidence and the case's facets;
+    // a case it abstains on scores 0, so abstaining never opens the gate.
     let mut selected = 0.0;
+    let mut abstained = 0;
     for (version, row) in &rewards {
         let selection = select(
             data,
@@ -536,10 +545,13 @@ pub fn harness(data: &QueryData, query: &HarnessQuery) -> Result<HarnessReport> 
                 permitted_splits: None,
             },
         )?;
-        selected += selection
+        match selection
             .chosen_key
             .and_then(|key| keys.iter().position(|k| *k == key))
-            .map_or(0.0, |index| row[index]);
+        {
+            Some(index) => selected += row[index],
+            None => abstained += 1,
+        }
     }
     let selector = selected / cases as f64;
     policies.push(PolicyResult {
@@ -552,7 +564,13 @@ pub fn harness(data: &QueryData, query: &HarnessQuery) -> Result<HarnessReport> 
         cases: cases as u32,
         policies,
         selector_gain: Some(selector - best_fixed.mean_reward),
-        reason: format!("{cases} held-out cases with a complete cell for every candidate"),
+        reason: if abstained == 0 {
+            format!("{cases} held-out cases with a complete cell for every candidate")
+        } else {
+            format!(
+                "{cases} held-out cases with a complete cell for every candidate; the selector chose nothing on {abstained}, scored 0"
+            )
+        },
     })
 }
 
@@ -713,6 +731,20 @@ mod tests {
             Some(candidate_key(&configuration("fast")))
         );
         assert!(chosen.reason.contains("short of 11"), "{}", chosen.reason);
+        // One candidate and no ranking: it is the choice.
+        let mut alone = query(&[]);
+        alone.candidates.truncate(1);
+        alone.min_cases = Some(11);
+        let chosen = select(&data, &alone).unwrap();
+        assert_eq!(chosen.source, "only");
+        assert_eq!(
+            chosen.chosen_key,
+            Some(candidate_key(&configuration("strong")))
+        );
+        // Two unranked candidates short of evidence: none is chosen.
+        let mut unranked = query(&[]);
+        unranked.min_cases = Some(11);
+        assert_eq!(select(&data, &unranked).unwrap().source, "none");
         // Held-out evidence is never read.
         let mut leaking = query(&[]);
         leaking.permitted_splits = Some(vec!["held_out".into()]);
