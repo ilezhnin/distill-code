@@ -432,6 +432,24 @@ export interface LeaderboardReport {
   rows: LeaderboardRow[];
 }
 /**
+ * How one pool case separates the models measured on it, from each model's
+ * standing cell.
+ */
+export interface CaseStats {
+  versionId: string;
+  definitionId: string;
+  /** Models with a complete cell on the case. */
+  models: number;
+  /** Of them, the models that passed every repetition. */
+  passed: number;
+  /** The widest gap between two models' shares of passed repetitions, 0 to 1. */
+  spread: number | null;
+  /** Complete cells whose repetitions disagree. */
+  flaky: number;
+  /** Every model measured, at least two, passed it every time. */
+  smoke: boolean;
+}
+/**
  * A dated, frozen set of case versions: from its date on, the pool the boards
  * measure. Before the first release the pool is every live test's newest
  * version.

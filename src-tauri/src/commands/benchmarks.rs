@@ -263,6 +263,11 @@ pub async fn benchmark_get_leaderboard(
     .await
 }
 #[tauri::command]
+pub async fn benchmark_get_case_stats(app: AppHandle) -> Result<Vec<CaseStats>> {
+    let s = service(&app).await?;
+    analyze(s.query_data().await?, benchmarks::analysis::case_tracker).await
+}
+#[tauri::command]
 pub async fn benchmark_get_history(
     app: AppHandle,
     configuration: Configuration,

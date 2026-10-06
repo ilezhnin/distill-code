@@ -815,6 +815,29 @@ pub struct CandidateObservation {
     pub models: Vec<InventoryModel>,
     pub authoritative: bool,
 }
+/// How one pool case separates the models measured on it, from each model's
+/// standing cell: who passed it every time, how far apart the models are,
+/// and how often its repetitions disagree.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaseStats {
+    pub version_id: String,
+    pub definition_id: String,
+    /// Models with a complete cell on the case.
+    pub models: u32,
+    /// Of them, the models that passed every repetition (a judged case: a
+    /// mean of half the points or more).
+    pub passed: u32,
+    /// The widest gap between two models' shares of passed repetitions, 0 to
+    /// 1: 0 when every model did alike, 1 when one always passed and another
+    /// never did.
+    pub spread: Option<f64>,
+    /// Complete cells whose repetitions disagree: some passed, some did not.
+    pub flaky: u32,
+    /// Every model measured, at least two, passed it every time: a case for
+    /// the smoke set, not the rating.
+    pub smoke: bool,
+}
 /// A dated, frozen set of case versions: from its date on, the pool the
 /// boards measure, so a step in a model's points at a release reads as the
 /// pool changing, not the model.

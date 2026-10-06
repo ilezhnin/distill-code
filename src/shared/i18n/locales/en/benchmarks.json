@@ -199,6 +199,16 @@
     "seedHint": "Synthetic seeds validate the pipeline; they are not evidence for a ranking.",
     "archivedTag": "Archived"
   },
+  "tracker": {
+    "passedBy": "Passed by",
+    "passedByHint": "Models that passed the case every repetition, out of the models with a complete cell on it.",
+    "spread": "Spread",
+    "spreadHint": "The widest gap between two models' shares of passed repetitions: 0% when every model did alike, 100% when one always passed and another never did.",
+    "flaky": "Flaky",
+    "flakyHint": "Complete cells whose repetitions disagree, out of the models measured.",
+    "passedOf": "{{passed}} / {{models}}",
+    "smoke": "Smoke set"
+  },
   "results": {
     "empty": "No attempts for this test yet."
   },

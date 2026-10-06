@@ -199,6 +199,16 @@
     "seedHint": "Las semillas sintéticas validan la canalización; no son evidencia para una clasificación.",
     "archivedTag": "Archivada"
   },
+  "tracker": {
+    "passedBy": "Superada por",
+    "passedByHint": "Modelos que superaron el caso en todas las repeticiones, de los modelos con una celda completa en él.",
+    "spread": "Dispersión",
+    "spreadHint": "La mayor diferencia entre las proporciones de repeticiones superadas de dos modelos: 0 % si todos hicieron lo mismo, 100 % si uno siempre la superó y otro nunca.",
+    "flaky": "Inestable",
+    "flakyHint": "Celdas completas cuyas repeticiones no coinciden, de los modelos medidos.",
+    "passedOf": "{{passed}} / {{models}}",
+    "smoke": "Conjunto de humo"
+  },
   "results": {
     "empty": "Todavía no hay intentos para esta prueba."
   },

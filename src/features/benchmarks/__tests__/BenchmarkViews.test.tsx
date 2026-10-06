@@ -58,6 +58,7 @@ vi.mock("../api/benchmarks", () => ({
     getHistory: vi.fn().mockResolvedValue([]),
     listDesigns: vi.fn(),
     listReleases: vi.fn().mockResolvedValue([]),
+    getCaseStats: vi.fn().mockResolvedValue([]),
     getRoutingEvidence: vi.fn(),
     listSchedules: vi.fn(),
     saveSchedule: vi.fn(),
@@ -1192,6 +1193,57 @@ describe("benchmark authoring and saved evidence", () => {
       ),
     );
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("shows how each library case separates the models and marks smoke cases", async () => {
+    const smoke = {
+      ...definition,
+      id: "definition-2",
+      draft: { ...definition.draft, name: "Every model passes" },
+    };
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      definition,
+      smoke,
+    ]);
+    vi.mocked(benchmarkApi.getCaseStats).mockResolvedValue([
+      {
+        versionId: "version-1",
+        definitionId: definition.id,
+        models: 3,
+        passed: 2,
+        spread: 0.5,
+        flaky: 1,
+        smoke: false,
+      },
+      {
+        versionId: "version-2",
+        definitionId: "definition-2",
+        models: 3,
+        passed: 3,
+        spread: 0,
+        flaky: 0,
+        smoke: true,
+      },
+    ]);
+    wrap(
+      <BenchmarksView
+        location={{ section: "development" }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    const first = (
+      await screen.findByRole("button", { name: definition.draft.name })
+    ).closest("tr") as HTMLElement;
+    expect(within(first).getByText("2 / 3")).toBeInTheDocument();
+    expect(within(first).getByText("50%")).toBeInTheDocument();
+    expect(within(first).getByText("1 / 3")).toBeInTheDocument();
+    expect(first).not.toHaveTextContent("Smoke set");
+    const second = screen
+      .getByRole("button", { name: "Every model passes" })
+      .closest("tr") as HTMLElement;
+    expect(second).toHaveTextContent("Smoke set");
+    expect(within(second).getByText("3 / 3")).toBeInTheDocument();
+    expect(within(second).getByText("0%")).toBeInTheDocument();
   });
   it("imports several definition files in one step and returns to the library", async () => {
     if (!File.prototype.text) {

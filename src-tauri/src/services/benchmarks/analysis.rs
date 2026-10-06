@@ -736,6 +736,70 @@ pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benc
     pool
 }
 
+/// A repetition passes at a full objective score, or at half the points or
+/// more of a judged one, the mark every result view draws.
+fn repetition_passed(score: f64) -> bool {
+    score >= 0.5
+}
+
+/// Discrimination and flakiness of every pool case over the models' standing
+/// cells, the ones the boards read: which cases separate models, which only
+/// add noise, and which every model passes.
+pub fn case_tracker(data: &QueryData) -> Vec<CaseStats> {
+    let rows = leaderboard(
+        data,
+        &ResultQuery {
+            limit: Some(500),
+            ..Default::default()
+        },
+    )
+    .rows;
+    let attempts: BTreeMap<&str, &Attempt> =
+        data.attempts.iter().map(|a| (a.id.as_str(), a)).collect();
+    pool(data, &ResultQuery::default())
+        .into_iter()
+        .map(|version| {
+            let required = required_repetitions(data, version) as usize;
+            // Each model's share of passed repetitions, over complete cells.
+            let mut shares = Vec::new();
+            let mut flaky = 0;
+            for row in &rows {
+                let scores: Vec<f64> = row
+                    .attempt_ids
+                    .iter()
+                    .filter_map(|id| attempts.get(id.as_str()))
+                    .filter(|a| a.version_id == version.id)
+                    .filter_map(|a| score_as_of(a, None))
+                    .collect();
+                if scores.len() < required {
+                    continue;
+                }
+                let passed = scores.iter().filter(|s| repetition_passed(**s)).count();
+                if passed > 0 && passed < scores.len() {
+                    flaky += 1;
+                }
+                shares.push(passed as f64 / scores.len() as f64);
+            }
+            let models = shares.len() as u32;
+            let passed = shares.iter().filter(|share| **share >= 1.0).count() as u32;
+            let spread = (!shares.is_empty()).then(|| {
+                let high = shares.iter().copied().fold(f64::MIN, f64::max);
+                let low = shares.iter().copied().fold(f64::MAX, f64::min);
+                high - low
+            });
+            CaseStats {
+                version_id: version.id.clone(),
+                definition_id: version.definition_id.clone(),
+                models,
+                passed,
+                spread,
+                flaky,
+                smoke: models >= 2 && passed == models,
+            }
+        })
+        .collect()
+}
+
 /// Each version an evaluator-only republication replaced, to the version
 /// that carries its cells now: the end of its chain.
 pub fn carried_versions(versions: &[BenchmarkVersion]) -> BTreeMap<String, String> {
@@ -1774,6 +1838,53 @@ pub(super) mod tests {
             // protocol of `REQUIRED_REPETITIONS` has its own tests.
             required_repetitions: 1,
         }
+    }
+    #[test]
+    fn the_tracker_tells_discriminating_flaky_and_smoke_cases_apart() {
+        let mut data = dataset();
+        data.required_repetitions = 2;
+        let template: Vec<Attempt> = data
+            .attempts
+            .iter()
+            .filter(|a| a.run_id == "after")
+            .cloned()
+            .collect();
+        data.attempts.retain(|a| a.run_id != "after");
+        let mine = template[0].configuration.clone();
+        let mut other = mine.clone();
+        other.id = "other".into();
+        other.model_id = "other".into();
+        for attempt in &template {
+            for (model, configuration) in [("model", &mine), ("other", &other)] {
+                for repetition in 0..2u32 {
+                    // v0 every model passes, v1 only "model" does, v2 "model"
+                    // passes one repetition of two, the rest nobody passes.
+                    let pass = match attempt.version_id.as_str() {
+                        "v0" => true,
+                        "v1" => model == "model",
+                        "v2" => !(model == "model" && repetition == 1),
+                        _ => false,
+                    };
+                    let mut copy = attempt.clone();
+                    copy.id = format!("{}-{model}-{repetition}", attempt.id);
+                    copy.configuration = configuration.clone();
+                    copy.observed = Some(configuration.clone());
+                    copy.repetition = repetition;
+                    copy.outcome = Some(if pass { "pass" } else { "fail" }.into());
+                    data.attempts.push(copy);
+                }
+            }
+        }
+        let stats = case_tracker(&data);
+        let of = |id: &str| stats.iter().find(|s| s.version_id == id).unwrap();
+        assert_eq!((of("v0").models, of("v0").passed), (2, 2));
+        assert_eq!(of("v0").spread, Some(0.0));
+        assert!(of("v0").smoke);
+        assert_eq!((of("v1").passed, of("v1").spread), (1, Some(1.0)));
+        assert!(!of("v1").smoke);
+        assert_eq!((of("v2").flaky, of("v2").spread), (1, Some(0.5)));
+        assert_eq!((of("v3").models, of("v3").passed), (2, 0));
+        assert!(!of("v3").smoke);
     }
     #[test]
     fn authored_cases_are_excluded_from_rows() {

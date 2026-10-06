@@ -12,6 +12,7 @@ import type {
   BenchmarkRun,
   BenchmarkVersion,
   CandidateObservation,
+  CaseStats,
   Capability,
   Configuration,
   CatalogEntry,
@@ -170,6 +171,8 @@ export const benchmarkApi = {
     invoke<void>("benchmark_delete_catalog_entry", { id }),
   getLeaderboard: (query: ResultQuery) =>
     invoke<LeaderboardReport>("benchmark_get_leaderboard", { query }),
+  /** Discrimination and flakiness of every pool case over the standing cells. */
+  getCaseStats: () => invoke<CaseStats[]>("benchmark_get_case_stats"),
   getHistory: (configuration: Configuration) =>
     invoke<HistorySnapshot[]>("benchmark_get_history", { configuration }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>

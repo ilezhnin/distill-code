@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   IconArchive,
@@ -28,10 +28,16 @@ import {
   TableRow,
 } from "@/shared/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
-import type { BenchmarkDefinition, BenchmarkVersion } from "../types";
+import type {
+  BenchmarkDefinition,
+  BenchmarkVersion,
+  CaseStats,
+} from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import { BenchmarkEditor } from "./BenchmarkEditor";
 import {
@@ -53,6 +59,22 @@ function generatorFamily(draft: BenchmarkDefinition["draft"]): string | null {
 
 function randomSeed(): number {
   return (crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000) + 1;
+}
+
+/** A column heading whose meaning shows after a held hover. */
+function HintedHead({ label, hint }: { label: string; hint: string }) {
+  return (
+    <TableHead>
+      <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+        <TooltipTrigger asChild>
+          <span>{label}</span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-72">
+          {hint}
+        </TooltipContent>
+      </Tooltip>
+    </TableHead>
+  );
 }
 
 export function BenchDevelopmentView({
@@ -80,6 +102,19 @@ export function BenchDevelopmentView({
   const [tab, setTab] = useState("editor");
   const [error, setError] = useState<string | null>(null);
   const definition = definitions.find((entry) => entry.id === benchmarkId);
+  // How each pool case separates the models measured on it.
+  const caseStats = useQuery({
+    queryKey: [...benchmarkKeys, "case-stats"],
+    queryFn: benchmarkApi.getCaseStats,
+    enabled: !benchmarkId,
+  });
+  const statsOf = useMemo(
+    () =>
+      new Map<string, CaseStats>(
+        (caseStats.data ?? []).map((entry) => [entry.definitionId, entry]),
+      ),
+    [caseStats.data],
+  );
   const operate = async (operation: () => Promise<void>) => {
     setError(null);
     try {
@@ -229,6 +264,18 @@ export function BenchDevelopmentView({
                 <TableHead>{t("benchmarks:fields.difficulty")}</TableHead>
                 <TableHead>{t("benchmarks:fields.split")}</TableHead>
                 <TableHead>{t("benchmarks:fields.versions")}</TableHead>
+                <HintedHead
+                  label={t("benchmarks:tracker.passedBy")}
+                  hint={t("benchmarks:tracker.passedByHint")}
+                />
+                <HintedHead
+                  label={t("benchmarks:tracker.spread")}
+                  hint={t("benchmarks:tracker.spreadHint")}
+                />
+                <HintedHead
+                  label={t("benchmarks:tracker.flaky")}
+                  hint={t("benchmarks:tracker.flakyHint")}
+                />
                 <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
@@ -249,6 +296,9 @@ export function BenchDevelopmentView({
                       {entry.draft.taskFamily}
                       {entry.archived
                         ? ` · ${t("benchmarks:library.archivedTag")}`
+                        : ""}
+                      {statsOf.get(entry.id)?.smoke
+                        ? ` · ${t("benchmarks:tracker.smoke")}`
                         : ""}
                     </p>
                   </TableCell>
@@ -271,6 +321,7 @@ export function BenchDevelopmentView({
                     </Badge>
                   </TableCell>
                   <TableCell>{entry.versions.length}</TableCell>
+                  <CaseStatsCells stats={statsOf.get(entry.id)} />
                   <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -366,6 +417,32 @@ export function BenchDevelopmentView({
         </>
       )}
     </section>
+  );
+}
+
+/** A pool case's discrimination and flakiness; dashes before any model is measured. */
+function CaseStatsCells({ stats }: { stats: CaseStats | undefined }) {
+  const { t } = useTranslation("benchmarks");
+  if (!stats || stats.models === 0)
+    return (
+      <>
+        <TableCell className="text-muted-foreground">-</TableCell>
+        <TableCell className="text-muted-foreground">-</TableCell>
+        <TableCell className="text-muted-foreground">-</TableCell>
+      </>
+    );
+  return (
+    <>
+      <TableCell className="tabular-nums">
+        {t("tracker.passedOf", { passed: stats.passed, models: stats.models })}
+      </TableCell>
+      <TableCell className="tabular-nums">
+        {stats.spread == null ? "-" : `${Math.round(stats.spread * 100)}%`}
+      </TableCell>
+      <TableCell className="tabular-nums">
+        {t("tracker.passedOf", { passed: stats.flaky, models: stats.models })}
+      </TableCell>
+    </>
   );
 }
 
