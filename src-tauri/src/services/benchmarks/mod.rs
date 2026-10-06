@@ -328,6 +328,9 @@ impl BenchmarkService {
         // A pinned runtime that changed since selection would fail every cell.
         let mut runtimes: HashMap<(String, Option<String>), Vec<InventoryModel>> = HashMap::new();
         for c in &request.configurations {
+            if let Err(error) = self.backend.readiness(c).await {
+                issues.push(error.message);
+            }
             let Some(pinned) = c.inventory_revision.as_ref() else {
                 continue;
             };
@@ -350,9 +353,18 @@ impl BenchmarkService {
                     }
                 }
             }
-            let model = runtimes[&key]
-                .iter()
-                .find(|m| m.configuration.model_id == c.model_id);
+            let model = runtimes[&key].iter().find(|m| {
+                m.configuration.model_id == c.model_id
+                    && m.configuration.execution_profile == c.execution_profile
+            });
+            if let Some(model) = model.filter(|model| !model.available) {
+                issues.push(
+                    model
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "Configuration is unavailable".into()),
+                );
+            }
             let current = model.and_then(|m| m.configuration.inventory_revision.as_ref());
             if current != Some(pinned) {
                 issues.push(

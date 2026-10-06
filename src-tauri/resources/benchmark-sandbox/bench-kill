@@ -14,4 +14,5 @@ for _ in $(seq 50); do
   [[ -z $(cat "$cgroup/cgroup.procs") ]] && break
   sleep 0.1
 done
+[[ -z $(cat "$cgroup/cgroup.procs") ]] || { echo 'bench-kill: processes did not stop' >&2; exit 70; }
 rmdir "$cgroup" 2>/dev/null || true

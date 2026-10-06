@@ -230,6 +230,7 @@
     "empty": "No attempts for this test yet."
   },
   "run": {
+    "repositoryTools": "Repository with tools",
     "title": "Run benchmarks",
     "description": "Choose published tests and pinned configurations. The execution count and budget are checked before anything starts.",
     "tests": "Published tests",

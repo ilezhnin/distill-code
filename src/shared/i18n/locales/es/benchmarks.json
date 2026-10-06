@@ -230,6 +230,7 @@
     "empty": "Todavía no hay intentos para esta prueba."
   },
   "run": {
+    "repositoryTools": "Repositorio con herramientas",
     "title": "Ejecutar benchmarks",
     "description": "Elige pruebas publicadas y configuraciones fijadas. El número de ejecuciones y el presupuesto se comprueban antes de empezar.",
     "tests": "Pruebas publicadas",

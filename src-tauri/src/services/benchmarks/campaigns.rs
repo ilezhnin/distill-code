@@ -98,10 +98,11 @@ fn refresh_candidates(schedule: &Schedule, inventory: &[InventoryModel]) -> Vec<
     };
     let mut configurations = Vec::new();
     for saved in &schedule.request.configurations {
-        let Some(model) = inventory
-            .iter()
-            .find(|model| model.available && model.configuration.model_id == saved.model_id)
-        else {
+        let Some(model) = inventory.iter().find(|model| {
+            model.available
+                && model.configuration.model_id == saved.model_id
+                && model.configuration.execution_profile == saved.execution_profile
+        }) else {
             continue;
         };
         // A saved effort the model no longer lists, or none on a model that
@@ -125,19 +126,29 @@ fn refresh_candidates(schedule: &Schedule, inventory: &[InventoryModel]) -> Vec<
     }
     if rule.include_new_models {
         for model in inventory.iter().filter(|model| model.available) {
+            // Discovery stays in the selected execution profiles. Adding a
+            // repository variant must not silently change a text campaign.
+            if !schedule
+                .request
+                .configurations
+                .iter()
+                .any(|saved| saved.execution_profile == model.configuration.execution_profile)
+            {
+                continue;
+            }
             // Without a named list every available model may join; a list limits
             // discovery to the models it names.
             let admitted =
                 rule.model_ids.is_empty() || rule.model_ids.contains(&model.configuration.model_id);
             if !admitted
-                || configurations
-                    .iter()
-                    .any(|config| config.model_id == model.configuration.model_id)
-                || schedule
-                    .request
-                    .configurations
-                    .iter()
-                    .any(|config| config.model_id == model.configuration.model_id)
+                || configurations.iter().any(|config| {
+                    config.model_id == model.configuration.model_id
+                        && config.execution_profile == model.configuration.execution_profile
+                })
+                || schedule.request.configurations.iter().any(|config| {
+                    config.model_id == model.configuration.model_id
+                        && config.execution_profile == model.configuration.execution_profile
+                })
             {
                 continue;
             }

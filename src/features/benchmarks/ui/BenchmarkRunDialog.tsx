@@ -200,6 +200,7 @@ export function BenchmarkRunDialog({
       config.modelId,
       config.effort ?? "",
       config.fastMode ?? "",
+      config.executionProfile,
     ].join(":");
     setConfigurations((previous) =>
       previewOnly
@@ -350,7 +351,11 @@ export function BenchmarkRunDialog({
                         { value: "none", label: t("run.chooseModel") },
                         ...(inventory.data?.map((entry, index) => ({
                           value: String(index),
-                          label: entry.name,
+                          label:
+                            entry.configuration.executionProfile ===
+                            "protected_repository"
+                              ? `${entry.name} (${t("run.repositoryTools")})`
+                              : entry.name,
                         })) ?? []),
                       ]}
                     />
@@ -440,6 +445,9 @@ export function BenchmarkRunDialog({
                   >
                     <span className="min-w-0 truncate">
                       {configurationLabel(entry)}
+                      {entry.executionProfile === "protected_repository"
+                        ? ` (${t("run.repositoryTools")})`
+                        : ""}
                     </span>
                     <Button
                       type="button"

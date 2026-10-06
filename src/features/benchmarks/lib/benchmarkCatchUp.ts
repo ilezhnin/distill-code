@@ -16,13 +16,21 @@ export type CatchUpResolution =
   | { issue: "missing" | "changed" }
   | { issue: "unavailable"; reason: string | null };
 
+/** An evidence label still retries through the original text profile. */
+function executionProfile(profile: string): string {
+  return profile === "native_text_auxiliary" ? "native_text" : profile;
+}
+
 /** The row's model, effort, fast mode and billing, pinned to today's runtime. */
 export function resolveCatchUpConfiguration(
   row: Configuration,
   inventory: InventoryModel[],
 ): CatchUpResolution {
   const model = inventory.find(
-    (entry) => entry.configuration.modelId === row.modelId,
+    (entry) =>
+      entry.configuration.modelId === row.modelId &&
+      entry.configuration.executionProfile ===
+        executionProfile(row.executionProfile),
   );
   if (!model) return { issue: "missing" };
   // A moving alias under another name serves another model now, which is
@@ -64,6 +72,7 @@ export function resolveCatchUpConfiguration(
     configuration.modelId,
     configuration.effort ?? "",
     configuration.fastMode ?? "",
+    configuration.executionProfile,
   ].join(":");
   return { configuration };
 }
@@ -89,7 +98,9 @@ export function requests(
   if (
     requested.providerId !== row.providerId ||
     (requested.accountId ?? null) !== (row.accountId ?? null) ||
-    requested.modelId !== row.modelId
+    requested.modelId !== row.modelId ||
+    executionProfile(requested.executionProfile) !==
+      executionProfile(row.executionProfile)
   )
     return false;
   const observed = (run.observedSelections ?? []).filter(

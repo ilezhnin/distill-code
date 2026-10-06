@@ -266,10 +266,6 @@ fn parse_status(text: &str) -> io::Result<Status> {
     })
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by repository attempts in the next step")
-)]
 pub(crate) async fn copy(id: &str, archive: &[u8]) -> io::Result<()> {
     valid_id(id)?;
     invoke(
@@ -284,10 +280,6 @@ pub(crate) async fn copy(id: &str, archive: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by repository attempts in the next step")
-)]
 pub(crate) async fn patch(id: &str, max_bytes: usize) -> io::Result<Vec<u8>> {
     valid_id(id)?;
     let out = invoke(

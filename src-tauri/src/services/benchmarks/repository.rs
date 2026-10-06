@@ -49,10 +49,6 @@ fn default_check_seconds() -> u64 {
 
 /// The evaluator kind of a repository case.
 pub const EVALUATOR: &str = "repository";
-/// Why a repository case is not run yet: its candidate would work unattended
-/// with tools on this machine, which waits for the operator's decision on
-/// how such a session is confined.
-pub const SESSION_UNAVAILABLE: &str = "Repository cases need an unattended session with tools, which is not enabled until its confinement is decided";
 /// The outcome of a turn that left the snapshot as it was.
 pub const NO_ANSWER: &str = "no_answer";
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;

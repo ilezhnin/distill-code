@@ -5,7 +5,10 @@ use super::{
     types::*,
     BenchmarkService,
 };
-use crate::services::agent_host::{execution::*, AgentHost};
+use crate::services::{
+    agent_host::{execution::*, repository_execution, AgentHost},
+    benchmark_sandbox as sandbox,
+};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -75,6 +78,9 @@ impl JudgeStop {
 
 pub trait ExecutionBackend: Send + Sync {
     fn unsupported(&self, configuration: &Configuration, draft: &BenchmarkDraft) -> Option<String>;
+    fn readiness<'a>(&'a self, _configuration: &'a Configuration) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Scores a creative rendering with a panel of other models; nothing happens
     /// where no panel can be assembled.
     fn judge<'a>(
@@ -297,6 +303,38 @@ fn native_refusal(c: &Configuration) -> Option<String> {
     profile_refusal(c).or_else(|| {
         NativeProvider::for_harness(&c.provider_id).and_then(NativeProvider::admission_issue)
     })
+}
+
+async fn repository_runtime(c: &Configuration) -> Result<String> {
+    if let Some(reason) = profile_refusal(c) {
+        return Err(BenchmarkError::new("capability_missing", reason));
+    }
+    let provider = NativeProvider::for_harness(&c.provider_id).expect("validated provider");
+    let status =
+        repository_execution::readiness(provider, c.account_id.as_deref().unwrap_or_default())
+            .await
+            .map_err(host_error)?;
+    Ok(repository_execution::revision(provider, &status))
+}
+
+/// A repository answer comes from the stopped working copy, never the agent's
+/// final message. A collection error cannot masquerade as an empty patch.
+async fn collect_repository(attempt: &mut Attempt, id: &str, cap: u64) -> Result<()> {
+    sandbox::kill("session", id).await?;
+    match sandbox::patch(id, usize::try_from(cap).unwrap_or(usize::MAX)).await {
+        Ok(bytes) => {
+            attempt.output = Some(String::from_utf8(bytes).map_err(|_| {
+                BenchmarkError::new("infrastructure_failure", "Repository patch is not UTF-8")
+            })?);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+            attempt.output = Some(String::new());
+            attempt.outcome = Some("budget_reached".into());
+            attempt.reason = Some("The repository patch exceeds the published artifact cap".into());
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 /// Why a panel cannot settle a rendering, before any judge is asked.
@@ -1147,7 +1185,7 @@ impl NativeBackend {
             },
         };
         let excluded = native.map_or(&[][..], NativeProvider::excluded_efforts);
-        Ok(result["models"]
+        let mut rows: Vec<InventoryModel> = result["models"]
             .as_array()
             .into_iter()
             .flatten()
@@ -1187,7 +1225,33 @@ impl NativeBackend {
                     reason: unavailable.clone(),
                 })
             })
-            .collect())
+            .collect();
+        if let Some(provider) = native {
+            let readiness = repository_execution::readiness(provider, account).await;
+            let (revision, reason) = match readiness {
+                Ok(status) => (
+                    Some(repository_execution::revision(provider, &status)),
+                    None,
+                ),
+                Err(error) => (None, Some(host_error(error).message)),
+            };
+            let repository_rows = rows
+                .iter()
+                .cloned()
+                .map(|mut row| {
+                    row.configuration.id.push_str(":repository");
+                    row.configuration.execution_profile = "protected_repository".into();
+                    row.configuration.inventory_revision = revision.as_ref().map(|runtime| {
+                        repository_inventory_revision(runtime, result, &row.configuration.model_id)
+                    });
+                    row.available = reason.is_none();
+                    row.reason = reason.clone();
+                    row
+                })
+                .collect::<Vec<_>>();
+            rows.extend(repository_rows);
+        }
+        Ok(rows)
     }
 
     /// The inventory `run`'s attempts on `provider` and `account` are checked
@@ -1281,7 +1345,9 @@ impl NativeBackend {
             offered.extend(
                 models
                     .into_iter()
-                    .filter(|model| model.available)
+                    .filter(|model| {
+                        model.available && model.configuration.execution_profile == "native_text"
+                    })
                     .map(|model| model.configuration),
             );
         }
@@ -1733,13 +1799,14 @@ impl ExecutionBackend for NativeBackend {
         })
     }
     fn unsupported(&self, c: &Configuration, d: &BenchmarkDraft) -> Option<String> {
+        if super::repository::is_repository_case(d) {
+            return profile_refusal(c).or_else(|| {
+                (c.execution_profile != "protected_repository")
+                    .then(|| "Choose the repository configuration for a repository case".into())
+            });
+        }
         if let Some(reason) = native_refusal(c) {
             return Some(reason);
-        }
-        // A repository case runs as a session with tools in a copy of its
-        // snapshot; that session is not enabled yet (see the plan's stage 1).
-        if super::repository::is_repository_case(d) {
-            return Some(super::repository::SESSION_UNAVAILABLE.into());
         }
         if c.execution_profile != "native_text" {
             return Some(
@@ -1768,6 +1835,14 @@ impl ExecutionBackend for NativeBackend {
             );
         }
         None
+    }
+    fn readiness<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if c.execution_profile == "protected_repository" {
+                repository_runtime(c).await?;
+            }
+            Ok(())
+        })
     }
     fn activity<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<AccountActivity>> {
         Box::pin(async move {
@@ -1883,6 +1958,10 @@ impl ExecutionBackend for NativeBackend {
                 }
             };
             busy().await?;
+            let repository = super::repository::is_repository_case(&version.manifest);
+            let mut cleanup = sandbox::Cleanup(
+                repository.then(|| repository_execution::attempt_id(&turn_owner(&attempt))),
+            );
             let inventory = self
                 .run_inventory(
                     &host,
@@ -1891,17 +1970,22 @@ impl ExecutionBackend for NativeBackend {
                     &account,
                 )
                 .await?;
-            let native_cli = crate::services::managed_acp_tools::native_cli_path(
-                &self.app,
-                &attempt.configuration.provider_id,
-            );
-            let runtime_revision = inventory_fingerprint(
-                &inventory,
-                provider,
-                native_cli,
-                &attempt.configuration.model_id,
-            )
-            .await?;
+            let runtime_revision = if repository {
+                let runtime = repository_runtime(&attempt.configuration).await?;
+                repository_inventory_revision(&runtime, &inventory, &attempt.configuration.model_id)
+            } else {
+                let native_cli = crate::services::managed_acp_tools::native_cli_path(
+                    &self.app,
+                    &attempt.configuration.provider_id,
+                );
+                inventory_fingerprint(
+                    &inventory,
+                    provider,
+                    native_cli,
+                    &attempt.configuration.model_id,
+                )
+                .await?
+            };
             // The pin guards the account the run was planned on. A test the
             // run moved to another account (its usage limit ran out) runs on
             // that account's runtime, which lists that account's models, and
@@ -1924,7 +2008,7 @@ impl ExecutionBackend for NativeBackend {
             }
             busy().await?;
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
-            if provider == NativeProvider::Grok {
+            if provider == NativeProvider::Grok && !repository {
                 let gate = self
                     .renew_grok_sign_in(
                         &host,
@@ -1952,13 +2036,21 @@ impl ExecutionBackend for NativeBackend {
                     }
                 }
             }
-            let cwd = store
-                .root
-                .join("runs")
-                .join(&attempt.run_id)
-                .join(&attempt.id)
-                .join("workspace");
-            tokio::fs::create_dir_all(&cwd).await?;
+            let cwd = if let Some(id) = cleanup.0.as_deref() {
+                let snapshot = super::repository::snapshot(&version.manifest)?;
+                let archive = super::repository::archive(&snapshot).await?;
+                sandbox::copy(id, &archive).await?;
+                "/workspace".to_owned()
+            } else {
+                let cwd = store
+                    .root
+                    .join("runs")
+                    .join(&attempt.run_id)
+                    .join(&attempt.id)
+                    .join("workspace");
+                tokio::fs::create_dir_all(&cwd).await?;
+                cwd.to_string_lossy().into_owned()
+            };
             let session = host
                 .create_owned_session(
                     OwnedSessionRequest {
@@ -1968,13 +2060,17 @@ impl ExecutionBackend for NativeBackend {
                         model_id: attempt.configuration.model_id.clone(),
                         reasoning_effort: attempt.configuration.effort.clone(),
                         fast_mode: attempt.configuration.fast_mode,
-                        cwd: cwd.to_string_lossy().into_owned(),
+                        cwd,
                         title: format!(
                             "Benchmark: {} [{}]",
                             version.manifest.name,
                             attempt.repetition + 1
                         ),
-                        profile: ExecutionProfile::NativeTextV1,
+                        profile: if repository {
+                            ExecutionProfile::ProtectedRepositoryV1
+                        } else {
+                            ExecutionProfile::NativeTextV1
+                        },
                     },
                     u64::from(timeout_seconds) * 1000,
                 )
@@ -2060,7 +2156,8 @@ impl ExecutionBackend for NativeBackend {
                 // policy, has already decided the attempt; stop paying for
                 // the rest of the turn. The size of the event record never
                 // does (see `evidence`).
-                if (capture.cap_answer() || capture.violation.is_some()) && !cancelled {
+                let answer_capped = capture.cap_answer();
+                if ((answer_capped && !repository) || capture.violation.is_some()) && !cancelled {
                     host.cancel_owned_turn(&key).await.map_err(host_error)?;
                     cancelled = true;
                     cancellation_started = Some(Instant::now());
@@ -2123,7 +2220,7 @@ impl ExecutionBackend for NativeBackend {
                             break;
                         }
                     }
-                    if capture.answer_capped {
+                    if capture.answer_capped && !repository {
                         attempt.outcome = Some("budget_reached".into());
                         attempt.reason = Some(ANSWER_CAP_REASON.into());
                     } else if let Some(error) = status.error {
@@ -2158,10 +2255,21 @@ impl ExecutionBackend for NativeBackend {
             attempt.duration_ms = Some(started.elapsed().as_millis() as u64);
             attempt.finished_at = Some(now());
             attempt.phase = "collecting".into();
+            if let Some(id) = cleanup.0.as_deref() {
+                host.stop_owned_sandbox(&session.session_id)
+                    .await
+                    .map_err(host_error)?;
+                collect_repository(&mut attempt, id, version.manifest.limits.max_artifact_bytes)
+                    .await?;
+            }
             mark_auxiliary_profile(&mut attempt);
             let evidence = capture.evidence.close(terminal);
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             store.save_attempt(&attempt).await?;
+            if let Some(id) = cleanup.0.as_deref() {
+                sandbox::clean(id).await?;
+                cleanup.0 = None;
+            }
             Ok(attempt)
         })
     }
@@ -2171,12 +2279,23 @@ impl ExecutionBackend for NativeBackend {
         mut attempt: Attempt,
     ) -> BoxFuture<'a, Result<Option<Attempt>>> {
         Box::pin(async move {
+            let mut cleanup = sandbox::Cleanup(
+                (attempt.configuration.execution_profile == "protected_repository")
+                    .then(|| repository_execution::attempt_id(&turn_owner(&attempt))),
+            );
+            if let Some(id) = cleanup.0.as_deref() {
+                sandbox::kill("session", id).await?;
+            }
             if attempt.evidence_hash.is_some()
                 && attempt
                     .outcome
                     .as_deref()
                     .is_some_and(|outcome| !matches!(outcome, "interrupted" | "dispatch_uncertain"))
             {
+                if let Some(id) = cleanup.0.as_deref() {
+                    sandbox::clean(id).await?;
+                    cleanup.0 = None;
+                }
                 return Ok(Some(attempt));
             }
             let host = self
@@ -2245,7 +2364,7 @@ impl ExecutionBackend for NativeBackend {
                     .into(),
             );
             attempt.reason = status.error.map(|v| v.to_string());
-            if capture.answer_capped {
+            if capture.answer_capped && cleanup.0.is_none() {
                 attempt.outcome = Some("budget_reached".into());
                 attempt.reason = Some(RECOVERED_ANSWER_CAP_REASON.into());
             }
@@ -2280,9 +2399,26 @@ impl ExecutionBackend for NativeBackend {
                 attempt.outcome = Some("execution_violation".into());
                 attempt.reason = Some(violation);
             }
+            if let Some(id) = cleanup.0.as_deref() {
+                match collect_repository(&mut attempt, id, cap).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        attempt.output = None;
+                        attempt.outcome = Some("infrastructure_failure".into());
+                        attempt.reason = Some(error.message);
+                    }
+                }
+            }
             mark_auxiliary_profile(&mut attempt);
             let evidence = capture.evidence.close(terminal);
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
+            // Persist the patch before removing its only working copy. Recovery
+            // can repeat cleanup if the process exits between these operations.
+            store.save_attempt(&attempt).await?;
+            if let Some(id) = cleanup.0.as_deref() {
+                sandbox::clean(id).await?;
+                cleanup.0 = None;
+            }
             Ok(Some(attempt))
         })
     }
@@ -2423,7 +2559,9 @@ fn violation_of(event: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 fn mark_auxiliary_profile(attempt: &mut Attempt) {
-    if attempt.usage.schema == "provider_turn_with_auxiliary_v2" {
+    if attempt.configuration.execution_profile == "native_text"
+        && attempt.usage.schema == "provider_turn_with_auxiliary_v2"
+    {
         if let Some(observed) = attempt.observed.as_mut() {
             observed.execution_profile = "native_text_auxiliary".into();
         }
@@ -2587,6 +2725,14 @@ enum RuntimeIdentity {
     /// row completes with its own model, so a change to another row of the
     /// vendor's list leaves a configuration's revision alone.
     PerModel(Sha256),
+}
+
+/// Reuse the account's model catalog, but pin the WSL runtime rather than the
+/// Windows executable that listed it. Renamed aliases
+/// invalidate the selected configuration as they do for native text.
+fn repository_inventory_revision(runtime: &str, inventory: &Value, model: &str) -> String {
+    RuntimeIdentity::PerModel(Sha256::new().chain_update(runtime.as_bytes()))
+        .revision(inventory, model)
 }
 
 impl RuntimeIdentity {
@@ -4109,6 +4255,27 @@ pub fn seed_definitions() -> Vec<BenchmarkDraft> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repository_pins_track_the_model_and_sandbox_but_not_unrelated_rows() {
+        let inventory =
+            json!({"models":[{"id":"m","name":"Model One"},{"id":"other","name":"Other"}]});
+        let original = repository_inventory_revision("sandbox-1", &inventory, "m");
+        let mut changed = inventory.clone();
+        changed["models"][1]["name"] = json!("New other");
+        assert_eq!(
+            original,
+            repository_inventory_revision("sandbox-1", &changed, "m")
+        );
+        changed["models"][0]["name"] = json!("Moved alias");
+        assert_ne!(
+            original,
+            repository_inventory_revision("sandbox-1", &changed, "m")
+        );
+        assert_ne!(
+            original,
+            repository_inventory_revision("sandbox-2", &inventory, "m")
+        );
+    }
     #[test]
     fn judge_replies_become_weighted_shares_and_unfenced_markup_renders() {
         let criteria = vec![
@@ -6400,8 +6567,68 @@ mod tests {
         );
         mark_auxiliary_profile(&mut attempt);
         assert_eq!(
-            attempt.observed.unwrap().execution_profile,
+            attempt.observed.as_ref().unwrap().execution_profile,
             "native_text_auxiliary"
+        );
+        // Tool turns normally need several calls; they retain the repository
+        // profile and all inclusive usage instead of becoming text rows.
+        attempt.configuration.execution_profile = "protected_repository".into();
+        attempt.observed.as_mut().unwrap().execution_profile = "protected_repository".into();
+        mark_auxiliary_profile(&mut attempt);
+        assert_eq!(
+            attempt.observed.unwrap().execution_profile,
+            "protected_repository"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the provisioned distill-bench WSL distribution"]
+    async fn repository_answer_is_the_stopped_patch_and_never_the_final_message() {
+        sandbox::ready().await.unwrap();
+        let id = format!("collect-{}", uuid::Uuid::new_v4());
+        let mut cleanup = sandbox::Cleanup(Some(id.clone()));
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "answer.txt", b"old\n".as_slice())
+            .unwrap();
+        sandbox::copy(&id, &archive.into_inner().unwrap())
+            .await
+            .unwrap();
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":{"id":"c","providerId":"codex-acp","accountId":"a","modelId":"m","billingMode":"subscription","executionProfile":"protected_repository"},
+            "repetition":0,"phase":"collecting","outcome":"completed","output":"I changed everything",
+            "usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],"evaluations":[]})).unwrap();
+        collect_repository(&mut attempt, &id, 4096).await.unwrap();
+        assert_eq!(attempt.output.as_deref(), Some(""));
+        let result = sandbox::command("/usr/local/sbin/bench-run", &["session", &id, "--", "/bin/sh", "-c",
+            "printf 'new\\n' >answer.txt; setsid sh -c 'sleep 5; echo late >>answer.txt' </dev/null >/dev/null 2>&1 &"])
+            .output().await.unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        collect_repository(&mut attempt, &id, 4096).await.unwrap();
+        let patch = attempt.output.clone().unwrap();
+        assert!(patch.contains("+new"));
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        collect_repository(&mut attempt, &id, 4096).await.unwrap();
+        assert_eq!(
+            attempt.output.as_deref(),
+            Some(patch.as_str()),
+            "detached child survived collection"
+        );
+        collect_repository(&mut attempt, &id, 4).await.unwrap();
+        assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
+        sandbox::clean(&id).await.unwrap();
+        cleanup.0 = None;
+        assert!(
+            collect_repository(&mut attempt, &id, 4096).await.is_err(),
+            "a missing recovery copy is not an empty answer"
         );
     }
     /// Each provider's usage names the model that answered, which for an

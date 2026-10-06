@@ -218,15 +218,37 @@ fn capability_with_issue(provider: NativeProvider, issue: Option<String>) -> Cap
 }
 
 #[tauri::command]
-pub fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
+pub async fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
     let _ = benchmarks::worker::configure(&app);
     let mut capabilities: Vec<Capability> = NativeProvider::ALL
         .iter()
         .map(|provider| native_text_capability(*provider))
         .collect();
-    for profile in ["protected_repository", "isolated_ui"] {
-        capabilities.push(Capability{provider_id:"claude-acp".into(),execution_profile:profile.into(),supported:benchmarks::worker::available(),reason:if benchmarks::worker::available(){"Bounded JavaScript/HTML artifacts generated as text and evaluated in a separate Chromium sandbox; general native repository execution is unavailable"}else{"Isolated artifact worker prerequisites are unavailable"}.into(),cli_account_id:None});
+    let sandbox_issue = crate::services::benchmark_sandbox::ready()
+        .await
+        .err()
+        .map(|error| error.to_string());
+    for provider in NativeProvider::ALL {
+        capabilities.push(Capability {
+            provider_id: provider.harness_id().into(),
+            execution_profile: "protected_repository".into(),
+            supported: sandbox_issue.is_none(),
+            reason: sandbox_issue.clone().unwrap_or_else(|| "Repository tasks run with tools in an isolated WSL copy; choose an account signed in inside distill-bench".into()),
+            cli_account_id: provider_accounts::cli_login_account_id(provider.harness_id()),
+        });
     }
+    capabilities.push(Capability {
+        provider_id: "claude-acp".into(),
+        execution_profile: "isolated_ui".into(),
+        supported: benchmarks::worker::available(),
+        reason: if benchmarks::worker::available() {
+            "Bounded HTML artifacts generated as text and evaluated in a separate Chromium sandbox"
+        } else {
+            "Isolated artifact worker prerequisites are unavailable"
+        }
+        .into(),
+        cli_account_id: None,
+    });
     if app
         .try_state::<crate::services::e2e_mode::E2eMode>()
         .is_some()

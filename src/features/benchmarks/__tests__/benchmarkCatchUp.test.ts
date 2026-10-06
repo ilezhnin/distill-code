@@ -33,7 +33,7 @@ describe("catch-up configuration", () => {
     const row = { ...configuration, inventoryRevision: "runtime-then" };
     expect(pinned(row)).toEqual({
       ...configuration,
-      id: "claude-acp:account-1:model-1:high:false",
+      id: "claude-acp:account-1:model-1:high:false:native_text",
       inventoryRevision: "runtime-now",
     });
   });
@@ -44,6 +44,25 @@ describe("catch-up configuration", () => {
       executionProfile: "native_text_auxiliary",
     };
     expect(pinned(row).executionProfile).toBe("native_text");
+  });
+
+  it("keeps repository catch-up on the sandbox runtime when the same model also has a text row", () => {
+    const repository = {
+      ...current,
+      configuration: {
+        ...current.configuration,
+        executionProfile: "protected_repository",
+        inventoryRevision: "sandbox-now",
+      },
+    };
+    const row = { ...configuration, executionProfile: "protected_repository" };
+    expect(pinned(row, [current, repository])).toMatchObject({
+      executionProfile: "protected_repository",
+      inventoryRevision: "sandbox-now",
+    });
+    expect(resolveCatchUpConfiguration(row, [current])).toEqual({
+      issue: "missing",
+    });
   });
 
   it("keeps the row's own level and never runs a model with levels unset", () => {

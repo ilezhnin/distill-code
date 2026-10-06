@@ -2114,7 +2114,7 @@ impl Inner {
                                 params
                                     .pointer("/update/sessionUpdate")
                                     .and_then(Value::as_str),
-                                Some("tool_call" | "tool_call_update")
+                                Some("tool_call" | "tool_call_update" | "plan")
                             )
                     }) {
                         params["update"]["_meta"]["executionViolation"] = json!(violation);
@@ -6273,6 +6273,14 @@ impl Inner {
         limit: u32,
     ) -> Result<OwnedEventPage, String> {
         self.store.owned_events(id, after, limit).await
+    }
+    pub async fn stop_owned_sandbox(&self, session: &str) -> Result<(), String> {
+        if let Some((bridge, _)) = self.attached_route(session).await {
+            if bridge.is_sandbox() {
+                bridge.stop_sandbox().await?;
+            }
+        }
+        Ok(())
     }
     pub async fn cancel_owned_turn(&self, key: &str) -> Result<(), String> {
         let dispatch = self
