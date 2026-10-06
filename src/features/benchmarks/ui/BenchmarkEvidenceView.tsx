@@ -55,7 +55,7 @@ import {
 } from "./BenchmarkPrimitives";
 
 export function BenchmarkEvidenceView({
-  attemptId,
+  attemptId: openedId,
   onClose,
   onSelectSession,
   onSelectAttempt,
@@ -66,6 +66,10 @@ export function BenchmarkEvidenceView({
   onSelectAttempt: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  // A repetition tab changes only what this dialog shows: the page behind it
+  // keeps its location, so nothing there redraws.
+  const [shownId, setShownId] = useState(openedId);
+  const attemptId = shownId;
   const client = useQueryClient();
   const definitions = useBenchmarkDefinitions();
   const evidence = useQuery({
@@ -263,7 +267,7 @@ export function BenchmarkEvidenceView({
                     toggleVariants({ size: "sm" }),
                     "h-7 px-2.5 text-xs",
                   )}
-                  onClick={() => onSelectAttempt(other.id)}
+                  onClick={() => setShownId(other.id)}
                 >
                   {t("evidence.repeat", { number: other.repetition + 1 })}
                 </button>

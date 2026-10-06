@@ -318,8 +318,7 @@
     "inProgress": "In progress",
     "finished": "Finished",
     "solved": "Solved",
-    "attention": "Failed",
-    "queued": "Queued"
+    "attention": "Failed"
   },
   "leaderboard": {
     "boards": {

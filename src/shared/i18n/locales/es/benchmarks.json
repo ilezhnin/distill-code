@@ -318,8 +318,7 @@
     "inProgress": "En curso",
     "finished": "Terminadas",
     "solved": "Resueltas",
-    "attention": "Fallidas",
-    "queued": "En cola"
+    "attention": "Fallidas"
   },
   "leaderboard": {
     "boards": {

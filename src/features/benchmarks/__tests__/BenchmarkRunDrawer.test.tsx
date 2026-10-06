@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import type { Attempt, BenchmarkDefinition, BenchmarkRun } from "../types";
 import { BenchmarkRunDrawer } from "../ui/BenchmarkRunDrawer";
+import { compactElapsed } from "../ui/BenchmarkTaskGrid";
 import { attempt, configuration, definition, run } from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
@@ -136,6 +137,9 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(await row("Alpha").findByLabelText("Pass")).toBeInTheDocument();
   expect(row("Alpha").getByText("1/1")).toBeInTheDocument();
   expect(row("Alpha").getByText("12 s")).toBeInTheDocument();
+  // A minute and more reads as m:ss, so a block never wraps its clock.
+  expect(compactElapsed(86_000)).toBe("1:26");
+  expect(compactElapsed(3_725_000)).toBe("1:02:05");
   expect(row("Bravo").getByLabelText("Running")).toBeInTheDocument();
   expect(block("Bravo")).toHaveAttribute("aria-current", "step");
   expect(row("Charlie").getByText("Queued")).toBeInTheDocument();

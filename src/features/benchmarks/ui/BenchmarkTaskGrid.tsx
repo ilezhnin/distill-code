@@ -7,7 +7,7 @@ import { IconClock, IconCoin } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
-import { formatElapsed, formatUsd } from "../lib/benchmarkLabels";
+import { formatUsd } from "../lib/benchmarkLabels";
 import type { AttemptSummary } from "../types";
 import {
   TestStatusMark,
@@ -40,6 +40,18 @@ export type CellAttempt = Pick<
   reason?: string | null;
   waitUntil?: number | null;
 };
+
+/** A block's clock: seconds under a minute, else m:ss, else h:mm:ss. */
+export function compactElapsed(milliseconds: number): string {
+  const total = Math.max(0, Math.round(milliseconds / 1000));
+  const seconds = total % 60;
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+  if (minutes > 0) return `${minutes}:${pad(seconds)}`;
+  return `${seconds} s`;
+}
 
 function median(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -114,15 +126,15 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   const failed =
     scored.filter((status) => !status.graded && status.passes < status.of)
       .length + count("unscored");
+  // What is still to come is the rest: no tile repeats the arithmetic.
   const items: [string, number][] = [
     ["grid.inProgress", count("running", "judging", "waiting")],
     ["grid.finished", count("scored", "unscored")],
     ["grid.solved", solved],
     ["grid.attention", failed],
-    ["grid.queued", count("queued", "gap")],
   ];
   return (
-    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {items.map(([key, value]) => (
         <div key={key} className="rounded-md border border-border px-3 py-2">
           <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -208,12 +220,12 @@ export function TaskGrid({
                     </span>
                     <TestStatusMark status={cell.status} now={now} compact />
                   </span>
-                  <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground tabular-nums">
+                  <span className="flex items-center justify-between gap-2 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
                     <span className="inline-flex items-center gap-1">
                       <IconClock className="size-3.5" aria-hidden />
                       {cell.durationMs == null
                         ? "–"
-                        : formatElapsed(t, cell.durationMs)}
+                        : compactElapsed(cell.durationMs)}
                     </span>
                     <span className="inline-flex items-center gap-1">
                       <IconCoin className="size-3.5" aria-hidden />
