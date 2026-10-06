@@ -8,6 +8,7 @@ pub mod export;
 pub mod fixtures;
 pub mod generated;
 pub mod model_catalog;
+pub mod repository;
 pub mod routing;
 pub mod runner;
 pub mod seeds;

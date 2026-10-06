@@ -1650,6 +1650,11 @@ impl ExecutionBackend for NativeBackend {
         if let Some(reason) = native_refusal(c) {
             return Some(reason);
         }
+        // A repository case runs as a session with tools in a copy of its
+        // snapshot; that session is not enabled yet (see the plan's stage 1).
+        if super::repository::is_repository_case(d) {
+            return Some(super::repository::SESSION_UNAVAILABLE.into());
+        }
         if c.execution_profile != "native_text" {
             return Some(
                 "Choose the native text configuration for bounded artifact generation".into(),
@@ -3003,6 +3008,12 @@ fn prompt_with_fixtures(draft: &BenchmarkDraft) -> Result<String> {
 pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation> {
     if matches!(draft.evaluator.kind.as_str(), "javascript" | "browser") {
         return super::worker::evaluate(draft, output).await;
+    }
+    // A repository case's output is the candidate's patch; its check runs in
+    // a fresh copy of the snapshot outside every working copy.
+    if draft.evaluator.kind == super::repository::EVALUATOR {
+        let scratch = std::env::temp_dir().join("distill-benchmark-checks");
+        return super::repository::evaluate_patch(draft, output, &scratch).await;
     }
     let mut evaluation = evaluation::evaluate(&draft.evaluator, output)?;
     // A judged brief answered without any drawing or page leaves the panel

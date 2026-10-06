@@ -9,6 +9,7 @@ pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
     issues.extend(super::routing::validate_draft(d));
     issues.extend(super::workflow::validate(d));
     issues.extend(evaluation::validate(&d.evaluator));
+    issues.extend(super::repository::validate(d));
     if d.schema_version != 1 {
         issues.push("Unsupported schema version".into());
     }
@@ -128,6 +129,32 @@ impl Store {
             let bad = super::worker::evaluate(&def.draft, &def.draft.evaluator.known_bad).await?;
             if good.verdict != "pass" || bad.verdict != "fail" {
                 return Err(BenchmarkError::new("validation","Protected evaluator must accept its known-good and reject its known-bad reference"));
+            }
+        }
+        // A repository check must pass its reference patch and fail the
+        // known-bad one on the snapshot itself before anyone is measured.
+        if def.draft.evaluator.kind == super::repository::EVALUATOR {
+            let scratch = self.root.join("versions").join(".checks");
+            let good = super::repository::evaluate_patch(
+                &def.draft,
+                &def.draft.evaluator.known_good,
+                &scratch,
+            )
+            .await?;
+            let bad = super::repository::evaluate_patch(
+                &def.draft,
+                &def.draft.evaluator.known_bad,
+                &scratch,
+            )
+            .await?;
+            if good.verdict != "pass" || bad.verdict == "pass" {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    format!(
+                        "The repository check must pass the reference patch and fail the known-bad one: {} / {}",
+                        good.reason, bad.reason
+                    ),
+                ));
             }
         }
         let hash = fixtures::publish_blob(&self.root, &def.draft).await?;

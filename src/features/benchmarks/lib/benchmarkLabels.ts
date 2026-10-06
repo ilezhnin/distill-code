@@ -6,6 +6,7 @@ export type StateTone = "positive" | "negative" | "neutral";
 const POSITIVE = new Set(["pass", "completed", "comparable"]);
 const NEGATIVE = new Set([
   "fail",
+  "no_answer",
   "budget_timeout",
   "budget_reached",
   "selection_changed",

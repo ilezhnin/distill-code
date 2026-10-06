@@ -95,6 +95,9 @@ pub fn validate(e: &Evaluator) -> Vec<String> {
                 issues.push("Review rubric is required".into());
             }
         }
+        // The check and its references are verified against the snapshot at
+        // publication (`repository::validate`, `Store::publish`).
+        "repository" => {}
         "javascript" | "browser" => {
             if serde_json::from_str::<serde_json::Value>(&e.expected).is_err() {
                 issues.push("Protected evaluator specification must be valid JSON".into());

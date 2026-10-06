@@ -459,6 +459,7 @@
     "interrupted": "Interrumpido",
     "pass": "Aprobado",
     "fail": "Fallido",
+    "no_answer": "Sin respuesta",
     "budget_timeout": "Límite de tiempo alcanzado",
     "budget_reached": "Presupuesto de artefacto superado",
     "quota_blocked": "Bloqueado por cuota",

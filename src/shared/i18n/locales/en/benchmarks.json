@@ -459,6 +459,7 @@
     "interrupted": "Interrupted",
     "pass": "Pass",
     "fail": "Fail",
+    "no_answer": "No answer",
     "budget_timeout": "Time limit reached",
     "budget_reached": "Artifact budget exceeded",
     "quota_blocked": "Quota blocked",

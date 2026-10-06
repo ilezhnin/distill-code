@@ -180,6 +180,9 @@ fn has_quality_outcome(outcome: Option<&str>) -> bool {
         Some(
             "pass"
                 | "fail"
+                // A repository turn that left the snapshot unchanged: the
+                // candidate's result, scored 0, kept apart for diagnosis.
+                | "no_answer"
                 | "judged"
                 | "pending_review"
                 | "completed"
