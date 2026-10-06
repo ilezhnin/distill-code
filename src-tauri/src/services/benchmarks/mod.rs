@@ -61,17 +61,28 @@ fn owed(version: &BenchmarkVersion, configuration: &Configuration) -> bool {
     !routing::authored_by_candidate(&version.manifest, configuration)
 }
 
-/// Executions a plan owes: every owed cell's turns and judge reservation, per repetition.
-fn owed_executions(versions: &[BenchmarkVersion], request: &RunRequest) -> usize {
+/// Executions a plan owes: every owed cell's turns and judge reservation, per
+/// repetition it still lacks.
+fn owed_executions(
+    versions: &[BenchmarkVersion],
+    request: &RunRequest,
+    repetitions: &dyn Fn(&BenchmarkVersion, &Configuration) -> u32,
+) -> usize {
     let mut turns = 0usize;
     for version in versions {
         for configuration in &request.configurations {
             if owed(version, configuration) {
-                turns = turns.saturating_add(execution_count(&version.manifest));
+                turns = turns.saturating_add(
+                    execution_count(&version.manifest).saturating_mul(repetitions(
+                        version,
+                        configuration,
+                    )
+                        as usize),
+                );
             }
         }
     }
-    turns.saturating_mul(request.repetitions as usize)
+    turns
 }
 
 fn matrix_order_seed(request_key: &str) -> String {
@@ -226,7 +237,24 @@ impl BenchmarkService {
         for id in &request.version_ids {
             versions.push(self.store.version(id).await?);
         }
-        Ok(owed_executions(&versions, request))
+        let repetitions = self.owed_repetitions(request).await?;
+        Ok(owed_executions(&versions, request, &*repetitions))
+    }
+    /// The repetitions a plan owes each cell: all of them, or, topping up,
+    /// those the cell's newest scored repetitions do not cover.
+    async fn owed_repetitions(
+        &self,
+        request: &RunRequest,
+    ) -> Result<Box<dyn Fn(&BenchmarkVersion, &Configuration) -> u32 + Send + Sync>> {
+        if !request.top_up {
+            let all = request.repetitions;
+            return Ok(Box::new(move |_, _| all));
+        }
+        let data = self.query_data().await?;
+        let planned = request.repetitions;
+        Ok(Box::new(move |version, configuration| {
+            planned.saturating_sub(analysis::scored_repetitions(&data, configuration, version))
+        }))
     }
     pub async fn preview_run(&self, request: &RunRequest) -> Result<RunPreview> {
         let mut issues = Vec::new();
@@ -234,7 +262,8 @@ impl BenchmarkService {
         for id in &request.version_ids {
             versions.push(self.store.version(id).await?);
         }
-        let count = owed_executions(&versions, request);
+        let repetitions = self.owed_repetitions(request).await?;
+        let count = owed_executions(&versions, request, &*repetitions);
         if !versions.is_empty()
             && request
                 .configurations
@@ -411,10 +440,19 @@ impl BenchmarkService {
                     .map(|c| (v.id.as_str(), c.id.as_str()))
             })
             .collect();
+        // Topping up, a cell keeps only the repetitions it still lacks.
+        let repetitions = self.owed_repetitions(&request).await?;
+        let owed_of = |version: &str, configuration: &Configuration| {
+            versions
+                .iter()
+                .find(|v| v.id == version)
+                .map_or(0, |v| repetitions(v, configuration))
+        };
         let cells: Vec<_> = randomized_matrix(&request)?
             .into_iter()
-            .filter(|(version, configuration, _)| {
+            .filter(|(version, configuration, repetition)| {
                 !authored.contains(&(version.as_str(), configuration.id.as_str()))
+                    && *repetition < owed_of(version, configuration)
             })
             .collect();
         let mut manifest = serde_json::to_value(&request)?;

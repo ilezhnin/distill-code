@@ -408,10 +408,17 @@ export function LeaderboardView({
                       <div className="flex items-center gap-2">
                         <StateBadge state={entry.row.status} />
                         <span className="text-xs text-muted-foreground">
-                          {t("leaderboard.measured", {
-                            scored: entry.row.scored,
-                            planned: entry.row.planned,
-                          })}
+                          {entry.row.complete != null &&
+                          entry.row.complete < entry.row.scored
+                            ? t("leaderboard.measuredPartial", {
+                                scored: entry.row.scored,
+                                planned: entry.row.planned,
+                                complete: entry.row.complete,
+                              })
+                            : t("leaderboard.measured", {
+                                scored: entry.row.scored,
+                                planned: entry.row.planned,
+                              })}
                         </span>
                       </div>
                     )}

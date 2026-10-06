@@ -639,6 +639,7 @@ mod tests {
             timeout_seconds: 30,
             max_executions: 2,
             preview: false,
+            top_up: false,
         };
         let run = service.start_run(request).await.unwrap();
         let mut root = run.attempts[0].clone();

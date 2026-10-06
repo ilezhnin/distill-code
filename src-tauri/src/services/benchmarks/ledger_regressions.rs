@@ -183,8 +183,6 @@ fn unscored_retests_keep_the_previous_cell() {
         &["infrastructure_failure"],
         &["dispatch_uncertain"],
         &["selection_changed"],
-        &["pass", "cancelled"],
-        &["fail", "interrupted"],
     ] {
         let mut data = before_only();
         settled_retest(&mut data, "cancelled", outcomes);
@@ -204,6 +202,22 @@ fn unscored_retests_keep_the_previous_cell() {
             assert_eq!(cell["runId"], "before", "{outcomes:?}");
             assert_eq!(cell["reward"], 1.0, "{outcomes:?}");
         }
+    }
+    // A retest's scored repetition joins the case's cell as its newest one;
+    // the unscored repetition beside it never does.
+    for (outcomes, points) in [
+        (&["pass", "cancelled"][..], 1000),
+        (&["fail", "interrupted"], 0),
+    ] {
+        let mut data = before_only();
+        settled_retest(&mut data, "cancelled", outcomes);
+        let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+        assert_eq!(row.points, Some(points), "{outcomes:?}");
+        assert_eq!((row.scored, row.planned), (6, 6), "{outcomes:?}");
+        assert!(
+            row.attempt_ids.iter().all(|id| id.starts_with("retest-0-")),
+            "{outcomes:?}"
+        );
     }
 }
 
@@ -230,20 +244,36 @@ fn scored_failures_and_complete_retests_replace_the_previous_cell() {
     );
 }
 
-/// The product protocol: a cell of fewer repetitions than required is a quick
-/// check that neither counts nor displaces an older measurement.
+/// The product protocol: a case's cell is its newest scored repetitions,
+/// across runs, up to the three it requires. One repetition is a measurement
+/// already, preliminary until the cell is complete; a rank needs every case
+/// complete. Nothing measured is thrown away, and a catch-up owes only what
+/// is missing.
 #[test]
-fn a_cell_short_of_the_required_repetitions_never_counts() {
+fn repetitions_add_up_across_runs_and_a_rank_waits_for_complete_cells() {
     let mut data = before_only();
     data.required_repetitions = 3;
+    // One repetition each: measured, preliminary, nothing missing to start.
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!((row.scored, row.planned, row.points), (0, 6, None));
-    assert_eq!(row.missing_version_ids.len(), 6);
-    settled_retest(&mut data, "completed", &["pass", "pass", "pass"]);
+    assert_eq!((row.scored, row.complete, row.planned), (6, 0, 6));
+    assert_eq!(
+        (row.points, row.status.as_str()),
+        (Some(1000), "preliminary")
+    );
+    assert!(row.missing_version_ids.is_empty());
+    // Two more repetitions complete every cell: three attempts per case, the
+    // first run's one among them, and the row ranks.
+    settled_retest(&mut data, "completed", &["pass", "pass"]);
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!((row.scored, row.points), (6, Some(1000)));
-    assert!(row.attempt_ids.iter().all(|id| id.starts_with("retest-")));
-    // A later quick check of one repetition leaves the measured cell standing.
+    assert_eq!(
+        (row.scored, row.complete, row.status.as_str()),
+        (6, 6, "comparable")
+    );
+    assert_eq!(row.points, Some(1000));
+    assert_eq!(row.attempt_ids.len(), 18);
+    assert!(row.attempt_ids.iter().any(|id| id.starts_with("before-")));
+    // A later single repetition takes the place of the oldest one: a fail
+    // among the newest three fails the case.
     let mut quick = data.runs[1].clone();
     quick.id = "quick".into();
     quick.created_at = 20;
@@ -252,7 +282,7 @@ fn a_cell_short_of_the_required_repetitions_never_counts() {
     let quick_attempts: Vec<Attempt> = data
         .attempts
         .iter()
-        .filter(|a| a.run_id == "retest" && a.repetition == 0)
+        .filter(|a| a.run_id == "retest" && a.repetition == 0 && a.version_id == "v0")
         .map(|a| {
             let mut a = a.clone();
             a.id = format!("quick-{}", a.id);
@@ -265,8 +295,10 @@ fn a_cell_short_of_the_required_repetitions_never_counts() {
     data.runs.push(quick);
     data.attempts.extend(quick_attempts);
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!((row.scored, row.points), (6, Some(1000)));
-    assert!(row.attempt_ids.iter().all(|id| id.starts_with("retest-")));
+    assert_eq!((row.scored, row.complete, row.passed), (6, 6, 5));
+    assert!(row.attempt_ids.iter().any(|id| id.starts_with("quick-")));
+    assert!(!row.attempt_ids.contains(&"before-v0".to_string()));
+    assert_eq!(row.attempt_ids.len(), 18);
 }
 
 #[test]
@@ -933,7 +965,7 @@ fn judge_panels_never_reach_the_cost_board() {
 }
 
 #[test]
-fn incomplete_repetitions_do_not_replace_the_previous_cell() {
+fn a_retests_scored_repetition_joins_the_cell_whatever_it_planned() {
     let mut data = before_only();
     let mut run = data.runs[0].clone();
     run.id = "retest".into();
@@ -945,10 +977,16 @@ fn incomplete_repetitions_do_not_replace_the_previous_cell() {
     a.outcome = Some("fail".into());
     data.runs.push(run);
     data.attempts.push(a);
+    // With one repetition required, the newest one is the cell: v0 fails.
     assert_eq!(
         leaderboard(&data, &ResultQuery::default()).rows[0].points,
-        Some(1000)
+        Some(833)
     );
+    // With three, the fail joins v0's earlier pass: two of three, failed.
+    data.required_repetitions = 3;
+    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+    assert_eq!((row.scored, row.complete, row.passed), (6, 0, 5));
+    assert_eq!(row.status, "preliminary");
 }
 
 #[test]
@@ -1160,6 +1198,7 @@ fn auxiliary_repetitions_stay_in_their_configurations_cell() {
         }
     }
     data.attempts.extend(extra);
+    data.required_repetitions = 3;
     let rows = leaderboard(&data, &ResultQuery::default()).rows;
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
@@ -1329,9 +1368,14 @@ fn missing_repeat_score_does_not_count_as_complete_case() {
     second.outcome = Some("infrastructure_failure".into());
     data.attempts.truncate(1);
     data.attempts.push(second);
+    data.required_repetitions = 2;
+    // The scored repetition is a measurement; the case is incomplete.
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!(row.scored, 0);
-    assert_eq!(row.points, None);
+    assert_eq!((row.scored, row.complete), (1, 0));
+    assert_eq!(
+        (row.points, row.status.as_str()),
+        (Some(1000), "preliminary")
+    );
 }
 
 #[test]
@@ -1534,14 +1578,15 @@ fn only_repetitions_that_ran_carry_spend() {
     let cost = |data: &QueryData| leaderboard(data, &ResultQuery::default()).rows[0].cost;
     // v0 stays unscored; its paid repetition counts and the cancelled one spent nothing.
     assert!((cost(&data).unwrap() - 7.0 / 6.0).abs() < 1e-9);
-    // A started repetition whose spend is unknown leaves v0 out of the cost.
+    // That repetition is v0's newest scored one; with its spend unknown the
+    // row's spend is unknown too, never free.
     data.attempts
         .iter_mut()
         .find(|a| a.run_id == "retest" && a.repetition == 0)
         .unwrap()
         .usage
         .cost = None;
-    assert_eq!(cost(&data), Some(1.0));
+    assert_eq!(cost(&data), None);
 }
 
 /// A newer run "refused-run" holding one refused attempt on v0 whose session

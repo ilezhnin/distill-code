@@ -100,6 +100,8 @@ export interface Configuration {
   modelName?: string | null;
 }
 export interface RunRequest {
+  /** Plan only the repetitions each case still lacks; a catch-up tops a cell up. */
+  topUp?: boolean;
   requestKey: string;
   versionIds: string[];
   configurations: Configuration[];
@@ -349,6 +351,8 @@ export interface LeaderboardRow {
   scored: number;
   attempted: number;
   planned: number;
+  /** Cases whose cell holds every required repetition; a rank needs all. */
+  complete?: number;
   quality: number | null;
   medianDurationMs: number | null;
   medianOutputTokens: number | null;

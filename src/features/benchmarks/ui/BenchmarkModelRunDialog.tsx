@@ -135,6 +135,8 @@ export function BenchmarkModelRunDialog({
     versionIds: versions.map((version) => version.id),
     configurations: [candidate],
     repetitions: REQUIRED_REPETITIONS,
+    // A case measured once owes two repetitions, not three more.
+    topUp: true,
     timeoutSeconds: runTimeLimitSeconds(versions),
     maxExecutions: Math.max(
       1,
@@ -221,14 +223,17 @@ export function BenchmarkModelRunDialog({
       ]),
     );
   }, [standingAttempts.data]);
-  // A test the model already solved on every repetition starts unchecked; a
-  // failed, unscored or never measured one starts checked. Until the results
-  // arrive nothing starts.
+  // A test the model already solved on every required repetition starts
+  // unchecked; a failed, unscored, incomplete or never measured one starts
+  // checked. Until the results arrive nothing starts.
   const done = useMemo(
     () =>
       new Set(
         [...standing]
-          .filter(([, cell]) => cell.passes === cell.of)
+          .filter(
+            ([, cell]) =>
+              cell.of >= REQUIRED_REPETITIONS && cell.passes === cell.of,
+          )
           .map(([versionId]) => versionId),
       ),
     [standing],

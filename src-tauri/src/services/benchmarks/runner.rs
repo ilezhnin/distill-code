@@ -4213,6 +4213,7 @@ mod tests {
             timeout_seconds: 10,
             max_executions: 2,
             preview: false,
+            top_up: false,
         }
     }
     #[tokio::test]
@@ -4429,6 +4430,39 @@ mod tests {
         );
         assert_ne!(resumed.attempts[1].phase, "pending");
         assert!(backend.calls.load(Ordering::SeqCst) >= 1);
+    }
+    /// A catch-up that tops a cell up plans only the repetitions the case
+    /// still lacks of three: a case measured once owes two, a complete one
+    /// nothing, and the preview counts the same.
+    #[tokio::test]
+    async fn a_top_up_plans_only_the_missing_repetitions() {
+        let (_dir, s, _backend) = setup().await;
+        // One repetition measured and scored.
+        let mut first = request(&s).await;
+        first.repetitions = 1;
+        first.max_executions = 1;
+        let run = s.start_run(first.clone()).await.unwrap();
+        let mut done = run.attempts[0].clone();
+        done.phase = "terminal".into();
+        done.outcome = Some("pass".into());
+        done.started_at = Some(1);
+        done.finished_at = Some(now());
+        s.store.save_attempt(&done).await.unwrap();
+        s.store.set_run_state(&run.id, "completed").await.unwrap();
+        // Topping up to three owes two.
+        let mut top_up = first.clone();
+        top_up.request_key = "top-up".into();
+        top_up.repetitions = 3;
+        top_up.max_executions = 3;
+        top_up.top_up = true;
+        assert_eq!(s.preview_run(&top_up).await.unwrap().execution_count, 2);
+        let topped = s.start_run(top_up.clone()).await.unwrap();
+        assert_eq!(topped.attempts.len(), 2);
+        // Without topping up, the same request plans all three.
+        let mut whole = top_up.clone();
+        whole.request_key = "whole".into();
+        whole.top_up = false;
+        assert_eq!(s.preview_run(&whole).await.unwrap().execution_count, 3);
     }
     #[tokio::test]
     async fn pause_and_cancel_never_send_queued_work() {

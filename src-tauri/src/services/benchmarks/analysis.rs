@@ -548,17 +548,22 @@ const RELIABILITY_WEIGHT: f64 = 0.8;
 const SPEED_WEIGHT: f64 = 0.15;
 const COST_WEIGHT: f64 = 0.05;
 
-/// One configuration's settled measurement of one case.
+/// One configuration's measurement of one case: its newest scored
+/// repetitions, up to the count the case requires.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct CaseCell {
-    /// 1 when every repetition passed, 0 when any failed; a judged case takes
-    /// the mean of its repetitions' panel scores instead.
+    /// 1 when every repetition so far passed, 0 when any failed; a judged
+    /// case takes the mean of its repetitions' panel scores instead.
     pub reward: f64,
     /// Median wall-clock over the repetitions.
     pub duration_ms: Option<f64>,
     /// Mean spend per repetition; unknown when any repetition's is.
     pub cost: Option<f64>,
     pub repetitions: u32,
+    /// Whether the cell holds every repetition the case requires. A cell
+    /// short of them still reads, as a preliminary measurement; a case
+    /// counts for a rank only once complete.
+    pub complete: bool,
 }
 
 /// How the pool reads a case: the repetitions its cell needs, and whether it
@@ -569,8 +574,9 @@ pub(super) struct CaseProtocol<'a> {
     pub graded: &'a dyn Fn(&str) -> bool,
 }
 
-/// The cells of a set of attempts, by case: every repetition scored and at
-/// least as many of them as the case requires.
+/// The cells of a set of attempts, by case, from the scored repetitions
+/// each case holds. A repetition without a score is left out; a case with
+/// none is no cell.
 pub(super) fn case_cells<'a>(
     attempts: &[&'a Attempt],
     as_of: Option<i64>,
@@ -587,11 +593,12 @@ pub(super) fn case_cells<'a>(
     by_case
         .into_iter()
         .filter_map(|(version, list)| {
-            let scores: Vec<f64> = list
-                .iter()
-                .map(|a| score_as_of(a, as_of))
-                .collect::<Option<_>>()?;
-            if (scores.len() as u32) < required(version) {
+            let list: Vec<&Attempt> = list
+                .into_iter()
+                .filter(|a| score_as_of(a, as_of).is_some())
+                .collect();
+            let scores: Vec<f64> = list.iter().filter_map(|a| score_as_of(a, as_of)).collect();
+            if scores.is_empty() {
                 return None;
             }
             let reward = if graded(version) {
@@ -613,6 +620,7 @@ pub(super) fn case_cells<'a>(
                     ),
                     cost: costs.map(|c| c.iter().sum::<f64>() / c.len() as f64),
                     repetitions: scores.len() as u32,
+                    complete: scores.len() as u32 >= required(version),
                 },
             ))
         })
@@ -718,6 +726,8 @@ pub(super) fn case_points(
 pub(super) struct BoardStats {
     pub passed: u32,
     pub scored: u32,
+    /// Cases whose cell holds every repetition it requires.
+    pub complete: u32,
     pub quality: Option<f64>,
     pub points: Option<u32>,
     pub speed_share: Option<f64>,
@@ -726,10 +736,12 @@ pub(super) struct BoardStats {
 
 pub(super) fn board_stats(cells: &BTreeMap<&str, CaseCell>, records: &CaseRecords) -> BoardStats {
     let scored = cells.len() as u32;
+    let complete = cells.values().filter(|cell| cell.complete).count() as u32;
     if scored == 0 {
         return BoardStats {
             passed: 0,
             scored,
+            complete,
             quality: None,
             points: None,
             speed_share: None,
@@ -751,6 +763,7 @@ pub(super) fn board_stats(cells: &BTreeMap<&str, CaseCell>, records: &CaseRecord
     BoardStats {
         passed: cells.values().filter(|cell| cell.reward >= 1.0).count() as u32,
         scored,
+        complete,
         quality: Some(cells.values().map(|cell| cell.reward).sum::<f64>() / scored as f64),
         points: Some(share_points(points / scored as f64)),
         speed_share: mean(&speeds),
@@ -854,47 +867,105 @@ pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benc
     pool
 }
 
-/// A run's cell replaces an older one only when every planned repetition settled
-/// with a valid score and the run planned at least `required` of them: a quick
-/// check of fewer repetitions never displaces a measurement. Cancelled,
-/// interrupted, failed-infrastructure, pending or partial retests keep the
-/// previous cell; scored failures do replace it. A case with no scored cell
-/// keeps its newest settled cell that began work, so paid spend stays visible;
-/// a cell that never ran is a plain gap.
+/// The newest scored repetitions of a case, across its runs, at most
+/// `required` of them: the case's cell. Repetitions add up between runs, so
+/// a run that measured a case once and a later run that measured it twice
+/// make one cell of three, and a catch-up owes only what is missing. A newer
+/// repetition takes the place of the oldest once the cell is full.
+pub(super) fn newest_scored<'a>(
+    attempts: &[&'a Attempt],
+    runs: &BTreeMap<&str, &BenchmarkRun>,
+    as_of: Option<i64>,
+    required: u32,
+) -> Vec<&'a Attempt> {
+    let mut scored: Vec<&Attempt> = attempts
+        .iter()
+        .copied()
+        .filter(|a| {
+            a.phase == "terminal"
+                && runs.contains_key(a.run_id.as_str())
+                && a.finished_at
+                    .is_some_and(|at| as_of.is_none_or(|cutoff| at <= cutoff))
+                && score_as_of(a, as_of).is_some()
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        (
+            runs[b.run_id.as_str()].created_at,
+            b.finished_at,
+            b.repetition,
+            &b.id,
+        )
+            .cmp(&(
+                runs[a.run_id.as_str()].created_at,
+                a.finished_at,
+                a.repetition,
+                &a.id,
+            ))
+    });
+    scored.truncate(required.max(1) as usize);
+    scored
+}
+
+/// How many scored repetitions a configuration's cell of a case holds now:
+/// what a catch-up that tops the cell up does not owe.
+pub fn scored_repetitions(
+    data: &QueryData,
+    configuration: &Configuration,
+    version: &BenchmarkVersion,
+) -> u32 {
+    let runs: BTreeMap<&str, &BenchmarkRun> = data
+        .runs
+        .iter()
+        .filter(|run| !run.request.preview)
+        .map(|run| (run.id.as_str(), run))
+        .collect();
+    let acknowledged = run_acknowledgments(&data.attempts);
+    let key = leaderboard_key(configuration);
+    let attempts: Vec<&Attempt> = data
+        .attempts
+        .iter()
+        .filter(|a| {
+            a.version_id == version.id
+                && runs.contains_key(a.run_id.as_str())
+                && leaderboard_key(&ledger_configuration(a, &acknowledged)) == key
+        })
+        .collect();
+    newest_scored(&attempts, &runs, None, required_repetitions(data, version)).len() as u32
+}
+
+/// A case's standing attempts: its cell of newest scored repetitions, else,
+/// when nothing scored, its newest settled attempts that began work, so paid
+/// spend stays visible. Cancelled, interrupted, failed-infrastructure or
+/// pending attempts never enter a cell; a case that never ran is a gap.
 pub(super) fn latest_cell_attempts<'a>(
     attempts: &[&'a Attempt],
     runs: &BTreeMap<&str, &BenchmarkRun>,
     as_of: Option<i64>,
     required: u32,
 ) -> Vec<&'a Attempt> {
+    let cell = newest_scored(attempts, runs, as_of, required);
+    if !cell.is_empty() {
+        return cell;
+    }
     let mut groups: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
     for attempt in attempts {
         groups.entry(&attempt.run_id).or_default().push(attempt);
     }
-    let settled: Vec<(&str, Vec<&Attempt>)> = groups
+    groups
         .into_iter()
         .filter(|(id, list)| {
-            let run = runs[id];
-            list.len() == run.request.repetitions as usize
+            runs.contains_key(id)
                 && list.iter().all(|a| {
                     a.phase == "terminal"
                         && a.finished_at
                             .is_some_and(|at| as_of.is_none_or(|cutoff| at <= cutoff))
                 })
+                && list.iter().any(|a| a.started_at.is_some())
         })
-        .collect();
-    let newest = |accept: &dyn Fn(&[&Attempt]) -> bool| {
-        settled
-            .iter()
-            .filter(|(_, list)| accept(list))
-            .max_by_key(|(id, _)| (runs[id].created_at, *id))
-            .map(|(_, list)| list.clone())
-    };
-    newest(&|list| {
-        list.len() >= required as usize && list.iter().all(|a| score_as_of(a, as_of).is_some())
-    })
-    .or_else(|| newest(&|list| list.iter().any(|a| a.started_at.is_some())))
-    .unwrap_or_default()
+        .max_by_key(|(id, _)| (runs[id].created_at, *id))
+        .map(|(_, list)| list)
+        .unwrap_or_default()
 }
 
 /// The spend a ledger row reports: scored cells as measured, and unscored cells
@@ -1052,7 +1123,7 @@ fn leaderboard_from_attempts(
             if eligible.is_empty() {
                 return LeaderboardRow {
                     comparison_key: String::new(),
-                    configuration, passed: 0, scored: 0, attempted: 0, planned: 0, quality: None,
+                    configuration, passed: 0, scored: 0, attempted: 0, planned: 0, complete: 0, quality: None,
                     median_duration_ms: None, median_output_tokens: None, cost: None, measured_at: None,
                     points: None, speed_share: None, cost_share: None,
                     status: "excluded".into(),
@@ -1120,6 +1191,7 @@ fn leaderboard_from_attempts(
                     .round() as u32
             });
             let (passed, scored, quality) = (overall.passed, overall.scored, overall.quality);
+            let complete = overall.complete;
             // A case without a score whose standing cell the provider refused
             // (an `unsupported` outcome, such as a model the account's plan
             // leaves out) is no gap a catch-up fills: asking again would
@@ -1143,6 +1215,7 @@ fn leaderboard_from_attempts(
                 scored,
                 attempted,
                 planned,
+                complete,
                 quality,
                 median_duration_ms: median(
                     scored_attempts
@@ -1168,14 +1241,14 @@ fn leaderboard_from_attempts(
                 cost_share: overall.cost_share,
                 status: if attempted == 0 {
                     "untested"
-                } else if scored == planned && standard_budgets {
+                } else if complete == planned && standard_budgets {
                     "comparable"
                 } else {
                     "preliminary"
                 }
                 .into(),
                 reason: format!(
-                    "{scored}/{planned} cases measured on the current pool; the newest settled cell of {REQUIRED_REPETITIONS} repetitions per case counts, and every repetition must pass{}{}",
+                    "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; the newest scored repetitions of each case count, and every repetition must pass{}{}",
                     if excluded > 0 {
                         format!("; {excluded} cases authored by this candidate excluded")
                     } else {
@@ -1394,34 +1467,17 @@ fn recalculated_history_report(
             .map_or(data.required_repetitions.max(1), |v| {
                 required_repetitions(data, v)
             });
-        let mut settled: Vec<_> = groups
-            .into_iter()
-            .filter(|(id, attempts)| {
-                attempts.len() == runs[id].request.repetitions as usize
-                    && attempts.len() >= required as usize
-                    && attempts.iter().all(|a| {
-                        a.phase == "terminal" && a.finished_at.is_some() && score(a).is_some()
-                    })
-            })
-            .collect();
-        settled.sort_by_key(|(id, _)| (runs[id].created_at, *id));
-        // A cell counts as known at `at` only if it was scored by then; a panel
-        // that answered later leaves the case a gap at this point.
-        let known = settled.iter().rev().find(|(id, attempts)| {
-            runs[id].created_at <= at
-                && attempts.iter().all(|a| {
-                    a.finished_at.is_some_and(|end| end <= at) && score_as_of(a, Some(at)).is_some()
-                })
-        });
-        if let Some((_, attempts)) = known {
-            if attempts
-                .iter()
-                .any(|a| a.evaluations.iter().any(|e| e.created_at > at))
-            {
-                revised.push(version.to_owned());
-            }
-            selected.extend(attempts.iter().copied());
+        // The case's newest repetitions scored by `at`; a panel that answered
+        // later leaves that repetition out of this point.
+        let attempts: Vec<&Attempt> = groups.into_values().flatten().collect();
+        let cell = newest_scored(&attempts, runs, Some(at), required);
+        if cell
+            .iter()
+            .any(|a| a.evaluations.iter().any(|e| e.created_at > at))
+        {
+            revised.push(version.to_owned());
         }
+        selected.extend(cell);
     }
     // A point with nothing finished by its date has no observation to anchor it.
     let mut report = if selected.is_empty() {
@@ -1862,6 +1918,7 @@ pub(super) mod tests {
             duration_ms,
             cost,
             repetitions: 3,
+            complete: true,
         };
         let record = (Some(60_000.0), Some(140.0));
         let points = |c: &CaseCell| case_points(c, Some(&record)).points;
@@ -1924,19 +1981,16 @@ pub(super) mod tests {
         // A graded case averages its repetitions instead.
         let graded_reward = reward(&three(["pass", "fail", "pass"]), graded).unwrap();
         assert!((graded_reward - 2.0 / 3.0).abs() < 1e-9);
-        // Fewer repetitions than required is no cell; an unscored one neither.
-        assert_eq!(
-            reward(&three(["pass", "pass", "pass"])[..2], objective),
-            None
-        );
-        assert_eq!(
-            reward(&three(["pass", "pass", "cancelled"]), objective),
-            None
-        );
-        assert_eq!(
-            cells(&three(["pass", "pass", "pass"]), objective)["v0"].repetitions,
-            3
-        );
+        // Fewer repetitions than required is a cell still, incomplete; an
+        // unscored repetition is left out of it.
+        let passes = three(["pass", "pass", "pass"]);
+        let partial = cells(&passes[..2], objective);
+        assert_eq!((partial["v0"].reward, partial["v0"].complete), (1.0, false));
+        let one_cancelled = three(["pass", "pass", "cancelled"]);
+        let short = cells(&one_cancelled, objective);
+        assert_eq!((short["v0"].repetitions, short["v0"].complete), (2, false));
+        let full = cells(&passes, objective);
+        assert_eq!((full["v0"].repetitions, full["v0"].complete), (3, true));
     }
     #[test]
     fn null_cost_is_not_free() {
@@ -1994,6 +2048,7 @@ pub(super) mod tests {
             timeout_seconds: 120,
             max_executions: 6,
             preview: false,
+            top_up: false,
         };
         let attempts = |run: &str, outcome: &str| {
             versions

@@ -675,6 +675,7 @@ mod tests {
             timeout_seconds: 120,
             max_executions: 20,
             preview: false,
+            top_up: false,
         }
     }
     fn matrix() -> (QueryData, RoutingEvidenceQuery) {

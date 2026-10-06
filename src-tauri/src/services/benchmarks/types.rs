@@ -205,6 +205,11 @@ pub struct RunRequest {
     pub max_executions: u32,
     #[serde(default)]
     pub preview: bool,
+    /// Plan only the repetitions each case still lacks of `repetitions`,
+    /// counting the scored ones its cell already holds: a catch-up adds to
+    /// a measurement instead of starting it over.
+    #[serde(default)]
+    pub top_up: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -504,6 +509,9 @@ pub struct LeaderboardRow {
     pub scored: u32,
     pub attempted: u32,
     pub planned: u32,
+    /// Cases whose cell holds every repetition it requires; a rank needs all.
+    #[serde(default)]
+    pub complete: u32,
     pub quality: Option<f64>,
     pub median_duration_ms: Option<f64>,
     pub median_output_tokens: Option<f64>,

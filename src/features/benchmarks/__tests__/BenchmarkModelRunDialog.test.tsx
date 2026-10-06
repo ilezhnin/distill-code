@@ -228,8 +228,10 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
       "version-5",
       "version-8",
     ],
-    // Every measurement is three repetitions; a case counts only when all pass.
+    // Every measurement is three repetitions; a case counts only when all
+    // pass, and a catch-up adds only the repetitions a case still lacks.
     repetitions: 3,
+    topUp: true,
     // Four hours from Settings, not a field in the dialog.
     timeoutSeconds: 14_400,
     // Four exact tests at one turn, the judged one at one plus three judges,
@@ -436,35 +438,43 @@ it("lists the tests in the order the run takes them and times the one running no
   expect(row("Alpha").getByText("Queued")).toBeInTheDocument();
 });
 
-it("leaves the tests the model passed unchecked and checks the failed ones, showing each score", async () => {
+it("leaves the tests the model solved on every repetition unchecked and checks the rest, showing each standing", async () => {
   const user = userEvent.setup();
+  // Alpha solved three times; Charlie failed once; Delta passed once.
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
-    { ...summary("version-1", "terminal", "pass", 1), id: "s-1" },
+    { ...summary("version-1", "terminal", "pass", 1), id: "s-1a" },
+    { ...summary("version-1", "terminal", "pass", 1), id: "s-1b" },
+    { ...summary("version-1", "terminal", "pass", 1), id: "s-1c" },
     { ...summary("version-3", "terminal", "fail", 0), id: "s-3" },
+    { ...summary("version-4", "terminal", "pass", 1), id: "s-4" },
   ]);
   show({
     measured: {
-      versionIds: ["version-1", "version-3"],
-      attemptIds: ["s-1", "s-3"],
+      versionIds: ["version-1", "version-3", "version-4"],
+      attemptIds: ["s-1a", "s-1b", "s-1c", "s-3", "s-4"],
     },
   });
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
-  // The passed test is done; the failed one runs again with the unmeasured.
+  // The solved test is done; the failed one and the one measured once run
+  // again with the unmeasured, topping their cells up.
   expect(await screen.findByText("5 of 6 selected")).toBeInTheDocument();
   expect(row("Alpha").getByRole("checkbox")).not.toBeChecked();
   for (const name of ["Bravo", "Charlie", "Delta", "Echo", "Hotel"])
     expect(row(name).getByRole("checkbox")).toBeChecked();
   expect(
     await row("Alpha").findByRole("img", {
-      name: "1 of 1 passed, 1 repetitions",
+      name: "3 of 3 passed, 3 repetitions",
     }),
   ).toBeInTheDocument();
   expect(
     row("Charlie").getByRole("img", { name: "0 of 1 passed, 1 repetitions" }),
   ).toBeInTheDocument();
+  expect(
+    row("Delta").getByRole("img", { name: "1 of 1 passed, 1 repetitions" }),
+  ).toBeInTheDocument();
   expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
-    attemptIds: ["s-1", "s-3"],
+    attemptIds: ["s-1a", "s-1b", "s-1c", "s-3", "s-4"],
     limit: 100,
   });
   // Measuring a passed test again stays one click away.
