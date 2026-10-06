@@ -714,6 +714,19 @@ impl Store {
         }
         Ok(out)
     }
+    /// Replaces a run's request: how a run inside its window grows by the
+    /// cases added to it.
+    pub async fn set_run_request(&self, id: &str, request: &RunRequest) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE run_plans SET request_json=?,revision=revision+1 WHERE id=?")
+            .bind(serde_json::to_string(request)?)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        event(&mut tx, id, "run_changed").await?;
+        tx.commit().await?;
+        Ok(())
+    }
     pub async fn set_baked(&self, id: &str, at: i64) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE run_plans SET baked_at=?,revision=revision+1 WHERE id=?")

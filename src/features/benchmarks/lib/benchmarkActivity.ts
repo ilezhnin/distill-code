@@ -2,6 +2,7 @@
 // Benchmarks pages and a model's rows show it while runs have work left.
 import type { Configuration, LeaderboardRow, RunSummary } from "../types";
 import { requests } from "./benchmarkCatchUp";
+import { runWindowOpen } from "./benchmarkPlan";
 
 /** Runs that dispatch now. */
 export function activeRuns(runs: RunSummary[]): RunSummary[] {
@@ -90,17 +91,19 @@ export function rowActivity(
 }
 
 /**
- * The row's newest run: the sitting its standing comes from, followed,
- * finished or warned about when the model is run again.
+ * The row's open run: the newest run measuring it whose window is still
+ * open, the sitting a run from the model page joins; a baked run is history.
  */
-export function rowNewestRun(
+export function rowOpenRun(
   row: LeaderboardRow,
   runs: RunSummary[],
+  now: number,
 ): RunSummary | null {
   return runs
     .filter(
       (run) =>
         !run.request.preview &&
+        runWindowOpen(run, now) &&
         run.request.configurations.some((entry) =>
           requests(entry, row.configuration, run),
         ),

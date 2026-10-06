@@ -275,31 +275,33 @@ export function BenchmarkModelRunDialog({
     return { left, restart, measured: inRun.size - left };
   }, [mine, scores, run.data]);
   const windowOpen = run.data ? runWindowOpen(run.data, clock) : false;
-  // A stopped run inside its window with tests left is finished, not
-  // replaced; a complete one is replaced only knowingly.
-  const resumable =
-    windowOpen &&
-    !runActive &&
-    !stopping &&
-    mine.length > 0 &&
-    cells.left > 0 &&
-    !summaries.isPending;
-  const complete =
-    windowOpen &&
-    !runActive &&
-    !stopping &&
-    mine.length > 0 &&
-    cells.left === 0 &&
-    !summaries.isPending;
   // Following a run, the checks show the tests it holds.
   const inRunIds = useMemo(
     () => new Set(mine.map((attempt) => attempt.versionId)),
     [mine],
   );
-  const following = (runActive || resumable) && mine.length > 0;
-  const isChecked = (versionId: string) =>
-    following ? inRunIds.has(versionId) : (overrides.get(versionId) ?? true);
+  // Tests the run never planned: inside its window they join it.
+  const missing = eligible.filter((version) => !inRunIds.has(version.id));
+  const stopped =
+    windowOpen &&
+    !runActive &&
+    !stopping &&
+    mine.length > 0 &&
+    !summaries.isPending;
+  // A run inside its window is finished, never replaced: its unfinished
+  // tests start over, the tests it lacks join it. Only a run complete on
+  // every current test is replaced, and knowingly.
+  const finishing = stopped && (cells.left > 0 || missing.length > 0);
+  const complete = stopped && cells.left === 0 && missing.length === 0;
+  const following = (runActive || finishing) && mine.length > 0;
+  const isChecked = (versionId: string) => {
+    if (!following) return overrides.get(versionId) ?? true;
+    if (inRunIds.has(versionId)) return true;
+    return finishing ? (overrides.get(versionId) ?? true) : false;
+  };
   const chosen = eligible.filter((version) => isChecked(version.id));
+  // The tests a finish adds to the run.
+  const added = chosen.filter((version) => !inRunIds.has(version.id));
   // A finished run measured its tests: the next one starts from what is
   // still missing, as the refreshed leaderboard row names it.
   const wasActive = useRef(runActive);
@@ -377,12 +379,15 @@ export function BenchmarkModelRunDialog({
       setBusy(false);
     }
   };
-  const resume = async () => {
+  const finish = async () => {
     if (!runId) return;
     setBusy(true);
     setError(null);
     try {
-      await benchmarkApi.resumeRun(runId);
+      await benchmarkApi.extendRun(
+        runId,
+        added.map((version) => version.id),
+      );
       await client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
@@ -433,12 +438,12 @@ export function BenchmarkModelRunDialog({
                   )}
             </BenchmarkAlert>
           ) : null}
-          {resumable && run.data ? (
+          {finishing && run.data ? (
             <p className="text-sm text-muted-foreground">
               {t("modelRun.finishHint", {
-                at: formatDate(run.data.updatedAt),
+                at: formatDate(run.data.createdAt),
                 until: formatDate(runWindowCloses(run.data)),
-                left: cells.left,
+                left: cells.left + added.length,
                 restart: cells.restart,
               })}
             </p>
@@ -453,7 +458,7 @@ export function BenchmarkModelRunDialog({
           ) : null}
           <Label className="flex items-center gap-3 border-b border-border px-2 pb-2 text-sm font-medium">
             <Checkbox
-              disabled={following || eligible.length === 0}
+              disabled={runActive || eligible.length === 0}
               checked={
                 allChecked
                   ? eligible.length > 0
@@ -471,7 +476,7 @@ export function BenchmarkModelRunDialog({
             />
             <span className="flex-1">{t("modelRun.allTests")}</span>
             <span className="text-xs font-normal text-muted-foreground tabular-nums">
-              {following
+              {runActive
                 ? t("modelRun.finished", { settled, total: inRun })
                 : t("modelRun.selected", {
                     selected: chosen.length,
@@ -498,7 +503,9 @@ export function BenchmarkModelRunDialog({
                 >
                   <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
                     <Checkbox
-                      disabled={following}
+                      disabled={
+                        runActive || (finishing && inRunIds.has(version.id))
+                      }
                       checked={isChecked(version.id)}
                       onCheckedChange={(checked) =>
                         setOverrides((previous) =>
@@ -548,12 +555,12 @@ export function BenchmarkModelRunDialog({
             >
               {stopping ? t("modelRun.stopping") : t("modelRun.stop")}
             </Button>
-          ) : resumable ? (
+          ) : finishing ? (
             <Button
               type="button"
               variant="primary"
-              disabled={busy}
-              onClick={() => void resume()}
+              disabled={busy || (cells.left === 0 && added.length === 0)}
+              onClick={() => void finish()}
             >
               {t("modelRun.finish")}
             </Button>

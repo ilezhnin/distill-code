@@ -4557,6 +4557,64 @@ mod tests {
             2
         );
     }
+    /// A test added to a run inside its window joins that run: the sitting
+    /// grows and goes on, no second run starts beside it, and what the run
+    /// had measured stands.
+    #[tokio::test]
+    async fn a_run_inside_its_window_grows_by_the_tests_added_to_it() {
+        let (_dir, s, backend) = setup().await;
+        let req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        let run = s.start_run(req).await.unwrap();
+        for attempt in &run.attempts {
+            s.store
+                .save_attempt(&settle(attempt, "pass"))
+                .await
+                .unwrap();
+        }
+        s.store.set_run_state(&run.id, "completed").await.unwrap();
+        // Complete on every test it planned, the run has nothing to resume.
+        let refused = s.control(&run.id, "resume").await.unwrap_err();
+        assert_eq!(refused.code, "validation");
+        let second = second_case(&s).await;
+        let grown = s
+            .extend_run(&run.id, std::slice::from_ref(&second))
+            .await
+            .unwrap();
+        assert_eq!(grown.state, "running");
+        assert_eq!(
+            grown.request.version_ids,
+            vec![first.clone(), second.clone()]
+        );
+        assert_eq!(grown.attempts.len(), 4);
+        assert!(grown
+            .attempts
+            .iter()
+            .filter(|a| a.version_id == second)
+            .all(|a| a.phase == "pending"));
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert!(done
+            .attempts
+            .iter()
+            .filter(|a| a.version_id == first)
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        assert_eq!(
+            done.attempts
+                .iter()
+                .filter(|a| a.version_id == second && super::super::analysis::score(a).is_some())
+                .count(),
+            2
+        );
+        // The same test again adds nothing and the run is complete.
+        let again = s.extend_run(&run.id, &[second]).await.unwrap_err();
+        assert_eq!(again.message, "Every case of this run is complete");
+        assert_eq!(s.store.run(&run.id).await.unwrap().attempts.len(), 4);
+    }
     /// Once a run's window closed it is final: nothing resumes it, and the
     /// runner bakes it, keeping the cells measured whole and dropping the
     /// rest, so a case half measured never reads as measured at all.
@@ -4596,6 +4654,8 @@ mod tests {
             "{}",
             refused.message
         );
+        let grown = s.extend_run(&run.id, &[]).await.unwrap_err();
+        assert!(grown.message.contains("window closed"), "{}", grown.message);
         s.tick().await.unwrap();
         let baked = s.store.run(&run.id).await.unwrap();
         assert!(baked.baked_at.is_some());

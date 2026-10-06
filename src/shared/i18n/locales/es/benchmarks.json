@@ -271,7 +271,7 @@
     "stopping": "Deteniendo…",
     "finish": "Terminar la ejecución",
     "startAgain": "Medir de nuevo",
-    "finishHint": "Detenida {{at}}. Termínala antes de {{until}}: quedan {{left}} pruebas, {{restart}} de ellas empiezan de nuevo desde la primera repetición.",
+    "finishHint": "Ejecución del {{at}}, abierta hasta {{until}}: {{left}} pruebas por medir, {{restart}} de ellas otra vez desde la primera repetición.",
     "measuredHint": "Medida por completo {{at}}: {{measured}} pruebas, todas las repeticiones. Una nueva ejecución las mide todas otra vez con su coste completo; esta medición queda en el historial."
   },
   "runs": {

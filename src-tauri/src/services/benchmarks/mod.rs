@@ -559,6 +559,81 @@ impl BenchmarkService {
         self.changed().await;
         self.store.run(id).await
     }
+    /// Adds cases to a run inside its window and goes on with it, so the
+    /// sitting grows instead of a second run starting beside it. A case the
+    /// run already planned is not added again: unfinished, it starts over;
+    /// complete, it stands. A case a configuration authored is left out.
+    /// With no cases to add this is a resume.
+    pub async fn extend_run(&self, id: &str, version_ids: &[String]) -> Result<BenchmarkRun> {
+        let run = self.store.run(id).await?;
+        if run.baked_at.is_some() || now() >= analysis::window_closes(&run) {
+            return Err(BenchmarkError::new(
+                "validation",
+                window_closed_message(&run),
+            ));
+        }
+        if matches!(run.state.as_str(), "pausing" | "cancelling") {
+            return Err(BenchmarkError::new(
+                "validation",
+                "The run is stopping; add tests once it has",
+            ));
+        }
+        let planned: BTreeSet<(String, String)> = run
+            .attempts
+            .iter()
+            .map(|a| (a.version_id.clone(), a.configuration.id.clone()))
+            .collect();
+        let mut request = run.request.clone();
+        for version_id in version_ids {
+            let version = self.store.version(version_id).await?;
+            for configuration in &run.request.configurations {
+                if planned.contains(&(version.id.clone(), configuration.id.clone()))
+                    || !owed(&version, configuration)
+                {
+                    continue;
+                }
+                for repetition in 0..request.repetitions.max(1) {
+                    self.store
+                        .insert_attempt(&pending_attempt(
+                            id,
+                            &version.id,
+                            configuration,
+                            repetition,
+                        ))
+                        .await?;
+                }
+            }
+            if !request.version_ids.contains(version_id) {
+                request.version_ids.push(version_id.clone());
+                let mut tx = self.store.pool.begin().await?;
+                routing::persist_snapshot(&mut tx, &routing::snapshot(id, &version, &request))
+                    .await?;
+                tx.commit().await?;
+            }
+        }
+        if request.version_ids != run.request.version_ids {
+            // The cap grows with the plan, so judged cases keep their panel.
+            let executions = self.planned_executions(&request).await?;
+            request.max_executions = request
+                .max_executions
+                .max(executions.min(u32::MAX as usize) as u32);
+            self.store.set_run_request(id, &request).await?;
+        }
+        let run = self.store.run(id).await?;
+        let unfinished = self.restart_unfinished_cells(&run).await?;
+        if !unfinished && matches!(run.state.as_str(), "completed" | "cancelled") {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Every case of this run is complete",
+            ));
+        }
+        if run.state != "running" {
+            self.store.set_run_state(id, "running").await?;
+        }
+        self.wake.notify_one();
+        self.changed().await;
+        self.store.run(id).await
+    }
     /// Puts every unfinished case of a run back to its start: the settled
     /// attempts of a cell short of the run's repetitions are superseded and
     /// each gets a fresh pending repetition, so the case is measured whole

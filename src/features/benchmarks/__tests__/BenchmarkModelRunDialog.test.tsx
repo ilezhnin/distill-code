@@ -34,6 +34,7 @@ vi.mock("../api/benchmarks", () => ({
     listAttempts: vi.fn(),
     cancelRun: vi.fn(),
     resumeRun: vi.fn(),
+    extendRun: vi.fn(),
   },
 }));
 
@@ -520,9 +521,10 @@ function stoppedRun(
   };
 }
 
-it("finishes a stopped run inside its window instead of starting another", async () => {
+it("finishes a stopped run inside its window, adding the tests it lacks, instead of starting another", async () => {
   const user = userEvent.setup();
-  // Alpha passed, Charlie failed, Echo and Hotel never started.
+  // Alpha passed, Charlie failed, Echo and Hotel never started; the run
+  // never planned Bravo and Delta.
   const stopped = stoppedRun("needs_attention", [
     { versionId: "version-1", outcome: "pass", score: 1 },
     { versionId: "version-3", outcome: "fail", score: 0 },
@@ -531,36 +533,49 @@ it("finishes a stopped run inside its window instead of starting another", async
   ]);
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(stopped.run);
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(stopped.summaries);
-  vi.mocked(benchmarkApi.resumeRun).mockResolvedValue({
+  vi.mocked(benchmarkApi.extendRun).mockResolvedValue({
     ...stopped.run,
     state: "running",
   });
   show({ runId: "run-2" });
   const finish = await screen.findByRole("button", { name: "Finish run" });
-  // The hint names what is left, what starts over and the deadline.
+  // The hint counts the queued tests with the added ones, what starts
+  // over, and names the deadline.
   expect(
-    screen.getByText(/2 tests left, 0 of them start over/),
+    screen.getByText(/4 tests to measure, 0 of them again/),
   ).toBeInTheDocument();
-  expect(screen.getByText(/Finish before/)).toBeInTheDocument();
-  // The checks show the run's tests and cannot change it.
+  expect(screen.getByText(/open until/)).toBeInTheDocument();
+  // The run's tests are fixed; the ones it lacks join it unless unchecked.
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
   expect(row("Alpha").getByRole("checkbox")).toBeChecked();
   expect(row("Alpha").getByRole("checkbox")).toBeDisabled();
-  expect(row("Delta").getByRole("checkbox")).not.toBeChecked();
+  expect(row("Delta").getByRole("checkbox")).toBeChecked();
+  expect(row("Delta").getByRole("checkbox")).toBeEnabled();
+  await user.click(row("Bravo").getByRole("checkbox"));
+  expect(
+    screen.getByText(/3 tests to measure, 0 of them again/),
+  ).toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Start" }),
   ).not.toBeInTheDocument();
   await user.click(finish);
-  expect(benchmarkApi.resumeRun).toHaveBeenCalledWith("run-2");
+  expect(benchmarkApi.extendRun).toHaveBeenCalledWith("run-2", ["version-4"]);
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
 });
 
 it("warns before measuring a model again whose run inside its window is complete", async () => {
-  const complete = stoppedRun("completed", [
-    { versionId: "version-1", outcome: "pass", score: 1 },
-    { versionId: "version-3", outcome: "fail", score: 0 },
-  ]);
+  const complete = stoppedRun(
+    "completed",
+    [
+      "version-1",
+      "version-2",
+      "version-3",
+      "version-4",
+      "version-5",
+      "version-8",
+    ].map((versionId) => ({ versionId, outcome: "pass", score: 1 })),
+  );
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(complete.run);
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(complete.summaries);
   show({ runId: "run-2" });
@@ -568,7 +583,7 @@ it("warns before measuring a model again whose run inside its window is complete
     await screen.findByRole("button", { name: "Measure again" }),
   ).toBeEnabled();
   expect(screen.getByRole("alert")).toHaveTextContent(
-    /Measured in full .*: 2 tests, every repetition\. A new run measures all of them again/,
+    /Measured in full .*: 6 tests, every repetition\. A new run measures all of them again/,
   );
   expect(
     screen.queryByRole("button", { name: "Finish run" }),

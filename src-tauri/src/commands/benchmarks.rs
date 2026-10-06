@@ -115,6 +115,14 @@ pub async fn benchmark_resume_run(app: AppHandle, id: String) -> Result<Benchmar
     service(&app).await?.control(&id, "resume").await
 }
 #[tauri::command]
+pub async fn benchmark_extend_run(
+    app: AppHandle,
+    id: String,
+    version_ids: Vec<String>,
+) -> Result<BenchmarkRun> {
+    service(&app).await?.extend_run(&id, &version_ids).await
+}
+#[tauri::command]
 pub async fn benchmark_cancel_run(app: AppHandle, id: String) -> Result<BenchmarkRun> {
     service(&app).await?.control(&id, "cancel").await
 }

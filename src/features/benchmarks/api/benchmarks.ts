@@ -86,6 +86,9 @@ export const benchmarkApi = {
     invoke<BenchmarkRun>("benchmark_resume_run", { id }),
   cancelRun: (id: string) =>
     invoke<BenchmarkRun>("benchmark_cancel_run", { id }),
+  /** Adds tests to a run inside its window and goes on with it; with none, a resume. */
+  extendRun: (id: string, versionIds: string[]) =>
+    invoke<BenchmarkRun>("benchmark_extend_run", { id, versionIds }),
   getEvidence: (id: string) =>
     invoke<Attempt>("benchmark_get_evidence", { id }),
   eventsSince: (afterSequence: number) =>
