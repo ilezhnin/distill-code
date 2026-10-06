@@ -149,7 +149,7 @@ export const cohort: LeaderboardCohort = {
   timeoutSeconds: 120,
   maxExecutions: 2,
   newestRunAt: 1000,
-  workClasses: ["coding-simple"],
+  workClasses: ["algorithms"],
 };
 export function leaderboardRow(
   overrides: Partial<LeaderboardRow> = {},

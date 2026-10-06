@@ -16,6 +16,7 @@
 
 import {
   isModelPreferenceClassId,
+  LEGACY_CLASS_IDS,
   type ModelPreferenceClassId,
 } from "./modelRanking";
 
@@ -80,10 +81,16 @@ export function parseRoutingPolicy(raw: unknown): RoutingPolicy {
   const classOverrides: Partial<Record<ModelPreferenceClassId, string[]>> = {};
   const overrides = stored.classOverrides;
   if (overrides && typeof overrides === "object") {
-    for (const [classId, labels] of Object.entries(overrides)) {
+    for (const [stored, labels] of Object.entries(overrides)) {
       // Only classes that exist: a JSON document can carry any key, and
-      // assigning `__proto__` here would re-parent the overrides object.
+      // assigning `__proto__` here would re-parent the overrides object. An
+      // override saved under a retired class follows its work; the first
+      // one read wins where two old classes merged.
+      const classId = Object.hasOwn(LEGACY_CLASS_IDS, stored)
+        ? LEGACY_CLASS_IDS[stored]
+        : stored;
       if (!isModelPreferenceClassId(classId)) continue;
+      if (classId in classOverrides) continue;
       if (!Array.isArray(labels)) continue;
       const kept = labels.filter(
         (label): label is string => typeof label === "string" && !!label.trim(),

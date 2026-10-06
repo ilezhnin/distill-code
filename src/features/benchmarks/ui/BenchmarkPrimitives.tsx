@@ -3,18 +3,22 @@ import { useTranslation } from "react-i18next";
 import {
   IconBolt,
   IconBraces,
+  IconBug,
   IconCode,
   IconCoin,
+  IconEyeCheck,
   IconFilter,
   IconLayout,
   IconMessage,
   IconNotebook,
   IconPalette,
+  IconPencil,
   IconRoute,
   IconShieldCheck,
+  IconSitemap,
   IconSparkles,
-  IconTarget,
   IconTestPipe,
+  IconTool,
   IconTrophy,
 } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
@@ -406,16 +410,20 @@ export function AxisBars({
 /** Label over value, for the summary grid at the top of a report dialog. */
 const BOARD_ICONS: Record<string, typeof IconTrophy> = {
   overall: IconTrophy,
+  "code-implement": IconCode,
+  algorithms: IconBraces,
+  debug: IconBug,
+  "code-review": IconEyeCheck,
+  security: IconShieldCheck,
+  testing: IconTestPipe,
+  architecture: IconSitemap,
+  planning: IconRoute,
   "frontend-ui": IconLayout,
   creative: IconPalette,
-  "coding-simple": IconCode,
-  "coding-complex": IconBraces,
-  "one-shot": IconTarget,
-  planning: IconRoute,
-  "general-light": IconMessage,
-  "general-medium": IconNotebook,
-  "testing-light": IconTestPipe,
-  "testing-heavy": IconShieldCheck,
+  writing: IconPencil,
+  "research-data": IconNotebook,
+  ops: IconTool,
+  general: IconMessage,
 };
 
 /**

@@ -99,7 +99,7 @@ fn seeds() -> Vec<Seed> {
     };
     vec![
         text(
-            "general-light",
+            "general",
             "seed-rule-ordered-classification",
             "Rule-ordered ticket classification",
             "Applies explicit rules in a declared priority order to six fictional tickets; two tickets match several rules.",
@@ -115,7 +115,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         text(
-            "general-light",
+            "general",
             "seed-date-normalization",
             "Strict date normalization",
             "Orders meetings written in mixed date formats and returns exactly one normalized value; two entries share the same digits in different orders.",
@@ -128,7 +128,7 @@ fn seeds() -> Vec<Seed> {
             exact_case("2026-03-11", "2026-11-03"),
         ),
         text(
-            "general-medium",
+            "research-data",
             "seed-constrained-option-choice",
             "Feasible option under layered constraints",
             "Filters six fictional options by three constraints, then applies a two-level tie-break.",
@@ -144,7 +144,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         text(
-            "general-medium",
+            "research-data",
             "seed-handbook-structuring",
             "Handbook excerpt to structured facts",
             "Extracts numeric policy values for one declared situation; every value has an exception that applies or does not apply.",
@@ -160,7 +160,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         text(
-            "one-shot",
+            "general",
             "seed-source-pack-extraction",
             "Extract facts from a frozen source pack",
             "Resolves dated corrections and a handover across fictional sources while ignoring an instruction embedded in one source.",
@@ -176,7 +176,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         text(
-            "one-shot",
+            "general",
             "seed-spec-to-contract",
             "Prose specification to field contract",
             "Turns a prose specification with optional fields and a retired legacy rule into an exact typed contract.",
@@ -218,7 +218,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         text(
-            "testing-heavy",
+            "testing",
             "seed-mutant-killing-set",
             "Minimal mutant-killing test set",
             "Selects the smallest input set that distinguishes four mutants from a specified predicate; three candidates are distractors.",
@@ -228,7 +228,7 @@ fn seeds() -> Vec<Seed> {
             json_case(json!([1, 5, 10, 11]), json!([0, 1, 5, 10, 11])),
         ),
         text(
-            "testing-heavy",
+            "testing",
             "seed-regression-root-cause",
             "Regression root cause from a dependency graph",
             "Identifies the one failing module whose dependencies pass and lists the propagated failures.",
@@ -241,7 +241,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         text(
-            "testing-light",
+            "testing",
             "seed-off-by-one-diagnosis",
             "Diagnose an off-by-one failure",
             "Traces a short loop by hand and names the defect from a closed vocabulary.",
@@ -254,7 +254,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         text(
-            "testing-light",
+            "testing",
             "seed-ci-log-verdict",
             "Read a frozen CI log",
             "Counts unique test outcomes from a log with a retried test and a stale summary line.",
@@ -270,7 +270,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         code(
-            "coding-simple",
+            "algorithms",
             "seed-interval-merge",
             "Merge closed intervals",
             "Implements interval merging where touching intervals join; protected cases cover unsorted, negative and empty input.",
@@ -290,7 +290,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         code(
-            "coding-simple",
+            "algorithms",
             "seed-semver-precedence",
             "Semantic version precedence",
             "Implements pre-release precedence rules that naive string comparison gets wrong.",
@@ -313,7 +313,7 @@ fn seeds() -> Vec<Seed> {
             ),
         ),
         Seed {
-            class: "coding-complex",
+            class: "algorithms",
             family: "seed-invoice-module-contract",
             name: "Diagnose and repair invoice modules",
             description: "Two-step bounded workflow: diagnose two defects across frozen modules, then deliver one corrected function under a stated rounding contract.",
@@ -353,7 +353,7 @@ fn seeds() -> Vec<Seed> {
             }),
         },
         code(
-            "coding-complex",
+            "algorithms",
             "seed-transitive-dependencies",
             "Transitive dependency traversal",
             "Implements a graph walk that tolerates cycles, self-loops and missing nodes; output must be sorted and exclude the start node.",
@@ -549,17 +549,26 @@ pub fn definitions() -> Vec<BenchmarkDraft> {
 mod tests {
     use super::*;
     #[test]
-    fn every_work_class_has_two_independent_valid_pipeline_families() {
+    fn every_seeded_work_class_has_two_independent_valid_pipeline_families() {
         let seeds = definitions();
+        let seeded: std::collections::BTreeSet<_> =
+            seeds.iter().map(|d| d.work_class_id.as_str()).collect();
         for class in super::super::routing::WORK_CLASSES {
             let families: std::collections::BTreeSet<_> = seeds
                 .iter()
                 .filter(|d| d.work_class_id == class)
                 .map(|d| &d.task_family)
                 .collect();
+            // The classes without seeds wait for repository tasks.
             assert!(
-                families.len() >= 2,
+                families.len() >= 2 || !seeded.contains(class),
                 "missing independent families for {class}"
+            );
+        }
+        for class in &seeded {
+            assert!(
+                super::super::routing::WORK_CLASSES.contains(class),
+                "{class}"
             );
         }
         let mut names = std::collections::BTreeSet::new();

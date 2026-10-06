@@ -73,8 +73,8 @@ export interface WaveStepTarget {
    * The ranking's profiles differ by effort as much as by model — "medium
    * engineering at medium, heavy at xhigh" is the whole difference between two
    * of them — and the model id never carries it. The spawn hands it to the
-   * child as its run-settings intent; without it `coding-simple` and
-   * `coding-complex` would route identically.
+   * child as its run-settings intent; without it `ops` and `code-implement`
+   * would route identically.
    */
   effort?: EffortValue;
   /**

@@ -26,16 +26,35 @@ import type { EffortValue } from "@/features/chat/lib/sessionRunSettings";
 import type { ModelOption, ModelPickerGroup } from "@/features/chat/types";
 
 export type ModelPreferenceClassId =
+  | "code-implement"
+  | "algorithms"
+  | "debug"
+  | "code-review"
+  | "security"
+  | "testing"
+  | "architecture"
+  | "planning"
   | "frontend-ui"
   | "creative"
-  | "coding-simple"
-  | "coding-complex"
-  | "one-shot"
-  | "planning"
-  | "testing-heavy"
-  | "testing-light"
-  | "general-medium"
-  | "general-light";
+  | "writing"
+  | "research-data"
+  | "ops"
+  | "general";
+
+/**
+ * The classes retired on October 5, 2026, by weight rather than kind, and
+ * where each one's work went. A stored override under an old id moves with
+ * it; the service moves the benchmark cases (`routing::legacy_work_class`).
+ */
+export const LEGACY_CLASS_IDS: Record<string, ModelPreferenceClassId> = {
+  "coding-simple": "algorithms",
+  "coding-complex": "algorithms",
+  "one-shot": "general",
+  "testing-heavy": "testing",
+  "testing-light": "testing",
+  "general-medium": "research-data",
+  "general-light": "general",
+};
 
 export interface RankedModelCandidate {
   /** Operator-facing name of the candidate ("Opus 5"). */
@@ -168,16 +187,22 @@ export const MODEL_PREFERENCE_CLASSES: Record<
   ModelPreferenceClassId,
   ModelPreferenceClass
 > = {
+  "code-implement": { id: "code-implement", ranking: [...ENGINEERING_HEAVY] },
+  algorithms: { id: "algorithms", ranking: [...ENGINEERING_HEAVY] },
+  debug: { id: "debug", ranking: [...ENGINEERING_HEAVY] },
+  "code-review": { id: "code-review", ranking: [...ENGINEERING_HEAVY] },
+  security: { id: "security", ranking: [...ENGINEERING_HEAVY] },
+  testing: { id: "testing", ranking: [...ENGINEERING_MEDIUM] },
+  architecture: { id: "architecture", ranking: [...ENGINEERING_HEAVY] },
+  planning: { id: "planning", ranking: [...DESIGN_PROFILE] },
   "frontend-ui": { id: "frontend-ui", ranking: [...DESIGN_PROFILE] },
   creative: { id: "creative", ranking: [...DESIGN_PROFILE] },
-  "coding-simple": { id: "coding-simple", ranking: [...ENGINEERING_MEDIUM] },
-  "coding-complex": { id: "coding-complex", ranking: [...ENGINEERING_HEAVY] },
-  "one-shot": { id: "one-shot", ranking: [...ENGINEERING_HEAVY] },
-  planning: { id: "planning", ranking: [...DESIGN_PROFILE] },
-  "testing-heavy": { id: "testing-heavy", ranking: [...ENGINEERING_HEAVY] },
-  "testing-light": { id: "testing-light", ranking: [...LIGHT_PROFILE] },
-  "general-medium": { id: "general-medium", ranking: [...ENGINEERING_MEDIUM] },
-  "general-light": { id: "general-light", ranking: [...LIGHT_PROFILE] },
+  writing: { id: "writing", ranking: [...LIGHT_PROFILE] },
+  "research-data": { id: "research-data", ranking: [...ENGINEERING_MEDIUM] },
+  ops: { id: "ops", ranking: [...ENGINEERING_MEDIUM] },
+  // The companions and open-ended conversations: the strongest available
+  // model, not a coding specialist.
+  general: { id: "general", ranking: [...ENGINEERING_HEAVY] },
 };
 
 /** Every class id, in the order the settings pane and the prompt list them. */
@@ -206,63 +231,58 @@ export function isModelPreferenceClassId(
  */
 export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
   {
-    // frontend / UI-UX — design work, Anthropic first
-    ux: "frontend-ui",
-    designer: "frontend-ui",
-    artist: "frontend-ui",
-    // coding, complex by default for implementers
-    brigade: "coding-complex",
-    "unity-worker": "coding-complex",
-    architect: "coding-complex",
-    integrator: "coding-complex",
-    // coding, simple mechanical work
-    devops: "coding-simple",
-    "pr-submitter": "coding-simple",
-    submitter: "coding-simple",
-    "unity-asset-integrator": "coding-simple",
-    "asset-integrator": "coding-simple",
-    tinker: "coding-simple",
-    // planning and coordination — the same Anthropic-first order as design
-    // (2026-09-12): these roles decide and sequence work, they do not write it.
+    // Implementation in a repository: code, tests and documents with proof.
+    brigade: "code-implement",
+    "unity-worker": "code-implement",
+    integrator: "code-implement",
+    tinker: "code-implement",
+    "agt.-builder": "code-implement",
+    "agt-builder": "code-implement",
+    // Defects: measure, reproduce, fix.
+    perf: "debug",
+    adversary: "debug",
+    // Read-only review and acceptance.
+    acceptor: "code-review",
+    "unity-reviewer": "code-review",
+    pushback: "code-review",
+    oracle: "code-review",
+    security: "security",
+    // Tests designed, run and played.
+    qa: "testing",
+    playtester: "testing",
+    "unity-test-runner": "testing",
+    "test-runner": "testing",
+    architect: "architecture",
+    // Planning and coordination: these roles decide and sequence work, they
+    // do not write it (2026-09-12).
     planner: "planning",
     producer: "planning",
-    oracle: "planning",
-    // one-shot capability (research, synthesis) — including the companion
-    // agents, which are conversations with a strong generalist rather than
-    // pipeline steps: the class is the strongest available model, not a coding
-    // specialist.
-    "agt.-builder": "one-shot",
-    "agt-builder": "one-shot",
-    distill: "one-shot",
-    choosey: "one-shot",
-    copycat: "one-shot",
-    pushback: "one-shot",
-    wildcard: "one-shot",
-    researcher: "one-shot",
-    // medium weight: careful reading, structured output, no deep design
-    // decisions — mapping a project, packaging a handoff, sourcing assets,
-    // spec'ing audio (gamedev recalibration 2026-08-30)
-    "unity-explorer": "general-medium",
-    "context-builder": "general-medium",
-    "asset-scout": "general-medium",
-    audio: "general-medium",
-    // light weight: no serious coding or design — fact checks, prose,
-    // translations, store copy
-    scout: "general-light",
-    writer: "general-light",
-    localizer: "general-light",
-    marketer: "general-light",
-    // heavy testing / audit
-    acceptor: "testing-heavy",
-    adversary: "testing-heavy",
-    "unity-reviewer": "testing-heavy",
-    security: "testing-heavy",
-    perf: "testing-heavy",
-    // light testing
-    qa: "testing-light",
-    playtester: "testing-light",
-    "unity-test-runner": "testing-light",
-    "test-runner": "testing-light",
+    choosey: "planning",
+    ux: "frontend-ui",
+    // Visual and game-design concept work.
+    artist: "creative",
+    designer: "creative",
+    audio: "creative",
+    // Shipped prose, store copy, translations.
+    writer: "writing",
+    marketer: "writing",
+    copycat: "writing",
+    localizer: "writing",
+    // Sources, maps and structured facts.
+    researcher: "research-data",
+    scout: "research-data",
+    "unity-explorer": "research-data",
+    "context-builder": "research-data",
+    "asset-scout": "research-data",
+    // Deterministic operations: CI, packaging, git actions, asset import.
+    devops: "ops",
+    "pr-submitter": "ops",
+    submitter: "ops",
+    "unity-asset-integrator": "ops",
+    "asset-integrator": "ops",
+    // Companions and open conversation.
+    distill: "general",
+    wildcard: "general",
   };
 
 export interface RankableModel {

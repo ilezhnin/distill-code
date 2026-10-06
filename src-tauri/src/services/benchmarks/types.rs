@@ -101,7 +101,7 @@ pub struct BenchmarkDraft {
     pub workflow: Option<WorkflowSpec>,
 }
 pub fn default_work_class() -> String {
-    "general-light".into()
+    "general".into()
 }
 pub fn default_context_hash() -> String {
     "clean-v1".into()

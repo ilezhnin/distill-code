@@ -9,13 +9,30 @@ describe("parseRoutingPolicy", () => {
     const policy = parseRoutingPolicy({
       waveNearLimitPercent: 70,
       chatNearLimitPercent: "soon",
-      classOverrides: { "coding-simple": ["Opus 5"], "one-shot": "nope" },
+      classOverrides: { algorithms: ["Opus 5"], general: "nope" },
     });
     expect(policy.waveNearLimitPercent).toBe(70);
     expect(policy.chatNearLimitPercent).toBe(
       DEFAULT_ROUTING_POLICY.chatNearLimitPercent,
     );
-    expect(policy.classOverrides).toEqual({ "coding-simple": ["Opus 5"] });
+    expect(policy.classOverrides).toEqual({ algorithms: ["Opus 5"] });
+  });
+
+  it("moves an override saved under a retired class to where its work went", () => {
+    const policy = parseRoutingPolicy({
+      classOverrides: {
+        "coding-complex": ["Opus 5"],
+        "coding-simple": ["Grok 4.7"],
+        "testing-heavy": ["Astra"],
+        testing: ["Fable 5.1"],
+      },
+    });
+    // Two retired classes merged: the first read wins; a current class
+    // keeps its own entry over a retired one.
+    expect(policy.classOverrides).toEqual({
+      algorithms: ["Opus 5"],
+      testing: ["Astra"],
+    });
   });
 
   it("refuses a threshold that would turn the setting into something else", () => {
@@ -31,7 +48,7 @@ describe("parseRoutingPolicy", () => {
 });
 
 describe("applyClassOverride", () => {
-  const shipped = MODEL_PREFERENCE_CLASSES["testing-light"].ranking;
+  const shipped = MODEL_PREFERENCE_CLASSES["writing"].ranking;
 
   it("takes the operator's order, including models from other classes", () => {
     // The whole point of the map: put the heavy model on light testing, or
@@ -54,7 +71,7 @@ describe("applyClassOverride", () => {
   it("keeps the class's own effort when the operator reorders it", () => {
     // The medium profile ranks the same models as the heavy one; a reorder
     // must not silently bring them back at xhigh.
-    const medium = MODEL_PREFERENCE_CLASSES["coding-simple"].ranking;
+    const medium = MODEL_PREFERENCE_CLASSES["ops"].ranking;
     expect(
       applyClassOverride(medium, ["Opus 5", "Astra"]).map((candidate) => [
         candidate.label,

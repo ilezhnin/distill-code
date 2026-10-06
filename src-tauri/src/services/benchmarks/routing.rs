@@ -7,18 +7,61 @@ use super::{
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const WORK_CLASSES: [&str; 10] = [
+/// The kinds of work a model is chosen for: one board per class on the
+/// leaderboard, one routing class per persona. Difficulty is a facet, not a
+/// class, since October 5, 2026 (`legacy_work_class`).
+pub const WORK_CLASSES: [&str; 14] = [
+    "code-implement",
+    "algorithms",
+    "debug",
+    "code-review",
+    "security",
+    "testing",
+    "architecture",
+    "planning",
     "frontend-ui",
     "creative",
-    "coding-simple",
-    "coding-complex",
-    "one-shot",
-    "planning",
-    "testing-heavy",
-    "testing-light",
-    "general-medium",
-    "general-light",
+    "writing",
+    "research-data",
+    "ops",
+    "general",
 ];
+
+/// Where a case of a class retired on October 5, 2026 belongs now, and the
+/// difficulty its old class implied. The old classes split work by weight
+/// (light, medium, heavy) rather than by kind; a few cases were classed by
+/// their family and move by name.
+pub fn legacy_work_class(class: &str, name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    let by_name = match hash(name.as_bytes()).as_str() {
+        "162d29d7782cb2681d8f4657465960d1cbe708596d38610980ade97589979bfd" => Some("security"),
+        "d8a00c06d4d89407c414c28c60ae43ea32d56461453b99382c31a12745d82e3d"
+        | "80b95d5ec59cd758186ccb8a76cb82e3469e8e3de282c5b9ac934a103167c73d"
+        | "5fd7048aaa6eef7834730932f5eed03570807b25ee1a191af5046951d82ab606"
+        | "6c9eae9dc1f52276f41be154b7366f68f8f1199cdf065b9355fcb3ac5ff8b29a"
+        | "0569ab96208b53167a1ef792792dacf2d43c5692f79fe91d69301d0605c6b9a2"
+        | "08b37bbba08e8fe11b0f0c9ffd5c8091c3db505354a82eef7705f9430a6861eb" => Some("debug"),
+        "5709ae53f8c0d47ef6c2cb8fec63c4e12845bd353c284289910dae53219317c6" => Some("writing"),
+        "8cc96d191a9122c52a7a01b9136c0dfe81bc0928eb20e486aeb97c6b47da517c"
+        | "342c6087a46dff944e8a3482e79cec0a809620d1e0729f46d8f1f828baacc136"
+        | "bf672287285dbd306d9b8a888725f76a7eb620e584ecdc22c4548ed61fcb6866"
+        | "b83b9c91dc906f47bd980f1b29f4ea11fc29b30c49078e01e29e92b54f931564"
+        | "c64d166f8adce8437a95c728f9b0f914215aaf7ac403ae02e9336c51d56aee71"
+        | "ee72cd13ff72ad00b90cbc5618197086bf62fe00565a4e15df988fb067337ca9"
+        | "850fe749b35c9037839b5ec9d58888dd0d4ee396a1dc53d6c32e7ac4dba0e6ef" => Some("research-data"),
+        _ => None,
+    };
+    let (by_class, difficulty) = match class {
+        "coding-simple" => ("algorithms", Some("easy")),
+        "coding-complex" => ("algorithms", Some("hard")),
+        "testing-light" => ("testing", Some("easy")),
+        "testing-heavy" => ("testing", Some("hard")),
+        "general-light" => ("general", Some("easy")),
+        "general-medium" => ("research-data", Some("medium")),
+        "one-shot" => ("general", None),
+        _ => return by_name.map(|class| (class, None)),
+    };
+    Some((by_name.unwrap_or(by_class), difficulty))
+}
 /// Names how `candidate_key` is derived. Keys recorded under an earlier
 /// algorithm (decision snapshot pins) are not comparable with current ones.
 pub const CANDIDATE_KEY_ALGORITHM: &str = "leaderboard-identity-v2";

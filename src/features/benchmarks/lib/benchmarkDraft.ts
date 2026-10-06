@@ -108,7 +108,7 @@ export function createBenchmarkDraft(): BenchmarkDraft {
     repetitions: 1,
     fixtures: [],
     environment: {},
-    workClassId: "general-light",
+    workClassId: "general",
     roleId: null,
     facets: {},
     rolePrompt: "",

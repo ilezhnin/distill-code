@@ -394,7 +394,7 @@ describe("waveRunner", () => {
       assistant(
         "plan-1",
         fence(
-          '{"steps":[{"role":"scout","subtask":"Look","access":[],"budget":{"minutes":5,"tokens":20000},"class":"coding-simple","effort":"high","fast":false}]}',
+          '{"steps":[{"role":"scout","subtask":"Look","access":[],"budget":{"minutes":5,"tokens":20000},"class":"algorithms","effort":"high","fast":false}]}',
         ),
       ),
     ]);
@@ -407,15 +407,12 @@ describe("waveRunner", () => {
     const [args] = spawnConductorChildSession.mock.calls[0];
     expect(args.budget).toEqual({ minutes: 5, tokens: 20000 });
     expect(args.runSettings).toEqual({ effort: "high", fast: false });
-    expect(resolveWaveStepTarget).toHaveBeenCalledWith(
-      "scout",
-      "coding-simple",
-    );
+    expect(resolveWaveStepTarget).toHaveBeenCalledWith("scout", "algorithms");
     // The persisted record carries all of them, so a restart resumes the
     // same step.
     expect(getWaveEngineState().waves[0]?.steps[0]).toMatchObject({
       budget: { minutes: 5, tokens: 20000 },
-      modelClass: "coding-simple",
+      modelClass: "algorithms",
       effort: "high",
       fast: false,
     });

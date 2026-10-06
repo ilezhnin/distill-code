@@ -44,13 +44,13 @@ function input(
 describe("resolveRankedModel", () => {
   it("falls through a platform at its usage limit, and says so", () => {
     const result = resolveRankedModel(
-      "one-shot",
+      "general",
       input({
         platformLimitState: (platform) =>
           platform === "grok-acp" ? "clear" : "at-limit",
       }),
     );
-    // one-shot: Astra → Fable 5.1 → Opus 5 → Grok 4.7; everything but Grok
+    // general: Astra → Fable 5.1 → Opus 5 → Grok 4.7; everything but Grok
     // is gated here.
     expect(result.choice?.label).toBe("Grok 4.7");
     expect(result.choice?.rankIndex).toBe(3);
@@ -95,7 +95,7 @@ describe("resolveRankedModel", () => {
       },
     ];
     const result = resolveRankedModel(
-      "coding-complex",
+      "code-implement",
       input({
         modelsForPlatform: (platform) =>
           platform === "claude-acp" ? claude : [],
@@ -120,26 +120,26 @@ describe("resolveRankedModel", () => {
           platform === "claude-acp" ? models : [],
       });
 
-    // coding-complex: Astra → Fable 5.1 → Opus 5; only Opus is installed.
+    // code-implement: Astra → Fable 5.1 → Opus 5; only Opus is installed.
     expect(
-      resolveRankedModel("coding-complex", onlyClaude(claudeRows)).choice?.model
+      resolveRankedModel("code-implement", onlyClaude(claudeRows)).choice?.model
         .id,
     ).toBe("opus[1m]");
     // With nothing but the alias, the alias still serves.
     expect(
-      resolveRankedModel("coding-complex", onlyClaude([claudeRows[0]])).choice
+      resolveRankedModel("code-implement", onlyClaude([claudeRows[0]])).choice
         ?.model.id,
     ).toBe("default");
   });
 
   it("returns no choice when nothing in the ranking is usable", () => {
     const result = resolveRankedModel(
-      "coding-complex",
+      "code-implement",
       input({ modelsForPlatform: () => [], allModels: () => [] }),
     );
     expect(result.choice).toBeUndefined();
     expect(result.skipped.length).toBe(
-      MODEL_PREFERENCE_CLASSES["coding-complex"].ranking.length,
+      MODEL_PREFERENCE_CLASSES["code-implement"].ranking.length,
     );
   });
 });

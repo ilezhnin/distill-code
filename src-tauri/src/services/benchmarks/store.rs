@@ -31,10 +31,80 @@ impl Store {
             .run(&pool)
             .await
             .map_err(|e| BenchmarkError::new("storage_unavailable", e.to_string()))?;
-        Ok(Self {
+        let store = Self {
             pool,
             root: root.to_owned(),
-        })
+        };
+        store.reclassify_legacy_work_classes().await?;
+        Ok(store)
+    }
+    /// Moves every case of a class retired on October 5, 2026 to its class of
+    /// today, once. A class is metadata about a case, not a change to its
+    /// task, so the version keeps its id and its measured cells; only its
+    /// manifest and content hash move, through the same published blob the
+    /// catalog writes. Drafts move with their definitions.
+    async fn reclassify_legacy_work_classes(&self) -> Result<()> {
+        const MARKER: &str = "work-classes-2026-10-05";
+        let done: Option<String> =
+            sqlx::query_scalar("SELECT id FROM catalog_seed_sets WHERE id=?")
+                .bind(MARKER)
+                .fetch_optional(&self.pool)
+                .await?;
+        if done.is_some() {
+            return Ok(());
+        }
+        let reclassified = |draft: &mut BenchmarkDraft| -> bool {
+            let Some((class, difficulty)) =
+                super::routing::legacy_work_class(&draft.work_class_id, &draft.name)
+            else {
+                return false;
+            };
+            draft.work_class_id = class.into();
+            if draft.facets.difficulty.is_none() {
+                draft.facets.difficulty = difficulty.map(Into::into);
+            }
+            true
+        };
+        let versions = sqlx::query("SELECT id,manifest_json FROM benchmark_versions")
+            .fetch_all(&self.pool)
+            .await?;
+        for row in versions {
+            let id: String = row.get(0);
+            let mut manifest: BenchmarkDraft = serde_json::from_str(row.get(1))?;
+            if !reclassified(&mut manifest) {
+                continue;
+            }
+            let hash = super::fixtures::publish_blob(&self.root, &manifest).await?;
+            sqlx::query("UPDATE benchmark_versions SET manifest_json=?,content_hash=? WHERE id=?")
+                .bind(serde_json::to_string(&manifest)?)
+                .bind(hash)
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
+        }
+        let definitions = sqlx::query("SELECT id,draft_json FROM benchmark_definitions")
+            .fetch_all(&self.pool)
+            .await?;
+        for row in definitions {
+            let id: String = row.get(0);
+            let mut draft: BenchmarkDraft = serde_json::from_str(row.get(1))?;
+            if !reclassified(&mut draft) {
+                continue;
+            }
+            sqlx::query("UPDATE benchmark_definitions SET draft_json=? WHERE id=?")
+                .bind(serde_json::to_string(&draft)?)
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT INTO catalog_seed_sets(id,seeded_at) VALUES(?,?) ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(MARKER)
+        .bind(now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
     pub async fn events_since(&self, sequence: i64) -> Result<Vec<BenchmarkEvent>> {
         let rows=sqlx::query("SELECT sequence,entity_id,kind,created_at FROM benchmark_events WHERE sequence>? ORDER BY sequence LIMIT 500").bind(sequence).fetch_all(&self.pool).await?;
@@ -1272,6 +1342,62 @@ mod tests {
         attempt.observed.as_mut().unwrap().effort = Some("high".into());
         attempt.observed.as_mut().unwrap().fast_mode = Some(false);
         assert_eq!(card_configuration(&attempt).fast_mode, Some(true));
+    }
+    /// A catalog from before October 5, 2026 carries the retired classes; the
+    /// first open moves every case and draft, keeps version ids and their
+    /// cells, and the second open leaves them alone.
+    #[tokio::test]
+    async fn legacy_work_classes_move_once_and_keep_their_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut draft = super::super::runner::seed_definitions().remove(0);
+        draft.work_class_id = "coding-simple".into();
+        draft.name = "Repair bounded clamp".into();
+        draft.facets.difficulty = None;
+        let mut planning = super::super::runner::seed_definitions().remove(1);
+        planning.work_class_id = "planning".into();
+        planning.facets.difficulty = Some("hard".into());
+        {
+            let store = Store::open(directory.path()).await.unwrap();
+            let json = |d: &BenchmarkDraft| serde_json::to_string(d).unwrap();
+            for (id, d) in [("d1", &draft), ("d2", &planning)] {
+                sqlx::query("INSERT INTO benchmark_definitions(id,draft_json,revision,archived) VALUES(?,?,1,0)")
+                    .bind(id).bind(json(d)).execute(&store.pool).await.unwrap();
+                sqlx::query("INSERT INTO benchmark_versions(id,definition_id,content_hash,manifest_json,published_at) VALUES(?,?,?,?,1)")
+                    .bind(format!("{id}-v")).bind(id).bind(format!("old-{id}")).bind(json(d)).execute(&store.pool).await.unwrap();
+            }
+            // The marker the first open wrote applies to an empty catalog; drop
+            // it to replay the move over these rows.
+            sqlx::query("DELETE FROM catalog_seed_sets WHERE id='work-classes-2026-10-05'")
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            store.pool.close().await;
+        }
+        let store = Store::open(directory.path()).await.unwrap();
+        let moved = store.version("d1-v").await.unwrap();
+        assert_eq!(moved.manifest.work_class_id, "debug");
+        assert_eq!(moved.manifest.facets.difficulty.as_deref(), Some("easy"));
+        assert_ne!(moved.content_hash, "old-d1");
+        assert!(directory
+            .path()
+            .join("versions")
+            .join(&moved.content_hash)
+            .is_dir());
+        assert_eq!(
+            store.definition("d1").await.unwrap().draft.work_class_id,
+            "debug"
+        );
+        // A class still in force keeps its row and its declared difficulty.
+        let kept = store.version("d2-v").await.unwrap();
+        assert_eq!(kept.manifest.work_class_id, "planning");
+        assert_eq!(kept.manifest.facets.difficulty.as_deref(), Some("hard"));
+        assert_eq!(kept.content_hash, "old-d2");
+        store.pool.close().await;
+        let again = Store::open(directory.path()).await.unwrap();
+        assert_eq!(
+            again.version("d1-v").await.unwrap().content_hash,
+            moved.content_hash
+        );
     }
     #[tokio::test]
     async fn catalog_seed_sets_insert_new_vendors_once() {

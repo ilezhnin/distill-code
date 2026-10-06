@@ -93,7 +93,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 /** A measured simple-coding axis with the given board points. */
 function codingAxis(points: number) {
   return {
-    id: "coding-simple",
+    id: "algorithms",
     quality: points / 1000,
     points,
     passed: 1,
@@ -828,17 +828,19 @@ describe("benchmark authoring and saved evidence", () => {
       "",
       "",
     ]);
-    await userEvent.click(screen.getByRole("tab", { name: "Simple coding" }));
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Algorithms and clean code" }),
+    );
     expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
     await userEvent.click(screen.getByRole("button", { name: "Overall" }));
     expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
     await userEvent.click(
-      screen.getByRole("button", { name: "Simple coding" }),
+      screen.getByRole("button", { name: "Algorithms and clean code" }),
     );
     expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
     expect(
-      screen.getByRole("button", { name: "Simple coding" }),
+      screen.getByRole("button", { name: "Algorithms and clean code" }),
     ).toHaveAttribute("aria-pressed", "true");
     const first = screen.getAllByRole("row")[1];
     expect(
@@ -929,7 +931,9 @@ describe("benchmark authoring and saved evidence", () => {
         .slice(1)
         .map((row) => within(row).getAllByRole("cell")[0].textContent);
     expect(ranks()).toEqual(["51", "52", "53", "54", "55"]);
-    await userEvent.click(screen.getByRole("tab", { name: "Simple coding" }));
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Algorithms and clean code" }),
+    );
     expect(onPageChange).toHaveBeenCalledWith(0);
     // Before the page resets, the second page holds the rows the class board
     // cannot rank; they follow every ranked row.

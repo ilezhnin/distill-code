@@ -16,7 +16,7 @@ const rows = [
     costShare: 0.1,
     axes: [
       {
-        id: "coding-simple",
+        id: "algorithms",
         quality: 0.5,
         points: 500,
         speedShare: 0.6,
@@ -32,7 +32,7 @@ const rows = [
     points: 500,
     axes: [
       {
-        id: "coding-simple",
+        id: "algorithms",
         quality: 1,
         points: 1000,
         passed: 2,
@@ -139,7 +139,7 @@ describe("leaderboard boards", () => {
   it("builds the overall board plus one per work class", () => {
     expect(boardsFor(cohort).map((board) => board.id)).toEqual([
       "overall",
-      "class:coding-simple",
+      "class:algorithms",
     ]);
     expect(boardsFor(null).map((board) => board.id)).toEqual(["overall"]);
   });
