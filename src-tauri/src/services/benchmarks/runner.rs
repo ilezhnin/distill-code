@@ -3089,7 +3089,7 @@ impl BenchmarkService {
                 None => {
                     a.phase = "terminal".into();
                     a.outcome = Some("dispatch_uncertain".into());
-                    a.reason=Some("Remote acceptance cannot be established after restart; explicitly create a new run to retry".into());
+                    a.reason=Some("Remote acceptance cannot be established after restart; the run continues with its other tests, and this one is run again from the model page".into());
                     a.finished_at = Some(now());
                     self.store.save_attempt(&a).await?;
                     self.changed().await;
@@ -4418,6 +4418,17 @@ mod tests {
         );
         assert_eq!(recovered.attempts[1].phase, "pending");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        // One lost test never retires the rest: the run resumes with the
+        // tests it has not started, and the uncertain one stays as it is.
+        s.control(&run.id, "resume").await.unwrap();
+        s.tick().await.unwrap();
+        let resumed = s.store.run(&run.id).await.unwrap();
+        assert_eq!(
+            resumed.attempts[0].outcome.as_deref(),
+            Some("dispatch_uncertain")
+        );
+        assert_ne!(resumed.attempts[1].phase, "pending");
+        assert!(backend.calls.load(Ordering::SeqCst) >= 1);
     }
     #[tokio::test]
     async fn pause_and_cancel_never_send_queued_work() {

@@ -280,7 +280,7 @@
     "preview": "Vista previa de desarrollo"
   },
   "attention": {
-    "restarted": "La aplicación se reinició con una prueba en curso; esta ejecución no puede reanudarse. Cancélala y vuelve a ejecutar sus pruebas.",
+    "restarted": "La aplicación se reinició con una prueba en curso. Reanuda: la ejecución sigue con sus otras pruebas y la perdida queda como hueco para repetirla desde la página de su modelo.",
     "quota": "Se agotó el límite de uso. Reanuda cuando se restablezca, o cancela.",
     "signIn": "Caducó el inicio de sesión del proveedor. Inicia sesión y reanuda.",
     "failed": "Una prueba se detuvo por un error: {{reason}}. Reanuda para intentarla de nuevo, o cancela.",

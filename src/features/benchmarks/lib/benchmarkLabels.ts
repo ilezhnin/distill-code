@@ -275,8 +275,9 @@ export function configurationDetails(
 /**
  * What a run that waits for the operator needs from them, from the attempt
  * that parked it: the cause in plain words and the one action that helps.
- * A run the app restarted under cannot resume; a usage limit or a sign-in
- * resumes once it is back; anything else is worth one more try.
+ * A run the app restarted under resumes with its other tests and leaves the
+ * lost one as a gap; a usage limit or a sign-in resumes once it is back;
+ * anything else is worth one more try.
  */
 export function attentionLabel(
   t: Translate,

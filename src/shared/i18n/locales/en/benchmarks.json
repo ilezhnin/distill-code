@@ -280,7 +280,7 @@
     "preview": "Development preview"
   },
   "attention": {
-    "restarted": "The app restarted while a test was in flight; this run cannot resume. Cancel it and run its tests again.",
+    "restarted": "The app restarted while a test was in flight. Resume: the run goes on with its other tests, and the lost one stays a gap to run again from its model's page.",
     "quota": "The usage limit ran out. Resume when it resets, or cancel.",
     "signIn": "The provider's sign-in expired. Sign in, then resume.",
     "failed": "A test stopped on an error: {{reason}}. Resume to try it again, or cancel.",

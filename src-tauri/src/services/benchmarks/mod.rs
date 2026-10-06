@@ -486,21 +486,13 @@ impl BenchmarkService {
         self.changed().await;
         self.store.run(&id).await
     }
+    /// A run resumes with the tests it has not started. A test the app
+    /// restarted under stays settled as uncertain: it is never dispatched
+    /// again under its own key, so nothing is paid twice, and it reads as a
+    /// gap the model page runs again as a new attempt. One lost test never
+    /// retires the rest of a run.
     pub async fn control(&self, id: &str, action: &str) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
-        if action == "resume"
-            && run.attempts.iter().any(|a| {
-                matches!(
-                    a.outcome.as_deref(),
-                    Some("dispatch_uncertain" | "interrupted")
-                )
-            })
-        {
-            return Err(BenchmarkError::new(
-                "dispatch_uncertain",
-                "Uncertain execution requires inspection and a separately requested new run",
-            ));
-        }
         let next = match (action, run.state.as_str()) {
             ("pause", "running") => "pausing",
             ("pause", "pausing" | "paused") => return Ok(run),
