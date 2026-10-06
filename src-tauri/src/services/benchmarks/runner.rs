@@ -1887,11 +1887,23 @@ impl ExecutionBackend for NativeBackend {
                 &attempt.configuration.model_id,
             )
             .await?;
-            if attempt
-                .configuration
-                .inventory_revision
-                .as_ref()
-                .is_some_and(|revision| revision != &runtime_revision)
+            // The pin guards the account the run was planned on. A test the
+            // run moved to another account (its usage limit ran out) runs on
+            // that account's runtime, which lists that account's models, and
+            // records it below.
+            let moved = !store
+                .run(&attempt.run_id)
+                .await?
+                .request
+                .configurations
+                .iter()
+                .any(|c| c.account_id == attempt.configuration.account_id);
+            if !moved
+                && attempt
+                    .configuration
+                    .inventory_revision
+                    .as_ref()
+                    .is_some_and(|revision| revision != &runtime_revision)
             {
                 return Err(BenchmarkError::new("selection_changed","Installed runtime or model capabilities changed since configuration selection; refresh inventory"));
             }
