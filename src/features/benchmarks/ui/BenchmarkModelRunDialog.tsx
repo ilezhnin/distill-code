@@ -253,7 +253,10 @@ export function BenchmarkModelRunDialog({
   // The run's cells: a test is finished once every planned repetition
   // scored; one short of that starts over when the run goes on.
   const cells = useMemo(() => {
-    const planned = run.data?.request.repetitions ?? REQUIRED_REPETITIONS;
+    const planned = Math.max(
+      run.data?.request.repetitions ?? REQUIRED_REPETITIONS,
+      REQUIRED_REPETITIONS,
+    );
     const byVersion = new Map<string, number>();
     const inRun = new Set<string>();
     for (const attempt of mine) {
@@ -275,6 +278,11 @@ export function BenchmarkModelRunDialog({
     return { left, restart, measured: inRun.size - left };
   }, [mine, scores, run.data]);
   const windowOpen = run.data ? runWindowOpen(run.data, clock) : false;
+  const resolvingRun =
+    runId != null &&
+    (run.isPending || (mine.length > 0 && summaries.isPending));
+  const legacyRun =
+    run.data != null && run.data.request.repetitions < REQUIRED_REPETITIONS;
   // Following a run, the checks show the tests it holds.
   const inRunIds = useMemo(
     () => new Set(mine.map((attempt) => attempt.versionId)),
@@ -284,6 +292,7 @@ export function BenchmarkModelRunDialog({
   const missing = eligible.filter((version) => !inRunIds.has(version.id));
   const stopped =
     windowOpen &&
+    !legacyRun &&
     !runActive &&
     !stopping &&
     mine.length > 0 &&
@@ -356,7 +365,10 @@ export function BenchmarkModelRunDialog({
         setError(check.issues.join("\n"));
         return;
       }
-      const started = await benchmarkApi.startRun(request);
+      const started =
+        complete && runId
+          ? await benchmarkApi.startRun(request, runId)
+          : await benchmarkApi.startRun(request);
       setRunId(started.id);
       setRequestKey(crypto.randomUUID());
       await client.invalidateQueries({ queryKey: benchmarkKeys });
@@ -569,7 +581,11 @@ export function BenchmarkModelRunDialog({
               type="button"
               variant="primary"
               disabled={
-                busy || !pinned || resolvingStanding || chosen.length === 0
+                busy ||
+                !pinned ||
+                resolvingStanding ||
+                resolvingRun ||
+                chosen.length === 0
               }
               onClick={() => void start()}
             >

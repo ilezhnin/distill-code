@@ -418,6 +418,15 @@ impl BenchmarkService {
         Ok(RunPreview{valid:issues.is_empty(),issues,execution_count:count.min(u32::MAX as usize) as u32,estimated_cost:None,cost_reason:"Provider does not expose a binding spend estimate; explicit task and time limits apply".into(),execution_order})
     }
     pub async fn start_run(&self, request: RunRequest) -> Result<BenchmarkRun> {
+        self.start_run_replacing(request, None).await
+    }
+    /// An explicitly confirmed new sitting seals the previous one in the
+    /// same transaction that admits the new plan. Failed admission preserves it.
+    pub async fn start_run_replacing(
+        &self,
+        request: RunRequest,
+        replace_run_id: Option<&str>,
+    ) -> Result<BenchmarkRun> {
         if let Some(id) =
             sqlx::query_scalar::<_, String>("SELECT id FROM run_plans WHERE request_key=?")
                 .bind(&request.request_key)
@@ -440,6 +449,31 @@ impl BenchmarkService {
                 preview.issues.join("; "),
             ));
         }
+        let replaced =
+            if let Some(previous_id) = replace_run_id {
+                let previous = self.store.run(previous_id).await?;
+                if previous.baked_at.is_some()
+                    || previous.request.preview
+                    || request.preview
+                    || !matches!(
+                        previous.state.as_str(),
+                        "completed" | "cancelled" | "needs_attention" | "paused"
+                    )
+                    || request.configurations.iter().any(|c| {
+                        !previous.request.configurations.iter().any(|old| {
+                            analysis::leaderboard_key(c) == analysis::leaderboard_key(old)
+                        })
+                    })
+                {
+                    return Err(BenchmarkError::new(
+                        "validation",
+                        "Only a stopped sitting of the same configuration can be replaced",
+                    ));
+                }
+                Some(previous)
+            } else {
+                None
+            };
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = now();
         let mut versions = Vec::new();
@@ -503,6 +537,20 @@ impl BenchmarkService {
         for (version, config, repetition) in cells {
             let attempt = pending_attempt(&id, &version, &config, repetition);
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,?,'pending',?)").bind(&attempt.id).bind(&id).bind(&version).bind(&config.id).bind(repetition as i64).bind(serde_json::to_string(&attempt)?).execute(&mut *tx).await?;
+        }
+        if let Some(previous) = replaced {
+            // A concurrent resume or extension must not be sealed by a stale dialog.
+            let revision: i64 = sqlx::query_scalar("SELECT revision FROM run_plans WHERE id=?")
+                .bind(&previous.id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if revision != previous.revision {
+                return Err(BenchmarkError::new(
+                    "revision_conflict",
+                    "The previous sitting changed; review it before measuring again",
+                ));
+            }
+            Self::bake_in_transaction(&mut tx, &previous, timestamp).await?;
         }
         event(&mut tx, &id, "run_created").await?;
         tx.commit().await?;
@@ -681,13 +729,29 @@ impl BenchmarkService {
     /// run that planned fewer repetitions keeps nothing. A run still open is
     /// completed as it stands.
     pub(super) async fn bake(&self, run: &BenchmarkRun, at: i64) -> Result<()> {
+        let mut tx = self.store.pool.begin().await?;
+        Self::bake_in_transaction(&mut tx, run, at).await?;
+        tx.commit().await?;
+        self.changed().await;
+        Ok(())
+    }
+    async fn bake_in_transaction(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &BenchmarkRun,
+        at: i64,
+    ) -> Result<()> {
         let required = run.request.repetitions.max(analysis::REQUIRED_REPETITIONS);
+        let mut settled = None;
         for (_, attempts) in analysis::run_cells(run) {
             let scored = attempts
                 .iter()
                 .filter(|a| analysis::score(a).is_some())
                 .count() as u32;
-            if scored >= required || never_measured(&attempts) {
+            if scored >= required {
+                settled = settled.max(attempts.iter().filter_map(|a| a.finished_at).max());
+                continue;
+            }
+            if never_measured(&attempts) {
                 continue;
             }
             for attempt in attempts {
@@ -696,7 +760,7 @@ impl BenchmarkService {
                 }
                 let mut dropped = attempt;
                 dropped.reason = Some(format!(
-                    "Dropped when the run's window closed: {scored} of {required} repetitions were scored (this one: {})",
+                    "Dropped when the sitting was sealed: {scored} of {required} repetitions were scored (this one: {})",
                     dropped.outcome.as_deref().unwrap_or("never ran")
                 ));
                 dropped.outcome = Some(analysis::SUPERSEDED.into());
@@ -704,25 +768,34 @@ impl BenchmarkService {
                 if dropped.finished_at.is_none() {
                     dropped.finished_at = Some(at);
                 }
-                self.store.supersede_attempt(&dropped).await?;
+                // Run summaries omit output. Change only lifecycle fields so
+                // superseding never erases the stored answer or paid usage.
+                sqlx::query("UPDATE attempts SET phase=?,data_json=json_set(data_json,'$.phase',?,'$.outcome',?,'$.reason',?,'$.finishedAt',?),repetition=-rowid WHERE id=?")
+                    .bind(&dropped.phase)
+                    .bind(&dropped.phase)
+                    .bind(&dropped.outcome)
+                    .bind(&dropped.reason)
+                    .bind(dropped.finished_at)
+                    .bind(&dropped.id)
+                    .execute(&mut **tx)
+                    .await?;
             }
         }
         if !matches!(run.state.as_str(), "completed" | "cancelled") {
             // Completed when its last counted cell settled, not when the
             // window closed: the point keeps the date of its measurement.
-            let settled = run
-                .attempts
-                .iter()
-                .filter(|a| analysis::score(a).is_some())
-                .filter_map(|a| a.finished_at)
-                .max()
-                .unwrap_or(run.updated_at);
-            self.store
-                .set_run_state_at(&run.id, "completed", settled)
+            sqlx::query("UPDATE run_plans SET state='completed',updated_at=? WHERE id=?")
+                .bind(settled.unwrap_or(run.updated_at))
+                .bind(&run.id)
+                .execute(&mut **tx)
                 .await?;
         }
-        self.store.set_baked(&run.id, at).await?;
-        self.changed().await;
+        sqlx::query("UPDATE run_plans SET baked_at=?,revision=revision+1 WHERE id=?")
+            .bind(at)
+            .bind(&run.id)
+            .execute(&mut **tx)
+            .await?;
+        event(tx, &run.id, "run_changed").await?;
         Ok(())
     }
     pub async fn create_baseline(

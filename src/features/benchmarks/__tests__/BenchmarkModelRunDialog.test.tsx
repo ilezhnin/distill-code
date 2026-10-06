@@ -492,14 +492,18 @@ function stoppedRun(
     score: number | null;
   }[],
 ): { run: BenchmarkRun; summaries: AttemptSummary[] } {
-  const summaries = entries.map((entry) => ({
-    ...summary(
-      entry.versionId,
-      entry.outcome ? "terminal" : "pending",
-      entry.outcome,
-      entry.score,
-    ),
-  }));
+  const summaries = entries.flatMap((entry) =>
+    Array.from({ length: 3 }, (_, repetition) => ({
+      ...summary(
+        entry.versionId,
+        entry.outcome ? "terminal" : "pending",
+        entry.outcome,
+        entry.score,
+      ),
+      id: `attempt-${entry.versionId}-${repetition}`,
+      repetition,
+    })),
+  );
   return {
     run: {
       ...run,
@@ -507,12 +511,13 @@ function stoppedRun(
       state,
       createdAt: Date.now() - 3_600_000,
       updatedAt: Date.now() - 600_000,
-      request: { ...run.request, repetitions: 1 },
+      request: { ...run.request, repetitions: 3 },
       attempts: summaries.map((entry) => ({
         ...attempt,
         id: entry.id,
         runId: "run-2",
         versionId: entry.versionId,
+        repetition: entry.repetition,
         phase: entry.phase,
         outcome: entry.outcome,
       })),
@@ -565,6 +570,7 @@ it("finishes a stopped run inside its window, adding the tests it lacks, instead
 });
 
 it("warns before measuring a model again whose run inside its window is complete", async () => {
+  const user = userEvent.setup();
   const complete = stoppedRun(
     "completed",
     [
@@ -574,7 +580,11 @@ it("warns before measuring a model again whose run inside its window is complete
       "version-4",
       "version-5",
       "version-8",
-    ].map((versionId) => ({ versionId, outcome: "pass", score: 1 })),
+    ].map((versionId) => ({
+      versionId,
+      outcome: versionId === "version-3" ? "fail" : "pass",
+      score: versionId === "version-3" ? 0 : 1,
+    })),
   );
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(complete.run);
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(complete.summaries);
@@ -583,11 +593,48 @@ it("warns before measuring a model again whose run inside its window is complete
     await screen.findByRole("button", { name: "Measure again" }),
   ).toBeEnabled();
   expect(screen.getByRole("alert")).toHaveTextContent(
-    /Measured in full .*: 6 tests, every repetition\. A new run measures all of them again/,
+    /Measured in full .*: 6 tests, every repetition\. Repeating this measurement is unnecessary spending/,
   );
   expect(
     screen.queryByRole("button", { name: "Finish run" }),
   ).not.toBeInTheDocument();
   // Every test is checked for the new sitting.
   expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Measure again" }));
+  expect(benchmarkApi.startRun).toHaveBeenCalledWith(
+    expect.objectContaining({ repetitions: 3 }),
+    "run-2",
+  );
+});
+
+it("starts legacy one-repetition runs afresh instead of paying to extend an unusable sitting", async () => {
+  const user = userEvent.setup();
+  const legacy = stoppedRun("completed", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+  ]);
+  legacy.run.request.repetitions = 1;
+  legacy.run.attempts = legacy.run.attempts.filter((a) => a.repetition === 0);
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(legacy.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(
+    legacy.summaries.filter((a) => a.repetition === 0),
+  );
+  show({ runId: "run-2" });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled(),
+  );
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Finish run" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Measure again" }),
+  ).not.toBeInTheDocument();
+  const start = screen.getByRole("button", { name: "Start" });
+  await waitFor(() => expect(start).toBeEnabled());
+  await user.click(start);
+  expect(benchmarkApi.startRun).toHaveBeenCalledWith(
+    expect.objectContaining({ repetitions: 3 }),
+  );
+  expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
 });

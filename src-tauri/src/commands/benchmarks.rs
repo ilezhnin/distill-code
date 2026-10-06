@@ -81,8 +81,15 @@ pub async fn benchmark_preview_run(app: AppHandle, request: RunRequest) -> Resul
     service(&app).await?.preview_run(&request).await
 }
 #[tauri::command]
-pub async fn benchmark_start_run(app: AppHandle, request: RunRequest) -> Result<BenchmarkRun> {
-    service(&app).await?.start_run(request).await
+pub async fn benchmark_start_run(
+    app: AppHandle,
+    request: RunRequest,
+    replace_run_id: Option<String>,
+) -> Result<BenchmarkRun> {
+    service(&app)
+        .await?
+        .start_run_replacing(request, replace_run_id.as_deref())
+        .await
 }
 #[tauri::command]
 pub async fn benchmark_list_runs(app: AppHandle) -> Result<Vec<RunSummary>> {

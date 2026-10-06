@@ -1,6 +1,7 @@
 import type { HistorySnapshot } from "../hooks/useBenchmarks";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import type {
   Attempt,
   AttemptSummary,
@@ -40,6 +41,73 @@ export function benchmarkErrorMessage(error: unknown): string {
   return String(error);
 }
 
+async function listCompletedDesigns(
+  query: ResultQuery,
+): Promise<DesignEntry[]> {
+  const entries = (
+    await invoke<DesignEntry[]>("benchmark_list_designs", { query })
+  ).filter((entry) => entry.phase === "terminal" && entry.score != null);
+  const legacy = entries.filter((entry) => entry.completedRepetitions == null);
+  if (legacy.length > 0) {
+    // The UI may update while an older backend finishes a paid run. Read its
+    // existing scoring endpoint until it can restart without losing that work.
+    const definitions = await benchmarkApi.listDefinitions();
+    const versions = new Map(
+      definitions.flatMap((definition) =>
+        definition.versions.map((version) => [version.id, version] as const),
+      ),
+    );
+    await Promise.all(
+      [...new Set(legacy.map((entry) => entry.runId))].map(async (id) => {
+        const run = await benchmarkApi.getRun(id);
+        const own = legacy.filter((entry) => entry.runId === id);
+        const attempts = run.attempts.filter((attempt) =>
+          own.some(
+            (entry) =>
+              entry.versionId === attempt.versionId &&
+              entry.configuration.id === attempt.configuration.id,
+          ),
+        );
+        const scored = new Set<string>();
+        for (let offset = 0; offset < attempts.length; offset += 100) {
+          const summaries = await benchmarkApi.listAttempts({
+            runId: id,
+            attemptIds: attempts.slice(offset, offset + 100).map((a) => a.id),
+            asOf: query.asOf,
+            limit: 100,
+          });
+          for (const attempt of summaries) {
+            if (attempt.phase === "terminal" && attempt.score != null)
+              scored.add(attempt.id);
+          }
+        }
+        for (const entry of own) {
+          entry.requiredRepetitions = Math.max(
+            REQUIRED_REPETITIONS,
+            run.request.repetitions,
+            versions.get(entry.versionId)?.manifest.repetitions ?? Infinity,
+          );
+          entry.completedRepetitions = new Set(
+            attempts
+              .filter(
+                (attempt) =>
+                  attempt.versionId === entry.versionId &&
+                  attempt.configuration.id === entry.configuration.id &&
+                  scored.has(attempt.id),
+              )
+              .map((attempt) => attempt.repetition),
+          ).size;
+        }
+      }),
+    );
+  }
+  return entries.filter(
+    (entry) =>
+      (entry.completedRepetitions ?? 0) >=
+      Math.max(REQUIRED_REPETITIONS, entry.requiredRepetitions ?? Infinity),
+  );
+}
+
 export const benchmarkApi = {
   listDefinitions: () =>
     invoke<BenchmarkDefinition[]>("benchmark_list_definitions"),
@@ -73,13 +141,15 @@ export const benchmarkApi = {
     invoke<BenchmarkDefinition>("benchmark_import_definition", { draft }),
   previewRun: (request: RunRequest) =>
     invoke<RunPreview>("benchmark_preview_run", { request }),
-  startRun: (request: RunRequest) =>
-    invoke<BenchmarkRun>("benchmark_start_run", { request }),
+  startRun: (request: RunRequest, replaceRunId?: string) =>
+    invoke<BenchmarkRun>("benchmark_start_run", {
+      request,
+      ...(replaceRunId ? { replaceRunId } : {}),
+    }),
   listRuns: () => invoke<RunSummary[]>("benchmark_list_runs"),
   listAttempts: (query: ResultQuery) =>
     invoke<AttemptSummary[]>("benchmark_list_attempts", { query }),
-  listDesigns: (query: ResultQuery) =>
-    invoke<DesignEntry[]>("benchmark_list_designs", { query }),
+  listDesigns: listCompletedDesigns,
   getRun: (id: string) => invoke<BenchmarkRun>("benchmark_get_run", { id }),
   pauseRun: (id: string) => invoke<BenchmarkRun>("benchmark_pause_run", { id }),
   resumeRun: (id: string) =>

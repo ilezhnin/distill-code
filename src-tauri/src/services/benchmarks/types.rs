@@ -332,6 +332,8 @@ pub struct DesignJudge {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesignEntry {
+    pub required_repetitions: u32,
+    pub completed_repetitions: u32,
     pub attempt_id: String,
     pub run_id: String,
     pub run_created_at: i64,

@@ -1076,7 +1076,21 @@ fn leaderboard_from_attempts(
     let mut contributing: BTreeSet<&str> = BTreeSet::new();
     let mut rows: Vec<LeaderboardRow> = cells
         .into_values()
-        .map(|(mut configuration, by_run)| {
+        .filter_map(|(mut configuration, by_run)| {
+            // A sealed sitting contributes only if it retained a complete
+            // cell. Provider refusals remain evidence, not an empty result.
+            let by_run: BTreeMap<_, _> = by_run
+                .into_iter()
+                .filter(|(id, list)| {
+                    runs[id].baked_at.is_none()
+                        || case_cells(list, query.as_of, protocol)
+                            .values()
+                            .any(|cell| cell.complete)
+                })
+                .collect();
+            if by_run.is_empty() {
+                return None;
+            }
             // The newest run that began measuring stands whole: one session's
             // cells, its gaps its own. A run still queued leaves the standing
             // one in place until its first cell starts.
@@ -1108,7 +1122,7 @@ fn leaderboard_from_attempts(
                 contributing.insert(attempt.run_id.as_str());
             }
             if eligible.is_empty() {
-                return LeaderboardRow {
+                return Some(LeaderboardRow {
                     comparison_key: String::new(),
                     configuration, passed: 0, scored: 0, attempted: 0, planned: 0, complete: 0, quality: None,
                     median_duration_ms: None, median_output_tokens: None, cost: None, measured_at: None,
@@ -1122,7 +1136,7 @@ fn leaderboard_from_attempts(
                     unsupported_version_ids: Vec::new(),
                     scored_version_ids: Vec::new(),
                     resolved_models: Vec::new(),
-                };
+                });
             }
             let planned = eligible.len() as u32;
             let attempted = attempts
@@ -1197,7 +1211,7 @@ fn leaderboard_from_attempts(
                         &a.version_id == id && a.outcome.as_deref() == Some("unsupported")
                     })
                 });
-            LeaderboardRow {
+            Some(LeaderboardRow {
                 comparison_key: comparison_key(&scored_attempts, &runs, &pool, query.as_of),
                 configuration,
                 passed,
@@ -1254,7 +1268,7 @@ fn leaderboard_from_attempts(
                     .collect::<BTreeSet<_>>().into_iter().collect(),
                 resolved_models: scored_attempts.iter().filter_map(|a| a.resolved_model.clone())
                     .collect::<BTreeSet<_>>().into_iter().collect(),
-            }
+            })
         })
         .collect();
     let cohort = (!pool.is_empty()).then(|| {
@@ -1559,6 +1573,17 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
             cells.entry(a.run_id.as_str()).or_default().push(a);
         }
     }
+    // An empty sealed sitting must not borrow an earlier row and re-date it.
+    cells.retain(|run_id, attempts| {
+        runs[run_id].baked_at.is_none()
+            || current_pool.iter().any(|version| {
+                attempts
+                    .iter()
+                    .filter(|a| a.version_id == version.id && score(a).is_some())
+                    .count() as u32
+                    >= required_repetitions(data, version)
+            })
+    });
     // A finished run is observed at its end; any other run, cancelled
     // included, when the last of its started cells settled, so a later
     // cancel or evaluation never re-dates it; a later evaluation stays an

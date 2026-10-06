@@ -412,8 +412,8 @@ impl Store {
             })
             .collect())
     }
-    /// The newest rendering per creative brief and configuration, newest
-    /// run first, with the markup and any recorded review.
+    /// A rendering from the newest complete cell per creative brief and
+    /// configuration. Repetitions must belong to the same run and request.
     pub async fn list_designs(&self, q: &ResultQuery) -> Result<Vec<DesignEntry>> {
         let catalog = self.catalog_entries().await?;
         let versions = q
@@ -422,7 +422,8 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()?;
         let rows = sqlx::query(
-            "SELECT a.data_json,v.manifest_json,r.created_at
+            "SELECT a.data_json,v.manifest_json,r.created_at,
+                    json_extract(r.request_json,'$.repetitions')
              FROM attempts a
              JOIN benchmark_versions v ON v.id=a.version_id
              JOIN run_plans r ON r.id=a.run_id
@@ -455,15 +456,17 @@ impl Store {
         }
         // One card per brief and model as the leaderboard counts it: runtime
         // revisions and defaulted controls do not split a model. Rows come newest
-        // first; a card shows the newest scored rendering, else the newest
-        // rendering, else the newest settled attempt, else the newest attempt.
-        let mut candidates: Vec<(Attempt, BenchmarkDraft, i64)> = Vec::new();
+        // first. Only complete scored cells can supply a card; a failed
+        // triple remains a result, while a single rendering is no measurement.
+        let mut candidates: Vec<(Attempt, BenchmarkDraft, i64, u32)> = Vec::new();
+        let mut repetitions = std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
         let mut cards: std::collections::BTreeMap<(String, String), (u8, usize)> =
             std::collections::BTreeMap::new();
         for row in rows {
             let mut attempt: Attempt = serde_json::from_str(&row.get::<String, _>(0))?;
             // A candidate that authored the brief is not an entry of it.
             if attempt.outcome.as_deref() == Some("excluded")
+                || super::analysis::is_superseded(&attempt)
                 || super::effort::effort_unknown(&attempt, &defaulted)
             {
                 continue;
@@ -475,15 +478,42 @@ impl Store {
                 &mut attempt,
                 manifest.limits.max_artifact_bytes,
             );
+            if attempt.phase != "terminal"
+                || super::analysis::score_as_of(&attempt, q.as_of).is_none()
+            {
+                continue;
+            }
+            let required = super::analysis::REQUIRED_REPETITIONS
+                .max(manifest.repetitions)
+                .max(row.get::<i64, _>(3) as u32);
+            repetitions
+                .entry((
+                    attempt.run_id.clone(),
+                    attempt.version_id.clone(),
+                    attempt.configuration.id.clone(),
+                ))
+                .or_default()
+                .insert(attempt.repetition);
+            candidates.push((attempt, manifest, row.get(2), required));
+        }
+        for (index, (attempt, _, _, required)) in candidates.iter().enumerate() {
+            if repetitions[&(
+                attempt.run_id.clone(),
+                attempt.version_id.clone(),
+                attempt.configuration.id.clone(),
+            )]
+                .len()
+                < *required as usize
+            {
+                continue;
+            }
             let key = (
                 attempt.version_id.clone(),
-                super::analysis::leaderboard_key(&card_configuration(&attempt)),
+                super::analysis::leaderboard_key(&card_configuration(attempt)),
             );
-            let tier = card_tier(&attempt);
-            let index = candidates.len();
-            candidates.push((attempt, manifest, row.get(2)));
+            let tier = card_tier(attempt);
             let card = cards.entry(key).or_insert((tier, index));
-            if tier > card.0 {
+            if tier > card.0 && candidates[card.1].0.run_id == attempt.run_id {
                 *card = (tier, index);
             }
         }
@@ -491,7 +521,7 @@ impl Store {
         chosen.sort_unstable();
         let mut out = Vec::new();
         for index in chosen {
-            let (attempt, manifest, run_created_at) = &candidates[index];
+            let (attempt, manifest, run_created_at, required) = &candidates[index];
             let configuration = card_configuration(attempt).into_owned();
             let review = attempt
                 .evaluations
@@ -549,6 +579,13 @@ impl Store {
                 review,
                 judges,
                 score,
+                required_repetitions: *required,
+                completed_repetitions: repetitions[&(
+                    attempt.run_id.clone(),
+                    attempt.version_id.clone(),
+                    attempt.configuration.id.clone(),
+                )]
+                    .len() as u32,
             });
         }
         Ok(out)
@@ -663,9 +700,12 @@ impl Store {
     /// repetition stays in its data.
     pub async fn supersede_attempt(&self, attempt: &Attempt) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE attempts SET phase=?,data_json=?,repetition=-rowid WHERE id=?")
+        sqlx::query("UPDATE attempts SET phase=?,data_json=json_set(data_json,'$.phase',?,'$.outcome',?,'$.reason',?,'$.finishedAt',?),repetition=-rowid WHERE id=?")
             .bind(&attempt.phase)
-            .bind(serde_json::to_string(attempt)?)
+            .bind(&attempt.phase)
+            .bind(&attempt.outcome)
+            .bind(&attempt.reason)
+            .bind(attempt.finished_at)
             .bind(&attempt.id)
             .execute(&mut *tx)
             .await?;
@@ -720,17 +760,6 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE run_plans SET request_json=?,revision=revision+1 WHERE id=?")
             .bind(serde_json::to_string(request)?)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        event(&mut tx, id, "run_changed").await?;
-        tx.commit().await?;
-        Ok(())
-    }
-    pub async fn set_baked(&self, id: &str, at: i64) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE run_plans SET baked_at=?,revision=revision+1 WHERE id=?")
-            .bind(at)
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -1051,6 +1080,30 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
+    /// Complete each fixture's protocol without changing which rendering is
+    /// newest. Copies precede the original row in the gallery's ordering.
+    async fn add_gallery_repetitions(store: &Store) {
+        let rows = sqlx::query("SELECT data_json FROM attempts")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        for row in rows {
+            let original: Attempt = serde_json::from_str(row.get(0)).unwrap();
+            for copy in 1..=2 {
+                let mut attempt = original.clone();
+                attempt.id = format!("{}-copy-{copy}", original.id);
+                attempt.repetition = sqlx::query_scalar::<_, i64>("SELECT MAX(repetition)+1 FROM attempts WHERE run_id=? AND version_id=? AND configuration_id=?")
+                    .bind(&attempt.run_id).bind(&attempt.version_id).bind(&attempt.configuration.id)
+                    .fetch_one(&store.pool).await.unwrap() as u32;
+                sqlx::query("INSERT INTO attempts(rowid,id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES((SELECT MIN(0,MIN(rowid))-1 FROM attempts),?,?,?,?,?,?,?)")
+                    .bind(&attempt.id).bind(&attempt.run_id).bind(&attempt.version_id)
+                    .bind(&attempt.configuration.id).bind(attempt.repetition)
+                    .bind(&attempt.phase).bind(serde_json::to_string(&attempt).unwrap())
+                    .execute(&store.pool).await.unwrap();
+            }
+        }
+    }
+
     /// sqlx stores the checksum of every migration it applies and refuses to
     /// open a database whose applied migration no longer matches its file,
     /// comments included; every benchmark surface would then fail to open. A
@@ -1105,13 +1158,14 @@ mod tests {
             } else {
                 json!([{"id":"objective","evaluatorRevision":"1","verdict":"pending_review","score":null,"reason":"waiting","createdAt":5,"provenance":"objective","artifacts":[]}])
             };
-            let attempt = json!({"id":format!("attempt-{run}"),"runId":run,"versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":null,"output":format!("<svg data-run='{run}'/>"),"usage":{"schema":"native","output":120,"cost":0.05},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
+            let attempt = json!({"id":format!("attempt-{run}"),"runId":run,"versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pending_review","output":format!("<svg data-run='{run}'/>"),"usage":{"schema":"native","output":120,"cost":0.05},"evaluations":evaluations,"eventCursor":0,"workflowSteps":[]});
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'candidate',0,'terminal',?)")
                 .bind(format!("attempt-{run}")).bind(run).bind(&version.id).bind(attempt.to_string())
                 .execute(&mut *tx).await.unwrap();
         }
         tx.commit().await.unwrap();
         // The preview run never shows; the newest real run wins and carries its review.
+        add_gallery_repetitions(&store).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].attempt_id, "attempt-run-2");
@@ -1124,7 +1178,7 @@ mod tests {
         assert_eq!(review.score, 0.7);
         assert!(entries[0].judges.is_empty());
         assert_eq!(review.details.as_ref().unwrap()["craft"], json!(0.6));
-        // One run on request: its own rendering, not yet reviewed.
+        // A run whose rendering is not reviewed is not a completed result.
         let older = store
             .list_designs(&ResultQuery {
                 run_id: Some("run-1".into()),
@@ -1132,8 +1186,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(older[0].attempt_id, "attempt-run-1");
-        assert!(older[0].review.is_none());
+        assert!(older.is_empty());
         let none = store
             .list_designs(&ResultQuery {
                 version_ids: Some(vec![]),
@@ -1146,7 +1199,7 @@ mod tests {
     /// A rendering the old runner stopped for the size of its event record
     /// scored a fixed 0 and, being the newest scored one, took the card. Read
     /// as unscored, it leaves the card to the older scored rendering, and its
-    /// own run shows it unscored.
+    /// own run has no completed gallery result.
     #[tokio::test]
     async fn a_rendering_stopped_by_its_event_record_is_unscored_in_the_gallery() {
         let directory = tempfile::tempdir().unwrap();
@@ -1176,6 +1229,7 @@ mod tests {
                 .execute(&mut *tx).await.unwrap();
         }
         tx.commit().await.unwrap();
+        add_gallery_repetitions(&store).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].attempt_id, "attempt-run-1");
@@ -1187,12 +1241,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(stopped[0].attempt_id, "attempt-run-2");
-        assert_eq!(
-            stopped[0].outcome.as_deref(),
-            Some("infrastructure_failure")
-        );
-        assert_eq!(stopped[0].score, None);
+        assert!(stopped.is_empty());
         // The store keeps what it settled with, for run detail.
         assert_eq!(
             store
@@ -1275,6 +1324,7 @@ mod tests {
                 .execute(&mut *tx).await.unwrap();
         }
         tx.commit().await.unwrap();
+        add_gallery_repetitions(&store).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert_eq!(entries.len(), 1);
         let card = &entries[0];
@@ -1316,11 +1366,10 @@ mod tests {
         insert("run-2", 2, json!({"id":"excluded","runId":"run-2","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"excluded","reason":"authored by this candidate","output":null,"finishedAt":2,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert!(entries.is_empty());
-        // A rendering an older run made still stands for that model.
+        // An unreviewed rendering from an older run is not a complete cell.
         insert("run-1", 1, json!({"id":"rendering","runId":"run-1","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pending_review","output":"<svg/>","finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].attempt_id, "rendering");
+        assert!(entries.is_empty());
     }
     #[tokio::test]
     async fn a_rendering_of_an_unknown_effort_is_no_gallery_entry() {
@@ -1366,12 +1415,13 @@ mod tests {
                 .execute(&mut *tx).await.unwrap();
         }
         for (repetition, (id, run, requested, observed)) in attempts.into_iter().enumerate() {
-            let attempt = json!({"id":id,"runId":run,"versionId":version.id,"configuration":requested,"observed":observed,"repetition":repetition,"phase":"terminal","outcome":"pending_review","output":format!("<svg data-id='{id}'/>"),"finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            let attempt = json!({"id":id,"runId":run,"versionId":version.id,"configuration":requested,"observed":observed,"repetition":repetition,"phase":"terminal","outcome":"pass","output":format!("<svg data-id='{id}'/>"),"finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,?,'terminal',?)")
                 .bind(id).bind(run).bind(&version.id).bind(requested["id"].as_str().unwrap()).bind(repetition as i64).bind(attempt.to_string())
                 .execute(&mut *tx).await.unwrap();
         }
         tx.commit().await.unwrap();
+        add_gallery_repetitions(&store).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert_eq!(
             entries
@@ -1386,7 +1436,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn a_rendering_awaiting_its_panel_outranks_an_older_cancelled_attempt() {
+    async fn a_rendering_awaiting_its_panel_is_not_a_completed_gallery_result() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).await.unwrap();
         let draft = super::super::seeds::definitions()
@@ -1429,10 +1479,74 @@ mod tests {
                 .execute(&store.pool).await.unwrap();
         }
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].attempt_id, "attempt-run-2");
-        assert_eq!(entries[0].phase, "awaiting_judges");
-        assert_eq!(entries[0].output.as_deref(), Some("<svg/>"));
+        assert!(entries.is_empty());
+        assert_eq!(
+            store
+                .attempt("attempt-run-2")
+                .await
+                .unwrap()
+                .output
+                .as_deref(),
+            Some("<svg/>")
+        );
+    }
+    #[tokio::test]
+    async fn the_gallery_requires_a_whole_cell_from_one_run_and_keeps_failed_triples() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        for (run, model, outcomes, required) in [
+            ("one", "partial", vec!["pass"], 3),
+            ("two", "partial", vec!["pass", "pass"], 3),
+            ("retired", "retired", vec!["superseded"; 3], 3),
+            ("refused", "refused", vec!["unsupported"; 3], 3),
+            (
+                "unreviewed",
+                "unreviewed",
+                vec!["pass", "pass", "pending_review"],
+                3,
+            ),
+            ("mixed", "mixed", vec!["pass", "pass", "superseded"], 3),
+            ("failed", "failed", vec!["fail"; 3], 3),
+            ("complete", "complete", vec!["pass"; 3], 3),
+            ("four", "four", vec!["pass"; 3], 4),
+        ] {
+            let configuration = json!({"id":model,"providerId":"provider","accountId":null,"modelId":model,"effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+            let request = json!({"requestKey":run,"versionIds":[version.id],"configurations":[configuration],"repetitions":required,"timeoutSeconds":600,"maxExecutions":4,"preview":false});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'completed',1,1,1,?)")
+                .bind(run).bind(run).bind(request.to_string()).execute(&store.pool).await.unwrap();
+            for (repetition, outcome) in outcomes.into_iter().enumerate() {
+                let id = format!("{run}-{repetition}");
+                let attempt = json!({"id":id,"runId":run,"versionId":version.id,"configuration":configuration,"repetition":repetition,"phase":"terminal","outcome":outcome,"output":"<svg/>","finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+                sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,?,'terminal',?)")
+                    .bind(id).bind(run).bind(&version.id).bind(model).bind(repetition as i64).bind(attempt.to_string())
+                    .execute(&store.pool).await.unwrap();
+            }
+        }
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.configuration.model_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["complete", "failed"].into_iter().collect()
+        );
+        assert!(entries
+            .iter()
+            .all(|e| e.required_repetitions == 3 && e.completed_repetitions == 3));
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.configuration.model_id == "failed")
+                .unwrap()
+                .score,
+            Some(0.0)
+        );
     }
     #[test]
     fn a_refused_rendering_stays_on_the_requested_card() {

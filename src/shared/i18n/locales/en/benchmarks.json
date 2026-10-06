@@ -272,7 +272,7 @@
     "finish": "Finish run",
     "startAgain": "Measure again",
     "finishHint": "Run of {{at}}, open until {{until}}: {{left}} tests to measure, {{restart}} of them again from the first repetition.",
-    "measuredHint": "Measured in full {{at}}: {{measured}} tests, every repetition. A new run measures all of them again at full cost; this measurement stays in history."
+    "measuredHint": "Measured in full {{at}}: {{measured}} tests, every repetition. Repeating this measurement is unnecessary spending. Confirm with Measure again to save this result in history and start a new run at full cost."
   },
   "runs": {
     "title": "Runs and history",

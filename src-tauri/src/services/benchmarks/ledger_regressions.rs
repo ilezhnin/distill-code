@@ -243,6 +243,38 @@ fn an_unscored_newer_run_stands_with_its_gaps() {
 }
 
 #[test]
+fn sealed_unmeasured_runs_leave_no_row_or_history_point() {
+    let mut data = before_only();
+    settled_retest(&mut data, "completed", &["unsupported"]);
+    data.runs[1].baked_at = Some(12);
+    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+    assert_eq!((row.scored, row.complete), (6, 6));
+    assert!(row.attempt_ids.iter().all(|id| id.starts_with("before-")));
+    let configuration = data.runs[0].request.configurations[0].clone();
+    let points = history(&data, &configuration);
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].run_id, "before");
+
+    data.runs.retain(|r| r.id == "retest");
+    data.attempts.retain(|a| a.run_id == "retest");
+    assert!(leaderboard(&data, &ResultQuery::default()).rows.is_empty());
+    let configuration = data.runs[0].request.configurations[0].clone();
+    assert!(history(&data, &configuration).is_empty());
+}
+
+#[test]
+fn sealed_failed_triples_remain_results() {
+    let mut data = before_only();
+    data.required_repetitions = 3;
+    settled_retest(&mut data, "completed", &["fail", "fail", "fail"]);
+    data.runs[1].baked_at = Some(12);
+    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+    assert_eq!((row.scored, row.complete, row.passed), (6, 6, 0));
+    assert_eq!(row.points, Some(0));
+    assert!(row.attempt_ids.iter().all(|id| id.starts_with("retest-")));
+}
+
+#[test]
 fn scored_failures_and_complete_retests_replace_the_previous_cell() {
     for outcomes in [
         &["fail", "budget_reached"][..],

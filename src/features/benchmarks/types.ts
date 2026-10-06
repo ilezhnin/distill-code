@@ -175,6 +175,9 @@ export interface DesignJudge {
 }
 /** The newest rendering of one creative brief by one configuration. */
 export interface DesignEntry {
+  /** Absent on an older backend still running an active measurement. */
+  requiredRepetitions?: number;
+  completedRepetitions?: number;
   attemptId: string;
   runId: string;
   runCreatedAt: number;

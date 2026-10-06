@@ -4492,9 +4492,10 @@ mod tests {
         let first = req.version_ids[0].clone();
         let second = second_case(&s).await;
         req.version_ids.push(second.clone());
-        req.max_executions = 4;
+        req.repetitions = 3;
+        req.max_executions = 6;
         let run = s.start_run(req).await.unwrap();
-        // The first case failed on both repetitions; the second was measured once.
+        // The first case failed all three repetitions; the second was measured once.
         for attempt in &run.attempts {
             if attempt.version_id == first {
                 s.store
@@ -4526,9 +4527,9 @@ mod tests {
             .iter()
             .all(|a| a.outcome.as_deref() == Some("fail")));
         // The unfinished cell starts over: its scored repetition is superseded
-        // and both repetitions are queued.
+        // and all three repetitions are queued.
         let unfinished = of(&resumed, &second);
-        assert_eq!(unfinished.len(), 3);
+        assert_eq!(unfinished.len(), 4);
         assert_eq!(
             unfinished
                 .iter()
@@ -4542,20 +4543,123 @@ mod tests {
             .map(|a| a.repetition)
             .collect();
         queued.sort_unstable();
-        assert_eq!(queued, vec![0, 1]);
-        for _ in 0..3 {
+        assert_eq!(queued, vec![0, 1, 2]);
+        for _ in 0..4 {
             s.tick().await.unwrap();
         }
         let done = s.store.run(&run.id).await.unwrap();
         assert_eq!(done.state, "completed");
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
         assert_eq!(
             of(&done, &second)
                 .iter()
                 .filter(|a| super::super::analysis::score(a).is_some())
                 .count(),
-            2
+            3
         );
+    }
+    #[tokio::test]
+    async fn confirmed_remeasurement_seals_the_previous_sitting_atomically() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        req.repetitions = 3;
+        req.max_executions = 3;
+        let old = s.start_run(req.clone()).await.unwrap();
+        for attempt in &old.attempts {
+            let mut failed = settle(attempt, "fail");
+            failed.output = Some("Original failed answer".into());
+            s.store.save_attempt(&failed).await.unwrap();
+        }
+        s.store.set_run_state(&old.id, "completed").await.unwrap();
+        let before = s.store.run(&old.id).await.unwrap();
+        req.request_key = "measure-again".into();
+        let mut invalid = req.clone();
+        invalid.max_executions = 0;
+        assert!(s.start_run_replacing(invalid, Some(&old.id)).await.is_err());
+        assert!(s.store.run(&old.id).await.unwrap().baked_at.is_none());
+        // A failure while sealing rolls back the newly admitted plan too.
+        sqlx::query("CREATE TRIGGER refuse_seal BEFORE UPDATE OF baked_at ON run_plans BEGIN SELECT RAISE(ABORT, 'test: seal failed'); END")
+            .execute(&s.store.pool).await.unwrap();
+        assert!(s
+            .start_run_replacing(req.clone(), Some(&old.id))
+            .await
+            .is_err());
+        assert_eq!(s.store.runs().await.unwrap().len(), 1);
+        assert!(s.store.run(&old.id).await.unwrap().baked_at.is_none());
+        sqlx::query("DROP TRIGGER refuse_seal")
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        let new = s
+            .start_run_replacing(req.clone(), Some(&old.id))
+            .await
+            .unwrap();
+        let sealed = s.store.run(&old.id).await.unwrap();
+        assert!(sealed.baked_at.is_some());
+        assert_eq!(sealed.updated_at, before.updated_at);
+        assert_eq!(sealed.attempts.len(), 3);
+        assert!(sealed
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("fail")));
+        assert!(s.control(&old.id, "resume").await.is_err());
+        assert!(s.extend_run(&old.id, &[]).await.is_err());
+        assert_ne!(new.id, old.id);
+        assert_eq!(new.attempts.len(), 3);
+        assert!(new.attempts.iter().all(|a| a.phase == "pending"));
+        // Retrying an acknowledged request neither creates nor seals anything again.
+        assert_eq!(
+            s.start_run_replacing(req, Some(&old.id)).await.unwrap().id,
+            new.id
+        );
+        assert_eq!(
+            s.store.run(&old.id).await.unwrap().baked_at,
+            sealed.baked_at
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        let history = super::super::analysis::history(
+            &s.query_data().await.unwrap(),
+            &before.request.configurations[0],
+        );
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].run_id, old.id);
+    }
+    #[tokio::test]
+    async fn sealing_and_restarting_preserve_superseded_evidence() {
+        let (_dir, s, _) = setup().await;
+        let mut req = request(&s).await;
+        req.repetitions = 3;
+        req.max_executions = 3;
+        let run = s.start_run(req).await.unwrap();
+        let mut original = settle(&run.attempts[0], "pass");
+        original.output = Some("Paid original answer".into());
+        original.usage.cost = Some(0.25);
+        s.store.save_attempt(&original).await.unwrap();
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        let archived = s.store.attempt(&original.id).await.unwrap();
+        assert_eq!(archived.outcome.as_deref(), Some("superseded"));
+        assert_eq!(archived.output, original.output);
+        assert_eq!(archived.usage.cost, original.usage.cost);
+        let resumed = s.store.run(&run.id).await.unwrap();
+        let mut partial = settle(
+            resumed
+                .attempts
+                .iter()
+                .find(|a| a.phase == "pending")
+                .unwrap(),
+            "fail",
+        );
+        partial.output = Some("Second paid answer".into());
+        partial.usage.cost = Some(0.5);
+        s.store.save_attempt(&partial).await.unwrap();
+        s.bake(&s.store.run(&run.id).await.unwrap(), now())
+            .await
+            .unwrap();
+        let archived = s.store.attempt(&partial.id).await.unwrap();
+        assert_eq!(archived.outcome.as_deref(), Some("superseded"));
+        assert_eq!(archived.output, partial.output);
+        assert_eq!(archived.usage.cost, partial.usage.cost);
     }
     /// A test added to a run inside its window joins that run: the sitting
     /// grows and goes on, no second run starts beside it, and what the run
