@@ -271,3 +271,26 @@ export function configurationDetails(
     .filter(Boolean)
     .join(" · ");
 }
+
+/**
+ * What a run that waits for the operator needs from them, from the attempt
+ * that parked it: the cause in plain words and the one action that helps.
+ * A run the app restarted under cannot resume; a usage limit or a sign-in
+ * resumes once it is back; anything else is worth one more try.
+ */
+export function attentionLabel(
+  t: Translate,
+  run: { attention?: { outcome: string | null; reason: string } | null },
+): string {
+  const attention = run.attention;
+  if (!attention) return t("attention.unknown");
+  if (attention.outcome === "dispatch_uncertain")
+    return t("attention.restarted");
+  if (/usage limit|quota/i.test(attention.reason)) return t("attention.quota");
+  if (/sign-in/i.test(attention.reason)) return t("attention.signIn");
+  // A raw bridge error reads better by its kind than by its JSON.
+  const reason = attention.reason.startsWith("{")
+    ? stateLabel(t, attention.outcome)
+    : attention.reason;
+  return t("attention.failed", { reason });
+}

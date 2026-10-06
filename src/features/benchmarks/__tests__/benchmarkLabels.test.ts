@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  attentionLabel,
   accountDisplay,
   formatElapsed,
   formatSpend,
@@ -126,5 +127,59 @@ describe("formatSpend", () => {
     expect(formatSpend(t, null, 800)).toBe("No price");
     // A refused or failed call counted nothing.
     expect(formatSpend(t, null, null)).toBe("Not reported");
+  });
+});
+
+describe("attentionLabel", () => {
+  const t = ((key: string, options?: { reason?: string }) =>
+    ({
+      "attention.restarted": "restarted",
+      "attention.quota": "quota",
+      "attention.signIn": "sign in",
+      "attention.failed": `failed: ${options?.reason}`,
+      "attention.unknown": "unknown",
+      "states.infrastructure_failure": "Infrastructure failure",
+    })[key] ?? key) as Parameters<typeof attentionLabel>[0];
+
+  it("names the cause and the one action that helps", () => {
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: "dispatch_uncertain",
+          reason: "Remote acceptance cannot be established after restart",
+        },
+      }),
+    ).toBe("restarted");
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: null,
+          reason: "A test did not finish: the usage limit ran out",
+        },
+      }),
+    ).toBe("quota");
+    expect(
+      attentionLabel(t, {
+        attention: { outcome: null, reason: "Grok sign-in expired" },
+      }),
+    ).toBe("sign in");
+    // A bridge's raw JSON reads by its kind, a sentence by itself.
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: "infrastructure_failure",
+          reason: '{"code":-32010}',
+        },
+      }),
+    ).toBe("failed: Infrastructure failure");
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: "infrastructure_failure",
+          reason: "Bridge exited with code 3",
+        },
+      }),
+    ).toBe("failed: Bridge exited with code 3");
+    expect(attentionLabel(t, { attention: null })).toBe("unknown");
   });
 });

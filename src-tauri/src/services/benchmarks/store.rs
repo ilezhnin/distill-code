@@ -267,6 +267,16 @@ impl Store {
                     FROM (SELECT a.configuration_id,a.version_id,MAX(a.phase<>'pending') AS running FROM attempts a
                         WHERE a.run_id=r.id AND a.phase<>'terminal'
                         GROUP BY a.configuration_id,a.version_id ORDER BY MIN(a.rowid)) o)
+                END,
+                CASE WHEN r.state='needs_attention' THEN
+                (SELECT json_array(json_extract(a.data_json,'$.outcome'),json_extract(a.data_json,'$.reason'))
+                    FROM attempts a WHERE a.run_id=r.id
+                        AND COALESCE(json_extract(a.data_json,'$.reason'),'')<>''
+                        AND COALESCE(json_extract(a.data_json,'$.outcome'),'') NOT IN
+                            ('pass','fail','judged','pending_review','completed','budget_reached','budget_timeout',
+                             'excluded','selection_changed','unsupported','cancelled')
+                    ORDER BY (a.phase='pending') DESC, COALESCE(json_extract(a.data_json,'$.finishedAt'),0) DESC, a.rowid DESC
+                    LIMIT 1)
                 END
              FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
@@ -285,6 +295,7 @@ impl Store {
                     settled_count: r.get::<i64, _>(7) as u64,
                     observed_selections: observed_selections(r.get(8)),
                     open_cells: open_cells(r.get(9)),
+                    attention: run_attention(r.get(10)),
                 })
             })
             .collect()
@@ -838,6 +849,17 @@ fn observed_selections(rows: Option<&str>) -> Vec<ObservedRunSelection> {
 
 /// The cells a run still has work on, from distinct rows of
 /// `[configuration id, version id, 1 while an attempt of it runs]`.
+/// The attempt that parked a run, as the summary query lists it.
+fn run_attention(raw: Option<String>) -> Option<RunAttention> {
+    let value: serde_json::Value = serde_json::from_str(raw.as_deref()?).ok()?;
+    let pair = value.as_array()?;
+    let reason = pair.get(1)?.as_str()?.to_owned();
+    Some(RunAttention {
+        outcome: pair.first().and_then(|v| v.as_str()).map(str::to_owned),
+        reason,
+    })
+}
+
 fn open_cells(rows: Option<&str>) -> Vec<OpenRunCell> {
     rows.and_then(|rows| serde_json::from_str::<Vec<(String, String, i64)>>(rows).ok())
         .unwrap_or_default()
@@ -1398,6 +1420,21 @@ mod tests {
             again.version("d1-v").await.unwrap().content_hash,
             moved.content_hash
         );
+    }
+    #[test]
+    fn a_run_summary_names_the_attempt_that_parked_it() {
+        let parsed = run_attention(Some(
+            r#"["dispatch_uncertain","Remote acceptance cannot be established after restart"]"#
+                .into(),
+        ))
+        .unwrap();
+        assert_eq!(parsed.outcome.as_deref(), Some("dispatch_uncertain"));
+        assert!(parsed.reason.starts_with("Remote acceptance"));
+        // A pending quota wait carries no outcome yet.
+        let waiting = run_attention(Some(r#"[null,"the usage limit ran out"]"#.into())).unwrap();
+        assert_eq!(waiting.outcome, None);
+        assert_eq!(run_attention(None), None);
+        assert_eq!(run_attention(Some("[]".into())), None);
     }
     #[tokio::test]
     async fn catalog_seed_sets_insert_new_vendors_once() {

@@ -16,10 +16,18 @@ import {
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
-import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
+import {
+  benchmarkKeys,
+  useBenchmarkDefinitions,
+  useBenchmarkRuns,
+} from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEffort } from "../lib/benchmarkEffort";
-import { modelDisplayName, shortId } from "../lib/benchmarkLabels";
+import {
+  attentionLabel,
+  modelDisplayName,
+  shortId,
+} from "../lib/benchmarkLabels";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -48,6 +56,8 @@ export function BenchmarkRunDrawer({
     queryKey: [...benchmarkKeys, "run", runId],
     queryFn: () => benchmarkApi.getRun(runId),
   });
+  // The summary names what parked a run that waits for the operator.
+  const summary = useBenchmarkRuns().data?.find((entry) => entry.id === runId);
   const definitions = useBenchmarkDefinitions();
   const names = useMemo(
     () =>
@@ -195,6 +205,11 @@ export function BenchmarkRunDrawer({
                     {run.request.preview ? (
                       <span className="text-xs text-muted-foreground">
                         {t("runs.preview")}
+                      </span>
+                    ) : null}
+                    {run.state === "needs_attention" ? (
+                      <span className="text-xs text-muted-foreground">
+                        {attentionLabel(t, summary ?? { attention: null })}
                       </span>
                     ) : null}
                   </div>

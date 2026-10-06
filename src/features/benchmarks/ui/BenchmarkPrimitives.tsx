@@ -52,7 +52,12 @@ import {
   SelectValue,
 } from "@/shared/ui/select";
 import { explicitEffort } from "../lib/benchmarkEffort";
-import { shortId, stateLabel, stateTone } from "../lib/benchmarkLabels";
+import {
+  attentionLabel,
+  shortId,
+  stateLabel,
+  stateTone,
+} from "../lib/benchmarkLabels";
 import type { Configuration, RunSummary } from "../types";
 
 export interface Option {
@@ -526,19 +531,23 @@ export function AttentionMark({
           <IconBell className="size-3" aria-hidden />
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom">
-        <ul className="space-y-0.5 tabular-nums">
+      <TooltipContent side="bottom" className="max-w-80">
+        <ul className="space-y-1">
           {runs.map((run) => (
             <li key={run.id}>
-              {formatDate(run.createdAt, {
-                dateStyle: "short",
-                timeStyle: "short",
-              })}
-              {" · "}
-              {t("activity.progress", {
-                settled: run.settledCount,
-                total: run.attemptCount,
-              })}
+              <span className="tabular-nums text-muted-foreground">
+                {formatDate(run.createdAt, {
+                  dateStyle: "short",
+                  timeStyle: "short",
+                })}
+                {" · "}
+                {t("activity.progress", {
+                  settled: run.settledCount,
+                  total: run.attemptCount,
+                })}
+              </span>
+              <br />
+              {attentionLabel(t, run)}
             </li>
           ))}
         </ul>

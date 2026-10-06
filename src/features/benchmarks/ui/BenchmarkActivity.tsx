@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { Badge } from "@/shared/ui/badge";
-import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import { Spinner } from "@/shared/ui/spinner";
@@ -13,6 +12,7 @@ import {
   workingConfigurations,
 } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
+import { attentionLabel } from "../lib/benchmarkLabels";
 import { modelDisplayName } from "../lib/benchmarkLabels";
 import type { LeaderboardRow, RunSummary } from "../types";
 import { StateBadge } from "./BenchmarkPrimitives";
@@ -99,31 +99,28 @@ export function BenchmarkActivity({
           </button>
         );
       })}
-      {stalled.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2">
+      {stalled.map((run) => (
+        <button
+          key={run.id}
+          type="button"
+          className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-left text-sm transition-colors hover:bg-destructive/10"
+          onClick={() => onOpenRun(run.id)}
+        >
           <StateBadge state="needs_attention" />
-          {stalled.map((run) => (
-            <Button
-              key={run.id}
-              type="button"
-              variant="ghost"
-              size="xs"
-              className="tabular-nums"
-              onClick={() => onOpenRun(run.id)}
-            >
-              {formatDate(run.createdAt, {
-                dateStyle: "short",
-                timeStyle: "short",
-              })}
-              {" · "}
-              {t("activity.progress", {
-                settled: run.settledCount,
-                total: run.attemptCount,
-              })}
-            </Button>
-          ))}
-        </div>
-      ) : null}
+          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+            {formatDate(run.createdAt, {
+              dateStyle: "short",
+              timeStyle: "short",
+            })}
+            {" · "}
+            {t("activity.progress", {
+              settled: run.settledCount,
+              total: run.attemptCount,
+            })}
+          </span>
+          <span className="min-w-0 flex-1">{attentionLabel(t, run)}</span>
+        </button>
+      ))}
     </section>
   );
 }

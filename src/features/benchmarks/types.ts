@@ -139,6 +139,8 @@ export interface RunSummary {
   observedSelections: ObservedRunSelection[];
   /** The cells an unfinished run still has a non-terminal attempt in; absent on older summaries. */
   openCells?: OpenRunCell[];
+  /** Why a run waits for the operator: the attempt that stopped it. */
+  attention?: { outcome: string | null; reason: string } | null;
 }
 /** A requested configuration and case an unfinished run has yet to settle. */
 export interface OpenRunCell {

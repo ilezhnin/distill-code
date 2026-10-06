@@ -279,6 +279,13 @@
     "progressLabel": "Settled attempts",
     "preview": "Development preview"
   },
+  "attention": {
+    "restarted": "The app restarted while a test was in flight; this run cannot resume. Cancel it and run its tests again.",
+    "quota": "The usage limit ran out. Resume when it resets, or cancel.",
+    "signIn": "The provider's sign-in expired. Sign in, then resume.",
+    "failed": "A test stopped on an error: {{reason}}. Resume to try it again, or cancel.",
+    "unknown": "A test did not finish. Resume to try it again, or cancel."
+  },
   "activity": {
     "attention": "Needs attention: {{count}} runs",
     "title": "Runs in progress",

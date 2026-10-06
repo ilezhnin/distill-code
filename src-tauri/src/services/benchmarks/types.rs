@@ -250,6 +250,18 @@ pub struct RunSummary {
     /// once the run has finished.
     #[serde(default)]
     pub open_cells: Vec<OpenRunCell>,
+    /// Why a run waits for the operator: the newest attempt that stopped it,
+    /// with its outcome and the reason the runner recorded. A quota wait
+    /// still pending comes before anything that settled.
+    #[serde(default)]
+    pub attention: Option<RunAttention>,
+}
+/// What parked a run: the outcome and recorded reason of the attempt behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAttention {
+    pub outcome: Option<String>,
+    pub reason: String,
 }
 /// A requested configuration and case with an attempt not yet terminal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
