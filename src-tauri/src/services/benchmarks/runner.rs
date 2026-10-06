@@ -1257,6 +1257,14 @@ impl NativeBackend {
             .iter()
             .filter(|account| account.enabled && judge_provider_allowed(&account.provider_id))
         {
+            // A judge on an account whose limit is spent could only abstain
+            // and leave the panel incomplete.
+            if exhausted(&attempt.run_id, &account.id)
+                || crate::services::provider_account_status::usage_spent(&self.app, &account.id)
+                    .await
+            {
+                continue;
+            }
             // Listed once per run, like the candidates' own bridges.
             let listed = self
                 .run_inventory(&host, &attempt.run_id, &account.provider_id, &account.id)
@@ -1779,12 +1787,19 @@ impl ExecutionBackend for NativeBackend {
             let snapshot = crate::services::provider_accounts::snapshot(&self.app)
                 .map_err(|error| BenchmarkError::new("infrastructure_failure", error))?;
             let default = snapshot.defaults.get(provider);
-            let mut accounts: Vec<String> = snapshot
+            let mut accounts = Vec::new();
+            for account in snapshot
                 .accounts
                 .iter()
                 .filter(|account| account.provider_id == provider && account.enabled)
-                .map(|account| account.id.clone())
-                .collect();
+            {
+                // An account whose last status shows a spent limit has no room.
+                if !crate::services::provider_account_status::usage_spent(&self.app, &account.id)
+                    .await
+                {
+                    accounts.push(account.id.clone());
+                }
+            }
             accounts.sort_by_key(|account| Some(account) != default);
             Ok(accounts)
         })

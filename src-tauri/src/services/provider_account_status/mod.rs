@@ -188,6 +188,16 @@ pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
     }
 }
 
+/// Whether the last known status of `account_id` has a usage window spent
+/// now; false while nothing is known. Reads the cache only.
+pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str) -> bool {
+    let state = app.state::<ProviderAccountStatusState>();
+    let cache = state.cache.lock().await;
+    cache
+        .get(account_id)
+        .is_some_and(|status| exhausted(status, None, now_ms()).0)
+}
+
 pub async fn fetch_snapshot(
     app: &AppHandle,
     force: bool,
