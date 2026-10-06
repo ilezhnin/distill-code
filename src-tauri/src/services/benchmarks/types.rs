@@ -205,11 +205,6 @@ pub struct RunRequest {
     pub max_executions: u32,
     #[serde(default)]
     pub preview: bool,
-    /// Plan only the repetitions each case still lacks of `repetitions`,
-    /// counting the scored ones its cell already holds: a catch-up adds to
-    /// a measurement instead of starting it over.
-    #[serde(default)]
-    pub top_up: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -231,6 +226,11 @@ pub struct BenchmarkRun {
     pub revision: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When the run's window closed and its cells became final: complete
+    /// ones kept, the rest dropped. A run inside its window is open to
+    /// finishing; none is changed after this.
+    #[serde(default)]
+    pub baked_at: Option<i64>,
     pub request: RunRequest,
     pub attempts: Vec<Attempt>,
 }
@@ -242,6 +242,9 @@ pub struct RunSummary {
     pub revision: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// See [`BenchmarkRun::baked_at`].
+    #[serde(default)]
+    pub baked_at: Option<i64>,
     pub request: RunRequest,
     pub attempt_count: u64,
     pub settled_count: u64,

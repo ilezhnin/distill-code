@@ -208,7 +208,7 @@ impl Store {
     }
     pub async fn run(&self, id: &str) -> Result<BenchmarkRun> {
         let r = sqlx::query(
-            "SELECT state,revision,created_at,updated_at,request_json FROM run_plans WHERE id=?",
+            "SELECT state,revision,created_at,updated_at,request_json,baked_at FROM run_plans WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -222,6 +222,7 @@ impl Store {
             revision: r.get(1),
             created_at: r.get(2),
             updated_at: r.get(3),
+            baked_at: r.get(5),
             request: serde_json::from_str(r.get(4))?,
             attempts: rows
                 .into_iter()
@@ -274,10 +275,11 @@ impl Store {
                         AND COALESCE(json_extract(a.data_json,'$.reason'),'')<>''
                         AND COALESCE(json_extract(a.data_json,'$.outcome'),'') NOT IN
                             ('pass','fail','judged','pending_review','completed','budget_reached','budget_timeout',
-                             'excluded','selection_changed','unsupported','cancelled')
+                             'excluded','selection_changed','unsupported','cancelled','superseded')
                     ORDER BY (a.phase='pending') DESC, COALESCE(json_extract(a.data_json,'$.finishedAt'),0) DESC, a.rowid DESC
                     LIMIT 1)
-                END
+                END,
+                r.baked_at
              FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
         .fetch_all(&self.pool)
@@ -290,6 +292,7 @@ impl Store {
                     revision: r.get(2),
                     created_at: r.get(3),
                     updated_at: r.get(4),
+                    baked_at: r.get(11),
                     request: serde_json::from_str(r.get(5))?,
                     attempt_count: r.get::<i64, _>(6) as u64,
                     settled_count: r.get::<i64, _>(7) as u64,
@@ -637,6 +640,39 @@ impl Store {
         ledger.sort_by_key(|entry| (entry.finished_at, entry.attempt_id.clone()));
         Ok(ledger)
     }
+    /// Adds a pending attempt to a run that already exists.
+    pub async fn insert_attempt(&self, attempt: &Attempt) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,?,?,?)")
+            .bind(&attempt.id)
+            .bind(&attempt.run_id)
+            .bind(&attempt.version_id)
+            .bind(&attempt.configuration.id)
+            .bind(attempt.repetition as i64)
+            .bind(&attempt.phase)
+            .bind(serde_json::to_string(attempt)?)
+            .execute(&mut *tx)
+            .await?;
+        event(&mut tx, &attempt.run_id, "run_changed").await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    /// Saves an attempt that no longer counts and frees its repetition slot
+    /// in the run's plan, so a fresh attempt may take that repetition. The
+    /// row's slot moves to a value no plan uses; the attempt's own
+    /// repetition stays in its data.
+    pub async fn supersede_attempt(&self, attempt: &Attempt) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE attempts SET phase=?,data_json=?,repetition=-rowid WHERE id=?")
+            .bind(&attempt.phase)
+            .bind(serde_json::to_string(attempt)?)
+            .bind(&attempt.id)
+            .execute(&mut *tx)
+            .await?;
+        event(&mut tx, &attempt.run_id, "run_changed").await?;
+        tx.commit().await?;
+        Ok(())
+    }
     pub async fn save_attempt(&self, attempt: &Attempt) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let changed = sqlx::query("UPDATE attempts SET phase=?,data_json=? WHERE id=?")
@@ -663,11 +699,42 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+    /// Runs whose window closed at or before `cutoff` and whose cells are not
+    /// final yet, oldest first.
+    pub async fn unbaked_runs(&self, cutoff: i64) -> Result<Vec<BenchmarkRun>> {
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM run_plans WHERE baked_at IS NULL AND created_at<=? ORDER BY created_at,id",
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for id in ids {
+            out.push(self.run(&id).await?);
+        }
+        Ok(out)
+    }
+    pub async fn set_baked(&self, id: &str, at: i64) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE run_plans SET baked_at=?,revision=revision+1 WHERE id=?")
+            .bind(at)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        event(&mut tx, id, "run_changed").await?;
+        tx.commit().await?;
+        Ok(())
+    }
     pub async fn set_run_state(&self, id: &str, state: &str) -> Result<()> {
+        self.set_run_state_at(id, state, now()).await
+    }
+    /// Moves a run to `state` as of `at`: how a run baked after its window
+    /// closed is completed at the time its last cell settled.
+    pub async fn set_run_state_at(&self, id: &str, state: &str, at: i64) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE run_plans SET state=?,revision=revision+1,updated_at=? WHERE id=?")
             .bind(state)
-            .bind(now())
+            .bind(at)
             .bind(id)
             .execute(&mut *tx)
             .await?;

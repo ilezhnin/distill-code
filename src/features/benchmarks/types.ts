@@ -100,8 +100,6 @@ export interface Configuration {
   modelName?: string | null;
 }
 export interface RunRequest {
-  /** Plan only the repetitions each case still lacks; a catch-up tops a cell up. */
-  topUp?: boolean;
   requestKey: string;
   versionIds: string[];
   configurations: Configuration[];
@@ -125,6 +123,8 @@ export interface BenchmarkRun {
   revision: number;
   createdAt: number;
   updatedAt: number;
+  /** When the run's window closed and its cells became final; absent while it is open. */
+  bakedAt?: number | null;
   request: RunRequest;
   attempts: Attempt[];
 }
@@ -134,6 +134,8 @@ export interface RunSummary {
   revision: number;
   createdAt: number;
   updatedAt: number;
+  /** When the run's window closed and its cells became final; absent while it is open. */
+  bakedAt?: number | null;
   request: RunRequest;
   attemptCount: number;
   settledCount: number;

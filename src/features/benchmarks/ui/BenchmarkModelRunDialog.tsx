@@ -21,8 +21,14 @@ import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { modelDisplayName, providerVendor } from "../lib/benchmarkLabels";
-import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
+import {
+  plannedTurns,
+  REQUIRED_REPETITIONS,
+  runWindowCloses,
+  runWindowOpen,
+} from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   Attempt,
@@ -57,11 +63,14 @@ function sameConfiguration(a: Configuration, b: Configuration): boolean {
 }
 
 /**
- * Runs one leaderboard model on the current tests. The model is the one the
- * page shows; every test it can be measured on and has not passed yet starts
- * checked, so a run asks for what failed or is missing. The list is in
- * the order the run takes the tests, and each row follows its test from
- * queued to running, with its elapsed time, to passed or failed.
+ * Runs one leaderboard model on the current tests. A run is one sitting:
+ * every test the model can be measured on starts checked, three repetitions
+ * each. The model's newest run, while its 24-hour window is open, is
+ * finished instead of replaced: its unfinished tests run again from the
+ * start, its complete ones stand. A complete run inside its window warns
+ * that a new one measures everything again. The list is in the order the
+ * run takes the tests, and each row follows its test from queued to
+ * running, with its elapsed time, to passed or failed.
  */
 export function BenchmarkModelRunDialog({
   row,
@@ -72,11 +81,12 @@ export function BenchmarkModelRunDialog({
   /** The model's leaderboard row, as the leaderboard stands now. */
   row: LeaderboardRow;
   definitions: BenchmarkDefinition[];
-  /** A run measuring this model now, followed instead of starting another. */
+  /** The model's newest run inside its window: followed, finished or warned about. */
   runId: string | null;
   onClose: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   const client = useQueryClient();
   const configuration = row.configuration;
   const name = modelDisplayName(configuration);
@@ -135,8 +145,6 @@ export function BenchmarkModelRunDialog({
     versionIds: versions.map((version) => version.id),
     configurations: [candidate],
     repetitions: REQUIRED_REPETITIONS,
-    // A case measured once owes two repetitions, not three more.
-    topUp: true,
     timeoutSeconds: runTimeLimitSeconds(versions),
     maxExecutions: Math.max(
       1,
@@ -150,11 +158,14 @@ export function BenchmarkModelRunDialog({
     queryFn: () => benchmarkApi.getRun(runId as string),
     enabled: runId != null,
   });
-  // The run's own attempts, in the order it dispatches them.
+  // The run's own attempts, in the order it dispatches them; a repetition
+  // superseded by a restart is no attempt of the run.
   const mine = useMemo(
     () =>
-      (run.data?.attempts ?? []).filter((attempt) =>
-        sameConfiguration(attempt.configuration, configuration),
+      (run.data?.attempts ?? []).filter(
+        (attempt) =>
+          attempt.outcome !== "superseded" &&
+          sameConfiguration(attempt.configuration, configuration),
       ),
     [run.data, configuration],
   );
@@ -223,21 +234,6 @@ export function BenchmarkModelRunDialog({
       ]),
     );
   }, [standingAttempts.data]);
-  // A test the model already solved on every required repetition starts
-  // unchecked; a failed, unscored, incomplete or never measured one starts
-  // checked. Until the results arrive nothing starts.
-  const done = useMemo(
-    () =>
-      new Set(
-        [...standing]
-          .filter(
-            ([, cell]) =>
-              cell.of >= REQUIRED_REPETITIONS && cell.passes === cell.of,
-          )
-          .map(([versionId]) => versionId),
-      ),
-    [standing],
-  );
   const resolvingStanding =
     row.attemptIds.length > 0 && standingAttempts.isPending;
   const scores = useMemo(
@@ -252,16 +248,57 @@ export function BenchmarkModelRunDialog({
   );
   const runActive = run.data ? ACTIVE_RUN.has(run.data.state) : false;
   const stopping = run.data?.state === "cancelling";
+  // The dialog's clock: a running test's timer and the window check.
+  const clock = useNow(run.data != null);
+  // The run's cells: a test is finished once every planned repetition
+  // scored; one short of that starts over when the run goes on.
+  const cells = useMemo(() => {
+    const planned = run.data?.request.repetitions ?? REQUIRED_REPETITIONS;
+    const byVersion = new Map<string, number>();
+    const inRun = new Set<string>();
+    for (const attempt of mine) {
+      inRun.add(attempt.versionId);
+      if (scores.get(attempt.id) != null)
+        byVersion.set(
+          attempt.versionId,
+          (byVersion.get(attempt.versionId) ?? 0) + 1,
+        );
+    }
+    let left = 0;
+    let restart = 0;
+    for (const versionId of inRun) {
+      const scored = byVersion.get(versionId) ?? 0;
+      if (scored >= planned) continue;
+      left += 1;
+      if (scored > 0) restart += 1;
+    }
+    return { left, restart, measured: inRun.size - left };
+  }, [mine, scores, run.data]);
+  const windowOpen = run.data ? runWindowOpen(run.data, clock) : false;
+  // A stopped run inside its window with tests left is finished, not
+  // replaced; a complete one is replaced only knowingly.
+  const resumable =
+    windowOpen &&
+    !runActive &&
+    !stopping &&
+    mine.length > 0 &&
+    cells.left > 0 &&
+    !summaries.isPending;
+  const complete =
+    windowOpen &&
+    !runActive &&
+    !stopping &&
+    mine.length > 0 &&
+    cells.left === 0 &&
+    !summaries.isPending;
   // Following a run, the checks show the tests it holds.
   const inRunIds = useMemo(
     () => new Set(mine.map((attempt) => attempt.versionId)),
     [mine],
   );
-  const following = runActive && mine.length > 0;
+  const following = (runActive || resumable) && mine.length > 0;
   const isChecked = (versionId: string) =>
-    following
-      ? inRunIds.has(versionId)
-      : (overrides.get(versionId) ?? !done.has(versionId));
+    following ? inRunIds.has(versionId) : (overrides.get(versionId) ?? true);
   const chosen = eligible.filter((version) => isChecked(version.id));
   // A finished run measured its tests: the next one starts from what is
   // still missing, as the refreshed leaderboard row names it.
@@ -289,12 +326,8 @@ export function BenchmarkModelRunDialog({
   const settled = [...statuses.values()].filter(
     (status) => status?.kind === "scored" || status?.kind === "unscored",
   ).length;
-  const busyTest = ordered.find((version) => {
-    const kind = statuses.get(version.id)?.kind;
-    return kind === "running" || kind === "judging";
-  });
-  // A running test's clock ticks every second.
-  const now = useNow(busyTest != null);
+  // A running test's clock ticks every second; the window check reads it too.
+  const now = clock;
   // Keep the test that runs now in view as the run moves down the list.
   const rows = useRef(new Map<string, HTMLLIElement>());
   const runningId = ordered.find((version) =>
@@ -337,6 +370,19 @@ export function BenchmarkModelRunDialog({
     setError(null);
     try {
       await benchmarkApi.cancelRun(runId);
+      await client.invalidateQueries({ queryKey: benchmarkKeys });
+    } catch (failure) {
+      setError(benchmarkErrorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const resume = async () => {
+    if (!runId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await benchmarkApi.resumeRun(runId);
       await client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
@@ -387,9 +433,27 @@ export function BenchmarkModelRunDialog({
                   )}
             </BenchmarkAlert>
           ) : null}
+          {resumable && run.data ? (
+            <p className="text-sm text-muted-foreground">
+              {t("modelRun.finishHint", {
+                at: formatDate(run.data.updatedAt),
+                until: formatDate(runWindowCloses(run.data)),
+                left: cells.left,
+                restart: cells.restart,
+              })}
+            </p>
+          ) : null}
+          {complete && run.data ? (
+            <BenchmarkAlert>
+              {t("modelRun.measuredHint", {
+                at: formatDate(run.data.updatedAt),
+                measured: cells.measured,
+              })}
+            </BenchmarkAlert>
+          ) : null}
           <Label className="flex items-center gap-3 border-b border-border px-2 pb-2 text-sm font-medium">
             <Checkbox
-              disabled={runActive || eligible.length === 0}
+              disabled={following || eligible.length === 0}
               checked={
                 allChecked
                   ? eligible.length > 0
@@ -407,7 +471,7 @@ export function BenchmarkModelRunDialog({
             />
             <span className="flex-1">{t("modelRun.allTests")}</span>
             <span className="text-xs font-normal text-muted-foreground tabular-nums">
-              {runActive || inRun > 0
+              {following
                 ? t("modelRun.finished", { settled, total: inRun })
                 : t("modelRun.selected", {
                     selected: chosen.length,
@@ -434,7 +498,7 @@ export function BenchmarkModelRunDialog({
                 >
                   <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
                     <Checkbox
-                      disabled={runActive}
+                      disabled={following}
                       checked={isChecked(version.id)}
                       onCheckedChange={(checked) =>
                         setOverrides((previous) =>
@@ -484,6 +548,15 @@ export function BenchmarkModelRunDialog({
             >
               {stopping ? t("modelRun.stopping") : t("modelRun.stop")}
             </Button>
+          ) : resumable ? (
+            <Button
+              type="button"
+              variant="primary"
+              disabled={busy}
+              onClick={() => void resume()}
+            >
+              {t("modelRun.finish")}
+            </Button>
           ) : (
             <Button
               type="button"
@@ -493,7 +566,7 @@ export function BenchmarkModelRunDialog({
               }
               onClick={() => void start()}
             >
-              {t("modelRun.start")}
+              {t(complete ? "modelRun.startAgain" : "modelRun.start")}
             </Button>
           )}
         </DialogFooter>

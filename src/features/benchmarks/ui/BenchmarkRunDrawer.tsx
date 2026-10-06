@@ -28,6 +28,7 @@ import {
   modelDisplayName,
   shortId,
 } from "../lib/benchmarkLabels";
+import { runWindowCloses } from "../lib/benchmarkPlan";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -209,7 +210,14 @@ export function BenchmarkRunDrawer({
                     ) : null}
                     {run.state === "needs_attention" ? (
                       <span className="text-xs text-muted-foreground">
-                        {attentionLabel(t, summary ?? { attention: null })}
+                        {attentionLabel(
+                          t,
+                          summary ?? { attention: null },
+                          formatDate(runWindowCloses(run), {
+                            dateStyle: "short",
+                            timeStyle: "short",
+                          }),
+                        )}
                       </span>
                     ) : null}
                   </div>

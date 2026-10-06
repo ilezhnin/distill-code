@@ -282,6 +282,16 @@ export function configurationDetails(
 export function attentionLabel(
   t: Translate,
   run: { attention?: { outcome: string | null; reason: string } | null },
+  /** When the run's window closes, formatted; the label then names the deadline. */
+  until?: string,
+): string {
+  const cause = attentionCause(t, run);
+  return until ? `${cause} ${t("attention.window", { until })}` : cause;
+}
+
+function attentionCause(
+  t: Translate,
+  run: { attention?: { outcome: string | null; reason: string } | null },
 ): string {
   const attention = run.attention;
   if (!attention) return t("attention.unknown");

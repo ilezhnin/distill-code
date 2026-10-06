@@ -3009,6 +3009,7 @@ impl BenchmarkService {
     }
     async fn tick(self: &Arc<Self>) -> Result<()> {
         self.recover_interrupted().await?;
+        self.bake_closed_windows().await?;
         super::campaigns::tick(self).await?;
         // Attempts and judge panels in flight, each its own task; each settles
         // its own attempt and frees its slot, and the next fill takes the slot
@@ -3035,6 +3036,32 @@ impl BenchmarkService {
             }
         }
         dispatched
+    }
+    /// Bakes every run whose window closed, once nothing of it flies. A
+    /// rendering still before its judges keeps the run open until the
+    /// verdict, as its generation is paid for; no other cell starts.
+    async fn bake_closed_windows(&self) -> Result<()> {
+        let at = now();
+        for run in self
+            .store
+            .unbaked_runs(at - super::analysis::RUN_WINDOW_MS)
+            .await?
+        {
+            if self.flying(&run.id).await > 0 {
+                continue;
+            }
+            if run.attempts.iter().any(|a| a.phase == AWAITING_JUDGES) {
+                if !matches!(run.state.as_str(), "running" | "pausing" | "cancelling") {
+                    self.store.set_run_state(&run.id, "running").await?;
+                }
+                continue;
+            }
+            if !matches!(run.state.as_str(), "completed" | "cancelled") {
+                self.finish_measurement(&run).await?;
+            }
+            self.bake(&run, at).await?;
+        }
+        Ok(())
     }
     async fn recover_interrupted(&self) -> Result<()> {
         let interrupted = sqlx::query_scalar::<_, String>(
@@ -3089,7 +3116,7 @@ impl BenchmarkService {
                 None => {
                     a.phase = "terminal".into();
                     a.outcome = Some("dispatch_uncertain".into());
-                    a.reason=Some("Remote acceptance cannot be established after restart; the run continues with its other tests, and this one is run again from the model page".into());
+                    a.reason=Some("Remote acceptance cannot be established after restart; the run continues with its other tests, and this case starts over when the run resumes".into());
                     a.finished_at = Some(now());
                     self.store.save_attempt(&a).await?;
                     self.changed().await;
@@ -3427,9 +3454,13 @@ impl BenchmarkService {
     }
     /// The pending attempts ready to dispatch. A pending cell whose candidate
     /// authored the case settles as excluded here, without any model call. A
-    /// cell whose provider is held (see [`hold_provider_until`]) waits.
+    /// cell whose provider is held (see [`hold_provider_until`]) waits, and
+    /// nothing starts once the run's window closed.
     async fn dispatchable(&self, run: &BenchmarkRun) -> Result<Vec<(Attempt, BenchmarkVersion)>> {
         let mut ready = Vec::new();
+        if now() >= super::analysis::window_closes(run) {
+            return Ok(ready);
+        }
         let mut versions: std::collections::HashMap<String, BenchmarkVersion> =
             std::collections::HashMap::new();
         for pending in run.attempts.iter().filter(|a| {
@@ -4213,7 +4244,6 @@ mod tests {
             timeout_seconds: 10,
             max_executions: 2,
             preview: false,
-            top_up: false,
         }
     }
     #[tokio::test]
@@ -4419,67 +4449,177 @@ mod tests {
         );
         assert_eq!(recovered.attempts[1].phase, "pending");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
-        // One lost test never retires the rest: the run resumes with the
-        // tests it has not started, and the uncertain one stays as it is.
+        // One lost test never retires the rest: the run resumes, the
+        // uncertain repetition is superseded and measured anew as its own
+        // attempt, never under the lost key.
         s.control(&run.id, "resume").await.unwrap();
-        s.tick().await.unwrap();
-        let resumed = s.store.run(&run.id).await.unwrap();
-        assert_eq!(
-            resumed.attempts[0].outcome.as_deref(),
-            Some("dispatch_uncertain")
-        );
-        assert_ne!(resumed.attempts[1].phase, "pending");
-        assert!(backend.calls.load(Ordering::SeqCst) >= 1);
-    }
-    /// A catch-up that tops a cell up plans only the repetitions the case
-    /// still lacks of three: a case measured once owes two, a complete one
-    /// nothing, and the preview counts the same.
-    #[tokio::test]
-    async fn a_top_up_plans_only_the_missing_repetitions() {
-        let (_dir, s, _backend) = setup().await;
-        // One repetition measured and scored.
-        let mut first = request(&s).await;
-        first.repetitions = 1;
-        first.max_executions = 1;
-        let run = s.start_run(first.clone()).await.unwrap();
-        let mut done = run.attempts[0].clone();
-        done.phase = "terminal".into();
-        done.outcome = Some("pass".into());
-        done.started_at = Some(1);
-        done.finished_at = Some(now());
-        s.store.save_attempt(&done).await.unwrap();
-        s.store.set_run_state(&run.id, "completed").await.unwrap();
-        // Topping up to three owes two.
-        let mut top_up = first.clone();
-        top_up.request_key = "top-up".into();
-        top_up.repetitions = 3;
-        top_up.max_executions = 3;
-        top_up.top_up = true;
-        assert_eq!(s.preview_run(&top_up).await.unwrap().execution_count, 2);
-        let topped = s.start_run(top_up.clone()).await.unwrap();
-        assert_eq!(topped.attempts.len(), 2);
-        // Without topping up, the same request plans all three.
-        let mut whole = top_up.clone();
-        whole.request_key = "whole".into();
-        whole.top_up = false;
-        assert_eq!(s.preview_run(&whole).await.unwrap().execution_count, 3);
-        // Once the cell is complete, selecting the case again measures it
-        // afresh: all three, never a single nudge.
-        for attempt in &topped.attempts {
-            let mut done = attempt.clone();
-            done.phase = "terminal".into();
-            done.outcome = Some("fail".into());
-            done.started_at = Some(1);
-            done.finished_at = Some(now());
-            s.store.save_attempt(&done).await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
         }
-        s.store
-            .set_run_state(&topped.id, "completed")
+        let resumed = s.store.run(&run.id).await.unwrap();
+        assert_eq!(resumed.attempts[0].outcome.as_deref(), Some("superseded"));
+        assert_eq!(resumed.attempts.len(), 3);
+        assert!(resumed.attempts[1..]
+            .iter()
+            .all(|a| a.phase == "terminal" && super::super::analysis::score(a).is_some()));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    }
+    /// A second case for a run, published from the next seed.
+    async fn second_case(s: &BenchmarkService) -> String {
+        let d = s
+            .store
+            .save_draft(None, None, seed_definitions().remove(1))
             .await
             .unwrap();
-        let mut again = top_up.clone();
-        again.request_key = "again".into();
-        assert_eq!(s.preview_run(&again).await.unwrap().execution_count, 3);
+        s.store.publish(&d.id, 1).await.unwrap().id
+    }
+    fn settle(attempt: &Attempt, outcome: &str) -> Attempt {
+        let mut done = attempt.clone();
+        done.phase = "terminal".into();
+        done.outcome = Some(outcome.into());
+        done.started_at = Some(1);
+        done.finished_at = Some(now());
+        done
+    }
+    /// A run resumed inside its window measures an unfinished case from the
+    /// start: a repetition scored before the stop is superseded and planned
+    /// anew beside the rest, so the cell is measured in one sitting. A case
+    /// complete when the run stopped, passed or failed, stands.
+    #[tokio::test]
+    async fn a_resumed_run_starts_its_unfinished_cases_over() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        let second = second_case(&s).await;
+        req.version_ids.push(second.clone());
+        req.max_executions = 4;
+        let run = s.start_run(req).await.unwrap();
+        // The first case failed on both repetitions; the second was measured once.
+        for attempt in &run.attempts {
+            if attempt.version_id == first {
+                s.store
+                    .save_attempt(&settle(attempt, "fail"))
+                    .await
+                    .unwrap();
+            } else if attempt.repetition == 0 {
+                s.store
+                    .save_attempt(&settle(attempt, "pass"))
+                    .await
+                    .unwrap();
+            }
+        }
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        let resumed = s.store.run(&run.id).await.unwrap();
+        let of = |run: &BenchmarkRun, version: &str| -> Vec<Attempt> {
+            run.attempts
+                .iter()
+                .filter(|a| a.version_id == version)
+                .cloned()
+                .collect()
+        };
+        // The failed cell is a result, not a gap: nothing of it is planned again.
+        assert!(of(&resumed, &first)
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("fail")));
+        // The unfinished cell starts over: its scored repetition is superseded
+        // and both repetitions are queued.
+        let unfinished = of(&resumed, &second);
+        assert_eq!(unfinished.len(), 3);
+        assert_eq!(
+            unfinished
+                .iter()
+                .filter(|a| a.outcome.as_deref() == Some("superseded"))
+                .count(),
+            1
+        );
+        let mut queued: Vec<u32> = unfinished
+            .iter()
+            .filter(|a| a.phase == "pending")
+            .map(|a| a.repetition)
+            .collect();
+        queued.sort_unstable();
+        assert_eq!(queued, vec![0, 1]);
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            of(&done, &second)
+                .iter()
+                .filter(|a| super::super::analysis::score(a).is_some())
+                .count(),
+            2
+        );
+    }
+    /// Once a run's window closed it is final: nothing resumes it, and the
+    /// runner bakes it, keeping the cells measured whole and dropping the
+    /// rest, so a case half measured never reads as measured at all.
+    #[tokio::test]
+    async fn a_run_past_its_window_is_baked() {
+        let (_dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        let second = second_case(&s).await;
+        req.version_ids.push(second.clone());
+        req.repetitions = 3;
+        req.max_executions = 6;
+        let run = s.start_run(req).await.unwrap();
+        // The first case is complete; the second holds one of three.
+        for attempt in &run.attempts {
+            if attempt.version_id == first || attempt.repetition == 0 {
+                s.store
+                    .save_attempt(&settle(attempt, "pass"))
+                    .await
+                    .unwrap();
+            }
+        }
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE run_plans SET created_at=? WHERE id=?")
+            .bind(now() - super::super::analysis::RUN_WINDOW_MS - 60_000)
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        let refused = s.control(&run.id, "resume").await.unwrap_err();
+        assert_eq!(refused.code, "validation");
+        assert!(
+            refused.message.contains("window closed"),
+            "{}",
+            refused.message
+        );
+        s.tick().await.unwrap();
+        let baked = s.store.run(&run.id).await.unwrap();
+        assert!(baked.baked_at.is_some());
+        assert_eq!(baked.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        for attempt in &baked.attempts {
+            let expected = if attempt.version_id == first {
+                "pass"
+            } else {
+                "superseded"
+            };
+            assert_eq!(attempt.outcome.as_deref(), Some(expected), "{}", attempt.id);
+            assert_eq!(attempt.phase, "terminal");
+        }
+        // The ledger holds the complete case alone.
+        let data = s.query_data().await.unwrap();
+        let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].scored, 1);
+        assert_eq!(report.rows[0].complete, 1);
+        assert_eq!(report.rows[0].planned, 2);
+        // Baked once: the next tick leaves it alone.
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().baked_at, baked.baked_at);
     }
     #[tokio::test]
     async fn pause_and_cancel_never_send_queued_work() {

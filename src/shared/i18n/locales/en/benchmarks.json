@@ -268,7 +268,11 @@
     "judging": "Judges",
     "start": "Start",
     "stop": "Stop",
-    "stopping": "Stopping…"
+    "stopping": "Stopping…",
+    "finish": "Finish run",
+    "startAgain": "Measure again",
+    "finishHint": "Stopped {{at}}. Finish before {{until}}: {{left}} tests left, {{restart}} of them start over from the first repetition.",
+    "measuredHint": "Measured in full {{at}}: {{measured}} tests, every repetition. A new run measures all of them again at full cost; this measurement stays in history."
   },
   "runs": {
     "title": "Runs and history",
@@ -280,11 +284,12 @@
     "preview": "Development preview"
   },
   "attention": {
-    "restarted": "The app restarted while a test was in flight. Resume: the run goes on with its other tests, and the lost one stays a gap to run again from its model's page.",
+    "restarted": "The app restarted while a test was in flight. Resume: the run goes on with its other tests, and the lost one starts over.",
     "quota": "The usage limit ran out. Resume when it resets, or cancel.",
     "signIn": "The provider's sign-in expired. Sign in, then resume.",
     "failed": "A test stopped on an error: {{reason}}. Resume to try it again, or cancel.",
-    "unknown": "A test did not finish. Resume to try it again, or cancel."
+    "unknown": "A test did not finish. Resume to try it again, or cancel.",
+    "window": "Finish before {{until}}; after that the run is recorded as it stands."
   },
   "activity": {
     "attention": "Needs attention: {{count}} runs",
@@ -528,7 +533,8 @@
     "unknown": "Unknown",
     "judged": "Judged",
     "rendered": "Rendered",
-    "abstained": "Abstained"
+    "abstained": "Abstained",
+    "superseded": "Not counted"
   },
   "tokens": "{{value}} tokens",
   "fastMode": "fast",

@@ -94,6 +94,9 @@ export function taskCells(
 ): TaskCell[] {
   const byCase = new Map<string, CellAttempt[]>();
   for (const attempt of attempts) {
+    // A repetition superseded by a restart, or dropped when the run's
+    // window closed, is no attempt of the cell.
+    if (attempt.outcome === "superseded") continue;
     const list = byCase.get(attempt.versionId) ?? [];
     list.push(attempt);
     byCase.set(attempt.versionId, list);

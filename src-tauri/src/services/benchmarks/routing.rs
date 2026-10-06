@@ -424,15 +424,8 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             by_case.entry(&a.version_id).or_default().push(a);
         }
         let selected: BTreeSet<_> = by_case
-            .iter()
-            .flat_map(|(version, list)| {
-                let required = versions
-                    .get(version)
-                    .map_or(data.required_repetitions.max(1), |v| {
-                        super::analysis::required_repetitions(data, v)
-                    });
-                super::analysis::latest_cell_attempts(list, &runs, Some(q.cutoff_at), required)
-            })
+            .values()
+            .flat_map(|list| super::analysis::latest_cell_attempts(list, &runs, Some(q.cutoff_at)))
             .map(|a| &a.id)
             .collect();
         let mut samples = Vec::new();
@@ -675,7 +668,6 @@ mod tests {
             timeout_seconds: 120,
             max_executions: 20,
             preview: false,
-            top_up: false,
         }
     }
     fn matrix() -> (QueryData, RoutingEvidenceQuery) {
@@ -713,6 +705,7 @@ mod tests {
                         revision: 1,
                         created_at: 900,
                         updated_at: 1000,
+                        baked_at: None,
                         request: run_request,
                         attempts: vec![],
                     });

@@ -14,6 +14,26 @@ export const JUDGE_CALLS = 3;
 export const REQUIRED_REPETITIONS = 3;
 
 /**
+ * How long a run stays open after it started (analysis::RUN_WINDOW_MS): the
+ * window in which its unfinished cases may still be measured. Once it closes
+ * the run is final, complete cells kept and the rest dropped.
+ */
+export const RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** When a run's window closes. */
+export function runWindowCloses(run: { createdAt: number }): number {
+  return run.createdAt + RUN_WINDOW_MS;
+}
+
+/** Whether a run may still be finished: its window is open and it is not baked. */
+export function runWindowOpen(
+  run: { createdAt: number; bakedAt?: number | null },
+  now: number,
+): boolean {
+  return run.bakedAt == null && now < runWindowCloses(run);
+}
+
+/**
  * Every turn one repetition of `versions` takes on `configuration`: each
  * workflow step plus the judge reservation of a judged case. A candidate owes
  * nothing on a case it wrote.

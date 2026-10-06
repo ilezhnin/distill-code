@@ -89,6 +89,29 @@ export function rowActivity(
   return { open, running, runId: newest?.id ?? null };
 }
 
+/**
+ * The row's newest run: the sitting its standing comes from, followed,
+ * finished or warned about when the model is run again.
+ */
+export function rowNewestRun(
+  row: LeaderboardRow,
+  runs: RunSummary[],
+): RunSummary | null {
+  return runs
+    .filter(
+      (run) =>
+        !run.request.preview &&
+        run.request.configurations.some((entry) =>
+          requests(entry, row.configuration, run),
+        ),
+    )
+    .reduce<RunSummary | null>(
+      (newest, run) =>
+        !newest || run.createdAt > newest.createdAt ? run : newest,
+      null,
+    );
+}
+
 /** The stalled runs that measure this row, newest first: its own warnings. */
 export function rowAttention(
   row: LeaderboardRow,

@@ -12,8 +12,8 @@ import {
   workingConfigurations,
 } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
-import { attentionLabel } from "../lib/benchmarkLabels";
-import { modelDisplayName } from "../lib/benchmarkLabels";
+import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
+import { runWindowCloses } from "../lib/benchmarkPlan";
 import type { LeaderboardRow, RunSummary } from "../types";
 import { StateBadge } from "./BenchmarkPrimitives";
 
@@ -118,7 +118,16 @@ export function BenchmarkActivity({
               total: run.attemptCount,
             })}
           </span>
-          <span className="min-w-0 flex-1">{attentionLabel(t, run)}</span>
+          <span className="min-w-0 flex-1">
+            {attentionLabel(
+              t,
+              run,
+              formatDate(runWindowCloses(run), {
+                dateStyle: "short",
+                timeStyle: "short",
+              }),
+            )}
+          </span>
         </button>
       ))}
     </section>

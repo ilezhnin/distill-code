@@ -61,28 +61,64 @@ fn owed(version: &BenchmarkVersion, configuration: &Configuration) -> bool {
     !routing::authored_by_candidate(&version.manifest, configuration)
 }
 
-/// Executions a plan owes: every owed cell's turns and judge reservation, per
-/// repetition it still lacks.
-fn owed_executions(
-    versions: &[BenchmarkVersion],
-    request: &RunRequest,
-    repetitions: &dyn Fn(&BenchmarkVersion, &Configuration) -> u32,
-) -> usize {
+/// Executions a plan owes: every owed cell's turns and judge reservation, per repetition.
+fn owed_executions(versions: &[BenchmarkVersion], request: &RunRequest) -> usize {
     let mut turns = 0usize;
     for version in versions {
         for configuration in &request.configurations {
             if owed(version, configuration) {
-                turns = turns.saturating_add(
-                    execution_count(&version.manifest).saturating_mul(repetitions(
-                        version,
-                        configuration,
-                    )
-                        as usize),
-                );
+                turns = turns.saturating_add(execution_count(&version.manifest));
             }
         }
     }
-    turns
+    turns.saturating_mul(request.repetitions as usize)
+}
+
+/// A repetition of a case not yet started, as a run plans it.
+fn pending_attempt(
+    run_id: &str,
+    version_id: &str,
+    configuration: &Configuration,
+    repetition: u32,
+) -> Attempt {
+    Attempt {
+        id: uuid::Uuid::new_v4().to_string(),
+        run_id: run_id.to_owned(),
+        version_id: version_id.to_owned(),
+        configuration: configuration.clone(),
+        repetition,
+        phase: "pending".into(),
+        outcome: None,
+        reason: None,
+        wait_until: None,
+        session_id: None,
+        host_run_id: None,
+        observed: None,
+        started_at: None,
+        finished_at: None,
+        duration_ms: None,
+        output: None,
+        evidence_hash: None,
+        usage: TokenUsage::default(),
+        evaluations: Vec::new(),
+        event_cursor: 0,
+        workflow_steps: Vec::new(),
+        resolved_model: None,
+    }
+}
+
+/// A cell the run never measured and never will: no repetition to restart or drop.
+fn never_measured(attempts: &[Attempt]) -> bool {
+    attempts
+        .iter()
+        .all(|a| matches!(a.outcome.as_deref(), Some("excluded" | "unsupported")))
+}
+
+fn window_closed_message(run: &BenchmarkRun) -> String {
+    let closed = chrono::DateTime::from_timestamp_millis(analysis::window_closes(run))
+        .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_default();
+    format!("The run's 24-hour window closed at {closed}; its results are final. Start a new run.")
 }
 
 fn matrix_order_seed(request_key: &str) -> String {
@@ -237,32 +273,7 @@ impl BenchmarkService {
         for id in &request.version_ids {
             versions.push(self.store.version(id).await?);
         }
-        let repetitions = self.owed_repetitions(request).await?;
-        Ok(owed_executions(&versions, request, &*repetitions))
-    }
-    /// The repetitions a plan owes each cell: all of them, or, topping up,
-    /// those the cell's newest scored repetitions do not cover. A case the
-    /// operator selected although its cell is complete is measured afresh,
-    /// every repetition again, so a failed cell is retried whole rather
-    /// than nudged by one new pass.
-    async fn owed_repetitions(
-        &self,
-        request: &RunRequest,
-    ) -> Result<Box<dyn Fn(&BenchmarkVersion, &Configuration) -> u32 + Send + Sync>> {
-        if !request.top_up {
-            let all = request.repetitions;
-            return Ok(Box::new(move |_, _| all));
-        }
-        let data = self.query_data().await?;
-        let planned = request.repetitions;
-        Ok(Box::new(move |version, configuration| {
-            let have = analysis::scored_repetitions(&data, configuration, version);
-            if have >= planned {
-                planned
-            } else {
-                planned - have
-            }
-        }))
+        Ok(owed_executions(&versions, request))
     }
     pub async fn preview_run(&self, request: &RunRequest) -> Result<RunPreview> {
         let mut issues = Vec::new();
@@ -270,8 +281,7 @@ impl BenchmarkService {
         for id in &request.version_ids {
             versions.push(self.store.version(id).await?);
         }
-        let repetitions = self.owed_repetitions(request).await?;
-        let count = owed_executions(&versions, request, &*repetitions);
+        let count = owed_executions(&versions, request);
         if !versions.is_empty()
             && request
                 .configurations
@@ -448,19 +458,10 @@ impl BenchmarkService {
                     .map(|c| (v.id.as_str(), c.id.as_str()))
             })
             .collect();
-        // Topping up, a cell keeps only the repetitions it still lacks.
-        let repetitions = self.owed_repetitions(&request).await?;
-        let owed_of = |version: &str, configuration: &Configuration| {
-            versions
-                .iter()
-                .find(|v| v.id == version)
-                .map_or(0, |v| repetitions(v, configuration))
-        };
         let cells: Vec<_> = randomized_matrix(&request)?
             .into_iter()
-            .filter(|(version, configuration, repetition)| {
+            .filter(|(version, configuration, _)| {
                 !authored.contains(&(version.as_str(), configuration.id.as_str()))
-                    && *repetition < owed_of(version, configuration)
             })
             .collect();
         let mut manifest = serde_json::to_value(&request)?;
@@ -500,30 +501,7 @@ impl BenchmarkService {
             routing::persist_snapshot(&mut tx, &routing::snapshot(&id, version, &request)).await?;
         }
         for (version, config, repetition) in cells {
-            let attempt = Attempt {
-                id: uuid::Uuid::new_v4().to_string(),
-                run_id: id.clone(),
-                version_id: version.clone(),
-                configuration: config.clone(),
-                repetition,
-                phase: "pending".into(),
-                outcome: None,
-                reason: None,
-                wait_until: None,
-                session_id: None,
-                host_run_id: None,
-                observed: None,
-                started_at: None,
-                finished_at: None,
-                duration_ms: None,
-                output: None,
-                evidence_hash: None,
-                usage: TokenUsage::default(),
-                evaluations: Vec::new(),
-                event_cursor: 0,
-                workflow_steps: Vec::new(),
-                resolved_model: None,
-            };
+            let attempt = pending_attempt(&id, &version, &config, repetition);
             sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,?,'pending',?)").bind(&attempt.id).bind(&id).bind(&version).bind(&config.id).bind(repetition as i64).bind(serde_json::to_string(&attempt)?).execute(&mut *tx).await?;
         }
         event(&mut tx, &id, "run_created").await?;
@@ -532,18 +510,34 @@ impl BenchmarkService {
         self.changed().await;
         self.store.run(&id).await
     }
-    /// A run resumes with the tests it has not started. A test the app
-    /// restarted under stays settled as uncertain: it is never dispatched
-    /// again under its own key, so nothing is paid twice, and it reads as a
-    /// gap the model page runs again as a new attempt. One lost test never
-    /// retires the rest of a run.
+    /// A run resumes with the cases it has not finished, inside its window.
+    /// A case short of its repetitions starts over, every repetition anew, so
+    /// a cell never spans two sittings; a complete case, passed or failed,
+    /// stands. A test the app restarted under was settled as uncertain and
+    /// is measured again as a new attempt, never under its own key. Once the
+    /// window closed the run is final and nothing resumes it.
     pub async fn control(&self, id: &str, action: &str) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
         let next = match (action, run.state.as_str()) {
             ("pause", "running") => "pausing",
             ("pause", "pausing" | "paused") => return Ok(run),
-            ("resume", "paused" | "needs_attention") => "running",
             ("resume", "running") => return Ok(run),
+            ("resume", "paused" | "needs_attention" | "completed" | "cancelled") => {
+                if run.baked_at.is_some() || now() >= analysis::window_closes(&run) {
+                    return Err(BenchmarkError::new(
+                        "validation",
+                        window_closed_message(&run),
+                    ));
+                }
+                let unfinished = self.restart_unfinished_cells(&run).await?;
+                if !unfinished && matches!(run.state.as_str(), "completed" | "cancelled") {
+                    return Err(BenchmarkError::new(
+                        "validation",
+                        "Every case of this run is complete",
+                    ));
+                }
+                "running"
+            }
             ("cancel", "running" | "pausing" | "paused" | "needs_attention") => "cancelling",
             ("cancel", "cancelled" | "cancelling") => return Ok(run),
             _ => {
@@ -564,6 +558,97 @@ impl BenchmarkService {
         self.wake.notify_one();
         self.changed().await;
         self.store.run(id).await
+    }
+    /// Puts every unfinished case of a run back to its start: the settled
+    /// attempts of a cell short of the run's repetitions are superseded and
+    /// each gets a fresh pending repetition, so the case is measured whole
+    /// in one sitting rather than topped up across days. Pending repetitions
+    /// stay queued. Returns whether anything is left to run.
+    async fn restart_unfinished_cells(&self, run: &BenchmarkRun) -> Result<bool> {
+        let planned = run.request.repetitions.max(1);
+        let mut unfinished = false;
+        for (_, attempts) in analysis::run_cells(run) {
+            let measured = attempts.iter().filter(|a| analysis::is_measured(a)).count() as u32;
+            if measured >= planned || never_measured(&attempts) {
+                continue;
+            }
+            unfinished = true;
+            for attempt in attempts {
+                // A queued repetition runs as planned; a rendering awaiting
+                // its judges or a verdict keeps its paid generation.
+                if attempt.phase != "terminal"
+                    || (analysis::is_measured(&attempt) && analysis::score(&attempt).is_none())
+                    || matches!(attempt.outcome.as_deref(), Some("excluded" | "unsupported"))
+                {
+                    continue;
+                }
+                let fresh = pending_attempt(
+                    &run.id,
+                    &attempt.version_id,
+                    &attempt.configuration,
+                    attempt.repetition,
+                );
+                let mut superseded = attempt;
+                superseded.reason = Some(format!(
+                    "Measured again from the start on resume: {measured} of {planned} repetitions were measured when the run stopped (this one: {})",
+                    superseded.outcome.as_deref().unwrap_or("unfinished")
+                ));
+                superseded.outcome = Some(analysis::SUPERSEDED.into());
+                self.store.supersede_attempt(&superseded).await?;
+                self.store.insert_attempt(&fresh).await?;
+            }
+        }
+        Ok(unfinished)
+    }
+    /// Bakes a run whose window closed: its complete cells stand, every other
+    /// attempt is superseded, so the run holds only what was measured whole
+    /// in its sitting. Completeness is the protocol's, not the plan's, so a
+    /// run that planned fewer repetitions keeps nothing. A run still open is
+    /// completed as it stands.
+    pub(super) async fn bake(&self, run: &BenchmarkRun, at: i64) -> Result<()> {
+        let required = run.request.repetitions.max(analysis::REQUIRED_REPETITIONS);
+        for (_, attempts) in analysis::run_cells(run) {
+            let scored = attempts
+                .iter()
+                .filter(|a| analysis::score(a).is_some())
+                .count() as u32;
+            if scored >= required || never_measured(&attempts) {
+                continue;
+            }
+            for attempt in attempts {
+                if matches!(attempt.outcome.as_deref(), Some("excluded" | "unsupported")) {
+                    continue;
+                }
+                let mut dropped = attempt;
+                dropped.reason = Some(format!(
+                    "Dropped when the run's window closed: {scored} of {required} repetitions were scored (this one: {})",
+                    dropped.outcome.as_deref().unwrap_or("never ran")
+                ));
+                dropped.outcome = Some(analysis::SUPERSEDED.into());
+                dropped.phase = "terminal".into();
+                if dropped.finished_at.is_none() {
+                    dropped.finished_at = Some(at);
+                }
+                self.store.supersede_attempt(&dropped).await?;
+            }
+        }
+        if !matches!(run.state.as_str(), "completed" | "cancelled") {
+            // Completed when its last counted cell settled, not when the
+            // window closed: the point keeps the date of its measurement.
+            let settled = run
+                .attempts
+                .iter()
+                .filter(|a| analysis::score(a).is_some())
+                .filter_map(|a| a.finished_at)
+                .max()
+                .unwrap_or(run.updated_at);
+            self.store
+                .set_run_state_at(&run.id, "completed", settled)
+                .await?;
+        }
+        self.store.set_baked(&run.id, at).await?;
+        self.changed().await;
+        Ok(())
     }
     pub async fn create_baseline(
         &self,

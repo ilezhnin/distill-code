@@ -33,6 +33,7 @@ vi.mock("../api/benchmarks", () => ({
     getRun: vi.fn(),
     listAttempts: vi.fn(),
     cancelRun: vi.fn(),
+    resumeRun: vi.fn(),
   },
 }));
 
@@ -228,10 +229,8 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
       "version-5",
       "version-8",
     ],
-    // Every measurement is three repetitions; a case counts only when all
-    // pass, and a catch-up adds only the repetitions a case still lacks.
+    // Every measurement is three repetitions; a case counts only when all pass.
     repetitions: 3,
-    topUp: true,
     // Four hours from Settings, not a field in the dialog.
     timeoutSeconds: 14_400,
     // Four exact tests at one turn, the judged one at one plus three judges,
@@ -438,7 +437,7 @@ it("lists the tests in the order the run takes them and times the one running no
   expect(row("Alpha").getByText("Queued")).toBeInTheDocument();
 });
 
-it("leaves the tests the model solved on every repetition unchecked and checks the rest, showing each standing", async () => {
+it("checks every test whatever its standing, a run being one sitting, and shows each standing", async () => {
   const user = userEvent.setup();
   // Alpha solved three times; Charlie failed once; Delta passed once.
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
@@ -456,11 +455,10 @@ it("leaves the tests the model solved on every repetition unchecked and checks t
   });
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
-  // The solved test is done; the failed one and the one measured once run
-  // again with the unmeasured, topping their cells up.
-  expect(await screen.findByText("5 of 6 selected")).toBeInTheDocument();
-  expect(row("Alpha").getByRole("checkbox")).not.toBeChecked();
-  for (const name of ["Bravo", "Charlie", "Delta", "Echo", "Hotel"])
+  // A new run measures every test again, the solved one included: only a
+  // whole sitting can stand on the board.
+  expect(await screen.findByText("6 of 6 selected")).toBeInTheDocument();
+  for (const name of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Hotel"])
     expect(row(name).getByRole("checkbox")).toBeChecked();
   expect(
     await row("Alpha").findByRole("img", {
@@ -477,10 +475,104 @@ it("leaves the tests the model solved on every repetition unchecked and checks t
     attemptIds: ["s-1a", "s-1b", "s-1c", "s-3", "s-4"],
     limit: 100,
   });
-  // Measuring a passed test again stays one click away.
+  // Leaving a test out stays one click away, and so does taking it back.
   await user.click(row("Alpha").getByRole("checkbox"));
-  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
-  await user.click(row("Alpha").getByRole("checkbox"));
+  expect(screen.getByText("5 of 6 selected")).toBeInTheDocument();
   await user.click(screen.getByText("All tests"));
+  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
+});
+
+/** The model's newest run, stopped an hour into its window. */
+function stoppedRun(
+  state: string,
+  entries: {
+    versionId: string;
+    outcome: string | null;
+    score: number | null;
+  }[],
+): { run: BenchmarkRun; summaries: AttemptSummary[] } {
+  const summaries = entries.map((entry) => ({
+    ...summary(
+      entry.versionId,
+      entry.outcome ? "terminal" : "pending",
+      entry.outcome,
+      entry.score,
+    ),
+  }));
+  return {
+    run: {
+      ...run,
+      id: "run-2",
+      state,
+      createdAt: Date.now() - 3_600_000,
+      updatedAt: Date.now() - 600_000,
+      request: { ...run.request, repetitions: 1 },
+      attempts: summaries.map((entry) => ({
+        ...attempt,
+        id: entry.id,
+        runId: "run-2",
+        versionId: entry.versionId,
+        phase: entry.phase,
+        outcome: entry.outcome,
+      })),
+    },
+    summaries,
+  };
+}
+
+it("finishes a stopped run inside its window instead of starting another", async () => {
+  const user = userEvent.setup();
+  // Alpha passed, Charlie failed, Echo and Hotel never started.
+  const stopped = stoppedRun("needs_attention", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-3", outcome: "fail", score: 0 },
+    { versionId: "version-5", outcome: null, score: null },
+    { versionId: "version-8", outcome: null, score: null },
+  ]);
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(stopped.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(stopped.summaries);
+  vi.mocked(benchmarkApi.resumeRun).mockResolvedValue({
+    ...stopped.run,
+    state: "running",
+  });
+  show({ runId: "run-2" });
+  const finish = await screen.findByRole("button", { name: "Finish run" });
+  // The hint names what is left, what starts over and the deadline.
+  expect(
+    screen.getByText(/2 tests left, 0 of them start over/),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/Finish before/)).toBeInTheDocument();
+  // The checks show the run's tests and cannot change it.
+  const row = (name: string) =>
+    within(screen.getByText(name).closest("label") as HTMLElement);
+  expect(row("Alpha").getByRole("checkbox")).toBeChecked();
+  expect(row("Alpha").getByRole("checkbox")).toBeDisabled();
+  expect(row("Delta").getByRole("checkbox")).not.toBeChecked();
+  expect(
+    screen.queryByRole("button", { name: "Start" }),
+  ).not.toBeInTheDocument();
+  await user.click(finish);
+  expect(benchmarkApi.resumeRun).toHaveBeenCalledWith("run-2");
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
+it("warns before measuring a model again whose run inside its window is complete", async () => {
+  const complete = stoppedRun("completed", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-3", outcome: "fail", score: 0 },
+  ]);
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(complete.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(complete.summaries);
+  show({ runId: "run-2" });
+  expect(
+    await screen.findByRole("button", { name: "Measure again" }),
+  ).toBeEnabled();
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    /Measured in full .*: 2 tests, every repetition\. A new run measures all of them again/,
+  );
+  expect(
+    screen.queryByRole("button", { name: "Finish run" }),
+  ).not.toBeInTheDocument();
+  // Every test is checked for the new sitting.
   expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
 });

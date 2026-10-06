@@ -201,6 +201,7 @@ mod tests {
             revision: 1,
             created_at,
             updated_at: created_at + 1,
+            baked_at: None,
             request,
             attempts: Vec::new(),
         });

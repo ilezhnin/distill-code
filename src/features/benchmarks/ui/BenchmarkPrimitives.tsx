@@ -58,6 +58,7 @@ import {
   stateLabel,
   stateTone,
 } from "../lib/benchmarkLabels";
+import { runWindowCloses } from "../lib/benchmarkPlan";
 import type { Configuration, RunSummary } from "../types";
 
 export interface Option {
@@ -547,7 +548,14 @@ export function AttentionMark({
                 })}
               </span>
               <br />
-              {attentionLabel(t, run)}
+              {attentionLabel(
+                t,
+                run,
+                formatDate(runWindowCloses(run), {
+                  dateStyle: "short",
+                  timeStyle: "short",
+                }),
+              )}
             </li>
           ))}
         </ul>

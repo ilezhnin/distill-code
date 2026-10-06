@@ -196,12 +196,7 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
                         ) == *key
                 })
                 .collect();
-            let selected = super::analysis::latest_cell_attempts(
-                &list,
-                &runs,
-                None,
-                super::analysis::required_repetitions(data, version),
-            );
+            let selected = super::analysis::latest_cell_attempts(&list, &runs, None);
             let excluded = super::routing::authored_by_candidate(&version.manifest, configuration);
             let mut outcomes = Vec::new();
             for a in &selected {
@@ -740,7 +735,6 @@ mod tests {
                 timeout_seconds: 10,
                 max_executions: 6,
                 preview: false,
-                top_up: false,
             })
             .await
             .unwrap();

@@ -24,7 +24,7 @@ import {
   rankRows,
   rowKey,
 } from "../lib/benchmarkBoards";
-import { rowActivity } from "../lib/benchmarkActivity";
+import { rowActivity, rowNewestRun } from "../lib/benchmarkActivity";
 import { catchUpCases } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { historyMeasurements } from "../lib/benchmarkHistory";
@@ -46,7 +46,7 @@ import type {
   RunSummary,
 } from "../types";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
-import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
+import { REQUIRED_REPETITIONS, runWindowOpen } from "../lib/benchmarkPlan";
 import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
 import { listByIds } from "./BenchmarkTestStatus";
 import {
@@ -202,6 +202,12 @@ export function BenchmarkConfigurationPage({
   }, [shownReport.cohort, versions, summaries.data]);
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(() => rowActivity(row, runs), [row, runs]);
+  // The run the dialog starts from: the one measuring the model now, else
+  // its newest run while that run's window is open.
+  const newest = useMemo(() => rowNewestRun(row, runs), [row, runs]);
+  const dialogRunId =
+    activity.runId ??
+    (newest && runWindowOpen(newest, Date.now()) ? newest.id : null);
   const queuedRunId = catchUp.queuedRunId;
   // The run measuring this model now, else one that plans its gaps.
   const openRunId = activity.runId ?? queuedRunId;
@@ -364,7 +370,7 @@ export function BenchmarkConfigurationPage({
             type="button"
             size="sm"
             leftIcon={<IconPlayerPlay />}
-            onClick={() => onRun(activity.runId)}
+            onClick={() => onRun(dialogRunId)}
           >
             {t("configuration.run")}
           </Button>

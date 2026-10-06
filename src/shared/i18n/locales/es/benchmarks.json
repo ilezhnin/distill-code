@@ -268,7 +268,11 @@
     "judging": "Jueces",
     "start": "Iniciar",
     "stop": "Detener",
-    "stopping": "Deteniendo…"
+    "stopping": "Deteniendo…",
+    "finish": "Terminar la ejecución",
+    "startAgain": "Medir de nuevo",
+    "finishHint": "Detenida {{at}}. Termínala antes de {{until}}: quedan {{left}} pruebas, {{restart}} de ellas empiezan de nuevo desde la primera repetición.",
+    "measuredHint": "Medida por completo {{at}}: {{measured}} pruebas, todas las repeticiones. Una nueva ejecución las mide todas otra vez con su coste completo; esta medición queda en el historial."
   },
   "runs": {
     "title": "Ejecuciones e historial",
@@ -280,11 +284,12 @@
     "preview": "Vista previa de desarrollo"
   },
   "attention": {
-    "restarted": "La aplicación se reinició con una prueba en curso. Reanuda: la ejecución sigue con sus otras pruebas y la perdida queda como hueco para repetirla desde la página de su modelo.",
+    "restarted": "La aplicación se reinició con una prueba en curso. Reanuda: la ejecución sigue con las demás pruebas y la perdida empieza de nuevo.",
     "quota": "Se agotó el límite de uso. Reanuda cuando se restablezca, o cancela.",
     "signIn": "Caducó el inicio de sesión del proveedor. Inicia sesión y reanuda.",
     "failed": "Una prueba se detuvo por un error: {{reason}}. Reanuda para intentarla de nuevo, o cancela.",
-    "unknown": "Una prueba no terminó. Reanuda para intentarla de nuevo, o cancela."
+    "unknown": "Una prueba no terminó. Reanuda para intentarla de nuevo, o cancela.",
+    "window": "Termínala antes de {{until}}; después la ejecución queda registrada tal como está."
   },
   "activity": {
     "attention": "Requiere atención: {{count}} ejecuciones",
@@ -528,7 +533,8 @@
     "unknown": "Desconocido",
     "judged": "Juzgado",
     "rendered": "Renderizado",
-    "abstained": "Abstención"
+    "abstained": "Abstención",
+    "superseded": "No cuenta"
   },
   "tokens": "{{value}} tokens",
   "fastMode": "rápido",
