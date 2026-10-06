@@ -33,6 +33,22 @@ export interface TaskCell {
   attemptIds: string[];
   /** One dot per repetition the measurement needs, in repetition order. */
   dots: DotState[];
+  /**
+   * What the dots add up to: solved once every needed repetition passed,
+   * failed once any did not, running while one works, else not done yet,
+   * a single pass included.
+   */
+  verdict: "queued" | "running" | "solved" | "failed";
+}
+
+function verdictOf(
+  dots: DotState[],
+  status: TestStatus | null,
+): TaskCell["verdict"] {
+  if (dots.includes("running") || status?.kind === "waiting") return "running";
+  if (dots.includes("failed") || status?.kind === "unscored") return "failed";
+  if (dots.length > 0 && dots.every((dot) => dot === "passed")) return "solved";
+  return "queued";
 }
 
 /** The attempt fields a cell reads; summaries and full attempts both carry them. */
@@ -104,11 +120,13 @@ export function taskCells(
       return a.outcome === "cancelled" ? "queued" : "failed";
     });
     while (dots.length < REQUIRED_REPETITIONS) dots.push("queued");
+    const status =
+      list.length === 0 ? null : testStatus(list, scores, runState);
     return {
       versionId: version.id,
       number: index + 1,
       name: version.name,
-      status: list.length === 0 ? null : testStatus(list, scores, runState),
+      status,
       // The clock the running block showed: from its start to its finish.
       durationMs: median(
         list.flatMap((a) =>
@@ -126,6 +144,7 @@ export function taskCells(
           : null,
       attemptIds: list.map((a) => a.id),
       dots,
+      verdict: verdictOf(dots, status),
     };
   });
 }
@@ -133,21 +152,15 @@ export function taskCells(
 /** How far a measurement got, in the counts a run view leads with. */
 export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   const { t } = useTranslation("benchmarks");
-  const kinds = cells.map((cell) => cell.status?.kind ?? "gap");
-  const count = (...which: string[]) =>
-    kinds.filter((kind) => which.includes(kind)).length;
-  // Solved is every repetition passed, as the dots and the frame read it.
-  const scored = cells.flatMap((cell) =>
-    cell.status?.kind === "scored" ? [cell.status] : [],
-  );
-  const solved = scored.filter((status) => status.passes === status.of).length;
-  const failed =
-    scored.filter((status) => status.passes < status.of).length +
-    count("unscored");
-  // What is still to come is the rest: no tile repeats the arithmetic.
+  // The verdicts the dots add up to; a case short of its repetitions is
+  // neither finished nor in progress, and the rest is what is still to come.
+  const count = (verdict: TaskCell["verdict"]) =>
+    cells.filter((cell) => cell.verdict === verdict).length;
+  const solved = count("solved");
+  const failed = count("failed");
   const items: [string, number][] = [
-    ["grid.inProgress", count("running", "judging", "waiting")],
-    ["grid.finished", count("scored", "unscored")],
+    ["grid.inProgress", count("running")],
+    ["grid.finished", solved + failed],
     ["grid.solved", solved],
     ["grid.attention", failed],
   ];
@@ -180,19 +193,14 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
  * The frame reads the whole case the way its dots read each repetition: grey
  * until it starts, blue while it works, green solved, red failed.
  */
-function tone(status: TestStatus | null): string {
-  if (!status) return "border-muted-foreground/30 text-muted-foreground";
-  switch (status.kind) {
-    case "scored":
-      return status.passes === status.of
-        ? "border-success/50 bg-success/5"
-        : "border-destructive/50 bg-destructive/5";
-    case "running":
-    case "judging":
-    case "waiting":
-      return "border-info/60 bg-info/5";
-    case "unscored":
+function tone(verdict: TaskCell["verdict"]): string {
+  switch (verdict) {
+    case "solved":
+      return "border-success/50 bg-success/5";
+    case "failed":
       return "border-destructive/50 bg-destructive/5";
+    case "running":
+      return "border-info/60 bg-info/5";
     default:
       return "border-muted-foreground/30 text-muted-foreground";
   }
@@ -212,10 +220,7 @@ export function TaskGrid({
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-2">
       {cells.map((cell) => {
-        const active =
-          cell.status?.kind === "running" ||
-          cell.status?.kind === "judging" ||
-          cell.status?.kind === "waiting";
+        const active = cell.verdict === "running";
         return (
           <li key={cell.versionId}>
             <Tooltip delayDuration={TOOLTIP_DELAY.held}>
@@ -232,7 +237,7 @@ export function TaskGrid({
                   className={cn(
                     "flex w-full flex-col gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors",
                     "enabled:hover:bg-muted disabled:cursor-default",
-                    tone(cell.status),
+                    tone(cell.verdict),
                   )}
                 >
                   <span className="flex items-center justify-between gap-2">

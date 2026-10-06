@@ -144,7 +144,8 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(dots("Alpha")).toEqual(["passed", "queued", "queued"]);
   expect(dots("Bravo")).toEqual(["running", "queued", "queued"]);
   expect(dots("Charlie")).toEqual(["queued", "queued", "queued"]);
-  expect(block("Alpha").className).toMatch(/border-success/);
+  // One pass of three is not a solved case yet: its frame stays grey.
+  expect(block("Alpha").className).toMatch(/border-muted-foreground/);
   expect(block("Bravo").className).toMatch(/border-info/);
   expect(block("Charlie").className).toMatch(/border-muted-foreground/);
   expect(row("Alpha").getByText("12 s")).toBeInTheDocument();
@@ -156,7 +157,7 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(block("Charlie")).toBeEnabled();
   // The counts a run leads with.
   expect(screen.getByText("In progress").nextSibling).toHaveTextContent("1");
-  expect(screen.getByText("Solved").nextSibling).toHaveTextContent("1");
+  expect(screen.getByText("Solved").nextSibling).toHaveTextContent("0");
   // One model's run names it once, in the title, not on every block.
   expect(screen.queryByText(/claude-acp/)).not.toBeInTheDocument();
   expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();

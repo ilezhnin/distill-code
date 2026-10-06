@@ -174,13 +174,14 @@ export function BenchmarkConfigurationPage({
     recorded && selected
       ? { attemptIds: results, asOf: selected.snapshot.createdAt }
       : { attemptIds: results };
-  // The measured cells as blocks, one per pool case in board order: a case
-  // without a result is a gap.
+  // Every standing attempt as blocks, one per pool case in board order: a
+  // case measured once shows that one repetition, a case never run is a gap.
+  const standing = shownRow.attemptIds;
   const summaries = useQuery({
-    queryKey: [...benchmarkKeys, "cells", attemptQuery],
+    queryKey: [...benchmarkKeys, "cells", attemptQuery, standing],
     // A dated point lists the verdicts that stood at its date.
-    queryFn: () => listByIds(results, attemptQuery.asOf ?? null),
-    enabled: results.length > 0,
+    queryFn: () => listByIds(standing, attemptQuery.asOf ?? null),
+    enabled: standing.length > 0,
   });
   const cells = useMemo(() => {
     const pool = new Set(shownReport.cohort?.versionIds ?? []);

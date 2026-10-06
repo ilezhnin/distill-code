@@ -523,9 +523,11 @@ describe("benchmark authoring and saved evidence", () => {
       />,
     );
     expect(await screen.findByText("Tests · 1")).toBeInTheDocument();
+    // Every standing attempt shows in the grid, the refused call as a
+    // failed repetition of its case; only the scored one is a result.
     await waitFor(() =>
       expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
-        attemptIds: ["attempt-1"],
+        attemptIds: ["attempt-1", "attempt-2"],
         limit: 100,
       }),
     );
