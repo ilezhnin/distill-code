@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { cn } from "@/shared/lib/cn";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -26,10 +25,10 @@ import {
   BenchmarkEmpty,
   StateBadge,
 } from "./BenchmarkPrimitives";
+import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
 import {
   FINISHED_RUN,
   listByIds,
-  TestStatusMark,
   testStatus,
   useNow,
 } from "./BenchmarkTestStatus";
@@ -61,7 +60,10 @@ export function BenchmarkRunDrawer({
         (definitions.data ?? []).flatMap((definition) =>
           definition.versions.map((version) => [
             version.id,
-            version.manifest.name,
+            {
+              name: version.manifest.name,
+              graded: version.manifest.evaluator.kind === "rubric",
+            },
           ]),
         ),
       ),
@@ -123,20 +125,52 @@ export function BenchmarkRunDrawer({
     return kind === "running" || kind === "judging";
   });
   const now = useNow(working.length > 0);
-  // Keep the attempt that runs now in view as the run moves down the list.
-  const rows = useRef(new Map<string, HTMLLIElement>());
-  const runningId = attempts.find((attempt) =>
-    ["running", "waiting"].includes(statuses.get(attempt.id)?.kind ?? ""),
-  )?.id;
-  useEffect(() => {
-    if (runningId)
-      rows.current.get(runningId)?.scrollIntoView?.({ block: "nearest" });
-  }, [runningId]);
   // One model's run is titled by the model, a matrix by its id.
   const configurations = run?.request.configurations ?? [];
   const single = configurations.length === 1 ? configurations[0] : null;
-  const repeated = (run?.request.repetitions ?? 1) > 1;
   const effort = single ? explicitEffort(single.effort) : null;
+  // One grid per configuration, its cases in the run's dispatch order.
+  const grids = useMemo(() => {
+    const order: { id: string; name: string; graded: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const attempt of attempts) {
+      if (seen.has(attempt.versionId)) continue;
+      seen.add(attempt.versionId);
+      const known = names.get(attempt.versionId);
+      order.push({
+        id: attempt.versionId,
+        name: known?.name ?? shortId(attempt.versionId),
+        graded: known?.graded ?? false,
+      });
+    }
+    return configurations.map((configuration) => ({
+      key: configuration.id,
+      label: configurationLabel(configuration),
+      cells: taskCells(
+        order,
+        attempts
+          .filter((attempt) => attempt.configuration.id === configuration.id)
+          .map((attempt) => ({
+            ...attempt,
+            cost: attempt.usage.cost,
+            score: scores.get(attempt.id) ?? null,
+          })),
+        run?.state ?? null,
+      ),
+    }));
+  }, [attempts, configurations, names, scores, run?.state]);
+  // Keep the configuration that works now in view as a matrix run moves on.
+  const rows = useRef(new Map<string, HTMLDivElement>());
+  const runningKey = grids.find((grid) =>
+    grid.cells.some(
+      (cell) =>
+        cell.status?.kind === "running" || cell.status?.kind === "waiting",
+    ),
+  )?.key;
+  useEffect(() => {
+    if (runningKey)
+      rows.current.get(runningKey)?.scrollIntoView?.({ block: "nearest" });
+  }, [runningKey]);
   return (
     <Dialog
       open
@@ -198,60 +232,28 @@ export function BenchmarkRunDrawer({
                   aria-label={t("runs.progressLabel")}
                 />
               </div>
-              <ol className="max-h-[55vh] overflow-y-auto">
-                {attempts.map((attempt) => {
-                  const status = statuses.get(attempt.id) ?? null;
-                  const current =
-                    status?.kind === "running" ||
-                    status?.kind === "judging" ||
-                    status?.kind === "waiting";
-                  const details = [
-                    single ? null : configurationLabel(attempt.configuration),
-                    repeated
-                      ? t("fields.repetitionValue", {
-                          value: attempt.repetition + 1,
-                        })
-                      : null,
-                    status?.kind === "unscored" ? attempt.reason : null,
-                  ].filter(Boolean);
-                  return (
-                    <li
-                      key={attempt.id}
+              <div className="max-h-[60vh] space-y-6 overflow-y-auto">
+                {grids.map((grid) => (
+                  <section key={grid.key} className="space-y-3">
+                    {single ? null : (
+                      <h3 className="text-sm font-medium">{grid.label}</h3>
+                    )}
+                    <TaskSummary cells={grid.cells} />
+                    <div
                       ref={(element) => {
-                        if (element) rows.current.set(attempt.id, element);
-                        else rows.current.delete(attempt.id);
+                        if (element) rows.current.set(grid.key, element);
+                        else rows.current.delete(grid.key);
                       }}
-                      aria-current={current ? "step" : undefined}
-                      className={cn(
-                        "flex items-center gap-3 rounded-md px-2 py-1.5 text-sm",
-                        current && "bg-muted",
-                      )}
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate">
-                          {names.get(attempt.versionId) ??
-                            shortId(attempt.versionId)}
-                        </div>
-                        {details.length > 0 ? (
-                          <div className="truncate text-xs text-muted-foreground">
-                            {details.join(" · ")}
-                          </div>
-                        ) : null}
-                      </div>
-                      <TestStatusMark status={status} now={now} />
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="ghost"
-                        disabled={attempt.phase === "pending"}
-                        onClick={() => onEvidence(attempt.id)}
-                      >
-                        {t("actions.inspect")}
-                      </Button>
-                    </li>
-                  );
-                })}
-              </ol>
+                      <TaskGrid
+                        cells={grid.cells}
+                        now={now}
+                        onOpen={(cell) => onEvidence(cell.attemptIds[0])}
+                      />
+                    </div>
+                  </section>
+                ))}
+              </div>
             </>
           ) : null}
         </DialogBody>

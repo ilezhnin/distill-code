@@ -198,6 +198,7 @@ export function BenchmarkModelRunDialog({
     queryFn: () => listByIds(row.attemptIds),
     enabled: row.attemptIds.length > 0,
   });
+  // The standing cell of each test: repetitions passed of those scored.
   const standing = useMemo(() => {
     const byVersion = new Map<string, number[]>();
     for (const summary of standingAttempts.data ?? []) {
@@ -210,17 +211,25 @@ export function BenchmarkModelRunDialog({
     return new Map(
       [...byVersion].map(([versionId, values]) => [
         versionId,
-        values.reduce((sum, value) => sum + value, 0) / values.length,
+        {
+          kind: "scored" as const,
+          score: values.reduce((sum, value) => sum + value, 0) / values.length,
+          passes: values.filter(passed).length,
+          of: values.length,
+          graded: false,
+          durationMs: null,
+        },
       ]),
     );
   }, [standingAttempts.data]);
-  // A test the model already passed starts unchecked; a failed, unscored or
-  // never measured one starts checked. Until the results arrive nothing starts.
+  // A test the model already solved on every repetition starts unchecked; a
+  // failed, unscored or never measured one starts checked. Until the results
+  // arrive nothing starts.
   const done = useMemo(
     () =>
       new Set(
         [...standing]
-          .filter(([, score]) => passed(score))
+          .filter(([, cell]) => cell.passes === cell.of)
           .map(([versionId]) => versionId),
       ),
     [standing],
@@ -437,11 +446,7 @@ export function BenchmarkModelRunDialog({
                     ) : standing.has(version.id) ? (
                       <span className="opacity-60">
                         <TestStatusMark
-                          status={{
-                            kind: "scored",
-                            score: standing.get(version.id) as number,
-                            durationMs: null,
-                          }}
+                          status={standing.get(version.id) ?? null}
                           now={now}
                         />
                       </span>

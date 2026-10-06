@@ -1,13 +1,25 @@
-// One test's progress as both run views show it: queued, running with its
-// clock, judged, then a check, a cross or points with the time it took.
+// One test's progress as every run view shows it: queued, running with its
+// clock, judged, then its repetitions passed of those scored, with a check
+// only when every one passed, and the time it took.
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconCheck, IconHourglass, IconX } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
+import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
 import { benchmarkApi } from "../api/benchmarks";
 import { formatElapsed, stateLabel } from "../lib/benchmarkLabels";
 import type { Attempt, AttemptSummary } from "../types";
+
+/** The attempt fields a status reads; a summary lacks the queue fields. */
+export type StatusAttempt = Pick<
+  Attempt,
+  "id" | "phase" | "outcome" | "finishedAt" | "durationMs"
+> & {
+  startedAt?: number | null;
+  reason?: string | null;
+  waitUntil?: number | null;
+};
 
 /** Attempt phases between dispatch and a settled answer. */
 export const WORKING = new Set([
@@ -42,18 +54,33 @@ export type TestStatus =
     }
   | { kind: "running"; startedAt: number | null }
   | { kind: "judging"; startedAt: number | null }
-  | { kind: "scored"; score: number; durationMs: number | null }
+  | {
+      kind: "scored";
+      /** Mean score of the repetitions, 0 to 1. */
+      score: number;
+      /** Repetitions that passed, of those scored: the case counts at all. */
+      passes: number;
+      of: number;
+      /** A case scored on a scale by a panel: its mean points, no pass. */
+      graded: boolean;
+      durationMs: number | null;
+    }
   | { kind: "unscored"; outcome: string | null; durationMs: number | null };
 
-/** Attempt summaries by id; one listing returns at most 100. */
+/**
+ * Attempt summaries by id; one listing returns at most 100. With `asOf`, the
+ * verdicts that stood at that date.
+ */
 export async function listByIds(
   ids: readonly string[],
+  asOf: number | null = null,
 ): Promise<AttemptSummary[]> {
   const pages: AttemptSummary[][] = [];
   for (let start = 0; start < ids.length; start += 100) {
     pages.push(
       await benchmarkApi.listAttempts({
         attemptIds: ids.slice(start, start + 100),
+        ...(asOf == null ? {} : { asOf }),
         limit: 100,
       }),
     );
@@ -63,18 +90,19 @@ export async function listByIds(
 
 /** One test's state across its attempts in the run. */
 export function testStatus(
-  attempts: Attempt[],
+  attempts: StatusAttempt[],
   scores: Map<string, number | null>,
   runState: string | null,
+  graded = false,
 ): TestStatus | null {
   if (attempts.length === 0) return null;
   const runFinished = runState != null && FINISHED_RUN.has(runState);
   const working = attempts.find((a) => WORKING.has(a.phase));
-  if (working) return { kind: "running", startedAt: working.startedAt };
+  if (working) return { kind: "running", startedAt: working.startedAt ?? null };
   const judging = attempts.find(
     (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
   );
-  if (judging) return { kind: "judging", startedAt: judging.startedAt };
+  if (judging) return { kind: "judging", startedAt: judging.startedAt ?? null };
   // A test the runner put back in the queue with a reason waits on its
   // provider: a usage limit, a sign-in renewal or the operator.
   const returned = attempts.find((a) => a.phase === "pending" && a.reason);
@@ -110,6 +138,9 @@ export function testStatus(
     return {
       kind: "scored",
       score: values.reduce((sum, value) => sum + value, 0) / values.length,
+      passes: values.filter(passed).length,
+      of: values.length,
+      graded,
       durationMs,
     };
   return { kind: "unscored", outcome: attempts[0].outcome, durationMs };
@@ -146,19 +177,24 @@ export function useNow(active: boolean): number {
   return now;
 }
 
-/** A test's mark: its clock while it runs, its result and time once done. */
+/**
+ * A test's mark: its clock while it runs, its result and time once done.
+ * `compact` leaves the time to the block around it.
+ */
 export function TestStatusMark({
   status,
   now,
+  compact = false,
 }: {
   status: TestStatus | null;
   now: number;
+  compact?: boolean;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
   if (!status) return null;
   const time = (milliseconds: number | null) =>
-    milliseconds == null ? null : (
+    milliseconds == null || compact ? null : (
       <span className="text-xs text-muted-foreground tabular-nums">
         {formatElapsed(t, Math.max(0, milliseconds))}
       </span>
@@ -212,16 +248,29 @@ export function TestStatusMark({
         </span>
       );
     case "scored": {
-      // Every result reads the same: its points on the boards' 0 to 1000
-      // scale, then a check or a cross where the spinner was.
-      const points = Math.round(status.score * 1000);
+      // A graded case reads as its mean points, as the boards count it.
+      if (status.graded)
+        return (
+          <span className="flex shrink-0 items-center gap-2">
+            {time(status.durationMs)}
+            <span
+              className="text-right text-sm tabular-nums"
+              title={t("states.judged")}
+            >
+              {Math.round(status.score * 1000)}
+            </span>
+          </span>
+        );
+      // Every other result reads the same: repetitions passed of those
+      // scored, then a check only when all of them did, a cross otherwise.
+      const solved = status.passes === status.of;
       return (
         <span className="flex shrink-0 items-center gap-2">
           {time(status.durationMs)}
-          <span className="w-[4ch] text-right text-sm tabular-nums">
-            {points}
+          <span className="text-right text-sm tabular-nums">
+            {status.passes}/{status.of}
           </span>
-          {points >= PASS_POINTS ? (
+          {solved ? (
             <IconCheck
               aria-label={t("states.pass")}
               className="size-4 text-success"
@@ -237,7 +286,12 @@ export function TestStatusMark({
     }
     case "unscored":
       return (
-        <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+        <span
+          className={cn(
+            "flex shrink-0 items-center gap-2 text-xs text-muted-foreground",
+            compact && "truncate",
+          )}
+        >
           {time(status.durationMs)}
           {stateLabel(t, status.outcome)}
         </span>

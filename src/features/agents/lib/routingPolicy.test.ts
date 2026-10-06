@@ -48,7 +48,7 @@ describe("parseRoutingPolicy", () => {
 });
 
 describe("applyClassOverride", () => {
-  const shipped = MODEL_PREFERENCE_CLASSES["writing"].ranking;
+  const shipped = MODEL_PREFERENCE_CLASSES.writing.ranking;
 
   it("takes the operator's order, including models from other classes", () => {
     // The whole point of the map: put the heavy model on light testing, or
@@ -71,7 +71,7 @@ describe("applyClassOverride", () => {
   it("keeps the class's own effort when the operator reorders it", () => {
     // The medium profile ranks the same models as the heavy one; a reorder
     // must not silently bring them back at xhigh.
-    const medium = MODEL_PREFERENCE_CLASSES["ops"].ranking;
+    const medium = MODEL_PREFERENCE_CLASSES.ops.ranking;
     expect(
       applyClassOverride(medium, ["Opus 5", "Astra"]).map((candidate) => [
         candidate.label,

@@ -288,6 +288,8 @@
     "running": "Running, {{open}} left"
   },
   "evidence": {
+    "repetitions": "Repetitions",
+    "repeat": "Repeat {{number}}",
     "title": "Evidence",
     "description": "Sealed output and evaluation revisions remain available independently of the live transcript.",
     "anonymousReview": "Anonymous review {{id}}",
@@ -308,6 +310,16 @@
     "judge": "Judge · {{model}}",
     "override": "Override the panel",
     "rescoreJudges": "Evaluate again (up to 3 model calls)"
+  },
+  "grid": {
+    "taskNamed": "Task {{number}}: {{name}}",
+    "title": "Tests · {{count}}",
+    "task": "Task {{number}}",
+    "inProgress": "In progress",
+    "finished": "Finished",
+    "solved": "Solved",
+    "attention": "Failed",
+    "queued": "Queued"
   },
   "leaderboard": {
     "boards": {

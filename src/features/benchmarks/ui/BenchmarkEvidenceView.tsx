@@ -6,7 +6,9 @@ import { IconChevronDown, IconClock, IconCoin } from "@tabler/icons-react";
 import { acpGetSessionInfo } from "@/shared/api/acp";
 import { mergeAcpSessionInfo } from "@/features/chat/lib/acpSessionMapping";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import { toggleVariants } from "@/shared/ui/toggle";
 import {
   Collapsible,
   CollapsibleContent,
@@ -78,6 +80,21 @@ export function BenchmarkEvidenceView({
   >({});
   const [reviewReason, setReviewReason] = useState("");
   const attempt = evidence.data;
+  // The case's other repetitions in the same run and configuration, so one
+  // measurement reads as one dialog with a tab per repetition.
+  const run = useQuery({
+    queryKey: [...benchmarkKeys, "run", attempt?.runId],
+    queryFn: () => benchmarkApi.getRun(attempt?.runId as string),
+    enabled: attempt != null,
+    staleTime: 30_000,
+  });
+  const repetitions = (run.data?.attempts ?? [])
+    .filter(
+      (other) =>
+        other.versionId === attempt?.versionId &&
+        other.configuration.id === attempt?.configuration.id,
+    )
+    .sort((a, b) => a.repetition - b.repetition);
   const manifest = definitions.data
     ?.flatMap((definition) => definition.versions)
     .find((version) => version.id === attempt?.versionId)?.manifest;
@@ -229,6 +246,30 @@ export function BenchmarkEvidenceView({
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-6">
+          {repetitions.length > 1 && !blind ? (
+            <div
+              role="tablist"
+              aria-label={t("evidence.repetitions")}
+              className="flex items-center gap-0.5"
+            >
+              {repetitions.map((other) => (
+                <button
+                  key={other.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={other.id === attemptId}
+                  data-state={other.id === attemptId ? "on" : "off"}
+                  className={cn(
+                    toggleVariants({ size: "sm" }),
+                    "h-7 px-2.5 text-xs",
+                  )}
+                  onClick={() => onSelectAttempt(other.id)}
+                >
+                  {t("evidence.repeat", { number: other.repetition + 1 })}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {error || evidence.error || definitions.error ? (
             <BenchmarkAlert>
               {error ??

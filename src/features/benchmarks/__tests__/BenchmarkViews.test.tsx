@@ -414,8 +414,9 @@ describe("benchmark authoring and saved evidence", () => {
     }
     wrap(<Workspace />);
     const drawer = await screen.findByRole("dialog", { name: "Run run-1" });
+    // The run reads as a grid of task blocks; a block opens its evidence.
     await userEvent.click(
-      await within(drawer).findByRole("button", { name: "Inspect" }),
+      await within(drawer).findByRole("button", { name: /^Task 1: / }),
     );
     const evidence = await screen.findByRole("dialog", {
       name: "claude-acp / model-1 / high",
@@ -490,15 +491,16 @@ describe("benchmark authoring and saved evidence", () => {
     expect(
       screen.queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
-    expect(
-      await screen.findByText("Integer transformation"),
-    ).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    // The measured case is a block named for the reader; it opens its evidence.
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Task 1: Integer transformation",
+      }),
+    );
     expect(inspect).toHaveBeenCalledWith("attempt-1");
     expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
       attemptIds: ["attempt-1"],
-      offset: 0,
-      limit: 50,
+      limit: 100,
     });
   });
   it("lists only the attempts that measured something", async () => {
@@ -520,12 +522,11 @@ describe("benchmark authoring and saved evidence", () => {
         onOpenRun={vi.fn()}
       />,
     );
-    expect(await screen.findByText("Attempts (1)")).toBeInTheDocument();
+    expect(await screen.findByText("Tests · 1")).toBeInTheDocument();
     await waitFor(() =>
       expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
         attemptIds: ["attempt-1"],
-        offset: 0,
-        limit: 50,
+        limit: 100,
       }),
     );
   });
@@ -560,13 +561,11 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByText(label, { selector: "dt" }).nextElementSibling;
     expect(spec("Resolved model")).toHaveTextContent("claude-sonnet-5");
     expect(spec("API model ID")).toHaveTextContent("sonnet");
-    // Every attempt on the page ran this one model, so no column repeats it.
+    // Every attempt on the page ran this one model, so the blocks never
+    // repeat it: a block carries its number, its mark, time and spend.
     expect(
-      await screen.findByRole("columnheader", { name: "Status" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("columnheader", { name: "Resolved model" }),
-    ).not.toBeInTheDocument();
+      await screen.findByRole("button", { name: /^Task 1: / }),
+    ).not.toHaveTextContent(/sonnet/);
     cleanup();
     // A row recorded before attempts kept the model names none.
     wrap(page({ ...sonnet, resolvedModels: undefined }));
@@ -1442,11 +1441,12 @@ describe("configuration history", () => {
     expect(
       screen.queryByText(/recalculated using today's evidence/),
     ).not.toBeInTheDocument();
-    expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
-      attemptIds: ["attempt-0"],
-      offset: 0,
-      limit: 50,
-    });
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+        attemptIds: ["attempt-0"],
+        limit: 100,
+      }),
+    );
     // Run measures today's model, whichever point is shown.
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(catchUp).toHaveBeenCalledWith(null);
@@ -1464,8 +1464,7 @@ describe("configuration history", () => {
       expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
         attemptIds: ["attempt-0"],
         asOf: pointAt,
-        offset: 0,
-        limit: 50,
+        limit: 100,
       }),
     );
     await userEvent.click(screen.getByRole("button", { name: "Current pool" }));

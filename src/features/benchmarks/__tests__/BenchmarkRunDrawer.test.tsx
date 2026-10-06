@@ -81,8 +81,18 @@ function show(subject: BenchmarkRun) {
   );
 }
 
-const row = (name: string) =>
-  within(screen.getByText(name).closest("li") as HTMLElement);
+/** A test's block: named by its number and name for the reader. */
+const block = (name: string) =>
+  screen.getAllByRole("button", {
+    name: new RegExp(`^Task \\d+: ${name}$`),
+  })[0];
+const row = (name: string) => within(block(name));
+const found = async (name: string) =>
+  (
+    await screen.findAllByRole("button", {
+      name: new RegExp(`^Task \\d+: ${name}$`),
+    })
+  )[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -113,30 +123,28 @@ afterEach(cleanup);
 
 it("lists one model's run by test, in its order, timing the test running now", async () => {
   show({ ...run, state: "running", attempts: attempts() });
-  expect(await screen.findByText("Alpha")).toBeInTheDocument();
+  expect(await found("Alpha")).toBeInTheDocument();
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByRole("heading")).toHaveTextContent("model-1");
   expect(within(dialog).getByRole("heading")).toHaveTextContent("high");
+  // Blocks in dispatch order, numbered by it; the name is for the reader.
   expect(
-    screen.getAllByRole("listitem").map((item) => item.textContent ?? ""),
-  ).toEqual([
-    expect.stringMatching(/^Alpha/),
-    expect.stringMatching(/^Bravo/),
-    expect.stringMatching(/^Charlie/),
-  ]);
+    screen
+      .getAllByRole("button", { name: /^Task \d+: / })
+      .map((item) => item.getAttribute("aria-label")),
+  ).toEqual(["Task 1: Alpha", "Task 2: Bravo", "Task 3: Charlie"]);
   expect(await row("Alpha").findByLabelText("Pass")).toBeInTheDocument();
+  expect(row("Alpha").getByText("1/1")).toBeInTheDocument();
   expect(row("Alpha").getByText("12 s")).toBeInTheDocument();
   expect(row("Bravo").getByLabelText("Running")).toBeInTheDocument();
-  expect(row("Bravo").getByText(/^1 min [5-7] s$/)).toBeInTheDocument();
-  expect(screen.getByText("Bravo").closest("li")).toHaveAttribute(
-    "aria-current",
-    "step",
-  );
+  expect(block("Bravo")).toHaveAttribute("aria-current", "step");
   expect(row("Charlie").getByText("Queued")).toBeInTheDocument();
-  expect(
-    row("Charlie").getByRole("button", { name: "Inspect" }),
-  ).toBeDisabled();
-  // One model's run names it once, in the title, not on every row.
+  // A queued test is a block already, its evidence empty until it runs.
+  expect(block("Charlie")).toBeEnabled();
+  // The counts a run leads with.
+  expect(screen.getByText("In progress").nextSibling).toHaveTextContent("1");
+  expect(screen.getByText("Solved").nextSibling).toHaveTextContent("1");
+  // One model's run names it once, in the title, not on every block.
   expect(screen.queryByText(/claude-acp/)).not.toBeInTheDocument();
   expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
 });
@@ -165,11 +173,22 @@ it("keeps a paused run's waiting tests queued and names each model of a matrix",
       }),
     ],
   });
-  expect(await screen.findByText("Charlie")).toBeInTheDocument();
+  expect(await found("Charlie")).toBeInTheDocument();
   expect(screen.getByText("Run run-matr")).toBeInTheDocument();
-  expect(row("Charlie").getByText("Queued")).toBeInTheDocument();
-  expect(row("Charlie").getByText(/model-2/)).toBeInTheDocument();
-  expect(row("Alpha").getByText(/model-1/)).toBeInTheDocument();
+  // A matrix shows one grid per model, each under its name; the second
+  // model's Charlie waits in its queue, the first model's is a gap.
+  const grid = (model: string) =>
+    within(
+      screen
+        .getByRole("heading", { level: 3, name: new RegExp(model) })
+        .closest("section") as HTMLElement,
+    );
+  expect(
+    grid("model-2").getByRole("button", { name: /Charlie/ }),
+  ).toHaveTextContent("Queued");
+  expect(
+    grid("model-1").getByRole("button", { name: /Charlie/ }),
+  ).toBeDisabled();
 });
 
 it("shows a test the provider's usage limit put back as waiting, not queued", async () => {
@@ -195,15 +214,12 @@ it("shows a test the provider's usage limit put back as waiting, not queued", as
       }),
     ],
   });
-  expect(await screen.findByText("Charlie")).toBeInTheDocument();
+  expect(await found("Charlie")).toBeInTheDocument();
   const waiting = row("Charlie").getByText("Usage limit, waiting");
   expect(waiting).toHaveAttribute("title", limit);
   expect(row("Charlie").queryByText("Queued")).not.toBeInTheDocument();
   // The run's place in the queue is the waiting test.
-  expect(screen.getByText("Charlie").closest("li")).toHaveAttribute(
-    "aria-current",
-    "step",
-  );
+  expect(block("Charlie")).toHaveAttribute("aria-current", "step");
 });
 
 it("says when a waiting test is tried again, where the runner knows", async () => {
@@ -237,7 +253,7 @@ it("says when a waiting test is tried again, where the runner knows", async () =
       waitingOn("a-3", "version-c", { reason: busy }),
     ],
   });
-  expect(await screen.findByText("Charlie")).toBeInTheDocument();
+  expect(await found("Charlie")).toBeInTheDocument();
   expect(
     row("Alpha").getByText(`Usage limit, next try at ${time}`),
   ).toBeInTheDocument();
@@ -269,7 +285,7 @@ it("shows a run the usage limit stopped as stopped, for the operator", async () 
       }),
     ],
   });
-  expect(await screen.findByText("Charlie")).toBeInTheDocument();
+  expect(await found("Charlie")).toBeInTheDocument();
   expect(row("Charlie").getByText("Usage limit, stopped")).toHaveAttribute(
     "title",
     stopped,

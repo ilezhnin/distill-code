@@ -20,7 +20,7 @@ import {
   workClassLabel,
 } from "../lib/benchmarkLabels";
 import type { BenchmarkVersion, ResultQuery } from "../types";
-import { TestStatusMark } from "./BenchmarkTestStatus";
+import { passed, TestStatusMark } from "./BenchmarkTestStatus";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -155,6 +155,9 @@ export function BenchmarkAttemptList({
                         status={{
                           kind: "scored",
                           score: row.score,
+                          passes: passed(row.score) ? 1 : 0,
+                          of: 1,
+                          graded: false,
                           durationMs: null,
                         }}
                         now={0}

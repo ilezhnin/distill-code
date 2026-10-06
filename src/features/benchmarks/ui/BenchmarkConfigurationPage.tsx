@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconPlayerPlay } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
@@ -44,7 +45,9 @@ import type {
   ResultQuery,
   RunSummary,
 } from "../types";
-import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
+import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
+import { listByIds, useNow } from "./BenchmarkTestStatus";
 import {
   BoardIcon,
   ScoreBar,
@@ -166,6 +169,35 @@ export function BenchmarkConfigurationPage({
     recorded && selected
       ? { attemptIds: results, asOf: selected.snapshot.createdAt }
       : { attemptIds: results };
+  // The measured cells as blocks, one per pool case in board order: a case
+  // without a result is a gap.
+  const summaries = useQuery({
+    queryKey: [...benchmarkKeys, "cells", attemptQuery],
+    // A dated point lists the verdicts that stood at its date.
+    queryFn: () => listByIds(results, attemptQuery.asOf ?? null),
+    enabled: results.length > 0,
+  });
+  const cells = useMemo(() => {
+    const pool = new Set(shownReport.cohort?.versionIds ?? []);
+    const classOrder = new Map(
+      (shownReport.cohort?.workClasses ?? []).map((id, index) => [id, index]),
+    );
+    const order = versions
+      .filter((version) => pool.has(version.id))
+      .sort(
+        (a, b) =>
+          (classOrder.get(a.manifest.workClassId) ?? 99) -
+            (classOrder.get(b.manifest.workClassId) ?? 99) ||
+          a.manifest.name.localeCompare(b.manifest.name),
+      )
+      .map((version) => ({
+        id: version.id,
+        name: version.manifest.name,
+        graded: version.manifest.evaluator.kind === "rubric",
+      }));
+    return taskCells(order, summaries.data ?? [], null);
+  }, [shownReport.cohort, versions, summaries.data]);
+  const now = useNow(false);
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(() => rowActivity(row, runs), [row, runs]);
   const queuedRunId = catchUp.queuedRunId;
@@ -549,20 +581,14 @@ export function BenchmarkConfigurationPage({
           </p>
         </section>
       ) : null}
-      <section className="space-y-3">
-        <SectionHeading
-          title={t("attempts.title", { count: results.length })}
+      <section className="space-y-4">
+        <SectionHeading title={t("grid.title", { count: cells.length })} />
+        <TaskSummary cells={cells} />
+        <TaskGrid
+          cells={cells}
+          now={now}
+          onOpen={(cell) => onEvidence(cell.attemptIds[0])}
         />
-        {results.length === 0 ? (
-          <p className="text-xs text-muted-foreground">{t("results.empty")}</p>
-        ) : (
-          <BenchmarkAttemptList
-            query={attemptQuery}
-            versions={versions}
-            resetKey={`${recorded}:${selection?.id ?? "current"}`}
-            onEvidence={onEvidence}
-          />
-        )}
       </section>
     </div>
   );

@@ -288,6 +288,8 @@
     "running": "En curso, quedan {{open}}"
   },
   "evidence": {
+    "repetitions": "Repeticiones",
+    "repeat": "Repetición {{number}}",
     "title": "Evidencia",
     "description": "La salida sellada y las revisiones de evaluación siguen disponibles independientemente de la transcripción en vivo.",
     "anonymousReview": "Revisión anónima {{id}}",
@@ -308,6 +310,16 @@
     "judge": "Juez · {{model}}",
     "override": "Anular el panel",
     "rescoreJudges": "Evaluar de nuevo (hasta 3 llamadas)"
+  },
+  "grid": {
+    "taskNamed": "Tarea {{number}}: {{name}}",
+    "title": "Pruebas · {{count}}",
+    "task": "Tarea {{number}}",
+    "inProgress": "En curso",
+    "finished": "Terminadas",
+    "solved": "Resueltas",
+    "attention": "Fallidas",
+    "queued": "En cola"
   },
   "leaderboard": {
     "boards": {
