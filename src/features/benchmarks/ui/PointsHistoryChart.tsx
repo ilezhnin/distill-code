@@ -6,6 +6,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -22,7 +23,9 @@ import {
   type RangeChoice,
   resizeWindow,
   revealTime,
+  rollingBand,
   smoothPath,
+  type BandPoint,
   type TimeTick,
   type TimeWindow,
   timeTicks,
@@ -177,7 +180,16 @@ export function PointsHistoryChart({
   const high = measured.findLastIndex((point) => point.at <= view.end);
   const visible = measured.slice(low, high + 1);
   const drawn = measured.slice(Math.max(0, low - 1), high + 2);
-  // The value axis rescales to what is drawn, neighbours included, so no line leaves the plot.
+  // The model's own running median and the band of its noise, per series,
+  // so a point outside it reads as a change from how the model has been doing.
+  const band = useMemo(() => {
+    const result = new Map<string, BandPoint>();
+    for (const segment of historySegments(points))
+      for (const [id, entry] of rollingBand(segment)) result.set(id, entry);
+    return result;
+  }, [points]);
+  // The value axis rescales to what is drawn, neighbours included, so no line
+  // leaves the plot; the band is clipped to it where it runs wider.
   const axis = valueAxis(
     drawn.map((point) => point.points as number),
     Math.floor(plotHeight / VALUE_SPACING),
@@ -541,8 +553,35 @@ export function PointsHistoryChart({
                   xs,
                   segment.map((point) => y(point.points as number)),
                 );
+                const banded = segment.filter((point) => band.has(point.id));
+                const bandXs = banded.map(x);
+                const highs = banded.map((point) =>
+                  y((band.get(point.id) as BandPoint).high),
+                );
+                const lows = banded.map((point) =>
+                  y((band.get(point.id) as BandPoint).low),
+                );
+                const medians = banded.map((point) =>
+                  y((band.get(point.id) as BandPoint).median),
+                );
                 return (
                   <g key={segment[0].id} data-history-segment>
+                    {banded.length > 1 ? (
+                      <g data-history-band>
+                        <path
+                          d={`${smoothPath(bandXs, highs)} ${smoothPath([...bandXs].reverse(), [...lows].reverse()).replace(/^M/, "L")} Z`}
+                          fill="var(--foreground)"
+                          fillOpacity={0.06}
+                        />
+                        <path
+                          d={smoothPath(bandXs, medians)}
+                          fill="none"
+                          stroke="var(--foreground)"
+                          strokeOpacity={0.35}
+                          strokeDasharray="4 4"
+                        />
+                      </g>
+                    ) : null}
                     <path
                       d={`${line} L${xs[xs.length - 1]},${plotBottom} L${xs[0]},${plotBottom} Z`}
                       fill={`url(#${ids}-fill)`}
@@ -583,9 +622,21 @@ export function PointsHistoryChart({
                   cy={y(point.points as number)}
                   r={selected ? 6 : lifted ? 5 : 3.5}
                   fill={selected ? "var(--chart-1)" : "var(--background)"}
-                  stroke={selected ? "var(--background)" : "var(--chart-1)"}
+                  stroke={
+                    selected
+                      ? "var(--background)"
+                      : band.get(point.id)?.outside === "below"
+                        ? "var(--destructive)"
+                        : band.get(point.id)?.outside === "above"
+                          ? "var(--success)"
+                          : "var(--chart-1)"
+                  }
+                  data-outside-band={band.get(point.id)?.outside ?? undefined}
                   strokeWidth={2}
-                  opacity={sparse || lifted ? 1 : 0}
+                  // A point outside the model's own band always shows.
+                  opacity={
+                    sparse || lifted || band.get(point.id)?.outside ? 1 : 0
+                  }
                   role="button"
                   tabIndex={point.id === tabStop ? 0 : -1}
                   aria-pressed={selected}

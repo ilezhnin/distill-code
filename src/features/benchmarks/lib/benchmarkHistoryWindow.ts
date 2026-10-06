@@ -422,3 +422,53 @@ export function utcOffset(at: number): string {
   const rest = Math.abs(minutes) % 60;
   return `${sign}${hours}${rest ? `:${String(rest).padStart(2, "0")}` : ""}`;
 }
+
+/** Points either side of a model's own recent median that read as its noise. */
+export const BAND_TOLERANCE = 0.1;
+/** How many of a model's latest points its running median reads. */
+export const BAND_WINDOW = 5;
+
+export interface BandPoint {
+  /** The median of this point and the ones before it, at most the window. */
+  median: number;
+  low: number;
+  high: number;
+  /** Where the point sits against its own band. */
+  outside: "above" | "below" | null;
+}
+
+/**
+ * A model's running median and the band around it, point by point in time
+ * order, over one series. Nothing is frozen: the band follows the model's
+ * own recent points, so a session outside it reads as a change from how
+ * the model has been doing, not from a launch-day reference.
+ */
+export function rollingBand(
+  points: { id: string; points: number | null }[],
+  window = BAND_WINDOW,
+  tolerance = BAND_TOLERANCE,
+): Map<string, BandPoint> {
+  const band = new Map<string, BandPoint>();
+  const recent: number[] = [];
+  for (const point of points) {
+    if (point.points == null) continue;
+    recent.push(point.points);
+    if (recent.length > window) recent.shift();
+    const sorted = [...recent].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    const median =
+      sorted.length % 2 === 0
+        ? (sorted[middle - 1] + sorted[middle]) / 2
+        : sorted[middle];
+    const low = median * (1 - tolerance);
+    const high = median * (1 + tolerance);
+    band.set(point.id, {
+      median,
+      low,
+      high,
+      outside:
+        point.points < low ? "below" : point.points > high ? "above" : null,
+    });
+  }
+  return band;
+}

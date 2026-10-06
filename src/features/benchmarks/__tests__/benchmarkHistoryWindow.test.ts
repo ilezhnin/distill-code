@@ -18,6 +18,7 @@ import {
   valueAxis,
   windowFor,
 } from "../lib/benchmarkHistoryWindow";
+import { rollingBand } from "../lib/benchmarkHistoryWindow";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -354,5 +355,43 @@ describe("local offset", () => {
     expect(utcOffset(start)).toBe("−4:30");
     offset.mockReturnValue(0);
     expect(utcOffset(start)).toBe("");
+  });
+});
+
+describe("rollingBand", () => {
+  const point = (id: string, points: number | null) => ({ id, points });
+
+  it("follows the model's own recent median and flags points outside its band", () => {
+    const band = rollingBand([
+      point("a", 1000),
+      point("b", 992),
+      point("c", 1038),
+      point("d", 942),
+      point("e", 880),
+      point("f", 1000),
+    ]);
+    // The median of a, b, c is 1000; d is still inside 900 to 1100.
+    expect(band.get("c")).toMatchObject({ median: 1000, outside: null });
+    expect(band.get("d")?.outside).toBeNull();
+    // e: the median of a to e is 992, and 880 sits below 892.8.
+    expect(band.get("e")).toMatchObject({ median: 992, outside: "below" });
+    // The window slides: f reads against b to f.
+    expect(band.get("f")?.median).toBe(992);
+    expect(band.get("f")?.outside).toBeNull();
+  });
+
+  it("skips gaps and widens with the tolerance", () => {
+    const band = rollingBand(
+      [point("a", 500), point("gap", null), point("b", 600)],
+      5,
+      0.25,
+    );
+    expect(band.has("gap")).toBe(false);
+    expect(band.get("b")).toMatchObject({
+      median: 550,
+      low: 412.5,
+      high: 687.5,
+      outside: null,
+    });
   });
 });
