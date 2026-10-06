@@ -425,6 +425,17 @@ export interface LeaderboardReport {
   cohort: LeaderboardCohort | null;
   rows: LeaderboardRow[];
 }
+/**
+ * A dated, frozen set of case versions: from its date on, the pool the boards
+ * measure. Before the first release the pool is every live test's newest
+ * version.
+ */
+export interface PoolRelease {
+  id: string;
+  name: string;
+  createdAt: number;
+  versionIds: string[];
+}
 export interface UsageLedgerEntry {
   attemptId: string;
   sessionId: string;

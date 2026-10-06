@@ -199,6 +199,27 @@ describe("points history hover and selection", () => {
     ).toBeInTheDocument();
   });
 
+  it("marks where the pool was released inside the shown range", () => {
+    const { container } = render(
+      <PointsHistoryChart
+        points={[
+          point({ id: "before", at: start, series: "old" }),
+          point({ id: "after", at: start + 2 * DAY, series: "new" }),
+        ]}
+        selectedId={null}
+        onSelect={() => {}}
+        releases={[
+          { id: "r1", name: "v1", at: start + DAY },
+          { id: "r0", name: "v0", at: start - 10 * DAY },
+        ]}
+      />,
+    );
+    const marks = container.querySelectorAll("[data-history-release]");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toHaveAttribute("data-history-release", "v1");
+    expect(marks[0]).toHaveTextContent("v1");
+  });
+
   it("draws lines only between comparable measurements", () => {
     const { container } = chart([
       point({ id: "a", at: start }),

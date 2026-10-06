@@ -258,12 +258,14 @@ impl BenchmarkService {
             );
         }
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
+        let releases = self.store.releases().await?;
         // Every analysis reads this data, so a measurement of an unknown
         // effort is left out of all of them alike, and an attempt its event
         // record stopped is unscored in all of them alike; the store keeps
         // both as they settled.
         Ok(evidence::with_answer_caps(effort::with_known_effort(
             QueryData {
+                releases,
                 definitions,
                 versions,
                 runs,
@@ -989,6 +991,51 @@ impl BenchmarkService {
         }
         self.store.save_attempt(&a).await?;
         Ok(a)
+    }
+    /// Freezes every live test's newest published version as a pool release,
+    /// named `name` or the next `vN`. A release that would repeat the newest
+    /// one is refused: nothing in the pool changed.
+    pub async fn create_release(&self, name: Option<String>) -> Result<PoolRelease> {
+        let data = self.query_data().await?;
+        let version_ids: Vec<String> = analysis::live_versions(&data, None)
+            .into_iter()
+            .map(|version| version.id.clone())
+            .collect();
+        if version_ids.is_empty() {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Publish a test before releasing the pool",
+            ));
+        }
+        if let Some(newest) = analysis::release_at(&data, None) {
+            let mut frozen = newest.version_ids.clone();
+            frozen.sort();
+            if frozen == version_ids {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    format!("The pool has not changed since {}", newest.name),
+                ));
+            }
+        }
+        let name = name
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| format!("v{}", data.releases.len() + 1));
+        if name.chars().count() > 40 || data.releases.iter().any(|r| r.name == name) {
+            return Err(BenchmarkError::new(
+                "validation",
+                "A release needs a new name of at most 40 characters",
+            ));
+        }
+        let release = PoolRelease {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            created_at: now(),
+            version_ids,
+        };
+        self.store.save_release(&release).await?;
+        self.changed().await;
+        Ok(release)
     }
     pub async fn save_schedule(&self, mut schedule: Schedule) -> Result<Schedule> {
         campaigns::validate(&schedule)?;

@@ -315,6 +315,14 @@ pub async fn benchmark_delete_catalog_entry(app: AppHandle, id: String) -> Resul
     service(&app).await?.store.delete_catalog_entry(&id).await
 }
 #[tauri::command]
+pub async fn benchmark_list_releases(app: AppHandle) -> Result<Vec<PoolRelease>> {
+    service(&app).await?.store.releases().await
+}
+#[tauri::command]
+pub async fn benchmark_create_release(app: AppHandle, name: Option<String>) -> Result<PoolRelease> {
+    service(&app).await?.create_release(name).await
+}
+#[tauri::command]
 pub async fn benchmark_submit_review(
     app: AppHandle,
     id: String,
@@ -366,6 +374,7 @@ mod tests {
             let _ = sender.send(());
         });
         let data = QueryData {
+            releases: Vec::new(),
             definitions: Vec::new(),
             versions: Vec::new(),
             runs: Vec::new(),

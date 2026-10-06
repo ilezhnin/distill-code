@@ -638,6 +638,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).await.unwrap();
         let data = QueryData {
+            releases: Vec::new(),
             definitions: vec![],
             versions: vec![],
             runs: vec![],

@@ -48,7 +48,8 @@
     "export": "Export dataset",
     "schedules": "Automatic retesting",
     "routing": "Selector evidence",
-    "catalog": "Model catalog"
+    "catalog": "Model catalog",
+    "releases": "Pool releases"
   },
   "filters": {
     "run": "Run",
@@ -360,6 +361,19 @@
     "heldOut": "Include held-out evaluation outcomes in this research export",
     "completed": "Exported {{count}} rows.",
     "hash": "Content hash"
+  },
+  "releases": {
+    "title": "Pool releases",
+    "description": "The boards measure the newest release. A new, revised or archived test reaches them at the next release.",
+    "unreleased": "Next release",
+    "matches": "The pool matches {{name}}.",
+    "changes": "{{added}} new, {{revised}} revised, {{retired}} retired",
+    "tests_one": "{{count}} test",
+    "tests_other": "{{count}} tests",
+    "name": "Name",
+    "release": "Release",
+    "history": "Releases",
+    "empty": "No release yet: the boards measure every live test."
   },
   "schedules": {
     "title": "Automatic retesting",

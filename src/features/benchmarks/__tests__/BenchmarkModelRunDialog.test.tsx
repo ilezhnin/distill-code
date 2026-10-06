@@ -91,6 +91,8 @@ function show(
     runId?: string | null;
     /** Tests the model already has a score on, by version and attempt. */
     measured?: { versionIds: string[]; attemptIds: string[] };
+    /** The released pool the boards measure. */
+    pool?: string[];
   } = {},
 ) {
   render(
@@ -106,6 +108,7 @@ function show(
           attemptIds: options.measured?.attemptIds ?? [],
         })}
         definitions={definitions}
+        pool={options.pool ?? null}
         runId={options.runId ?? null}
         onClose={vi.fn()}
       />
@@ -183,6 +186,18 @@ beforeEach(() => {
   vi.mocked(benchmarkApi.cancelRun).mockResolvedValue(liveRun("cancelling"));
 });
 afterEach(cleanup);
+
+it("lists the released pool, not tests published after it", async () => {
+  // The release froze Alpha, Golf before its archive and Hotel's first version.
+  show({ pool: ["version-1", "version-7", "version-8-old", "version-6"] });
+  await screen.findByRole("dialog");
+  expect(screen.getByText("3 of 3 selected")).toBeInTheDocument();
+  for (const name of ["Alpha", "Golf", "Hotel"])
+    expect(screen.getByText(name)).toBeInTheDocument();
+  for (const name of ["Bravo", "Charlie", "Delta", "Echo"])
+    expect(screen.queryByText(name)).not.toBeInTheDocument();
+  expect(screen.getByText("Foxtrot")).toBeInTheDocument();
+});
 
 it("checks every current test, keeps the model's own out, and runs the rest on today's runtime", async () => {
   const user = userEvent.setup();

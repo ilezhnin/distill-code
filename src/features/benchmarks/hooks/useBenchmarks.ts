@@ -5,7 +5,12 @@ import { activeRuns, runProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
-import type { CatalogEntry, Configuration, LeaderboardReport } from "../types";
+import type {
+  CatalogEntry,
+  Configuration,
+  LeaderboardReport,
+  PoolRelease,
+} from "../types";
 
 export const benchmarkKeys = ["benchmarks"] as const;
 
@@ -114,6 +119,16 @@ export function useBenchmarkProgress() {
     return dispatching.length > 0 ? runProgress(dispatching) : null;
   }, [runs.data]);
 }
+
+/** Every pool release, oldest first. */
+export function useBenchmarkReleases() {
+  const releases = useQuery({
+    queryKey: [...benchmarkKeys, "releases"],
+    queryFn: benchmarkApi.listReleases,
+  });
+  return releases.data ?? EMPTY_RELEASES;
+}
+const EMPTY_RELEASES: PoolRelease[] = [];
 
 /** Dated vendor facts; an empty catalog is seeded by the service on first read. */
 export function useModelCatalog() {

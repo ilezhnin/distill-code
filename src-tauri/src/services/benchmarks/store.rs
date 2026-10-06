@@ -880,6 +880,24 @@ impl Store {
             .await?;
         Ok(())
     }
+    /// Every pool release, oldest first.
+    pub async fn releases(&self) -> Result<Vec<PoolRelease>> {
+        self.json_rows("SELECT data_json FROM pool_releases ORDER BY created_at, rowid")
+            .await
+    }
+    pub async fn save_release(&self, release: &PoolRelease) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO pool_releases(id,name,created_at,data_json) VALUES(?,?,?,?)")
+            .bind(&release.id)
+            .bind(&release.name)
+            .bind(release.created_at)
+            .bind(serde_json::to_string(release)?)
+            .execute(&mut *tx)
+            .await?;
+        event(&mut tx, &release.id, "release_created").await?;
+        tx.commit().await?;
+        Ok(())
+    }
     pub async fn schedules(&self) -> Result<Vec<Schedule>> {
         self.json_rows("SELECT data_json FROM schedules ORDER BY rowid DESC")
             .await

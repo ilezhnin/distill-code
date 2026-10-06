@@ -83,6 +83,14 @@ const NAVIGATOR_TICK_SPACING = 150;
 const BAND_WIDTH = 14;
 const DAY = 86_400_000;
 
+/** A pool release as the chart marks it. */
+export interface ReleaseMark {
+  id: string;
+  name: string;
+  at: number;
+}
+const NO_RELEASES: ReleaseMark[] = [];
+
 type Zoom = { choice: RangeChoice } | { choice: null; view: TimeWindow };
 type Drag = { mode: "window" | "start" | "end"; x: number; view: TimeWindow };
 
@@ -120,12 +128,15 @@ export function PointsHistoryChart({
   selectedId,
   onSelect,
   toolbar,
+  releases = NO_RELEASES,
 }: {
   points: HistoryPoint[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   /** Controls at the end of the zoom row. */
   toolbar?: ReactNode;
+  /** Where the pool changed: a step in points there is the pool, not the model. */
+  releases?: ReleaseMark[];
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -460,6 +471,36 @@ export function PointsHistoryChart({
               </text>
             </g>
           ))}
+          {span > 0
+            ? releases
+                .filter(
+                  (release) =>
+                    release.at >= view.start && release.at <= view.end,
+                )
+                .map((release) => {
+                  const at = timeX(release.at);
+                  return (
+                    <g key={release.id} data-history-release={release.name}>
+                      <line
+                        x1={at}
+                        x2={at}
+                        y1={plotTop - 4}
+                        y2={plotBottom}
+                        stroke="var(--muted-foreground)"
+                        strokeOpacity={0.7}
+                        strokeDasharray="2 4"
+                      />
+                      <text
+                        x={at + 4}
+                        y={plotTop + 6}
+                        className="fill-muted-foreground text-[11px]"
+                      >
+                        {release.name}
+                      </text>
+                    </g>
+                  );
+                })
+            : null}
           {ticks.map((tick) => {
             const at = timeX(tick.at);
             const anchor =

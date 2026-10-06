@@ -328,6 +328,8 @@ pub fn run() {
             commands::benchmarks::benchmark_list_catalog,
             commands::benchmarks::benchmark_save_catalog_entry,
             commands::benchmarks::benchmark_delete_catalog_entry,
+            commands::benchmarks::benchmark_list_releases,
+            commands::benchmarks::benchmark_create_release,
             commands::benchmarks::benchmark_submit_review,
             commands::benchmarks::benchmark_rescore,
             commands::benchmarks::benchmark_export_dataset,

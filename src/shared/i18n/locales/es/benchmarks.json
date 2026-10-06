@@ -48,7 +48,8 @@
     "export": "Exportar conjunto de datos",
     "schedules": "Repetición automática",
     "routing": "Evidencia del selector",
-    "catalog": "Catálogo de modelos"
+    "catalog": "Catálogo de modelos",
+    "releases": "Versiones del conjunto"
   },
   "filters": {
     "run": "Ejecución",
@@ -360,6 +361,19 @@
     "heldOut": "Incluir resultados de evaluación reservada en esta exportación de investigación",
     "completed": "Se exportaron {{count}} filas.",
     "hash": "Hash del contenido"
+  },
+  "releases": {
+    "title": "Versiones del conjunto",
+    "description": "Los tableros miden la versión más reciente. Una prueba nueva, revisada o archivada llega a ellos en la siguiente versión.",
+    "unreleased": "Próxima versión",
+    "matches": "El conjunto coincide con {{name}}.",
+    "changes": "{{added}} nuevas, {{revised}} revisadas, {{retired}} retiradas",
+    "tests_one": "{{count}} prueba",
+    "tests_other": "{{count}} pruebas",
+    "name": "Nombre",
+    "release": "Publicar versión",
+    "history": "Versiones",
+    "empty": "Todavía no hay versiones: los tableros miden todas las pruebas activas."
   },
   "schedules": {
     "title": "Repetición automática",

@@ -45,7 +45,7 @@ import type {
   ResultQuery,
   RunSummary,
 } from "../types";
-import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { benchmarkKeys, useBenchmarkReleases } from "../hooks/useBenchmarks";
 import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
 import { listByIds } from "./BenchmarkTestStatus";
@@ -113,6 +113,16 @@ export function BenchmarkConfigurationPage({
   onOpenRun: (runId: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  const releases = useBenchmarkReleases();
+  const releaseMarks = useMemo(
+    () =>
+      releases.map((release) => ({
+        id: release.id,
+        name: release.name,
+        at: release.createdAt,
+      })),
+    [releases],
+  );
   const { formatDate } = useLocaleFormatting();
   const names = useModelNames();
   const catalog = useModelCatalog();
@@ -420,6 +430,7 @@ export function BenchmarkConfigurationPage({
       {modes.length > 0 ? (
         <section aria-label={t("history.title")}>
           <PointsHistoryChart
+            releases={releaseMarks}
             toolbar={
               <div className="flex items-center gap-0.5">
                 {modes.map((mode) => (

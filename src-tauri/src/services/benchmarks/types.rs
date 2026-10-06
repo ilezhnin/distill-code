@@ -810,12 +810,25 @@ pub struct CandidateObservation {
     pub models: Vec<InventoryModel>,
     pub authoritative: bool,
 }
+/// A dated, frozen set of case versions: from its date on, the pool the
+/// boards measure, so a step in a model's points at a release reads as the
+/// pool changing, not the model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolRelease {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    pub version_ids: Vec<String>,
+}
 #[derive(Debug, Clone)]
 pub struct QueryData {
     pub definitions: Vec<BenchmarkDefinition>,
     pub versions: Vec<BenchmarkVersion>,
     pub runs: Vec<BenchmarkRun>,
     pub attempts: Vec<Attempt>,
+    /// Every pool release, oldest first.
+    pub releases: Vec<PoolRelease>,
     /// The protocol the ledger is read under: how many scored repetitions a
     /// cell needs before its case counts. A case may declare more.
     pub required_repetitions: u32,

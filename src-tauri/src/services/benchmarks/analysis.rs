@@ -689,7 +689,48 @@ pub(super) fn board_stats(cells: &BTreeMap<&str, CaseCell>, records: &CaseRecord
 /// A dated query takes the pool as it stood then, so a later publication,
 /// archive or restore never rewrites an earlier observation.
 pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a BenchmarkVersion> {
-    let as_of = query.as_of;
+    let versions: BTreeMap<&str, &BenchmarkVersion> =
+        data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
+    let mut pool: Vec<&BenchmarkVersion> = match query
+        .run_id
+        .as_ref()
+        .and_then(|id| data.runs.iter().find(|run| &run.id == id))
+    {
+        Some(run) => run
+            .request
+            .version_ids
+            .iter()
+            .filter_map(|id| versions.get(id.as_str()).copied())
+            .collect(),
+        // From the first release on, the pool is the newest release at the
+        // date; publishing or archiving a test changes it only at the next.
+        None => match release_at(data, query.as_of) {
+            Some(release) => release
+                .version_ids
+                .iter()
+                .filter_map(|id| versions.get(id.as_str()).copied())
+                .collect(),
+            None => live_versions(data, query.as_of),
+        },
+    };
+    if let Some(ids) = &query.version_ids {
+        pool.retain(|version| ids.contains(&version.id));
+    }
+    pool.sort_by(|a, b| a.id.cmp(&b.id));
+    pool
+}
+
+/// The newest pool release made by `as_of` (by now without one).
+pub(super) fn release_at(data: &QueryData, as_of: Option<i64>) -> Option<&PoolRelease> {
+    data.releases
+        .iter()
+        .filter(|release| as_of.is_none_or(|at| release.created_at <= at))
+        .max_by_key(|release| (release.created_at, &release.id))
+}
+
+/// Every live test's newest published version at `as_of` (now without one):
+/// the pool before the first release, and what the next release freezes.
+pub(super) fn live_versions(data: &QueryData, as_of: Option<i64>) -> Vec<&BenchmarkVersion> {
     let versions: BTreeMap<&str, &BenchmarkVersion> =
         data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
     // An archived definition is live before its archive time. Definitions
@@ -742,42 +783,25 @@ pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benc
             }
         }
     }
-    let mut pool: Vec<&BenchmarkVersion> = match query
-        .run_id
-        .as_ref()
-        .and_then(|id| data.runs.iter().find(|run| &run.id == id))
-    {
-        Some(run) => run
-            .request
-            .version_ids
-            .iter()
-            .filter_map(|id| versions.get(id.as_str()).copied())
-            .collect(),
-        None => {
-            let mut latest: BTreeMap<&str, &BenchmarkVersion> = BTreeMap::new();
-            for version in &data.versions {
-                let retired = archived
-                    .get(version.definition_id.as_str())
-                    .is_some_and(|live_until| as_of.is_none_or(|at| at > *live_until))
-                    || as_of.is_some_and(|at| archived_then(&version.definition_id, at));
-                if retired || as_of.is_some_and(|at| version.published_at > at) {
-                    continue;
-                }
-                let entry = latest
-                    .entry(version.definition_id.as_str())
-                    .or_insert(version);
-                if version.published_at > entry.published_at {
-                    *entry = version;
-                }
-            }
-            latest.into_values().collect()
+    let mut latest: BTreeMap<&str, &BenchmarkVersion> = BTreeMap::new();
+    for version in &data.versions {
+        let retired = archived
+            .get(version.definition_id.as_str())
+            .is_some_and(|live_until| as_of.is_none_or(|at| at > *live_until))
+            || as_of.is_some_and(|at| archived_then(&version.definition_id, at));
+        if retired || as_of.is_some_and(|at| version.published_at > at) {
+            continue;
         }
-    };
-    if let Some(ids) = &query.version_ids {
-        pool.retain(|version| ids.contains(&version.id));
+        let entry = latest
+            .entry(version.definition_id.as_str())
+            .or_insert(version);
+        if version.published_at > entry.published_at {
+            *entry = version;
+        }
     }
-    pool.sort_by(|a, b| a.id.cmp(&b.id));
-    pool
+    let mut live: Vec<&BenchmarkVersion> = latest.into_values().collect();
+    live.sort_by(|a, b| a.id.cmp(&b.id));
+    live
 }
 
 /// A case's standing cell for the training ledger and the orchestrator's
@@ -1697,6 +1721,7 @@ pub(super) mod tests {
             },
         ];
         QueryData {
+            releases: Vec::new(),
             definitions: vec![],
             versions,
             runs,

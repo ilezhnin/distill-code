@@ -16,6 +16,7 @@ import type {
   Configuration,
   CatalogEntry,
   InventoryModel,
+  PoolRelease,
   RunPreview,
   RunRequest,
   RunSummary,
@@ -175,6 +176,10 @@ export const benchmarkApi = {
     invoke<RoutingEvidence>("benchmark_get_routing_evidence", { query }),
   getUsageLedger: () =>
     invoke<UsageLedgerEntry[]>("benchmark_get_usage_ledger"),
+  listReleases: () => invoke<PoolRelease[]>("benchmark_list_releases"),
+  /** Freezes every live test's newest version; the name defaults to the next vN. */
+  createRelease: (name: string | null) =>
+    invoke<PoolRelease>("benchmark_create_release", { name }),
   submitReview: (
     id: string,
     score: number,

@@ -6437,6 +6437,82 @@ mod tests {
         let definition = s.store.save_draft(None, None, draft).await.unwrap();
         s.store.publish(&definition.id, 1).await.unwrap()
     }
+    /// The pool the boards measure now, as version ids.
+    async fn board_pool(s: &BenchmarkService) -> Vec<String> {
+        let data = s.query_data().await.unwrap();
+        let mut ids: Vec<String> = super::super::analysis::pool(&data, &ResultQuery::default())
+            .into_iter()
+            .map(|version| version.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+    #[tokio::test]
+    async fn a_release_freezes_the_pool_until_the_next() {
+        let (_dir, s, _) = setup().await;
+        let mut seeds = seed_definitions();
+        let first = publish(&s, seeds.remove(0)).await;
+        let second = publish(&s, seeds.remove(0)).await;
+        let mut frozen = vec![first.id.clone(), second.id.clone()];
+        frozen.sort();
+        // Before any release the pool is every live test.
+        assert_eq!(board_pool(&s).await, frozen);
+        // Distinct milliseconds for the dated reads below.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let v1 = s.create_release(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(v1.name, "v1");
+        let refused = s.create_release(None).await.unwrap_err();
+        assert!(
+            refused.message.contains("not changed since v1"),
+            "{}",
+            refused.message
+        );
+        // A new test and a new version wait for the next release.
+        let third = publish(&s, seeds.remove(0)).await;
+        let mut draft = s
+            .store
+            .definition(&first.definition_id)
+            .await
+            .unwrap()
+            .draft;
+        draft.prompt.push_str(" Answer briefly.");
+        let saved = s
+            .store
+            .save_draft(Some(first.definition_id.as_str()), Some(1), draft)
+            .await
+            .unwrap();
+        let revised = s
+            .store
+            .publish(&first.definition_id, saved.draft_revision)
+            .await
+            .unwrap();
+        assert_eq!(board_pool(&s).await, frozen);
+        assert!(s.create_release(Some("v1".into())).await.is_err());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let v2 = s.create_release(None).await.unwrap();
+        assert_eq!(v2.name, "v2");
+        let mut released = vec![revised.id, second.id, third.id];
+        released.sort();
+        assert_eq!(board_pool(&s).await, released);
+        // A point dated before the first release reads the live tests of its day.
+        let data = s.query_data().await.unwrap();
+        let early = ResultQuery {
+            as_of: Some(v1.created_at - 1),
+            ..Default::default()
+        };
+        assert_eq!(super::super::analysis::pool(&data, &early).len(), 2);
+        let between = ResultQuery {
+            as_of: Some(v2.created_at - 1),
+            ..Default::default()
+        };
+        let mut then: Vec<String> = super::super::analysis::pool(&data, &between)
+            .into_iter()
+            .map(|version| version.id.clone())
+            .collect();
+        then.sort();
+        assert_eq!(then, frozen);
+    }
     /// One repetition of a creative brief for the passing fake model.
     async fn creative_request(s: &BenchmarkService) -> RunRequest {
         let version = publish(s, creative()).await;

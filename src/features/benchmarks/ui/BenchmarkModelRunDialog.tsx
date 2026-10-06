@@ -75,12 +75,15 @@ function sameConfiguration(a: Configuration, b: Configuration): boolean {
 export function BenchmarkModelRunDialog({
   row,
   definitions,
+  pool = null,
   runId: activeRunId,
   onClose,
 }: {
   /** The model's leaderboard row, as the leaderboard stands now. */
   row: LeaderboardRow;
   definitions: BenchmarkDefinition[];
+  /** The versions the boards measure (the newest release once there is one). */
+  pool?: string[] | null;
   /** The model's newest run inside its window: followed, finished or warned about. */
   runId: string | null;
   onClose: () => void;
@@ -91,15 +94,20 @@ export function BenchmarkModelRunDialog({
   const configuration = row.configuration;
   const name = modelDisplayName(configuration);
   const effort = explicitEffort(configuration.effort);
-  // The current pool: the newest published version of every live test, the
-  // ones this model can be measured on first.
+  // The pool the boards measure: the newest release once there is one, else
+  // the newest published version of every live test. A run of it counts
+  // whole.
   const { eligible, authored } = useMemo(() => {
+    const inPool = pool ? new Set(pool) : null;
     const current = definitions
-      .filter((definition) => !definition.archived)
       .flatMap((definition) =>
-        [...definition.versions]
-          .sort((a, b) => b.publishedAt - a.publishedAt)
-          .slice(0, 1),
+        inPool
+          ? definition.versions.filter((version) => inPool.has(version.id))
+          : definition.archived
+            ? []
+            : [...definition.versions]
+                .sort((a, b) => b.publishedAt - a.publishedAt)
+                .slice(0, 1),
       )
       .sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
     const wrote = (version: BenchmarkVersion) =>
@@ -108,7 +116,7 @@ export function BenchmarkModelRunDialog({
       eligible: current.filter((version) => !wrote(version)),
       authored: current.filter(wrote),
     };
-  }, [definitions, configuration]);
+  }, [definitions, configuration, pool]);
   // A click overrides a test's default until a run finishes.
   const [overrides, setOverrides] = useState<Map<string, boolean>>(
     () => new Map(),

@@ -11,6 +11,7 @@ import {
   IconPlus,
   IconRepeat,
   IconRoute,
+  IconTag,
 } from "@tabler/icons-react";
 import type { AppNavigationUpdateOptions } from "@/app/types/appNavigation";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
@@ -48,6 +49,7 @@ import { DesignBenchView } from "./DesignBenchView";
 import { BenchmarkAlert, BenchmarkEmpty } from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
 import { BenchmarkModelRunDialog } from "./BenchmarkModelRunDialog";
+import { BenchmarkReleasesDialog } from "./BenchmarkReleasesDialog";
 import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
 import { BenchmarkRunDrawer } from "./BenchmarkRunDrawer";
 import { BenchmarkRunsDialog } from "./BenchmarkRunsDialog";
@@ -68,6 +70,7 @@ type DialogKind =
   | "runs"
   | "import"
   | "export"
+  | "releases"
   | "schedules"
   | "routing"
   | "catalog";
@@ -147,6 +150,7 @@ export function BenchmarksView({
     { kind: "runs", label: t("toolbar.runs"), icon: <IconHistory /> },
     { kind: "import", label: t("toolbar.import"), icon: <IconFileImport /> },
     { kind: "export", label: t("toolbar.export"), icon: <IconFileExport /> },
+    { kind: "releases", label: t("toolbar.releases"), icon: <IconTag /> },
     { kind: "schedules", label: t("toolbar.schedules"), icon: <IconRepeat /> },
     { kind: "routing", label: t("toolbar.routing"), icon: <IconRoute /> },
     { kind: "catalog", label: t("toolbar.catalog"), icon: <IconCoin /> },
@@ -305,6 +309,7 @@ export function BenchmarksView({
             ) ?? modelRun.row
           }
           definitions={definitions.data ?? []}
+          pool={leaderboard.data?.cohort?.versionIds ?? null}
           runId={modelRun.runId}
           onClose={() => setModelRun(null)}
         />
@@ -349,6 +354,12 @@ export function BenchmarksView({
       ) : null}
       {dialog === "catalog" ? (
         <BenchmarkCatalogDialog onClose={() => setDialog(null)} />
+      ) : null}
+      {dialog === "releases" ? (
+        <BenchmarkReleasesDialog
+          definitions={definitions.data ?? []}
+          onClose={() => setDialog(null)}
+        />
       ) : null}
       {dialog === "schedules" ? (
         <BenchmarkSchedulesDialog

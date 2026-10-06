@@ -278,6 +278,7 @@ mod tests {
     async fn query_data(store: &Store) -> QueryData {
         let definitions = store.all_definitions().await.unwrap();
         QueryData {
+            releases: Vec::new(),
             versions: definitions
                 .iter()
                 .flat_map(|d| d.versions.clone())

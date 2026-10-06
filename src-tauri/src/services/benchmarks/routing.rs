@@ -673,6 +673,7 @@ mod tests {
     }
     fn matrix() -> (QueryData, RoutingEvidenceQuery) {
         let mut data = QueryData {
+            releases: Vec::new(),
             definitions: vec![],
             versions: vec![],
             runs: vec![],
