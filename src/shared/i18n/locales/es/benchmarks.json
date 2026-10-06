@@ -206,6 +206,26 @@
     "smoke": "Conjunto de humo",
     "detail": "{{spread}} % de diferencia · {{flaky}} inestables"
   },
+  "selector": {
+    "title": "Selector frente a modelos fijos",
+    "empty": "Todavía ningún caso reservado tiene una celda completa para cada modelo.",
+    "cases": "Casos reservados",
+    "casesHint": "Casos reservados de la clase en los que cada modelo tiene una celda completa.",
+    "policies": {
+      "selector": "Selector",
+      "best_fixed": "Mejor fijo",
+      "persona": "Persona",
+      "oracle": "Oráculo"
+    },
+    "hints": {
+      "selector": "El modelo que el selector elige para cada caso a partir de la evidencia de entrenamiento y las facetas del caso, en puntos sobre 1000.",
+      "best_fixed": "El mejor modelo único en estos casos.",
+      "persona": "El primer modelo del orden de la persona de la clase.",
+      "oracle": "El mejor modelo de cada caso: el techo que ningún selector puede superar."
+    },
+    "gain": "Ganancia",
+    "gainHint": "Los puntos del selector sobre los del mejor modelo fijo. Mientras no sea mayor que cero, el selector no elige ningún modelo."
+  },
   "results": {
     "empty": "Todavía no hay intentos para esta prueba."
   },

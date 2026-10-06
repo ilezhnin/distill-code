@@ -12,6 +12,7 @@ pub mod repository;
 pub mod routing;
 pub mod runner;
 pub mod seeds;
+pub mod selector;
 pub mod store;
 pub mod types;
 pub mod worker;

@@ -40,6 +40,7 @@ import type {
 } from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import { BenchmarkEditor } from "./BenchmarkEditor";
+import { SelectorHarness } from "./SelectorHarness";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -406,6 +407,7 @@ export function BenchDevelopmentView({
               {t("benchmarks:library.seedHint")}
             </p>
           ) : null}
+          <SelectorHarness />
         </>
       )}
     </section>

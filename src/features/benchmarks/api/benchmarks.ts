@@ -13,6 +13,8 @@ import type {
   BenchmarkVersion,
   CandidateObservation,
   CaseStats,
+  SelectorHarnessQuery,
+  SelectorHarnessReport,
   Capability,
   Configuration,
   CatalogEntry,
@@ -171,6 +173,9 @@ export const benchmarkApi = {
     invoke<void>("benchmark_delete_catalog_entry", { id }),
   getLeaderboard: (query: ResultQuery) =>
     invoke<LeaderboardReport>("benchmark_get_leaderboard", { query }),
+  /** The held-out harness of one class: the selector against fixed policies. */
+  selectorHarness: (query: SelectorHarnessQuery) =>
+    invoke<SelectorHarnessReport>("benchmark_selector_harness", { query }),
   /** Discrimination and flakiness of every pool case over the standing cells. */
   getCaseStats: () => invoke<CaseStats[]>("benchmark_get_case_stats"),
   getHistory: (configuration: Configuration) =>

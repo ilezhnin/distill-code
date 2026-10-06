@@ -267,6 +267,36 @@ pub async fn benchmark_get_case_stats(app: AppHandle) -> Result<Vec<CaseStats>> 
     let s = service(&app).await?;
     analyze(s.query_data().await?, benchmarks::analysis::case_tracker).await
 }
+/// Chooses a configuration for a class of work from the evidence, or the
+/// persona's prior while evidence is short; `record` keeps the decision.
+#[tauri::command]
+pub async fn benchmark_select_candidate(
+    app: AppHandle,
+    query: benchmarks::selector::SelectionQuery,
+    record: Option<bool>,
+) -> Result<benchmarks::selector::Selection> {
+    let s = service(&app).await?;
+    let selection = analyze(s.query_data().await?, move |data| {
+        benchmarks::selector::select(data, &query)
+    })
+    .await??;
+    if record.unwrap_or(false) {
+        s.store.save_selection(&selection).await?;
+    }
+    Ok(selection)
+}
+/// The held-out harness of one class: the selector against fixed policies.
+#[tauri::command]
+pub async fn benchmark_selector_harness(
+    app: AppHandle,
+    query: benchmarks::selector::HarnessQuery,
+) -> Result<benchmarks::selector::HarnessReport> {
+    let s = service(&app).await?;
+    analyze(s.query_data().await?, move |data| {
+        benchmarks::selector::harness(data, &query)
+    })
+    .await?
+}
 #[tauri::command]
 pub async fn benchmark_get_history(
     app: AppHandle,

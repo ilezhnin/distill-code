@@ -323,6 +323,8 @@ pub fn run() {
             commands::benchmarks::benchmark_get_leaderboard,
             commands::benchmarks::benchmark_get_history,
             commands::benchmarks::benchmark_get_case_stats,
+            commands::benchmarks::benchmark_select_candidate,
+            commands::benchmarks::benchmark_selector_harness,
             commands::benchmarks::benchmark_get_usage_ledger,
             commands::benchmarks::benchmark_get_routing_evidence,
             commands::benchmarks::benchmark_get_candidate_observations,

@@ -206,6 +206,26 @@
     "smoke": "Smoke set",
     "detail": "{{spread}}% apart · {{flaky}} flaky"
   },
+  "selector": {
+    "title": "Selector against fixed models",
+    "empty": "No held-out case has a complete cell for every model yet.",
+    "cases": "Held-out cases",
+    "casesHint": "Held-out cases of the class on which every model has a complete cell.",
+    "policies": {
+      "selector": "Selector",
+      "best_fixed": "Best fixed",
+      "persona": "Persona",
+      "oracle": "Oracle"
+    },
+    "hints": {
+      "selector": "The model the selector picks for each case from training evidence and the case's facets, points out of 1000.",
+      "best_fixed": "The best single model on these cases.",
+      "persona": "The first model of the class's persona ranking.",
+      "oracle": "The best model of each case: the ceiling no selector can pass."
+    },
+    "gain": "Gain",
+    "gainHint": "The selector's points over the best fixed model's. Until it is above zero the selector chooses no model anywhere."
+  },
   "results": {
     "empty": "No attempts for this test yet."
   },

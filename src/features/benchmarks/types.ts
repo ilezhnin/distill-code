@@ -431,6 +431,34 @@ export interface LeaderboardReport {
   cohort: LeaderboardCohort | null;
   rows: LeaderboardRow[];
 }
+/** One policy's mean reward over a selector harness's held-out cases. */
+export interface SelectorPolicyResult {
+  /** `fixed`, `best_fixed`, `oracle`, `persona` or `selector`. */
+  policy: string;
+  candidateKey: string | null;
+  meanReward: number;
+}
+/**
+ * The held-out harness of one class: the selector against each single
+ * configuration, the best of them, the persona's ranking and the per-case
+ * oracle. Until the gain is above zero the selector decides nothing.
+ */
+export interface SelectorHarnessReport {
+  workClassId: string;
+  cases: number;
+  policies: SelectorPolicyResult[];
+  selectorGain: number | null;
+  reason: string;
+}
+export interface SelectorHarnessQuery {
+  workClassId: string;
+  candidates: {
+    configuration: Configuration;
+    available: boolean;
+    reason: string | null;
+  }[];
+  prior: Configuration[];
+}
 /**
  * How one pool case separates the models measured on it, from each model's
  * standing cell.

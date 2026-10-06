@@ -59,6 +59,7 @@ vi.mock("../api/benchmarks", () => ({
     listDesigns: vi.fn(),
     listReleases: vi.fn().mockResolvedValue([]),
     getCaseStats: vi.fn().mockResolvedValue([]),
+    selectorHarness: vi.fn(),
     getRoutingEvidence: vi.fn(),
     listSchedules: vi.fn(),
     saveSchedule: vi.fn(),
