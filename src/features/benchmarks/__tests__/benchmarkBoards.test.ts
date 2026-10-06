@@ -88,6 +88,12 @@ describe("leaderboard boards", () => {
     ).not.toBe(rowKey(before));
   });
 
+  it("keeps one row per model whichever account a run went on", () => {
+    expect(
+      configurationKey({ ...configuration, accountId: "another-account" }),
+    ).toBe(configurationKey(configuration));
+  });
+
   it("keeps an attempt with auxiliary calls on its configuration's row", () => {
     const row = leaderboardRow({ configuration });
     const auxiliary = {
@@ -115,7 +121,6 @@ describe("leaderboard boards", () => {
       JSON.stringify([
         [
           "kimi-acp",
-          "cli-login-kimi-acp",
           "kimi-code/kimi-for-coding",
           "default",
           false,

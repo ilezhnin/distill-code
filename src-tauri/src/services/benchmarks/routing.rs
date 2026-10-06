@@ -823,13 +823,14 @@ mod tests {
             candidate_key(&config("low")),
             candidate_key(&config("high"))
         );
-        // A display id never splits a candidate; an account does.
+        // Neither a display id nor the account splits a candidate: the
+        // account is where a turn ran, not what was measured.
         let mut label = config("low");
         label.id = "unrelated display label".into();
         assert_eq!(candidate_key(&label), candidate_key(&config("low")));
         let mut account = config("low");
         account.account_id = Some("another account".into());
-        assert_ne!(candidate_key(&account), candidate_key(&config("low")));
+        assert_eq!(candidate_key(&account), candidate_key(&config("low")));
     }
     #[test]
     fn class_evidence_owes_the_pool_as_it_stood_at_the_cutoff() {

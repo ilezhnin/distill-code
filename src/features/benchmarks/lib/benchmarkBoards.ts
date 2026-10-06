@@ -109,9 +109,9 @@ export function onMovingAlias(
  * adds its display name; no other key carries one.
  */
 export function configurationKey(configuration: Configuration): string {
+  // The account is where a run went, not what it measured: one row per model.
   const identity = [
     configuration.providerId,
-    configuration.accountId ?? null,
     configuration.modelId,
     configuration.effort || "default",
     configuration.fastMode ?? false,

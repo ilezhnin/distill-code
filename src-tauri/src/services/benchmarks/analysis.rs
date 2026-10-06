@@ -292,10 +292,12 @@ fn has_auxiliary_usage(attempt: &Attempt) -> bool {
 /// (`NativeProvider::moving_aliases`) is a candidate per display name, so
 /// Kimi's `kimi-for-coding` as K2.7 Code and as K2.8 Preview are two rows;
 /// every other key is unchanged by that.
+/// A board row's identity: what is measured, not where it ran. The account is
+/// a quota pool; a run that goes on on another account of the provider when
+/// one runs out stays one row, and every attempt keeps its own account.
 pub(super) fn leaderboard_key(configuration: &Configuration) -> String {
     let identity = (
         &configuration.provider_id,
-        &configuration.account_id,
         &configuration.model_id,
         configuration
             .effort
@@ -2180,7 +2182,7 @@ pub(super) mod tests {
         };
         assert_eq!(
             leaderboard_key(&claude),
-            r#"["claude-acp","account","sonnet","default",false,"subscription","native_text"]"#
+            r#"["claude-acp","sonnet","default",false,"subscription","native_text"]"#
         );
         let mut renamed = claude.clone();
         renamed.model_name = Some("Sonnet 5.5".into());
@@ -2195,7 +2197,7 @@ pub(super) mod tests {
         assert_ne!(leaderboard_key(&k27), leaderboard_key(&k28));
         assert_eq!(
             leaderboard_key(&k28),
-            r#"[["kimi-acp","cli-login-kimi-acp","kimi-code/kimi-for-coding","default",false,"subscription","native_text"],"K2.8 Preview"]"#
+            r#"[["kimi-acp","kimi-code/kimi-for-coding","default",false,"subscription","native_text"],"K2.8 Preview"]"#
         );
         let mut k3 = k27.clone();
         k3.model_id = "kimi-code/k3".into();

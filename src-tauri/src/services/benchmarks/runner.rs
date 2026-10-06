@@ -134,6 +134,11 @@ pub trait ExecutionBackend: Send + Sync {
             })
         })
     }
+    /// The enabled accounts of `provider` a turn may run on, its default
+    /// first; none for a provider with only the CLI's own sign-in.
+    fn accounts<'a>(&'a self, _provider: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 pub struct NativeBackend {
     pub app: tauri::AppHandle,
@@ -554,6 +559,47 @@ fn quota_waiting(run_id: &str, provider_id: &str) -> bool {
         .contains_key(&(run_id.to_owned(), provider_id.to_owned()))
 }
 
+/// Accounts whose usage limit ran out under a run, until their reset.
+static EXHAUSTED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// `account` refused `run_id`'s turns for its usage limit until `until`.
+fn exhaust(run_id: &str, account: &str, until: i64) {
+    EXHAUSTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((run_id.to_owned(), account.to_owned()), until);
+}
+
+/// Whether `account`'s limit still holds `run_id` off.
+fn exhausted(run_id: &str, account: &str) -> bool {
+    let mut held = EXHAUSTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (run_id.to_owned(), account.to_owned());
+    match held.get(&key) {
+        Some(until) if *until > now() => true,
+        Some(_) => {
+            held.remove(&key);
+            false
+        }
+        None => false,
+    }
+}
+
+/// When a quota refusal says the account's limit resets.
+fn quota_reset(error: &str) -> Option<i64> {
+    serde_json::from_str::<Value>(error)
+        .ok()?
+        .pointer("/data/nextReset")
+        .and_then(Value::as_i64)
+}
+
+/// Why a test moved to another account, before the provider's own words.
+const MOVED_ACCOUNT: &str =
+    "The usage limit of its account ran out; it goes on on another account of the provider";
+
 /// A turn of `provider_id` finished: the run no longer waits on its limit.
 fn quota_recovered(run_id: &str, provider_id: &str) {
     QUOTA_SINCE
@@ -615,6 +661,38 @@ fn provider_hold(run_id: &str, provider_id: &str) -> Option<i64> {
 
 fn provider_held(run_id: &str, provider_id: &str) -> bool {
     provider_hold(run_id, provider_id).is_some()
+}
+
+/// The ready attempts in dispatch order: a case's repetitions go out
+/// together, at the place of its first one in the plan, and a case already
+/// begun goes first, so a run stopped early leaves whole cases rather than
+/// one or two repetitions of many. The order of cases stays the plan's.
+fn grouped_by_cell(
+    run: &BenchmarkRun,
+    ready: Vec<(Attempt, BenchmarkVersion)>,
+) -> Vec<(Attempt, BenchmarkVersion)> {
+    let cell = |a: &Attempt| {
+        (
+            a.version_id.clone(),
+            super::analysis::leaderboard_key(&a.configuration),
+        )
+    };
+    let begun: std::collections::HashSet<_> = run
+        .attempts
+        .iter()
+        .filter(|a| a.started_at.is_some() && !super::analysis::is_superseded(a))
+        .map(cell)
+        .collect();
+    let mut first: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
+    for (index, (a, _)) in ready.iter().enumerate() {
+        first.entry(cell(a)).or_insert(index);
+    }
+    let mut ready = ready;
+    ready.sort_by_key(|(a, _)| {
+        let key = cell(a);
+        (!begun.contains(&key), first[&key], a.repetition)
+    });
+    ready
 }
 
 /// Whether a turn that failed with `code`, while its attempt was saved in
@@ -1694,6 +1772,21 @@ impl ExecutionBackend for NativeBackend {
             host.account_activity(&c.provider_id, "*")
                 .await
                 .map_err(host_error)
+        })
+    }
+    fn accounts<'a>(&'a self, provider: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+        Box::pin(async move {
+            let snapshot = crate::services::provider_accounts::snapshot(&self.app)
+                .map_err(|error| BenchmarkError::new("infrastructure_failure", error))?;
+            let default = snapshot.defaults.get(provider);
+            let mut accounts: Vec<String> = snapshot
+                .accounts
+                .iter()
+                .filter(|account| account.provider_id == provider && account.enabled)
+                .map(|account| account.id.clone())
+                .collect();
+            accounts.sort_by_key(|account| Some(account) != default);
+            Ok(accounts)
         })
     }
     fn inventory<'a>(
@@ -3315,6 +3408,15 @@ impl BenchmarkService {
         flights: &mut tokio::task::JoinSet<()>,
         tried: &mut std::collections::HashSet<String>,
     ) -> Result<bool> {
+        // An account whose limit ran out under this run hands its tests to
+        // another account of the provider that has room.
+        if let Some(account) = a.configuration.account_id.clone() {
+            if exhausted(&run.id, &account) {
+                if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
+                    a.configuration.account_id = Some(other);
+                }
+            }
+        }
         // A configuration flies as many attempts as its run was admitted
         // with, within its account's and the app's slots.
         let lane = super::analysis::configuration_key(&a.configuration);
@@ -3433,6 +3535,32 @@ impl BenchmarkService {
                 // sign-in or policy the host would not start) waits for the
                 // operator with its reason. The same refusal again after the
                 // operator resumed settles the cell instead.
+                // A limit that ran out on this account moves the test to
+                // another account of the provider with room, if there is one.
+                if error.code == QUOTA_WAIT {
+                    if let Some(account) = a.configuration.account_id.as_deref() {
+                        exhaust(
+                            &run.id,
+                            account,
+                            quota_reset(&error.message).unwrap_or(now() + QUOTA_RETRY_MS),
+                        );
+                    }
+                    if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
+                        let reason = format!("{MOVED_ACCOUNT}. {}", error.message);
+                        if version.manifest.workflow.is_some() {
+                            failed.phase = "pending".into();
+                            failed.started_at = None;
+                            failed.reason = Some(reason);
+                            failed.wait_until = None;
+                        } else {
+                            requeue(&mut failed, reason);
+                        }
+                        failed.configuration.account_id = Some(other);
+                        self.store.save_attempt(&failed).await?;
+                        self.changed().await;
+                        return Ok(());
+                    }
+                }
                 if returns_to_queue(&error.code, &failed.phase) && !refused_again(&a, &error) {
                     // A limit that ran out mid-run discards the unfinished
                     // turn; the run waits for a reset it can reach, or stops
@@ -3494,6 +3622,17 @@ impl BenchmarkService {
         }
         Ok(())
     }
+    /// Another enabled account of `configuration`'s provider whose limit has
+    /// not run out under `run_id`, the default first.
+    async fn room_elsewhere(&self, run_id: &str, configuration: &Configuration) -> Option<String> {
+        let current = configuration.account_id.as_deref();
+        self.backend
+            .accounts(&configuration.provider_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|account| Some(account.as_str()) != current && !exhausted(run_id, account))
+    }
     /// The pending attempts ready to dispatch. A pending cell whose candidate
     /// authored the case settles as excluded here, without any model call. A
     /// cell whose provider is held (see [`hold_provider_until`]) waits, and
@@ -3525,7 +3664,7 @@ impl BenchmarkService {
             self.store.save_attempt(&excluded).await?;
             self.changed().await;
         }
-        Ok(ready)
+        Ok(grouped_by_cell(run, ready))
     }
     /// Evaluates a finished generation and, for a creative brief, asks the
     /// judge panel. Evaluator and judge failures stay on the attempt.
@@ -3760,10 +3899,22 @@ pub struct FakeBackend {
     /// Turns in flight now, and the most ever at once.
     pub in_flight: std::sync::atomic::AtomicU64,
     pub peak_in_flight: std::sync::atomic::AtomicU64,
+    /// The accounts the fake provider lists, and those whose limit ran out.
+    pub accounts_of: std::sync::Mutex<Vec<String>>,
+    pub spent_accounts: std::sync::Mutex<Vec<String>>,
 }
 impl ExecutionBackend for FakeBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
+    }
+    fn accounts<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+        Box::pin(async move {
+            Ok(self
+                .accounts_of
+                .lock()
+                .map(|a| a.clone())
+                .unwrap_or_default())
+        })
     }
     fn judge<'a>(
         &'a self,
@@ -3870,7 +4021,12 @@ impl ExecutionBackend for FakeBackend {
                     "Provider did not acknowledge the exact model, effort and fast mode",
                 ));
             }
-            if take(&self.quota_waits) {
+            let spent = a.configuration.account_id.as_ref().is_some_and(|account| {
+                self.spent_accounts
+                    .lock()
+                    .is_ok_and(|spent| spent.contains(account))
+            });
+            if take(&self.quota_waits) || spent {
                 a.phase = "running".into();
                 a.host_run_id = Some(format!("fake-{}", a.id));
                 store.save_attempt(&a).await?;
@@ -4730,10 +4886,11 @@ mod tests {
         let run = s.store.run(&run.id).await.unwrap();
         assert_eq!(run.state, "cancelled");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-        assert!(run.attempts[0].evidence_hash.is_some());
+        assert!(run.attempts.iter().any(|a| a.evidence_hash.is_some()));
     }
     /// Five efforts of both fake models on each of two accounts, two turns
-    /// each: 20 configurations, 40 turns.
+    /// each: 20 configurations, 40 turns. The second account's models are
+    /// billed apart, so each is its own candidate.
     async fn wide_request(s: &BenchmarkService, backend: &FakeBackend) -> RunRequest {
         let efforts = ["low", "medium", "high", "xhigh", "max"];
         *backend.effort_levels.lock().unwrap() = efforts.map(String::from).to_vec();
@@ -4747,6 +4904,9 @@ mod tests {
                     c.account_id = Some(account.into());
                     c.model_id = model.into();
                     c.effort = Some(effort.into());
+                    if account == "two" {
+                        c.billing_mode = "simulated-second".into();
+                    }
                     req.configurations.push(c);
                 }
             }
@@ -4851,6 +5011,131 @@ mod tests {
         drain(&s, &run.id).await;
         assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
         assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn a_spent_account_hands_its_tests_to_another_and_the_row_stays_one() {
+        let (_dir, s, backend) = setup().await;
+        *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "second".into()];
+        *backend.spent_accounts.lock().unwrap() = vec!["isolated".into()];
+        let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
+        let run = drain(&s, &run.id).await;
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
+        assert!(run.attempts.iter().all(|a| {
+            a.outcome.as_deref() == Some("pass")
+                && a.configuration.account_id.as_deref() == Some("second")
+        }));
+        // The run asked for the first account; its row is the model's one.
+        assert_eq!(
+            run.request.configurations[0].account_id.as_deref(),
+            Some("isolated")
+        );
+        let data = s.query_data().await.unwrap();
+        let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].scored, 1);
+    }
+    #[tokio::test]
+    async fn every_account_spent_still_waits_or_stops_as_before() {
+        let (_dir, s, backend) = setup().await;
+        *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "second".into()];
+        *backend.spent_accounts.lock().unwrap() = vec!["isolated".into(), "second".into()];
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        assert!(held.attempts.iter().all(|a| a.phase == "pending"));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn a_case_goes_out_whole_and_a_begun_case_first() {
+        let attempt = |version: &str, repetition: u32, started: bool| Attempt {
+            id: format!("{version}-{repetition}"),
+            run_id: "run".into(),
+            version_id: version.into(),
+            configuration: Configuration {
+                id: "c".into(),
+                provider_id: "fake".into(),
+                account_id: None,
+                model_id: "m".into(),
+                effort: None,
+                fast_mode: None,
+                billing_mode: "simulated".into(),
+                execution_profile: "native_text".into(),
+                inventory_revision: None,
+                model_name: None,
+            },
+            repetition,
+            phase: if started { "terminal" } else { "pending" }.into(),
+            outcome: started.then(|| "pass".into()),
+            reason: None,
+            wait_until: None,
+            session_id: None,
+            host_run_id: None,
+            observed: None,
+            started_at: started.then_some(1),
+            finished_at: started.then_some(2),
+            duration_ms: None,
+            output: None,
+            evidence_hash: None,
+            usage: TokenUsage::default(),
+            evaluations: vec![],
+            event_cursor: 0,
+            workflow_steps: vec![],
+            resolved_model: None,
+        };
+        let version = |id: &str| BenchmarkVersion {
+            id: id.into(),
+            definition_id: id.into(),
+            content_hash: String::new(),
+            published_at: 0,
+            manifest: seed_definitions().remove(0),
+            carries_from: None,
+        };
+        // Planned shuffled: b0 a1 c0 b2 a0 a2 b1 c1 c2; c0 already ran.
+        let plan = [
+            ("b", 0),
+            ("a", 1),
+            ("b", 2),
+            ("a", 0),
+            ("a", 2),
+            ("b", 1),
+            ("c", 1),
+            ("c", 2),
+        ];
+        let ready: Vec<_> = plan
+            .iter()
+            .map(|(v, r)| (attempt(v, *r, false), version(v)))
+            .collect();
+        let mut attempts: Vec<Attempt> = ready.iter().map(|(a, _)| a.clone()).collect();
+        attempts.push(attempt("c", 0, true));
+        let run = BenchmarkRun {
+            id: "run".into(),
+            state: "running".into(),
+            revision: 1,
+            created_at: 0,
+            updated_at: 0,
+            baked_at: None,
+            request: RunRequest {
+                request_key: "run".into(),
+                version_ids: vec!["a".into(), "b".into(), "c".into()],
+                configurations: vec![attempts[0].configuration.clone()],
+                repetitions: 3,
+                timeout_seconds: 60,
+                max_executions: 9,
+                preview: false,
+                parallelism: None,
+            },
+            attempts,
+        };
+        let order: Vec<String> = grouped_by_cell(&run, ready)
+            .into_iter()
+            .map(|(a, _)| a.id)
+            .collect();
+        assert_eq!(
+            order,
+            ["c-1", "c-2", "b-0", "b-1", "b-2", "a-0", "a-1", "a-2"]
+        );
     }
     #[test]
     fn a_quota_wait_leaves_one_flight_on_the_account_until_a_turn_lands() {
