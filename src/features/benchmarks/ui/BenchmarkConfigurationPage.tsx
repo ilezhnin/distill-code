@@ -161,6 +161,11 @@ export function BenchmarkConfigurationPage({
   const shownRow = selected?.row ?? rowOf(report, key) ?? row;
   // A point is dated by its observation, not by later evidence it borrows.
   const shownAt = selected ? selected.snapshot.createdAt : shownRow.measuredAt;
+  // The cases a shown point borrows from later cells: measured, but not then.
+  const shownBackfilled =
+    selected && !recorded
+      ? (selected.snapshot.backfilledVersionIds?.length ?? 0)
+      : 0;
   // A dated point lists the verdicts that stood at its date.
   // The attempts that measured something: a cell kept only for its spend,
   // such as a call the provider refused, is no result to list.
@@ -276,7 +281,10 @@ export function BenchmarkConfigurationPage({
       t("configuration.context"),
       formatContext(fact?.contextTokens) ?? t("unknown"),
     ],
-    [t("configuration.cases"), `${shownRow.scored} / ${shownRow.planned}`],
+    [
+      t("configuration.cases"),
+      `${shownRow.scored - shownBackfilled} / ${shownRow.planned}`,
+    ],
     [
       t("configuration.measured"),
       shownAt == null
@@ -429,20 +437,26 @@ export function BenchmarkConfigurationPage({
                 ))}
               </div>
             }
-            points={measurements.map((entry) => ({
-              id: pointId(entry.snapshot),
-              at: entry.snapshot.createdAt,
-              points: entry.row.points,
-              series: entry.series,
-              scored: entry.row.scored,
-              planned: entry.row.planned,
-              backfilled: recorded
+            points={measurements.map((entry) => {
+              // A point counts only the cases finished by its date; the
+              // cases its recalculation borrows from later cells are named
+              // apart, never as measured then.
+              const backfilled = recorded
                 ? 0
-                : (entry.snapshot.backfilledVersionIds?.length ?? 0),
-              revised: recorded
-                ? 0
-                : (entry.snapshot.revisedVersionIds?.length ?? 0),
-            }))}
+                : (entry.snapshot.backfilledVersionIds?.length ?? 0);
+              return {
+                id: pointId(entry.snapshot),
+                at: entry.snapshot.createdAt,
+                points: entry.row.points,
+                series: entry.series,
+                scored: entry.row.scored - backfilled,
+                planned: entry.row.planned,
+                backfilled,
+                revised: recorded
+                  ? 0
+                  : (entry.snapshot.revisedVersionIds?.length ?? 0),
+              };
+            })}
             selectedId={selected ? pointId(selected.snapshot) : null}
             onSelect={select}
           />

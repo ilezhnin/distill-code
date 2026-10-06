@@ -1417,8 +1417,10 @@ describe("configuration history", () => {
     const measured = () =>
       screen.getByText("Measured").nextElementSibling?.textContent;
     expect(rating()).toBe("900");
+    // The older point borrowed its only case from a later cell, so it
+    // counts none as measured then; its rating is still the recalculation.
     const oldPoint = await screen.findByRole("button", {
-      name: /: 750 points · 1\/1 cases$/,
+      name: /: 750 points · 0\/1 cases$/,
     });
     expect(
       screen.getByRole("button", { name: /: 900 points · 1\/1 cases$/ }),
