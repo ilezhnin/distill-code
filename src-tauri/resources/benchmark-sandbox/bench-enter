@@ -20,6 +20,11 @@ for hidden in /tmp/.X11-unix /run/WSL /run/netns; do
 done
 mount -t tmpfs -o mode=1777 none /tmp
 mount -t tmpfs -o mode=1777 none /dev/shm
+# Checks never need a persistent home or any provider sign-in.
+if [[ $user == checker ]]; then
+  mount -t tmpfs -o mode=755 none /home
+  install -d -m 700 -o checker -g checker /home/checker
+fi
 cwd=/home/$user
 if [[ -n $dir ]]; then
   mount --bind "$dir" /workspace

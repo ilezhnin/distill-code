@@ -3132,8 +3132,7 @@ pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation
     // A repository case's output is the candidate's patch; its check runs in
     // a fresh copy of the snapshot outside every working copy.
     if draft.evaluator.kind == super::repository::EVALUATOR {
-        let scratch = std::env::temp_dir().join("distill-benchmark-checks");
-        return super::repository::evaluate_patch(draft, output, &scratch).await;
+        return super::repository::evaluate_patch(draft, output).await;
     }
     let mut evaluation = evaluation::evaluate(&draft.evaluator, output)?;
     // A judged brief answered without any drawing or page leaves the panel

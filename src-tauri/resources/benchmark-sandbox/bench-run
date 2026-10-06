@@ -47,5 +47,5 @@ if [[ $net == bench ]]; then
 else
   network=(unshare --net)
 fi
-exec "${network[@]}" unshare --mount --propagation private \
+exec "${network[@]}" unshare --mount --pid --fork --mount-proc --kill-child --propagation private \
   /usr/local/sbin/bench-enter "$user" "$dir" "${vars[@]}" -- "$@"

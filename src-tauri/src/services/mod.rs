@@ -1,5 +1,6 @@
 pub(crate) mod acp_tools_reconciler;
 pub mod agent_host;
+pub(crate) mod benchmark_sandbox;
 pub mod benchmarks;
 pub mod bundled_agents;
 pub mod bundled_skills;

@@ -8,9 +8,23 @@ for file in /usr/local/sbin/bench-* /etc/wsl.conf; do
 done
 echo "node $(node --version 2>/dev/null)"
 echo "git $(git --version 2>/dev/null | cut -d' ' -f3)"
+for binary in /usr/local/bin/node /usr/bin/git /opt/distill-tools/bin/*; do
+  echo "binary $binary $(sha256sum "$binary" 2>/dev/null | cut -d' ' -f1)"
+done
 echo "netns $([[ -e /run/netns/bench ]] && echo up || echo down)"
 for manifest in /opt/distill-tools/*/manifest; do
-  [[ -f $manifest ]] && sed 's/^/tool /' "$manifest"
+  [[ -f $manifest ]] || continue
+  while read -r tool kind name recorded; do
+    if [[ $kind == file ]]; then
+      # Rehash the installed entrypoint, not its provisioning-time receipt.
+      launcher=/opt/distill-tools/bin/$name
+      target=$(sed -n 's/^exec \(.*\) "\$@"$/\1/p' "$launcher" | awk '{print $NF}')
+      digest=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1)
+      echo "tool $tool file $name $digest"
+    else
+      echo "tool $tool $kind $name"
+    fi
+  done <"$manifest"
 done
 for account in /home/candidate/accounts/*/*; do
   [[ -d $account ]] || continue

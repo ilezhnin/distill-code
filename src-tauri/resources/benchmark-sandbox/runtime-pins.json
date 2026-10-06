@@ -1,0 +1,22 @@
+{
+  "node": "v24.18.0",
+  "git": "2.43.0",
+  "binary /usr/local/bin/node": "41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c",
+  "binary /usr/bin/git": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+  "binary /opt/distill-tools/bin/claude": "68a9afca0195f600b12c92b82798c64190088783e4dd95cd5a2112a95551e5df",
+  "binary /opt/distill-tools/bin/claude-agent-acp": "a202a2c732b41862f418b9aee533f2f6c0f062d5d2b0128e4b4c55a9c4035ce9",
+  "binary /opt/distill-tools/bin/codex": "8a70e94f986c4cece083c1e840acf98df87ba5ff1ebb6372b032e9c3fb82856a",
+  "binary /opt/distill-tools/bin/codex-acp": "90890c0681e9369de798325ac2a32c7011ca85f5388add32db4508a6da2a1256",
+  "binary /opt/distill-tools/bin/grok": "f01423fa4f9a5eb56f0834a7392df438705fca7d48db83d66b2a31b9092b8881",
+  "binary /opt/distill-tools/bin/kimi": "1707ed4d3da50b1e005953eaac581137ea450b1dae01654cdb1bde34f1a624f6",
+  "tool claude-acp version": "@agentclientprotocol/claude-agent-acp@0.81.0",
+  "tool claude-acp file claude": "1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b",
+  "tool claude-acp file claude-agent-acp": "9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+  "tool codex-acp version": "@agentclientprotocol/codex-acp@1.13.0",
+  "tool codex-acp file codex": "0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",
+  "tool codex-acp file codex-acp": "cb4b021dfe1ea1b579b02800ac03c057273803535dad9ac2cd262eb174152269",
+  "tool grok version": "@xai-official/grok@1.0.40",
+  "tool grok file grok": "92c997dfd109c0672d40d5ae6fbd15835d53ffaf12cf9ea124d22aaef3ff23fc",
+  "tool kimi version": "@moonshot-ai/kimi-code@2.1.0",
+  "tool kimi file kimi": "6f801a114b5a5d708d9fec1ea0002ac42ec19841c088a96aecd7e6117b8b1d59"
+}

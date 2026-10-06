@@ -134,25 +134,18 @@ impl Store {
         // A repository check must pass its reference patch and fail the
         // known-bad one on the snapshot itself before anyone is measured.
         if def.draft.evaluator.kind == super::repository::EVALUATOR {
-            let scratch = self.root.join("versions").join(".checks");
-            let good = super::repository::evaluate_patch(
-                &def.draft,
-                &def.draft.evaluator.known_good,
-                &scratch,
-            )
-            .await?;
-            let bad = super::repository::evaluate_patch(
-                &def.draft,
-                &def.draft.evaluator.known_bad,
-                &scratch,
-            )
-            .await?;
+            let good =
+                super::repository::evaluate_reference(&def.draft, &def.draft.evaluator.known_good)
+                    .await?;
+            let bad =
+                super::repository::evaluate_reference(&def.draft, &def.draft.evaluator.known_bad)
+                    .await?;
             if good.verdict != "pass" || bad.verdict == "pass" {
                 return Err(BenchmarkError::new(
                     "validation",
                     format!(
-                        "The repository check must pass the reference patch and fail the known-bad one: {} / {}",
-                        good.reason, bad.reason
+                        "The repository check must pass the reference patch and fail the known-bad one (reference: {}; known-bad: {}): {} / {}",
+                        good.verdict, bad.verdict, good.reason, bad.reason
                     ),
                 ));
             }

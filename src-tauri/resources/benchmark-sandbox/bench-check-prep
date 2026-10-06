@@ -33,7 +33,39 @@ if [[ -s $dir/.answer.patch ]]; then
 fi
 rm -f "$dir/.answer.patch"
 if [[ -d $staging/hidden ]]; then
-  cp -a "$staging/hidden/." "$dir/"
-  chown -R checker:checker "$dir"
+  # The answer may replace a hidden-file parent with a symlink. Never follow
+  # candidate-controlled links while installing files as root. Also remove
+  # background children before touching the patched workspace.
+  /usr/local/sbin/bench-kill check "$id"
+  python3 - "$staging/hidden" "$dir" <<'PY'
+import os
+import pathlib
+import pwd
+import shutil
+import sys
+
+source, target = map(pathlib.Path, sys.argv[1:])
+checker = pwd.getpwnam("checker")
+for file in source.rglob("*"):
+    if not file.is_file():
+        continue
+    relative = file.relative_to(source)
+    destination = target
+    for part in relative.parts[:-1]:
+        destination /= part
+        if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+            print("The answer obstructs a hidden check file", file=sys.stderr)
+            sys.exit(2)
+        destination.mkdir(exist_ok=True)
+        os.chown(destination, checker.pw_uid, checker.pw_gid)
+    destination /= relative.name
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        print("The answer obstructs a hidden check file", file=sys.stderr)
+        sys.exit(2)
+    # Replace rather than overwrite: even a hard link must not be followed.
+    destination.unlink(missing_ok=True)
+    shutil.copyfile(file, destination)
+    os.chown(destination, checker.pw_uid, checker.pw_gid)
+PY
 fi
 echo "prepared $id"

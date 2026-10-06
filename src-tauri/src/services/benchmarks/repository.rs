@@ -12,11 +12,12 @@
 //! exit status scores the attempt: 0 passes, anything else fails.
 
 use super::{fixtures, types::*};
+use crate::services::benchmark_sandbox as sandbox;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 /// The snapshot a repository case starts from.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -54,8 +55,7 @@ pub const EVALUATOR: &str = "repository";
 pub const SESSION_UNAVAILABLE: &str = "Repository cases need an unattended session with tools, which is not enabled until its confinement is decided";
 /// The outcome of a turn that left the snapshot as it was.
 pub const NO_ANSWER: &str = "no_answer";
-/// Output a check may print before its tail is kept as the reason.
-const REASON_TAIL: usize = 2_000;
+const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn snapshot(manifest: &BenchmarkDraft) -> Result<Snapshot> {
     serde_json::from_value(manifest.environment["repository"].clone()).map_err(|error| {
@@ -155,24 +155,51 @@ async fn git(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>>
         .kill_on_drop(true);
     crate::services::process::apply_no_window_async(&mut command);
     let mut child = command.spawn()?;
-    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
-        stdin.write_all(bytes).await?;
-        stdin.shutdown().await?;
-    }
-    let output = tokio::time::timeout(Duration::from_secs(120), child.wait_with_output())
+    let tree = crate::services::process::ProcessTree::contain(&child);
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take().expect("piped git stdout");
+    let stderr = child.stderr.take().expect("piped git stderr");
+    let run = async {
+        let (written, out, err, status) = tokio::join!(
+            async {
+                if let (Some(bytes), Some(mut stdin)) = (input, stdin) {
+                    stdin.write_all(bytes).await?;
+                    stdin.shutdown().await?;
+                }
+                Ok::<_, std::io::Error>(())
+            },
+            sandbox::read_tail(stdout, MAX_SNAPSHOT_BYTES),
+            sandbox::read_tail(stderr, 8192),
+            child.wait()
+        );
+        let status = status?;
+        if status.success() {
+            written?;
+        }
+        Ok::<_, BenchmarkError>((status, out?, err?.0))
+    };
+    let output = tokio::time::timeout(Duration::from_secs(120), run)
         .await
         .map_err(|_| BenchmarkError::new("infrastructure_failure", "git did not finish"))??;
-    if !output.status.success() {
+    drop(tree);
+    let (status, (stdout, truncated), stderr) = output;
+    if !status.success() {
         return Err(BenchmarkError::new(
             "infrastructure_failure",
             format!(
                 "git {} failed: {}",
                 args.first().unwrap_or(&""),
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&stderr).trim()
             ),
         ));
     }
-    Ok(output.stdout)
+    if truncated {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Repository snapshot exceeds 256 MiB",
+        ));
+    }
+    Ok(stdout)
 }
 
 /// A git command against the snapshot's repository: a working repository
@@ -189,9 +216,18 @@ async fn source_git(snapshot: &Snapshot, args: &[&str]) -> Result<Vec<u8>> {
     git(cwd, &bare, None).await
 }
 
-/// Writes the snapshot into `dir`, a new directory, as a repository of one
-/// commit: the snapshot's files and nothing of the history behind them.
-pub async fn materialize(snapshot: &Snapshot, dir: &Path) -> Result<()> {
+/// Verify the frozen tree and export only its files. Archiving the tree also
+/// avoids Git's global PAX comment carrying the source commit identity.
+pub async fn archive(snapshot: &Snapshot) -> Result<Vec<u8>> {
+    if [&snapshot.commit, &snapshot.tree]
+        .iter()
+        .any(|id| ![40, 64].contains(&id.len()) || !id.bytes().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Snapshot commit and tree must be full git object ids",
+        ));
+    }
     let tree = source_git(
         snapshot,
         &["rev-parse", &format!("{}^{{tree}}", snapshot.commit)],
@@ -203,7 +239,44 @@ pub async fn materialize(snapshot: &Snapshot, dir: &Path) -> Result<()> {
             "The snapshot commit no longer holds the published tree",
         ));
     }
-    let archive = source_git(snapshot, &["archive", "--format=tar", &snapshot.commit]).await?;
+    let archive = source_git(snapshot, &["archive", "--format=tar", &snapshot.tree]).await?;
+    if archive.len() > MAX_SNAPSHOT_BYTES {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Repository snapshot exceeds 256 MiB",
+        ));
+    }
+    validate_archive(&archive)?;
+    Ok(archive)
+}
+
+// Archives enter root-owned staging. Until link-preserving extraction has its
+// own confinement proof, reject links and special files before crossing WSL.
+fn validate_archive(bytes: &[u8]) -> Result<()> {
+    let mut archive = tar::Archive::new(bytes);
+    for entry in archive.entries()? {
+        let entry = entry?;
+        let path = entry.path()?;
+        let path = path.to_string_lossy();
+        let kind = entry.header().entry_type();
+        if !fixtures::safe_relative(path.trim_end_matches('/'))
+            || path
+                .split('/')
+                .any(|part| part.eq_ignore_ascii_case(".git"))
+            || !(kind.is_file() || kind.is_dir())
+        {
+            return Err(BenchmarkError::new(
+                "validation",
+                format!("Unsupported or unsafe snapshot entry: {path}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+async fn materialize(snapshot: &Snapshot, dir: &Path) -> Result<()> {
+    let archive = archive(snapshot).await?;
     tokio::fs::create_dir_all(dir).await?;
     let target = dir.to_owned();
     tokio::task::spawn_blocking(move || tar::Archive::new(archive.as_slice()).unpack(&target))
@@ -232,14 +305,8 @@ pub async fn materialize(snapshot: &Snapshot, dir: &Path) -> Result<()> {
 
 /// Everything the candidate changed in its copy since the snapshot, new
 /// files included, as a binary patch; empty when it changed nothing.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "read by the repository session once its confinement is decided"
-    )
-)]
-pub async fn patch(dir: &Path, max_bytes: usize) -> Result<String> {
+#[cfg(test)]
+async fn patch(dir: &Path, max_bytes: usize) -> Result<String> {
     git(dir, &["add", "-A"], None).await?;
     let bytes = git(dir, &["diff", "--cached", "--binary", "HEAD"], None).await?;
     if bytes.len() > max_bytes {
@@ -251,14 +318,28 @@ pub async fn patch(dir: &Path, max_bytes: usize) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Scores `patch` against `manifest`'s hidden check in a fresh copy under
-/// `scratch`, which it removes afterwards.
-pub async fn evaluate_patch(
+/// Scores the sealed answer. Empty answers remain a separate model outcome.
+pub async fn evaluate_patch(manifest: &BenchmarkDraft, patch: &str) -> Result<Evaluation> {
+    if patch.trim().is_empty() {
+        return Ok(evaluation(
+            manifest,
+            NO_ANSWER,
+            0.0,
+            "The turn left the snapshot unchanged".into(),
+            None,
+        ));
+    }
+    evaluate_reference(manifest, patch).await
+}
+
+fn evaluation(
     manifest: &BenchmarkDraft,
-    patch: &str,
-    scratch: &Path,
-) -> Result<Evaluation> {
-    let evaluation = |verdict: &str, score: f64, reason: String| Evaluation {
+    verdict: &str,
+    score: f64,
+    reason: String,
+    details: Option<serde_json::Value>,
+) -> Evaluation {
+    Evaluation {
         id: uuid::Uuid::new_v4().to_string(),
         evaluator_revision: manifest.evaluator.revision.clone(),
         verdict: verdict.into(),
@@ -267,112 +348,107 @@ pub async fn evaluate_patch(
         created_at: super::store::now(),
         provenance: "objective".into(),
         artifacts: vec![],
-        details: None,
+        details,
         judge: None,
         usage: None,
-    };
-    if patch.trim().is_empty() {
-        return Ok(evaluation(
-            NO_ANSWER,
-            0.0,
-            "The turn left the snapshot unchanged".into(),
-        ));
     }
-    let snapshot = snapshot(manifest)?;
-    let check = hidden_check(&manifest.evaluator)?;
-    let dir = scratch.join(format!("check-{}", uuid::Uuid::new_v4()));
-    let result = async {
-        materialize(&snapshot, &dir).await?;
-        if let Err(error) = git(
-            &dir,
-            &["apply", "--whitespace=nowarn", "--binary", "-"],
-            Some(patch.as_bytes()),
-        )
-        .await
-        {
-            return Ok(evaluation(
-                "fail",
-                0.0,
-                format!(
-                    "The patch does not apply to the snapshot: {}",
-                    error.message
-                ),
-            ));
-        }
-        for file in &check.files {
-            let path = dir.join(&file.path);
-            if let Some(parent) = path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            tokio::fs::write(&path, file.content.as_bytes()).await?;
-        }
-        let (passed, tail) = run_check(&check, &dir).await?;
-        Ok(if passed {
-            evaluation("pass", 1.0, tail)
-        } else {
-            evaluation("fail", 0.0, tail)
-        })
-    }
-    .await;
-    let _ = tokio::fs::remove_dir_all(&dir).await;
-    result
 }
 
-/// Runs the check's command in `dir`; whether it exited 0, and the tail of
-/// what it printed.
-async fn run_check(check: &HiddenCheck, dir: &Path) -> Result<(bool, String)> {
-    let mut command = tokio::process::Command::new(&check.command[0]);
-    command
-        .args(&check.command[1..])
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    crate::services::process::apply_no_window_async(&mut command);
-    let mut child = command.spawn().map_err(|error| {
-        BenchmarkError::new(
-            "evaluation_error",
-            format!("The check command could not start: {error}"),
-        )
-    })?;
-    let tree = crate::services::process::ProcessTree::contain(&child);
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let run = async {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        if let Some(stream) = stdout.as_mut() {
-            stream.read_to_end(&mut out).await?;
+fn sandbox_error(error: std::io::Error) -> BenchmarkError {
+    BenchmarkError::new("evaluation_error", format!("Repository sandbox: {error}"))
+}
+
+fn append_file(builder: &mut tar::Builder<Vec<u8>>, path: &str, bytes: &[u8]) -> Result<()> {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder.append_data(&mut header, path, bytes)?;
+    Ok(())
+}
+
+fn check_archive(snapshot: &[u8], patch: &str, check: &HiddenCheck) -> Result<Vec<u8>> {
+    validate_archive(snapshot)?;
+    let mut builder = tar::Builder::new(Vec::new());
+    // Include the directory even for an empty snapshot.
+    let mut directory = tar::Header::new_gnu();
+    directory.set_entry_type(tar::EntryType::Directory);
+    directory.set_size(0);
+    directory.set_mode(0o755);
+    directory.set_cksum();
+    builder.append_data(&mut directory, "snapshot", std::io::empty())?;
+    for entry in tar::Archive::new(snapshot).entries()? {
+        let mut entry = entry?;
+        let path = PathBuf::from("snapshot").join(entry.path()?);
+        let mut header = entry.header().clone();
+        builder.append_data(&mut header, path, &mut entry)?;
+    }
+    append_file(&mut builder, "answer.patch", patch.as_bytes())?;
+    for file in &check.files {
+        append_file(
+            &mut builder,
+            &format!("hidden/{}", file.path),
+            file.content.as_bytes(),
+        )?;
+    }
+    Ok(builder.into_inner()?)
+}
+
+/// Publication must run even an empty known-bad answer against the real
+/// check. Otherwise a check that always succeeds could pass publication.
+pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Result<Evaluation> {
+    let status = sandbox::ready()
+        .await
+        .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
+    let check = hidden_check(&manifest.evaluator)?;
+    let snapshot = archive(&snapshot(manifest)?).await?;
+    let package = check_archive(&snapshot, patch, &check)?;
+    let id = format!("check-{}", uuid::Uuid::new_v4());
+    let mut cleanup = sandbox::Cleanup(Some(id.clone()));
+    let details = Some(
+        serde_json::json!({"sandbox": sandbox::DISTRIBUTION, "runtimeRevision": status.revision, "checkId": id}),
+    );
+    let result = async {
+        let prepared = sandbox::prepare_check(&id, &package)
+            .await
+            .map_err(sandbox_error)?;
+        if prepared.code == Some(2) {
+            return Ok(evaluation(
+                manifest,
+                "fail",
+                0.0,
+                prepared.reason(),
+                details,
+            ));
         }
-        if let Some(stream) = stderr.as_mut() {
-            stream.read_to_end(&mut err).await?;
-        }
-        let status = child.wait().await?;
-        out.extend_from_slice(&err);
-        Ok::<_, BenchmarkError>((status.success(), out))
-    };
-    match tokio::time::timeout(Duration::from_secs(check.timeout_seconds), run).await {
-        Ok(result) => {
-            let (passed, output) = result?;
-            let text = String::from_utf8_lossy(&output);
-            let tail: String = text
-                .chars()
-                .rev()
-                .take(REASON_TAIL)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            Ok((passed, tail.trim().to_owned()))
-        }
-        Err(_) => {
-            if let Some(tree) = &tree {
-                tree.kill();
+        match sandbox::check(&id, &check.command, check.timeout_seconds).await {
+            Ok(output) => {
+                // A missing executable is an evaluator defect, not a model failure.
+                if matches!(output.code, Some(126 | 127)) {
+                    return Err(BenchmarkError::new("evaluation_error", output.reason()));
+                }
+                Ok(evaluation(
+                    manifest,
+                    if output.success() { "pass" } else { "fail" },
+                    if output.success() { 1.0 } else { 0.0 },
+                    output.reason(),
+                    details,
+                ))
             }
-            Ok((false, "The check exceeded its time limit".into()))
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => Ok(evaluation(
+                manifest,
+                "fail",
+                0.0,
+                "The check exceeded its time limit".into(),
+                details,
+            )),
+            Err(error) => Err(sandbox_error(error)),
         }
     }
+    .await;
+    sandbox::clean(&id).await.map_err(sandbox_error)?;
+    cleanup.0 = None;
+    result
 }
 
 #[cfg(test)]
@@ -461,6 +537,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the provisioned distill-bench WSL distribution"]
     async fn a_copy_holds_the_snapshot_alone_and_the_check_scores_the_patch() {
         let root = tempfile::tempdir().unwrap();
         let (snapshot, fix) = source(root.path()).await;
@@ -479,7 +556,7 @@ mod tests {
         assert!(!copy.join("hidden").exists());
         // Unchanged: no answer.
         let none = patch(&copy, 1 << 20).await.unwrap();
-        let scored = evaluate_patch(&draft, &none, root.path()).await.unwrap();
+        let scored = evaluate_patch(&draft, &none).await.unwrap();
         assert_eq!(scored.verdict, NO_ANSWER);
         assert_eq!(scored.score, Some(0.0));
         // The candidate fixes the file and adds a note: the check passes.
@@ -491,14 +568,28 @@ mod tests {
             .unwrap();
         let fixed = patch(&copy, 1 << 20).await.unwrap();
         assert!(fixed.contains("NOTES.md"));
-        let scored = evaluate_patch(&draft, &fixed, root.path()).await.unwrap();
+        let scored = evaluate_patch(&draft, &fixed).await.unwrap();
         assert_eq!(scored.verdict, "pass", "{}", scored.reason);
         // A wrong change fails, and the reference patch passes.
         let wrong = fixed.replace("a + b", "a * b");
-        let scored = evaluate_patch(&draft, &wrong, root.path()).await.unwrap();
+        let scored = evaluate_patch(&draft, &wrong).await.unwrap();
         assert_eq!(scored.verdict, "fail");
-        let scored = evaluate_patch(&draft, &fix, root.path()).await.unwrap();
+        let scored = evaluate_patch(&draft, &fix).await.unwrap();
         assert_eq!(scored.verdict, "pass", "{}", scored.reason);
+        assert_eq!(scored.details.as_ref().unwrap()["sandbox"], "distill-bench");
+        // An empty publication reference must actually fail the hidden check,
+        // whereas an empty candidate answer is the no_answer outcome above.
+        let scored = evaluate_reference(&draft, "").await.unwrap();
+        assert_eq!(scored.verdict, "fail", "{}", scored.reason);
+        let mut broken_check = draft.clone();
+        broken_check.evaluator.expected = serde_json::json!({
+            "files": [], "command": ["true"], "timeoutSeconds": 30,
+        })
+        .to_string();
+        assert_eq!(
+            evaluate_reference(&broken_check, "").await.unwrap().verdict,
+            "pass"
+        );
         // No check copy is left behind.
         let mut entries = tokio::fs::read_dir(root.path()).await.unwrap();
         while let Some(entry) = entries.next_entry().await.unwrap() {
@@ -554,5 +645,80 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code, "evidence_missing");
+    }
+
+    #[test]
+    fn snapshot_links_and_git_metadata_are_refused_before_root_extraction() {
+        for (path, kind) in [
+            ("linked", tar::EntryType::Symlink),
+            ("pipe", tar::EntryType::Fifo),
+            (".git/config", tar::EntryType::Regular),
+        ] {
+            let mut builder = tar::Builder::new(Vec::new());
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(kind);
+            header.set_size(0);
+            header.set_mode(0o644);
+            if kind.is_symlink() {
+                header.set_link_name("/etc").unwrap();
+            }
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, std::io::empty())
+                .unwrap();
+            assert!(validate_archive(&builder.into_inner().unwrap()).is_err());
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the provisioned distill-bench WSL distribution"]
+    async fn sandbox_checks_bound_output_kill_timeouts_and_reject_hidden_file_links() {
+        let root = tempfile::tempdir().unwrap();
+        let (snapshot, fix) = source(root.path()).await;
+        let mut draft = manifest(&snapshot);
+        draft.evaluator.expected = serde_json::json!({
+            "files": [], "command": ["bash", "-c", "test $(id -un) = checker && test ! -e /mnt/c && python3 -c 'import sys; sys.stdout.write(\"o\" * 200000); sys.stderr.write(\"e\" * 200000)'"], "timeoutSeconds": 30,
+        }).to_string();
+        let scored = evaluate_reference(&draft, &fix).await.unwrap();
+        assert_eq!(scored.verdict, "pass", "{}", scored.reason);
+        assert!(scored.reason.len() <= 2_000);
+
+        draft.evaluator.expected = serde_json::json!({
+            "files": [], "command": ["bash", "-c", "setsid sleep 600 >/dev/null 2>&1 & sleep 600"], "timeoutSeconds": 3,
+        }).to_string();
+        let scored = evaluate_reference(&draft, &fix).await.unwrap();
+        assert_eq!(scored.verdict, "fail");
+        assert!(scored.reason.contains("time limit"));
+        let id = scored.details.as_ref().unwrap()["checkId"]
+            .as_str()
+            .unwrap();
+        let probe = sandbox::command(
+            "bash",
+            &[
+                "-c",
+                &format!(
+            "test ! -e /sys/fs/cgroup/distill-bench/check-{id} && test ! -e /srv/bench/checks/{id}"
+        ),
+            ],
+        )
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            probe.status.success(),
+            "timeout left Linux processes or a workspace"
+        );
+
+        draft = manifest(&snapshot);
+        // This only names a sandbox path. Root staging must refuse it before
+        // copying a hidden file through the candidate's symlink.
+        let linked = "diff --git a/hidden b/hidden\nnew file mode 120000\nindex 0000000..0000000\n--- /dev/null\n+++ b/hidden\n@@ -0,0 +1 @@\n+/tmp\n\\ No newline at end of file\n";
+        let scored = evaluate_reference(&draft, linked).await.unwrap();
+        assert_eq!(scored.verdict, "fail");
+        assert!(
+            scored.reason.contains("obstructs a hidden check"),
+            "{}",
+            scored.reason
+        );
     }
 }
