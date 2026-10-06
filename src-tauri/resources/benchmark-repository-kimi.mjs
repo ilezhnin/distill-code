@@ -26,6 +26,16 @@ if (digest(readFileSync(entrypoint)) !== pinned) {
 // Each control is an exact edit with the number of places it must apply.
 const controls = [
   {
+    // Login provisions the OAuth provider and its model catalog as well as
+    // credentials. Copy only those settings into the attempt's private home
+    // before the engine reads them; session writes never reach the account.
+    name: "account model configuration",
+    anchor: "const homeDir = resolveKimiHome(input.homeDir, env, osHomeDir);",
+    replacement:
+      'const homeDir = resolveKimiHome(input.homeDir, env, osHomeDir);\n\tdistillBenchmarkAccountConfig(input.configPath ?? join$4(homeDir, "config.toml"));',
+    count: 1,
+  },
+  {
     // OAuth alone uses the selected account; all session storage is private.
     name: "account credentials",
     anchor:
@@ -106,6 +116,18 @@ const controls = [
 // the cache, and each model under `_meta.quota.model_usage`. Usage that does
 // not come within five seconds is left out rather than holding the answer.
 const usageHelper = `
+import { mkdirSync as distillBenchmarkMkdir, writeFileSync as distillBenchmarkWriteFile } from "node:fs";
+function distillBenchmarkAccountConfig(configPath) {
+\tconst account = parse$8(readFileSync("/tmp/provider/config.toml", "utf8"));
+\tconst config = Object.fromEntries(
+\t\t["default_provider", "default_model", "providers", "models"]
+\t\t\t.filter((key) => account[key] !== undefined)
+\t\t\t.map((key) => [key, account[key]])
+\t);
+\tdistillBenchmarkMkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+\tdistillBenchmarkWriteFile(configPath, stringify$1(config), { mode: 0o600 });
+}
+
 async function distillBenchmarkTurnUsage(agent) {
 	let timer;
 	try {
