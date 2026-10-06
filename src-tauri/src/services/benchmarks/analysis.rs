@@ -1384,7 +1384,7 @@ fn recalculated_history_report(
         }
     }
     let mut selected = Vec::new();
-    let mut backfilled = Vec::new();
+    let backfilled: Vec<String> = Vec::new();
     let mut revised = Vec::new();
     for (version, groups) in cells {
         let required = data
