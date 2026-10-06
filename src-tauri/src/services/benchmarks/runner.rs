@@ -4463,6 +4463,23 @@ mod tests {
         whole.request_key = "whole".into();
         whole.top_up = false;
         assert_eq!(s.preview_run(&whole).await.unwrap().execution_count, 3);
+        // Once the cell is complete, selecting the case again measures it
+        // afresh: all three, never a single nudge.
+        for attempt in &topped.attempts {
+            let mut done = attempt.clone();
+            done.phase = "terminal".into();
+            done.outcome = Some("fail".into());
+            done.started_at = Some(1);
+            done.finished_at = Some(now());
+            s.store.save_attempt(&done).await.unwrap();
+        }
+        s.store
+            .set_run_state(&topped.id, "completed")
+            .await
+            .unwrap();
+        let mut again = top_up.clone();
+        again.request_key = "again".into();
+        assert_eq!(s.preview_run(&again).await.unwrap().execution_count, 3);
     }
     #[tokio::test]
     async fn pause_and_cancel_never_send_queued_work() {

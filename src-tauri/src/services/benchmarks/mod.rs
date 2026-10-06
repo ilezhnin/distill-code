@@ -241,7 +241,10 @@ impl BenchmarkService {
         Ok(owed_executions(&versions, request, &*repetitions))
     }
     /// The repetitions a plan owes each cell: all of them, or, topping up,
-    /// those the cell's newest scored repetitions do not cover.
+    /// those the cell's newest scored repetitions do not cover. A case the
+    /// operator selected although its cell is complete is measured afresh,
+    /// every repetition again, so a failed cell is retried whole rather
+    /// than nudged by one new pass.
     async fn owed_repetitions(
         &self,
         request: &RunRequest,
@@ -253,7 +256,12 @@ impl BenchmarkService {
         let data = self.query_data().await?;
         let planned = request.repetitions;
         Ok(Box::new(move |version, configuration| {
-            planned.saturating_sub(analysis::scored_repetitions(&data, configuration, version))
+            let have = analysis::scored_repetitions(&data, configuration, version);
+            if have >= planned {
+                planned
+            } else {
+                planned - have
+            }
         }))
     }
     pub async fn preview_run(&self, request: &RunRequest) -> Result<RunPreview> {
