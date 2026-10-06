@@ -8,13 +8,13 @@ import { Spinner } from "@/shared/ui/spinner";
 import { modelNameKey, useModelNames } from "../hooks/useBenchmarks";
 import {
   activeRuns,
+  rowAttention,
   runProgress,
-  stalledRuns,
   workingConfigurations,
 } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { modelDisplayName } from "../lib/benchmarkLabels";
-import type { RunSummary } from "../types";
+import type { LeaderboardRow, RunSummary } from "../types";
 import { StateBadge } from "./BenchmarkPrimitives";
 
 /** The models one run names before the rest are counted. */
@@ -22,20 +22,25 @@ const SHOWN_MODELS = 3;
 
 /**
  * Runs that dispatch, each with the models it is working on and its progress,
- * and one line of runs that wait for the operator. Each opens its run.
+ * and, on a model's own page, the line of its runs that wait for the
+ * operator. A list page shows a warning on the row it belongs to instead;
+ * nothing here names another model's trouble.
  */
 export function BenchmarkActivity({
   runs,
   onOpenRun,
+  attentionFor = null,
 }: {
   runs: RunSummary[];
   onOpenRun: (id: string) => void;
+  /** The row whose stalled runs the line names; none on a list page. */
+  attentionFor?: LeaderboardRow | null;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
   const names = useModelNames();
   const active = activeRuns(runs);
-  const stalled = stalledRuns(runs);
+  const stalled = attentionFor ? rowAttention(attentionFor, runs) : [];
   if (active.length === 0 && stalled.length === 0) return null;
   return (
     <section aria-label={t("activity.title")} className="flex flex-col gap-2">

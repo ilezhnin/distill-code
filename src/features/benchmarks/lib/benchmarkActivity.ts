@@ -88,3 +88,17 @@ export function rowActivity(
   }
   return { open, running, runId: newest?.id ?? null };
 }
+
+/** The stalled runs that measure this row, newest first: its own warnings. */
+export function rowAttention(
+  row: LeaderboardRow,
+  runs: RunSummary[],
+): RunSummary[] {
+  return stalledRuns(runs)
+    .filter((run) =>
+      run.request.configurations.some((entry) =>
+        requests(entry, row.configuration, run),
+      ),
+    )
+    .sort((a, b) => b.createdAt - a.createdAt);
+}

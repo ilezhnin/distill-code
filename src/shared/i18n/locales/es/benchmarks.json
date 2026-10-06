@@ -280,6 +280,7 @@
     "preview": "Vista previa de desarrollo"
   },
   "activity": {
+    "attention": "Requiere atención: {{count}} ejecuciones",
     "title": "Ejecuciones en curso",
     "progress": "{{settled}} / {{total}}",
     "more": "+{{count}}",

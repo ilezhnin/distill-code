@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  IconBell,
   IconBolt,
   IconBraces,
   IconBug,
@@ -21,6 +22,7 @@ import {
   IconTool,
   IconTrophy,
 } from "@tabler/icons-react";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Alert, AlertDescription } from "@/shared/ui/alert";
 import { Badge } from "@/shared/ui/badge";
@@ -51,7 +53,7 @@ import {
 } from "@/shared/ui/select";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { shortId, stateLabel, stateTone } from "../lib/benchmarkLabels";
-import type { Configuration } from "../types";
+import type { Configuration, RunSummary } from "../types";
 
 export interface Option {
   value: string;
@@ -495,6 +497,56 @@ export function ShareMarks({
   );
 }
 
+/**
+ * A red bell on the row whose run stopped and waits for the operator: the
+ * warning belongs to the model, not to every page. It opens the newest such
+ * run; a held hover lists them.
+ */
+export function AttentionMark({
+  runs,
+  onOpen,
+}: {
+  runs: RunSummary[];
+  onOpen: (id: string) => void;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
+  return (
+    <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={t("activity.attention", { count: runs.length })}
+          className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground transition-opacity hover:opacity-80"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen(runs[0].id);
+          }}
+        >
+          <IconBell className="size-3" aria-hidden />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        <ul className="space-y-0.5 tabular-nums">
+          {runs.map((run) => (
+            <li key={run.id}>
+              {formatDate(run.createdAt, {
+                dateStyle: "short",
+                timeStyle: "short",
+              })}
+              {" · "}
+              {t("activity.progress", {
+                settled: run.settledCount,
+                total: run.attemptCount,
+              })}
+            </li>
+          ))}
+        </ul>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** The glyph a board goes by wherever it is named: a work class or the overall board. */
 export function BoardIcon({
   board,
@@ -528,12 +580,15 @@ export function ModelIdentity({
   name,
   vendor,
   showRuntime = false,
+  mark,
   children,
 }: {
   configuration: Configuration;
   name: string;
   vendor: string;
   showRuntime?: boolean;
+  /** A warning beside the name, such as a run of this model that stopped. */
+  mark?: ReactNode;
   children?: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
@@ -546,6 +601,7 @@ export function ModelIdentity({
       <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span className="font-medium">{name}</span>
+          {mark}
           {effort ? <Badge variant="outline">{effort}</Badge> : null}
           {configuration.fastMode ? (
             <Badge variant="outline">{t("fastMode")}</Badge>

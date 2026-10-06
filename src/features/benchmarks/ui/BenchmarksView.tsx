@@ -305,7 +305,11 @@ export function BenchmarksView({
         {errors.map((error) => (
           <BenchmarkAlert key={error}>{error}</BenchmarkAlert>
         ))}
-        <BenchmarkActivity runs={runs.data ?? []} onOpenRun={openRun} />
+        <BenchmarkActivity
+          runs={runs.data ?? []}
+          onOpenRun={openRun}
+          attentionFor={location.section === "leaderboard" ? openedRow : null}
+        />
         {location.section === "development" ? (
           <BenchDevelopmentView
             definitions={definitions.data ?? []}
@@ -370,6 +374,7 @@ export function BenchmarksView({
           <LeaderboardView
             report={leaderboard.data}
             runs={runs.data ?? []}
+            onOpenRun={openRun}
             loading={leaderboard.isPending}
             page={page}
             pageSize={PAGE_SIZE}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   activeRuns,
   rowActivity,
+  rowAttention,
   runProgress,
   runningConfigurations,
   stalledRuns,
@@ -95,5 +96,28 @@ describe("benchmark activity", () => {
       running: 0,
       runId: null,
     });
+  });
+
+  it("names a row's own stalled runs, newest first, and no other model's", () => {
+    const alone = { ...configuration, id: "config-3", modelId: "model-3" };
+    const runs = [
+      summary({ id: "old", state: "needs_attention", createdAt: 1 }),
+      summary({ id: "live" }),
+      summary({
+        id: "elsewhere",
+        state: "needs_attention",
+        createdAt: 3,
+        request: { ...runSummary.request, configurations: [alone] },
+      }),
+      summary({ id: "new", state: "needs_attention", createdAt: 2 }),
+    ];
+    expect(
+      rowAttention(leaderboardRow({ configuration }), runs).map((r) => r.id),
+    ).toEqual(["new", "old"]);
+    expect(
+      rowAttention(leaderboardRow({ configuration: alone }), runs).map(
+        (r) => r.id,
+      ),
+    ).toEqual(["elsewhere"]);
   });
 });

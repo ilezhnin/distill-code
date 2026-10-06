@@ -31,7 +31,7 @@ import {
   type BoardId,
   type RankedRow,
 } from "../lib/benchmarkBoards";
-import { rowActivity } from "../lib/benchmarkActivity";
+import { rowActivity, rowAttention } from "../lib/benchmarkActivity";
 import {
   boardDescription,
   boardTitle,
@@ -56,6 +56,7 @@ import {
   BenchmarkPager,
   BenchmarkToolbar,
   BoardIcon,
+  AttentionMark,
   ModelIdentity,
   ScoreBar,
   ShareMarks,
@@ -67,6 +68,8 @@ interface Props {
   report: LeaderboardReport | undefined;
   /** Runs whose open cells mark the rows they still measure. */
   runs?: RunSummary[];
+  /** Opens a run from a row's warning. */
+  onOpenRun?: (id: string) => void;
   loading: boolean;
   page: number;
   pageSize: number;
@@ -92,6 +95,7 @@ function twinKey(configuration: Configuration): string {
 export function LeaderboardView({
   report,
   runs = [],
+  onOpenRun,
   loading,
   page,
   pageSize,
@@ -207,6 +211,7 @@ export function LeaderboardView({
   );
   const modelCell = (entry: RankedRow) => {
     const activity = rowActivity(entry.row, runs);
+    const attention = rowAttention(entry.row, runs);
     return (
       <TableCell className={cn(pinned("left-10"))}>
         <ModelIdentity
@@ -214,6 +219,14 @@ export function LeaderboardView({
           name={nameOf(entry.row)}
           vendor={vendorOf(entry.row)}
           showRuntime={(twins.get(twinKey(entry.row.configuration)) ?? 0) > 1}
+          mark={
+            attention.length > 0 ? (
+              <AttentionMark
+                runs={attention}
+                onOpen={(id) => onOpenRun?.(id)}
+              />
+            ) : null
+          }
         >
           {view === "table" && entry.row.status !== "comparable" ? (
             <div className="mt-1">

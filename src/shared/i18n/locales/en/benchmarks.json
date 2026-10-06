@@ -280,6 +280,7 @@
     "preview": "Development preview"
   },
   "activity": {
+    "attention": "Needs attention: {{count}} runs",
     "title": "Runs in progress",
     "progress": "{{settled}} / {{total}}",
     "more": "+{{count}}",
