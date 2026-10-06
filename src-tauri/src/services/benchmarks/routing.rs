@@ -693,6 +693,7 @@ mod tests {
                     content_hash: "hash".into(),
                     published_at: 100,
                     manifest,
+                    carries_from: None,
                 };
                 data.versions.push(version.clone());
                 for configuration in &candidates {

@@ -713,11 +713,54 @@ pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benc
             None => live_versions(data, query.as_of),
         },
     };
+    // A case republished with only its evaluator changed is its carrying
+    // version, at every date: the cells moved to it.
+    let carried = carried_versions(&data.versions);
+    if !carried.is_empty() {
+        pool = pool
+            .into_iter()
+            .map(|version| {
+                carried
+                    .get(&version.id)
+                    .and_then(|id| versions.get(id.as_str()).copied())
+                    .unwrap_or(version)
+            })
+            .collect();
+        pool.sort_by(|a, b| a.id.cmp(&b.id));
+        pool.dedup_by(|a, b| a.id == b.id);
+    }
     if let Some(ids) = &query.version_ids {
         pool.retain(|version| ids.contains(&version.id));
     }
     pool.sort_by(|a, b| a.id.cmp(&b.id));
     pool
+}
+
+/// Each version an evaluator-only republication replaced, to the version
+/// that carries its cells now: the end of its chain.
+pub fn carried_versions(versions: &[BenchmarkVersion]) -> BTreeMap<String, String> {
+    let mut next: BTreeMap<&str, &BenchmarkVersion> = BTreeMap::new();
+    for version in versions {
+        if let Some(from) = version.carries_from.as_deref() {
+            let entry = next.entry(from).or_insert(version);
+            if version.published_at > entry.published_at {
+                *entry = version;
+            }
+        }
+    }
+    next.keys()
+        .map(|from| {
+            let mut current = *from;
+            // A chain is never longer than the versions; a cycle stops there.
+            for _ in 0..versions.len() {
+                match next.get(current) {
+                    Some(successor) => current = successor.id.as_str(),
+                    None => break,
+                }
+            }
+            ((*from).to_owned(), current.to_owned())
+        })
+        .collect()
 }
 
 /// The newest pool release made by `as_of` (by now without one).
@@ -1654,6 +1697,7 @@ pub(super) mod tests {
                     content_hash: format!("hash{index}"),
                     published_at: 1,
                     manifest,
+                    carries_from: None,
                 }
             })
             .collect::<Vec<_>>();

@@ -70,6 +70,12 @@ export interface BenchmarkVersion {
   contentHash: string;
   publishedAt: number;
   manifest: BenchmarkDraft;
+  /**
+   * The version whose cells this one carries: it changed only the evaluator,
+   * so the stored outputs were evaluated again instead of the case opening a
+   * gap.
+   */
+  carriesFrom?: string | null;
 }
 export interface BenchmarkDefinition {
   id: string;

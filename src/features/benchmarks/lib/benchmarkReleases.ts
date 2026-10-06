@@ -28,15 +28,28 @@ export function poolChanges(
   previous: string[],
   next: string[],
 ): PoolChanges {
+  const versions = definitions.flatMap((definition) => definition.versions);
   const testOf = new Map(
-    definitions.flatMap((definition) =>
-      definition.versions.map(
-        (version) => [version.id, definition.id] as const,
-      ),
-    ),
+    versions.map((version) => [version.id, version.definitionId] as const),
   );
+  // A version republished with only its evaluator changed is the same
+  // measurement: the release reads it through the version that carries it.
+  const carriedFrom = new Map(
+    versions
+      .filter((version) => version.carriesFrom)
+      .map((version) => [version.id, version.carriesFrom as string] as const),
+  );
+  const origin = (id: string) => {
+    const seen = new Set<string>();
+    let current = id;
+    while (carriedFrom.has(current) && !seen.has(current)) {
+      seen.add(current);
+      current = carriedFrom.get(current) as string;
+    }
+    return current;
+  };
   const byTest = (ids: string[]) =>
-    new Map(ids.map((id) => [testOf.get(id) ?? id, id] as const));
+    new Map(ids.map((id) => [testOf.get(id) ?? id, origin(id)] as const));
   const before = byTest(previous);
   const after = byTest(next);
   let added = 0;

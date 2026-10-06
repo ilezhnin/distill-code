@@ -3392,7 +3392,12 @@ impl BenchmarkService {
         let result = match result {
             Ok(completed) => {
                 let stop = JudgeStop::run(&run.id, cancel_rx);
-                self.settle(completed, &version, judge_budget, stop).await
+                // A republication that changed only the evaluator while the
+                // turn ran evaluates it, as it evaluated the settled ones.
+                match self.store.carried_version(&version.id).await {
+                    Ok(evaluated) => self.settle(completed, &evaluated, judge_budget, stop).await,
+                    Err(error) => Err(error),
+                }
             }
             Err(error) => Err(error),
         };
@@ -6512,6 +6517,82 @@ mod tests {
             .collect();
         then.sort();
         assert_eq!(then, frozen);
+    }
+    #[tokio::test]
+    async fn an_evaluator_only_republish_evaluates_the_stored_outputs_again() {
+        let (_dir, s, backend) = setup().await;
+        let draft = seed_definitions()
+            .into_iter()
+            .find(|d| d.evaluator.kind == "exact")
+            .unwrap();
+        let definition = s.store.save_draft(None, None, draft.clone()).await.unwrap();
+        let first = s.publish_version(&definition.id, 1).await.unwrap();
+        assert_eq!(first.carries_from, None);
+        let mut req = request(&s).await;
+        req.request_key = "carried".into();
+        req.version_ids = vec![first.id.clone()];
+        req.repetitions = super::super::analysis::REQUIRED_REPETITIONS;
+        req.max_executions = super::super::analysis::REQUIRED_REPETITIONS;
+        let run = s.start_run(req).await.unwrap();
+        let run = drain(&s, &run.id).await;
+        assert!(run
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        let calls = backend.calls.load(Ordering::SeqCst);
+        // The expected answer is corrected: the same outputs now fail.
+        let mut fixed = draft.clone();
+        fixed.evaluator.expected = format!("{} corrected", draft.evaluator.expected);
+        fixed.evaluator.known_good = fixed.evaluator.expected.clone();
+        fixed.evaluator.revision = "corrected".into();
+        let saved = s
+            .store
+            .save_draft(Some(definition.id.as_str()), Some(1), fixed.clone())
+            .await
+            .unwrap();
+        let second = s
+            .publish_version(&definition.id, saved.draft_revision)
+            .await
+            .unwrap();
+        assert_eq!(second.carries_from.as_deref(), Some(first.id.as_str()));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
+        for attempt in s.store.run(&run.id).await.unwrap().attempts {
+            assert_eq!(attempt.version_id, first.id);
+            assert_eq!(attempt.outcome.as_deref(), Some("fail"));
+            let evaluation = attempt.evaluations.last().unwrap();
+            assert_eq!(evaluation.evaluator_revision, "corrected");
+            assert_eq!(evaluation.details.as_ref().unwrap()["carriedTo"], second.id);
+        }
+        // The case stands on the new version with its old cells: no gap.
+        let data = s.query_data().await.unwrap();
+        let row = super::super::analysis::leaderboard(&data, &ResultQuery::default())
+            .rows
+            .remove(0);
+        assert!(row.scored_version_ids.contains(&second.id));
+        assert!(!row.missing_version_ids.contains(&second.id));
+        // A changed prompt is another task: it opens a gap and carries nothing.
+        let mut reworded = fixed;
+        reworded.prompt.push_str(" Answer in one line.");
+        let saved = s
+            .store
+            .save_draft(
+                Some(definition.id.as_str()),
+                Some(saved.draft_revision),
+                reworded,
+            )
+            .await
+            .unwrap();
+        let third = s
+            .publish_version(&definition.id, saved.draft_revision)
+            .await
+            .unwrap();
+        assert_eq!(third.carries_from, None);
+        let data = s.query_data().await.unwrap();
+        let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
+        assert!(report
+            .rows
+            .iter()
+            .all(|row| !row.scored_version_ids.contains(&third.id)));
     }
     /// One repetition of a creative brief for the passing fake model.
     async fn creative_request(s: &BenchmarkService) -> RunRequest {

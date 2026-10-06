@@ -108,6 +108,8 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
+  // The last publication changed only the evaluator and kept the results.
+  const [carried, setCarried] = useState(false);
   const signature = (
     value: BenchmarkDraft,
     rows: FixtureRow[],
@@ -340,10 +342,11 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
             onClick={() =>
               void execute(async () => {
                 const saved = await save();
-                await benchmarkApi.publishVersion(
+                const version = await benchmarkApi.publishVersion(
                   saved.id,
                   saved.draftRevision,
                 );
+                setCarried(Boolean(version.carriesFrom));
                 await client.invalidateQueries({ queryKey: benchmarkKeys });
               })
             }
@@ -371,6 +374,11 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
       {validation?.valid ? (
         <p role="status" className="text-sm text-muted-foreground">
           {t("benchmarks:editor.valid")}
+        </p>
+      ) : null}
+      {carried ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t("benchmarks:editor.carried")}
         </p>
       ) : null}
 

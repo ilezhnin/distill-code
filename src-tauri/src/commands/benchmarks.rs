@@ -36,10 +36,10 @@ pub async fn benchmark_publish_version(
     id: String,
     expected_revision: i64,
 ) -> Result<BenchmarkVersion> {
-    let s = service(&app).await?;
-    let value = s.store.publish(&id, expected_revision).await?;
-    s.changed().await;
-    Ok(value)
+    service(&app)
+        .await?
+        .publish_version(&id, expected_revision)
+        .await
 }
 #[tauri::command]
 pub async fn benchmark_duplicate_definition(

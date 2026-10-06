@@ -55,6 +55,28 @@ describe("pool releases", () => {
     });
   });
 
+  it("reads an evaluator-only republication as the version it carries", () => {
+    const carried = [
+      ...tests,
+      {
+        ...test("a", [["a3", 6]]),
+        versions: [
+          {
+            ...tests[0].versions[1],
+            id: "a3",
+            publishedAt: 6,
+            carriesFrom: "a2",
+          },
+        ],
+      },
+    ];
+    expect(poolChanges(carried, ["a2", "b1"], ["a3", "b1"])).toEqual({
+      added: 0,
+      revised: 0,
+      retired: 0,
+    });
+  });
+
   it("names the next release as the service does", () => {
     expect(nextReleaseName([])).toBe("v1");
     expect(

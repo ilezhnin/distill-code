@@ -183,7 +183,7 @@ impl Store {
         Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
     pub async fn versions_for(&self, id: &str) -> Result<Vec<BenchmarkVersion>> {
-        let rows=sqlx::query("SELECT id,content_hash,manifest_json,published_at FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC").bind(id).fetch_all(&self.pool).await?;
+        let rows=sqlx::query("SELECT id,content_hash,manifest_json,published_at,carries_from FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC").bind(id).fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|r| {
                 Ok(BenchmarkVersion {
@@ -192,19 +192,36 @@ impl Store {
                     content_hash: r.get(1),
                     manifest: serde_json::from_str(r.get(2))?,
                     published_at: r.get(3),
+                    carries_from: r.get(4),
                 })
             })
             .collect()
     }
     pub async fn version(&self, id: &str) -> Result<BenchmarkVersion> {
-        let r=sqlx::query("SELECT definition_id,content_hash,manifest_json,published_at FROM benchmark_versions WHERE id=?").bind(id).fetch_optional(&self.pool).await?.ok_or_else(||BenchmarkError::new("validation","Published version not found"))?;
+        let r=sqlx::query("SELECT definition_id,content_hash,manifest_json,published_at,carries_from FROM benchmark_versions WHERE id=?").bind(id).fetch_optional(&self.pool).await?.ok_or_else(||BenchmarkError::new("validation","Published version not found"))?;
         Ok(BenchmarkVersion {
             id: id.into(),
             definition_id: r.get(0),
             content_hash: r.get(1),
             manifest: serde_json::from_str(r.get(2))?,
             published_at: r.get(3),
+            carries_from: r.get(4),
         })
+    }
+    /// The version that carries `id`'s cells now: the end of its chain of
+    /// evaluator-only republications, or `id` itself.
+    pub async fn carried_version(&self, id: &str) -> Result<BenchmarkVersion> {
+        let mut current = id.to_owned();
+        while let Some(next) = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM benchmark_versions WHERE carries_from=? ORDER BY published_at DESC LIMIT 1",
+        )
+        .bind(&current)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            current = next;
+        }
+        self.version(&current).await
     }
     pub async fn run(&self, id: &str) -> Result<BenchmarkRun> {
         let r = sqlx::query(

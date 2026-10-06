@@ -155,6 +155,11 @@ pub struct BenchmarkVersion {
     pub content_hash: String,
     pub published_at: i64,
     pub manifest: BenchmarkDraft,
+    /// The version whose cells this one carries: published with only its
+    /// evaluator changed, so the case keeps its measurements and their
+    /// stored outputs are evaluated again instead of the case opening a gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carries_from: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

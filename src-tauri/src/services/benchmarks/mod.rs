@@ -241,7 +241,7 @@ impl BenchmarkService {
     }
     pub async fn query_data(&self) -> Result<QueryData> {
         let definitions = self.store.all_definitions().await?;
-        let versions = definitions
+        let versions: Vec<BenchmarkVersion> = definitions
             .iter()
             .flat_map(|d| d.versions.clone())
             .collect();
@@ -256,6 +256,24 @@ impl BenchmarkService {
                 &attempt.usage,
                 attempt.finished_at.or(attempt.started_at),
             );
+        }
+        // Cells of a version an evaluator-only republication replaced are the
+        // carrying version's cells in every analysis; the store keeps them
+        // where they ran.
+        let carried = analysis::carried_versions(&versions);
+        if !carried.is_empty() {
+            for run in &mut runs {
+                for id in &mut run.request.version_ids {
+                    if let Some(to) = carried.get(id) {
+                        id.clone_from(to);
+                    }
+                }
+                for attempt in &mut run.attempts {
+                    if let Some(to) = carried.get(&attempt.version_id) {
+                        attempt.version_id.clone_from(to);
+                    }
+                }
+            }
         }
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
         let releases = self.store.releases().await?;
@@ -992,6 +1010,77 @@ impl BenchmarkService {
         self.store.save_attempt(&a).await?;
         Ok(a)
     }
+    /// Publishes a definition's draft. A version that changes only the
+    /// evaluator carries the cells of the newest one: an objective evaluator
+    /// evaluates their sealed outputs again here, locally and free; a judged
+    /// case keeps its panels' scores until the operator asks for new judges,
+    /// which costs model calls.
+    pub async fn publish_version(&self, id: &str, revision: i64) -> Result<BenchmarkVersion> {
+        let version = self.store.publish(id, revision).await?;
+        if version.carries_from.is_some() && version.manifest.evaluator.kind != "rubric" {
+            self.evaluate_carried(&version).await?;
+        }
+        self.changed().await;
+        Ok(version)
+    }
+    /// Evaluates every settled, evaluated output of the versions `version`
+    /// carries with its evaluator; returns how many it evaluated.
+    async fn evaluate_carried(&self, version: &BenchmarkVersion) -> Result<usize> {
+        let mut carried = Vec::new();
+        let mut from = version.carries_from.clone();
+        while let Some(id) = from {
+            if carried.contains(&id) {
+                break;
+            }
+            from = self.store.version(&id).await?.carries_from;
+            carried.push(id);
+        }
+        let mut evaluated = 0;
+        for run in self.store.all_runs().await? {
+            for attempt in run
+                .attempts
+                .iter()
+                .filter(|a| a.phase == "terminal" && carried.contains(&a.version_id))
+            {
+                let lock = evaluation_lock(&attempt.id);
+                let _guard = lock.lock().await;
+                // Budget failures, cancellations, exclusions and retired
+                // repetitions keep their recorded outcome, as in a rescore.
+                let evaluated_before = matches!(
+                    self.store.stored_outcome(&attempt.id).await?.as_deref(),
+                    Some("pass" | "fail" | "completed" | "evaluation_error")
+                );
+                let step = sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM workflow_steps WHERE attempt_id=?",
+                )
+                .bind(&attempt.id)
+                .fetch_one(&self.store.pool)
+                .await?
+                    != 0;
+                if !evaluated_before || step {
+                    continue;
+                }
+                let mut a = self.store.attempt(&attempt.id).await?;
+                let Some(output) = a.output.clone() else {
+                    continue;
+                };
+                match runner::evaluate(&version.manifest, &output).await {
+                    Ok(mut e) => {
+                        e.details = Some(serde_json::json!({ "carriedTo": version.id }));
+                        a.outcome = Some(e.verdict.clone());
+                        a.evaluations.push(e);
+                    }
+                    Err(error) => {
+                        a.outcome = Some("evaluation_error".into());
+                        a.reason = Some(error.message);
+                    }
+                }
+                self.store.save_attempt(&a).await?;
+                evaluated += 1;
+            }
+        }
+        Ok(evaluated)
+    }
     /// Freezes every live test's newest published version as a pool release,
     /// named `name` or the next `vN`. A release that would repeat the newest
     /// one is refused: nothing in the pool changed.
@@ -1008,7 +1097,13 @@ impl BenchmarkService {
             ));
         }
         if let Some(newest) = analysis::release_at(&data, None) {
-            let mut frozen = newest.version_ids.clone();
+            // A version that only re-evaluates a frozen one is no change.
+            let carried = analysis::carried_versions(&data.versions);
+            let mut frozen: Vec<String> = newest
+                .version_ids
+                .iter()
+                .map(|id| carried.get(id).unwrap_or(id).clone())
+                .collect();
             frozen.sort();
             if frozen == version_ids {
                 return Err(BenchmarkError::new(

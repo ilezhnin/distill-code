@@ -176,14 +176,31 @@ impl Store {
             tx.commit().await?;
             return self.version(&key).await;
         }
+        // A version that changes only the evaluator of the newest one carries
+        // its cells: the stored outputs are evaluated again, not run again.
+        let newest = sqlx::query(
+            "SELECT id,manifest_json FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        use sqlx::Row;
+        let carries_from = match newest {
+            Some(row) => {
+                let previous: BenchmarkDraft = serde_json::from_str(row.get(1))?;
+                evaluator_only(&previous, &def.draft).then(|| row.get::<String, _>(0))
+            }
+            None => None,
+        };
         let v = BenchmarkVersion {
             id: uuid::Uuid::new_v4().to_string(),
             definition_id: id.into(),
             content_hash: hash,
             published_at: now(),
             manifest: def.draft,
+            carries_from,
         };
-        sqlx::query("INSERT INTO benchmark_versions(id,definition_id,content_hash,manifest_json,published_at) VALUES(?,?,?,?,?)").bind(&v.id).bind(id).bind(&v.content_hash).bind(serde_json::to_string(&v.manifest)?).bind(v.published_at).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO benchmark_versions(id,definition_id,content_hash,manifest_json,published_at,carries_from) VALUES(?,?,?,?,?,?)").bind(&v.id).bind(id).bind(&v.content_hash).bind(serde_json::to_string(&v.manifest)?).bind(v.published_at).bind(&v.carries_from).execute(&mut *tx).await?;
         event(&mut tx, id, "version_published").await?;
         tx.commit().await?;
         Ok(v)
@@ -232,9 +249,39 @@ impl Store {
     }
 }
 
+/// Whether `next` differs from `previous` in its evaluator alone: a fixed
+/// expected answer, check or rubric, with the same task, fixtures, limits and
+/// everything else a candidate sees or is held to.
+pub(super) fn evaluator_only(previous: &BenchmarkDraft, next: &BenchmarkDraft) -> bool {
+    let parts = |draft: &BenchmarkDraft| {
+        let mut value = serde_json::to_value(draft).unwrap_or_default();
+        let evaluator = value
+            .as_object_mut()
+            .and_then(|object| object.remove("evaluator"));
+        (value, evaluator)
+    };
+    let (before, old) = parts(previous);
+    let (after, new) = parts(next);
+    old != new && before == after
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_a_change_confined_to_the_evaluator_carries_cells() {
+        let draft = super::super::seeds::definitions().remove(0);
+        let mut fixed = draft.clone();
+        fixed.evaluator.expected.push_str(" corrected");
+        assert!(evaluator_only(&draft, &fixed));
+        assert!(!evaluator_only(&draft, &draft));
+        let mut reworded = fixed.clone();
+        reworded.prompt.push_str(" Answer in one line.");
+        assert!(!evaluator_only(&draft, &reworded));
+        let mut limited = fixed;
+        limited.limits.timeout_seconds += 1;
+        assert!(!evaluator_only(&draft, &limited));
+    }
     #[tokio::test]
     async fn archiving_records_the_first_archive_time() {
         let directory = tempfile::tempdir().unwrap();
