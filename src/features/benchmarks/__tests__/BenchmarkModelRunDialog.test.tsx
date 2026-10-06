@@ -249,14 +249,16 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
   const stop = await screen.findByRole("button", { name: "Stop" });
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
-  // Every result in one form: repetitions passed of those scored, then a
-  // check when all passed or a cross.
-  expect(row("Alpha").getByLabelText("Pass")).toBeInTheDocument();
-  expect(row("Alpha").getByText("1/1")).toBeInTheDocument();
-  expect(row("Bravo").getByText("1/1")).toBeInTheDocument();
-  expect(row("Bravo").getByLabelText("Pass")).toBeInTheDocument();
-  expect(row("Charlie").getByText("0/1")).toBeInTheDocument();
-  expect(row("Charlie").getByLabelText("Fail")).toBeInTheDocument();
+  // Every result in one form: one dot per repetition, green where it passed,
+  // red where it did not; no checks, crosses or counts beside them.
+  const dots = (name: string) =>
+    [...row(name).getByRole("img").querySelectorAll("[data-dot]")].map((dot) =>
+      dot.getAttribute("data-dot"),
+    );
+  expect(dots("Alpha")).toEqual(["passed"]);
+  expect(dots("Bravo")).toEqual(["passed"]);
+  expect(dots("Charlie")).toEqual(["failed"]);
+  expect(row("Charlie").queryByText("0/1")).not.toBeInTheDocument();
   expect(row("Echo").getByLabelText("Running")).toBeInTheDocument();
   expect(row("Hotel").getByText("Queued")).toBeInTheDocument();
   expect(screen.getByText("3 of 5 finished")).toBeInTheDocument();
@@ -419,7 +421,11 @@ it("lists the tests in the order the run takes them and times the one running no
   const row = (name: string) =>
     within(screen.getByText(name).closest("li") as HTMLElement);
   expect(row("Charlie").getByText("7 s")).toBeInTheDocument();
-  expect(await row("Charlie").findByLabelText("Pass")).toBeInTheDocument();
+  expect(
+    await row("Charlie").findByRole("img", {
+      name: "1 of 1 passed, 1 repetitions",
+    }),
+  ).toBeInTheDocument();
   expect(row("Echo").getByLabelText("Running")).toBeInTheDocument();
   expect(row("Echo").getByText(/^2 min [5-7] s$/)).toBeInTheDocument();
   expect(screen.getByText("Echo").closest("li")).toHaveAttribute(
@@ -449,8 +455,14 @@ it("leaves the tests the model passed unchecked and checks the failed ones, show
   expect(row("Alpha").getByRole("checkbox")).not.toBeChecked();
   for (const name of ["Bravo", "Charlie", "Delta", "Echo", "Hotel"])
     expect(row(name).getByRole("checkbox")).toBeChecked();
-  expect(await row("Alpha").findByLabelText("Pass")).toBeInTheDocument();
-  expect(row("Charlie").getByLabelText("Fail")).toBeInTheDocument();
+  expect(
+    await row("Alpha").findByRole("img", {
+      name: "1 of 1 passed, 1 repetitions",
+    }),
+  ).toBeInTheDocument();
+  expect(
+    row("Charlie").getByRole("img", { name: "0 of 1 passed, 1 repetitions" }),
+  ).toBeInTheDocument();
   expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
     attemptIds: ["s-1", "s-3"],
     limit: 100,

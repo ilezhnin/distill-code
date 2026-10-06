@@ -3,7 +3,7 @@
 // only when every one passed, and the time it took.
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconCheck, IconHourglass, IconX } from "@tabler/icons-react";
+import { IconHourglass } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
@@ -61,11 +61,60 @@ export type TestStatus =
       /** Repetitions that passed, of those scored: the case counts at all. */
       passes: number;
       of: number;
-      /** A case scored on a scale by a panel: its mean points, no pass. */
-      graded: boolean;
       durationMs: number | null;
     }
   | { kind: "unscored"; outcome: string | null; durationMs: number | null };
+
+/** One repetition's state, as a dot: grey never started, blue works, green passed, red failed. */
+export type DotState = "queued" | "running" | "passed" | "failed";
+
+const DOT_TONE: Record<DotState, string> = {
+  queued: "bg-muted-foreground/40",
+  running: "bg-info animate-pulse",
+  passed: "bg-success",
+  failed: "bg-destructive",
+};
+
+/**
+ * A test's repetitions as a row of dots, the way a run reads at a glance;
+ * the row names the count it stands for.
+ */
+export function RepetitionDots({
+  states,
+  className,
+}: {
+  states: DotState[];
+  className?: string;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const passes = states.filter((state) => state === "passed").length;
+  const scored = states.filter(
+    (state) => state === "passed" || state === "failed",
+  ).length;
+  return (
+    <span
+      role="img"
+      aria-label={t("grid.repetitions", { passes, scored, of: states.length })}
+      className={cn("inline-flex shrink-0 items-center gap-1", className)}
+    >
+      {states.map((state, index) => (
+        <span
+          // biome-ignore lint/suspicious/noArrayIndexKey: dots are positional, the repetition number is their identity
+          key={`${state}-${index}`}
+          data-dot={state}
+          className={cn("size-2 rounded-full", DOT_TONE[state])}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** The dots of a scored test: its passes green, the rest red. */
+export function scoredDots(passes: number, of: number): DotState[] {
+  return Array.from({ length: of }, (_, index) =>
+    index < passes ? "passed" : "failed",
+  );
+}
 
 /**
  * Attempt summaries by id; one listing returns at most 100. With `asOf`, the
@@ -93,7 +142,6 @@ export function testStatus(
   attempts: StatusAttempt[],
   scores: Map<string, number | null>,
   runState: string | null,
-  graded = false,
 ): TestStatus | null {
   if (attempts.length === 0) return null;
   const runFinished = runState != null && FINISHED_RUN.has(runState);
@@ -130,9 +178,17 @@ export function testStatus(
     durations.length > 0
       ? durations.reduce((sum, value) => sum + value, 0) / durations.length
       : null;
+  // Before a score arrives a settled attempt reads by its outcome, as the
+  // service scores it: a pass is 1, a fail or a reached budget 0.
   const values = attempts.flatMap((a) => {
     const score = scores.get(a.id);
-    return score == null ? [] : [score];
+    if (score != null) return [score];
+    if (a.outcome === "pass") return [1];
+    return a.outcome === "fail" ||
+      a.outcome === "budget_reached" ||
+      a.outcome === "budget_timeout"
+      ? [0]
+      : [];
   });
   if (values.length > 0)
     return {
@@ -140,7 +196,6 @@ export function testStatus(
       score: values.reduce((sum, value) => sum + value, 0) / values.length,
       passes: values.filter(passed).length,
       of: values.length,
-      graded,
       durationMs,
     };
   return { kind: "unscored", outcome: attempts[0].outcome, durationMs };
@@ -247,43 +302,17 @@ export function TestStatusMark({
           <Spinner decorative className="size-4" />
         </span>
       );
-    case "scored": {
-      // A graded case reads as its mean points, as the boards count it.
-      if (status.graded)
-        return (
-          <span className="flex shrink-0 items-center gap-2">
-            {time(status.durationMs)}
-            <span
-              className="text-right text-sm tabular-nums"
-              title={t("states.judged")}
-            >
-              {Math.round(status.score * 1000)}
-            </span>
-          </span>
-        );
-      // Every other result reads the same: repetitions passed of those
-      // scored, then a check only when all of them did, a cross otherwise.
-      const solved = status.passes === status.of;
+    case "scored":
+      // Every result reads the same: one dot per repetition, green where it
+      // passed, red where it did not. A graded case passes a repetition
+      // from half the points; the boards count its mean, the evidence
+      // shows it.
       return (
         <span className="flex shrink-0 items-center gap-2">
           {time(status.durationMs)}
-          <span className="text-right text-sm tabular-nums">
-            {status.passes}/{status.of}
-          </span>
-          {solved ? (
-            <IconCheck
-              aria-label={t("states.pass")}
-              className="size-4 text-success"
-            />
-          ) : (
-            <IconX
-              aria-label={t("states.fail")}
-              className="size-4 text-destructive"
-            />
-          )}
+          <RepetitionDots states={scoredDots(status.passes, status.of)} />
         </span>
       );
-    }
     case "unscored":
       return (
         <span

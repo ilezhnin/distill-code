@@ -312,6 +312,7 @@
     "rescoreJudges": "Evaluar de nuevo (hasta 3 llamadas)"
   },
   "grid": {
+    "repetitions": "{{passes}} de {{scored}} superadas, {{of}} repeticiones",
     "taskNamed": "Tarea {{number}}: {{name}}",
     "title": "Pruebas · {{count}}",
     "task": "Tarea {{number}}",

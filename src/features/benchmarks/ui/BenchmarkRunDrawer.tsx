@@ -26,12 +26,7 @@ import {
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
-import {
-  FINISHED_RUN,
-  listByIds,
-  testStatus,
-  useNow,
-} from "./BenchmarkTestStatus";
+import { FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
 
 /**
  * One frozen run: its progress, every test in the order the run takes them
@@ -60,10 +55,7 @@ export function BenchmarkRunDrawer({
         (definitions.data ?? []).flatMap((definition) =>
           definition.versions.map((version) => [
             version.id,
-            {
-              name: version.manifest.name,
-              graded: version.manifest.evaluator.kind === "rubric",
-            },
+            version.manifest.name,
           ]),
         ),
       ),
@@ -110,37 +102,20 @@ export function BenchmarkRunDrawer({
       ),
     [summaries.data],
   );
-  const statuses = useMemo(
-    () =>
-      new Map(
-        attempts.map((attempt) => [
-          attempt.id,
-          testStatus([attempt], scores, run?.state ?? null),
-        ]),
-      ),
-    [attempts, scores, run?.state],
-  );
-  const working = attempts.filter((attempt) => {
-    const kind = statuses.get(attempt.id)?.kind;
-    return kind === "running" || kind === "judging";
-  });
-  const now = useNow(working.length > 0);
   // One model's run is titled by the model, a matrix by its id.
   const configurations = run?.request.configurations ?? [];
   const single = configurations.length === 1 ? configurations[0] : null;
   const effort = single ? explicitEffort(single.effort) : null;
   // One grid per configuration, its cases in the run's dispatch order.
   const grids = useMemo(() => {
-    const order: { id: string; name: string; graded: boolean }[] = [];
+    const order: { id: string; name: string }[] = [];
     const seen = new Set<string>();
     for (const attempt of attempts) {
       if (seen.has(attempt.versionId)) continue;
       seen.add(attempt.versionId);
-      const known = names.get(attempt.versionId);
       order.push({
         id: attempt.versionId,
-        name: known?.name ?? shortId(attempt.versionId),
-        graded: known?.graded ?? false,
+        name: names.get(attempt.versionId) ?? shortId(attempt.versionId),
       });
     }
     return configurations.map((configuration) => ({
@@ -247,7 +222,6 @@ export function BenchmarkRunDrawer({
                     >
                       <TaskGrid
                         cells={grid.cells}
-                        now={now}
                         onOpen={(cell) => onEvidence(cell.attemptIds[0])}
                       />
                     </div>

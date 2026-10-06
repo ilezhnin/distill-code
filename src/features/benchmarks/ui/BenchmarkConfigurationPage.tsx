@@ -47,7 +47,7 @@ import type {
 } from "../types";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
-import { listByIds, useNow } from "./BenchmarkTestStatus";
+import { listByIds } from "./BenchmarkTestStatus";
 import {
   BoardIcon,
   ScoreBar,
@@ -190,14 +190,9 @@ export function BenchmarkConfigurationPage({
             (classOrder.get(b.manifest.workClassId) ?? 99) ||
           a.manifest.name.localeCompare(b.manifest.name),
       )
-      .map((version) => ({
-        id: version.id,
-        name: version.manifest.name,
-        graded: version.manifest.evaluator.kind === "rubric",
-      }));
+      .map((version) => ({ id: version.id, name: version.manifest.name }));
     return taskCells(order, summaries.data ?? [], null);
   }, [shownReport.cohort, versions, summaries.data]);
-  const now = useNow(false);
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(() => rowActivity(row, runs), [row, runs]);
   const queuedRunId = catchUp.queuedRunId;
@@ -586,7 +581,6 @@ export function BenchmarkConfigurationPage({
         <TaskSummary cells={cells} />
         <TaskGrid
           cells={cells}
-          now={now}
           onOpen={(cell) => onEvidence(cell.attemptIds[0])}
         />
       </section>

@@ -134,15 +134,24 @@ it("lists one model's run by test, in its order, timing the test running now", a
       .getAllByRole("button", { name: /^Task \d+: / })
       .map((item) => item.getAttribute("aria-label")),
   ).toEqual(["Task 1: Alpha", "Task 2: Bravo", "Task 3: Charlie"]);
-  expect(await row("Alpha").findByLabelText("Pass")).toBeInTheDocument();
-  expect(row("Alpha").getByText("1/1")).toBeInTheDocument();
+  // Dots per repetition the measurement needs: Alpha's one pass and two
+  // never started, Bravo's one working, Charlie's three waiting. The frame
+  // reads the whole case the same way.
+  const dots = (name: string) =>
+    [...block(name).querySelectorAll("[data-dot]")].map((dot) =>
+      dot.getAttribute("data-dot"),
+    );
+  expect(dots("Alpha")).toEqual(["passed", "queued", "queued"]);
+  expect(dots("Bravo")).toEqual(["running", "queued", "queued"]);
+  expect(dots("Charlie")).toEqual(["queued", "queued", "queued"]);
+  expect(block("Alpha").className).toMatch(/border-success/);
+  expect(block("Bravo").className).toMatch(/border-info/);
+  expect(block("Charlie").className).toMatch(/border-muted-foreground/);
   expect(row("Alpha").getByText("12 s")).toBeInTheDocument();
   // A minute and more reads as m:ss, so a block never wraps its clock.
   expect(compactElapsed(86_000)).toBe("1:26");
   expect(compactElapsed(3_725_000)).toBe("1:02:05");
-  expect(row("Bravo").getByLabelText("Running")).toBeInTheDocument();
   expect(block("Bravo")).toHaveAttribute("aria-current", "step");
-  expect(row("Charlie").getByText("Queued")).toBeInTheDocument();
   // A queued test is a block already, its evidence empty until it runs.
   expect(block("Charlie")).toBeEnabled();
   // The counts a run leads with.
@@ -188,8 +197,8 @@ it("keeps a paused run's waiting tests queued and names each model of a matrix",
         .closest("section") as HTMLElement,
     );
   expect(
-    grid("model-2").getByRole("button", { name: /Charlie/ }),
-  ).toHaveTextContent("Queued");
+    grid("model-2").getByRole("button", { name: /Charlie/ }).className,
+  ).toMatch(/border-muted-foreground/);
   expect(
     grid("model-1").getByRole("button", { name: /Charlie/ }),
   ).toBeDisabled();

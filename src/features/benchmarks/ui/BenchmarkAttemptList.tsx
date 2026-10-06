@@ -157,7 +157,6 @@ export function BenchmarkAttemptList({
                           score: row.score,
                           passes: passed(row.score) ? 1 : 0,
                           of: 1,
-                          graded: false,
                           durationMs: null,
                         }}
                         now={0}

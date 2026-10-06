@@ -10,10 +10,15 @@ import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { formatUsd } from "../lib/benchmarkLabels";
 import type { AttemptSummary } from "../types";
 import {
+  type DotState,
+  passed,
+  RepetitionDots,
   TestStatusMark,
   testStatus,
   type TestStatus,
+  WORKING,
 } from "./BenchmarkTestStatus";
+import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 
 export interface TaskCell {
   versionId: string;
@@ -26,6 +31,8 @@ export interface TaskCell {
   cost: number | null;
   /** The case's attempts, repetition order; the first opens the evidence. */
   attemptIds: string[];
+  /** One dot per repetition the measurement needs, in repetition order. */
+  dots: DotState[];
 }
 
 /** The attempt fields a cell reads; summaries and full attempts both carry them. */
@@ -65,7 +72,7 @@ function median(values: number[]): number | null {
  * mean, unknown when any repetition's spend is.
  */
 export function taskCells(
-  order: { id: string; name: string; graded?: boolean }[],
+  order: { id: string; name: string }[],
   attempts: CellAttempt[],
   runState: string | null,
 ): TaskCell[] {
@@ -81,14 +88,27 @@ export function taskCells(
     );
     const scores = new Map(list.map((a) => [a.id, a.score ?? null]));
     const costs = list.map((a) => a.cost);
+    const dots: DotState[] = list.map((a) => {
+      const score = a.score ?? null;
+      if (score != null) return passed(score) ? "passed" : "failed";
+      if (
+        WORKING.has(a.phase) ||
+        a.phase === "awaiting_judges" ||
+        a.outcome === "pending_review"
+      )
+        return "running";
+      // Before its score arrives a settled attempt reads by its outcome; one
+      // that never started, or was cancelled, never did.
+      if (a.phase !== "terminal" || a.outcome == null) return "queued";
+      if (a.outcome === "pass") return "passed";
+      return a.outcome === "cancelled" ? "queued" : "failed";
+    });
+    while (dots.length < REQUIRED_REPETITIONS) dots.push("queued");
     return {
       versionId: version.id,
       number: index + 1,
       name: version.name,
-      status:
-        list.length === 0
-          ? null
-          : testStatus(list, scores, runState, version.graded ?? false),
+      status: list.length === 0 ? null : testStatus(list, scores, runState),
       // The clock the running block showed: from its start to its finish.
       durationMs: median(
         list.flatMap((a) =>
@@ -105,6 +125,7 @@ export function taskCells(
             costs.length
           : null,
       attemptIds: list.map((a) => a.id),
+      dots,
     };
   });
 }
@@ -115,17 +136,14 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   const kinds = cells.map((cell) => cell.status?.kind ?? "gap");
   const count = (...which: string[]) =>
     kinds.filter((kind) => which.includes(kind)).length;
-  // A graded case is finished, neither solved nor failed: the boards count
-  // its mean points.
+  // Solved is every repetition passed, as the dots and the frame read it.
   const scored = cells.flatMap((cell) =>
     cell.status?.kind === "scored" ? [cell.status] : [],
   );
-  const solved = scored.filter(
-    (status) => !status.graded && status.passes === status.of,
-  ).length;
+  const solved = scored.filter((status) => status.passes === status.of).length;
   const failed =
-    scored.filter((status) => !status.graded && status.passes < status.of)
-      .length + count("unscored");
+    scored.filter((status) => status.passes < status.of).length +
+    count("unscored");
   // What is still to come is the rest: no tile repeats the arithmetic.
   const items: [string, number][] = [
     ["grid.inProgress", count("running", "judging", "waiting")],
@@ -158,36 +176,39 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   );
 }
 
+/**
+ * The frame reads the whole case the way its dots read each repetition: grey
+ * until it starts, blue while it works, green solved, red failed.
+ */
 function tone(status: TestStatus | null): string {
-  if (!status) return "border-dashed border-border text-muted-foreground";
+  if (!status) return "border-muted-foreground/30 text-muted-foreground";
   switch (status.kind) {
     case "scored":
-      if (status.graded) return "border-border bg-muted/40";
       return status.passes === status.of
-        ? "border-success/40 bg-success/5"
-        : "border-destructive/40 bg-destructive/5";
+        ? "border-success/50 bg-success/5"
+        : "border-destructive/50 bg-destructive/5";
     case "running":
     case "judging":
     case "waiting":
-      return "border-chart-1/60 bg-chart-1/5";
+      return "border-info/60 bg-info/5";
     case "unscored":
-      return "border-destructive/40 bg-destructive/5";
+      return "border-destructive/50 bg-destructive/5";
     default:
-      return "border-border";
+      return "border-muted-foreground/30 text-muted-foreground";
   }
 }
 
 /** The blocks, in pool order; a block opens its case's evidence. */
 export function TaskGrid({
   cells,
-  now,
   onOpen,
 }: {
   cells: TaskCell[];
-  now: number;
   onOpen: (cell: TaskCell) => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  // A waiting block names its next try against the time it is drawn at.
+  const now = Date.now();
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-2">
       {cells.map((cell) => {
@@ -218,20 +239,25 @@ export function TaskGrid({
                     <span className="font-medium tabular-nums">
                       {t("grid.task", { number: cell.number })}
                     </span>
+                    <RepetitionDots states={cell.dots} />
+                  </span>
+                  {cell.status?.kind === "waiting" ? (
+                    // A wait says what it is and how long, in the clock's place.
                     <TestStatusMark status={cell.status} now={now} compact />
-                  </span>
-                  <span className="flex items-center justify-between gap-2 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
-                    <span className="inline-flex items-center gap-1">
-                      <IconClock className="size-3.5" aria-hidden />
-                      {cell.durationMs == null
-                        ? "–"
-                        : compactElapsed(cell.durationMs)}
+                  ) : (
+                    <span className="flex items-center justify-between gap-2 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+                      <span className="inline-flex items-center gap-1">
+                        <IconClock className="size-3.5" aria-hidden />
+                        {cell.durationMs == null
+                          ? "–"
+                          : compactElapsed(cell.durationMs)}
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <IconCoin className="size-3.5" aria-hidden />
+                        {cell.cost == null ? "–" : formatUsd(t, cell.cost)}
+                      </span>
                     </span>
-                    <span className="inline-flex items-center gap-1">
-                      <IconCoin className="size-3.5" aria-hidden />
-                      {cell.cost == null ? "–" : formatUsd(t, cell.cost)}
-                    </span>
-                  </span>
+                  )}
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom">{cell.name}</TooltipContent>

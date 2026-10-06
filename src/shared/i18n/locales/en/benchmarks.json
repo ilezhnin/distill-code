@@ -312,6 +312,7 @@
     "rescoreJudges": "Evaluate again (up to 3 model calls)"
   },
   "grid": {
+    "repetitions": "{{passes}} of {{scored}} passed, {{of}} repetitions",
     "taskNamed": "Task {{number}}: {{name}}",
     "title": "Tests · {{count}}",
     "task": "Task {{number}}",

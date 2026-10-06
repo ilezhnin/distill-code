@@ -216,7 +216,6 @@ export function BenchmarkModelRunDialog({
           score: values.reduce((sum, value) => sum + value, 0) / values.length,
           passes: values.filter(passed).length,
           of: values.length,
-          graded: false,
           durationMs: null,
         },
       ]),
