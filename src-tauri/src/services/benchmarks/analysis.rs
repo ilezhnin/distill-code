@@ -1360,11 +1360,11 @@ fn comparison_key(
     serde_json::to_string(&protocols).unwrap_or_default()
 }
 
-/// Recompute each observation on today's measured cases with today's evidence.
-/// A case keeps the newest scored cell observed by then, whatever runtime,
-/// budget or evaluator revision it ran under, so a retest never rewrites an
-/// earlier point. A case first measured later supplies the first cell scored
-/// after the point, explicitly marked as backfilled.
+/// Recompute each observation on today's cases with today's evidence. A case
+/// keeps the newest scored cell observed by then, whatever runtime, budget or
+/// evaluator revision it ran under, so a retest never rewrites an earlier
+/// point. A case not measured by then is a gap at that point: a point counts
+/// only what had finished by its date, never a later cell.
 fn recalculated_history_report(
     data: &QueryData,
     own: &[&Attempt],
@@ -1406,28 +1406,15 @@ fn recalculated_history_report(
             .collect();
         settled.sort_by_key(|(id, _)| (runs[id].created_at, *id));
         // A cell counts as known at `at` only if it was scored by then; a panel
-        // that answered later falls through to the backfill branch.
+        // that answered later leaves the case a gap at this point.
         let known = settled.iter().rev().find(|(id, attempts)| {
             runs[id].created_at <= at
                 && attempts.iter().all(|a| {
                     a.finished_at.is_some_and(|end| end <= at) && score_as_of(a, Some(at)).is_some()
                 })
         });
-        // Otherwise the first cell scored after it stands, whenever its run was
-        // created, so an older run resumed later never replaces that backfill.
-        let first_later = || {
-            settled.iter().min_by_key(|(id, attempts)| {
-                (
-                    attempts.iter().filter_map(|a| settled_at(a)).max(),
-                    runs[id].created_at,
-                    *id,
-                )
-            })
-        };
-        if let Some((_, attempts)) = known.or_else(first_later) {
-            if known.is_none() {
-                backfilled.push(version.to_owned());
-            } else if attempts
+        if let Some((_, attempts)) = known {
+            if attempts
                 .iter()
                 .any(|a| a.evaluations.iter().any(|e| e.created_at > at))
             {
@@ -1436,8 +1423,8 @@ fn recalculated_history_report(
             selected.extend(attempts.iter().copied());
         }
     }
-    // A point with only future evidence has no observation to anchor it.
-    let mut report = if backfilled.len() == current.len() {
+    // A point with nothing finished by its date has no observation to anchor it.
+    let mut report = if selected.is_empty() {
         LeaderboardReport {
             cohort: None,
             rows: Vec::new(),
@@ -1449,8 +1436,8 @@ fn recalculated_history_report(
         // A retrospective estimate has no dated peer comparison or rank.
         row.status = "preliminary".into();
         row.reason = format!(
-            "{}/{} current cases; {} first measured later, {} reviewed later; recalculated using today's evidence",
-            row.scored, row.planned, backfilled.len(), revised.len()
+            "{}/{} current cases finished by then; {} reviewed later; recalculated using today's evidence",
+            row.scored, row.planned, revised.len()
         );
     }
     (report, backfilled, revised)

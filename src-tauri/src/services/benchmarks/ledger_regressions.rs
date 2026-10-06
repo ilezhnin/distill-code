@@ -634,18 +634,22 @@ fn history_includes_late_reviews_without_global_run_truncation() {
     assert_eq!(points[0].revised_version_ids, vec!["v0"]);
     assert!(points[1].revised_version_ids.is_empty());
 
-    // Unscored at the first point, the case was first measured later, not
-    // reviewed later, as the dated report shows.
+    // Unscored at the first point, the case is a gap there: the point
+    // counts the five that had finished, never a later cell.
     data.attempts[0].evaluations.remove(0);
     let points = history(&data, &configuration);
     assert_eq!(points[0].report.rows[0].scored, 5);
-    assert_eq!(points[0].backfilled_version_ids, vec!["v0"]);
+    assert!(points[0].backfilled_version_ids.is_empty());
     assert!(points[0].revised_version_ids.is_empty());
-    assert_eq!(points[0].recalculated_report.rows[0].points, Some(833));
+    let row = &points[0].recalculated_report.rows[0];
+    assert_eq!((row.scored, row.planned, row.points), (5, 6, Some(1000)));
 }
 
+/// A point on the current pool counts only the cases that had finished by
+/// its date; a case first measured later is a gap there, so an older point
+/// never reads as complete and never borrows a later result.
 #[test]
-fn backfill_aligns_the_pool_but_preserves_real_retests_and_the_dated_archive() {
+fn a_point_counts_only_what_had_finished_by_its_date() {
     let (mut data, _) = super::tests::dataset();
     data.versions.truncate(3);
     data.attempts.retain(|a| {
@@ -657,12 +661,19 @@ fn backfill_aligns_the_pool_but_preserves_real_retests_and_the_dated_archive() {
     let first = history(&data, &configuration);
     assert_eq!(first[0].report.rows[0].points, Some(1000));
     assert_eq!(first[0].report.rows[0].scored, 1);
-    assert_eq!(first[0].recalculated_report.rows[0].points, Some(500));
-    assert_eq!(first[0].backfilled_version_ids, vec!["v1"]);
-    assert!(first
-        .iter()
-        .all(|s| s.recalculated_report.rows[0].scored == 2
-            && s.recalculated_report.rows[0].planned == 3));
+    let early = &first[0].recalculated_report.rows[0];
+    assert_eq!(
+        (early.scored, early.planned, early.points),
+        (1, 3, Some(1000))
+    );
+    assert!(first.iter().all(|s| s.backfilled_version_ids.is_empty()));
+    assert_eq!(
+        first
+            .iter()
+            .map(|s| s.recalculated_report.rows[0].scored)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
 
     let mut run = data.runs[1].clone();
     run.id = "retest".into();
@@ -676,87 +687,23 @@ fn backfill_aligns_the_pool_but_preserves_real_retests_and_the_dated_archive() {
     data.runs.push(run);
     data.attempts.push(attempt);
     let points = history(&data, &configuration);
+    // v0 alone, then v0 with v1's fail, then v1's retest passes.
     assert_eq!(
         points
             .iter()
             .map(|s| s.recalculated_report.rows[0].points)
             .collect::<Vec<_>>(),
-        vec![Some(500), Some(500), Some(1000)]
+        vec![Some(1000), Some(500), Some(1000)]
     );
     assert_eq!(
         points[0].recalculated_report.rows[0].attempt_ids,
         first[0].recalculated_report.rows[0].attempt_ids
     );
-    assert!(points.last().unwrap().backfilled_version_ids.is_empty());
+    assert!(points.iter().all(|s| s.backfilled_version_ids.is_empty()));
     assert_eq!(
         points.last().unwrap().recalculated_report.rows[0].points,
         leaderboard(&data, &ResultQuery::default()).rows[0].points
     );
-}
-
-#[test]
-fn backfill_requires_every_repetition_and_never_reuses_a_replaced_version() {
-    let mut data = before_only();
-    let configuration = data.attempts[0].configuration.clone();
-    let template = |data: &QueryData, version: &str| {
-        data.attempts
-            .iter()
-            .find(|a| a.version_id == version)
-            .unwrap()
-            .clone()
-    };
-    let (v1, v5) = (template(&data, "v1"), template(&data, "v5"));
-    // v5 has no early cell. A later run left one of its two repetitions on v5
-    // and on v1; a still later run measured v5 completely.
-    data.attempts.retain(|a| a.version_id != "v5");
-    for (id, created_at, repetitions) in [("partial", 5, 2), ("full", 10, 1)] {
-        let mut run = data.runs[0].clone();
-        run.id = id.into();
-        run.created_at = created_at;
-        run.updated_at = created_at + 1;
-        run.request.repetitions = repetitions;
-        data.runs.push(run);
-    }
-    for (run, source, outcome, finished_at) in [
-        ("partial", &v5, "fail", 6),
-        ("partial", &v1, "fail", 6),
-        ("full", &v5, "pass", 11),
-    ] {
-        let mut a = source.clone();
-        a.id = format!("{run}-{}", a.version_id);
-        a.run_id = run.into();
-        a.outcome = Some(outcome.into());
-        a.finished_at = Some(finished_at);
-        data.attempts.push(a);
-    }
-    let mut replacement = data.versions[0].clone();
-    replacement.id = "replacement".into();
-    replacement.published_at = 9;
-    data.versions.push(replacement);
-    let points = history(&data, &configuration);
-    // The partial run changes nothing, so it adds no point of its own.
-    assert_eq!(
-        points.iter().map(|p| p.created_at).collect::<Vec<_>>(),
-        vec![3, 11]
-    );
-    // The earlier gap takes the first complete later cell, not the partial one.
-    assert_eq!(points[0].backfilled_version_ids, vec!["v5"]);
-    let row = &points[0].recalculated_report.rows[0];
-    assert_eq!(row.points, Some(1000));
-    assert_eq!(row.missing_version_ids, vec!["replacement"]);
-    assert!(row.attempt_ids.contains(&"full-v5".to_string()));
-    assert!(row.attempt_ids.iter().all(|id| !id.starts_with("partial-")));
-    // One repetition of the later run never displaces v1's complete cell.
-    let last = points.last().unwrap();
-    for report in [&last.report, &last.recalculated_report] {
-        let row = &report.rows[0];
-        assert_eq!((row.points, row.scored), (Some(1000), 5));
-        assert!(row.attempt_ids.contains(&"before-v1".to_string()));
-        assert!(row
-            .attempt_ids
-            .iter()
-            .all(|id| !id.starts_with("partial-") && id != "before-v0"));
-    }
 }
 
 #[test]
@@ -1854,8 +1801,10 @@ fn a_refusal_before_any_session_stays_on_the_row_its_run_acknowledged() {
     assert!(points.iter().all(|p| p.report.rows.len() == 1));
 }
 
+/// A cell scored after a point is a gap at that point, and one repetition
+/// short of the required count never counts at any point.
 #[test]
-fn a_resumed_older_run_never_replaces_the_first_backfill() {
+fn later_and_partial_cells_stay_gaps_at_earlier_points() {
     let mut data = before_only();
     let configuration = data.attempts[0].configuration.clone();
     let v5 = data
@@ -1865,14 +1814,15 @@ fn a_resumed_older_run_never_replaces_the_first_backfill() {
         .unwrap()
         .clone();
     data.attempts.retain(|a| a.version_id != "v5");
-    // "parked" was created first but reached v5 only after "catch-up" scored it.
-    for (id, created_at, outcome, finished_at) in
-        [("parked", 1, "fail", 20), ("catch-up", 5, "pass", 10)]
+    // "partial" left v5 one repetition short; "catch-up" measured it later.
+    for (id, created_at, repetitions, outcome, finished_at) in
+        [("partial", 4, 2, "fail", 6), ("catch-up", 5, 1, "pass", 10)]
     {
         let mut run = data.runs[0].clone();
         run.id = id.into();
         run.created_at = created_at;
         run.updated_at = finished_at + 1;
+        run.request.repetitions = repetitions;
         run.request.version_ids = vec!["v5".into()];
         data.runs.push(run);
         let mut a = v5.clone();
@@ -1883,31 +1833,31 @@ fn a_resumed_older_run_never_replaces_the_first_backfill() {
         a.finished_at = Some(finished_at);
         data.attempts.push(a);
     }
-    let backfill = |data: &QueryData| {
-        let points = history(data, &configuration);
-        assert_eq!(points[0].created_at, 3);
-        assert_eq!(points[0].backfilled_version_ids, vec!["v5"]);
-        points[0].recalculated_report.rows[0].clone()
+    let points = history(&data, &configuration);
+    let at = |time: i64| {
+        points
+            .iter()
+            .find(|p| p.created_at == time)
+            .map(|p| p.recalculated_report.rows[0].clone())
+            .unwrap()
     };
-    let mut paused = data.clone();
-    let parked = paused.runs.iter_mut().find(|r| r.id == "parked").unwrap();
-    parked.state = "paused".into();
-    let waiting = paused
-        .attempts
-        .iter_mut()
-        .find(|a| a.id == "parked-v5")
-        .unwrap();
-    waiting.phase = "pending".into();
-    waiting.outcome = None;
-    waiting.started_at = None;
-    waiting.finished_at = None;
-    waiting.observed = None;
-    waiting.output = None;
-    let first = backfill(&paused);
-    assert_eq!(first.points, Some(1000));
-    assert!(first.attempt_ids.contains(&"catch-up-v5".to_string()));
-    // Resumed, the older run's fail is a later cell, not the first one.
-    let resumed = backfill(&data);
-    assert_eq!(resumed.attempt_ids, first.attempt_ids);
-    assert_eq!(resumed.points, Some(1000));
+    // The first point had five cases finished; v5 is its gap, and the
+    // partial cell adds no point of its own.
+    assert_eq!(
+        points.iter().map(|p| p.created_at).collect::<Vec<_>>(),
+        vec![3, 11]
+    );
+    let first = at(3);
+    assert_eq!((first.scored, first.planned), (5, 6));
+    assert_eq!(first.missing_version_ids, vec!["v5"]);
+    assert!(first.attempt_ids.iter().all(|id| !id.ends_with("-v5")));
+    // Once the catch-up passed v5, the point counts it.
+    let later = at(11);
+    assert!(later.attempt_ids.contains(&"catch-up-v5".to_string()));
+    assert!(later
+        .attempt_ids
+        .iter()
+        .all(|id| !id.starts_with("partial-")));
+    assert_eq!((later.scored, later.points), (6, Some(1000)));
+    assert!(points.iter().all(|p| p.backfilled_version_ids.is_empty()));
 }
