@@ -352,11 +352,16 @@ export interface LeaderboardRow {
   medianOutputTokens: number | null;
   cost: number | null;
   measuredAt: number | null;
-  /** One scale for every board: points out of 1000, computed by the service. */
+  /**
+   * One scale for every board, computed by the service: the mean of the
+   * measured class boards, points out of 1000. A class board is the mean
+   * over its cases of reliability (every repetition passed) weighted with
+   * how fast and how cheaply the case was solved against its record.
+   */
   points: number | null;
-  efficiencyPoints: number | null;
-  speedPoints: number | null;
-  costPoints: number | null;
+  /** Mean share of the record speed and cost over the solved cases, 0 to 1. */
+  speedShare?: number | null;
+  costShare?: number | null;
   status: string;
   reason: string;
   attemptIds: string[];
@@ -377,8 +382,12 @@ export interface LeaderboardRow {
 }
 export interface LeaderboardAxis {
   id: string;
+  /** Mean reward over the class's measured cases, 0 to 1. */
   quality: number | null;
+  /** The class board: reliability weighted with speed and cost, out of 1000. */
   points: number | null;
+  speedShare?: number | null;
+  costShare?: number | null;
   passed: number;
   scored: number;
   planned: number;

@@ -13,7 +13,11 @@ import {
 interface BenchmarkStrings {
   states: Record<string, string>;
   run: Record<string, string>;
-  leaderboard: { boardDescriptions: Record<string, string> };
+  leaderboard: {
+    boards: Record<string, string>;
+    boardDescriptions: Record<string, string>;
+    shares: Record<string, string>;
+  };
 }
 
 const strings = (locale: string) =>
@@ -73,13 +77,21 @@ describe("benchmark copy", () => {
     expect(name("grok-acp", "Grok 4.7")).toBe("Grok 4.7");
   });
 
-  it("describes the Cost board as the model's own generation cost", () => {
-    expect(strings("en").leaderboard.boardDescriptions.cost).not.toMatch(
-      /including judge/i,
-    );
-    expect(strings("es").leaderboard.boardDescriptions.cost).not.toMatch(
-      /incluyendo los jueces/i,
-    );
+  it("names only the overall board and describes a class board by its rule", () => {
+    for (const locale of ["en", "es"] as const) {
+      const leaderboard = strings(locale).leaderboard;
+      expect(Object.keys(leaderboard.boards)).toEqual(["overall"]);
+      expect(Object.keys(leaderboard.boardDescriptions)).toEqual([
+        "overall",
+        "class",
+      ]);
+      expect(leaderboard.boardDescriptions.class).toContain("{{label}}");
+      expect(Object.keys(leaderboard.shares)).toEqual([
+        "reliability",
+        "speed",
+        "cost",
+      ]);
+    }
   });
 });
 

@@ -185,8 +185,6 @@ fn unscored_retests_keep_the_previous_cell() {
         &["selection_changed"],
         &["pass", "cancelled"],
         &["fail", "interrupted"],
-        &["budget_timeout"],
-        &["pass", "budget_timeout"],
     ] {
         let mut data = before_only();
         settled_retest(&mut data, "cancelled", outcomes);
@@ -211,24 +209,72 @@ fn unscored_retests_keep_the_previous_cell() {
 
 #[test]
 fn scored_failures_and_complete_retests_replace_the_previous_cell() {
+    for outcomes in [
+        &["fail", "budget_reached"][..],
+        &["pass", "budget_timeout"],
+        &["pass", "fail"],
+    ] {
+        let mut data = before_only();
+        settled_retest(&mut data, "completed", outcomes);
+        let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+        // One failed repetition fails the case.
+        assert_eq!(row.points, Some(0), "{outcomes:?}");
+        assert_eq!(row.status, "comparable", "{outcomes:?}");
+        assert!(row.attempt_ids.iter().all(|id| id.starts_with("retest-")));
+    }
     let mut data = before_only();
-    settled_retest(&mut data, "completed", &["fail", "budget_reached"]);
-    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!(row.points, Some(0));
-    assert_eq!(row.status, "comparable");
-    assert!(row.attempt_ids.iter().all(|id| id.starts_with("retest-")));
-    let mut data = before_only();
-    settled_retest(&mut data, "completed", &["pass", "fail"]);
+    settled_retest(&mut data, "completed", &["pass", "pass"]);
     assert_eq!(
         leaderboard(&data, &ResultQuery::default()).rows[0].points,
-        Some(500)
+        Some(1000)
     );
+}
+
+/// The product protocol: a cell of fewer repetitions than required is a quick
+/// check that neither counts nor displaces an older measurement.
+#[test]
+fn a_cell_short_of_the_required_repetitions_never_counts() {
+    let mut data = before_only();
+    data.required_repetitions = 3;
+    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+    assert_eq!((row.scored, row.planned, row.points), (0, 6, None));
+    assert_eq!(row.missing_version_ids.len(), 6);
+    settled_retest(&mut data, "completed", &["pass", "pass", "pass"]);
+    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+    assert_eq!((row.scored, row.points), (6, Some(1000)));
+    assert!(row.attempt_ids.iter().all(|id| id.starts_with("retest-")));
+    // A later quick check of one repetition leaves the measured cell standing.
+    let mut quick = data.runs[1].clone();
+    quick.id = "quick".into();
+    quick.created_at = 20;
+    quick.updated_at = 21;
+    quick.request.repetitions = 1;
+    let quick_attempts: Vec<Attempt> = data
+        .attempts
+        .iter()
+        .filter(|a| a.run_id == "retest" && a.repetition == 0)
+        .map(|a| {
+            let mut a = a.clone();
+            a.id = format!("quick-{}", a.id);
+            a.run_id = "quick".into();
+            a.outcome = Some("fail".into());
+            a.finished_at = Some(21);
+            a
+        })
+        .collect();
+    data.runs.push(quick);
+    data.attempts.extend(quick_attempts);
+    let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
+    assert_eq!((row.scored, row.points), (6, Some(1000)));
+    assert!(row.attempt_ids.iter().all(|id| id.starts_with("retest-")));
 }
 
 #[test]
 fn a_case_without_any_scored_cell_stays_a_gap() {
-    // A turn the run's time limit stopped measured nothing either.
-    for (state, outcome) in [("cancelled", "cancelled"), ("completed", "budget_timeout")] {
+    for (state, outcome) in [
+        ("cancelled", "cancelled"),
+        ("needs_attention", "infrastructure_failure"),
+    ] {
         let mut data = before_only();
         settled_retest(&mut data, state, &[outcome]);
         // v0 only ever ended so; the other cases passed earlier.
@@ -281,13 +327,8 @@ fn cost_rating_must_not_penalize_identical_per_case_cost_for_more_repetitions() 
     assert!(rows
         .iter()
         .all(|r| r.status == "comparable" && r.points == Some(1000)));
-    eprintln!(
-        "cost ratings: {:?}",
-        rows.iter()
-            .map(|r| (&r.configuration.model_id, r.cost, r.cost_points))
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(rows[0].cost_points, rows[1].cost_points);
+    // Both spend 1.0 per repetition on every case, so both sit at the record.
+    assert!(rows.iter().all(|r| r.cost_share == Some(1.0)));
 }
 
 #[test]
@@ -586,9 +627,10 @@ fn history_includes_late_reviews_without_global_run_truncation() {
     let points = history(&data, &configuration);
     assert_eq!(points.len(), 2);
     assert_eq!(points[0].report.rows[0].points, Some(1000));
-    assert_eq!(points[1].report.rows[0].points, Some(900));
+    // A review short of a pass fails the case: five of six solved.
+    assert_eq!(points[1].report.rows[0].points, Some(833));
     assert_eq!(points[1].created_at, 50);
-    assert_eq!(points[0].recalculated_report.rows[0].points, Some(900));
+    assert_eq!(points[0].recalculated_report.rows[0].points, Some(833));
     assert_eq!(points[0].revised_version_ids, vec!["v0"]);
     assert!(points[1].revised_version_ids.is_empty());
 
@@ -599,7 +641,7 @@ fn history_includes_late_reviews_without_global_run_truncation() {
     assert_eq!(points[0].report.rows[0].scored, 5);
     assert_eq!(points[0].backfilled_version_ids, vec!["v0"]);
     assert!(points[0].revised_version_ids.is_empty());
-    assert_eq!(points[0].recalculated_report.rows[0].points, Some(900));
+    assert_eq!(points[0].recalculated_report.rows[0].points, Some(833));
 }
 
 #[test]
@@ -939,7 +981,7 @@ fn judge_panels_never_reach_the_cost_board() {
     assert_eq!(rows.len(), 2);
     for row in &rows {
         assert_eq!(row.cost, Some(1.0));
-        assert_eq!(row.cost_points, Some(1000));
+        assert_eq!(row.cost_share, Some(1.0));
     }
 }
 
@@ -1043,20 +1085,16 @@ fn only_a_candidate_with_a_different_eligible_set_loses_its_rank() {
     assert_eq!((other.scored, other.planned), (6, 6));
     assert_eq!(other.status, "comparable");
     assert_eq!(
-        (
-            other.efficiency_points,
-            other.speed_points,
-            other.cost_points
-        ),
-        (Some(1000), Some(1000), Some(1000))
+        (other.speed_share, other.cost_share),
+        (Some(1.0), Some(1.0))
     );
     assert_eq!((author.scored, author.planned), (5, 5));
     assert_eq!(author.status, "preliminary");
     assert!(author
         .reason
         .contains("eligible case set differs from the ranked pool"));
-    // The unranked row is still scored against the ranked row's best.
-    assert_eq!(author.speed_points, Some(1000));
+    // The unranked row is still scored against the record.
+    assert_eq!(author.speed_share, Some(1.0));
 }
 
 #[test]
@@ -1104,10 +1142,12 @@ fn relative_boards_keep_points_while_no_row_is_ranked() {
             .iter()
             .find(|r| r.configuration.model_id == model)
             .unwrap();
-        (row.efficiency_points, row.speed_points, row.cost_points)
+        (row.speed_share, row.cost_share, row.points)
     };
-    assert_eq!(points("model"), (Some(1000), Some(1000), Some(1000)));
-    assert_eq!(points("other"), (Some(250), Some(500), Some(500)));
+    assert_eq!(points("model"), (Some(1.0), Some(1.0), Some(1000)));
+    // Twice the record on the four shared cases (0.8 + 0.15 / 2 + 0.05 / 2),
+    // the record itself on the case only "other" solved.
+    assert_eq!(points("other"), (Some(0.6), Some(0.6), Some(920)));
 }
 
 #[test]
@@ -1139,15 +1179,14 @@ fn a_ranked_row_without_a_metric_never_blanks_that_board() {
     };
     let (model, other) = (row("model"), row("other"));
     assert_eq!(model.status, "comparable");
-    assert_eq!((model.cost, model.cost_points), (None, None));
+    // Unknown spend is never free; the cases with known spend still compare.
+    assert_eq!((model.cost, model.cost_share), (None, Some(1.0)));
     assert_eq!(model.median_output_tokens, None);
     assert_eq!(other.status, "preliminary");
-    assert_eq!(other.cost_points, Some(1000));
-    assert_eq!(other.efficiency_points, Some(1000));
-    // The ranked reference still applies where it measured the metric.
+    assert_eq!(other.cost_share, Some(1.0));
     assert_eq!(
-        (model.speed_points, other.speed_points),
-        (Some(1000), Some(1000))
+        (model.speed_share, other.speed_share),
+        (Some(1.0), Some(1.0))
     );
 }
 
@@ -1229,7 +1268,7 @@ fn settled_cells_of_an_unfinished_or_cancelled_run_are_one_history_point() {
             .push(evaluation(60, Some(0.4), "human", "fail"));
         assert_eq!(
             dated_points(&reviewed, &configuration),
-            vec![(2, Some(1000)), (60, Some(900))],
+            vec![(2, Some(1000)), (60, Some(833))],
             "{state}"
         );
         // So is a later objective re-evaluation that changes the score.
@@ -1349,12 +1388,14 @@ fn missing_repeat_score_does_not_count_as_complete_case() {
 }
 
 #[test]
-fn an_artifact_cap_failure_scores_zero_and_a_timeout_nothing() {
+fn an_artifact_cap_failure_and_a_timeout_score_zero() {
+    // The time limit is a safety stop of hours; a turn that reaches it failed
+    // the task, and no later evaluation of what it left behind changes that.
     let mut timed_out = before_only().attempts.remove(0);
     timed_out.outcome = Some("budget_timeout".into());
     timed_out.evaluations = vec![evaluation(10, Some(1.0), "objective", "pass")];
-    assert_eq!(score(&timed_out), None);
-    assert_eq!(score_as_of(&timed_out, Some(20)), None);
+    assert_eq!(score(&timed_out), Some(0.0));
+    assert_eq!(score_as_of(&timed_out, Some(20)), Some(0.0));
     let mut a = before_only().attempts.remove(0);
     a.outcome = Some("budget_reached".into());
     // A legacy rescore of the partial output, recorded after the run.
@@ -1524,7 +1565,7 @@ fn a_cell_that_never_ran_leaves_the_cost_and_the_date_alone() {
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
     assert_eq!(row.missing_version_ids, vec!["v0"]);
     assert_eq!(row.cost, Some(1.0));
-    assert_eq!(row.cost_points, Some(1000));
+    assert_eq!(row.cost_share, Some(1.0));
     assert_eq!(row.measured_at, Some(2));
     assert!(row.attempt_ids.iter().all(|id| !id.starts_with("retest-")));
     // The cancellation changes nothing, so it adds no point of its own.

@@ -90,6 +90,18 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
 }));
 
+/** A measured simple-coding axis with the given board points. */
+function codingAxis(points: number) {
+  return {
+    id: "coding-simple",
+    quality: points / 1000,
+    points,
+    passed: 1,
+    scored: 1,
+    planned: 1,
+  };
+}
+
 const scopeProps = {
   loading: false,
   scope: { versionId: "all", runId: "all" },
@@ -434,9 +446,6 @@ describe("benchmark authoring and saved evidence", () => {
       cost: null,
       measuredAt: null,
       points: null,
-      efficiencyPoints: null,
-      speedPoints: null,
-      costPoints: null,
       status: "preliminary",
       reason: "No valid evidence",
       missingVersionIds: ["version-1"],
@@ -774,23 +783,17 @@ describe("benchmark authoring and saved evidence", () => {
       leaderboardRow({
         configuration: { ...configuration, id: "a", modelId: "alpha" },
         points: 1000,
-        efficiencyPoints: 200,
-        speedPoints: 200,
-        costPoints: 100,
+        axes: [codingAxis(200)],
       }),
       leaderboardRow({
         configuration: { ...configuration, id: "b", modelId: "beta" },
         points: 500,
-        efficiencyPoints: 1000,
-        speedPoints: 1000,
-        costPoints: 1000,
+        axes: [codingAxis(1000)],
       }),
       leaderboardRow({
         configuration: { ...configuration, id: "c", modelId: "gamma" },
         points: 1000,
-        efficiencyPoints: 111,
-        speedPoints: 67,
-        costPoints: 33,
+        axes: [codingAxis(67)],
       }),
       leaderboardRow({
         configuration: { ...configuration, id: "d", modelId: "delta" },
@@ -820,18 +823,23 @@ describe("benchmark authoring and saved evidence", () => {
     expect(
       screen.queryByRole("button", { name: /unranked/ }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("tab", { name: "Simple coding" }),
-    ).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("tab", { name: "Speed" }));
+    // Only the overall board and one board per work class remain.
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "",
+      "",
+    ]);
+    await userEvent.click(screen.getByRole("tab", { name: "Simple coding" }));
     expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
-    await userEvent.click(screen.getByRole("button", { name: "Cost" }));
-    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
-    expect(screen.getByRole("button", { name: "Cost" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
+    await userEvent.click(screen.getByRole("button", { name: "Overall" }));
+    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Simple coding" }),
     );
+    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
+    expect(
+      screen.getByRole("button", { name: "Simple coding" }),
+    ).toHaveAttribute("aria-pressed", "true");
     const first = screen.getAllByRole("row")[1];
     expect(
       within(first)
@@ -842,9 +850,6 @@ describe("benchmark authoring and saved evidence", () => {
       // The vendor icon carries its own title text.
       "ClaudebetahighAnthropic",
       "500",
-      "–",
-      "1000",
-      "1000",
       "1000",
       "–",
       "–",
@@ -905,7 +910,7 @@ describe("benchmark authoring and saved evidence", () => {
           modelId: `model-${String(index).padStart(2, "0")}`,
         },
         points: 100 + index,
-        costPoints: index < 30 ? 100 + index : null,
+        axes: index < 30 ? [codingAxis(100 + index)] : [],
       }),
     );
     const onPageChange = vi.fn();
@@ -924,9 +929,9 @@ describe("benchmark authoring and saved evidence", () => {
         .slice(1)
         .map((row) => within(row).getAllByRole("cell")[0].textContent);
     expect(ranks()).toEqual(["51", "52", "53", "54", "55"]);
-    await userEvent.click(screen.getByRole("tab", { name: "Cost" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Simple coding" }));
     expect(onPageChange).toHaveBeenCalledWith(0);
-    // Before the page resets, the second page holds the rows the cost board
+    // Before the page resets, the second page holds the rows the class board
     // cannot rank; they follow every ranked row.
     expect(ranks()).toEqual(["–", "–", "–", "–", "–"]);
   });

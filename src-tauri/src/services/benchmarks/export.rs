@@ -196,7 +196,12 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
                         ) == *key
                 })
                 .collect();
-            let selected = super::analysis::latest_cell_attempts(&list, &runs, None);
+            let selected = super::analysis::latest_cell_attempts(
+                &list,
+                &runs,
+                None,
+                super::analysis::required_repetitions(data, version),
+            );
             let excluded = super::routing::authored_by_candidate(&version.manifest, configuration);
             let mut outcomes = Vec::new();
             for a in &selected {
@@ -642,6 +647,7 @@ mod tests {
             versions: vec![],
             runs: vec![],
             attempts: vec![],
+            required_repetitions: 1,
         };
         let result = export(&store, data, false).await.unwrap();
         let ledger = std::path::Path::new(&result.path).with_file_name("ledger.jsonl");
@@ -730,22 +736,32 @@ mod tests {
                 request_key: "export-test".into(),
                 version_ids: vec![version.id],
                 configurations: inventory.into_iter().map(|m| m.configuration).collect(),
-                repetitions: 1,
+                repetitions: super::super::analysis::REQUIRED_REPETITIONS,
                 timeout_seconds: 10,
-                max_executions: 2,
+                max_executions: 6,
                 preview: false,
             })
             .await
             .unwrap();
         let snapshot = service.store.decision_snapshots().await.unwrap().remove(0);
-        let mut attempt = run.attempts[0].clone();
-        attempt.phase = "terminal".into();
-        attempt.outcome = Some("pass".into());
-        attempt.finished_at = Some(now());
-        attempt.output = Some("private-answer-not-a-feature".into());
-        attempt.evidence_hash = Some("sealed".into());
-        attempt.resolved_model = Some("fake-pass-2026".into());
-        service.store.save_attempt(&attempt).await.unwrap();
+        // One configuration's whole cell passes; the other never ran.
+        let configuration = run.attempts[0].configuration.id.clone();
+        let mut answered = Vec::new();
+        for mut attempt in run
+            .attempts
+            .iter()
+            .filter(|a| a.configuration.id == configuration)
+            .cloned()
+        {
+            attempt.phase = "terminal".into();
+            attempt.outcome = Some("pass".into());
+            attempt.finished_at = Some(now());
+            attempt.output = Some("private-answer-not-a-feature".into());
+            attempt.evidence_hash = Some("sealed".into());
+            attempt.resolved_model = Some("fake-pass-2026".into());
+            service.store.save_attempt(&attempt).await.unwrap();
+            answered.push(json!(attempt.id));
+        }
         assert_eq!(
             serde_json::to_value(&snapshot).unwrap(),
             serde_json::to_value(service.store.decision_snapshots().await.unwrap().remove(0))
@@ -767,7 +783,7 @@ mod tests {
             .flat_map(|cell| cell["outcomes"].as_array().unwrap())
             .collect();
         for outcome in &outcomes {
-            let expected = if outcome["attemptId"] == json!(attempt.id) {
+            let expected = if answered.contains(&outcome["attemptId"]) {
                 json!("fake-pass-2026")
             } else {
                 Value::Null

@@ -498,13 +498,16 @@ pub struct LeaderboardRow {
     pub cost: Option<f64>,
     pub measured_at: Option<i64>,
     /// One scale for every board, so the selector reads the same numbers the
-    /// operator sees: success scales to points out of 1000; on efficiency,
-    /// speed and cost the best comparable configuration scores 1000 and the
-    /// others in proportion.
+    /// operator sees: the mean of the measured class boards, points out of
+    /// 1000. A class board is the mean over its cases of reliability (every
+    /// repetition passed) weighted with how fast and how cheaply the case was
+    /// solved against its best measurement.
     pub points: Option<u32>,
-    pub efficiency_points: Option<u32>,
-    pub speed_points: Option<u32>,
-    pub cost_points: Option<u32>,
+    /// Mean share of the record speed and cost over the solved cases, 0 to 1.
+    #[serde(default)]
+    pub speed_share: Option<f64>,
+    #[serde(default)]
+    pub cost_share: Option<f64>,
     pub status: String,
     pub reason: String,
     pub attempt_ids: Vec<String>,
@@ -532,9 +535,14 @@ pub struct LeaderboardRow {
 #[serde(rename_all = "camelCase")]
 pub struct LeaderboardAxis {
     pub id: String,
+    /// Mean reward over the class's measured cases, 0 to 1.
     pub quality: Option<f64>,
-    /// Measured success as points out of 1000.
+    /// The class board: reliability weighted with speed and cost, out of 1000.
     pub points: Option<u32>,
+    #[serde(default)]
+    pub speed_share: Option<f64>,
+    #[serde(default)]
+    pub cost_share: Option<f64>,
     pub passed: u32,
     pub scored: u32,
     pub planned: u32,
@@ -805,4 +813,7 @@ pub struct QueryData {
     pub versions: Vec<BenchmarkVersion>,
     pub runs: Vec<BenchmarkRun>,
     pub attempts: Vec<Attempt>,
+    /// The protocol the ledger is read under: how many scored repetitions a
+    /// cell needs before its case counts. A case may declare more.
+    pub required_repetitions: u32,
 }

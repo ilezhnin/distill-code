@@ -127,20 +127,27 @@ pub(super) fn effective_outcome(
     }
 }
 
-/// An answer past the published artifact cap is a task failure, not an
-/// infrastructure exclusion: the candidate chose that behavior. It scores a
-/// fixed 0 that no later evaluation of the partial output can change. A turn
-/// the run's time limit stopped measured nothing (`budget_timeout` is no
-/// quality outcome): the limit is a safety stop, so the case stays a gap a
-/// catch-up runs again.
+/// An answer past the published artifact cap, or a turn the run's time limit
+/// stopped, is a task failure, not an infrastructure exclusion: the candidate
+/// chose that behavior, and a limit of hours is a safety stop that only a hung
+/// turn reaches. Both score a fixed 0 that no later evaluation of the partial
+/// output can change.
 fn is_budget_failure(outcome: Option<&str>) -> bool {
-    outcome == Some("budget_reached")
+    matches!(outcome, Some("budget_reached" | "budget_timeout"))
 }
 
 fn has_quality_outcome(outcome: Option<&str>) -> bool {
     matches!(
         outcome,
-        Some("pass" | "fail" | "judged" | "pending_review" | "completed" | "budget_reached")
+        Some(
+            "pass"
+                | "fail"
+                | "judged"
+                | "pending_review"
+                | "completed"
+                | "budget_reached"
+                | "budget_timeout"
+        )
     )
 }
 
@@ -518,45 +525,237 @@ pub fn share_points(share: f64) -> u32 {
     (share * 1000.0).round().clamp(0.0, 1000.0) as u32
 }
 
-/// Points for a lower-is-better measurement: the best value scores 1000, the
-/// rest in proportion to it.
-pub fn relative_points(value: f64, best: f64) -> u32 {
-    if value <= 0.0 {
-        1000
-    } else {
-        share_points(best / value)
+/// A case counts only once its newest cell holds this many scored repetitions:
+/// one pass proves nothing about a model that will do the work unattended.
+/// The ledger reads it from `QueryData::required_repetitions`; a case may
+/// declare more in its manifest.
+pub const REQUIRED_REPETITIONS: u32 = 3;
+
+/// The repetitions a case's cell needs: the ledger's protocol or the case's
+/// own declaration, whichever asks for more.
+pub(super) fn required_repetitions(data: &QueryData, version: &BenchmarkVersion) -> u32 {
+    data.required_repetitions
+        .max(version.manifest.repetitions)
+        .max(1)
+}
+
+/// How a solved case's points split: reliability first, then how fast and how
+/// cheaply it was solved against the best measurement of that case. Speed and
+/// cost are compared only among candidates that solved the case, so a cheap
+/// wrong answer earns nothing. A missing measurement gives up its weight to
+/// the others in proportion.
+const RELIABILITY_WEIGHT: f64 = 0.8;
+const SPEED_WEIGHT: f64 = 0.15;
+const COST_WEIGHT: f64 = 0.05;
+
+/// One configuration's settled measurement of one case.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct CaseCell {
+    /// 1 when every repetition passed, 0 when any failed; a judged case takes
+    /// the mean of its repetitions' panel scores instead.
+    pub reward: f64,
+    /// Median wall-clock over the repetitions.
+    pub duration_ms: Option<f64>,
+    /// Mean spend per repetition; unknown when any repetition's is.
+    pub cost: Option<f64>,
+    pub repetitions: u32,
+}
+
+/// How the pool reads a case: the repetitions its cell needs, and whether it
+/// is scored on a scale rather than pass or fail.
+#[derive(Clone, Copy)]
+pub(super) struct CaseProtocol<'a> {
+    pub required: &'a dyn Fn(&str) -> u32,
+    pub graded: &'a dyn Fn(&str) -> bool,
+}
+
+/// The cells of a set of attempts, by case: every repetition scored and at
+/// least as many of them as the case requires.
+pub(super) fn case_cells<'a>(
+    attempts: &[&'a Attempt],
+    as_of: Option<i64>,
+    protocol: CaseProtocol<'_>,
+) -> BTreeMap<&'a str, CaseCell> {
+    let (required, graded) = (protocol.required, protocol.graded);
+    let mut by_case: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
+    for attempt in attempts {
+        by_case
+            .entry(attempt.version_id.as_str())
+            .or_default()
+            .push(attempt);
+    }
+    by_case
+        .into_iter()
+        .filter_map(|(version, list)| {
+            let scores: Vec<f64> = list
+                .iter()
+                .map(|a| score_as_of(a, as_of))
+                .collect::<Option<_>>()?;
+            if (scores.len() as u32) < required(version) {
+                return None;
+            }
+            let reward = if graded(version) {
+                scores.iter().sum::<f64>() / scores.len() as f64
+            } else if scores.iter().all(|s| *s == 1.0) {
+                1.0
+            } else {
+                0.0
+            };
+            let costs: Option<Vec<f64>> = list.iter().map(|a| a.usage.cost).collect();
+            Some((
+                version,
+                CaseCell {
+                    reward,
+                    duration_ms: median(
+                        list.iter()
+                            .filter_map(|a| a.duration_ms.map(|v| v as f64))
+                            .collect(),
+                    ),
+                    cost: costs.map(|c| c.iter().sum::<f64>() / c.len() as f64),
+                    repetitions: scores.len() as u32,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// The fastest and cheapest solved cell of each case: what speed and cost are
+/// measured against. Every settled cell of every candidate counts, so the
+/// record does not depend on which rows a report happens to hold.
+pub(super) type CaseRecords = BTreeMap<String, (Option<f64>, Option<f64>)>;
+
+pub(super) fn case_records(
+    attempts: &[Attempt],
+    runs: &BTreeMap<&str, &BenchmarkRun>,
+    as_of: Option<i64>,
+    protocol: CaseProtocol<'_>,
+) -> CaseRecords {
+    let graded = protocol.graded;
+    let acknowledged = run_acknowledgments(attempts);
+    let mut cells: BTreeMap<(String, &str), Vec<&Attempt>> = BTreeMap::new();
+    for attempt in attempts {
+        if !runs.contains_key(attempt.run_id.as_str()) {
+            continue;
+        }
+        let key = leaderboard_key(&ledger_configuration(attempt, &acknowledged));
+        cells
+            .entry((key, attempt.run_id.as_str()))
+            .or_default()
+            .push(attempt);
+    }
+    let mut records = CaseRecords::new();
+    for list in cells.values() {
+        for (version, cell) in case_cells(list, as_of, protocol) {
+            if (cell.reward < 1.0 && !graded(version)) || cell.reward <= 0.0 {
+                continue;
+            }
+            let entry = records.entry(version.to_owned()).or_insert((None, None));
+            entry.0 = min_of(entry.0, cell.duration_ms);
+            entry.1 = min_of(entry.1, cell.cost);
+        }
+    }
+    records
+}
+
+fn min_of(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }
 
-/// Passed and scored cells plus the mean of per-case means.
-fn cell_stats(attempts: &[&Attempt], as_of: Option<i64>) -> (u32, u32, Option<f64>) {
-    let mut cases: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
-    let incomplete: BTreeSet<_> = attempts
-        .iter()
-        .filter(|a| score_as_of(a, as_of).is_none())
-        .map(|a| &a.version_id)
-        .collect();
-    for attempt in attempts {
-        if incomplete.contains(&attempt.version_id) {
-            continue;
-        }
-        if let Some(value) = score_as_of(attempt, as_of) {
-            cases.entry(&attempt.version_id).or_default().push(value);
-        }
+/// A solved case's share of its best measurement: 1 at the record, 0.5 at
+/// twice the record's time or spend.
+fn share_of_record(record: Option<f64>, value: Option<f64>) -> Option<f64> {
+    match (record, value) {
+        (Some(record), Some(value)) if value > 0.0 => Some((record / value).clamp(0.0, 1.0)),
+        (Some(_), Some(_)) => Some(1.0),
+        _ => None,
     }
-    let passed = attempts
-        .iter()
-        .filter(|a| score_as_of(a, as_of) == Some(1.0))
-        .count() as u32;
-    let scored = cases.values().map(|values| values.len() as u32).sum();
-    let quality = (!cases.is_empty()).then(|| {
-        cases
-            .values()
-            .map(|values| values.iter().sum::<f64>() / values.len() as f64)
-            .sum::<f64>()
-            / cases.len() as f64
-    });
-    (passed, scored, quality)
+}
+
+/// What one case adds to a board, 0 to 1, with the speed and cost shares that
+/// went into it.
+pub(super) struct CasePoints {
+    pub points: f64,
+    pub speed: Option<f64>,
+    pub cost: Option<f64>,
+}
+
+pub(super) fn case_points(
+    cell: &CaseCell,
+    record: Option<&(Option<f64>, Option<f64>)>,
+) -> CasePoints {
+    let (best_duration, best_cost) = record.copied().unwrap_or((None, None));
+    let speed = share_of_record(best_duration, cell.duration_ms);
+    let cost = share_of_record(best_cost, cell.cost);
+    if cell.reward <= 0.0 {
+        return CasePoints {
+            points: 0.0,
+            speed: None,
+            cost: None,
+        };
+    }
+    let mut weight = RELIABILITY_WEIGHT;
+    let mut sum = RELIABILITY_WEIGHT;
+    if let Some(speed) = speed {
+        weight += SPEED_WEIGHT;
+        sum += SPEED_WEIGHT * speed;
+    }
+    if let Some(cost) = cost {
+        weight += COST_WEIGHT;
+        sum += COST_WEIGHT * cost;
+    }
+    CasePoints {
+        points: cell.reward * sum / weight,
+        speed,
+        cost,
+    }
+}
+
+/// A board over a set of cells: solved cases, the mean reward, the points and
+/// the mean speed and cost shares of the solved cases.
+pub(super) struct BoardStats {
+    pub passed: u32,
+    pub scored: u32,
+    pub quality: Option<f64>,
+    pub points: Option<u32>,
+    pub speed_share: Option<f64>,
+    pub cost_share: Option<f64>,
+}
+
+pub(super) fn board_stats(cells: &BTreeMap<&str, CaseCell>, records: &CaseRecords) -> BoardStats {
+    let scored = cells.len() as u32;
+    if scored == 0 {
+        return BoardStats {
+            passed: 0,
+            scored,
+            quality: None,
+            points: None,
+            speed_share: None,
+            cost_share: None,
+        };
+    }
+    let mut points = 0.0;
+    let mut speeds = Vec::new();
+    let mut costs = Vec::new();
+    for (version, cell) in cells {
+        let case = case_points(cell, records.get(*version));
+        points += case.points;
+        speeds.extend(case.speed);
+        costs.extend(case.cost);
+    }
+    let mean = |values: &[f64]| {
+        (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+    };
+    BoardStats {
+        passed: cells.values().filter(|cell| cell.reward >= 1.0).count() as u32,
+        scored,
+        quality: Some(cells.values().map(|cell| cell.reward).sum::<f64>() / scored as f64),
+        points: Some(share_points(points / scored as f64)),
+        speed_share: mean(&speeds),
+        cost_share: mean(&costs),
+    }
 }
 
 /// The current pool: the latest published version of every live definition,
@@ -655,30 +854,18 @@ pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benc
     pool
 }
 
-/// Distinct cases among attempts that carry a score.
-fn scored_cases(attempts: &[&Attempt], as_of: Option<i64>) -> u32 {
-    let incomplete: BTreeSet<_> = attempts
-        .iter()
-        .filter(|a| score_as_of(a, as_of).is_none())
-        .map(|a| &a.version_id)
-        .collect();
-    attempts
-        .iter()
-        .filter(|a| !incomplete.contains(&a.version_id))
-        .map(|a| a.version_id.as_str())
-        .collect::<BTreeSet<_>>()
-        .len() as u32
-}
-
 /// A run's cell replaces an older one only when every planned repetition settled
-/// with a valid score. Cancelled, interrupted, failed-infrastructure, pending or
-/// partial retests keep the previous cell; scored failures do replace it. A case
-/// with no scored cell keeps its newest settled cell that began work, so paid
-/// spend stays visible; a cell that never ran is a plain gap.
+/// with a valid score and the run planned at least `required` of them: a quick
+/// check of fewer repetitions never displaces a measurement. Cancelled,
+/// interrupted, failed-infrastructure, pending or partial retests keep the
+/// previous cell; scored failures do replace it. A case with no scored cell
+/// keeps its newest settled cell that began work, so paid spend stays visible;
+/// a cell that never ran is a plain gap.
 pub(super) fn latest_cell_attempts<'a>(
     attempts: &[&'a Attempt],
     runs: &BTreeMap<&str, &BenchmarkRun>,
     as_of: Option<i64>,
+    required: u32,
 ) -> Vec<&'a Attempt> {
     let mut groups: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
     for attempt in attempts {
@@ -703,19 +890,21 @@ pub(super) fn latest_cell_attempts<'a>(
             .max_by_key(|(id, _)| (runs[id].created_at, *id))
             .map(|(_, list)| list.clone())
     };
-    newest(&|list| list.iter().all(|a| score_as_of(a, as_of).is_some()))
-        .or_else(|| newest(&|list| list.iter().any(|a| a.started_at.is_some())))
-        .unwrap_or_default()
+    newest(&|list| {
+        list.len() >= required as usize && list.iter().all(|a| score_as_of(a, as_of).is_some())
+    })
+    .or_else(|| newest(&|list| list.iter().any(|a| a.started_at.is_some())))
+    .unwrap_or_default()
 }
 
 /// The spend a ledger row reports: scored cells as measured, and unscored cells
 /// only through the repetitions that began work, and only when all of those
 /// report their spend. A repetition that never ran spent nothing, and a cell
 /// whose spend is unknown is a gap for cost, never free.
-fn spent_attempts<'a>(attempts: &[&'a Attempt], as_of: Option<i64>) -> Vec<&'a Attempt> {
+fn spent_attempts<'a>(attempts: &[&'a Attempt], scored: &BTreeSet<&str>) -> Vec<&'a Attempt> {
     let unscored: BTreeSet<&str> = attempts
         .iter()
-        .filter(|a| score_as_of(a, as_of).is_none())
+        .filter(|a| !scored.contains(a.version_id.as_str()))
         .map(|a| a.version_id.as_str())
         .collect();
     let unknown: BTreeSet<&str> = attempts
@@ -791,6 +980,23 @@ fn leaderboard_from_attempts(
             .map(|v| v.manifest.work_class_id.as_str())
             .unwrap_or("unknown")
     };
+    let graded = |version_id: &str| {
+        pool.iter()
+            .find(|v| v.id == version_id)
+            .is_some_and(|v| v.manifest.evaluator.kind == "rubric")
+    };
+    let required = |version_id: &str| {
+        pool.iter()
+            .find(|v| v.id == version_id)
+            .map_or(data.required_repetitions.max(1), |v| {
+                required_repetitions(data, v)
+            })
+    };
+    let protocol = CaseProtocol {
+        required: &required,
+        graded: &graded,
+    };
+    let records = case_records(&data.attempts, &runs, query.as_of, protocol);
     let acknowledged = run_acknowledgments(&data.attempts);
     // Every attempt on a pool case from a counted run, by configuration and case.
     let mut cells: BTreeMap<String, (Configuration, BTreeMap<&str, Vec<&Attempt>>)> =
@@ -820,8 +1026,8 @@ fn leaderboard_from_attempts(
         .map(|(mut configuration, by_case)| {
             // Per case, the newest run's attempts stand; older measurements are superseded.
             let mut attempts: Vec<&Attempt> = Vec::new();
-            for (_, list) in by_case {
-                attempts.extend(latest_cell_attempts(&list, &runs, query.as_of));
+            for (version, list) in by_case {
+                attempts.extend(latest_cell_attempts(&list, &runs, query.as_of, required(version)));
             }
             // Keep the newest concrete configuration for catch-up execution;
             // each attempt retains its original runtime and account evidence.
@@ -848,7 +1054,7 @@ fn leaderboard_from_attempts(
                     comparison_key: String::new(),
                     configuration, passed: 0, scored: 0, attempted: 0, planned: 0, quality: None,
                     median_duration_ms: None, median_output_tokens: None, cost: None, measured_at: None,
-                    points: None, efficiency_points: None, speed_points: None, cost_points: None,
+                    points: None, speed_share: None, cost_share: None,
                     status: "excluded".into(),
                     reason: format!("{excluded} cases excluded: this candidate helped author every case in the pool"),
                     attempt_ids: Vec::new(),
@@ -867,40 +1073,53 @@ fn leaderboard_from_attempts(
                 .map(|a| a.version_id.as_str())
                 .collect::<BTreeSet<_>>()
                 .len() as u32;
-            let (passed, _, quality) = cell_stats(&attempts, query.as_of);
-            let scored = scored_cases(&attempts, query.as_of);
-            let incomplete: BTreeSet<_> = attempts.iter().filter(|a| score_as_of(a, query.as_of).is_none()).map(|a| &a.version_id).collect();
+            let cells = case_cells(&attempts, query.as_of, protocol);
+            let scored_versions: BTreeSet<&str> = cells.keys().copied().collect();
             let scored_attempts: Vec<&Attempt> = attempts.iter().copied()
-                .filter(|a| !incomplete.contains(&a.version_id)).collect();
-            let spent = spent_attempts(&attempts, query.as_of);
+                .filter(|a| scored_versions.contains(a.version_id.as_str())).collect();
+            let spent = spent_attempts(&attempts, &scored_versions);
             let cost = mean_case_cost(&spent, query.as_of);
             let standard_budgets = attempts.iter().all(|a| {
                 eligible.iter().find(|v| v.id == a.version_id).is_some_and(|v|
                     runs[a.run_id.as_str()].request.timeout_seconds >= v.manifest.limits.timeout_seconds)
             });
-            let axes = work_classes
+            // A class board is the mean over its cases; the row is the mean
+            // over its measured class boards, so a class with many cases does
+            // not outweigh a class with few.
+            let axes: Vec<LeaderboardAxis> = work_classes
                 .iter()
                 .map(|class| {
-                    let subset: Vec<&Attempt> = attempts
+                    let subset: BTreeMap<&str, CaseCell> = cells
                         .iter()
-                        .copied()
-                        .filter(|a| work_class(&a.version_id) == class)
+                        .filter(|(version, _)| work_class(version) == class)
+                        .map(|(version, cell)| (*version, *cell))
                         .collect();
                     let cases = eligible
                         .iter()
                         .filter(|v| v.manifest.work_class_id == *class)
                         .count() as u32;
-                    let (passed, _, quality) = cell_stats(&subset, query.as_of);
+                    let stats = board_stats(&subset, &records);
                     LeaderboardAxis {
                         id: class.clone(),
-                        quality,
-                        points: quality.map(share_points),
-                        passed,
-                        scored: scored_cases(&subset, query.as_of),
+                        quality: stats.quality,
+                        points: stats.points,
+                        speed_share: stats.speed_share,
+                        cost_share: stats.cost_share,
+                        passed: stats.passed,
+                        scored: stats.scored,
                         planned: cases,
                     }
                 })
                 .collect();
+            let overall = board_stats(&cells, &records);
+            let measured_axes: Vec<&LeaderboardAxis> =
+                axes.iter().filter(|axis| axis.scored > 0).collect();
+            let points = (!measured_axes.is_empty()).then(|| {
+                (measured_axes.iter().filter_map(|axis| axis.points).map(f64::from).sum::<f64>()
+                    / measured_axes.len() as f64)
+                    .round() as u32
+            });
+            let (passed, scored, quality) = (overall.passed, overall.scored, overall.quality);
             // A case without a score whose standing cell the provider refused
             // (an `unsupported` outcome, such as a model the account's plan
             // leaves out) is no gap a catch-up fills: asking again would
@@ -944,10 +1163,9 @@ fn leaderboard_from_attempts(
                 measured_at: scored_attempts.iter().chain(&spent).flat_map(|a| a.finished_at.into_iter().chain(
                     a.evaluations.iter().map(|e| e.created_at).filter(|at| query.as_of.is_none_or(|cutoff| *at <= cutoff))
                 )).max(),
-                points: quality.map(share_points),
-                efficiency_points: None,
-                speed_points: None,
-                cost_points: None,
+                points,
+                speed_share: overall.speed_share,
+                cost_share: overall.cost_share,
                 status: if attempted == 0 {
                     "untested"
                 } else if scored == planned && standard_budgets {
@@ -957,7 +1175,7 @@ fn leaderboard_from_attempts(
                 }
                 .into(),
                 reason: format!(
-                    "{scored}/{planned} cases measured on the current pool; the newest settled result per case counts, repetitions averaged{}{}",
+                    "{scored}/{planned} cases measured on the current pool; the newest settled cell of {REQUIRED_REPETITIONS} repetitions per case counts, and every repetition must pass{}{}",
                     if excluded > 0 {
                         format!("; {excluded} cases authored by this candidate excluded")
                     } else {
@@ -1025,41 +1243,10 @@ fn leaderboard_from_attempts(
             );
         }
     }
-    // Lower-is-better boards score against the best ranked row that measured
-    // the metric. When no ranked row has it, the best measured row stands in,
-    // so a gap never blanks them.
-    let best = |pick: fn(&LeaderboardRow) -> Option<f64>| {
-        let min_of = |ranked: bool| {
-            rows.iter()
-                .filter(|row| {
-                    if ranked {
-                        row.status == "comparable"
-                    } else {
-                        row.status == "preliminary" && row.scored > 0
-                    }
-                })
-                .filter_map(pick)
-                .reduce(f64::min)
-        };
-        min_of(true).or_else(|| min_of(false))
-    };
-    let best_tokens = best(|row| row.median_output_tokens);
-    let best_duration = best(|row| row.median_duration_ms);
-    let best_cost = best(|row| row.cost);
-    for row in &mut rows {
-        row.efficiency_points = row
-            .median_output_tokens
-            .zip(best_tokens)
-            .map(|(v, b)| relative_points(v, b));
-        row.speed_points = row
-            .median_duration_ms
-            .zip(best_duration)
-            .map(|(v, b)| relative_points(v, b));
-        row.cost_points = row.cost.zip(best_cost).map(|(v, b)| relative_points(v, b));
-    }
     rows.sort_by(|a, b| {
         (b.status == "comparable")
             .cmp(&(a.status == "comparable"))
+            .then_with(|| b.points.unwrap_or(0).cmp(&a.points.unwrap_or(0)))
             .then_with(|| {
                 b.quality
                     .unwrap_or(-1.0)
@@ -1200,10 +1387,18 @@ fn recalculated_history_report(
     let mut backfilled = Vec::new();
     let mut revised = Vec::new();
     for (version, groups) in cells {
+        let required = data
+            .versions
+            .iter()
+            .find(|v| v.id == version)
+            .map_or(data.required_repetitions.max(1), |v| {
+                required_repetitions(data, v)
+            });
         let mut settled: Vec<_> = groups
             .into_iter()
             .filter(|(id, attempts)| {
                 attempts.len() == runs[id].request.repetitions as usize
+                    && attempts.len() >= required as usize
                     && attempts.iter().all(|a| {
                         a.phase == "terminal" && a.finished_at.is_some() && score(a).is_some()
                     })
@@ -1253,9 +1448,6 @@ fn recalculated_history_report(
     for row in &mut report.rows {
         // A retrospective estimate has no dated peer comparison or rank.
         row.status = "preliminary".into();
-        row.efficiency_points = None;
-        row.speed_points = None;
-        row.cost_points = None;
         row.reason = format!(
             "{}/{} current cases; {} first measured later, {} reviewed later; recalculated using today's evidence",
             row.scored, row.planned, backfilled.len(), revised.len()
@@ -1669,9 +1861,95 @@ pub(super) mod tests {
     fn points_share_one_scale() {
         assert_eq!(share_points(0.929), 929);
         assert_eq!(share_points(1.2), 1000);
-        assert_eq!(relative_points(2000.0, 2000.0), 1000);
-        assert_eq!(relative_points(10_000.0, 2000.0), 200);
-        assert_eq!(relative_points(0.0, 2000.0), 1000);
+        assert_eq!(share_of_record(Some(2000.0), Some(2000.0)), Some(1.0));
+        assert_eq!(share_of_record(Some(2000.0), Some(10_000.0)), Some(0.2));
+        assert_eq!(share_of_record(Some(2000.0), Some(0.0)), Some(1.0));
+        assert_eq!(share_of_record(None, Some(2000.0)), None);
+    }
+    /// A solved case: reliability outweighs speed and cost, and a missing
+    /// measurement gives up its weight instead of counting as the worst.
+    #[test]
+    fn a_case_scores_reliability_then_speed_then_cost() {
+        let cell = |reward, duration_ms, cost| CaseCell {
+            reward,
+            duration_ms,
+            cost,
+            repetitions: 3,
+        };
+        let record = (Some(60_000.0), Some(140.0));
+        let points = |c: &CaseCell| case_points(c, Some(&record)).points;
+        assert_eq!(points(&cell(1.0, Some(60_000.0), Some(140.0))), 1.0);
+        let slower = points(&cell(1.0, Some(180_000.0), Some(300.0)));
+        assert!((slower - (0.8 + 0.15 / 3.0 + 0.05 * 140.0 / 300.0)).abs() < 1e-9);
+        assert_eq!(points(&cell(0.0, Some(1.0), Some(0.01))), 0.0);
+        // Unknown cost: reliability and speed share the weight.
+        let unknown = points(&cell(1.0, Some(120_000.0), None));
+        assert!((unknown - (0.8 + 0.15 * 0.5) / 0.95).abs() < 1e-9);
+        assert_eq!(points(&cell(1.0, None, None)), 1.0);
+        // A judged case keeps its graded reward.
+        assert!((points(&cell(0.5, None, None)) - 0.5).abs() < 1e-9);
+    }
+    /// A cell needs every required repetition scored, every one passing.
+    #[test]
+    fn a_cell_passes_only_when_every_repetition_passes() {
+        let (data, _) = dataset();
+        let base = &data.attempts[0];
+        let attempt = |id: &str, repetition: u32, outcome: &str| Attempt {
+            id: id.into(),
+            repetition,
+            outcome: Some(outcome.into()),
+            ..base.clone()
+        };
+        let three = |outcomes: [&str; 3]| {
+            [
+                attempt("a", 0, outcomes[0]),
+                attempt("b", 1, outcomes[1]),
+                attempt("c", 2, outcomes[2]),
+            ]
+        };
+        let objective = CaseProtocol {
+            required: &|_| 3,
+            graded: &|_| false,
+        };
+        let graded = CaseProtocol {
+            required: &|_| 3,
+            graded: &|_| true,
+        };
+        fn cells<'a>(
+            list: &'a [Attempt],
+            protocol: CaseProtocol<'_>,
+        ) -> BTreeMap<&'a str, CaseCell> {
+            case_cells(&list.iter().collect::<Vec<_>>(), None, protocol)
+        }
+        let reward = |list: &[Attempt], protocol| cells(list, protocol).get("v0").map(|c| c.reward);
+        assert_eq!(
+            reward(&three(["pass", "pass", "pass"]), objective),
+            Some(1.0)
+        );
+        assert_eq!(
+            reward(&three(["pass", "fail", "pass"]), objective),
+            Some(0.0)
+        );
+        assert_eq!(
+            reward(&three(["pass", "budget_timeout", "pass"]), objective),
+            Some(0.0)
+        );
+        // A graded case averages its repetitions instead.
+        let graded_reward = reward(&three(["pass", "fail", "pass"]), graded).unwrap();
+        assert!((graded_reward - 2.0 / 3.0).abs() < 1e-9);
+        // Fewer repetitions than required is no cell; an unscored one neither.
+        assert_eq!(
+            reward(&three(["pass", "pass", "pass"])[..2], objective),
+            None
+        );
+        assert_eq!(
+            reward(&three(["pass", "pass", "cancelled"]), objective),
+            None
+        );
+        assert_eq!(
+            cells(&three(["pass", "pass", "pass"]), objective)["v0"].repetitions,
+            3
+        );
     }
     #[test]
     fn null_cost_is_not_free() {
@@ -1796,6 +2074,9 @@ pub(super) mod tests {
                 versions,
                 runs,
                 attempts: before.into_iter().chain(after).collect(),
+                // The fixtures measure one repetition per case; the product
+                // protocol of `REQUIRED_REPETITIONS` has its own tests.
+                required_repetitions: 1,
             },
             baseline,
         )
@@ -1847,16 +2128,18 @@ pub(super) mod tests {
         let row = &report.rows[0];
         assert_eq!(row.status, "comparable");
         assert_eq!((row.scored, row.planned), (6, 6));
-        assert_eq!(row.points, Some(333));
+        // Two of six cases solved; the row is the mean of its two class
+        // boards (1000 and 0), not of its cases.
+        assert_eq!(row.quality, Some(2.0 / 6.0));
+        assert_eq!(row.points, Some(500));
         let planning = row.axes.iter().find(|axis| axis.id == "planning").unwrap();
         assert_eq!(
             (planning.scored, planning.planned, planning.points),
             (2, 2, Some(1000))
         );
         assert!(row.missing_version_ids.is_empty());
-        // Every attempt took 100 ms, so the only comparable row is its own best.
-        assert_eq!(row.speed_points, Some(1000));
-        assert_eq!((row.efficiency_points, row.cost_points), (None, None));
+        // Every attempt took 100 ms, so the solved cases sit at their record.
+        assert_eq!((row.speed_share, row.cost_share), (Some(1.0), None));
         assert_eq!(row.measured_at, Some(2));
         // One lonely case leaves five gaps and no rank.
         data.attempts.truncate(1);
@@ -1940,7 +2223,7 @@ pub(super) mod tests {
         );
         // The six measured cases still carry their points, on every board.
         assert_eq!(row.points, Some(0));
-        assert_eq!(row.speed_points, Some(1000));
+        assert_eq!(row.speed_share, None);
         // Archiving a definition retires its case from the pool.
         data.definitions.push(BenchmarkDefinition {
             id: "d6".into(),
@@ -2009,7 +2292,8 @@ pub(super) mod tests {
         assert_eq!(pending.status, "preliminary");
         let judged = at(9);
         assert_eq!(judged.scored, 6);
-        assert_eq!(judged.points, Some(900));
+        // A panel score short of a pass fails an objective case.
+        assert_eq!(judged.points, Some(833));
         assert_eq!(at(10).points, Some(1000));
     }
 

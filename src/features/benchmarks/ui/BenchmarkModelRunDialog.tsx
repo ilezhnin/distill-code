@@ -22,7 +22,7 @@ import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
 import { modelDisplayName, providerVendor } from "../lib/benchmarkLabels";
-import { plannedTurns } from "../lib/benchmarkPlan";
+import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   Attempt,
@@ -134,9 +134,12 @@ export function BenchmarkModelRunDialog({
     requestKey,
     versionIds: versions.map((version) => version.id),
     configurations: [candidate],
-    repetitions: 1,
+    repetitions: REQUIRED_REPETITIONS,
     timeoutSeconds: runTimeLimitSeconds(versions),
-    maxExecutions: Math.max(1, plannedTurns(versions, candidate)),
+    maxExecutions: Math.max(
+      1,
+      plannedTurns(versions, candidate) * REQUIRED_REPETITIONS,
+    ),
     preview: false,
   });
   const [runId, setRunId] = useState<string | null>(activeRunId);

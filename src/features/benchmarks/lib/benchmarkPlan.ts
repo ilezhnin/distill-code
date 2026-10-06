@@ -7,6 +7,13 @@ import { authoredByCandidate } from "./benchmarkEligibility";
 export const JUDGE_CALLS = 3;
 
 /**
+ * Repetitions a measurement needs before a case counts, and a case counts
+ * only when every one of them passed (analysis::REQUIRED_REPETITIONS). A run
+ * of fewer is a quick check that never enters a board.
+ */
+export const REQUIRED_REPETITIONS = 3;
+
+/**
  * Every turn one repetition of `versions` takes on `configuration`: each
  * workflow step plus the judge reservation of a judged case. A candidate owes
  * nothing on a case it wrote.

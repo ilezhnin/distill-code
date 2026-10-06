@@ -216,6 +216,7 @@ impl BenchmarkService {
                 versions,
                 runs,
                 attempts,
+                required_repetitions: analysis::REQUIRED_REPETITIONS,
             },
         )))
     }

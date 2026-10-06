@@ -23,7 +23,7 @@ import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
 import { shortId } from "../lib/benchmarkLabels";
-import { plannedTurns } from "../lib/benchmarkPlan";
+import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   BenchmarkDefinition,
@@ -75,7 +75,7 @@ export function BenchmarkRunDialog({
   const [fastMode, setFastMode] = useState(false);
   const [versions, setVersions] = useState(selectedVersionIds);
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
-  const [repetitions, setRepetitions] = useState(1);
+  const [repetitions, setRepetitions] = useState(REQUIRED_REPETITIONS);
   const published = definitions.filter(
     (entry) => !entry.archived && entry.versions.length > 0,
   );

@@ -17,7 +17,12 @@ import {
   useModelNames,
   type HistorySnapshot,
 } from "../hooks/useBenchmarks";
-import { boardsFor, rankRows, rowKey } from "../lib/benchmarkBoards";
+import {
+  boardShares,
+  boardsFor,
+  rankRows,
+  rowKey,
+} from "../lib/benchmarkBoards";
 import { rowActivity } from "../lib/benchmarkActivity";
 import { catchUpCases } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
@@ -43,6 +48,7 @@ import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import {
   BoardIcon,
   ScoreBar,
+  ShareMarks,
   SectionHeading,
   StateBadge,
 } from "./BenchmarkPrimitives";
@@ -304,6 +310,12 @@ export function BenchmarkConfigurationPage({
               <dd className="font-display text-2xl tabular-nums">
                 {overall?.points ?? "–"}
               </dd>
+              {overall?.points != null ? (
+                <ShareMarks
+                  className="justify-end"
+                  shares={boardShares(shownRow, { workClass: null })}
+                />
+              ) : null}
             </div>
           </dl>
           <Button
@@ -460,11 +472,17 @@ export function BenchmarkConfigurationPage({
                   </div>
                   <div className="min-w-0 flex-1">
                     {board.share != null ? (
-                      <ScoreBar
-                        share={board.share}
-                        leading={board.rank === 1}
-                        label={`${board.label}: ${board.points ?? "–"}`}
-                      />
+                      <>
+                        <ScoreBar
+                          share={board.share}
+                          leading={board.rank === 1}
+                          label={`${board.label}: ${board.points ?? "–"}`}
+                        />
+                        <ShareMarks
+                          className="mt-1.5"
+                          shares={boardShares(shownRow, board)}
+                        />
+                      </>
                     ) : null}
                   </div>
                   <span

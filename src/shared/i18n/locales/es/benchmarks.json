@@ -311,17 +311,16 @@
   },
   "leaderboard": {
     "boards": {
-      "overall": "General",
-      "efficiency": "Uso de tokens de salida",
-      "speed": "Velocidad",
-      "cost": "Coste"
+      "overall": "General"
     },
     "boardDescriptions": {
-      "overall": "Éxito medido en puntos sobre 1000, con pesos iguales por caso. Más alto es mejor.",
-      "class": "Éxito medido en los casos de {{label}} en puntos sobre 1000. Más alto es mejor.",
-      "efficiency": "Mediana de tokens de salida por intento puntuado. La configuración más frugal obtiene 1000, las demás en proporción.",
-      "speed": "Duración mediana del intento. La configuración más rápida obtiene 1000, las demás en proporción.",
-      "cost": "USD medios por tarea de la propia generación del modelo, promediando las repeticiones de cada caso. Las llamadas a los jueces no se incluyen. Los cargos desconocidos siguen sin conocerse. El menor costo obtiene 1000 puntos."
+      "overall": "La media de las tablas por clase, en puntos sobre 1000. Más alto es mejor.",
+      "class": "Casos de {{label}}, en puntos sobre 1000: un caso cuenta cuando todas sus repeticiones pasaron, ponderado por la rapidez y el coste con que se resolvió frente a la mejor medición de ese caso. Más alto es mejor."
+    },
+    "shares": {
+      "reliability": "Casos resueltos en todas las repeticiones, de los casos medidos.",
+      "speed": "Cuota media de la solución más rápida sobre los casos resueltos: 100% en el récord, 50% al doble de su tiempo.",
+      "cost": "Cuota media de la solución más barata sobre los casos resueltos: 100% en el récord, 50% al doble de su gasto."
     },
     "allAxes": "Todos los tableros",
     "measured": "{{scored}} / {{planned}} medidas",

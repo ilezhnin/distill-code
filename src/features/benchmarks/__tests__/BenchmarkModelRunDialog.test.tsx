@@ -228,11 +228,13 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
       "version-5",
       "version-8",
     ],
-    repetitions: 1,
+    // Every measurement is three repetitions; a case counts only when all pass.
+    repetitions: 3,
     // Four hours from Settings, not a field in the dialog.
     timeoutSeconds: 14_400,
-    // Four exact tests at one turn, the judged one at one plus three judges.
-    maxExecutions: 8,
+    // Four exact tests at one turn, the judged one at one plus three judges,
+    // three times over.
+    maxExecutions: 24,
     preview: false,
   };
   await waitFor(() =>

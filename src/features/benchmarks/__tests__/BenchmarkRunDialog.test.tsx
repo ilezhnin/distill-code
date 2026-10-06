@@ -112,10 +112,11 @@ it("counts every workflow step against the explicit execution budget", async () 
   await user.click(screen.getByRole("combobox", { name: "Model" }));
   await user.click(screen.getByRole("option", { name: "Test model" }));
   await user.click(screen.getByRole("button", { name: "Add configuration" }));
-  expect(screen.getByText("2 executions")).toBeInTheDocument();
+  // Two workflow steps, three repetitions each.
+  expect(screen.getByText("6 executions")).toBeInTheDocument();
   fireEvent.change(
     screen.getByRole("spinbutton", { name: "Maximum executions" }),
-    { target: { value: "1" } },
+    { target: { value: "5" } },
   );
   expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
 });

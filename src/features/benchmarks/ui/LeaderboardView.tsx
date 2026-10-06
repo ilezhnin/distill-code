@@ -23,6 +23,7 @@ import {
   useModelNames,
 } from "../hooks/useBenchmarks";
 import {
+  boardShares,
   boardsFor,
   rankRows,
   rowKey,
@@ -57,6 +58,7 @@ import {
   BoardIcon,
   ModelIdentity,
   ScoreBar,
+  ShareMarks,
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { ModelFilter } from "./ModelFilter";
@@ -375,14 +377,20 @@ export function LeaderboardView({
                 <>
                   <TableCell>
                     {entry.rank != null && entry.share != null ? (
-                      <ScoreBar
-                        share={entry.share}
-                        leading={entry.rank === 1}
-                        label={t("leaderboard.chartLabel", {
-                          model: nameOf(entry.row),
-                          value: entry.points ?? "–",
-                        })}
-                      />
+                      <>
+                        <ScoreBar
+                          share={entry.share}
+                          leading={entry.rank === 1}
+                          label={t("leaderboard.chartLabel", {
+                            model: nameOf(entry.row),
+                            value: entry.points ?? "–",
+                          })}
+                        />
+                        <ShareMarks
+                          className="mt-1.5"
+                          shares={boardShares(entry.row, board)}
+                        />
+                      </>
                     ) : (
                       <div className="flex items-center gap-2">
                         <StateBadge state={entry.row.status} />

@@ -6874,8 +6874,8 @@ mod tests {
             "validation"
         );
         assert_eq!(backend.judges.load(Ordering::SeqCst), asked);
-        // A human override cannot turn a timeout into a verdict either; it
-        // measured nothing, so its case stays a gap.
+        // A human override cannot turn a timeout into a verdict either: the
+        // turn failed its task, and that stands.
         let mut timed_out = s.store.attempt(&creative.attempts[0].id).await.unwrap();
         timed_out.outcome = Some("budget_timeout".into());
         timed_out.evaluations.clear();
@@ -6887,7 +6887,7 @@ mod tests {
         assert_eq!(refused.message, "Only an evaluated result can be reviewed");
         let kept = s.store.attempt(&timed_out.id).await.unwrap();
         assert_eq!(kept.outcome.as_deref(), Some("budget_timeout"));
-        assert_eq!(super::super::analysis::score(&kept), None);
+        assert_eq!(super::super::analysis::score(&kept), Some(0.0));
     }
     #[tokio::test]
     async fn evaluating_again_persists_the_new_verdict_of_a_finished_attempt() {

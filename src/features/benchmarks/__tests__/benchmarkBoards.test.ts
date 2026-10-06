@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  boardShares,
   boardsFor,
   configurationKey,
   rankRows,
@@ -11,14 +12,15 @@ const rows = [
   leaderboardRow({
     configuration: { ...configuration, id: "a", modelId: "alpha" },
     points: 1000,
-    speedPoints: 200,
-    efficiencyPoints: 200,
-    costPoints: 100,
+    speedShare: 0.2,
+    costShare: 0.1,
     axes: [
       {
         id: "coding-simple",
         quality: 0.5,
         points: 500,
+        speedShare: 0.6,
+        costShare: null,
         passed: 1,
         scored: 2,
         planned: 2,
@@ -28,9 +30,6 @@ const rows = [
   leaderboardRow({
     configuration: { ...configuration, id: "b", modelId: "beta" },
     points: 500,
-    speedPoints: 1000,
-    efficiencyPoints: 1000,
-    costPoints: 1000,
     axes: [
       {
         id: "coding-simple",
@@ -45,9 +44,8 @@ const rows = [
   leaderboardRow({
     configuration: { ...configuration, id: "c", modelId: "gamma" },
     points: 1000,
-    speedPoints: 67,
-    efficiencyPoints: null,
-    costPoints: 33,
+    speedShare: 0.067,
+    costShare: 0.033,
   }),
   leaderboardRow({
     configuration: { ...configuration, id: "d", modelId: "delta" },
@@ -138,20 +136,35 @@ describe("leaderboard boards", () => {
     );
   });
 
-  it("builds one board per shared measurement plus one per work class", () => {
+  it("builds the overall board plus one per work class", () => {
     expect(boardsFor(cohort).map((board) => board.id)).toEqual([
       "overall",
       "class:coding-simple",
-      "efficiency",
-      "speed",
-      "cost",
     ]);
-    expect(boardsFor(null).map((board) => board.id)).toEqual([
-      "overall",
-      "efficiency",
-      "speed",
-      "cost",
-    ]);
+    expect(boardsFor(null).map((board) => board.id)).toEqual(["overall"]);
+  });
+
+  it("reads what went into a board's points from the row or its class axis", () => {
+    const [overall, coding] = boardsFor(cohort);
+    expect(boardShares(rows[0], overall)).toEqual({
+      passed: 1,
+      scored: 1,
+      speed: 0.2,
+      cost: 0.1,
+    });
+    expect(boardShares(rows[0], coding)).toEqual({
+      passed: 1,
+      scored: 2,
+      speed: 0.6,
+      cost: null,
+    });
+    // A row never measured on the class has nothing to show there.
+    expect(boardShares(rows[2], coding)).toEqual({
+      passed: 0,
+      scored: 0,
+      speed: null,
+      cost: null,
+    });
   });
 
   it("shares ranks between ties and skips the next rank", () => {
@@ -170,26 +183,22 @@ describe("leaderboard boards", () => {
     expect(ranked[3].share).toBe(90);
   });
 
-  it("orders every board by its own points and leaves missing ones unranked", () => {
+  it("orders a class board by its own points and leaves missing ones unranked", () => {
     const boards = boardsFor(cohort);
-    const speed = rankRows(rows, boards[3]);
-    expect(speed.map((entry) => entry.row.configuration.modelId)).toEqual([
+    const workClass = rankRows(rows, boards[1]);
+    expect(workClass.map((entry) => entry.row.configuration.modelId)).toEqual([
       "beta",
       "alpha",
       "gamma",
       "delta",
     ]);
-    expect(speed[0].share).toBe(100);
-    expect(speed[1].share).toBe(20);
-    const efficiency = rankRows(rows, boards[2]);
-    // A row without a measurement cannot rank, even when it is comparable.
+    expect(workClass[0].share).toBe(100);
+    expect(workClass[1].share).toBe(50);
+    // A row without a measurement on the class cannot rank, even when it is
+    // comparable.
     expect(
-      efficiency.find((entry) => entry.row.configuration.modelId === "gamma")
+      workClass.find((entry) => entry.row.configuration.modelId === "gamma")
         ?.rank,
     ).toBeNull();
-    const workClass = rankRows(rows, boards[1]);
-    expect(
-      workClass.slice(0, 2).map((entry) => entry.row.configuration.modelId),
-    ).toEqual(["beta", "alpha"]);
   });
 });

@@ -419,6 +419,7 @@ mod tests {
             versions: Vec::new(),
             runs: Vec::new(),
             attempts: Vec::new(),
+            required_repetitions: 1,
         };
         let received = analyze(data, move |_| {
             receiver

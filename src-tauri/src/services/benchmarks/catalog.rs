@@ -285,6 +285,7 @@ mod tests {
             definitions,
             runs: store.all_runs().await.unwrap(),
             attempts: vec![],
+            required_repetitions: 1,
         }
     }
     fn pooled(data: &QueryData, as_of: Option<i64>, version: &str) -> bool {

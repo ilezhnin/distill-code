@@ -381,8 +381,15 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             by_case.entry(&a.version_id).or_default().push(a);
         }
         let selected: BTreeSet<_> = by_case
-            .values()
-            .flat_map(|list| super::analysis::latest_cell_attempts(list, &runs, Some(q.cutoff_at)))
+            .iter()
+            .flat_map(|(version, list)| {
+                let required = versions
+                    .get(version)
+                    .map_or(data.required_repetitions.max(1), |v| {
+                        super::analysis::required_repetitions(data, v)
+                    });
+                super::analysis::latest_cell_attempts(list, &runs, Some(q.cutoff_at), required)
+            })
             .map(|a| &a.id)
             .collect();
         let mut samples = Vec::new();
@@ -633,6 +640,7 @@ mod tests {
             versions: vec![],
             runs: vec![],
             attempts: vec![],
+            required_repetitions: 1,
         };
         let candidates = vec![config("low"), config("high")];
         for difficulty in ["easy", "hard"] {

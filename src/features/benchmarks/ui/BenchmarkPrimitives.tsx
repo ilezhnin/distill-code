@@ -5,7 +5,6 @@ import {
   IconBraces,
   IconCode,
   IconCoin,
-  IconFeather,
   IconFilter,
   IconLayout,
   IconMessage,
@@ -37,6 +36,8 @@ import {
 } from "@/shared/ui/hover-card";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
   Select,
   SelectContent,
@@ -405,9 +406,6 @@ export function AxisBars({
 /** Label over value, for the summary grid at the top of a report dialog. */
 const BOARD_ICONS: Record<string, typeof IconTrophy> = {
   overall: IconTrophy,
-  efficiency: IconFeather,
-  speed: IconBolt,
-  cost: IconCoin,
   "frontend-ui": IconLayout,
   creative: IconPalette,
   "coding-simple": IconCode,
@@ -420,7 +418,76 @@ const BOARD_ICONS: Record<string, typeof IconTrophy> = {
   "testing-heavy": IconShieldCheck,
 };
 
-/** The glyph a board goes by wherever it is named: a work class or a shared measurement. */
+/**
+ * What a board's points are made of, in the board's own units: solved cases of
+ * the measured ones, then the mean speed and cost shares of those solved.
+ * Each mark explains itself on a held hover.
+ */
+export function ShareMarks({
+  shares,
+  className,
+}: {
+  shares: {
+    passed: number;
+    scored: number;
+    speed: number | null;
+    cost: number | null;
+  };
+  className?: string;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const percent = (share: number | null) =>
+    share == null ? "–" : `${Math.round(share * 100)}%`;
+  const marks: {
+    id: string;
+    icon: typeof IconTrophy;
+    value: string;
+    hint: string;
+  }[] = [
+    {
+      id: "reliability",
+      icon: IconShieldCheck,
+      value: `${shares.passed}/${shares.scored}`,
+      hint: t("shares.reliability"),
+    },
+    {
+      id: "speed",
+      icon: IconBolt,
+      value: percent(shares.speed),
+      hint: t("shares.speed"),
+    },
+    {
+      id: "cost",
+      icon: IconCoin,
+      value: percent(shares.cost),
+      hint: t("shares.cost"),
+    },
+  ];
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-3 text-xs tabular-nums text-muted-foreground",
+        className,
+      )}
+    >
+      {marks.map((mark) => (
+        <Tooltip key={mark.id} delayDuration={TOOLTIP_DELAY.held}>
+          <TooltipTrigger asChild>
+            <span className="inline-flex cursor-default items-center gap-1">
+              <mark.icon className="size-3.5" aria-hidden />
+              <span>{mark.value}</span>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-64">
+            {mark.hint}
+          </TooltipContent>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+/** The glyph a board goes by wherever it is named: a work class or the overall board. */
 export function BoardIcon({
   board,
   className,

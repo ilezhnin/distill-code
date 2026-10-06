@@ -311,17 +311,16 @@
   },
   "leaderboard": {
     "boards": {
-      "overall": "Overall",
-      "efficiency": "Output token use",
-      "speed": "Speed",
-      "cost": "Cost"
+      "overall": "Overall"
     },
     "boardDescriptions": {
-      "overall": "Measured success as points out of 1000, equal case weights. Higher is better.",
-      "class": "Measured success on {{label}} cases as points out of 1000. Higher is better.",
-      "efficiency": "Median output tokens per scored attempt. The leanest configuration scores 1000, the others in proportion.",
-      "speed": "Median attempt duration. The fastest configuration scores 1000, the others in proportion.",
-      "cost": "Mean reported USD per task for the model's own generation, averaging repetitions within each case. Judge calls are not included. Unknown charges remain unknown. The lowest cost scores 1000."
+      "overall": "The mean of the class boards, points out of 1000. Higher is better.",
+      "class": "{{label}} cases, points out of 1000: a case counts when every repetition passed, weighted by how fast and how cheaply it was solved against the best measurement of that case. Higher is better."
+    },
+    "shares": {
+      "reliability": "Cases solved on every repetition, of the cases measured.",
+      "speed": "Mean share of the fastest solution over the solved cases: 100% at the record, 50% at twice its time.",
+      "cost": "Mean share of the cheapest solution over the solved cases: 100% at the record, 50% at twice its spend."
     },
     "allAxes": "All boards",
     "measured": "{{scored}} / {{planned}} measured",

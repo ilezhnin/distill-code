@@ -1,24 +1,22 @@
-// One leaderboard, several boards. The service scores every board on the same
-// scale (points out of 1000, see analysis.rs), so the operator and the selector
-// read identical numbers; this module only orders and labels them.
+// One leaderboard, one board per work class and an overall board over them.
+// The service scores every board on the same scale (points out of 1000, see
+// analysis.rs): reliability on the class's cases, weighted with how fast and
+// how cheaply the solved cases were done. The operator and the selector read
+// identical numbers; this module only orders and labels them.
 import type {
   Configuration,
+  LeaderboardAxis,
   LeaderboardCohort,
   LeaderboardRow,
 } from "../types";
 
 export const CLASS_BOARD_PREFIX = "class:";
 
-export type BoardId =
-  | "overall"
-  | "efficiency"
-  | "speed"
-  | "cost"
-  | `${typeof CLASS_BOARD_PREFIX}${string}`;
+export type BoardId = "overall" | `${typeof CLASS_BOARD_PREFIX}${string}`;
 
 export interface Board {
   id: BoardId;
-  /** Work class id for a class board; null for the shared measurements. */
+  /** Work class id for a class board; null for the overall board. */
   workClass: string | null;
   /** Points out of 1000 on this board. */
   points: (row: LeaderboardRow) => number | null;
@@ -37,14 +35,38 @@ export function boardsFor(
           row.axes.find((axis) => axis.id === workClass)?.points ?? null,
       }),
     ),
-    {
-      id: "efficiency",
-      workClass: null,
-      points: (row) => row.efficiencyPoints,
-    },
-    { id: "speed", workClass: null, points: (row) => row.speedPoints },
-    { id: "cost", workClass: null, points: (row) => row.costPoints },
   ];
+}
+
+/** What went into a row's points on a board. */
+export interface BoardShares {
+  /** Cases solved on every repetition, of the cases measured. */
+  passed: number;
+  scored: number;
+  /** Mean share of the record speed and cost over the solved cases, 0 to 1. */
+  speed: number | null;
+  cost: number | null;
+}
+
+export function boardShares(
+  row: LeaderboardRow,
+  board: Pick<Board, "workClass">,
+): BoardShares {
+  const source: Pick<
+    LeaderboardAxis,
+    "passed" | "scored" | "speedShare" | "costShare"
+  > = board.workClass
+    ? (row.axes.find((axis) => axis.id === board.workClass) ?? {
+        passed: 0,
+        scored: 0,
+      })
+    : row;
+  return {
+    passed: source.passed,
+    scored: source.scored,
+    speed: source.speedShare ?? null,
+    cost: source.costShare ?? null,
+  };
 }
 
 export interface RankedRow {
