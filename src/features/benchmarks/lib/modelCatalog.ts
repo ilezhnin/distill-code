@@ -45,11 +45,20 @@ function money(value: number): string {
   return `$${Number(value.toPrecision(3)).toString()}`;
 }
 
-/** "$4 / $20" for input and output list prices per million tokens. */
+/** Whether an entry prices a model its vendor does not, as a labelled estimate. */
+export function isEstimate(entry: Pick<CatalogEntry, "source">): boolean {
+  return entry.source.startsWith("estimate:");
+}
+
+/**
+ * "$4 / $20" for input and output list prices per million tokens; "~$4 / $20"
+ * when the entry is an estimate rather than a published price.
+ */
 export function formatPrice(entry: CatalogEntry | null): string | null {
   if (!entry || entry.inputPerMillion == null || entry.outputPerMillion == null)
     return null;
-  return `${money(entry.inputPerMillion)} / ${money(entry.outputPerMillion)}`;
+  const prices = `${money(entry.inputPerMillion)} / ${money(entry.outputPerMillion)}`;
+  return isEstimate(entry) ? `~${prices}` : prices;
 }
 
 /** "1M", "1.05M", "500K", "200K". */

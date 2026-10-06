@@ -1309,20 +1309,24 @@ mod tests {
         let store = Store::open(directory.path()).await.unwrap();
         let entries = store.catalog_entries().await.unwrap();
         assert!(!entries.iter().any(|e| e.id == "seed-anthropic-fable-5-1"));
-        assert_eq!(entries.len(), 4 + 14);
+        // Four kept Anthropic rows, fourteen vendor rows, two estimates.
+        assert_eq!(entries.len(), 4 + 14 + 2);
         assert!(entries.iter().any(|e| e.id == "seed-moonshot-k3"));
+        assert!(entries
+            .iter()
+            .any(|e| e.id == "seed-estimate-kimi-k2-8-preview"));
         // A vendor seed the user deletes stays deleted.
         store
             .delete_catalog_entry("seed-xai-grok-4-5")
             .await
             .unwrap();
         let again = store.catalog_entries().await.unwrap();
-        assert_eq!(again.len(), 17);
+        assert_eq!(again.len(), 19);
         assert!(!again.iter().any(|e| e.id == "seed-xai-grok-4-5"));
         // A new catalog gets every set.
         let fresh_directory = tempfile::tempdir().unwrap();
         let fresh = Store::open(fresh_directory.path()).await.unwrap();
-        assert_eq!(fresh.catalog_entries().await.unwrap().len(), 5 + 14);
+        assert_eq!(fresh.catalog_entries().await.unwrap().len(), 5 + 14 + 2);
     }
     #[test]
     fn a_policy_violation_never_stands_as_a_rendering() {

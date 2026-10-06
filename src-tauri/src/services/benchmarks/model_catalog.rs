@@ -15,6 +15,8 @@ pub const MOONSHOT_PRICING: &str = "https://platform.kimi.ai/docs/pricing/chat";
 const SEED_CHECKED_AT: i64 = 1_790_942_400_000;
 /// 2026-10-03T12:00:00Z: the day the OpenAI, xAI and Moonshot sources were read.
 const VENDOR_SEEDS_CHECKED_AT: i64 = 1_791_028_800_000;
+/// 2026-10-05T12:00:00Z: the day the estimates for unpriced models were set.
+const ESTIMATES_CHECKED_AT: i64 = 1_791_201_600_000;
 
 /// The model entry that applied to `configuration` at `at`, as
 /// `lib/modelCatalog.ts` resolves it: an entry of its provider or of none,
@@ -65,17 +67,20 @@ pub fn list_cost(entry: &CatalogEntry, usage: &TokenUsage) -> Option<f64> {
     )
 }
 
-/// An attempt's cost as every report reads it: what the provider reported,
-/// else its tokens at the list prices that applied when it ran (`at`).
+/// An attempt's cost as every report reads it: its tokens at the list prices
+/// that applied when it ran (`at`), so every provider is priced the same way;
+/// what the provider reported only where no list price resolves. Providers
+/// report on different bases (Grok's figure runs near a third of its list
+/// price, Kimi reports none), so a reported figure is evidence for the
+/// attempt's details, not a board.
 pub fn attempt_cost(
     entries: &[CatalogEntry],
     configuration: &Configuration,
     usage: &TokenUsage,
     at: Option<i64>,
 ) -> Option<f64> {
-    usage
-        .cost
-        .or_else(|| list_cost(resolve(entries, configuration, at?)?, usage))
+    at.and_then(|at| list_cost(resolve(entries, configuration, at)?, usage))
+        .or(usage.cost)
 }
 
 /// The seed sets in the order they shipped, by id. A store adds each set once.
@@ -85,6 +90,64 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
         ("openai-2026-10-03", openai_seeds()),
         ("xai-2026-10-03", xai_seeds()),
         ("moonshot-2026-10-03", moonshot_seeds()),
+        ("estimates-2026-10-05", estimate_seeds()),
+    ]
+}
+
+/// Models no vendor prices, priced as their nearest published sibling so a
+/// board never treats an unpriced model as free or as worst. Each entry names
+/// its basis in `source`; a published price added later wins by date.
+/// Effective from the vendor seeds' date, so every measurement since is
+/// priced; later creation wins the tie against the unpriced vendor rows.
+fn estimate_seeds() -> Vec<CatalogEntry> {
+    let estimate = |position: i64,
+                    slug: &str,
+                    provider_id: &str,
+                    needle: &str,
+                    name: &str,
+                    vendor: &str,
+                    prices: [Option<f64>; 4],
+                    context: Option<u64>,
+                    source: &str| CatalogEntry {
+        id: format!("seed-estimate-{slug}"),
+        kind: "model".into(),
+        provider_id: Some(provider_id.into()),
+        needle: needle.into(),
+        display_name: Some(name.into()),
+        vendor: Some(vendor.into()),
+        input_per_million: prices[0],
+        output_per_million: prices[1],
+        cache_read_per_million: prices[2],
+        cache_write_per_million: prices[3],
+        context_tokens: context,
+        effective_from: VENDOR_SEEDS_CHECKED_AT,
+        checked_at: ESTIMATES_CHECKED_AT,
+        source: source.into(),
+        created_at: ESTIMATES_CHECKED_AT + position,
+    };
+    vec![
+        estimate(
+            0,
+            "grok-4-7-build-fast",
+            "grok-acp",
+            "grok-4.7-build-fast",
+            "Grok 4.7 Fast",
+            "xAI",
+            [Some(2.0), Some(6.0), Some(0.5), None],
+            Some(256_000),
+            "estimate: xAI lists no separate price for Grok 4.7 Fast and describes it as Grok 4.7 served faster, so it is priced as Grok 4.7 (https://docs.x.ai/docs/models) until a published price appears",
+        ),
+        estimate(
+            1,
+            "kimi-k2-8-preview",
+            "kimi-acp",
+            "k2.8",
+            "Kimi K2.8 Preview",
+            "Moonshot AI",
+            [Some(0.95), Some(4.0), Some(0.19), None],
+            Some(262_144),
+            "estimate: Moonshot publishes no price for K2.8 Preview (kimi-for-coding), so it is priced as K2.7 Code, the previous model on the same id (https://platform.kimi.ai/docs/pricing/chat, kimi-k2.7-code), until a published price appears",
+        ),
     ]
 }
 
@@ -414,7 +477,8 @@ mod tests {
                 "anthropic-2026-10-02",
                 "openai-2026-10-03",
                 "xai-2026-10-03",
-                "moonshot-2026-10-03"
+                "moonshot-2026-10-03",
+                "estimates-2026-10-05"
             ]
         );
         let seeds = seeds();
@@ -426,7 +490,7 @@ mod tests {
             assert_eq!(seed.effective_from, seed.checked_at);
         }
         // The renderer's resolution test reads the same rows.
-        let vendors: Vec<CatalogEntry> = sets[1..]
+        let vendors: Vec<CatalogEntry> = sets[1..4]
             .iter()
             .flat_map(|(_, entries)| entries.clone())
             .collect();
@@ -525,15 +589,67 @@ mod tests {
             attempt_cost(&entries, &configuration, &silent, Some(150)),
             None
         );
-        // A reported cost stands; another provider's entry never prices it.
+        // The list price prices every provider alike; the provider's own
+        // figure counts only where no list price resolves.
         let mut reported = spent.clone();
         reported.cost = Some(0.42);
+        let priced = attempt_cost(&entries, &configuration, &reported, Some(150)).unwrap();
+        assert!((priced - (3.0 + 1.5 + 0.003)).abs() < 1e-9, "{priced}");
         assert_eq!(
-            attempt_cost(&entries, &configuration, &reported, Some(150)),
+            attempt_cost(&entries, &configuration, &reported, Some(50)),
+            Some(0.42)
+        );
+        assert_eq!(
+            attempt_cost(&entries, &configuration, &reported, None),
             Some(0.42)
         );
         let mut other = configuration.clone();
         other.provider_id = "grok-acp".into();
         assert_eq!(attempt_cost(&entries, &other, &spent, Some(150)), None);
+    }
+
+    /// An unpriced model resolves to its labelled estimate from the vendor
+    /// seeds' date on, over the vendor row that left it unknown.
+    #[test]
+    fn unpriced_models_resolve_to_a_labelled_estimate() {
+        let entries: Vec<CatalogEntry> = seed_sets()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        let fast = Configuration {
+            id: "grok".into(),
+            provider_id: "grok-acp".into(),
+            account_id: None,
+            model_id: "grok-4.7-build-fast".into(),
+            effort: Some("xhigh".into()),
+            fast_mode: None,
+            billing_mode: "subscription".into(),
+            execution_profile: "native_text".into(),
+            inventory_revision: None,
+            model_name: Some("Grok 4.7 Fast".into()),
+        };
+        let entry = resolve(&entries, &fast, VENDOR_SEEDS_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-estimate-grok-4-7-build-fast");
+        assert!(entry.source.starts_with("estimate:"));
+        assert_eq!(entry.output_per_million, Some(6.0));
+        let preview = Configuration {
+            provider_id: "kimi-acp".into(),
+            model_id: "kimi-code/kimi-for-coding".into(),
+            model_name: Some("K2.8 Preview".into()),
+            ..fast.clone()
+        };
+        let entry = resolve(&entries, &preview, ESTIMATES_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-estimate-kimi-k2-8-preview");
+        // The highspeed row keeps its own published price.
+        let highspeed = Configuration {
+            model_id: "kimi-code/kimi-for-coding-highspeed".into(),
+            model_name: Some("K2.7 Code Highspeed".into()),
+            ..preview
+        };
+        let entry = resolve(&entries, &highspeed, ESTIMATES_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-moonshot-k2-7-code-highspeed");
+        for seed in estimate_seeds() {
+            validate(&seed).unwrap();
+        }
     }
 }

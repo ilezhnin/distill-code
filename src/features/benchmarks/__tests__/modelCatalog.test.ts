@@ -82,6 +82,10 @@ describe("model catalog resolution", () => {
       formatPrice(entry({ inputPerMillion: 0.435, outputPerMillion: 0.87 })),
     ).toBe("$0.435 / $0.87");
     expect(formatPrice(entry({ outputPerMillion: null }))).toBeNull();
+    // An estimate reads as one wherever the price is shown.
+    expect(
+      formatPrice(entry({ source: "estimate: priced as its sibling" })),
+    ).toBe("~$4 / $20");
     expect(formatContext(1_000_000)).toBe("1M");
     expect(formatContext(1_050_000)).toBe("1.05M");
     expect(formatContext(500_000)).toBe("500K");
