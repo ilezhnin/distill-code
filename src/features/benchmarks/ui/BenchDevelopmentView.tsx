@@ -268,14 +268,6 @@ export function BenchDevelopmentView({
                   label={t("benchmarks:tracker.passedBy")}
                   hint={t("benchmarks:tracker.passedByHint")}
                 />
-                <HintedHead
-                  label={t("benchmarks:tracker.spread")}
-                  hint={t("benchmarks:tracker.spreadHint")}
-                />
-                <HintedHead
-                  label={t("benchmarks:tracker.flaky")}
-                  hint={t("benchmarks:tracker.flakyHint")}
-                />
                 <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
@@ -287,7 +279,7 @@ export function BenchDevelopmentView({
                       type="button"
                       variant="link"
                       size="xs"
-                      className="h-auto px-0 text-sm"
+                      className="h-auto px-0 text-left text-sm whitespace-normal"
                       onClick={() => onEdit(entry.id)}
                     >
                       {entry.draft.name || t("benchmarks:editor.new")}
@@ -420,29 +412,25 @@ export function BenchDevelopmentView({
   );
 }
 
-/** A pool case's discrimination and flakiness; dashes before any model is measured. */
+/**
+ * A pool case's discrimination and flakiness in one cell: the models that
+ * passed it every time, then the spread between models and the cells whose
+ * repetitions disagree; a dash before any model is measured.
+ */
 function CaseStatsCells({ stats }: { stats: CaseStats | undefined }) {
   const { t } = useTranslation("benchmarks");
   if (!stats || stats.models === 0)
-    return (
-      <>
-        <TableCell className="text-muted-foreground">-</TableCell>
-        <TableCell className="text-muted-foreground">-</TableCell>
-        <TableCell className="text-muted-foreground">-</TableCell>
-      </>
-    );
+    return <TableCell className="text-muted-foreground">-</TableCell>;
   return (
-    <>
-      <TableCell className="tabular-nums">
-        {t("tracker.passedOf", { passed: stats.passed, models: stats.models })}
-      </TableCell>
-      <TableCell className="tabular-nums">
-        {stats.spread == null ? "-" : `${Math.round(stats.spread * 100)}%`}
-      </TableCell>
-      <TableCell className="tabular-nums">
-        {t("tracker.passedOf", { passed: stats.flaky, models: stats.models })}
-      </TableCell>
-    </>
+    <TableCell className="tabular-nums">
+      {t("tracker.passedOf", { passed: stats.passed, models: stats.models })}
+      <p className="text-xs text-muted-foreground">
+        {t("tracker.detail", {
+          spread: Math.round((stats.spread ?? 0) * 100),
+          flaky: stats.flaky,
+        })}
+      </p>
+    </TableCell>
   );
 }
 

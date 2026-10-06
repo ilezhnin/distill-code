@@ -1235,15 +1235,14 @@ describe("benchmark authoring and saved evidence", () => {
       await screen.findByRole("button", { name: definition.draft.name })
     ).closest("tr") as HTMLElement;
     expect(within(first).getByText("2 / 3")).toBeInTheDocument();
-    expect(within(first).getByText("50%")).toBeInTheDocument();
-    expect(within(first).getByText("1 / 3")).toBeInTheDocument();
+    expect(within(first).getByText("50% apart · 1 flaky")).toBeInTheDocument();
     expect(first).not.toHaveTextContent("Smoke set");
     const second = screen
       .getByRole("button", { name: "Every model passes" })
       .closest("tr") as HTMLElement;
     expect(second).toHaveTextContent("Smoke set");
     expect(within(second).getByText("3 / 3")).toBeInTheDocument();
-    expect(within(second).getByText("0%")).toBeInTheDocument();
+    expect(within(second).getByText("0% apart · 0 flaky")).toBeInTheDocument();
   });
   it("imports several definition files in one step and returns to the library", async () => {
     if (!File.prototype.text) {

@@ -201,13 +201,10 @@
   },
   "tracker": {
     "passedBy": "Passed by",
-    "passedByHint": "Models that passed the case every repetition, out of the models with a complete cell on it.",
-    "spread": "Spread",
-    "spreadHint": "The widest gap between two models' shares of passed repetitions: 0% when every model did alike, 100% when one always passed and another never did.",
-    "flaky": "Flaky",
-    "flakyHint": "Complete cells whose repetitions disagree, out of the models measured.",
+    "passedByHint": "Models that passed the case every repetition, out of the models with a complete cell on it. Below: the widest gap between two models' shares of passed repetitions (0% when every model did alike, 100% when one always passed and another never did), and the cells whose repetitions disagree.",
     "passedOf": "{{passed}} / {{models}}",
-    "smoke": "Smoke set"
+    "smoke": "Smoke set",
+    "detail": "{{spread}}% apart · {{flaky}} flaky"
   },
   "results": {
     "empty": "No attempts for this test yet."

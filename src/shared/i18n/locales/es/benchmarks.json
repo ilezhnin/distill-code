@@ -201,13 +201,10 @@
   },
   "tracker": {
     "passedBy": "Superada por",
-    "passedByHint": "Modelos que superaron el caso en todas las repeticiones, de los modelos con una celda completa en él.",
-    "spread": "Dispersión",
-    "spreadHint": "La mayor diferencia entre las proporciones de repeticiones superadas de dos modelos: 0 % si todos hicieron lo mismo, 100 % si uno siempre la superó y otro nunca.",
-    "flaky": "Inestable",
-    "flakyHint": "Celdas completas cuyas repeticiones no coinciden, de los modelos medidos.",
+    "passedByHint": "Modelos que superaron el caso en todas las repeticiones, de los modelos con una celda completa en él. Debajo: la mayor diferencia entre las proporciones de repeticiones superadas de dos modelos (0 % si todos hicieron lo mismo, 100 % si uno siempre la superó y otro nunca) y las celdas cuyas repeticiones no coinciden.",
     "passedOf": "{{passed}} / {{models}}",
-    "smoke": "Conjunto de humo"
+    "smoke": "Conjunto de humo",
+    "detail": "{{spread}} % de diferencia · {{flaky}} inestables"
   },
   "results": {
     "empty": "Todavía no hay intentos para esta prueba."
