@@ -1,0 +1,47 @@
+#!/bin/bash
+# bench-network ID [clean]: one candidate network namespace. Only public
+# internet egress; even localhost belongs to this attempt alone.
+set -euo pipefail
+id=${1:-}
+[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || exit 64
+key=$(printf '%s' "$id" | sha256sum | cut -c1-12)
+host=db$key
+peer=dp$key
+namespace=distill-$key
+exec 9>/run/lock/distill-bench-network
+flock 9
+if [[ ${2:-} == clean ]]; then
+  ip link del "$host" 2>/dev/null || true
+  ip netns del "$namespace" 2>/dev/null || true
+  exit 0
+fi
+/usr/local/sbin/bench-net
+[[ ! -e /run/netns/$namespace ]] || { echo "$namespace"; exit 0; }
+# Allocate a free /30 under the lock. Routes disappear with their veth.
+subnet=
+for ((n=0; n<16384; n++)); do
+  a=$((n / 64)); b=$((n % 64 * 4))
+  if [[ -z $(ip -4 route show exact "10.232.$a.$b/30") ]]; then
+    subnet=10.232.$a
+    break
+  fi
+done
+[[ -n $subnet ]] || { echo 'No free benchmark subnet' >&2; exit 75; }
+trap 'ip link del "$host" 2>/dev/null || true; ip netns del "$namespace" 2>/dev/null || true' ERR
+ip netns add "$namespace"
+ip link add "$host" type veth peer name "$peer"
+ip link set "$peer" netns "$namespace"
+ip addr add "$subnet.$((b + 1))/30" dev "$host"
+ip link set "$host" up
+ip netns exec "$namespace" ip addr add "$subnet.$((b + 2))/30" dev "$peer"
+ip netns exec "$namespace" ip link set "$peer" up
+ip netns exec "$namespace" ip link set lo up
+ip netns exec "$namespace" ip route add default via "$subnet.$((b + 1))"
+ip netns exec "$namespace" sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
+iptables -C FORWARD -i db+ -j DISTILL-BENCH 2>/dev/null || iptables -I FORWARD -i db+ -j DISTILL-BENCH
+iptables -C FORWARD -o db+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null ||
+  iptables -I FORWARD -o db+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -C INPUT -i db+ -j DROP 2>/dev/null || iptables -I INPUT -i db+ -j DROP
+iptables -t nat -C POSTROUTING -s 10.232.0.0/16 -o eth0 -j MASQUERADE 2>/dev/null ||
+  iptables -t nat -A POSTROUTING -s 10.232.0.0/16 -o eth0 -j MASQUERADE
+echo "$namespace"

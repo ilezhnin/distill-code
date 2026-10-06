@@ -19,7 +19,7 @@ fi
 shift 2
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-run: bad id" >&2; exit 64; }
 case $mode in
-  session) user=candidate dir=/srv/bench/work/$id net=bench ;;
+  session) user=candidate dir=/srv/bench/work/$id net=session ;;
   check) user=checker dir=/srv/bench/checks/$id net=none ;;
   login) user=candidate dir= net=bench ;;
   *) echo "bench-run: unknown mode $mode" >&2; exit 64 ;;
@@ -42,7 +42,10 @@ echo 8G >"$cgroup/memory.max"
 echo 0 >"$cgroup/memory.swap.max" 2>/dev/null || true
 echo 2048 >"$cgroup/pids.max"
 echo $$ >"$cgroup/cgroup.procs"
-if [[ $net == bench ]]; then
+if [[ $net == session ]]; then
+  namespace=$(/usr/local/sbin/bench-network "$id")
+  network=(ip netns exec "$namespace")
+elif [[ $net == bench ]]; then
   network=(ip netns exec bench)
 else
   network=(unshare --net)

@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::bridge::{error_text, Bridge, BridgeEvent, SpawnEnv};
+use super::execution::ExecutionProfile;
 use super::execution::{
     self, AccountActivity, ExecutionDispatch, NativeProvider, ObservedSelection, OwnedEventPage,
     OwnedSession, OwnedSessionRequest, OwnedTurnImage, OwnedTurnRequest,
@@ -24,6 +25,7 @@ use super::harness::{self, HarnessSpec};
 use super::harness_env::build_spawn_env;
 use super::legacy_import;
 use super::protocol::{self, invalid_params, now_iso, Message};
+use super::repository_execution;
 use super::session_title;
 use super::sources::SourceRoots;
 use super::store::{ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo};
@@ -103,6 +105,7 @@ pub const MAX_OWNED_TURN_MS: u64 = 24 * 60 * 60 * 1000;
 #[derive(Clone, Copy)]
 struct OwnedBridge<'a> {
     profile_key: &'a str,
+    repository: Option<(&'a OwnedSessionRequest, &'a str)>,
     provider: NativeProvider,
     turn_limit_ms: u64,
 }
@@ -116,6 +119,12 @@ fn owned_runtime_root(root: &std::path::Path) -> PathBuf {
 /// Removes the sign-in copy an owned bridge on `route_key` may have left in
 /// its runtime directory under `runtime_root`; nothing for any other route.
 fn discard_route_sign_in(runtime_root: &std::path::Path, route_key: &str) -> std::io::Result<()> {
+    if route_key
+        .split_once(BENCHMARK_ROUTE)
+        .is_some_and(|(_, profile)| repository_execution::is_route(profile))
+    {
+        return Ok(());
+    }
     if !route_key.contains(BENCHMARK_ROUTE) {
         return Ok(());
     }
@@ -1299,6 +1308,33 @@ impl Inner {
             bridge.touch();
             return Ok(bridge);
         }
+        if let Some(owned) = profile.filter(|owned| owned.repository.is_some()) {
+            let (request, revision) = owned.repository.expect("repository launch");
+            let current = repository_execution::readiness(owned.provider, &request.account_id)
+                .await
+                .map_err(protocol::internal)?;
+            if repository_execution::revision(owned.provider, &current) != revision {
+                return Err(protocol::internal(
+                    "capability_missing: sandbox runtime changed during admission",
+                ));
+            }
+            let env = super::harness_env::build_owned_spawn_env(&self.app, &[]).await;
+            let launch = repository_execution::launch(request, owned.provider, revision.to_owned());
+            let bridge = Bridge::spawn_scoped(
+                spec,
+                &env,
+                self.events_tx.clone(),
+                &route_key,
+                Some(&launch),
+            )
+            .await
+            .map_err(protocol::internal)?;
+            self.bridges
+                .lock()
+                .await
+                .insert(route_key, Arc::clone(&bridge));
+            return Ok(bridge);
+        }
         let mut env = match profile {
             Some(owned) => {
                 super::harness_env::build_owned_spawn_env(
@@ -2068,7 +2104,19 @@ impl Inner {
                             .pointer("/update/sessionUpdate")
                             .and_then(Value::as_str),
                         runtime.run.is_some(),
-                    ) {
+                    )
+                    .filter(|_| {
+                        !runtime
+                            .execution_profile
+                            .as_deref()
+                            .is_some_and(repository_execution::is_route)
+                            || !matches!(
+                                params
+                                    .pointer("/update/sessionUpdate")
+                                    .and_then(Value::as_str),
+                                Some("tool_call" | "tool_call_update")
+                            )
+                    }) {
                         params["update"]["_meta"]["executionViolation"] = json!(violation);
                     }
                     if params
@@ -2513,6 +2561,14 @@ impl Inner {
                 .await
             {
                 if harness.contains("\u{1f}benchmark:") {
+                    if origin.is_sandbox() {
+                        if let Some(answer) =
+                            repository_execution::permission_answer(method, &params)
+                        {
+                            origin.respond(id, Ok(answer));
+                            return;
+                        }
+                    }
                     let owner = self
                         .store
                         .execution_owner(&session_id)
@@ -5748,10 +5804,19 @@ impl Inner {
         let provider = execution::validate_request(&request)?;
         // Fail closed: a profile the policy probe has not passed on what this
         // build ships never starts.
-        if let Some(issue) = provider.admission_issue() {
-            return Err(format!("capability_missing: {issue}"));
-        }
-        let policy_hash = provider.policy_hash(&request)?;
+        let repository_revision = if request.profile == ExecutionProfile::ProtectedRepositoryV1 {
+            let status = repository_execution::readiness(provider, &request.account_id).await?;
+            Some(repository_execution::revision(provider, &status))
+        } else {
+            if let Some(issue) = provider.admission_issue() {
+                return Err(format!("capability_missing: {issue}"));
+            }
+            None
+        };
+        let policy_hash = match &repository_revision {
+            Some(revision) => repository_execution::policy_hash(&request, revision)?,
+            None => provider.policy_hash(&request)?,
+        };
         let lock = self
             .owned_lock(&format!("owner:{}", request.owner_id))
             .await;
@@ -5781,7 +5846,7 @@ impl Inner {
             &request.provider_id,
             Some(&request.account_id),
         )?;
-        if provider == NativeProvider::Codex {
+        if repository_revision.is_none() && provider == NativeProvider::Codex {
             // Every thread loads the account's home; it must add nothing.
             execution::codex_home_preflight(&provider_accounts::account_home(
                 &self.app, &account,
@@ -5789,23 +5854,46 @@ impl Inner {
             // Nor may the user's own profile, which the redirect cannot hide.
             execution::codex_user_skills_preflight(execution::codex_user_profile().as_deref())?;
         }
-        let profile_key = provider.profile_key();
+        let profile_key = if repository_revision.is_some() {
+            repository_execution::profile_key(&request.owner_id)
+        } else {
+            provider.profile_key()
+        };
         let bridge = self
             .ensure_execution_bridge(
                 &request.provider_id,
                 Some(&account.id),
                 Some(OwnedBridge {
                     profile_key: &profile_key,
+                    repository: repository_revision
+                        .as_deref()
+                        .map(|revision| (&request, revision)),
                     provider,
                     turn_limit_ms,
                 }),
             )
             .await
             .map_err(|e| error_text(&e))?;
-        let opened = bridge.request("session/new",json!({"cwd":request.cwd,"mcpServers":[],"_meta":provider.session_meta(&request.model_id)})).await.map_err(|e|error_text(&e))?;
+        let meta = if repository_revision.is_some() {
+            repository_execution::session_meta(provider, &request.model_id)
+        } else {
+            provider.session_meta(&request.model_id)
+        };
+        let opened = bridge
+            .request(
+                "session/new",
+                json!({"cwd":request.cwd,"mcpServers":[],"_meta":meta}),
+            )
+            .await
+            .map_err(|e| error_text(&e))?;
         let bridge_session_id =
             protocol::session_id(&opened).ok_or("bridge returned no sessionId")?;
-        if let Some(mode) = provider.permission_mode() {
+        let mode = if repository_revision.is_some() {
+            repository_execution::permission_mode(provider)
+        } else {
+            provider.permission_mode()
+        };
+        if let Some(mode) = mode {
             if let Err(error) = bridge
                 .request(
                     "session/set_mode",
@@ -6198,6 +6286,9 @@ impl Inner {
         self.store.request_execution_cancel(key).await?;
         if let Some((bridge, id)) = self.attached_route(&dispatch.session_id).await {
             bridge.notify("session/cancel", json!({"sessionId":id}));
+            if bridge.is_sandbox() {
+                bridge.stop_sandbox().await?;
+            }
             Ok(())
         } else {
             Err("dispatch_uncertain: no live runtime can confirm cancellation".into())

@@ -142,6 +142,8 @@ pub struct Bridge {
     /// The bridge and everything it started — the agent CLI a node bridge
     /// spawns is a grandchild no kill of `child` reaches.
     tree: Option<ProcessTree>,
+    sandbox_id: Option<String>,
+    sandbox_stopped: AtomicBool,
 }
 
 /// Everything a bridge process inherits: the user's login-shell environment,
@@ -270,6 +272,7 @@ pub struct OwnedLaunch {
     /// The file the executable fingerprint describes: the pinned entrypoint or
     /// binary the profile was verified against.
     pub fingerprint_target: PathBuf,
+    pub sandbox: Option<(String, String)>,
 }
 
 fn missing_bridge(spec: &HarnessSpec) -> String {
@@ -327,6 +330,7 @@ pub(super) fn owned_launch(
                 program: executable.clone(),
                 args: provider.launch_args().to_vec(),
                 fingerprint_target: executable,
+                sandbox: None,
             });
         }
     };
@@ -344,6 +348,7 @@ pub(super) fn owned_launch(
         program: node,
         args,
         fingerprint_target: entrypoint,
+        sandbox: None,
     })
 }
 
@@ -413,7 +418,10 @@ impl Bridge {
             Some(launch) => (
                 launch.program.clone(),
                 launch.args.clone(),
-                fingerprint_of(spec.id, &launch.fingerprint_target),
+                launch.sandbox.as_ref().map_or_else(
+                    || fingerprint_of(spec.id, &launch.fingerprint_target),
+                    |(_, revision)| json!({"sandbox":"distill-bench","revision":revision}),
+                ),
             ),
             None => {
                 let executable = resolve_executable(
@@ -602,6 +610,8 @@ impl Bridge {
             last_used: Mutex::new(Instant::now()),
             child: Mutex::new(Some(child)),
             tree,
+            sandbox_id: owned.and_then(|launch| launch.sandbox.as_ref().map(|(id, _)| id.clone())),
+            sandbox_stopped: AtomicBool::new(false),
         });
 
         let init = bridge
@@ -862,7 +872,27 @@ impl Bridge {
         let _ = self.writer.send(line);
     }
 
+    pub fn is_sandbox(&self) -> bool {
+        self.sandbox_id.is_some()
+    }
+
+    pub async fn stop_sandbox(&self) -> Result<(), String> {
+        if let Some(id) = &self.sandbox_id {
+            crate::services::benchmark_sandbox::kill("session", id)
+                .await
+                .map_err(|error| error.to_string())?;
+            self.sandbox_stopped.store(true, Ordering::SeqCst);
+            self.kill();
+        }
+        Ok(())
+    }
+
     pub fn kill(&self) {
+        if !self.sandbox_stopped.swap(true, Ordering::SeqCst) {
+            if let Some(id) = &self.sandbox_id {
+                crate::services::benchmark_sandbox::kill_detached(id);
+            }
+        }
         self.alive.store(false, Ordering::SeqCst);
         if let Ok(mut child) = self.child.lock() {
             if let Some(child) = child.as_mut() {
@@ -950,6 +980,8 @@ pub(super) mod tests {
             last_used: Mutex::new(Instant::now()),
             child: Mutex::new(None),
             tree: None,
+            sandbox_id: None,
+            sandbox_stopped: AtomicBool::new(false),
         };
         (bridge, written)
     }
@@ -1305,6 +1337,8 @@ pub(super) mod tests {
             last_used: Mutex::new(Instant::now()),
             child: Mutex::new(None),
             tree: None,
+            sandbox_id: None,
+            sandbox_stopped: AtomicBool::new(false),
         };
 
         // A request that got in before the drain is failed by it.

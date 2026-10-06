@@ -274,7 +274,7 @@ impl NativeProvider {
     }
 
     /// The short name of the provider in the policy resource and profile key.
-    fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
@@ -1221,11 +1221,9 @@ pub(super) fn native_text_meta(model: &str) -> Value {
 /// The provider whose profile serves `request`, once the request is one an
 /// owned session may be opened for.
 pub(super) fn validate_request(request: &OwnedSessionRequest) -> Result<NativeProvider, String> {
-    let provider = NativeProvider::for_harness(&request.provider_id)
-        .filter(|_| request.profile == ExecutionProfile::NativeTextV1)
-        .ok_or(
-            "capability_missing: this provider has no verified native no-tool execution profile",
-        )?;
+    let provider = NativeProvider::for_harness(&request.provider_id).ok_or(
+        "capability_missing: this provider has no verified native no-tool execution profile",
+    )?;
     if let Some(reason) = provider.effort_refusal(request.reasoning_effort.as_deref()) {
         return Err(format!("capability_missing: {reason}"));
     }
@@ -1237,6 +1235,14 @@ pub(super) fn validate_request(request: &OwnedSessionRequest) -> Result<NativePr
         if value.trim().is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
             return Err(format!("validation: invalid {name}"));
         }
+    }
+    if request.profile == ExecutionProfile::ProtectedRepositoryV1 {
+        crate::services::benchmark_sandbox::valid_id(&request.account_id)
+            .map_err(|error| format!("validation: {error}"))?;
+        if request.cwd != "/workspace" {
+            return Err("validation: repository workspace must be /workspace".into());
+        }
+        return Ok(provider);
     }
     if !Path::new(&request.cwd).is_absolute() {
         return Err("validation: benchmark workspace must be absolute".into());
@@ -2061,7 +2067,9 @@ mod tests {
         repository.profile = ExecutionProfile::ProtectedRepositoryV1;
         assert!(validate_request(&repository)
             .unwrap_err()
-            .starts_with("capability_missing:"));
+            .starts_with("validation:"));
+        repository.cwd = "/workspace".into();
+        assert_eq!(validate_request(&repository), Ok(NativeProvider::Claude));
         let mut relative = request("claude-acp");
         relative.cwd = "workspace".into();
         assert!(validate_request(&relative)

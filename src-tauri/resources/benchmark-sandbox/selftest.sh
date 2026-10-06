@@ -36,6 +36,13 @@ run session selftest-a -- bash -c 'echo two >>selftest-file; echo new >added; rm
 check "answer read past a removed .git" "$(/usr/local/sbin/bench-patch selftest-a | grep -c '^diff --git')" 2
 check "untouched copy has no answer" "$(/usr/local/sbin/bench-patch selftest-b | wc -c)" 0
 check "own /tmp" "$(run session selftest-b -- ls -A /tmp)" ""
+check "private candidate home" "$(run session selftest-b -- ls -A /home/candidate)" ""
+check "session public internet" "$(run session selftest-b -- curl -s -o /dev/null -w '%{http_code}' -m 15 https://api.anthropic.com/ | grep -c '^[1-5][0-9][0-9]$')" 1
+( run session selftest-a -- python3 -m http.server 41981 --bind 127.0.0.1 >/dev/null & ) 2>/dev/null
+sleep 1
+check "own local server" "$(run session selftest-a -- curl -s -o /dev/null -w '%{http_code}' -m 3 http://127.0.0.1:41981/)" 200
+check "other attempt cannot reach local server" "$(run session selftest-b -- curl -s -m 3 http://127.0.0.1:41981/ >/dev/null; echo $?)" 7
+/usr/local/sbin/bench-kill session selftest-a
 ( run session selftest-a -- bash -c 'setsid sleep 600 & sleep 600' >/dev/null & ) 2>/dev/null
 sleep 2
 /usr/local/sbin/bench-kill session selftest-a

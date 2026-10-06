@@ -23,6 +23,7 @@ const FILES: &[(&str, &[u8])] = resources![
     "bench-kill",
     "bench-login",
     "bench-net",
+    "bench-network",
     "bench-patch",
     "bench-run",
     "bench-status",
@@ -36,13 +37,6 @@ pub(crate) struct Status {
 }
 
 impl Status {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by repository session admission in the next step"
-        )
-    )]
     pub fn require_account(&self, provider: &str, account: &str) -> io::Result<()> {
         valid_id(account)?;
         if !self
@@ -369,6 +363,34 @@ pub(crate) async fn kill(mode: &str, id: &str) -> io::Result<()> {
     .await?
     .require_success("kill")?;
     Ok(())
+}
+
+/// Start Linux cleanup even while the host's async runtime is shutting down.
+/// The helper is its own Windows process and finishes the cgroup kill after
+/// the app exits. Explicit cancellation awaits `kill` instead.
+pub(crate) fn kill_detached(id: &str) {
+    if valid_id(id).is_err() {
+        return;
+    }
+    let mut command = std::process::Command::new("wsl.exe");
+    command
+        .args([
+            "-d",
+            DISTRIBUTION,
+            "-u",
+            "root",
+            "--exec",
+            "/usr/local/sbin/bench-kill",
+            "session",
+            id,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    super::process::apply_no_window(&mut command);
+    if let Err(error) = command.spawn() {
+        log::warn!("[benchmarks] cannot stop sandbox {id}: {error}");
+    }
 }
 
 pub(crate) async fn clean(id: &str) -> io::Result<()> {

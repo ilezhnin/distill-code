@@ -12,6 +12,7 @@ pub(crate) mod kimi;
 mod legacy_import;
 pub mod protocol;
 mod replay;
+pub(crate) mod repository_execution;
 pub mod router;
 mod session_title;
 pub mod sources;

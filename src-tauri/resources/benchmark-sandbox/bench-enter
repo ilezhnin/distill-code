@@ -8,8 +8,19 @@ user=$1
 dir=$2
 shift 2
 vars=()
+account_home=
+instructions=
+grok_config=
 while [[ $1 != -- ]]; do
-  vars+=("$1")
+  if [[ $1 == DISTILL_BENCH_ACCOUNT_HOME=* ]]; then
+    account_home=${1#*=}
+  elif [[ $1 == DISTILL_BENCH_INSTRUCTIONS=* ]]; then
+    instructions=${1#*=}
+  elif [[ $1 == DISTILL_BENCH_GROK_CONFIG=* ]]; then
+    grok_config=${1#*=}
+  else
+    vars+=("$1")
+  fi
   shift
 done
 shift
@@ -20,15 +31,33 @@ for hidden in /tmp/.X11-unix /run/WSL /run/netns; do
 done
 mount -t tmpfs -o mode=1777 none /tmp
 mount -t tmpfs -o mode=1777 none /dev/shm
-# Checks never need a persistent home or any provider sign-in.
-if [[ $user == checker ]]; then
+# A session sees only its selected sandbox sign-in, never other accounts
+# or an earlier attempt's OS home. Login alone uses the persistent home.
+if [[ -n $dir ]]; then
+  if [[ -n $account_home ]]; then
+    [[ $user == candidate && $account_home =~ ^/home/candidate/accounts/[A-Za-z0-9_-]{1,80}/(claude|codex|grok|kimi)$ ]] || exit 64
+    [[ $(realpath -e "$account_home") == "$account_home" ]] || exit 64
+    install -d -m 700 -o candidate -g candidate /tmp/provider
+    mount --bind "$account_home" /tmp/provider
+  fi
   mount -t tmpfs -o mode=755 none /home
-  install -d -m 700 -o checker -g checker /home/checker
+  install -d -m 700 -o "$user" -g "$user" "/home/$user"
+fi
+if [[ -n $instructions ]]; then
+  printf '%s\n' "$instructions" >/tmp/repository-instructions.md
+fi
+if [[ -n $grok_config ]]; then
+  install -d -m 700 -o candidate -g candidate /home/candidate/.grok
+  printf '%s\n' "$grok_config" >/home/candidate/.grok/config.toml
 fi
 cwd=/home/$user
 if [[ -n $dir ]]; then
   mount --bind "$dir" /workspace
   cwd=/workspace
+fi
+if [[ $user == candidate && -n $dir && ( -e /workspace/.codex || -e /workspace/.agents ) ]]; then
+  echo 'capability_missing: repository contains native Codex configuration or skills' >&2
+  exit 65
 fi
 # Every other attempt's copy, every pristine base and every check.
 mount -t tmpfs -o mode=700 none /srv/bench

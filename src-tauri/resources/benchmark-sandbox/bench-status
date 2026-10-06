@@ -35,7 +35,7 @@ for account in /home/candidate/accounts/*/*; do
     claude) [[ -s $account/.credentials.json ]] && signed=yes ;;
     codex) [[ -s $account/auth.json ]] && signed=yes ;;
     grok) [[ -s $account/auth.json ]] && signed=yes ;;
-    kimi) [[ -n $(ls -A "$account" 2>/dev/null) ]] && signed=yes ;;
+    kimi) [[ -n $(find "$account/credentials" -type f -size +0c -print -quit 2>/dev/null) ]] && signed=yes ;;
   esac
   echo "account $provider $id $signed"
 done
