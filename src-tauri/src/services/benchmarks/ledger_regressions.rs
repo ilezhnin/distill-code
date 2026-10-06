@@ -436,16 +436,21 @@ fn judge_run(data: &mut QueryData, run_id: &str, protocol: Option<&str>, value: 
     }
 }
 
+/// A run is one point: a verdict given on its outputs after it ended
+/// restates that point instead of adding one, however many come later.
 #[test]
-fn history_includes_late_reviews_without_global_run_truncation() {
+fn a_late_review_restates_its_runs_point_instead_of_adding_one() {
     let mut data = before_only();
     let configuration = data.attempts[0].configuration.clone();
+    let end = data.runs[0].updated_at;
     data.attempts[0]
         .evaluations
         .push(evaluation(2, Some(1.0), "objective", "pass"));
-    data.attempts[0]
-        .evaluations
-        .push(evaluation(50, Some(0.4), "human", "fail"));
+    for (at, value) in [(50, 0.4), (60, 0.4), (70, 0.4)] {
+        data.attempts[0]
+            .evaluations
+            .push(evaluation(at, Some(value), "human", "fail"));
+    }
     for n in 0..30 {
         let mut run = data.runs[0].clone();
         run.id = format!("other-{n}");
@@ -454,24 +459,28 @@ fn history_includes_late_reviews_without_global_run_truncation() {
         data.runs.push(run);
     }
     let points = history(&data, &configuration);
-    assert_eq!(points.len(), 2);
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].created_at, end);
+    // As recorded, the board read 1000 at the run's end.
     assert_eq!(points[0].report.rows[0].points, Some(1000));
     // A review short of a pass fails the case: five of six solved.
-    assert_eq!(points[1].report.rows[0].points, Some(833));
-    assert_eq!(points[1].created_at, 50);
     assert_eq!(points[0].recalculated_report.rows[0].points, Some(833));
     assert_eq!(points[0].revised_version_ids, vec!["v0"]);
-    assert!(points[1].revised_version_ids.is_empty());
+    assert_eq!(
+        points[0].recalculated_report.rows[0].points,
+        leaderboard(&data, &ResultQuery::default()).rows[0].points
+    );
 
-    // Unscored at the first point, the case is a gap there: the point
-    // counts the five that had finished, never a later cell.
+    // Unscored at the run's end, the case was finished then, so its later
+    // verdict still counts on that one point.
     data.attempts[0].evaluations.remove(0);
     let points = history(&data, &configuration);
+    assert_eq!(points.len(), 1);
     assert_eq!(points[0].report.rows[0].scored, 5);
     assert!(points[0].backfilled_version_ids.is_empty());
-    assert!(points[0].revised_version_ids.is_empty());
+    assert_eq!(points[0].revised_version_ids, vec!["v0"]);
     let row = &points[0].recalculated_report.rows[0];
-    assert_eq!((row.scored, row.planned, row.points), (5, 6, Some(1000)));
+    assert_eq!((row.scored, row.planned, row.points), (6, 6, Some(833)));
 }
 
 /// A point on the current pool counts only the cases that had finished by
@@ -1016,6 +1025,13 @@ fn dated_points(data: &QueryData, configuration: &Configuration) -> Vec<(i64, Op
         .collect()
 }
 
+fn recalculated_points(data: &QueryData, configuration: &Configuration) -> Vec<(i64, Option<u32>)> {
+    history(data, configuration)
+        .iter()
+        .map(|p| (p.created_at, p.recalculated_report.rows[0].points))
+        .collect()
+}
+
 #[test]
 fn settled_cells_of_an_unfinished_or_cancelled_run_are_one_history_point() {
     for state in ["needs_attention", "running", "paused", "cancelled"] {
@@ -1045,23 +1061,28 @@ fn settled_cells_of_an_unfinished_or_cancelled_run_are_one_history_point() {
         assert_eq!(board.points, Some(1000), "{state}");
         assert_eq!(points[0].report.rows[0].points, board.points, "{state}");
         assert_eq!(points[0].report.rows[0].attempt_ids, board.attempt_ids);
-        // A later review is a point of its own; the observation stays put.
+        // A later review restates the run's one point, which stays put.
         let mut reviewed = unchanged.clone();
         reviewed.attempts[0]
             .evaluations
             .push(evaluation(60, Some(0.4), "human", "fail"));
         assert_eq!(
             dated_points(&reviewed, &configuration),
-            vec![(2, Some(1000)), (60, Some(833))],
+            vec![(2, Some(1000))],
             "{state}"
         );
-        // So is a later objective re-evaluation that changes the score.
+        assert_eq!(
+            recalculated_points(&reviewed, &configuration),
+            vec![(2, Some(833))],
+            "{state}"
+        );
+        // So does a later objective re-evaluation that changes the score.
         data.attempts[0]
             .evaluations
             .push(evaluation(50, Some(0.0), "objective", "fail"));
         assert_eq!(
-            dated_points(&data, &configuration),
-            vec![(2, Some(1000)), (50, Some(833))],
+            recalculated_points(&data, &configuration),
+            vec![(2, Some(833))],
             "{state}"
         );
     }

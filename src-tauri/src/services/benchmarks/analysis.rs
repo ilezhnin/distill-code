@@ -1410,8 +1410,9 @@ fn comparison_key(
 /// Recompute an observation on today's cases with today's evidence: the
 /// run's own cells as they had finished by `at`, whatever runtime, budget or
 /// evaluator revision they ran under, so a later run never rewrites an
-/// earlier point. A case the run had not finished by then is a gap at that
-/// point.
+/// earlier point. A verdict given after `at` on a cell finished by then is
+/// that run's own measurement and counts here; a case the run had not
+/// finished by then is a gap at that point.
 fn recalculated_history_report(
     data: &QueryData,
     own: &[&Attempt],
@@ -1427,11 +1428,11 @@ fn recalculated_history_report(
                 && current.contains(a.version_id.as_str())
                 && !is_superseded(a)
                 && a.finished_at.is_some_and(|end| end <= at)
-                && score_as_of(a, Some(at)).is_some()
+                && score_as_of(a, None).is_some()
         })
         .collect();
     let backfilled: Vec<String> = Vec::new();
-    // A panel that answered later leaves that repetition out of this point.
+    // The cases whose verdict came after the run's end, named on the point.
     let revised: Vec<String> = selected
         .iter()
         .filter(|a| a.evaluations.iter().any(|e| e.created_at > at))
@@ -1513,10 +1514,11 @@ fn settled_at(attempt: &Attempt) -> Option<i64> {
 }
 
 /// One data read supplies both the dated archive and the recalculated series.
-/// Every non-preview run that settled cells of this configuration is an
-/// observation whatever its state, and so is every later evaluation of them.
-/// A run is observed when its last counted cell settled, so a window that
-/// closed a day later never re-dates what was measured.
+/// Every non-preview run that settled cells of this configuration is one
+/// observation whatever its state: its repetitions and any verdict given on
+/// them later belong to that one point, never to points of their own. A run
+/// is observed when its last counted cell settled, so a window that closed a
+/// day later never re-dates what was measured.
 pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySnapshot> {
     let key = leaderboard_key(configuration);
     let runs: BTreeMap<_, _> = data
@@ -1575,44 +1577,39 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
         };
         observed.insert(*run_id, at);
     }
-    let mut events = BTreeMap::new();
-    for (run_id, attempts) in &cells {
-        let at = observed[run_id];
-        events.insert(at, *run_id);
-        for e in attempts.iter().flat_map(|a| &a.evaluations) {
-            if e.created_at > at {
-                events.insert(e.created_at, *run_id);
-            }
-        }
-    }
-    let observations =
-        newest_observations(events.into_iter().rev(), HISTORY_POINTS, |(at, run_id)| {
-            let report = leaderboard(
-                data,
-                &ResultQuery {
-                    as_of: Some(at),
-                    limit: Some(500),
-                    ..Default::default()
-                },
-            );
-            let row = report
+    let events: BTreeSet<(i64, &str)> = observed.iter().map(|(run, at)| (*at, *run)).collect();
+    newest_observations(events.into_iter().rev(), HISTORY_POINTS, |(at, run_id)| {
+        // As the board stood at the run's end.
+        let report = leaderboard(
+            data,
+            &ResultQuery {
+                as_of: Some(at),
+                limit: Some(500),
+                ..Default::default()
+            },
+        );
+        let (recalculated_report, backfilled_version_ids, revised_version_ids) =
+            recalculated_history_report(data, &own, &current, run_id, at);
+        let row = |report: &LeaderboardReport| {
+            report
                 .rows
                 .iter()
-                .find(|r| leaderboard_key(&r.configuration) == key)?;
-            let signature = serde_json::to_string(&(
-                row.points,
-                &row.attempt_ids,
-                &row.comparison_key,
-                row.cost,
-            ))
-            .unwrap_or_default();
-            Some((signature, (at, run_id, report)))
-        });
-    observations
-        .into_iter()
-        .map(|(at, run_id, report)| {
-            let (recalculated_report, backfilled_version_ids, revised_version_ids) =
-                recalculated_history_report(data, &own, &current, run_id, at);
+                .find(|r| leaderboard_key(&r.configuration) == key)
+                .map(|row| {
+                    serde_json::to_string(&(
+                        row.points,
+                        &row.attempt_ids,
+                        &row.comparison_key,
+                        row.cost,
+                    ))
+                    .unwrap_or_default()
+                })
+        };
+        // A run that left the board as it stood, a cancel before any cell
+        // ran, adds no point of its own.
+        let signature = row(&report).or_else(|| row(&recalculated_report))?;
+        Some((
+            signature,
             HistorySnapshot {
                 id: format!("{run_id}:{at}"),
                 run_id: run_id.to_owned(),
@@ -1621,9 +1618,9 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
                 recalculated_report,
                 backfilled_version_ids,
                 revised_version_ids,
-            }
-        })
-        .collect()
+            },
+        ))
+    })
 }
 
 #[cfg(test)]
