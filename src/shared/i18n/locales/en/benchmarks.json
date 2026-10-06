@@ -589,6 +589,7 @@
     "context": "Context window",
     "cases": "Cases measured",
     "attempts": "Attempts scored",
+    "parallelism": "Attempts at once",
     "measured": "Measured",
     "spend": "Mean cost per task",
     "outputTokens": "Median output tokens",

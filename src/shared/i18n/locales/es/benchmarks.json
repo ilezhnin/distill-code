@@ -589,6 +589,7 @@
     "context": "Ventana de contexto",
     "cases": "Casos medidos",
     "attempts": "Intentos puntuados",
+    "parallelism": "Intentos a la vez",
     "measured": "Medido",
     "spend": "Costo medio por tarea",
     "outputTokens": "Mediana de tokens de salida",

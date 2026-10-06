@@ -409,15 +409,62 @@ const ACCOUNT_BUSY: &str = "account_busy";
 /// Attempts in flight at once on one account, and across the app.
 const ACCOUNT_SLOTS: usize = 4;
 const TOTAL_SLOTS: usize = 12;
+/// Attempts of one configuration a new run flies at once, recorded in its
+/// request. A stream's tokens per second do not depend on how many we send;
+/// what parallelism spends is the account's rate limit, which the runner
+/// waits out.
+pub const PARALLEL_ATTEMPTS: u32 = 4;
 
 /// An attempt or a judge panel in flight, keyed in `BenchmarkService::active`
-/// by its lane (a configuration, or a run's panel): its run, its account and
-/// the signal that cancels it.
+/// by the attempt (or, for a panel, its run's panel lane): its run, the lane
+/// it shares with its configuration's other attempts, its account and the
+/// signal that cancels it.
 pub struct Flight {
     pub run_id: String,
+    pub lane: String,
     pub account: String,
     pub exclusive: bool,
     pub cancel: watch::Sender<bool>,
+}
+
+/// Where a flight would sit: its key in `BenchmarkService::active`, its lane
+/// and how many of the lane may fly at once, its account and how many of
+/// the account may.
+struct Seat<'a> {
+    id: &'a str,
+    lane: &'a str,
+    lane_slots: usize,
+    account: &'a str,
+    account_slots: usize,
+    exclusive: bool,
+}
+
+/// How many attempts of one configuration of `provider_id` a run of
+/// `request` flies at once: what it was admitted with (one for a run
+/// admitted before that was recorded), and one on a bridge that serves one
+/// session at a time.
+pub(super) fn attempts_at_once(request: &RunRequest, provider_id: &str) -> u32 {
+    if serves_one_session(provider_id) {
+        return 1;
+    }
+    request.parallelism.unwrap_or(1).max(1)
+}
+
+/// Whether `provider_id`'s benchmark bridge answers one session at a time:
+/// the Grok CLI's.
+fn serves_one_session(provider_id: &str) -> bool {
+    NativeProvider::for_harness(provider_id) == Some(NativeProvider::Grok)
+}
+
+/// How many attempts of `run_id` fly at once on an account of `provider_id`:
+/// one while the run waits out that provider's usage limit, so a single turn
+/// finds out whether the limit reset, else [`ACCOUNT_SLOTS`].
+fn account_slots(run_id: &str, provider_id: &str) -> usize {
+    if quota_waiting(run_id, provider_id) {
+        1
+    } else {
+        ACCOUNT_SLOTS
+    }
 }
 /// The error code of a turn the host refused before any provider call because
 /// every eligible account waits for quota.
@@ -506,6 +553,15 @@ fn quota_plan(run_id: &str, provider_id: &str, error: &str, at: i64) -> QuotaPla
         return QuotaPlan::Stop;
     }
     QuotaPlan::WaitUntil(next_reset.unwrap_or(at + QUOTA_RETRY_MS))
+}
+
+/// Whether `run_id` still waits out `provider_id`'s usage limit: refused for
+/// quota, and no turn of that provider finished since.
+fn quota_waiting(run_id: &str, provider_id: &str) -> bool {
+    QUOTA_SINCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(&(run_id.to_owned(), provider_id.to_owned()))
 }
 
 /// A turn of `provider_id` finished: the run no longer waits on its limit.
@@ -3177,7 +3233,15 @@ impl BenchmarkService {
                 .map(|a| a.id.clone());
             if let Some(id) = waiting.clone().filter(|id| !tried.contains(id)) {
                 let lane = format!("judges\u{1f}{}", run.id);
-                if let Some(cancel) = self.claim(&run.id, &lane, "", false).await {
+                let seat = Seat {
+                    id: &lane,
+                    lane: &lane,
+                    lane_slots: 1,
+                    account: "",
+                    account_slots: ACCOUNT_SLOTS,
+                    exclusive: false,
+                };
+                if let Some(cancel) = self.claim(&run.id, seat).await {
                     tried.insert(id.clone());
                     let (service, run) = (self.clone(), run.clone());
                     flights.spawn(async move {
@@ -3232,44 +3296,43 @@ impl BenchmarkService {
             .filter(|flight| flight.run_id == run_id)
             .count()
     }
-    /// Takes a slot for `lane` on `account` if one is free: one flight per
-    /// lane, [`ACCOUNT_SLOTS`] per account, [`TOTAL_SLOTS`] in all; an
-    /// exclusive flight shares its account with nothing. Returns its cancel
-    /// signal.
-    async fn claim(
-        &self,
-        run_id: &str,
-        lane: &str,
-        account: &str,
-        exclusive: bool,
-    ) -> Option<watch::Receiver<bool>> {
+    /// Takes `seat` if it is free: its lane and its account below their
+    /// limits, [`TOTAL_SLOTS`] in all; an exclusive flight shares its account
+    /// with nothing. Returns its cancel signal.
+    async fn claim(&self, run_id: &str, seat: Seat<'_>) -> Option<watch::Receiver<bool>> {
         let mut active = self.active.lock().await;
         let on_account: Vec<&Flight> = active
             .values()
-            .filter(|flight| !account.is_empty() && flight.account == account)
+            .filter(|flight| !seat.account.is_empty() && flight.account == seat.account)
             .collect();
+        let on_lane = active
+            .values()
+            .filter(|flight| flight.lane == seat.lane)
+            .count();
         if active.len() >= TOTAL_SLOTS
-            || active.contains_key(lane)
-            || on_account.len() >= ACCOUNT_SLOTS
+            || active.contains_key(seat.id)
+            || on_lane >= seat.lane_slots
+            || on_account.len() >= seat.account_slots
             || on_account.iter().any(|flight| flight.exclusive)
-            || (exclusive && !on_account.is_empty())
+            || (seat.exclusive && !on_account.is_empty())
         {
             return None;
         }
         let (cancel, signal) = watch::channel(false);
         active.insert(
-            lane.to_owned(),
+            seat.id.to_owned(),
             Flight {
                 run_id: run_id.to_owned(),
-                account: account.to_owned(),
-                exclusive,
+                lane: seat.lane.to_owned(),
+                account: seat.account.to_owned(),
+                exclusive: seat.exclusive,
                 cancel,
             },
         );
         Some(signal)
     }
-    async fn release(&self, lane: &str) {
-        self.active.lock().await.remove(lane);
+    async fn release(&self, id: &str) {
+        self.active.lock().await.remove(id);
     }
     /// Starts `a` if its configuration, account and the app have a free slot.
     async fn start(
@@ -3280,17 +3343,26 @@ impl BenchmarkService {
         flights: &mut tokio::task::JoinSet<()>,
         tried: &mut std::collections::HashSet<String>,
     ) -> Result<bool> {
-        // One attempt per configuration at a time keeps its timing and quota
-        // its own.
+        // A configuration flies as many attempts as its run was admitted
+        // with, within its account's and the app's slots.
         let lane = super::analysis::configuration_key(&a.configuration);
+        let provider = &a.configuration.provider_id;
         let account = format!(
-            "{}\u{1f}{}",
-            a.configuration.provider_id,
+            "{provider}\u{1f}{}",
             a.configuration.account_id.as_deref().unwrap_or_default()
         );
         // An account measured around a run must not see anyone else's turns.
         let exclusive = version.manifest.measurement_profile != "task_metrics";
-        let Some(cancel_rx) = self.claim(&run.id, &lane, &account, exclusive).await else {
+        let id = a.id.clone();
+        let seat = Seat {
+            id: &id,
+            lane: &lane,
+            lane_slots: attempts_at_once(&run.request, provider) as usize,
+            account: &account,
+            account_slots: account_slots(&run.id, provider),
+            exclusive,
+        };
+        let Some(cancel_rx) = self.claim(&run.id, seat).await else {
             return Ok(false);
         };
         let ready = async {
@@ -3300,7 +3372,7 @@ impl BenchmarkService {
         }
         .await;
         if !matches!(ready, Ok(true)) {
-            self.release(&lane).await;
+            self.release(&id).await;
             return ready;
         }
         // Judges run only where the saved plan reserved their calls; known
@@ -3314,7 +3386,7 @@ impl BenchmarkService {
             a.phase = "pending".into();
             a.started_at = None;
             self.store.save_attempt(&a).await?;
-            self.release(&lane).await;
+            self.release(&id).await;
             return Ok(false);
         }
         // Tell the app the attempt started, so a run's view shows which test
@@ -3328,7 +3400,7 @@ impl BenchmarkService {
             {
                 log::warn!("[benchmarks] attempt stopped: {}", error.message);
             }
-            service.release(&lane).await;
+            service.release(&id).await;
             service.changed().await;
         });
         Ok(true)
@@ -4244,6 +4316,15 @@ mod tests {
             timeout_seconds: 10,
             max_executions: 2,
             preview: false,
+            parallelism: None,
+        }
+    }
+    /// [`request`] flown one attempt at a time, so a refused turn is the
+    /// only one sent before the run reacts to it.
+    async fn serial_request(s: &BenchmarkService) -> RunRequest {
+        RunRequest {
+            parallelism: Some(1),
+            ..request(s).await
         }
     }
     #[tokio::test]
@@ -4806,7 +4887,7 @@ mod tests {
     #[tokio::test]
     async fn active_cancel_retains_sealed_evidence() {
         let (_dir, s, backend) = setup().await;
-        let req = request(&s).await;
+        let req = serial_request(&s).await;
         let run = s.start_run(req).await.unwrap();
         let background = s.clone();
         let tick = tokio::spawn(async move { background.tick().await });
@@ -4858,13 +4939,114 @@ mod tests {
             backend.peak_in_flight.load(Ordering::SeqCst),
             2 * ACCOUNT_SLOTS as u64
         );
-        // A configuration's own turns never overlap.
+        // A configuration's own turns overlap at most as far as the run was
+        // admitted with.
+        assert_eq!(run.request.parallelism, Some(PARALLEL_ATTEMPTS));
         for a in &run.attempts {
-            for b in &run.attempts {
-                if a.id != b.id && a.configuration.id == b.configuration.id {
-                    assert!(a.finished_at <= b.started_at || b.finished_at <= a.started_at);
-                }
+            let overlapping = run
+                .attempts
+                .iter()
+                .filter(|b| {
+                    b.configuration.id == a.configuration.id
+                        && b.started_at < a.finished_at
+                        && a.started_at < b.finished_at
+                })
+                .count();
+            assert!(overlapping <= PARALLEL_ATTEMPTS as usize, "{overlapping}");
+        }
+    }
+    /// One configuration, eight turns of one case.
+    async fn deep_request(s: &BenchmarkService, provider: &str) -> RunRequest {
+        let mut req = request(s).await;
+        req.configurations[0].provider_id = provider.into();
+        req.repetitions = 8;
+        req.max_executions = 8;
+        req
+    }
+    async fn drain(s: &Arc<BenchmarkService>, run_id: &str) -> BenchmarkRun {
+        for _ in 0..12 {
+            s.tick().await.unwrap();
+            let run = s.store.run(run_id).await.unwrap();
+            if run.state == "completed" {
+                return run;
             }
+        }
+        panic!("run {run_id} did not complete");
+    }
+    #[tokio::test]
+    async fn a_configuration_flies_its_attempts_in_parallel() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
+        assert_eq!(run.request.parallelism, Some(PARALLEL_ATTEMPTS));
+        let run = drain(&s, &run.id).await;
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
+        assert_eq!(
+            backend.peak_in_flight.load(Ordering::SeqCst),
+            u64::from(PARALLEL_ATTEMPTS)
+        );
+        assert!(run
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        // The row notes the conditions its run flew under.
+        let data = s.query_data().await.unwrap();
+        let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows[0].parallelism, Some(PARALLEL_ATTEMPTS));
+    }
+    #[tokio::test]
+    async fn a_run_admitted_before_parallelism_flies_one_attempt_at_a_time() {
+        let (_dir, s, backend) = setup().await;
+        let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
+        let mut old = run.request.clone();
+        old.parallelism = None;
+        sqlx::query("UPDATE run_plans SET request_json=? WHERE id=?")
+            .bind(serde_json::to_string(&old).unwrap())
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        drain(&s, &run.id).await;
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
+        assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 1);
+        let data = s.query_data().await.unwrap();
+        let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows[0].parallelism, Some(1));
+    }
+    #[tokio::test]
+    async fn a_bridge_that_serves_one_session_flies_one_attempt_at_a_time() {
+        let (_dir, s, backend) = setup().await;
+        let run = s
+            .start_run(deep_request(&s, "grok-acp").await)
+            .await
+            .unwrap();
+        drain(&s, &run.id).await;
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
+        assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn a_quota_wait_leaves_one_flight_on_the_account_until_a_turn_lands() {
+        let (run, provider) = ("quota-slots-run", "kimi-acp");
+        assert_eq!(account_slots(run, provider), ACCOUNT_SLOTS);
+        let error = json!({"data":{"kind":QUOTA_WAIT,"nextReset":now() + 60_000}}).to_string();
+        assert!(matches!(
+            quota_plan(run, provider, &error, now()),
+            QuotaPlan::WaitUntil(_)
+        ));
+        assert_eq!(account_slots(run, provider), 1);
+        // Another run on the provider flies as before.
+        assert_eq!(account_slots("another-run", provider), ACCOUNT_SLOTS);
+        quota_recovered(run, provider);
+        assert_eq!(account_slots(run, provider), ACCOUNT_SLOTS);
+    }
+    #[tokio::test]
+    async fn parallelism_outside_the_slots_is_refused() {
+        let (_dir, s, _) = setup().await;
+        for n in [0, PARALLEL_ATTEMPTS + 1] {
+            let mut req = request(&s).await;
+            req.request_key = format!("parallel-{n}");
+            req.parallelism = Some(n);
+            let error = s.start_run(req).await.unwrap_err();
+            assert!(error.message.contains("in parallel"), "{}", error.message);
         }
     }
     #[tokio::test]
@@ -4929,7 +5111,7 @@ mod tests {
     async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {
         let (_dir, s, fake) = setup().await;
         fake.quota_waits.store(1, Ordering::SeqCst);
-        let run = s.start_run(request(&s).await).await.unwrap();
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         let held = s.store.run(&run.id).await.unwrap();
         assert_eq!(held.state, "running");
@@ -4955,7 +5137,7 @@ mod tests {
     async fn a_selection_refused_before_dispatch_keeps_the_cell_for_the_operator() {
         let (_dir, s, fake) = setup().await;
         fake.refused_selections.store(1, Ordering::SeqCst);
-        let run = s.start_run(request(&s).await).await.unwrap();
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         let stopped = s.store.run(&run.id).await.unwrap();
         assert_eq!(stopped.state, "needs_attention");
@@ -5007,7 +5189,7 @@ mod tests {
     async fn a_refusal_repeated_after_a_resume_settles_its_cell() {
         let (_dir, s, fake) = setup().await;
         fake.capability_refusals.store(2, Ordering::SeqCst);
-        let run = s.start_run(request(&s).await).await.unwrap();
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "needs_attention");
         s.store.set_run_state(&run.id, "running").await.unwrap();
@@ -5060,7 +5242,7 @@ mod tests {
     async fn a_sign_in_the_cli_renews_later_holds_the_run_on_its_own() {
         let (_dir, s, fake) = setup().await;
         fake.sign_in_waits.store(2, Ordering::SeqCst);
-        let run = s.start_run(request(&s).await).await.unwrap();
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
         let release = || {
             PROVIDER_HOLDS
                 .lock()
@@ -6355,13 +6537,16 @@ mod tests {
         assert_eq!(s.store.runs().await.unwrap().len(), 100);
         assert_eq!(s.query_data().await.unwrap().runs.len(), 102);
         s.tick().await.unwrap();
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            s.store.run(&old.id).await.unwrap().attempts[0]
-                .outcome
-                .as_deref(),
-            Some("pass")
-        );
+        // Both repetitions of the old run fly at once.
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert!(s
+            .store
+            .run(&old.id)
+            .await
+            .unwrap()
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
     }
     #[tokio::test]
     async fn capacity_without_exhaustion_is_only_a_lower_bound() {

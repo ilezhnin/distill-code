@@ -1094,12 +1094,13 @@ fn leaderboard_from_attempts(
             // The newest run that began measuring stands whole: one session's
             // cells, its gaps its own. A run still queued leaves the standing
             // one in place until its first cell starts.
-            let mut attempts: Vec<&Attempt> = by_run
+            let standing = by_run
                 .into_iter()
                 .filter(|(_, list)| list.iter().any(|a| a.started_at.is_some()))
-                .max_by_key(|(id, _)| (runs[id].created_at, *id))
-                .map(|(_, list)| list)
-                .unwrap_or_default();
+                .max_by_key(|(id, _)| (runs[id].created_at, *id));
+            let standing_request = standing.as_ref().map(|(id, _)| &runs[id].request);
+            let mut attempts: Vec<&Attempt> =
+                standing.map(|(_, list)| list).unwrap_or_default();
             // Keep the newest concrete configuration for the next run;
             // each attempt retains its original runtime and account evidence.
             if let Some(latest) = attempts
@@ -1111,6 +1112,9 @@ fn leaderboard_from_attempts(
             // Catch-up pins this configuration, so it carries the runnable profile.
             configuration.execution_profile =
                 ledger_profile(&configuration.execution_profile).to_owned();
+            let parallelism = standing_request.map(|request| {
+                super::runner::attempts_at_once(request, &configuration.provider_id)
+            });
             let eligible: Vec<&BenchmarkVersion> = pool
                 .iter()
                 .copied()
@@ -1136,6 +1140,7 @@ fn leaderboard_from_attempts(
                     unsupported_version_ids: Vec::new(),
                     scored_version_ids: Vec::new(),
                     resolved_models: Vec::new(),
+                    parallelism,
                 });
             }
             let planned = eligible.len() as u32;
@@ -1268,6 +1273,7 @@ fn leaderboard_from_attempts(
                     .collect::<BTreeSet<_>>().into_iter().collect(),
                 resolved_models: scored_attempts.iter().filter_map(|a| a.resolved_model.clone())
                     .collect::<BTreeSet<_>>().into_iter().collect(),
+                parallelism,
             })
         })
         .collect();
@@ -2027,6 +2033,7 @@ pub(super) mod tests {
             timeout_seconds: 120,
             max_executions: 6,
             preview: false,
+            parallelism: None,
         };
         let attempts = |run: &str, outcome: &str| {
             versions

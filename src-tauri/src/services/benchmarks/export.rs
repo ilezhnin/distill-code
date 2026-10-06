@@ -735,6 +735,7 @@ mod tests {
                 timeout_seconds: 10,
                 max_executions: 6,
                 preview: false,
+                parallelism: None,
             })
             .await
             .unwrap();

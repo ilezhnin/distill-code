@@ -296,6 +296,13 @@ export function BenchmarkConfigurationPage({
       t("configuration.attempts"),
       `${results.length} / ${shownRow.planned * REQUIRED_REPETITIONS}`,
     ],
+    // The conditions the standing run flew under.
+    [
+      t("configuration.parallelism"),
+      shownRow.parallelism == null
+        ? t("unknown")
+        : String(shownRow.parallelism),
+    ],
     [
       t("configuration.measured"),
       shownAt == null

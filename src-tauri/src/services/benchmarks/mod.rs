@@ -355,6 +355,15 @@ impl BenchmarkService {
         {
             issues.push("Select cases and configurations within the explicit execution budget (maximum 1000)".into());
         }
+        if request
+            .parallelism
+            .is_some_and(|n| n == 0 || n > runner::PARALLEL_ATTEMPTS)
+        {
+            issues.push(format!(
+                "Attempts in parallel per configuration must be between 1 and {}",
+                runner::PARALLEL_ATTEMPTS
+            ));
+        }
         if request.timeout_seconds == 0 || request.timeout_seconds > MAX_TIME_LIMIT_SECONDS {
             issues.push(format!(
                 "Run time limit must be between 1 and {MAX_TIME_LIMIT_SECONDS} seconds"
@@ -427,6 +436,10 @@ impl BenchmarkService {
         request: RunRequest,
         replace_run_id: Option<&str>,
     ) -> Result<BenchmarkRun> {
+        // The run records how many attempts of a configuration it flies at
+        // once, before the request is compared with a saved plan.
+        let mut request = request;
+        request.parallelism.get_or_insert(runner::PARALLEL_ATTEMPTS);
         if let Some(id) =
             sqlx::query_scalar::<_, String>("SELECT id FROM run_plans WHERE request_key=?")
                 .bind(&request.request_key)

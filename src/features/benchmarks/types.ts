@@ -107,6 +107,12 @@ export interface RunRequest {
   timeoutSeconds: number;
   maxExecutions: number;
   preview: boolean;
+  /**
+   * Attempts of one configuration in flight at once, recorded by the service
+   * at admission; absent on runs admitted before it was recorded (one at a
+   * time).
+   */
+  parallelism?: number;
 }
 export interface RunPreview {
   valid: boolean;
@@ -390,6 +396,8 @@ export interface LeaderboardRow {
   unsupportedVersionIds?: string[];
   /** Every model the counted attempts' usage named, sorted. */
   resolvedModels?: string[];
+  /** Attempts of this configuration its standing run flew at once. */
+  parallelism?: number | null;
 }
 export interface LeaderboardAxis {
   id: string;

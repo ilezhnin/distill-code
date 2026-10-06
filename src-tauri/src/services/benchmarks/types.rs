@@ -205,6 +205,11 @@ pub struct RunRequest {
     pub max_executions: u32,
     #[serde(default)]
     pub preview: bool,
+    /// Attempts of one configuration in flight at once, recorded at
+    /// admission so a run's points note the conditions it ran under. A run
+    /// admitted before it was recorded ran one at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallelism: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -555,6 +560,10 @@ pub struct LeaderboardRow {
     /// answered, sorted; more than one means the id moved between models.
     #[serde(default)]
     pub resolved_models: Vec<String>,
+    /// Attempts of one configuration its standing run flew at once (one for
+    /// a run admitted before that was recorded).
+    #[serde(default)]
+    pub parallelism: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
