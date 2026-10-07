@@ -112,6 +112,72 @@ fn displayed_outcome_follows_the_newest_evidence() {
 }
 
 #[test]
+fn a_critical_failure_cannot_be_outvoted_by_quality_scores() {
+    let mut attempt = before_only().attempts.remove(0);
+    attempt.outcome = Some("pending_review".into());
+    let mut marker = evaluation(10, None, "render", "rendered");
+    marker.details = Some(serde_json::json!({"expectedJudges":3,
+        "protocol":{"criticalCheckPolicy":super::super::judge_checks::POLICY}}));
+    let vote = |at, value, status| {
+        let mut result = evaluation(at, Some(value), "judge", "judged");
+        result.details = Some(
+            serde_json::json!({"criticalCheckPolicy":super::super::judge_checks::POLICY,
+            "criticalCheckStatus":status}),
+        );
+        result
+    };
+    attempt.evaluations = vec![
+        marker.clone(),
+        vote(11, 0.0, "fail"),
+        vote(12, 0.9, "pass"),
+        vote(13, 1.0, "pass"),
+    ];
+    assert_eq!(score_as_of(&attempt, Some(12)), None);
+    assert_eq!(score(&attempt), Some(0.0));
+    // An incomplete new panel preserves the last complete verdict and its cutoff.
+    marker.created_at = 20;
+    attempt.evaluations.extend([marker, vote(21, 0.9, "pass")]);
+    assert_eq!(score(&attempt), Some(0.0));
+    attempt
+        .evaluations
+        .extend([vote(22, 0.8, "pass"), vote(23, 1.0, "pass")]);
+    assert_eq!(score(&attempt), Some(0.9));
+    assert_eq!(score_as_of(&attempt, Some(19)), Some(0.0));
+    attempt
+        .evaluations
+        .push(evaluation(30, Some(0.7), "human", "judged"));
+    assert_eq!(score(&attempt), Some(0.7));
+}
+
+#[test]
+fn critical_panels_require_matching_decided_votes() {
+    let mut attempt = before_only().attempts.remove(0);
+    attempt.outcome = Some("judged".into());
+    let mut marker = evaluation(10, None, "render", "rendered");
+    marker.details = Some(serde_json::json!({"expectedJudges":1,
+        "protocol":{"criticalCheckPolicy":super::super::judge_checks::POLICY}}));
+    for details in [
+        None,
+        Some(serde_json::json!({"criticalCheckPolicy":"old","criticalCheckStatus":"pass"})),
+        Some(
+            serde_json::json!({"criticalCheckPolicy":super::super::judge_checks::POLICY,"criticalCheckStatus":"unknown"}),
+        ),
+    ] {
+        let mut vote = evaluation(11, Some(1.0), "judge", "judged");
+        vote.details = details;
+        attempt.evaluations = vec![marker.clone(), vote];
+        assert_eq!(score(&attempt), None);
+        assert_eq!(
+            evaluation_outcome(&attempt.evaluations),
+            Some("pending_review")
+        );
+    }
+    // This protocol never changes legacy visual or text panel interpretation.
+    attempt.evaluations[0].details = Some(serde_json::json!({"expectedJudges":1}));
+    assert_eq!(score(&attempt), Some(1.0));
+}
+
+#[test]
 fn pending_retest_must_not_erase_completed_measurements() {
     let mut data = before_only();
     let mut pending = data.runs[0].clone();

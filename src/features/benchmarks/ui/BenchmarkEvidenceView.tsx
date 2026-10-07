@@ -34,6 +34,7 @@ import {
   hasPanelVerdict,
 } from "../lib/benchmarkEligibility";
 import {
+  criticalCheckEvidence,
   evaluationCriteria,
   previewDocument,
   rubricCriteriaOf,
@@ -474,6 +475,41 @@ export function BenchmarkEvidenceView({
                       <p className="text-xs text-muted-foreground">
                         {evaluation.reason}
                       </p>
+                      {criticalCheckEvidence(evaluation.details).length > 0 ? (
+                        <div className="space-y-2 text-xs">
+                          <p className="font-medium">
+                            {t("evidence.criticalChecks")}
+                          </p>
+                          {criticalCheckEvidence(evaluation.details).map(
+                            (check) => (
+                              <div
+                                key={check.id}
+                                className="space-y-1 rounded-md border border-border p-2"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span>{check.id}</span>
+                                  <StateBadge
+                                    state={
+                                      check.verdict === "unknown"
+                                        ? "pending_review"
+                                        : check.verdict
+                                    }
+                                  />
+                                </div>
+                                <p>{check.reason}</p>
+                                {[...new Set(check.evidence)].map((quote) => (
+                                  <blockquote
+                                    key={quote}
+                                    className="border-l-2 border-border pl-2 whitespace-pre-wrap break-words text-muted-foreground"
+                                  >
+                                    {quote}
+                                  </blockquote>
+                                ))}
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

@@ -84,13 +84,36 @@ fn judge_panel(evaluations: &[&Evaluation]) -> Panel {
             .as_ref()
             .and_then(|d| d["expectedJudges"].as_u64())
             .unwrap_or(1) as usize;
-        let votes: Vec<f64> = evaluations[start..end]
+        let critical = evaluations[start].details.as_ref().is_some_and(|details| {
+            details
+                .pointer("/protocol/criticalCheckPolicy")
+                .and_then(serde_json::Value::as_str)
+                == Some(super::judge_checks::POLICY)
+        });
+        let mut critical_failed = false;
+        let mut votes: Vec<f64> = evaluations[start..end]
             .iter()
             .filter(|e| e.provenance == "judge")
-            .filter_map(|e| e.score)
-            .filter(valid_score)
+            .filter_map(|e| {
+                let score = e.score.filter(valid_score)?;
+                if critical {
+                    let details = e.details.as_ref()?;
+                    if details["criticalCheckPolicy"] != super::judge_checks::POLICY {
+                        return None;
+                    }
+                    match details["criticalCheckStatus"].as_str()? {
+                        "fail" => critical_failed = true,
+                        "pass" => {}
+                        _ => return None,
+                    }
+                }
+                Some(score)
+            })
             .collect();
         if votes.len() >= expected {
+            if critical_failed {
+                votes.fill(0.0);
+            }
             return Panel::Settled {
                 marker: start,
                 votes,

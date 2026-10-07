@@ -7,6 +7,7 @@ pub mod evidence;
 pub mod export;
 pub mod fixtures;
 pub mod generated;
+mod judge_checks;
 pub mod model_catalog;
 pub mod repository;
 pub mod routing;

@@ -101,6 +101,50 @@ describe("blind benchmark review", () => {
     ]);
   });
 
+  it("shows recorded critical conditions and quotes as text, including abstentions", async () => {
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([definition]);
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...attempt,
+      evaluations: [
+        {
+          ...attempt.evaluations[0],
+          verdict: "abstained",
+          score: null,
+          provenance: "judge_failure",
+          reason: "Critical checks unresolved; judge abstained.",
+          details: {
+            criticalCheckPolicy: "critical-text-v1",
+            criticalCheckStatus: "unknown",
+            criticalChecks: {
+              retention: {
+                verdict: "fail",
+                reason: "The old acknowledgement clears a newer payload.",
+                evidence: ["<script>clear(current)</script>"],
+              },
+              barrier: {
+                verdict: "unknown",
+                reason: "The final release condition is unspecified.",
+                evidence: [],
+              },
+            },
+          },
+        },
+      ],
+    });
+    showEvidence();
+    await screen.findByText("Critical conditions");
+    expect(
+      screen.getByText("The old acknowledgement clears a newer payload."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The final release condition is unspecified."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("<script>clear(current)</script>"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog").querySelector("script")).toBeNull();
+  });
+
   it("shows the frozen rubric and artifacts without identity, metadata or transcript before review", async () => {
     showEvidence();
     await screen.findByText("Score contrast and legible labels from 0 to 1.");

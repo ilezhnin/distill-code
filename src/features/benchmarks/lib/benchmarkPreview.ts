@@ -21,6 +21,33 @@ export interface RenderableMarkup {
   body: string;
 }
 
+export interface CriticalCheckEvidence {
+  id: string;
+  verdict: "pass" | "fail" | "unknown";
+  reason: string;
+  evidence: string[];
+}
+
+export function criticalCheckEvidence(
+  details: Record<string, unknown> | null | undefined,
+): CriticalCheckEvidence[] {
+  if (details?.criticalCheckPolicy !== "critical-text-v1") return [];
+  const checks = details.criticalChecks;
+  if (!checks || typeof checks !== "object" || Array.isArray(checks)) return [];
+  return Object.entries(checks).flatMap(([id, check]) => {
+    if (!check || typeof check !== "object") return [];
+    const { verdict, reason, evidence } = check as Record<string, unknown>;
+    if (
+      (verdict !== "pass" && verdict !== "fail" && verdict !== "unknown") ||
+      typeof reason !== "string" ||
+      !Array.isArray(evidence) ||
+      !evidence.every((quote): quote is string => typeof quote === "string")
+    )
+      return [];
+    return [{ id, verdict, reason, evidence }];
+  });
+}
+
 /** Criterion scores from legacy reviews or a versioned judge response. */
 export function evaluationCriteria(
   details: Record<string, unknown> | null | undefined,

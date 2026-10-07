@@ -317,6 +317,7 @@
     "evaluations": "Evaluation history",
     "workflowSteps": "Workflow steps",
     "notEvaluated": "No evaluation is available yet.",
+    "criticalChecks": "Critical conditions",
     "metadata": "Selection, usage and provenance",
     "review": "Record rubric review",
     "rescore": "Evaluate again",

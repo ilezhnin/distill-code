@@ -1,6 +1,6 @@
 use super::{
     analysis::matches_selection,
-    evaluation, fixtures,
+    evaluation, fixtures, judge_checks,
     store::{now, Store},
     types::*,
     BenchmarkService,
@@ -920,6 +920,7 @@ struct NativePanel<'a> {
     batch: &'a str,
     prompt: &'a str,
     image: Option<&'a OwnedTurnImage>,
+    response: Option<&'a str>,
     criteria: &'a [RubricCriterion],
     stop: &'a JudgeStop,
 }
@@ -945,6 +946,7 @@ impl PanelJudges for NativePanel<'_> {
                     index,
                     self.prompt,
                     self.image,
+                    self.response,
                     self.criteria,
                     self.stop,
                 )
@@ -1394,6 +1396,7 @@ impl NativeBackend {
         index: usize,
         prompt: &str,
         image: Option<&OwnedTurnImage>,
+        response: Option<&str>,
         criteria: &[RubricCriterion],
         stop: &JudgeStop,
     ) -> Result<Evaluation> {
@@ -1562,13 +1565,11 @@ impl NativeBackend {
         let failure = failure.or(turn_failure);
         let parsed = failure
             .is_none()
-            .then(|| parse_judge_reply(&reply, criteria))
+            .then(|| judge_score_sheet(&version.manifest, &reply, response, criteria))
             .flatten();
-        let score = parsed
-            .as_ref()
-            .map(|(shares, _)| weighted_share(shares, criteria));
+        let score = parsed.as_ref().and_then(|sheet| sheet.score);
         let reason = match &parsed {
-            Some((_, notes)) if !notes.is_empty() => notes.clone(),
+            Some(sheet) if !sheet.reason.is_empty() => sheet.reason.clone(),
             Some(_) => "Scored by the judge panel".into(),
             None => failure.unwrap_or_else(|| "Judge returned no valid score sheet".into()),
         };
@@ -1594,7 +1595,10 @@ impl NativeBackend {
             details: Some(
                 json!({"judgeBatchId": batch, "sessionId": session.session_id, "usageComplete": usage_complete,
                 "durationMs": started.elapsed().as_millis() as u64,
-                "criteria": parsed.map(|(shares, _)| shares)}),
+                "criteria": parsed.as_ref().map(|sheet| &sheet.shares),
+                "criticalCheckPolicy": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|_| judge_checks::POLICY)),
+                "criticalCheckStatus": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|check| check.status)),
+                "criticalChecks": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|check| &check.checks))}),
             ),
             judge: Some(judge.clone()),
             usage: Some(usage),
@@ -1689,8 +1693,11 @@ impl ExecutionBackend for NativeBackend {
                     tokio::fs::create_dir_all(&directory).await?;
                     let batch = uuid::Uuid::new_v4().to_string();
                     let expected = panel.len();
-                    let protocol = json!({"panel": panel, "prompt": prompt,
+                    let mut protocol = json!({"panel": panel, "prompt": prompt,
                         "renderer": renderer, "samplesPerJudge": 1, "expectedJudges": expected});
+                    if judge_checks::enabled(&version.manifest) {
+                        protocol["criticalCheckPolicy"] = json!(judge_checks::POLICY);
+                    }
                     let protocol_hash = judge_protocol_hash(&panel, &prompt, &renderer);
                     let extension = if textual { "txt" } else { "png" };
                     let path = directory.join(format!("rendering-{batch}.{extension}"));
@@ -1739,14 +1746,17 @@ impl ExecutionBackend for NativeBackend {
             });
             // The response belongs to the evidence, not the scoring protocol:
             // including it in the protocol hash would split every comparison.
-            let dispatch_prompt = if textual {
-                let response = String::from_utf8(png).map_err(|_| {
+            let response = if textual {
+                Some(String::from_utf8(png).map_err(|_| {
                     BenchmarkError::new("validation", "Saved judge text is not UTF-8")
-                })?;
-                text_judge_prompt(&prompt, &response)
+                })?)
             } else {
-                prompt
+                None
             };
+            let dispatch_prompt = response.as_deref().map_or_else(
+                || prompt.clone(),
+                |response| text_judge_prompt(&prompt, response),
+            );
             let (end, votes) = ask_panel(
                 &judges,
                 expected,
@@ -1759,6 +1769,7 @@ impl ExecutionBackend for NativeBackend {
                     batch: &batch,
                     prompt: &dispatch_prompt,
                     image: image.as_ref(),
+                    response: response.as_deref(),
                     criteria: &criteria,
                     stop: &stop,
                 },
@@ -3191,7 +3202,7 @@ fn judge_renderer(draft: &BenchmarkDraft) -> String {
 }
 
 pub(crate) fn validate_judge_input(draft: &BenchmarkDraft) -> Vec<String> {
-    let mut issues = Vec::new();
+    let mut issues = judge_checks::validate(draft);
     if let Some(mode) = draft.environment.get("judgeInput") {
         if draft.evaluator.kind != "rubric" || !matches!(mode.as_str(), Some("text" | "visual")) {
             issues.push("Judge input requires a rubric and either text or visual".into());
@@ -3312,6 +3323,7 @@ fn judge_prompt(draft: &BenchmarkDraft, criteria: &[RubricCriterion]) -> String 
         ));
     }
     prompt.push_str("\nScore every criterion from 0 to 10.");
+    prompt.push_str(&judge_checks::instructions(draft));
     prompt
 }
 
@@ -3342,6 +3354,48 @@ pub(crate) fn parse_judge_reply(
         .take(500)
         .collect();
     Some((shares, notes))
+}
+
+struct JudgeScoreSheet {
+    shares: serde_json::Map<String, Value>,
+    score: Option<f64>,
+    reason: String,
+    critical: Option<judge_checks::Assessment>,
+}
+
+fn judge_score_sheet(
+    draft: &BenchmarkDraft,
+    reply: &str,
+    response: Option<&str>,
+    criteria: &[RubricCriterion],
+) -> Option<JudgeScoreSheet> {
+    let (shares, notes) = parse_judge_reply(reply, criteria)?;
+    let critical = if judge_checks::enabled(draft) {
+        Some(judge_checks::parse(
+            draft,
+            reply,
+            response?,
+            &criteria.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        )?)
+    } else {
+        None
+    };
+    let score = match critical.as_ref().map(|check| check.status) {
+        Some("unknown") => None,
+        Some("fail") => Some(0.0),
+        _ => Some(weighted_share(&shares, criteria)),
+    };
+    let reason = match critical.as_ref().map(|check| check.status) {
+        Some("unknown") => format!("Critical checks unresolved; judge abstained. {notes}"),
+        Some("fail") => format!("Critical check failed; score is zero. {notes}"),
+        _ => notes,
+    };
+    Some(JudgeScoreSheet {
+        shares,
+        score,
+        reason,
+        critical,
+    })
 }
 
 fn weighted_share(shares: &serde_json::Map<String, Value>, criteria: &[RubricCriterion]) -> f64 {
@@ -4523,6 +4577,182 @@ mod tests {
         assert_eq!(judge_renderer(&draft), "text-evidence-v1");
         draft.environment["textLimits"]["maxWords"] = json!(0);
         assert!(!validate_judge_input(&draft).is_empty());
+    }
+
+    fn critical_text() -> BenchmarkDraft {
+        let mut draft = creative();
+        draft.environment["judgeInput"] = json!("text");
+        draft.environment["rubricCriteria"] =
+            json!([{"id":"quality","label":"Quality","weight":1}]);
+        draft.environment["criticalChecks"] = json!([
+            {"id":"retention","requirement":"An old acknowledgement cannot remove a newer pending write."},
+            {"id":"barrier","requirement":"Keep the close barrier until every participant settles."}
+        ]);
+        draft
+    }
+
+    fn critical_reply() -> Value {
+        json!({"scores":{"quality":9},"notes":"Concrete revision comparison and settled barrier.",
+        "checks":{
+            "retention":{"verdict":"pass","evidence":["Remove only the acknowledged revision."],"reason":"A newer pending revision remains queued."},
+            "barrier":{"verdict":"pass","evidence":["Wait for every participant."],"reason":"A rejected participant does not release the other participants."}
+        }})
+    }
+
+    #[test]
+    fn critical_judgments_preserve_evidence_fail_closed_and_keep_legacy_scores() {
+        let draft = critical_text();
+        let criteria = rubric_criteria(&draft);
+        let response = "Remove only the acknowledged revision. Wait for every participant.";
+        let mut reply = critical_reply();
+        let parse = |reply: &Value| {
+            judge_score_sheet(&draft, &reply.to_string(), Some(response), &criteria).unwrap()
+        };
+        let passed = parse(&reply);
+        assert_eq!(passed.score, Some(0.9));
+        assert_eq!(passed.critical.unwrap().checks, reply["checks"]);
+        reply["checks"]["retention"]["verdict"] = json!("fail");
+        assert_eq!(parse(&reply).score, Some(0.0));
+        // The parser anchors evidence; semantic validity requires calibration.
+        reply["checks"]["barrier"]["verdict"] = json!("unknown");
+        reply["checks"]["barrier"]["evidence"] = json!([]);
+        let undecided = parse(&reply);
+        assert_eq!(undecided.score, None);
+        assert!(undecided.reason.contains("abstained"));
+        let mut legacy = draft.clone();
+        legacy
+            .environment
+            .as_object_mut()
+            .unwrap()
+            .remove("criticalChecks");
+        assert_eq!(
+            judge_score_sheet(&legacy, &reply.to_string(), None, &criteria)
+                .unwrap()
+                .score,
+            Some(0.9)
+        );
+    }
+
+    #[test]
+    fn critical_judgments_reject_incomplete_or_fabricated_evidence_without_repair() {
+        let draft = critical_text();
+        let criteria = rubric_criteria(&draft);
+        let response = "Remove only the acknowledged revision. Wait for every participant.";
+        for (path, value) in [
+            (
+                "/checks/retention/evidence",
+                json!(["Quote from a source, not the response."]),
+            ),
+            ("/checks/retention/evidence", json!([])),
+            ("/checks/retention/reason", json!(" ")),
+            ("/checks/retention/verdict", json!("mostly_pass")),
+            ("/checks/retention", json!(null)),
+            ("/scores/quality", json!(11)),
+            ("/scores/quality", json!(-1)),
+            ("/scores/quality", json!("9")),
+        ] {
+            let mut reply = critical_reply();
+            *reply.pointer_mut(path).unwrap() = value;
+            assert!(
+                judge_score_sheet(&draft, &reply.to_string(), Some(response), &criteria).is_none(),
+                "{path}"
+            );
+        }
+        for key in ["checks", "scores", "notes"] {
+            let mut reply = critical_reply();
+            reply.as_object_mut().unwrap().remove(key);
+            assert!(
+                judge_score_sheet(&draft, &reply.to_string(), Some(response), &criteria).is_none()
+            );
+        }
+        for reply in [
+            format!("Prose {}", critical_reply()),
+            format!("```json\n{}\n```", critical_reply()),
+        ] {
+            assert!(judge_score_sheet(&draft, &reply, Some(response), &criteria).is_none());
+        }
+        let mut extra = critical_reply();
+        extra["checks"]["extra"] = extra["checks"]["barrier"].clone();
+        assert!(judge_score_sheet(&draft, &extra.to_string(), Some(response), &criteria).is_none());
+    }
+
+    #[test]
+    fn critical_conditions_are_validated_and_frozen_in_the_protocol() {
+        let mut draft = critical_text();
+        assert!(validate_judge_input(&draft).is_empty());
+        let panel = vec![judge_row("sonnet"), judge_row("haiku")];
+        let identity = |draft: &BenchmarkDraft| {
+            judge_protocol_hash(
+                &panel,
+                &judge_prompt(draft, &rubric_criteria(draft)),
+                &judge_renderer(draft),
+            )
+        };
+        let original = identity(&draft);
+        draft.environment["criticalChecks"][0]["requirement"] =
+            json!("Retain each acknowledged payload separately.");
+        assert_ne!(original, identity(&draft));
+        let prompt = judge_prompt(&draft, &rubric_criteria(&draft));
+        assert!(prompt.contains(judge_checks::POLICY));
+        assert!(prompt.contains("explicitly unsafe operation"));
+        for invalid in [
+            json!([]),
+            json!(null),
+            json!([{"id":"","requirement":"x"}]),
+            json!([{"id":"x","requirement":"x"},{"id":"x","requirement":"y"}]),
+            json!([{"id":"x","requirement":" "}]),
+            json!([{"id":"x","requirement":"x","ignored":true}]),
+        ] {
+            draft.environment["criticalChecks"] = invalid;
+            assert!(!validate_judge_input(&draft).is_empty());
+        }
+        draft = critical_text();
+        draft.environment["judgeInput"] = json!("visual");
+        assert!(!validate_judge_input(&draft).is_empty());
+    }
+
+    /// Export the exact production prompts, then parse saved external replies
+    /// through the same scoring path. This diagnostic never dispatches a model.
+    #[test]
+    #[ignore = "requires an explicit local calibration directory"]
+    fn critical_calibration_uses_the_production_protocol() {
+        let directory = std::path::PathBuf::from(
+            std::env::var("DISTILL_JUDGE_CALIBRATION_DIR")
+                .expect("Set a local calibration directory"),
+        );
+        let draft: BenchmarkDraft =
+            serde_json::from_slice(&std::fs::read(directory.join("draft.json")).unwrap()).unwrap();
+        assert!(judge_checks::enabled(&draft));
+        assert!(validate_judge_input(&draft).is_empty());
+        let cases: Vec<Value> =
+            serde_json::from_slice(&std::fs::read(directory.join("cases.json")).unwrap()).unwrap();
+        let replies: Value = std::fs::read(directory.join("replies.json"))
+            .ok()
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+            .unwrap_or(json!({}));
+        let criteria = rubric_criteria(&draft);
+        let protocol = judge_prompt(&draft, &criteria);
+        let mut exported = Vec::new();
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let response = case["response"].as_str().unwrap();
+            assert!(judge_document(&draft, response).is_some(), "{name}");
+            let sheet = replies[name]
+                .as_str()
+                .and_then(|reply| judge_score_sheet(&draft, reply, Some(response), &criteria));
+            exported.push(json!({"name":name,"expected":case["expected"],
+                "prompt":text_judge_prompt(&protocol,response),
+                "protocolSha256":hex::encode(Sha256::digest(protocol.as_bytes())),
+                "responseSha256":hex::encode(Sha256::digest(response.as_bytes())),
+                "parsed":sheet.map(|sheet| json!({"score":sheet.score,"reason":sheet.reason,
+                    "criteria":sheet.shares,"status":sheet.critical.as_ref().map(|check| check.status),
+                    "checks":sheet.critical.map(|check| check.checks)}))}));
+        }
+        std::fs::write(
+            directory.join("production-protocol.json"),
+            serde_json::to_vec_pretty(&exported).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
