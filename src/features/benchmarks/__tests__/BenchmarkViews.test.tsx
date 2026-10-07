@@ -451,12 +451,12 @@ describe("benchmark authoring and saved evidence", () => {
     wrap(<LeaderboardView {...scopeProps} report={report} onOpen={open} />);
     const row = screen.getByRole("row", { name: /model-1/ });
     expect(within(row).getAllByRole("cell")[0]).toHaveTextContent("–");
-    expect(within(row).getByText("Preliminary")).toBeInTheDocument();
-    expect(within(row).getByText("0 / 4 measured")).toBeInTheDocument();
+    expect(within(row).queryByText("Preliminary")).not.toBeInTheDocument();
+    expect(within(row).queryByText(/measured/)).not.toBeInTheDocument();
     // Rank, points, price and context all stay unknown.
     expect(within(row).getAllByText("–")).toHaveLength(4);
     expect(row).not.toHaveTextContent("0.0%");
-    // Nothing explains itself in prose above the rows.
+    // Avoid unrelated summary counters above the rows.
     expect(screen.queryByText(/scored ·/)).not.toBeInTheDocument();
     expect(screen.queryByText(/configurations shown/)).not.toBeInTheDocument();
     await userEvent.click(
@@ -819,6 +819,8 @@ describe("benchmark authoring and saved evidence", () => {
         });
     // Every model is listed; a row without a rank follows the ranked ones.
     expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
+    const profile = within(screen.getAllByRole("row")[1]).getByRole("img");
+    expect(profile).toHaveAccessibleName("Algorithms and clean code: 200");
     expect(
       screen.queryByRole("button", { name: /unranked/ }),
     ).not.toBeInTheDocument();

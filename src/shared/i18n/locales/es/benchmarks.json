@@ -352,6 +352,7 @@
       "cost": "Cuota media de la solución más barata sobre los casos resueltos: 100% en el récord, 50% al doble de su gasto."
     },
     "allAxes": "Todos los tableros",
+    "score": "Puntuación",
     "measuredPartial": "{{scored}} / {{planned}} medidas, {{complete}} completas",
     "measured": "{{scored}} / {{planned}} medidas",
     "open": "Abrir {{model}}",

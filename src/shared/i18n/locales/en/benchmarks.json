@@ -352,6 +352,7 @@
       "cost": "Mean share of the cheapest solution over the solved cases: 100% at the record, 50% at twice its spend."
     },
     "allAxes": "All boards",
+    "score": "Score",
     "measuredPartial": "{{scored}} / {{planned}} measured, {{complete}} complete",
     "measured": "{{scored}} / {{planned}} measured",
     "open": "Open {{model}}",

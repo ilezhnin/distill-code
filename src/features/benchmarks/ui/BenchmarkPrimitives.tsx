@@ -597,6 +597,7 @@ export function ModelIdentity({
   name,
   vendor,
   showRuntime = false,
+  wrap = true,
   mark,
   children,
 }: {
@@ -604,6 +605,8 @@ export function ModelIdentity({
   name: string;
   vendor: string;
   showRuntime?: boolean;
+  /** Tables can keep the name and configuration together and scroll instead. */
+  wrap?: boolean;
   /** A warning beside the name, such as a run of this model that stopped. */
   mark?: ReactNode;
   children?: ReactNode;
@@ -616,7 +619,12 @@ export function ModelIdentity({
         {getProviderIcon(configuration.providerId, "size-6")}
       </span>
       <div className="min-w-0">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <div
+          className={cn(
+            "flex min-w-0 items-center gap-x-2 gap-y-1",
+            wrap ? "flex-wrap" : "whitespace-nowrap",
+          )}
+        >
           <span className="font-medium">{name}</span>
           {mark}
           {effort ? <Badge variant="outline">{effort}</Badge> : null}

@@ -23,7 +23,6 @@ import {
   useModelNames,
 } from "../hooks/useBenchmarks";
 import {
-  boardShares,
   boardsFor,
   rankRows,
   rowKey,
@@ -58,8 +57,6 @@ import {
   BoardIcon,
   AttentionMark,
   ModelIdentity,
-  ScoreBar,
-  ShareMarks,
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { ModelFilter } from "./ModelFilter";
@@ -213,11 +210,12 @@ export function LeaderboardView({
     const activity = rowActivity(entry.row, runs);
     const attention = rowAttention(entry.row, runs);
     return (
-      <TableCell className={cn(pinned("left-10"))}>
+      <TableCell className={cn("min-w-72", pinned("left-10"))}>
         <ModelIdentity
           configuration={entry.row.configuration}
           name={nameOf(entry.row)}
           vendor={vendorOf(entry.row)}
+          wrap={false}
           showRuntime={(twins.get(twinKey(entry.row.configuration)) ?? 0) > 1}
           mark={
             attention.length > 0 ? (
@@ -228,7 +226,8 @@ export function LeaderboardView({
             ) : null
           }
         >
-          {view === "table" && entry.row.status !== "comparable" ? (
+          {entry.row.status !== "comparable" &&
+          entry.row.status !== "preliminary" ? (
             <div className="mt-1">
               <StateBadge state={entry.row.status} />
             </div>
@@ -370,9 +369,10 @@ export function LeaderboardView({
           <TableHeader>
             <TableRow>
               <TableHead>{t("fields.rank")}</TableHead>
-              <TableHead>{t("fields.model")}</TableHead>
-              <TableHead className="w-[34%]">{boardLabel(board)}</TableHead>
-              <TableHead className="text-right" />
+              <TableHead className="w-[32%]">{t("fields.model")}</TableHead>
+              <TableHead className="w-20 text-right">
+                {t("leaderboard.score")}
+              </TableHead>
               <TableHead>{t("leaderboard.allAxes")}</TableHead>
               <TableHead className="text-right">
                 {t("leaderboard.price")}
@@ -388,41 +388,6 @@ export function LeaderboardView({
               row(
                 entry,
                 <>
-                  <TableCell>
-                    {entry.rank != null && entry.share != null ? (
-                      <>
-                        <ScoreBar
-                          share={entry.share}
-                          leading={entry.rank === 1}
-                          label={t("leaderboard.chartLabel", {
-                            model: nameOf(entry.row),
-                            value: entry.points ?? "–",
-                          })}
-                        />
-                        <ShareMarks
-                          className="mt-1.5"
-                          shares={boardShares(entry.row, board)}
-                        />
-                      </>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <StateBadge state={entry.row.status} />
-                        <span className="text-xs text-muted-foreground">
-                          {entry.row.complete != null &&
-                          entry.row.complete < entry.row.scored
-                            ? t("leaderboard.measuredPartial", {
-                                scored: entry.row.scored,
-                                planned: entry.row.planned,
-                                complete: entry.row.complete,
-                              })
-                            : t("leaderboard.measured", {
-                                scored: entry.row.scored,
-                                planned: entry.row.planned,
-                              })}
-                        </span>
-                      </div>
-                    )}
-                  </TableCell>
                   <TableCell className="text-right">
                     <div
                       className={cn(
@@ -438,13 +403,15 @@ export function LeaderboardView({
                     <AxisBars
                       muted={entry.rank == null}
                       activeId={board.id}
-                      items={boards.map((axis) => ({
-                        id: axis.id,
-                        label: boardLabel(axis),
-                        points:
-                          standings.get(axis.id)?.rows.get(rowKey(entry.row))
-                            ?.points ?? null,
-                      }))}
+                      items={boards
+                        .filter((axis) => axis.workClass != null)
+                        .map((axis) => ({
+                          id: axis.id,
+                          label: boardLabel(axis),
+                          points:
+                            standings.get(axis.id)?.rows.get(rowKey(entry.row))
+                              ?.points ?? null,
+                        }))}
                     />
                   </TableCell>
                 </>,
