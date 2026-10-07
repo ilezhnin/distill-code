@@ -307,6 +307,47 @@ pub async fn benchmark_select_candidate(
     }
     Ok(selection)
 }
+/// Fits locally from a frozen training ledger; never dispatches a model call.
+#[tauri::command]
+pub async fn benchmark_fit_selector(
+    app: AppHandle,
+    request: benchmarks::learned::FitRequest,
+) -> Result<benchmarks::learned::FitSummary> {
+    let s = service(&app).await?;
+    let artifact = analyze(s.query_data().await?, move |data| {
+        benchmarks::learned::fit(data, request)
+    })
+    .await??;
+    s.store.save_selector_fit(&artifact).await
+}
+
+#[tauri::command]
+pub async fn benchmark_list_selector_fits(
+    app: AppHandle,
+) -> Result<Vec<benchmarks::learned::FitSummary>> {
+    service(&app).await?.store.selector_fits().await
+}
+
+#[tauri::command]
+pub async fn benchmark_get_selector_fit(
+    app: AppHandle,
+    id: String,
+) -> Result<benchmarks::learned::FitArtifact> {
+    service(&app).await?.store.selector_fit(&id).await
+}
+
+#[tauri::command]
+pub async fn benchmark_predict_selector(
+    app: AppHandle,
+    id: String,
+    request: benchmarks::learned::PredictionRequest,
+) -> Result<benchmarks::learned::Prediction> {
+    let model = service(&app).await?.store.selector_model(&id).await?;
+    tauri::async_runtime::spawn_blocking(move || benchmarks::learned::predict(&model, &request))
+        .await
+        .map_err(|e| BenchmarkError::new("infrastructure_failure", e.to_string()))?
+}
+
 /// The held-out harness of one class: the selector against fixed policies.
 #[tauri::command]
 pub async fn benchmark_selector_harness(

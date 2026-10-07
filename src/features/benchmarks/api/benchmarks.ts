@@ -1,4 +1,11 @@
 import type { HistorySnapshot } from "../hooks/useBenchmarks";
+import type {
+  SelectorFitRequest,
+  SelectorFitSummary,
+  SelectorFitArtifact,
+  SelectorPredictionRequest,
+  SelectorPrediction,
+} from "../lib/benchmarkLearning";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
@@ -109,6 +116,14 @@ async function listCompletedDesigns(
 }
 
 export const benchmarkApi = {
+  fitSelector: (request: SelectorFitRequest) =>
+    invoke<SelectorFitSummary>("benchmark_fit_selector", { request }),
+  listSelectorFits: () =>
+    invoke<SelectorFitSummary[]>("benchmark_list_selector_fits"),
+  getSelectorFit: (id: string) =>
+    invoke<SelectorFitArtifact>("benchmark_get_selector_fit", { id }),
+  predictSelector: (id: string, request: SelectorPredictionRequest) =>
+    invoke<SelectorPrediction>("benchmark_predict_selector", { id, request }),
   listDefinitions: () =>
     invoke<BenchmarkDefinition[]>("benchmark_list_definitions"),
   saveDraft: (

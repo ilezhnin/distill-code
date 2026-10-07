@@ -48,6 +48,7 @@ import { BenchmarkConfigurationPage } from "./BenchmarkConfigurationPage";
 import { DesignBenchView } from "./DesignBenchView";
 import { BenchmarkAlert, BenchmarkEmpty } from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
+import { BenchmarkLearningDialog } from "./BenchmarkLearningDialog";
 import { BenchmarkModelRunDialog } from "./BenchmarkModelRunDialog";
 import { BenchmarkReleasesDialog } from "./BenchmarkReleasesDialog";
 import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
@@ -73,6 +74,7 @@ type DialogKind =
   | "releases"
   | "schedules"
   | "routing"
+  | "learning"
   | "catalog";
 
 export function BenchmarksView({
@@ -148,6 +150,7 @@ export function BenchmarksView({
   ];
   const menuItems: { kind: DialogKind; label: string; icon: ReactNode }[] = [
     { kind: "runs", label: t("toolbar.runs"), icon: <IconHistory /> },
+    { kind: "learning", label: t("learning.title"), icon: <IconRoute /> },
     { kind: "import", label: t("toolbar.import"), icon: <IconFileImport /> },
     { kind: "export", label: t("toolbar.export"), icon: <IconFileExport /> },
     { kind: "releases", label: t("toolbar.releases"), icon: <IconTag /> },
@@ -376,6 +379,18 @@ export function BenchmarksView({
             setDialog(null);
             onNavigate({ ...location, attemptId: id });
           }}
+        />
+      ) : null}
+      {dialog === "learning" ? (
+        <BenchmarkLearningDialog
+          versions={(definitions.data ?? [])
+            .filter((definition) => !definition.archived)
+            .flatMap((definition) =>
+              [...definition.versions]
+                .sort((a, b) => b.publishedAt - a.publishedAt)
+                .slice(0, 1),
+            )}
+          onClose={() => setDialog(null)}
         />
       ) : null}
       <ConfirmDialog
