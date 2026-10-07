@@ -2,9 +2,8 @@
  * What a project knows, drawn (M14).
  *
  * A list of pages is a list of pages; a wiki is what its `[[links]]` make of
- * them. The findings `distro/skills/project-wiki/SKILL.md` asks a linting
- * agent to hunt for — the page nothing points at, the cluster that drifted
- * away from the rest — are properties of the edges, and the operator can see
+ * them. An unreferenced page or a cluster disconnected from the rest are
+ * properties of the edges, and the operator can see
  * both in a second on a picture that would cost a whole session to describe
  * in prose.
  *

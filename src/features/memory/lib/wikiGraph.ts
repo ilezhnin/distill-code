@@ -39,7 +39,7 @@ import {
 
 import { PROJECT_WIKI_DIR } from "./projectWikiPrompt";
 
-/** The four types `distro/skills/project-wiki/SKILL.md` allows. */
+/** Supported types in the application's project wiki format. */
 export const WIKI_PAGE_TYPES = [
   "entity",
   "concept",

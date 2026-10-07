@@ -28,7 +28,7 @@ operator's working skills, role catalog or avatars.
 - `src/` — React UI/features/shared code
 - `src-tauri/` — Tauri shell; `src-tauri/src/services/agent_host/` is the
   built-in ACP host that spawns the harness bridges and stores sessions
-- `distro/` — bundled agents and skills and other app defaults
+- `distro/` — generic application help and other public app defaults
 - `acp-tools.lock.json` — pinned `package.json` + `package-lock.json`
   the managed ACP bridges are installed from with `npm ci`
 - `scripts/update-acp-tools-lock.mjs` — resolves and records a new managed ACP bridge pin
