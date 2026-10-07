@@ -10,6 +10,7 @@ pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
     issues.extend(super::workflow::validate(d));
     issues.extend(evaluation::validate(&d.evaluator));
     issues.extend(super::repository::validate(d));
+    issues.extend(super::runner::validate_judge_input(d));
     if d.schema_version != 1 {
         issues.push("Unsupported schema version".into());
     }
