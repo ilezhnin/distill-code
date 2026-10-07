@@ -146,6 +146,16 @@ function selftest() {
     stdio: ["pipe", "inherit", "inherit"],
   });
   process.exitCode = result.status ?? 1;
+  if (process.exitCode === 0) {
+    const artifacts = wsl(
+      ["-d", DISTRO, "-u", "root", "--exec", "python3", "-"],
+      {
+        input: fs.readFileSync(path.join(resources, "artifact-selftest.py")),
+        stdio: ["pipe", "inherit", "inherit"],
+      },
+    );
+    process.exitCode = artifacts.status ?? 1;
+  }
 }
 
 const [command] = process.argv.slice(2);

@@ -44,6 +44,9 @@ pub struct HiddenCheck {
     /// A separate untrusted process that receives only public probe inputs.
     /// The check reads the submitted files as data and executes code only in
     /// this process through DISTILL_BENCH_RPC_FD. The probe never sees checks.
+    /// DISTILL_BENCH_ARTIFACT_FD is a check-only JSON-lines channel: send
+    /// {"path":"relative/file"}; receive base64 {"data":"..."} or an error.
+    /// It reads actual probe files without following links, up to 8 MiB each.
     #[serde(default)]
     pub probe: Option<CheckProbe>,
 }
@@ -624,21 +627,25 @@ mod tests {
         let (snapshot, fix) = source(root.path()).await;
         let mut draft = manifest(&snapshot);
         draft.evaluator.expected = serde_json::json!({
-            "files": [{"path":"hidden/check.py", "content": r#"import json,os,socket
+            "files": [{"path":"hidden/check.py", "content": r#"import base64,json,os,socket
 from pathlib import Path
 assert not Path('sum.js').exists()
 assert Path('/submission/sum.js').is_file()
 channel=socket.socket(fileno=int(os.environ['DISTILL_BENCH_RPC_FD'])).makefile('rwb')
 channel.write(b'{"a":17,"b":29}\n');channel.flush()
 assert json.loads(channel.readline(1024)) == 46
+artifacts=socket.socket(fileno=int(os.environ['DISTILL_BENCH_ARTIFACT_FD'])).makefile('rwb')
+artifacts.write(b'{"path":"actual.txt"}\n');artifacts.flush()
+assert base64.b64decode(json.loads(artifacts.readline(1024))['data']) == b'46'
 print('Independent verdict passed')
 "#}],
             "command": ["python3", "hidden/check.py"],
             "timeoutSeconds": 15,
             "probe": {"command":["node","driver.cjs"],"files":[{"path":"driver.cjs","content":r#"const net=require('node:net');
 const {sum}=require('./sum.js');
+if (process.env.DISTILL_BENCH_ARTIFACT_FD) throw Error('Trusted artifact channel leaked');
 const socket=new net.Socket({fd:Number(process.env.DISTILL_BENCH_RPC_FD),readable:true,writable:true});
-require('node:readline').createInterface({input:socket}).on('line',line=>{const {a,b}=JSON.parse(line);socket.write(JSON.stringify(sum(a,b))+'\n');});
+require('node:readline').createInterface({input:socket}).on('line',line=>{const {a,b}=JSON.parse(line);const result=sum(a,b);require('node:fs').writeFileSync('actual.txt',String(result),{mode:0o600});socket.write(JSON.stringify(result)+'\n');});
 "#}]},
         }).to_string();
         assert_eq!(
