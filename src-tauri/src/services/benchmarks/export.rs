@@ -12,7 +12,7 @@ fn pseudonym(salt: &str, id: &str) -> String {
 }
 fn public_configuration(c: &Configuration, salt: &str) -> Value {
     json!({"id":pseudonym(salt,&format!("configuration:{}",c.id)),"candidateKey":super::routing::candidate_key(c),"providerId":c.provider_id,"account":c.account_id.as_ref().map(|id|pseudonym(salt,id)),
-        "modelId":c.model_id,"effort":c.effort,"fastMode":c.fast_mode,"billingMode":c.billing_mode,
+        "modelId":c.model_id,"modelName":c.model_name,"effort":c.effort,"fastMode":c.fast_mode,"billingMode":c.billing_mode,
         "executionProfile":c.execution_profile,"inventoryRevision":c.inventory_revision})
 }
 
@@ -20,9 +20,23 @@ fn exported_split(split: &str, include_held_out: bool) -> bool {
     split == "train" || (include_held_out && split == "held_out")
 }
 
-pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<Value>> {
+fn split_group(draft: &BenchmarkDraft) -> &str {
+    draft
+        .environment
+        .get("splitGroup")
+        .and_then(Value::as_str)
+        .filter(|group| !group.trim().is_empty())
+        .unwrap_or(&draft.task_family)
+}
+
+fn validate_splits(data: &QueryData, cutoff: Option<i64>) -> Result<()> {
     let mut splits: BTreeMap<&str, &str> = BTreeMap::new();
-    for version in &data.versions {
+    let mut groups: BTreeMap<&str, &str> = BTreeMap::new();
+    for version in data
+        .versions
+        .iter()
+        .filter(|v| cutoff.is_none_or(|at| v.published_at <= at))
+    {
         let split = version.manifest.split.as_str();
         if splits
             .insert(&version.manifest.task_family, split)
@@ -33,7 +47,50 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                 "A task family crosses dataset splits",
             ));
         }
+        if groups
+            .insert(split_group(&version.manifest), split)
+            .is_some_and(|previous| previous != split)
+        {
+            return Err(BenchmarkError::new(
+                "validation",
+                "A related task group crosses dataset splits",
+            ));
+        }
     }
+    Ok(())
+}
+
+/// One portable observation; cutoff applies to its score and judge evidence.
+/// The raw archive has no historical query. Ledger calls supply only terminal
+/// attempts known at their frozen cutoff, never later outputs or measurements.
+fn observation(
+    attempt: Option<&Attempt>,
+    repetition: u32,
+    authored: bool,
+    salt: &str,
+    cutoff: Option<i64>,
+) -> Value {
+    let reward = if authored {
+        None
+    } else {
+        attempt.and_then(|a| super::analysis::score_as_of(a, cutoff))
+    };
+    json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
+        "excluded":authored.then_some("authored_by_candidate"),
+        "outcome":attempt.and_then(|a|super::analysis::outcome_as_of(a.outcome.as_deref(),a.finished_at,&a.evaluations,cutoff)),
+        "phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),
+        "usage":attempt.map(|a|&a.usage),"resolvedModel":attempt.and_then(|a|a.resolved_model.as_ref()),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
+        "observedConfiguration":attempt.and_then(|a|a.observed.as_ref()).map(|c|public_configuration(c,salt)),
+        "workflowSteps":attempt.map(|a|&a.workflow_steps),
+        "evaluationRevisions":attempt.map(|a|a.evaluations.iter().filter(|e|cutoff.is_none_or(|at|e.created_at<=at)).map(|e|json!({"id":e.id,"revision":e.evaluator_revision,"provenance":e.provenance,"verdict":e.verdict,"score":e.score,"createdAt":e.created_at,"usage":e.usage,
+            "judge":e.judge.as_ref().map(|c|public_configuration(c,salt)),
+            "judgeBatchId":e.details.as_ref().and_then(|d|d.get("judgeBatchId")),
+            "protocolHash":e.details.as_ref().and_then(|d|d.get("protocolHash"))})).collect::<Vec<_>>()),
+        "subscriptionCharge":null,"subscriptionChargeReason":"See batch-level quota evidence; never allocated by token share"})
+}
+
+pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<Value>> {
+    validate_splits(data, None)?;
     let mut result = Vec::new();
     // A run whose every request named no effort level has no candidate left
     // to export (see `effort`).
@@ -65,27 +122,18 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                     })
                     .collect();
                 let authored = super::routing::authored_by_candidate(&version.manifest, config);
-                let observations:Vec<_>=(0..run.request.repetitions).map(|repetition|{
-                    let attempt=attempts.iter().find(|a|a.repetition==repetition);
-                    let reward=if authored { None } else { attempt.and_then(|a|super::analysis::score(a)) };
-                    json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
-                        "excluded":authored.then_some("authored_by_candidate"),
-                        "outcome":attempt.and_then(|a|super::analysis::effective_outcome(a.outcome.as_deref(),&a.evaluations)),"phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),
-                        "usage":attempt.map(|a|&a.usage),"resolvedModel":attempt.and_then(|a|a.resolved_model.as_ref()),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
-                        "observedConfiguration":attempt.and_then(|a|a.observed.as_ref()).map(|c|public_configuration(c,salt)),
-                        "workflowSteps":attempt.map(|a|&a.workflow_steps),
-                        "evaluationRevisions":attempt.map(|a|a.evaluations.iter().map(|e|json!({"id":e.id,"revision":e.evaluator_revision,"provenance":e.provenance,"verdict":e.verdict,"score":e.score,"createdAt":e.created_at,"usage":e.usage,
-                            "judge":e.judge.as_ref().map(|c|public_configuration(c,salt)),
-                            "judgeBatchId":e.details.as_ref().and_then(|d|d.get("judgeBatchId")),
-                            "protocolHash":e.details.as_ref().and_then(|d|d.get("protocolHash"))})).collect::<Vec<_>>()),
-                        "subscriptionCharge":null,"subscriptionChargeReason":"See batch-level quota evidence; never allocated by token share"})
-                }).collect();
+                let observations: Vec<_> = (0..run.request.repetitions)
+                    .map(|repetition| {
+                        let attempt = attempts.iter().find(|a| a.repetition == repetition);
+                        observation(attempt.copied(), repetition, authored, salt, None)
+                    })
+                    .collect();
                 matrix.push(json!({"configuration":public_configuration(config,salt),"outcomes":observations}));
             }
             result.push(json!({"schemaVersion":2,"candidateKeyAlgorithm":super::routing::CANDIDATE_KEY_ALGORITHM,
                 "runId":run.id,"taskVersion":version.id,"contentHash":version.content_hash,
                 "runCreatedAt":run.created_at,"protocol":{"timeoutSeconds":run.request.timeout_seconds,"repetitions":run.request.repetitions,"maxExecutions":run.request.max_executions},
-                "family":version.manifest.task_family,"split":version.manifest.split,"category":version.manifest.category,
+                "family":version.manifest.task_family,"splitGroup":split_group(&version.manifest),"split":version.manifest.split,"category":version.manifest.category,
                 "features":{"prompt":version.manifest.prompt,"fixtures":version.manifest.fixtures,
                     "workClassId":version.manifest.work_class_id,"roleId":version.manifest.role_id,"rolePrompt":version.manifest.role_prompt,
                     "facets":version.manifest.facets,"roleContextHash":version.manifest.role_context_hash,"entryState":version.manifest.entry_state,
@@ -99,12 +147,30 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
 
 /// Current cases joined across runs, with an explicit missing cell for every
 /// measured candidate. Historical outcome rows remain a separate archive.
+#[cfg(test)]
 pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<Value>> {
-    let archive = rows(data, include_held_out, salt)?;
+    ledger_rows_at(data, include_held_out, salt, now())
+}
+
+/// Training labels have stricter conditions than a historical board row:
+/// one frozen runtime, complete planned repetitions and the published budget.
+pub fn ledger_rows_at(
+    data: &QueryData,
+    include_held_out: bool,
+    salt: &str,
+    cutoff: i64,
+) -> Result<Vec<Value>> {
+    if cutoff < 0 || cutoff > now() {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Invalid training evidence cutoff",
+        ));
+    }
+    validate_splits(data, Some(cutoff))?;
     let runs: BTreeMap<_, _> = data
         .runs
         .iter()
-        .filter(|r| !r.request.preview)
+        .filter(|r| !r.request.preview && r.created_at <= cutoff)
         .map(|r| (r.id.as_str(), r))
         .collect();
     let versions: BTreeMap<_, _> = data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
@@ -118,9 +184,12 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
         runs.contains_key(a.run_id.as_str())
             && versions.get(a.version_id.as_str()).is_some_and(|v| {
                 exported_split(&v.manifest.split, include_held_out)
+                    && v.published_at <= cutoff
                     && !super::routing::authored_by_candidate(&v.manifest, &c)
             })
-            && super::analysis::score(a).is_some()
+            && a.phase == "terminal"
+            && a.finished_at.is_some_and(|at| at <= cutoff)
+            && super::analysis::score_as_of(a, Some(cutoff)).is_some()
     }) {
         let key = super::analysis::leaderboard_key(&super::analysis::execution_configuration(a));
         let entry = newest.entry(key).or_insert(a);
@@ -153,6 +222,7 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
                 .iter()
                 .filter(|a| {
                     a.run_id == run.id
+                        && a.finished_at.is_some_and(|at| at <= cutoff)
                         && super::analysis::leaderboard_key(&a.configuration) == requested
                 })
                 .map(|a| {
@@ -170,11 +240,9 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
         }
     }
     // Attempts whose run no longer names their configuration still count.
-    for a in data
-        .attempts
-        .iter()
-        .filter(|a| runs.contains_key(a.run_id.as_str()))
-    {
+    for a in data.attempts.iter().filter(|a| {
+        runs.contains_key(a.run_id.as_str()) && a.finished_at.is_some_and(|at| at <= cutoff)
+    }) {
         if let Some(version) = versions.get(a.version_id.as_str()) {
             planned.insert((
                 super::analysis::leaderboard_key(&super::analysis::execution_configuration(a)),
@@ -183,43 +251,70 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
         }
     }
     let mut result = Vec::new();
-    for version in super::analysis::pool(data, &ResultQuery::default()) {
+    for version in super::analysis::pool(
+        data,
+        &ResultQuery {
+            as_of: Some(cutoff),
+            ..Default::default()
+        },
+    ) {
         if !exported_split(&version.manifest.split, include_held_out) {
             continue;
         }
+        if version.published_at > cutoff {
+            continue;
+        }
         let mut matrix = Vec::new();
+        let minimum_repetitions = super::analysis::required_repetitions(data, version);
         for (key, configuration) in &candidates {
+            let known_runtime = configuration
+                .inventory_revision
+                .as_ref()
+                .is_some_and(|revision| !revision.trim().is_empty());
             let list: Vec<_> = data
                 .attempts
                 .iter()
                 .filter(|a| {
                     a.version_id == version.id
-                        && runs.contains_key(a.run_id.as_str())
+                        && known_runtime
+                        && runs.get(a.run_id.as_str()).is_some_and(|run| {
+                            run.request.repetitions >= minimum_repetitions
+                                && run.request.timeout_seconds
+                                    >= version.manifest.limits.timeout_seconds
+                        })
+                        && a.observed.as_ref().is_some_and(|observed| {
+                            observed.inventory_revision == configuration.inventory_revision
+                        })
                         && super::analysis::leaderboard_key(
                             &super::analysis::execution_configuration(a),
                         ) == *key
                 })
                 .collect();
-            let selected = super::analysis::latest_cell_attempts(&list, &runs, None);
+            let mut selected = super::analysis::latest_cell_attempts(&list, &runs, Some(cutoff));
+            selected.sort_by_key(|a| (a.repetition, &a.id));
             let excluded = super::routing::authored_by_candidate(&version.manifest, configuration);
-            let mut outcomes = Vec::new();
-            for a in &selected {
-                if let Some(observation) = archive
-                    .iter()
-                    .flat_map(|r| r["matrix"].as_array().into_iter().flatten())
-                    .flat_map(|c| c["outcomes"].as_array().into_iter().flatten())
-                    .find(|o| o["attemptId"] == a.id)
-                {
-                    outcomes.push(observation.clone());
-                }
-            }
+            let required_repetitions = selected.first().map_or(minimum_repetitions, |a| {
+                runs[a.run_id.as_str()]
+                    .request
+                    .repetitions
+                    .max(minimum_repetitions)
+            });
+            let repetitions: BTreeSet<_> = selected.iter().map(|a| a.repetition).collect();
+            let outcomes: Vec<_> = selected
+                .iter()
+                .map(|a| observation(Some(a), a.repetition, excluded, salt, Some(cutoff)))
+                .collect();
             let complete = !excluded
-                && !selected.is_empty()
-                && selected.iter().all(|a| super::analysis::score(a).is_some());
+                && selected.len() == required_repetitions as usize
+                && repetitions.len() == selected.len()
+                && repetitions.iter().copied().eq(0..required_repetitions)
+                && selected
+                    .iter()
+                    .all(|a| super::analysis::score_as_of(a, Some(cutoff)).is_some());
             let reward = complete.then(|| {
                 selected
                     .iter()
-                    .filter_map(|a| super::analysis::score(a))
+                    .filter_map(|a| super::analysis::score_as_of(a, Some(cutoff)))
                     .sum::<f64>()
                     / selected.len() as f64
             });
@@ -227,10 +322,23 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
             // planned for it: those cells are masked, not missing.
             let not_planned = !planned.contains(&(key.clone(), version.definition_id.as_str()));
             let owed = !excluded && !not_planned;
+            let observation_status = if excluded {
+                "authored_by_candidate"
+            } else if not_planned {
+                "not_planned"
+            } else if !known_runtime {
+                "unknown_runtime"
+            } else if selected.is_empty() {
+                "no_compatible_cell"
+            } else if !complete {
+                "incomplete_cell"
+            } else {
+                "observed"
+            };
             matrix.push(json!({"configuration":public_configuration(configuration,salt), "owed":owed, "observed":complete,
-                "notPlanned":not_planned,
+                "notPlanned":not_planned,"observationStatus":observation_status,"requiredRepetitions":required_repetitions,
                 "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"outcomes":outcomes,
-                "meanCost":super::analysis::mean_case_cost(&selected,None),
+                "meanCost":super::analysis::mean_case_cost(&selected,Some(cutoff)),
                 "runId":selected.first().map(|a|&a.run_id),
                 "effectiveTimeoutSeconds":selected.first().map(|a|super::runner::effective_timeout_seconds(runs[a.run_id.as_str()].request.timeout_seconds,&version.manifest)),
                 "repetitions":selected.len()}));
@@ -242,14 +350,14 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
                 .iter()
                 .filter(|c| c["owed"] == true)
                 .all(|c| c["observed"] == true);
-        result.push(json!({"schemaVersion":3,"candidateKeyAlgorithm":super::routing::CANDIDATE_KEY_ALGORITHM,
-            "selectionProvenance":"current_pool_latest_settled_cell",
-            "taskVersion":version.id,"contentHash":version.content_hash,"family":version.manifest.task_family,"split":version.manifest.split,
+        result.push(json!({"schemaVersion":4,"candidateKeyAlgorithm":super::routing::CANDIDATE_KEY_ALGORITHM,
+            "selectionProvenance":"current_pool_latest_compatible_runtime_cell","cutoffAt":cutoff,
+            "taskVersion":version.id,"contentHash":version.content_hash,"family":version.manifest.task_family,"splitGroup":split_group(&version.manifest),"split":version.manifest.split,
             "features":{"prompt":version.manifest.prompt,"fixtures":version.manifest.fixtures,"workClassId":version.manifest.work_class_id,
                 "roleId":version.manifest.role_id,"rolePrompt":version.manifest.role_prompt,"facets":version.manifest.facets,
                 "roleContextHash":version.manifest.role_context_hash,"entryState":version.manifest.entry_state,
                 "workflow":version.manifest.workflow,"executionProfile":version.manifest.execution_profile,"limits":version.manifest.limits},
-            "matrix":matrix,"owedCandidates":owed,"completeMatrix":complete_matrix,
+            "matrix":matrix,"owedCandidates":owed,"completeMatrix":complete_matrix,"minimumRepetitions":minimum_repetitions,
             "evaluatorRevision":version.manifest.evaluator.revision}));
     }
     Ok(result)
@@ -291,6 +399,7 @@ pub async fn export(
     data: QueryData,
     include_held_out: bool,
 ) -> Result<ExportResult> {
+    let cutoff = now();
     let id = uuid::Uuid::new_v4().to_string();
     let mut rows = rows(&data, include_held_out, &id)?;
     let snapshots = store.decision_snapshots().await?;
@@ -322,17 +431,17 @@ pub async fn export(
     tokio::fs::create_dir_all(&directory).await?;
     let outcomes_jsonl = jsonl(&rows)?;
     let hash = format!("{:x}", Sha256::digest(outcomes_jsonl.as_bytes()));
-    let prepared = ledger_rows(&data, include_held_out, &id)?;
+    let prepared = ledger_rows_at(&data, include_held_out, &id, cutoff)?;
     let ledger_jsonl = jsonl(&prepared)?;
     let ledger_hash = format!("{:x}", Sha256::digest(ledger_jsonl.as_bytes()));
-    let manifest = json!({"schemaVersion":2,"id":id,"createdAt":now(),"rowCount":rows.len(),"contentHash":hash,"catalogDefinitions":data.definitions.len(),
+    let manifest = json!({"schemaVersion":3,"id":id,"createdAt":now(),"cutoffAt":cutoff,"rowCount":rows.len(),"contentHash":hash,"catalogDefinitions":data.definitions.len(),
         "candidateKeyAlgorithm":super::routing::CANDIDATE_KEY_ALGORITHM,
         "purpose":if include_held_out{"explicit_evaluation_export"}else{"training"},"includesHeldOut":include_held_out,"includesDevelopment":false,
         "aggregation":"equal frozen-case means over observed repetitions; missing values stay null",
         "archive":"outcomes.jsonl",
         "currentPool":{"path":"ledger.jsonl","rowCount":prepared.len(),"contentHash":ledger_hash,
-            "selection":"latest settled repetitions per candidate and current task version; explicit observation masks",
-            "trainingPolicy":"training uses train cases only; development fixtures are never exported and held-out cases require explicit evaluation export; require compatible protocols and every owed candidate cell observed (completeMatrix) before fitting soft targets; a candidate owes only the cases some run planned for it, so author-excluded and not-planned cells are masked, not missing"},
+            "schemaVersion":4,"selection":"latest settled cell compatible with the column runtime, minimum repetitions and published timeout, at cutoffAt; every planned repetition must be scored",
+            "trainingPolicy":"train only by default; development is never exported; held-out requires an evaluation export. Families and related splitGroup values must not cross splits. completeMatrix covers exported columns only: a fit must separately verify its candidate inventory, class/family coverage and grader qualification. Authored and not-planned cells are masked. Partial, unknown-runtime and incompatible cells have null rewards; historical observations remain in outcomes.jsonl."},
         "quotaSemantics":"whole controlled batch only; mixed and unknown charges are omitted",
         "quota":quota,"versions":rows.iter().map(|row|json!({"version":row["taskVersion"],"family":row["family"],"split":row["split"],"hash":row["contentHash"]})).collect::<Vec<_>>()});
     let path = directory.join("outcomes.jsonl");
@@ -390,6 +499,225 @@ mod tests {
     }
     fn columns(row: &Value) -> usize {
         row["matrix"].as_array().map_or(0, Vec::len)
+    }
+
+    #[test]
+    fn training_cells_require_the_declared_repetition_protocol() {
+        let mut data = dataset();
+        data.required_repetitions = 3;
+        let exported = ledger_rows(&data, false, "training").unwrap();
+        assert!(exported.iter().all(|row| row["completeMatrix"] == false));
+        assert!(exported.iter().all(
+            |row| row["matrix"][0]["observed"] == false && row["matrix"][0]["reward"].is_null()
+        ));
+    }
+
+    #[test]
+    fn training_cells_never_relabel_old_runtime_outcomes() {
+        let mut data = dataset();
+        for attempt in data.attempts.iter_mut().filter(|a| a.run_id == "before") {
+            attempt.observed.as_mut().unwrap().inventory_revision = Some("old-runtime".into());
+        }
+        data.attempts.retain(|a| a.id != "after-v0");
+        let exported = ledger_rows(&data, false, "training").unwrap();
+        let row = exported.iter().find(|r| r["taskVersion"] == "v0").unwrap();
+        assert_eq!(
+            row["matrix"][0]["configuration"]["inventoryRevision"],
+            "runtime-hash"
+        );
+        assert_eq!(row["matrix"][0]["observed"], false);
+        assert!(row["matrix"][0]["reward"].is_null());
+        assert_eq!(row["completeMatrix"], false);
+    }
+
+    #[test]
+    fn training_cells_ignore_short_timeout_runs_before_selecting_latest() {
+        let mut data = dataset();
+        for version in &mut data.versions {
+            version.manifest.limits.timeout_seconds = 120;
+        }
+        data.runs[1].request.timeout_seconds = 10;
+        let exported = ledger_rows(&data, false, "training").unwrap();
+        assert!(exported
+            .iter()
+            .all(|row| row["matrix"][0]["runId"] == "before"));
+        assert!(exported.iter().all(|row| row["matrix"][0]["reward"] == 1.0));
+    }
+
+    fn three_repetitions(data: &mut QueryData) {
+        data.required_repetitions = 3;
+        for run in &mut data.runs {
+            run.request.repetitions = 3;
+        }
+        data.attempts = data
+            .attempts
+            .iter()
+            .flat_map(|attempt| {
+                (0..3).map(move |repetition| {
+                    let mut copy = attempt.clone();
+                    copy.id = format!("{}-{repetition}", attempt.id);
+                    copy.repetition = repetition;
+                    copy
+                })
+            })
+            .collect();
+    }
+
+    #[test]
+    fn a_new_partial_cell_does_not_become_a_complete_soft_target() {
+        let mut data = dataset();
+        three_repetitions(&mut data);
+        data.attempts
+            .retain(|a| a.run_id != "after" || a.repetition == 0);
+        let rows = ledger_rows(&data, false, "t").unwrap();
+        for row in rows {
+            let cell = &row["matrix"][0];
+            assert_eq!(cell["runId"], "after");
+            assert_eq!(cell["repetitions"], 1);
+            assert_eq!(cell["requiredRepetitions"], 3);
+            assert_eq!(cell["observationStatus"], "incomplete_cell");
+            assert_eq!(row["completeMatrix"], false);
+            assert!(cell["reward"].is_null());
+        }
+    }
+
+    #[test]
+    fn soft_targets_keep_the_repetition_distribution_and_reject_duplicate_indices() {
+        let mut data = dataset();
+        three_repetitions(&mut data);
+        for attempt in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
+            attempt.outcome = Some(
+                if attempt.repetition == 0 {
+                    "fail"
+                } else {
+                    "pass"
+                }
+                .into(),
+            );
+        }
+        let rows = ledger_rows_at(&data, false, "t", 10).unwrap();
+        for row in &rows {
+            assert_eq!(row["matrix"][0]["reward"], 2.0 / 3.0);
+            assert_eq!(row["completeMatrix"], true);
+            assert!(row["matrix"][0]["meanCost"].is_null());
+        }
+        data.attempts.reverse();
+        data.runs.reverse();
+        data.versions.reverse();
+        assert_eq!(ledger_rows_at(&data, false, "t", 10).unwrap(), rows);
+        for attempt in data
+            .attempts
+            .iter_mut()
+            .filter(|a| a.run_id == "after" && a.repetition == 2)
+        {
+            attempt.repetition = 1;
+        }
+        assert!(ledger_rows(&data, false, "t")
+            .unwrap()
+            .iter()
+            .all(|row| row["completeMatrix"] == false));
+    }
+
+    #[test]
+    fn runtime_identity_must_be_known_and_acknowledged() {
+        let mut data = dataset();
+        for attempt in &mut data.attempts {
+            attempt.observed.as_mut().unwrap().inventory_revision = None;
+        }
+        let rows = ledger_rows(&data, false, "t").unwrap();
+        assert!(rows.iter().all(
+            |row| row["matrix"][0]["observationStatus"] == "unknown_runtime"
+                && row["completeMatrix"] == false
+        ));
+        for attempt in &mut data.attempts {
+            attempt.observed = None;
+        }
+        let rows = ledger_rows(&data, false, "t").unwrap();
+        assert!(rows
+            .iter()
+            .all(|row| row["matrix"][0]["reward"].is_null() && row["completeMatrix"] == false));
+    }
+
+    #[test]
+    fn a_mixed_runtime_repetition_cell_stays_incomplete() {
+        let mut data = dataset();
+        three_repetitions(&mut data);
+        for attempt in data.attempts.iter_mut().filter(|a| a.repetition == 0) {
+            attempt.observed.as_mut().unwrap().inventory_revision = Some("other-runtime".into());
+        }
+        let rows = ledger_rows(&data, false, "t").unwrap();
+        assert!(rows
+            .iter()
+            .all(|row| row["completeMatrix"] == false && row["matrix"][0]["reward"].is_null()));
+    }
+
+    #[test]
+    fn training_cutoff_excludes_later_runs_and_judge_evidence() {
+        let mut data = dataset();
+        let attempt = data
+            .attempts
+            .iter_mut()
+            .find(|a| a.id == "before-v0")
+            .unwrap();
+        for (time, verdict, score) in [(2, "pass", 1.0), (9, "fail", 0.0)] {
+            attempt.evaluations.push(Evaluation {
+                id: time.to_string(),
+                evaluator_revision: "revision".into(),
+                verdict: verdict.into(),
+                score: Some(score),
+                reason: "checked".into(),
+                created_at: time,
+                provenance: "human".into(),
+                artifacts: vec![],
+                details: None,
+                judge: None,
+                usage: None,
+            });
+        }
+        let early = ledger_rows_at(&data, false, "t", 3).unwrap();
+        for row in &early {
+            assert_eq!(row["cutoffAt"], 3);
+            assert_eq!(row["matrix"][0]["runId"], "before");
+            assert_eq!(row["matrix"][0]["reward"], 1.0);
+        }
+        assert_eq!(
+            early[0]["matrix"][0]["outcomes"][0]["evaluationRevisions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        data.versions[5].published_at = 20;
+        assert_eq!(ledger_rows_at(&data, false, "t", 3).unwrap().len(), 5);
+        assert!(ledger_rows_at(&data, false, "t", -1).is_err());
+        assert!(ledger_rows_at(&data, false, "t", now() + 60_000).is_err());
+    }
+
+    #[test]
+    fn related_families_must_share_a_split_before_training_export() {
+        let mut data = dataset();
+        data.versions[0].manifest.environment["splitGroup"] = json!("shared-origin");
+        data.versions[1].manifest.environment["splitGroup"] = json!("shared-origin");
+        data.versions[1].manifest.split = "held_out".into();
+        for include_held_out in [false, true] {
+            assert!(ledger_rows(&data, include_held_out, "t")
+                .unwrap_err()
+                .message
+                .contains("related task group"));
+            assert!(rows(&data, include_held_out, "t").is_err());
+        }
+    }
+
+    #[test]
+    fn a_cell_must_finish_all_repetitions_its_run_planned() {
+        let mut data = dataset();
+        three_repetitions(&mut data);
+        data.runs[1].request.repetitions = 5;
+        let rows = ledger_rows(&data, false, "t").unwrap();
+        assert!(rows
+            .iter()
+            .all(|row| row["matrix"][0]["requiredRepetitions"] == 5
+                && row["completeMatrix"] == false));
     }
 
     #[test]
@@ -731,7 +1059,7 @@ mod tests {
                 version_ids: vec![version.id],
                 configurations: inventory.into_iter().map(|m| m.configuration).collect(),
                 repetitions: super::super::analysis::REQUIRED_REPETITIONS,
-                timeout_seconds: 10,
+                timeout_seconds: version.manifest.limits.timeout_seconds,
                 max_executions: 6,
                 preview: false,
                 parallelism: None,
@@ -749,6 +1077,7 @@ mod tests {
             .cloned()
         {
             attempt.phase = "terminal".into();
+            attempt.observed = Some(attempt.configuration.clone());
             attempt.outcome = Some("pass".into());
             attempt.finished_at = Some(now());
             attempt.output = Some("private-answer-not-a-feature".into());
