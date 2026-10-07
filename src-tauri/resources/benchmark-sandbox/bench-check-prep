@@ -9,7 +9,10 @@ id=${1:-}
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-check-prep: bad id" >&2; exit 64; }
 dir=/srv/bench/checks/$id
 staging=/srv/bench/staging/$id
-[[ ! -e $dir && ! -e $staging ]] || { echo "bench-check-prep: $id exists" >&2; exit 73; }
+probe=/srv/bench/probes/$id
+pair=/srv/bench/pairs/$id.json
+submission=/srv/bench/submissions/$id
+[[ ! -e $dir && ! -e $staging && ! -e $probe && ! -e $pair && ! -e $submission ]] || { echo "bench-check-prep: $id exists" >&2; exit 73; }
 mkdir -p "$staging" "$dir"
 chmod 700 "$staging" "$dir"
 trap 'rm -rf "$staging"' EXIT
@@ -32,40 +35,56 @@ if [[ -s $dir/.answer.patch ]]; then
   fi
 fi
 rm -f "$dir/.answer.patch"
-if [[ -d $staging/hidden ]]; then
+# Freeze a separate public copy before adding anything hidden. The checker
+# may inspect the submitted files as data, but executes the submission only
+# through the probe. No private check is copied into the probe workspace.
+/usr/local/sbin/bench-kill check "$id"
+if [[ -f $staging/probe.json ]]; then
+  install -d -m 700 /srv/bench/probes /srv/bench/pairs /srv/bench/submissions "$probe"
+  cp -a "$dir/." "$probe/"
+  chown -R candidate:candidate "$probe"
+  # Keep submitted files off the check's import/search paths. The checker
+  # can inspect a separate read-only /submission mount, without executing it.
+  mv "$dir" "$submission"
+  install -d -m 700 -o checker -g checker "$dir"
+  install -m 600 "$staging/probe.json" "$pair"
+fi
+if [[ -d $staging/hidden || -d $staging/probe ]]; then
   # The answer may replace a hidden-file parent with a symlink. Never follow
   # candidate-controlled links while installing files as root. Also remove
   # background children before touching the patched workspace.
-  /usr/local/sbin/bench-kill check "$id"
-  python3 - "$staging/hidden" "$dir" <<'PY'
+  python3 - "$staging/hidden" "$dir" "$staging/probe" "$probe" <<'PY'
 import os
 import pathlib
 import pwd
 import shutil
 import sys
 
-source, target = map(pathlib.Path, sys.argv[1:])
-checker = pwd.getpwnam("checker")
-for file in source.rglob("*"):
-    if not file.is_file():
+for start, user in [(1, 'checker'), (3, 'candidate')]:
+    source, target = map(pathlib.Path, sys.argv[start:start+2])
+    owner = pwd.getpwnam(user)
+    if not source.is_dir():
         continue
-    relative = file.relative_to(source)
-    destination = target
-    for part in relative.parts[:-1]:
-        destination /= part
-        if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
-            print("The answer obstructs a hidden check file", file=sys.stderr)
+    for file in source.rglob("*"):
+        if not file.is_file():
+            continue
+        relative = file.relative_to(source)
+        destination = target
+        for part in relative.parts[:-1]:
+            destination /= part
+            if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+                print("The answer obstructs a hidden check or probe driver file", file=sys.stderr)
+                sys.exit(2)
+            destination.mkdir(exist_ok=True)
+            os.chown(destination, owner.pw_uid, owner.pw_gid)
+        destination /= relative.name
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            print("The answer obstructs a hidden check or probe driver file", file=sys.stderr)
             sys.exit(2)
-        destination.mkdir(exist_ok=True)
-        os.chown(destination, checker.pw_uid, checker.pw_gid)
-    destination /= relative.name
-    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
-        print("The answer obstructs a hidden check file", file=sys.stderr)
-        sys.exit(2)
-    # Replace rather than overwrite: even a hard link must not be followed.
-    destination.unlink(missing_ok=True)
-    shutil.copyfile(file, destination)
-    os.chown(destination, checker.pw_uid, checker.pw_gid)
+        # Replace rather than overwrite: even a hard link must not be followed.
+        destination.unlink(missing_ok=True)
+        shutil.copyfile(file, destination)
+        os.chown(destination, owner.pw_uid, owner.pw_gid)
 PY
 fi
 echo "prepared $id"

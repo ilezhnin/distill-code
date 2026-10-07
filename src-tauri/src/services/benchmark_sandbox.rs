@@ -21,6 +21,7 @@ const FILES: &[(&str, &[u8])] = resources![
     "bench-clean",
     "bench-copy",
     "bench-enter",
+    "bench-judge",
     "bench-kill",
     "bench-login",
     "bench-net",
@@ -325,10 +326,11 @@ pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result
     if argv.is_empty() {
         return Err(io::Error::other("The check needs a command"));
     }
-    let mut args = vec!["check", id, "--"];
+    let seconds_arg = seconds.to_string();
+    let mut args = vec![id, &seconds_arg, "--"];
     args.extend(argv.iter().map(String::as_str));
     let result = invoke(
-        "/usr/local/sbin/bench-run",
+        "/usr/local/sbin/bench-judge",
         &args,
         None,
         TAIL_BYTES,

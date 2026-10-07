@@ -56,6 +56,13 @@ if [[ -n $dir ]]; then
   mount --bind "$dir" /workspace
   cwd=/workspace
 fi
+if [[ $user == checker && -n $dir && -d /srv/bench/submissions/$(basename "$dir") ]]; then
+  mkdir -p /submission
+  mount --bind "/srv/bench/submissions/$(basename "$dir")" /submission
+  mount -o remount,bind,ro /submission
+elif [[ -d /submission ]]; then
+  mount -t tmpfs -o mode=000 none /submission
+fi
 if [[ $user == candidate && -n $dir && ( -e /workspace/.codex || -e /workspace/.agents ) ]]; then
   echo 'capability_missing: repository contains native Codex configuration or skills' >&2
   exit 65

@@ -8,4 +8,5 @@ id=${1:-}
 /usr/local/sbin/bench-kill check "$id"
 /usr/local/sbin/bench-auth save "$id"
 /usr/local/sbin/bench-network "$id" clean
-rm -rf "/srv/bench/work/$id" "/srv/bench/base/$id" "/srv/bench/checks/$id" "/srv/bench/staging/$id" "/srv/bench/auth/$id"
+rm -rf "/srv/bench/work/$id" "/srv/bench/base/$id" "/srv/bench/checks/$id" "/srv/bench/staging/$id" "/srv/bench/auth/$id" "/srv/bench/probes/$id" "/srv/bench/submissions/$id"
+rm -f "/srv/bench/pairs/$id.json"

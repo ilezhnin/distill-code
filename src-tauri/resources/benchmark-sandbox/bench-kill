@@ -3,10 +3,12 @@
 set -euo pipefail
 mode=${1:-}
 id=${2:-}
-if [[ ! $mode =~ ^(session|check|login)$ || ! $id =~ ^[A-Za-z0-9_-]{1,80}$ ]]; then
+if [[ ! $mode =~ ^(session|check|probe|login)$ || ! $id =~ ^[A-Za-z0-9_-]{1,80}$ ]]; then
   echo "bench-kill: bad arguments" >&2
   exit 64
 fi
+# A paired check owns its untrusted probe even if its supervisor was cancelled.
+if [[ $mode == check ]]; then /usr/local/sbin/bench-kill probe "$id"; fi
 cgroup=/sys/fs/cgroup/distill-bench/$mode-$id
 if [[ -d $cgroup ]]; then
   echo 1 >"$cgroup/cgroup.kill"

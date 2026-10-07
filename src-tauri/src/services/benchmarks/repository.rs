@@ -41,6 +41,20 @@ pub struct HiddenCheck {
     pub command: Vec<String>,
     #[serde(default = "default_check_seconds")]
     pub timeout_seconds: u64,
+    /// A separate untrusted process that receives only public probe inputs.
+    /// The check reads the submitted files as data and executes code only in
+    /// this process through DISTILL_BENCH_RPC_FD. The probe never sees checks.
+    #[serde(default)]
+    pub probe: Option<CheckProbe>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckProbe {
+    /// Public driver files installed beside the submitted repository.
+    #[serde(default)]
+    pub files: Vec<Fixture>,
+    pub command: Vec<String>,
 }
 
 fn default_check_seconds() -> u64 {
@@ -71,15 +85,21 @@ pub fn hidden_check(evaluator: &Evaluator) -> Result<HiddenCheck> {
             format!("A repository check needs {{files, command, timeoutSeconds}}: {error}"),
         )
     })?;
-    if check.command.is_empty() || check.command[0].trim().is_empty() {
+    if !valid_command(&check.command)
+        || check
+            .probe
+            .as_ref()
+            .is_some_and(|p| !valid_command(&p.command))
+    {
         return Err(BenchmarkError::new(
             "validation",
-            "A repository check needs a command",
+            "A repository check and each probe need a bounded command without NUL bytes",
         ));
     }
     if check
         .files
         .iter()
+        .chain(check.probe.iter().flat_map(|p| &p.files))
         .any(|file| !fixtures::safe_relative(&file.path))
     {
         return Err(BenchmarkError::new(
@@ -94,6 +114,14 @@ pub fn hidden_check(evaluator: &Evaluator) -> Result<HiddenCheck> {
         ));
     }
     Ok(check)
+}
+
+fn valid_command(argv: &[String]) -> bool {
+    !argv.is_empty()
+        && argv.len() <= 256
+        && !argv[0].trim().is_empty()
+        && argv.iter().all(|arg| !arg.contains('\0'))
+        && argv.iter().map(String::len).sum::<usize>() <= 32 * 1024
 }
 
 /// What a repository case lacks, as validation issues. The repository check
@@ -401,6 +429,20 @@ fn check_archive(snapshot: &[u8], patch: &str, check: &HiddenCheck) -> Result<Ve
             file.content.as_bytes(),
         )?;
     }
+    if let Some(probe) = &check.probe {
+        append_file(
+            &mut builder,
+            "probe.json",
+            &serde_json::to_vec(&serde_json::json!({"command": probe.command}))?,
+        )?;
+        for file in &probe.files {
+            append_file(
+                &mut builder,
+                &format!("probe/{}", file.path),
+                file.content.as_bytes(),
+            )?;
+        }
+    }
     Ok(builder.into_inner()?)
 }
 
@@ -546,6 +588,77 @@ mod tests {
         })
         .to_string();
         draft
+    }
+
+    #[test]
+    fn isolated_probe_commands_and_paths_are_validated() {
+        let mut evaluator = super::super::seeds::definitions().remove(0).evaluator;
+        let valid = serde_json::json!({
+            "command": ["python3", "hidden/check.py"],
+            "files": [{"path": "hidden/check.py", "content": "pass"}],
+            "probe": {"command": ["node", "driver.mjs"], "files": [{"path": "driver.mjs", "content": ""}]},
+        });
+        evaluator.expected = valid.to_string();
+        assert!(hidden_check(&evaluator).unwrap().probe.is_some());
+        for command in [
+            serde_json::json!([]),
+            serde_json::json!([" "]),
+            serde_json::json!(["node", "\0"]),
+            serde_json::json!(["x".repeat(32769)]),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["probe"]["command"] = command;
+            evaluator.expected = invalid.to_string();
+            assert!(hidden_check(&evaluator).is_err());
+        }
+        let mut invalid = valid;
+        invalid["probe"]["files"][0]["path"] = "../escape".into();
+        evaluator.expected = invalid.to_string();
+        assert!(hidden_check(&evaluator).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the provisioned distill-bench WSL distribution"]
+    async fn isolated_verdict_cannot_be_rewritten_by_submitted_code() {
+        let root = tempfile::tempdir().unwrap();
+        let (snapshot, fix) = source(root.path()).await;
+        let mut draft = manifest(&snapshot);
+        draft.evaluator.expected = serde_json::json!({
+            "files": [{"path":"hidden/check.py", "content": r#"import json,os,socket
+from pathlib import Path
+assert not Path('sum.js').exists()
+assert Path('/submission/sum.js').is_file()
+channel=socket.socket(fileno=int(os.environ['DISTILL_BENCH_RPC_FD'])).makefile('rwb')
+channel.write(b'{"a":17,"b":29}\n');channel.flush()
+assert json.loads(channel.readline(1024)) == 46
+print('Independent verdict passed')
+"#}],
+            "command": ["python3", "hidden/check.py"],
+            "timeoutSeconds": 15,
+            "probe": {"command":["node","driver.cjs"],"files":[{"path":"driver.cjs","content":r#"const net=require('node:net');
+const {sum}=require('./sum.js');
+const socket=new net.Socket({fd:Number(process.env.DISTILL_BENCH_RPC_FD),readable:true,writable:true});
+require('node:readline').createInterface({input:socket}).on('line',line=>{const {a,b}=JSON.parse(line);socket.write(JSON.stringify(sum(a,b))+'\n');});
+"#}]},
+        }).to_string();
+        assert_eq!(
+            evaluate_reference(&draft, &fix).await.unwrap().verdict,
+            "pass"
+        );
+        assert_eq!(
+            evaluate_reference(&draft, "").await.unwrap().verdict,
+            "fail"
+        );
+        // Same wrong implementation, plus the previously successful attack.
+        let attack = "diff --git a/sum.js b/sum.js\n--- a/sum.js\n+++ b/sum.js\n@@ -1 +1,2 @@\n+require('node:assert/strict').equal = () => {};\n exports.sum = (a, b) => a - b;\n";
+        let verdict = evaluate_reference(&draft, attack).await.unwrap();
+        assert_eq!(verdict.verdict, "fail", "{}", verdict.reason);
+        let id = verdict.details.unwrap()["checkId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let result = sandbox::command("python3", &["-c", &format!("from pathlib import Path; assert all(not (Path('/srv/bench')/d/'{id}').exists() for d in ['checks','probes','submissions']); assert not Path('/srv/bench/pairs/{id}.json').exists()")]).output().await.unwrap();
+        assert!(result.status.success());
     }
 
     #[test]

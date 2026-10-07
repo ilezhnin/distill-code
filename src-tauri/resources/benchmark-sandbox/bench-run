@@ -3,6 +3,7 @@
 #
 #   session ID  as candidate, /workspace = /srv/bench/work/ID, public internet only
 #   check ID    as checker, /workspace = /srv/bench/checks/ID, no network
+#   probe ID    as candidate, /workspace = /srv/bench/probes/ID, no network
 #   login ID    as candidate, no workspace, public internet only (provider sign-in)
 #
 # Every mode runs in its own cgroup (memory and process caps; bench-kill ends
@@ -21,6 +22,7 @@ shift 2
 case $mode in
   session) user=candidate dir=/srv/bench/work/$id net=session ;;
   check) user=checker dir=/srv/bench/checks/$id net=none ;;
+  probe) user=candidate dir=/srv/bench/probes/$id net=none ;;
   login) user=candidate dir= net=bench ;;
   *) echo "bench-run: unknown mode $mode" >&2; exit 64 ;;
 esac
