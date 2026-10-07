@@ -47,7 +47,9 @@ pub fn legacy_work_class(class: &str, name: &str) -> Option<(&'static str, Optio
         | "b83b9c91dc906f47bd980f1b29f4ea11fc29b30c49078e01e29e92b54f931564"
         | "c64d166f8adce8437a95c728f9b0f914215aaf7ac403ae02e9336c51d56aee71"
         | "ee72cd13ff72ad00b90cbc5618197086bf62fe00565a4e15df988fb067337ca9"
-        | "850fe749b35c9037839b5ec9d58888dd0d4ee396a1dc53d6c32e7ac4dba0e6ef" => Some("research-data"),
+        | "850fe749b35c9037839b5ec9d58888dd0d4ee396a1dc53d6c32e7ac4dba0e6ef" => {
+            Some("research-data")
+        }
         _ => None,
     };
     let (by_class, difficulty) = match class {

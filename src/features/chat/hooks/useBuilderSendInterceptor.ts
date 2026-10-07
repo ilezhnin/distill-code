@@ -1,9 +1,17 @@
-import agentBuilderSkillBody from "../../../../distro/skills/agent-builder/SKILL.md?raw";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import type { ChatSendOptions } from "@/features/chat/types";
 
+// The editor needs the application file contract, not an operator's skill body.
+const AGENT_FILE_INSTRUCTIONS = [
+  "Edit the agent Markdown draft according to the user's request.",
+  "Keep its YAML frontmatter between --- delimiters and its instructions in the Markdown body.",
+  "Use the name and description frontmatter fields for the displayed identity.",
+  "Preserve existing fields and provider/model configuration unless the user requests a change.",
+  "Do not copy personal profiles, private roles or local skills into the draft unless explicitly requested.",
+].join("\n");
+
 export function resolveAgentBuilderSkillBody(
-  skillBody = agentBuilderSkillBody,
+  skillBody = AGENT_FILE_INSTRUCTIONS,
 ) {
   return skillBody;
 }
@@ -29,7 +37,7 @@ export function composeBuilderSendOptions(
   const pathNote = [
     "agent-builder session path instructions:",
     "This session is bound to an existing draft that the app is previewing.",
-    "These instructions override the generic create/rename workflow above:",
+    "Follow the editor's file ownership requirements:",
     `- Edit exactly this file: ${session.targetAgentPath}`,
     "- Do not rename, move, delete, or replace it with a new slug-named file.",
     "- Update the frontmatter name for the agent's display name, but keep the filename/path unchanged.",

@@ -193,6 +193,7 @@ export function defaultBundledAgentPaths(): string[] {
     "distro",
     "agents",
   );
+  if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((entry) => entry.endsWith(".md"))
     .sort()
@@ -211,11 +212,8 @@ function main(argv: string[]): number {
       console.error(USAGE);
       return 2;
     }
-    if (paths.length === 0) {
-      console.error("no bundled agent manifests found in distro/agents");
-      console.error(USAGE);
-      return 2;
-    }
+    // The public distribution intentionally contains no operator role catalog.
+    // Explicitly supplied files still go through the complete validation below.
   }
 
   const allErrors: string[] = [];

@@ -183,7 +183,9 @@ describe("the project memory mirror and a project that joins late", () => {
     await flushMemoryWrites();
 
     folders.unreadable.clear();
-    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual(["c1"]);
+    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual([
+      "c1",
+    ]);
   });
 
   it("merges a folder that comes back after startup into the store and the file", async () => {
@@ -240,7 +242,9 @@ describe("the project memory mirror and a project that joins late", () => {
       .getState()
       .remember({ text: "Alex pushes", scope: "global" }, NOW);
     await flushMemoryWrites();
-    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual(["c2"]);
+    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual([
+      "c2",
+    ]);
   });
 
   it("reads the new folder when a project is pointed somewhere else", async () => {

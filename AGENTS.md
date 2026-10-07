@@ -22,12 +22,13 @@ Storage paths and migration behavior are documented in `docs/distill-root-layout
 Personal prompt files, their organization and delivery hooks belong to the user.
 Do not encode a personal profile schema, scaffold it, or add its delivery workflow
 to app source, documentation or UI. Keep personal skills and agent definitions
-outside the repository. `distro/` is for generic built-in skills and starter agents.
+outside the repository. `distro/` contains application help only, not the
+operator's working skills, role catalog or avatars.
 
 - `src/` — React UI/features/shared code
 - `src-tauri/` — Tauri shell; `src-tauri/src/services/agent_host/` is the
   built-in ACP host that spawns the harness bridges and stores sessions
-- `distro/` — bundled agents and skills and other app defaults
+- `distro/` — generic application help and other public app defaults
 - `acp-tools.lock.json` — pinned `package.json` + `package-lock.json`
   the managed ACP bridges are installed from with `npm ci`
 - `scripts/update-acp-tools-lock.mjs` — resolves and records a new managed ACP bridge pin
@@ -36,10 +37,7 @@ outside the repository. `distro/` is for generic built-in skills and starter age
 - `src-tauri/crates/distillctl/` — bundled distillctl CLI
 - `distro/skills/distill-help/references/distillctl.md` — distillctl guidance agents
   read from the bundled `distill-help` skill
-- `.agents/` — development skills and checks for coding agents working on this
-  repository, read straight from the checkout. Distill itself does not list a
-  project's `.agents` (see `docs/distill-root-layout.md`), so a Distill chat on
-  this repository does not offer them.
+- `.agents/checks/` — generic development checks for this repository.
 
 ## Architectural laws
 
@@ -57,6 +55,49 @@ Renderer code should use `getCachedAvatarForRef()` or
 `cachedAssetToMedia()`, which passes paths through
 `convertFileSrc(..., "asset")`. Do not fetch remote media or construct CDN URLs
 in UI code.
+
+## Private information and publication
+
+Keep personal information outside every project Git checkout: operator profiles,
+memory, conversations, project history, private roles, agent definitions, avatars,
+working skills, credentials, account exports, internal audits, development plans,
+roadmaps and handoffs. Store them under the configured Distill root or a private
+local workspace directory. Do not seed personal material from the application
+distribution. Existing user-owned installations must remain intact.
+
+The repository may contain application source, generic contributor instructions,
+documented current behavior, schema/template guidance, application help and
+invented regression fixtures. Only `distill-help` and `distill-monitor` are public
+bundled skills. Do not add working roles or skills to `distro/` or `.agents/skills/`.
+Use fictional project names and paths in tests and examples.
+
+Review the staged bytes and all outgoing history before publication, including
+commit messages, images, generated files and archives. Never copy private data
+into issues, pull requests, CI logs/artifacts, releases or shared screenshots.
+Ignore rules and hooks are safeguards, not proof of confidentiality. Removing a
+file from the latest tree does not remove it from history or third-party copies.
+If a real credential is exposed, revoke or rotate it; history cleanup alone does
+not make it safe. Preserve a private backup before an authorized history rewrite.
+
+## Private benchmark material
+
+Keep only benchmark infrastructure and deliberately public development examples
+in the application repository. Actual evaluation tasks and their documentation
+are private local data. Keep prompts, fixtures, repository snapshots, expected
+answers, hidden checks, rubrics, valid alternatives, mutants, calibration results,
+per-task reports and detailed task plans outside every project Git checkout.
+Do not copy that material into source, regression fixtures, documentation, commit
+messages, issues, pull requests, CI artifacts or screenshots intended for sharing.
+Use invented development fixtures to test the generic infrastructure.
+
+The durable private task store is under the configured Distill root at
+`benchmark-tasks`; detailed plans belong in its `documentation` directory.
+Only general template guidance, schema descriptions and application behavior
+belong in repository documentation. Check the index and outgoing history before
+publication: removing a file from the latest tree does not remove earlier blobs
+or commit messages. Never treat a previously public task as an unseen holdout.
+Sending a task to a remote model is a separate data disclosure; verify the
+applicable account's data-use terms and controls before a private evaluation.
 
 ## Common commands
 
@@ -93,9 +134,8 @@ Each `*-windows` recipe and `bundle` wraps a script in `scripts/windows/`; when
 ## distillctl
 
 distillctl lets agents control the app: CLI → broker → renderer registry.
-Design and reasoning: `docs/distillctl-architecture.md`. To add or change a
-command, use `.agents/skills/distillctl-new-command/SKILL.md`
-(`just new-command <noun> <verb>`).
+Design and reasoning: `docs/distillctl-architecture.md`. Scaffold a command with
+`just new-command <noun> <verb>` and follow the invariants below.
 
 Invariants (1, 3, 4 are gated by test failures; 2, 5, 6 are review rules —
 the doc has the whys and the enforcement map):
