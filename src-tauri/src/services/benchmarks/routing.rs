@@ -32,6 +32,8 @@ pub const WORK_CLASSES: [&str; 14] = [
 /// (light, medium, heavy) rather than by kind; a few cases were classed by
 /// their family and move by name.
 pub fn legacy_work_class(class: &str, name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    // Stable compatibility keys keep local catalog titles out of application source.
+    // These digests are identifiers, not encryption or a claim of historical secrecy.
     let by_name = match hash(name.as_bytes()).as_str() {
         "162d29d7782cb2681d8f4657465960d1cbe708596d38610980ade97589979bfd" => Some("security"),
         "d8a00c06d4d89407c414c28c60ae43ea32d56461453b99382c31a12745d82e3d"
@@ -47,7 +49,9 @@ pub fn legacy_work_class(class: &str, name: &str) -> Option<(&'static str, Optio
         | "b83b9c91dc906f47bd980f1b29f4ea11fc29b30c49078e01e29e92b54f931564"
         | "c64d166f8adce8437a95c728f9b0f914215aaf7ac403ae02e9336c51d56aee71"
         | "ee72cd13ff72ad00b90cbc5618197086bf62fe00565a4e15df988fb067337ca9"
-        | "850fe749b35c9037839b5ec9d58888dd0d4ee396a1dc53d6c32e7ac4dba0e6ef" => Some("research-data"),
+        | "850fe749b35c9037839b5ec9d58888dd0d4ee396a1dc53d6c32e7ac4dba0e6ef" => {
+            Some("research-data")
+        }
         _ => None,
     };
     let (by_class, difficulty) = match class {
