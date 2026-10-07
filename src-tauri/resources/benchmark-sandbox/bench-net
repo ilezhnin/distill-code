@@ -6,6 +6,14 @@
 # WSL distribution, which all share this VM's network namespace) and the
 # parent cgroup with memory and process controllers.
 set -eu
+# WSL's boot command does not inherit an interactive root shell's PATH.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p /run/lock
+exec 9>/run/lock/distill-bench-net
+flock 9
+# The first distribution to boot cannot depend on another distro's systemd
+# enabling these controllers on the shared cgroup root.
+echo "+memory +pids" >/sys/fs/cgroup/cgroup.subtree_control
 mkdir -p /sys/fs/cgroup/distill-bench
 echo "+memory +pids" >/sys/fs/cgroup/distill-bench/cgroup.subtree_control
 # The VM's network namespace outlives this distribution's restarts, so a
@@ -23,7 +31,6 @@ ip link set bench0 up
 ip netns exec bench ip addr add 10.231.0.2/30 dev bench1
 ip netns exec bench ip link set bench1 up
 ip netns exec bench ip link set lo up
-ip netns exec bench ip route add default via 10.231.0.1
 ip netns exec bench sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
 sysctl -q -w net.ipv4.ip_forward=1
 iptables -N DISTILL-BENCH 2>/dev/null || iptables -F DISTILL-BENCH
@@ -43,3 +50,6 @@ iptables -t nat -C POSTROUTING -s 10.231.0.0/30 -o eth0 -j MASQUERADE 2>/dev/nul
   iptables -t nat -A POSTROUTING -s 10.231.0.0/30 -o eth0 -j MASQUERADE
 mkdir -p /etc/netns/bench
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/etc/netns/bench/resolv.conf
+# Publish readiness only after every limit and firewall rule is installed.
+# A failed setup has no default route and is rebuilt on the next invocation.
+ip netns exec bench ip route add default via 10.231.0.1

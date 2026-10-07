@@ -10,6 +10,8 @@ check() {
 run() { /usr/local/sbin/bench-run "$@" 2>/dev/null; }
 gateway=$(ip route | awk '/default/ {print $3}')
 
+check "boot initialized network" "$(ip netns exec bench ip -4 route show default 2>/dev/null | grep -c 'via 10.231.0.1')" 1
+check "boot enabled resource controllers" "$(grep -w memory /sys/fs/cgroup/distill-bench/cgroup.subtree_control | grep -w pids >/dev/null && echo ready)" ready
 check "runs as the candidate" "$(run login selftest -- id -un)" candidate
 check "no Windows drive" "$(run login selftest -- ls -A /mnt)" ""
 check "no WSL GUI socket" "$(run login selftest -- bash -c '[ -e /mnt/wslg ] && echo seen')" ""

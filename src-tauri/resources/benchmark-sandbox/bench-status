@@ -3,6 +3,9 @@
 # "key value" pair per line: the digest of every sandbox file, the tool
 # versions and the signed-in provider accounts.
 set -uo pipefail
+# Admission can be the first command after WSL starts. Join the boot helper's
+# lock and finish initialization before reporting readiness.
+/usr/local/sbin/bench-net >&2 || exit $?
 for file in /usr/local/sbin/bench-* /etc/wsl.conf; do
   echo "file $(basename "$file") $(sha256sum "$file" | cut -d' ' -f1)"
 done
@@ -11,7 +14,7 @@ echo "git $(git --version 2>/dev/null | cut -d' ' -f3)"
 for binary in /usr/local/bin/node /usr/bin/git /opt/distill-tools/bin/*; do
   echo "binary $binary $(sha256sum "$binary" 2>/dev/null | cut -d' ' -f1)"
 done
-echo "netns $([[ -e /run/netns/bench ]] && echo up || echo down)"
+echo "netns $(if ip netns exec bench ip -4 route show default 2>/dev/null | grep -q 10.231.0.1; then echo up; else echo down; fi)"
 for manifest in /opt/distill-tools/*/manifest; do
   [[ -f $manifest ]] || continue
   while read -r tool kind name recorded; do
