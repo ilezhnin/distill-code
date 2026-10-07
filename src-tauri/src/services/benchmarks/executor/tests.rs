@@ -66,6 +66,80 @@ fn started(decision: &Decision) -> Observation {
     }
 }
 
+#[test]
+fn application_ids_resolve_to_native_keys_and_invalid_references_are_rejected() {
+    let canonical = request();
+    let mut input = ApplicationRequest {
+        request_key: canonical.request_key.clone(),
+        surface: canonical.surface.clone(),
+        context_id: canonical.context_id.clone(),
+        task: canonical.prediction.task.clone(),
+        target_family: canonical.prediction.target_family.clone(),
+        target_group: canonical.prediction.target_group.clone(),
+        candidates: canonical.prediction.candidates.clone(),
+        prior_ids: canonical
+            .prediction
+            .candidates
+            .iter()
+            .rev()
+            .map(|row| row.configuration.id.clone())
+            .collect(),
+        hard_candidate_id: None,
+        model_id: None,
+        min_quality: canonical.prediction.min_quality,
+    };
+    let converted = Request::try_from(input.clone()).unwrap();
+    assert_eq!(hash(&converted).unwrap(), hash(&canonical).unwrap());
+    input.hard_candidate_id = Some(input.candidates[0].configuration.id.clone());
+    assert_eq!(
+        Request::try_from(input.clone())
+            .unwrap()
+            .prediction
+            .hard_candidate_key,
+        Some(routing::candidate_key(&input.candidates[0].configuration))
+    );
+    input.hard_candidate_id = Some("missing".into());
+    assert_eq!(
+        Request::try_from(input.clone()).unwrap_err().code,
+        "validation"
+    );
+    input.hard_candidate_id = None;
+    input.candidates[1].configuration.id = input.candidates[0].configuration.id.clone();
+    assert_eq!(Request::try_from(input).unwrap_err().code, "validation");
+}
+
+#[tokio::test]
+async fn unknown_reported_executor_stays_unknown_even_when_execution_completes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let decision = store.prepare_executor_decision(request()).await.unwrap();
+    let mut observation = started(&decision);
+    observation.configuration = None;
+    assert_eq!(
+        store
+            .observe_executor(&decision.request.request_key, observation.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "validation"
+    );
+    observation.reason = Some("Provider configuration not reported".into());
+    store
+        .observe_executor(&decision.request.request_key, observation.clone())
+        .await
+        .unwrap();
+    observation.phase = "terminal".into();
+    observation.outcome = Some("completed".into());
+    let record = store
+        .observe_executor(&decision.request.request_key, observation)
+        .await
+        .unwrap();
+    assert!(record
+        .observations
+        .iter()
+        .all(|row| row.matches_selected.is_none() && row.observation.configuration.is_none()));
+}
+
 #[tokio::test]
 async fn both_surfaces_share_the_policy_and_research_never_overrides_the_prior() {
     let directory = tempfile::tempdir().unwrap();

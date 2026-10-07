@@ -12,6 +12,73 @@ mod tests;
 
 const POLICY_VERSION: &str = "executor-selection-v1";
 
+/// Application callers identify inventory rows; canonical evidence keys stay native.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplicationRequest {
+    pub request_key: String,
+    pub surface: String,
+    pub context_id: String,
+    pub task: learned::PublicTask,
+    pub target_family: String,
+    pub target_group: String,
+    pub candidates: Vec<RoutingCandidate>,
+    pub prior_ids: Vec<String>,
+    pub hard_candidate_id: Option<String>,
+    pub model_id: Option<String>,
+    pub min_quality: f64,
+}
+
+impl TryFrom<ApplicationRequest> for Request {
+    type Error = BenchmarkError;
+
+    fn try_from(value: ApplicationRequest) -> Result<Self> {
+        let identities: std::collections::BTreeMap<_, _> = value
+            .candidates
+            .iter()
+            .map(|row| {
+                (
+                    row.configuration.id.clone(),
+                    routing::candidate_key(&row.configuration),
+                )
+            })
+            .collect();
+        if identities.len() != value.candidates.len()
+            || identities.keys().any(|id| id.trim().is_empty())
+        {
+            return Err(error(
+                "validation",
+                "Application candidate IDs must be distinct and nonempty",
+            ));
+        }
+        let key = |id: &String| {
+            identities.get(id).cloned().ok_or_else(|| {
+                error(
+                    "validation",
+                    "Application preference does not identify an inventory candidate",
+                )
+            })
+        };
+        let request = Self {
+            request_key: value.request_key,
+            surface: value.surface,
+            context_id: value.context_id,
+            prediction: learned::PredictionRequest {
+                task: value.task,
+                target_family: value.target_family,
+                target_group: value.target_group,
+                candidates: value.candidates,
+                hard_candidate_key: value.hard_candidate_id.as_ref().map(key).transpose()?,
+                min_quality: value.min_quality,
+            },
+            prior_keys: value.prior_ids.iter().map(key).collect::<Result<_>>()?,
+            model_id: value.model_id,
+        };
+        validate(&request)?;
+        Ok(request)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
@@ -334,8 +401,11 @@ fn validate_observation(record: &Record, value: &Observation) -> Result<()> {
         || (started
             && (value.outcome.is_some()
                 || !valid_ids
-                || !observed
-                || record.decision.chosen.is_none()))
+                || (!observed
+                    && value
+                        .reason
+                        .as_deref()
+                        .is_none_or(|reason| reason.trim().is_empty()))))
         || (terminal
             && !matches!(
                 value.outcome.as_deref(),
@@ -343,7 +413,14 @@ fn validate_observation(record: &Record, value: &Observation) -> Result<()> {
             ))
         || (observed && !valid_ids)
         || (any_id && !valid_ids)
-        || (terminal && value.outcome.as_deref() == Some("completed") && !observed)
+        || (terminal && value.outcome.as_deref() == Some("completed") && !valid_ids)
+        || (terminal
+            && valid_ids
+            && !observed
+            && value
+                .reason
+                .as_deref()
+                .is_none_or(|reason| reason.trim().is_empty()))
         || value.configuration.as_ref().is_some_and(|configuration| {
             configuration.provider_id.trim().is_empty() || configuration.model_id.trim().is_empty()
         })

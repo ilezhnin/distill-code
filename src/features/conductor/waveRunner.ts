@@ -16,6 +16,14 @@
  * the store subscription that calls this fires on every chat-store change.
  */
 
+import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
+import {
+  closeUnstartedWaveExecutor,
+  prepareWaveExecutor,
+  waveExecutorAvailable,
+  syncWaveExecutorOutcomes,
+  resetWaveExecutorOutcomesForTests,
+} from "./waveExecutor";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
@@ -622,6 +630,9 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   }
   void (async () => {
     let timedOut = false;
+    let preparedKey: string | undefined;
+    let childStarted = false;
+    let closedBeforeStart = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // P33: a revision's workers are told what this same request already
@@ -630,10 +641,8 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       // step most likely to repeat a dead end is the one that cannot see the
       // previous wave.
       //
-      // The `revisionCount` test is repeated here, and not left to the loader
-      // that also makes it, so a first wave never awaits anything: everything
-      // before the first `await` in this block runs in the caller's own tick,
-      // and a request with no history must not pay a round-trip to learn it.
+      // A first wave needs no historical-failure lookup. Every dispatch still
+      // awaits the recorded executor decision below before creating a child.
       const failedAttempts =
         wave.revisionCount > 0
           ? await loadFailedAttemptsBlock({
@@ -795,6 +804,72 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           );
         }
       }
+      const prompt = buildWaveStepPrompt(step, request.previousReports, {
+        stepIndex: request.stepIndex,
+        totalSteps: request.totalSteps,
+      });
+      const selection = prepareWaveExecutor(wave, request, prompt, {
+        target: executionTarget,
+        runSettings: stepRunSettings.runSettings,
+        ranked: Boolean(stepTarget),
+      });
+      let selectionExpired = false;
+      void selection
+        .then((late) => {
+          if (selectionExpired)
+            return closeUnstartedWaveExecutor(
+              late.requestKey,
+              "failed",
+              "Executor selection exceeded the dispatch deadline",
+            );
+        })
+        .catch(() => {
+          /* The main await reports the selection failure. */
+        });
+      const prepared = await Promise.race([
+        selection,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            selectionExpired = true;
+            reject(
+              new Error("Executor selection exceeded the dispatch deadline"),
+            );
+          }, WAVE_SPAWN_TIMEOUT_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+      timer = undefined;
+      preparedKey = prepared.requestKey;
+      if (prepared.error) throw new Error(prepared.error);
+      // Selection crosses an async storage boundary. A stopped wave must not
+      // create a child just because its decision finished later.
+      const current = getWaveEngineState().waves.find(
+        (row) => row.waveId === wave.waveId,
+      );
+      if (
+        !current ||
+        current.phase !== "running" ||
+        current.steps[request.stepIndex]?.phase !== "spawning"
+      ) {
+        await closeUnstartedWaveExecutor(
+          preparedKey,
+          "cancelled",
+          "Wave stopped before dispatch",
+        );
+        closedBeforeStart = true;
+        return;
+      }
+      if (
+        prepared.selected &&
+        !waveExecutorAvailable(request, prepared.selected, Boolean(stepTarget))
+      ) {
+        throw new Error(
+          "Selected executor is no longer available for dispatch",
+        );
+      }
+      executionTarget = prepared.selected?.target ?? executionTarget;
+      const selectedRunSettings =
+        prepared.selected?.runSettings ?? stepRunSettings.runSettings;
       const spawnPromise = spawnConductorChildSession({
         parentSessionId: wave.conductorSessionId,
         role: "worker",
@@ -827,14 +902,9 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         // model id. A step whose model came from the plan carries no ranked
         // settings: the plan pinned the model, and only its own fields say
         // how to run it.
-        ...(stepRunSettings.runSettings
-          ? { runSettings: stepRunSettings.runSettings }
-          : {}),
+        ...(selectedRunSettings ? { runSettings: selectedRunSettings } : {}),
         task: request.step.subtask,
-        prompt: buildWaveStepPrompt(step, request.previousReports, {
-          stepIndex: request.stepIndex,
-          totalSteps: request.totalSteps,
-        }),
+        prompt,
       });
       // A spawn that beats the timeout after the step was already failed must
       // not run as an orphan worker: stop it instead of adopting it.
@@ -858,6 +928,29 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           }, WAVE_SPAWN_TIMEOUT_MS);
         }),
       ]);
+      childStarted = true;
+      await executorSelection
+        .observe(preparedKey, {
+          phase: "started",
+          sessionId,
+          runId,
+          configuration: null,
+          outcome: null,
+          reason:
+            "Session created; the provider has not reported an executor configuration yet",
+        })
+        .catch((error: unknown) => {
+          // The child already exists. Keep managing it even if journal storage
+          // fails; treating this as a spawn failure would orphan real work.
+          appendConductorNotice(
+            wave.conductorSessionId,
+            persistFailureNoticeText({
+              failures: 1,
+              reason: error instanceof Error ? error.message : String(error),
+            }),
+            false,
+          );
+        });
       // Adopt the child only into a wave that is still running. A wave the
       // operator stopped (5b) — or one that was pruned — must not gain a
       // worker after the fact: the child was spawned with a real prompt and
@@ -881,6 +974,15 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       });
       if (!adopted) void stopOrchestratorSession(sessionId);
     } catch (error) {
+      if (preparedKey && !childStarted && !closedBeforeStart) {
+        await closeUnstartedWaveExecutor(
+          preparedKey,
+          "failed",
+          error instanceof Error ? error.message : String(error),
+        ).catch(() => {
+          // The original failure is still surfaced below. No retry dispatch.
+        });
+      }
       // No auto-retry (Q2): the step is marked failed so later `access: "all"`
       // steps stop waiting on it, and the operator sees why.
       updateWaveEngineState((state) => {
@@ -1245,6 +1347,25 @@ export function runWaveEngineTick(): void {
   for (const dispatch of digests) {
     startDigestDispatch(dispatch, runWaveEngineTick);
   }
+  syncWaveExecutorOutcomes(
+    Object.values(useConductorGraphStore.getState().nodesById).filter(
+      (node) =>
+        !node.waveId ||
+        node.stepIndex === undefined ||
+        !inFlightSpawns.has(spawnKey(node.waveId, node.stepIndex)),
+    ),
+    (node, error) => {
+      if (node.parentSessionId)
+        appendConductorNotice(
+          node.parentSessionId,
+          persistFailureNoticeText({
+            failures: 1,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+          false,
+        );
+    },
+  );
   reportPersistFailureOnce();
 }
 
@@ -1317,6 +1438,7 @@ function reportConductorDocumentOutage(): void {
 
 /** Clears the process-local guards. Tests only. */
 export function resetWaveRunnerForTests(): void {
+  resetWaveExecutorOutcomesForTests();
   documentOutageNoticeSentTo.clear();
   resetPersistHealthForTests();
   resetWaveLifecycleForTests();

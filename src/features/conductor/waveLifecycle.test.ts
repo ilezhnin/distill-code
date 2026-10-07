@@ -9,6 +9,24 @@ import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode, StructuredReport } from "./types";
 import { waveDigestMarker } from "./waveDigest";
 
+// The lifecycle test owns child dispatch; the native decision store is isolated.
+vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
+  executorSelection: {
+    get: vi.fn(async () => null),
+    select: vi.fn(
+      async (
+        request: import("@/features/benchmarks/lib/executorSelection").ApplicationExecutorRequest,
+      ) => ({
+        chosen:
+          request.candidates.find((row) => row.available)?.configuration ??
+          null,
+        reason: "persona_prior",
+      }),
+    ),
+    observe: vi.fn(async () => undefined),
+  },
+}));
+
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
 

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type {
+  ApplicationExecutorRequest,
+  ExecutorDecision,
+  ExecutorDecisionRecord,
+} from "@/features/benchmarks/lib/executorSelection";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { i18n } from "@/shared/i18n";
@@ -11,6 +16,59 @@ import {
   resetWaveStepTargetIoForTests,
   setWaveStepTargetIoForTests,
 } from "./waveStepTarget";
+
+const executorSelection = vi.hoisted(() => ({
+  get: vi.fn<(key: string) => Promise<ExecutorDecisionRecord | null>>(),
+  select:
+    vi.fn<
+      (
+        request: ApplicationExecutorRequest,
+        record: boolean,
+      ) => Promise<ExecutorDecision>
+    >(),
+  observe: vi.fn(async (_key: string, _observation: unknown) => undefined),
+}));
+function decisionFor(request: ApplicationExecutorRequest): ExecutorDecision {
+  return {
+    request: {
+      requestKey: request.requestKey,
+      surface: request.surface,
+      contextId: request.contextId,
+      prediction: {
+        task: request.task,
+        targetFamily: request.targetFamily,
+        targetGroup: request.targetGroup,
+        candidates: request.candidates,
+        hardCandidateKey: request.hardCandidateId,
+        minQuality: request.minQuality,
+      },
+      priorKeys: request.priorIds,
+      modelId: request.modelId,
+    },
+    chosen:
+      request.candidates.find((row) => row.available)?.configuration ?? null,
+    chosenKey: null,
+    source: request.hardCandidateId ? "pin" : "prior",
+    reason: "persona_prior",
+    createdAt: 0,
+    inputHash: "fixture",
+    artifactHash: "fixture",
+    policyVersion: "fixture",
+    learnedStatus: "not_requested",
+    researchPrediction: null,
+    learnedDispatchAllowed: false,
+  };
+}
+beforeEach(() => {
+  executorSelection.get.mockReset().mockResolvedValue(null);
+  executorSelection.select
+    .mockReset()
+    .mockImplementation(async (request) => decisionFor(request));
+  executorSelection.observe.mockClear();
+});
+vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
+  executorSelection,
+}));
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 
@@ -168,6 +226,254 @@ describe("waveRunner", () => {
   afterEach(() => {
     resetWaveRunnerForTests();
     resetWaveEngineStateCache();
+    resetWaveStepTargetIoForTests();
+  });
+
+  function selectionPlan(explicit = false): void {
+    setWaveStepTargetIoForTests({
+      personas: () => [
+        {
+          id: "scout",
+          displayName: "Scout",
+          systemPrompt: "Inspect the sample project.",
+          isBuiltin: false,
+          writable: true,
+          modelRanking: JSON.stringify({
+            version: 1,
+            entries: [
+              {
+                platform: "codex-acp",
+                modelId: "example-one",
+                label: "One",
+                effort: "low",
+              },
+              {
+                platform: "codex-acp",
+                modelId: "example-two",
+                label: "Two",
+                effort: "high",
+              },
+            ],
+          }),
+        },
+      ],
+      providers: () => [{ id: "codex-acp", label: "Example" }] as never,
+      modelsForHarness: () => [
+        { id: "example-one", name: "One", displayName: "One" },
+        { id: "example-two", name: "Two", displayName: "Two" },
+      ],
+      rateLimits: () => [],
+      conductorTarget: () => undefined,
+    });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "selection-plan",
+        fence(
+          JSON.stringify({
+            steps: [
+              {
+                role: "scout",
+                subtask: "Inspect the sample input",
+                access: [],
+                ...(explicit ? { model: "example-two" } : {}),
+              },
+            ],
+          }),
+        ),
+      ),
+    ]);
+  }
+
+  it("records the full preference pool before dispatch and dispatches the returned choice", async () => {
+    selectionPlan();
+    executorSelection.select.mockImplementationOnce(async (request, record) => {
+      expect(record).toBe(true);
+      expect(spawnConductorChildSession).not.toHaveBeenCalled();
+      expect(
+        request.candidates.map((row) => row.configuration.modelId),
+      ).toEqual(["example-one", "example-two"]);
+      expect(request.task).toMatchObject({
+        rolePrompt: "Inspect the sample project.",
+        executionProfile: "interactive_acp",
+      });
+      return {
+        ...decisionFor(request),
+        chosen: request.candidates[1].configuration,
+      };
+    });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
+    );
+    expect(spawnConductorChildSession.mock.calls[0][0]).toMatchObject({
+      executionTarget: { modelId: "example-two" },
+      runSettings: { effort: "high" },
+    });
+    expect(executorSelection.observe).toHaveBeenCalledWith(
+      executorSelection.select.mock.calls[0][0].requestKey,
+      expect.objectContaining({
+        phase: "started",
+        sessionId: "child-0",
+        runId: "run-1",
+        configuration: null,
+      }),
+    );
+  });
+
+  it("does not redispatch a step with a durable execution record after a restart", async () => {
+    selectionPlan();
+    executorSelection.get.mockResolvedValueOnce({
+      observations: [{ observation: { phase: "started" } }],
+    } as ExecutorDecisionRecord);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
+    );
+    expect(executorSelection.select).not.toHaveBeenCalled();
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
+
+  it("bounds selection time and closes a late decision without spawning", async () => {
+    vi.useFakeTimers();
+    try {
+      selectionPlan();
+      let release!: (value: ExecutorDecision) => void;
+      executorSelection.select.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(WAVE_SPAWN_TIMEOUT_MS + 1);
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed");
+      release(decisionFor(executorSelection.select.mock.calls[0][0]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(executorSelection.observe).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ phase: "terminal", outcome: "failed" }),
+      );
+      expect(spawnConductorChildSession).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rechecks ranked inventory after selection without silently choosing another model", async () => {
+    selectionPlan();
+    executorSelection.select.mockImplementationOnce(async (request) => {
+      setWaveStepTargetIoForTests({ modelsForHarness: () => [] });
+      return decisionFor(request);
+    });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
+    );
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
+
+  it("sends an explicit model as a hard pin without role alternatives", async () => {
+    selectionPlan(true);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+    const input = executorSelection.select.mock.calls[0][0];
+    expect(input.candidates).toHaveLength(1);
+    expect(input.hardCandidateId).toBe(input.candidates[0].configuration.id);
+    expect(input.candidates[0].configuration.modelId).toBe("example-two");
+  });
+
+  it("does not dispatch when selection storage fails", async () => {
+    selectionPlan();
+    executorSelection.select.mockRejectedValueOnce(
+      new Error("decision store unavailable"),
+    );
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
+    );
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+    expect(noticeTexts().join(" ")).toContain("decision store unavailable");
+  });
+
+  it("cancels a prepared decision if the wave is stopped while storage is pending", async () => {
+    selectionPlan();
+    let release!: (value: ExecutorDecision) => void;
+    executorSelection.select.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(executorSelection.select).toHaveBeenCalledTimes(1),
+    );
+    stopWaveByOperator(CONDUCTOR_ID, getWaveEngineState().waves[0].waveId);
+    release(decisionFor(executorSelection.select.mock.calls[0][0]));
+    await vi.waitFor(() =>
+      expect(executorSelection.observe).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          phase: "terminal",
+          outcome: "cancelled",
+          configuration: null,
+        }),
+      ),
+    );
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses a pinned model that disappears during selection", async () => {
+    selectionPlan(true);
+    executorSelection.select.mockImplementationOnce(async (request) => {
+      setWaveStepTargetIoForTests({ modelsForHarness: () => [] });
+      return decisionFor(request);
+    });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
+    );
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+    expect(executorSelection.observe).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ outcome: "failed" }),
+    );
+  });
+
+  it("reconciles a terminal run without inventing an observed configuration or dispatching again", async () => {
+    selectionPlan();
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
+    );
+    const decision = decisionFor(executorSelection.select.mock.calls[0][0]);
+    executorSelection.get.mockResolvedValue({ decision, observations: [] });
+    useConductorGraphStore
+      .getState()
+      .patchNode("child-0", { status: "completed" });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(executorSelection.observe).toHaveBeenCalledWith(
+        decision.request.requestKey,
+        expect.objectContaining({
+          phase: "terminal",
+          sessionId: "child-0",
+          runId: "run-1",
+          outcome: "completed",
+          configuration: null,
+        }),
+      ),
+    );
+    runWaveEngineTick();
+    expect(
+      executorSelection.observe.mock.calls.filter(
+        ([, row]) => (row as { phase: string }).phase === "terminal",
+      ),
+    ).toHaveLength(1);
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
   });
 
   it("stays off for the session when a folder document could not be read", async () => {
@@ -550,6 +856,7 @@ describe("waveRunner", () => {
           }),
       );
       runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
       expect(getWaveEngineState().waves[0].steps[0].phase).toBe("spawning");
 

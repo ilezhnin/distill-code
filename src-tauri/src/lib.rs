@@ -329,6 +329,7 @@ pub fn run() {
             commands::benchmarks::benchmark_list_selector_fits,
             commands::benchmarks::benchmark_get_selector_fit,
             commands::benchmarks::benchmark_predict_selector,
+            commands::benchmarks::benchmark_select_executor,
             commands::benchmarks::benchmark_preview_executor_decision,
             commands::benchmarks::benchmark_prepare_executor_decision,
             commands::benchmarks::benchmark_get_executor_decision,

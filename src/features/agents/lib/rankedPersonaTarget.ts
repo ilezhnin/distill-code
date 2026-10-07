@@ -33,6 +33,7 @@ import {
   type ModelPreferenceClassId,
   type RankableModel,
   type RankedModelResolution,
+  type RankedModelResolutionInput,
 } from "./modelRanking";
 
 export interface RankedPersonaTargetContext {
@@ -98,6 +99,14 @@ export function rankedPersonaExecutionTarget(
   persona: Pick<Persona, "displayName" | "modelRanking">,
   context: RankedPersonaTargetContext,
 ): RankedPersonaTarget | undefined {
+  return rankedPersonaExecutionTargets(persona, context)[0];
+}
+
+/** Feasible preferences in dispatch order, with limits resolved by the same policy. */
+export function rankedPersonaExecutionTargets(
+  persona: Pick<Persona, "displayName" | "modelRanking">,
+  context: RankedPersonaTargetContext,
+): RankedPersonaTarget[] {
   // The agent's own list wins; the bundled-slug class is the fallback, so an
   // agent nobody has tuned still runs on the ranking its role deserves.
   // A class named by the caller wins over both: it is a statement about the
@@ -109,54 +118,74 @@ export function rankedPersonaExecutionTarget(
         const classId = modelPreferenceClassForPersona(persona);
         return classId ? ({ kind: "class", classId } as const) : undefined;
       })());
-  if (!source) return undefined;
+  if (!source) return [];
 
   const installed = new Set(context.providers.map((provider) => provider.id));
-  const resolution = resolveRankedCandidates(
-    candidatesForRankingSource(source, context.classOverrides),
-    {
-      modelsForPlatform: (platform) =>
-        installed.has(platform) ? context.getModelsForHarness(platform) : [],
-      allModels: () =>
-        context.providers.flatMap((provider) =>
-          context
-            .getModelsForHarness(provider.id)
-            .map((model) => ({ harnessId: provider.id, model })),
-        ),
-      platformLimitState: (platform, scopedWindow) =>
-        platformLimitState(context.rateLimits, platform, {
-          scopedWindow,
-          ...(typeof context.nearLimitPercent === "number"
-            ? { nearLimitPercent: context.nearLimitPercent }
-            : {}),
-        }),
-    },
-  );
-  if (!resolution.choice) return undefined;
-
-  const { harnessId, model, effort, fast } = resolution.choice;
-  try {
-    return {
-      runSettings: {
-        ...(effort ? { effort } : {}),
-        ...(fast !== undefined ? { fast } : {}),
-      },
-      // A concrete model needs the provider that serves it; without this the
-      // normalizer refused every resolution the ranking made, so the feature
-      // could not retarget anything at all. The model's own provider id is
-      // the right one — for a harness that fans several providers into one
-      // list, the harness id is not a provider.
-      target: normalizeSessionExecutionTarget({
-        harnessId,
-        modelProviderId: model.providerId ?? harnessId,
-        modelId: model.id,
-        modelName: model.displayName ?? model.name ?? model.id,
+  const remaining = candidatesForRankingSource(
+    source,
+    context.classOverrides,
+  ).map((candidate, rankIndex) => ({ candidate, rankIndex }));
+  const input: RankedModelResolutionInput = {
+    modelsForPlatform: (platform) =>
+      installed.has(platform) ? context.getModelsForHarness(platform) : [],
+    allModels: () =>
+      context.providers.flatMap((provider) =>
+        context
+          .getModelsForHarness(provider.id)
+          .map((model) => ({ harnessId: provider.id, model })),
+      ),
+    platformLimitState: (platform, scopedWindow) =>
+      platformLimitState(context.rateLimits, platform, {
+        scopedWindow,
+        ...(typeof context.nearLimitPercent === "number"
+          ? { nearLimitPercent: context.nearLimitPercent }
+          : {}),
       }),
-      resolution,
-    };
-  } catch {
-    // A preference must never stop a session from starting: fall back to the
-    // persona's single model exactly as an unresolvable ranking does.
-    return undefined;
+  };
+  const targets: RankedPersonaTarget[] = [];
+  const seen = new Set<string>();
+  while (remaining.length > 0) {
+    const resolution = resolveRankedCandidates(
+      remaining.map((row) => row.candidate),
+      input,
+    );
+    if (!resolution.choice) break;
+    const localIndex = resolution.choice.rankIndex;
+    const originalIndex = remaining[localIndex].rankIndex;
+    remaining.splice(localIndex, 1);
+    resolution.choice = { ...resolution.choice, rankIndex: originalIndex };
+    const { harnessId, model, effort, fast } = resolution.choice;
+    const key = JSON.stringify([
+      harnessId,
+      model.providerId,
+      model.id,
+      effort ?? null,
+      fast ?? false,
+    ]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    try {
+      targets.push({
+        runSettings: {
+          ...(effort ? { effort } : {}),
+          ...(fast !== undefined ? { fast } : {}),
+        },
+        // A concrete model needs the provider that serves it; without this the
+        // normalizer refused every resolution the ranking made, so the feature
+        // could not retarget anything at all. The model's own provider id is
+        // the right one — for a harness that fans several providers into one
+        // list, the harness id is not a provider.
+        target: normalizeSessionExecutionTarget({
+          harnessId,
+          modelProviderId: model.providerId ?? harnessId,
+          modelId: model.id,
+          modelName: model.displayName ?? model.name ?? model.id,
+        }),
+        resolution,
+      });
+    } catch {
+      // Malformed inventory rows are not dispatch candidates.
+    }
   }
+  return targets;
 }

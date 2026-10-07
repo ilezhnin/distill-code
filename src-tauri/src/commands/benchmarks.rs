@@ -349,6 +349,21 @@ pub async fn benchmark_predict_selector(
 }
 
 #[tauri::command]
+pub async fn benchmark_select_executor(
+    app: AppHandle,
+    request: benchmarks::executor::ApplicationRequest,
+    record: bool,
+) -> Result<benchmarks::executor::Decision> {
+    let store = &service(&app).await?.store;
+    let request = request.try_into()?;
+    if record {
+        store.prepare_executor_decision(request).await
+    } else {
+        store.preview_executor_decision(request).await
+    }
+}
+
+#[tauri::command]
 pub async fn benchmark_preview_executor_decision(
     app: AppHandle,
     request: benchmarks::executor::Request,

@@ -27,7 +27,7 @@ import {
   type ModelPreferenceClassId,
   type RankableModel,
 } from "@/features/agents/lib/modelRanking";
-import { rankedPersonaExecutionTarget } from "@/features/agents/lib/rankedPersonaTarget";
+import { rankedPersonaExecutionTargets } from "@/features/agents/lib/rankedPersonaTarget";
 import type { RoutingPolicy } from "@/features/agents/lib/routingPolicy";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { getRoutingPolicy } from "@/features/agents/stores/routingPolicyStore";
@@ -186,12 +186,19 @@ export function resolveWaveStepTarget(
    */
   classId?: ModelPreferenceClassId,
 ): WaveStepTarget | undefined {
+  return resolveWaveStepTargets(roleId, classId)[0];
+}
+
+export function resolveWaveStepTargets(
+  roleId: string,
+  classId?: ModelPreferenceClassId,
+): WaveStepTarget[] {
   try {
     const persona = resolvePersonaForRole(roleId, io.personas());
-    if (!persona) return undefined;
+    if (!persona) return [];
 
     const policy = io.routingPolicy();
-    const ranked = rankedPersonaExecutionTarget(persona, {
+    const targets = rankedPersonaExecutionTargets(persona, {
       providers: io.providers(),
       getModelsForHarness: io.modelsForHarness,
       rateLimits: io.rateLimits(),
@@ -202,43 +209,37 @@ export function resolveWaveStepTarget(
       nearLimitPercent: policy.waveNearLimitPercent,
       ...(classId ? { classId } : {}),
     });
-    if (!ranked?.resolution.choice) return undefined;
+    return targets.flatMap((ranked): WaveStepTarget[] => {
+      if (!ranked.resolution.choice) return [];
 
-    // L1, observed live on 2026-08-28: a whole wave of four executors was
-    // spawned on `gpt-5.6-sol[low]` while codex advertised only
-    // `gpt-5.6-sol[ultra]`. Every one of them died on its first send with
-    // "Failed to set ACP model option: Invalid params" before doing any work,
-    // and the operator paid for four empty sessions.
-    //
-    // Whatever composes an id the harness does not serve, this is the last
-    // place that can refuse to act on it, and the check is cheap: the target
-    // must name a model the harness is currently advertising. Inheriting the
-    // conductor's model is a preference not applied — which is what the
-    // ranking already does whenever it has nothing to say — while spawning on
-    // an unserved id is a session that cannot run at all.
-    if (!isAdvertisedModel(ranked.target)) return undefined;
+      // A ranking can name only a model in the confirmed harness inventory.
+      // In particular, effort must never be folded into an unadvertised id.
+      if (!isAdvertisedModel(ranked.target)) return [];
 
-    const { choice } = ranked.resolution;
-    return {
-      target: ranked.target,
-      label: choice.label,
-      fallback: choice.rankIndex > 0,
-      nearLimit: choice.nearLimit === true,
-      ...(ranked.runSettings.effort
-        ? { effort: ranked.runSettings.effort }
-        : {}),
-      ...(choice.effortApplied !== undefined
-        ? { effortApplied: choice.effortApplied }
-        : {}),
-      ...(ranked.runSettings.fast !== undefined
-        ? { fast: ranked.runSettings.fast }
-        : {}),
-      ...(choice.fastApplied !== undefined
-        ? { fastApplied: choice.fastApplied }
-        : {}),
-    };
+      const { choice } = ranked.resolution;
+      return [
+        {
+          target: ranked.target,
+          label: choice.label,
+          fallback: choice.rankIndex > 0,
+          nearLimit: choice.nearLimit === true,
+          ...(ranked.runSettings.effort
+            ? { effort: ranked.runSettings.effort }
+            : {}),
+          ...(choice.effortApplied !== undefined
+            ? { effortApplied: choice.effortApplied }
+            : {}),
+          ...(ranked.runSettings.fast !== undefined
+            ? { fast: ranked.runSettings.fast }
+            : {}),
+          ...(choice.fastApplied !== undefined
+            ? { fastApplied: choice.fastApplied }
+            : {}),
+        },
+      ];
+    });
   } catch {
-    return undefined;
+    return [];
   }
 }
 
@@ -738,4 +739,19 @@ export function checkWaveStepRunSettings(
   } catch {
     return { ok: true };
   }
+}
+
+/** Public inputs only; interactive execution has a distinct, non-benchmark scope. */
+export function waveExecutorRoleContext(
+  roleId: string,
+  classId?: ModelPreferenceClassId,
+) {
+  const persona = resolvePersonaForRole(roleId, io.personas());
+  return {
+    workClassId:
+      classId ??
+      (persona ? modelPreferenceClassForPersona(persona) : undefined) ??
+      "general",
+    rolePrompt: persona?.systemPrompt ?? "",
+  };
 }

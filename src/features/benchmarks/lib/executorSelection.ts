@@ -3,7 +3,22 @@ import type { Configuration } from "../types";
 import type {
   SelectorPrediction,
   SelectorPredictionRequest,
+  PublicSelectorTask,
 } from "./benchmarkLearning";
+
+export interface ApplicationExecutorRequest {
+  requestKey: string;
+  surface: "chat" | "wave";
+  contextId: string;
+  task: PublicSelectorTask;
+  targetFamily: string;
+  targetGroup: string;
+  candidates: SelectorPredictionRequest["candidates"];
+  priorIds: string[];
+  hardCandidateId: string | null;
+  modelId: string | null;
+  minQuality: number;
+}
 
 export interface ExecutorSelectionRequest {
   requestKey: string;
@@ -49,6 +64,8 @@ export interface ExecutorDecisionRecord {
 
 /** Shared native boundary; preview has no writes and prepare precedes dispatch. */
 export const executorSelection = {
+  select: (request: ApplicationExecutorRequest, record: boolean) =>
+    invoke<ExecutorDecision>("benchmark_select_executor", { request, record }),
   preview: (request: ExecutorSelectionRequest) =>
     invoke<ExecutorDecision>("benchmark_preview_executor_decision", {
       request,
