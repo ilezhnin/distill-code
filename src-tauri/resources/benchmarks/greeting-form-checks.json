@@ -1,8 +1,12 @@
 {
   "viewport": { "width": 960, "height": 720 },
   "steps": [
+    { "action": "expectAccessibleName", "selector": "#name" },
     { "action": "fill", "selector": "#name", "value": "Mira" },
     { "action": "click", "selector": "#submit" },
-    { "action": "expectText", "selector": "#result", "value": "Hello, Mira!" }
+    { "action": "expectText", "selector": "#result", "value": "Hello, Mira!" },
+    { "action": "fill", "selector": "#name", "value": "Bo" },
+    { "action": "click", "selector": "#submit" },
+    { "action": "expectText", "selector": "#result", "value": "Hello, Bo!" }
   ]
 }

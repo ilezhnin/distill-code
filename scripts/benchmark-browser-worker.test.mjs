@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { createRequire } from "node:module";
@@ -20,6 +20,14 @@ async function evaluate(kind, output, spec, image) {
   });
   let text = "";
   let errors = "";
+  let expired = false;
+  const timeout = setTimeout(() => {
+    expired = true;
+    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+  }, 20000);
   child.stdout.on("data", (chunk) => {
     text += chunk;
   });
@@ -38,8 +46,9 @@ async function evaluate(kind, output, spec, image) {
   );
   const code = await new Promise((resolve, reject) => {
     child.on("error", reject);
-    child.on("exit", resolve);
-  });
+    child.on("close", resolve);
+  }).finally(() => clearTimeout(timeout));
+  assert.equal(expired, false, "Worker did not finish within 20 seconds");
   assert.equal(code, 0, `${text}\n${errors}`);
   return JSON.parse(text);
 }
@@ -104,4 +113,89 @@ test("actual form interactions and independent screenshots", async () => {
     (await evaluate("browser", form, spec, "failing-form")).pass,
     false,
   );
+  assert.equal(
+    (await evaluate("browser", correct.replace(/<label.*?<\/label>/, ""), spec))
+      .pass,
+    false,
+  );
+  assert.equal(
+    (
+      await evaluate(
+        "browser",
+        correct.replace(
+          '<label for="name">Name</label><input id="name">',
+          '<label>Project title<input id="name"></label>',
+        ),
+        spec,
+      )
+    ).pass,
+    true,
+  );
+});
+
+test("keyboard submission exercises Enter instead of substituting a click", async () => {
+  const form =
+    '<form><label>Name<input id="name"></label><button>Save</button><output id="result"></output></form><script>document.querySelector("form").onsubmit=e=>{e.preventDefault();document.querySelector("#result").textContent="Saved "+document.querySelector("#name").value;};</script>';
+  const spec = {
+    steps: [
+      { action: "fill", selector: "#name", value: "Ada" },
+      { action: "press", selector: "#name", value: "Enter" },
+      { action: "expectText", selector: "#result", value: "Saved Ada" },
+    ],
+  };
+  assert.equal((await evaluate("browser", form, spec)).pass, true);
+  const broken =
+    form +
+    '<script>document.querySelector("#name").onkeydown=e=>{if(e.key==="Enter")e.preventDefault();};</script>';
+  assert.equal((await evaluate("browser", broken, spec)).pass, false);
+});
+
+test("failed interaction completes even when Edge profile cleanup is denied", async () => {
+  const result = await evaluate(
+    "browser",
+    '<form><label>Name<input id="name" required></label><button id="submit" disabled>Save</button><output id="result"></output></form>',
+    {
+      steps: [
+        { action: "fill", selector: "#name", value: "Ada" },
+        { action: "click", selector: "#submit" },
+        { action: "expectText", selector: "#result", value: "Saved Ada" },
+      ],
+    },
+  );
+  assert.equal(result.pass, false);
+  assert.deepEqual(
+    result.checks.map((check) => check.pass),
+    [true, false, false],
+  );
+  // Cleanup failures remain visible, but are not candidate failures or hangs.
+  if (result.cleanupWarning) {
+    assert.equal(typeof result.cleanupWarning.code, "string");
+    assert.match(
+      result.cleanupWarning.retainedProfile,
+      /distill-benchmark-browser-/,
+    );
+  }
+});
+
+test("immutable input checks observe nested changes independently of a correct result", async () => {
+  const spec = {
+    functionName: "update",
+    immutableArgs: [0],
+    argsCases: [
+      { args: [{ nested: { value: 1 } }], expected: { nested: { value: 2 } } },
+    ],
+  };
+  for (const source of [
+    "function update(input){return {nested:{value:input.nested.value+1}};}",
+    "function update(input){const copy=structuredClone(input);copy.nested.value++;return copy;}",
+  ])
+    assert.equal((await evaluate("javascript", source, spec)).pass, true);
+  const result = await evaluate(
+    "javascript",
+    "function update(input){input.nested.value++;return input;}",
+    spec,
+  );
+  assert.equal(result.pass, false);
+  assert.equal(result.checks[0].outputMatches, true);
+  assert.equal(result.checks[0].inputsPreserved, false);
 });

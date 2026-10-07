@@ -2,7 +2,9 @@
 // Expected values and assertions remain in this controller process.
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const MAX_INPUT = 4 * 1024 * 1024;
 let input = "";
@@ -14,7 +16,17 @@ for await (const chunk of process.stdin) {
 const request = JSON.parse(input);
 const imported = await import(pathToFileURL(process.argv[2]).href);
 const { chromium } = imported.chromium ? imported : imported.default;
-const browser = await chromium.launch({
+const viewport = request.spec.viewport ?? { width: 1000, height: 700 };
+if (
+  ![viewport.width, viewport.height].every(
+    (n) => Number.isInteger(n) && n >= 320 && n <= 1600,
+  )
+)
+  throw new Error("Invalid viewport");
+// An explicit, freshly allocated profile keeps Playwright's recursive cleanup
+// retries outside the evaluation time budget. It is never reused by another run.
+const profile = await mkdtemp(join(tmpdir(), "distill-benchmark-browser-"));
+const launchOptions = {
   executablePath: process.argv[3],
   headless: true,
   chromiumSandbox: true,
@@ -24,26 +36,19 @@ const browser = await chromium.launch({
     "--disable-sync",
     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
   ],
-});
+  viewport,
+  serviceWorkers: "block",
+  acceptDownloads: false,
+  permissions: [],
+};
 let blockedRequests = 0;
 const checks = [];
 const csp =
   "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 let context;
+let result;
 try {
-  const viewport = request.spec.viewport ?? { width: 1000, height: 700 };
-  if (
-    ![viewport.width, viewport.height].every(
-      (n) => Number.isInteger(n) && n >= 320 && n <= 1600,
-    )
-  )
-    throw new Error("Invalid viewport");
-  context = await browser.newContext({
-    viewport,
-    serviceWorkers: "block",
-    acceptDownloads: false,
-    permissions: [],
-  });
+  context = await chromium.launchPersistentContext(profile, launchOptions);
   await context.addInitScript(() => {
     for (const name of [
       "RTCPeerConnection",
@@ -69,7 +74,7 @@ try {
   context.on("page", (page) => {
     if (context.pages().length > 1) void page.close();
   });
-  const page = await context.newPage();
+  const page = context.pages()[0] ?? (await context.newPage());
   page.setDefaultTimeout(1500);
   const shell = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
   const quietShell =
@@ -102,18 +107,28 @@ try {
       request.spec.argsCases.length > 100
     )
       throw new Error("Expected 1-100 protected cases");
+    const immutableArgs = request.spec.immutableArgs ?? [];
+    if (
+      !Array.isArray(immutableArgs) ||
+      immutableArgs.some((index) => !Number.isInteger(index) || index < 0)
+    )
+      throw new Error("Invalid immutable argument indices");
     for (const [index, test] of request.spec.argsCases.entries()) {
+      if (immutableArgs.some((argument) => argument >= test.args.length))
+        throw new Error("Immutable argument index is outside the case inputs");
       try {
         // No expected value crosses this boundary. Each case receives a fresh realm.
         await page.goto("about:blank");
         await page.setContent(shell);
         const actual = await page.evaluate(
-          ({ source, name, args }) => {
+          async ({ source, name, args }) => {
             const run = new Function(
               "args",
               `"use strict";\n${source}\n;return ${name}(...args);`,
             );
-            return run(args);
+            // Retain the actual argument references in the controller closure;
+            // the candidate supplies its result, never an immutability verdict.
+            return { result: await run(args), args };
           },
           {
             source: request.output,
@@ -121,7 +136,16 @@ try {
             args: test.args,
           },
         );
-        checks.push({ index, pass: isDeepStrictEqual(actual, test.expected) });
+        const outputMatches = isDeepStrictEqual(actual.result, test.expected);
+        const inputsPreserved = immutableArgs.every((argument) =>
+          isDeepStrictEqual(actual.args[argument], test.args[argument]),
+        );
+        checks.push({
+          index,
+          pass: outputMatches && inputsPreserved,
+          outputMatches,
+          inputsPreserved,
+        });
       } catch {
         checks.push({ index, pass: false });
       }
@@ -143,7 +167,37 @@ try {
       try {
         if (step.action === "fill") await locator.fill(String(step.value));
         else if (step.action === "click") await locator.click();
-        else if (step.action === "expectText") {
+        else if (step.action === "press")
+          await locator.press(String(step.value));
+        else if (step.action === "expectAccessibleName") {
+          // Chromium computes the accessible name; candidate JavaScript cannot
+          // replace an element getter to report a name the browser does not use.
+          if ((await locator.count()) !== 1)
+            throw new Error("Expected one named control");
+          const client = await context.newCDPSession(page);
+          try {
+            const { root } = await client.send("DOM.getDocument");
+            const { nodeId } = await client.send("DOM.querySelector", {
+              nodeId: root.nodeId,
+              selector: step.selector,
+            });
+            const { nodes } = await client.send(
+              "Accessibility.getPartialAXTree",
+              { nodeId, fetchRelatives: false },
+            );
+            if (
+              !nodes.some(
+                (node) =>
+                  !node.ignored &&
+                  typeof node.name?.value === "string" &&
+                  node.name.value.trim(),
+              )
+            )
+              throw new Error("Accessible name missing");
+          } finally {
+            await client.detach();
+          }
+        } else if (step.action === "expectText") {
           if ((await locator.textContent())?.trim() !== step.value)
             throw new Error("Text mismatch");
         } else if (step.action === "expectValue") {
@@ -171,21 +225,25 @@ try {
       throw new Error("Screenshot exceeds artifact cap");
     await writeFile(request.screenshotPath, screenshot, { flag: "wx" });
   }
-  process.stdout.write(
-    JSON.stringify({
-      pass: checks.every((check) => check.pass),
-      checks,
-      boundary,
-      blockedRequests,
-      browserVersion: browser.version(),
-    }),
-  );
+  result = {
+    pass: checks.every((check) => check.pass),
+    checks,
+    boundary,
+    blockedRequests,
+    browserVersion: context.browser().version(),
+  };
 } catch (error) {
-  process.stdout.write(
-    JSON.stringify({ error: String(error.message ?? error) }),
-  );
+  result = { error: String(error.message ?? error) };
   process.exitCode = 1;
 } finally {
   await context?.close();
-  await browser.close();
+  // Only remove the exact profile returned by mkdtemp above. On Windows, Edge
+  // profile files can deny deletion after the browser exits. Do not retry every
+  // file recursively and turn a completed check into a candidate timeout.
+  try {
+    await rm(profile, { recursive: true, force: true, maxRetries: 0 });
+  } catch (error) {
+    result.cleanupWarning = { code: error.code, retainedProfile: profile };
+  }
 }
+process.stdout.write(JSON.stringify(result));
