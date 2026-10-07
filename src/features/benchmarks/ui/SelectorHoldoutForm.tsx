@@ -15,6 +15,7 @@ import {
 } from "../lib/benchmarkLearning";
 import type { BenchmarkVersion } from "../types";
 import { BenchmarkAlert, Field, SelectField } from "./BenchmarkPrimitives";
+import { SelectorHoldoutReportView } from "./SelectorHoldoutReportView";
 
 /** Register decisions only. This form has no run or promotion action. */
 export function SelectorHoldoutForm({
@@ -226,6 +227,7 @@ export function SelectorHoldoutForm({
                 : ""}
             </p>
           ))}
+          <SelectorHoldoutReportView plan={plan} />
         </details>
       ))}
     </section>

@@ -4,6 +4,7 @@ mod features;
 mod fit;
 pub mod holdout;
 mod persistence;
+pub mod report;
 #[cfg(test)]
 mod tests;
 

@@ -52,6 +52,29 @@
     "releases": "Versiones del conjunto"
   },
   "learning": {
+    "report": {
+      "title": "Informe de evaluación reservado",
+      "description": "Comparación solo de investigación. Cada tarea y candidato reservados necesitan todas las repeticiones de su primera medición planificada, con el entorno y evaluador fijados. Esta acción no llama a proveedores ni activa asignaciones.",
+      "freezeNotice": "El primer informe completo se guarda permanentemente. Las ejecuciones y revisiones posteriores no sustituyen sus mediciones. El plan fija de antemano 2.000 remuestreos pareados por grupo, pesos iguales e intervalos percentiles del 95%.",
+      "legacy": "Esta reserva anterior no fijó un método de informe. No puede añadirlo después de la exposición.",
+      "evaluate": "Guardar informe de la evidencia existente",
+      "coverage": "{{groups}} grupos declarados · {{fallbacks}} tareas usaron la alternativa fijada",
+      "learned": "Selector entrenado",
+      "aggregate": "Selector agregado",
+      "persona": "Persona",
+      "bestFixed": "Mejor fijo retrospectivo",
+      "oracle": "Oráculo por tarea",
+      "policy": "Estrategia",
+      "quality": "Calidad",
+      "utility": "Utilidad [intervalo del 95%]",
+      "duration": "Tiempo de generación",
+      "cost": "Coste de generación",
+      "gain": "Ganancia del selector [intervalo del 95%]",
+      "unknown_one": "Desconocido ({{count}} tarea)",
+      "unknown_other": "Desconocido ({{count}} tareas)",
+      "intervals": "Los intervalos exploratorios dependen de las repeticiones medidas y no corrigen comparaciones múltiples. Pocos grupos pueden producir intervalos poco fiables o degenerados. El mejor fijo se elige de nuevo en cada remuestreo; el oráculo usa la utilidad observada por tarea. Los costes ausentes nunca son cero. La promoción aún requiere validar evaluadores, independencia y flujo completo.",
+      "evidence": "Inspeccionar informe y evidencia guardados"
+    },
     "holdout": {
       "title": "Fijar un plan de evaluación independiente",
       "description": "Selecciona al menos 8 casos reservados en 4 grupos declarados independientes. El servicio rechaza familias ya previstas en una ejecución o reservadas por otra evaluación. Las predicciones y los comparadores se fijan antes de los resultados.",
@@ -64,7 +87,7 @@
       "retry": "Reintentar la misma reserva",
       "edit": "Cambiar datos",
       "plan": "Plan {{id}} · {{count}} casos",
-      "pending": "Solo reservado. Aún se requieren resultados independientes, incertidumbre por familia, validación de evaluadores y del flujo.",
+      "pending": "Las decisiones están fijadas. La validación de evaluadores y del flujo sigue siendo un requisito separado.",
       "choice": "entrenado: {{learned}}; agregado: {{aggregate}}",
       "usedFallback": "Se utilizó la alternativa explícita"
     },

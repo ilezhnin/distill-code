@@ -331,6 +331,8 @@ pub fn run() {
             commands::benchmarks::benchmark_predict_selector,
             commands::benchmarks::benchmark_freeze_selector_holdout,
             commands::benchmarks::benchmark_list_selector_holdouts,
+            commands::benchmarks::benchmark_evaluate_selector_holdout,
+            commands::benchmarks::benchmark_get_selector_holdout_report,
             commands::benchmarks::benchmark_selector_harness,
             commands::benchmarks::benchmark_get_usage_ledger,
             commands::benchmarks::benchmark_get_routing_evidence,

@@ -215,7 +215,7 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
 
 /// Unknown resources remove that objective for the entire comparison. A cheap
 /// or fast failed answer cannot earn resource credit independent of quality.
-fn utilities(targets: &mut [TrainingTarget], weights: RoleWeights) {
+pub(super) fn utilities(targets: &mut [TrainingTarget], weights: RoleWeights) {
     let successful: Vec<_> = targets
         .iter()
         .filter(|t| t.reward.is_some_and(|r| r > 0.0))

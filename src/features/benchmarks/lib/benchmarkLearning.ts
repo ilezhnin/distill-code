@@ -170,6 +170,36 @@ export interface SelectorHoldoutPlan {
     aggregateSource: string;
   }[];
   policies: string[];
+  evaluation?: {
+    recipe: string;
+    bootstrapSamples: number;
+    intervalMass: number;
+  } | null;
   dispatchAllowed: false;
   status: "reserved_research_holdout";
+}
+
+export interface SelectorHoldoutReport {
+  planId: string;
+  planHash: string;
+  artifactHash: string;
+  createdAt: number;
+  groups: number;
+  fallbackCases: number;
+  policies: {
+    policy: string;
+    selectedFixedKey: string | null;
+    quality: number;
+    utility: number;
+    meanDurationMs: number | null;
+    meanCost: number | null;
+    missingDurationCases: number;
+    missingCostCases: number;
+    utilityInterval: { lower: number; upper: number };
+    learnedUtilityGain: number;
+    learnedGainInterval: { lower: number; upper: number };
+  }[];
+  limitations: string[];
+  status: "research_only";
+  dispatchAllowed: false;
 }

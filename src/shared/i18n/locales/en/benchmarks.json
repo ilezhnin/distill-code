@@ -52,6 +52,29 @@
     "releases": "Pool releases"
   },
   "learning": {
+    "report": {
+      "title": "Frozen holdout report",
+      "description": "Research comparison only. Every reserved task and candidate needs all repetitions from its first planned measurement, with the frozen runtime and evaluator. This action makes no provider calls and does not activate routing.",
+      "freezeNotice": "The first complete report is saved permanently. Later runs and regrades cannot replace its measurements. The plan fixes 2,000 paired group resamples, equal group weights and 95% percentile intervals before results exist.",
+      "legacy": "This older reservation did not freeze a report recipe. It cannot acquire one after exposure.",
+      "evaluate": "Save report from existing evidence",
+      "coverage": "{{groups}} declared groups · {{fallbacks}} tasks used the frozen fallback",
+      "learned": "Learned selector",
+      "aggregate": "Aggregate selector",
+      "persona": "Persona",
+      "bestFixed": "Best fixed in hindsight",
+      "oracle": "Per-task oracle",
+      "policy": "Policy",
+      "quality": "Quality",
+      "utility": "Utility [95% interval]",
+      "duration": "Generation time",
+      "cost": "Generation cost",
+      "gain": "Learned utility gain [95% interval]",
+      "unknown_one": "Unknown ({{count}} task)",
+      "unknown_other": "Unknown ({{count}} tasks)",
+      "intervals": "Exploratory intervals are conditional on the measured repetitions and unadjusted for multiple comparisons. Few groups can produce unreliable or degenerate intervals. Best fixed is selected again in each resample; the oracle uses observed per-task utility. Missing costs are never zero. Grader, independence and full workflow qualification are still required before promotion.",
+      "evidence": "Inspect saved report and evidence"
+    },
     "holdout": {
       "title": "Freeze an independent evaluation plan",
       "description": "Select at least 8 held-out cases in 4 declared independent groups. The service rejects families already planned in any run or reserved by another evaluation. Predictions and comparator choices are frozen before outcomes.",
@@ -64,7 +87,7 @@
       "retry": "Retry the same reservation",
       "edit": "Change inputs",
       "plan": "Plan {{id}} · {{count}} cases",
-      "pending": "Reserved only. Independent results, family uncertainty, grader qualification and workflow validation are still required.",
+      "pending": "Choices are frozen. Grader qualification and workflow validation remain separate requirements.",
       "choice": "learned: {{learned}}; aggregate: {{aggregate}}",
       "usedFallback": "Explicit fallback used"
     },

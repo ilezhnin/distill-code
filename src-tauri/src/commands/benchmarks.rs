@@ -372,6 +372,30 @@ pub async fn benchmark_list_selector_holdouts(
         .await
 }
 
+/// Evaluate only existing evidence; never starts generation or judging.
+#[tauri::command]
+pub async fn benchmark_evaluate_selector_holdout(
+    app: AppHandle,
+    plan_id: String,
+) -> Result<benchmarks::learned::report::HoldoutReport> {
+    let service = service(&app).await?;
+    let report = service.store.evaluate_selector_holdout(&plan_id).await?;
+    service.changed().await;
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn benchmark_get_selector_holdout_report(
+    app: AppHandle,
+    plan_id: String,
+) -> Result<Option<benchmarks::learned::report::HoldoutReport>> {
+    service(&app)
+        .await?
+        .store
+        .selector_holdout_report(&plan_id)
+        .await
+}
+
 /// The held-out harness of one class: the selector against fixed policies.
 #[tauri::command]
 pub async fn benchmark_selector_harness(

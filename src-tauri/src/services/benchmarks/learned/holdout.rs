@@ -9,7 +9,7 @@ use super::*;
 use sqlx::Row;
 use std::collections::BTreeMap;
 
-const PROTOCOL: &str = "unseen-family-reservation-v1";
+const PROTOCOL: &str = "unseen-family-reservation-v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,6 +52,10 @@ pub struct HoldoutPlan {
     pub cases: Vec<HoldoutCase>,
     /// Policies required by the later report, including every fixed candidate.
     pub policies: Vec<String>,
+    /// Older reservations have no predeclared statistical recipe and cannot
+    /// acquire one after exposure. They remain inspectable, not evaluable.
+    #[serde(default)]
+    pub evaluation: Option<super::report::ReportProtocol>,
     pub dispatch_allowed: bool,
     pub status: String,
 }
@@ -100,9 +104,41 @@ fn exposure_error(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("holdout_already_exposed", message)
 }
 
+/// Historical renames can join two declared groups through the same family.
+/// Such groups must not become independent bootstrap units within one plan.
+fn validate_group_separation(cases: &[HoldoutCase], drafts: &[&BenchmarkDraft]) -> Result<()> {
+    let selected: BTreeSet<_> = cases.iter().map(|c| c.split_group.as_str()).collect();
+    for initial in &selected {
+        let mut groups = BTreeSet::from([*initial]);
+        let mut families = BTreeSet::new();
+        loop {
+            let before = (groups.len(), families.len());
+            for draft in drafts {
+                if groups.contains(split_group(draft))
+                    || families.contains(draft.task_family.as_str())
+                {
+                    groups.insert(split_group(draft));
+                    families.insert(draft.task_family.as_str());
+                }
+            }
+            if before == (groups.len(), families.len()) {
+                break;
+            }
+        }
+        if selected.intersection(&groups).count() > 1 {
+            return Err(invalid("Declared holdout groups share a historical family relation; merge their group labels before reservation"));
+        }
+    }
+    Ok(())
+}
+
 /// Freezes predictions and training-only aggregate choices before any labels
 /// from these families exist. Storage rechecks exposure against unfiltered runs.
-fn prepare(data: &QueryData, model: &LearnedModel, request: HoldoutRequest) -> Result<HoldoutPlan> {
+pub(super) fn prepare(
+    data: &QueryData,
+    model: &LearnedModel,
+    request: HoldoutRequest,
+) -> Result<HoldoutPlan> {
     let request = canonical(request, model)?;
     let current: BTreeMap<_, _> = super::super::analysis::pool(data, &ResultQuery::default())
         .into_iter()
@@ -211,6 +247,14 @@ fn prepare(data: &QueryData, model: &LearnedModel, request: HoldoutRequest) -> R
     if groups.len() < 4 {
         return Err(invalid("Holdout requires at least four declared independent groups; qualification is a separate gate"));
     }
+    validate_group_separation(
+        &cases,
+        &data
+            .versions
+            .iter()
+            .map(|v| &v.manifest)
+            .collect::<Vec<_>>(),
+    )?;
     let mut policies = vec![
         "learned".into(),
         "aggregate".into(),
@@ -233,6 +277,7 @@ fn prepare(data: &QueryData, model: &LearnedModel, request: HoldoutRequest) -> R
         configurations,
         cases,
         policies,
+        evaluation: Some(super::report::ReportProtocol::new(model.weights)),
         dispatch_allowed: false,
         status: "reserved_research_holdout".into(),
     })
@@ -303,6 +348,13 @@ impl Store {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
+        validate_group_separation(
+            &plan.cases,
+            &versions
+                .iter()
+                .map(|(_, _, draft)| draft)
+                .collect::<Vec<_>>(),
+        )?;
         // A family may have used an earlier group name. Reserve the connected
         // component, so a rename cannot split related examples across plans.
         loop {
@@ -395,10 +447,11 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn fixture() -> (QueryData, FitArtifact, HoldoutRequest) {
+    pub(in crate::services::benchmarks::learned) fn fixture(
+    ) -> (QueryData, FitArtifact, HoldoutRequest) {
         let mut data = super::super::tests::data();
         let artifact = fit(
             &data,
@@ -637,5 +690,32 @@ mod tests {
                 .code,
             "holdout_already_exposed"
         );
+    }
+
+    #[tokio::test]
+    async fn historical_relations_cannot_inflate_the_independent_group_count() {
+        let (mut data, artifact, request) = fixture();
+        let plan = prepare(&data, &artifact.model, request.clone()).unwrap();
+        let mut bridge = data
+            .versions
+            .iter()
+            .find(|v| v.id == "held-0")
+            .unwrap()
+            .clone();
+        bridge.id = "historical-group-bridge".into();
+        bridge.definition_id = bridge.id.clone();
+        bridge.manifest.environment["splitGroup"] = serde_json::json!("held-group-1");
+        data.versions.push(bridge);
+        assert!(prepare(&data, &artifact.model, request).is_err());
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        store.save_selector_fit(&artifact).await.unwrap();
+        save_versions(&store, &data.versions).await;
+        assert!(store.reserve_selector_holdout(&plan).await.is_err());
+        assert!(store
+            .selector_holdouts(&artifact.model.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }
