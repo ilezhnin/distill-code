@@ -527,15 +527,15 @@ pub(super) fn case_cells<'a>(
                 0.0
             };
             let costs: Option<Vec<f64>> = list.iter().map(|a| a.usage.cost).collect();
+            let durations: Option<Vec<f64>> = list
+                .iter()
+                .map(|a| a.duration_ms.map(|v| v as f64))
+                .collect();
             Some((
                 version,
                 CaseCell {
                     reward,
-                    duration_ms: median(
-                        list.iter()
-                            .filter_map(|a| a.duration_ms.map(|v| v as f64))
-                            .collect(),
-                    ),
+                    duration_ms: durations.and_then(median),
                     cost: costs.map(|c| c.iter().sum::<f64>() / c.len() as f64),
                     repetitions: scores.len() as u32,
                     complete: scores.len() as u32 >= required(version),
@@ -1717,6 +1717,13 @@ pub(super) mod tests {
         assert_eq!((short["v0"].repetitions, short["v0"].complete), (2, false));
         let full = cells(&passes, objective);
         assert_eq!((full["v0"].repetitions, full["v0"].complete), (3, true));
+        // Missing timing is not an unusually fast repetition. The outcome
+        // remains complete, but its latency cannot enter a comparison.
+        let mut incomplete_timing = passes;
+        incomplete_timing[1].duration_ms = None;
+        let measured = cells(&incomplete_timing, objective);
+        assert_eq!(measured["v0"].duration_ms, None);
+        assert!(measured["v0"].complete);
     }
     #[test]
     fn null_cost_is_not_free() {

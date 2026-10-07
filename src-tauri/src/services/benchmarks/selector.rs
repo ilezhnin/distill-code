@@ -69,6 +69,9 @@ pub struct SelectionQuery {
     /// Evidence splits; train alone by default, and never held-out.
     #[serde(default)]
     pub permitted_splits: Option<Vec<String>>,
+    /// Exclude this family when choosing for an unseen task from it.
+    #[serde(default)]
+    pub target_family: Option<String>,
 }
 
 /// One candidate's standing in a selection, on the shared cases.
@@ -107,73 +110,35 @@ pub struct Selection {
     pub standings: Vec<CandidateStanding>,
 }
 
-/// A case's reward from its scored repetitions, as the boards count it: 1
-/// only when every objective repetition passed, a judged case its mean.
-fn case_reward(scores: &[f64]) -> f64 {
-    if scores.iter().all(|s| *s == 0.0 || *s == 1.0) {
-        f64::from(u8::from(scores.iter().all(|s| *s == 1.0)))
-    } else {
-        scores.iter().sum::<f64>() / scores.len() as f64
-    }
-}
-
-fn median(mut values: Vec<f64>) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_by(f64::total_cmp);
-    Some(values[values.len() / 2])
-}
-
-/// A candidate's measurement of one case: its reward, median duration and
-/// mean cost (unknown when a repetition's is).
-struct CaseMeasure {
-    reward: f64,
-    duration: Option<f64>,
-    cost: Option<f64>,
-}
-
+/// Read the same complete cells and evaluator semantics as the boards.
 fn measures(
     data: &QueryData,
     attempt_ids: &[String],
     cutoff: i64,
-) -> BTreeMap<String, CaseMeasure> {
+) -> BTreeMap<String, analysis::CaseCell> {
     let by_id: BTreeMap<&str, &Attempt> =
         data.attempts.iter().map(|a| (a.id.as_str(), a)).collect();
-    let mut cases: BTreeMap<String, Vec<&Attempt>> = BTreeMap::new();
-    for id in attempt_ids {
-        if let Some(attempt) = by_id.get(id.as_str()) {
-            cases
-                .entry(attempt.version_id.clone())
-                .or_default()
-                .push(attempt);
-        }
-    }
-    cases
+    let versions: BTreeMap<&str, &BenchmarkVersion> =
+        data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
+    let attempts: Vec<&Attempt> = attempt_ids
+        .iter()
+        .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter_map(|(version, list)| {
-            let scores: Vec<f64> = list
-                .iter()
-                .filter_map(|a| analysis::score_as_of(a, Some(cutoff)))
-                .collect();
-            if scores.is_empty() {
-                return None;
-            }
-            let costs: Option<Vec<f64>> = list.iter().map(|a| a.usage.cost).collect();
-            Some((
-                version,
-                CaseMeasure {
-                    reward: case_reward(&scores),
-                    duration: median(
-                        list.iter()
-                            .filter_map(|a| a.duration_ms.map(|d| d as f64))
-                            .collect(),
-                    ),
-                    cost: costs.map(|c| c.iter().sum::<f64>() / c.len() as f64),
-                },
-            ))
-        })
-        .collect()
+        .filter_map(|id| by_id.get(id.as_str()).copied())
+        .filter(|a| versions.contains_key(a.version_id.as_str()))
+        .collect();
+    analysis::case_cells(
+        &attempts,
+        Some(cutoff),
+        analysis::CaseProtocol {
+            required: &|id| analysis::required_repetitions(data, versions[id]),
+            graded: &|id| versions[id].manifest.evaluator.kind == "rubric",
+        },
+    )
+    .into_iter()
+    .filter(|(_, cell)| cell.complete)
+    .map(|(id, cell)| (id.to_owned(), cell))
+    .collect()
 }
 
 /// The best on record over `own`, 0 to 1, for a solved case only.
@@ -185,7 +150,22 @@ fn share(record: Option<f64>, own: Option<f64>) -> Option<f64> {
     }
 }
 
+fn validate_candidates(candidates: &[RoutingCandidate]) -> Result<()> {
+    let keys: BTreeSet<_> = candidates
+        .iter()
+        .map(|c| candidate_key(&c.configuration))
+        .collect();
+    if candidates.len() > 200 || keys.len() != candidates.len() {
+        return Err(BenchmarkError::new(
+            "validation",
+            "A selector requires at most 200 distinct candidate identities",
+        ));
+    }
+    Ok(())
+}
+
 pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
+    validate_candidates(&query.candidates)?;
     let splits = query
         .permitted_splits
         .clone()
@@ -201,6 +181,7 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
         .iter()
         .any(|w| !w.is_finite() || *w < 0.0)
         || weights.quality <= 0.0
+        || !(weights.quality + weights.speed + weights.cost).is_finite()
     {
         return Err(BenchmarkError::new(
             "validation",
@@ -214,9 +195,14 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
         &RoutingEvidenceQuery {
             schema_version: 1,
             mode: "class".into(),
-            purpose: "analysis".into(),
+            purpose: if query.target_family.is_some() {
+                "selector"
+            } else {
+                "analysis"
+            }
+            .into(),
             target_version_id: None,
-            target_family: String::new(),
+            target_family: query.target_family.clone().unwrap_or_default(),
             work_class_id: query.work_class_id.clone(),
             facets: query.facets.clone(),
             role_context_hash: CLEAN_CONTEXT.into(),
@@ -234,12 +220,11 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
         },
     )?;
     // Candidates with measured evidence that may be chosen.
-    let usable: Vec<(&RoutingEvidenceRow, BTreeMap<String, CaseMeasure>)> = evidence
+    let usable: Vec<(&RoutingEvidenceRow, BTreeMap<String, analysis::CaseCell>)> = evidence
         .candidates
         .iter()
         .filter(|row| row.available && !matches!(row.status.as_str(), "unavailable" | "excluded"))
         .map(|row| (row, measures(data, &row.attempt_ids, cutoff)))
-        .filter(|(_, cases)| !cases.is_empty())
         .collect();
     let shared: BTreeSet<&str> = match usable.split_first() {
         None => BTreeSet::new(),
@@ -249,11 +234,16 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
             .filter(|case| rest.iter().all(|(_, cases)| cases.contains_key(*case)))
             .collect(),
     };
-    let record = |pick: &dyn Fn(&CaseMeasure) -> Option<f64>, case: &str| {
+    let record = |pick: &dyn Fn(&analysis::CaseCell) -> Option<f64>, case: &str| {
+        // Apply the same resource dimensions to every candidate on a case.
+        // Dropping only one candidate's unknown duration or cost would make
+        // its missing measurements a scoring advantage.
         usable
             .iter()
-            .filter_map(|(_, cases)| cases.get(case).filter(|m| m.reward >= 0.5).and_then(pick))
-            .min_by(f64::total_cmp)
+            .filter_map(|(_, cases)| cases.get(case).filter(|m| m.reward > 0.0))
+            .map(pick)
+            .collect::<Option<Vec<_>>>()
+            .and_then(|values| values.into_iter().min_by(f64::total_cmp))
     };
     let mut standings: Vec<CandidateStanding> = evidence
         .candidates
@@ -263,7 +253,7 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
                 .iter()
                 .find(|(usable, _)| usable.candidate_key == row.candidate_key)
                 .map(|(_, cases)| cases);
-            let on_shared: Vec<(&str, &CaseMeasure)> = measured
+            let on_shared: Vec<(&str, &analysis::CaseCell)> = measured
                 .map(|cases| {
                     shared
                         .iter()
@@ -274,28 +264,37 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
             let quality = (!on_shared.is_empty()).then(|| {
                 on_shared.iter().map(|(_, m)| m.reward).sum::<f64>() / on_shared.len() as f64
             });
-            let mean_share = |pick: &dyn Fn(&CaseMeasure) -> Option<f64>| {
+            let mean_share = |pick: &dyn Fn(&analysis::CaseCell) -> Option<f64>| {
                 let shares: Vec<f64> = on_shared
                     .iter()
-                    .filter(|(_, m)| m.reward >= 0.5)
+                    .filter(|(_, m)| m.reward > 0.0)
                     .filter_map(|(case, m)| share(record(pick, case), pick(m)))
                     .collect();
                 (!shares.is_empty()).then(|| shares.iter().sum::<f64>() / shares.len() as f64)
             };
-            let speed_share = mean_share(&|m| m.duration);
+            let speed_share = mean_share(&|m| m.duration_ms);
             let cost_share = mean_share(&|m| m.cost);
-            let score = quality.map(|q| {
-                let mut total = weights.quality * q;
-                let mut weight = weights.quality;
-                if let Some(s) = speed_share {
-                    total += weights.speed * s;
-                    weight += weights.speed;
-                }
-                if let Some(c) = cost_share {
-                    total += weights.cost * c;
-                    weight += weights.cost;
-                }
-                total / weight
+            let score = quality.map(|_| {
+                on_shared
+                    .iter()
+                    .map(|(case, cell)| {
+                        if cell.reward == 0.0 {
+                            return 0.0;
+                        }
+                        let mut total = weights.quality;
+                        let mut weight = weights.quality;
+                        if let Some(s) = share(record(&|m| m.duration_ms, case), cell.duration_ms) {
+                            total += weights.speed * s;
+                            weight += weights.speed;
+                        }
+                        if let Some(c) = share(record(&|m| m.cost, case), cell.cost) {
+                            total += weights.cost * c;
+                            weight += weights.cost;
+                        }
+                        cell.reward * total / weight
+                    })
+                    .sum::<f64>()
+                    / on_shared.len() as f64
             });
             CandidateStanding {
                 candidate_key: row.candidate_key.clone(),
@@ -438,43 +437,74 @@ pub struct HarnessReport {
 /// Replays the selector on the class's held-out cases against the fixed
 /// policies (see the module).
 pub fn harness(data: &QueryData, query: &HarnessQuery) -> Result<HarnessReport> {
-    let pool = analysis::pool(data, &ResultQuery::default());
-    let runs: BTreeMap<&str, &BenchmarkRun> = data
-        .runs
-        .iter()
-        .filter(|run| !run.request.preview)
-        .map(|run| (run.id.as_str(), run))
-        .collect();
-    let keys: Vec<String> = query
+    validate_candidates(&query.candidates)?;
+    let cutoff = now();
+    let candidates: Vec<RoutingCandidate> = query
         .candidates
+        .iter()
+        .filter(|c| c.available)
+        .cloned()
+        .collect();
+    let mut selection_query = SelectionQuery {
+        work_class_id: query.work_class_id.clone(),
+        facets: TaskFacets::default(),
+        candidates: candidates.clone(),
+        weights: query.weights,
+        prior: query.prior.clone(),
+        min_cases: query.min_cases,
+        cutoff_at: Some(cutoff),
+        permitted_splits: None,
+        target_family: None,
+    };
+    // Validate the contract even when the held-out pool is empty.
+    select(data, &selection_query)?;
+    let pool = analysis::pool(data, &ResultQuery::default());
+    let keys: Vec<String> = candidates
         .iter()
         .map(|c| candidate_key(&c.configuration))
         .collect();
     // Each held-out case of the class with a complete cell for every candidate.
     let mut rewards: Vec<(&BenchmarkVersion, Vec<f64>)> = Vec::new();
     for version in pool.iter().filter(|v| {
-        v.manifest.split == "held_out" && v.manifest.work_class_id == query.work_class_id
+        v.manifest.split == "held_out"
+            && v.manifest.work_class_id == query.work_class_id
+            && v.manifest.role_context_hash == CLEAN_CONTEXT
+            && v.manifest.entry_state.is_none()
     }) {
-        let required = analysis::required_repetitions(data, version) as usize;
+        // Evaluation and inference use the same eligibility, inventory,
+        // authorship, time-budget and newest-cell rules. Held-out labels are
+        // read only here, never by select.
+        let evidence = routing::get_evidence(
+            data,
+            &RoutingEvidenceQuery {
+                schema_version: 1,
+                mode: "exact".into(),
+                purpose: "analysis".into(),
+                target_version_id: Some(version.id.clone()),
+                target_family: String::new(),
+                work_class_id: query.work_class_id.clone(),
+                facets: TaskFacets::default(),
+                role_context_hash: CLEAN_CONTEXT.into(),
+                entry_state_hash: None,
+                candidates: candidates.clone(),
+                cutoff_at: cutoff,
+                permitted_splits: vec!["held_out".into()],
+                objective: RoutingObjective {
+                    kind: "quality".into(),
+                    min_quality: 0.0,
+                },
+                constraints: RoutingConstraints::default(),
+                max_age_ms: MAX_EVIDENCE_AGE_MS,
+                timeout_seconds: None,
+            },
+        )?;
         let mut row = Vec::new();
-        for key in &keys {
-            let attempts: Vec<&Attempt> = data
-                .attempts
-                .iter()
-                .filter(|a| {
-                    a.version_id == version.id
-                        && &candidate_key(&analysis::execution_configuration(a)) == key
-                })
-                .collect();
-            let cell = analysis::latest_cell_attempts(&attempts, &runs, None);
-            let scores: Vec<f64> = cell
-                .iter()
-                .filter_map(|a| analysis::score_as_of(a, None))
-                .collect();
-            if scores.len() < required {
+        for candidate in &evidence.candidates {
+            let cells = measures(data, &candidate.attempt_ids, cutoff);
+            let Some(cell) = cells.get(&version.id) else {
                 break;
-            }
-            row.push(case_reward(&scores));
+            };
+            row.push(cell.reward);
         }
         if row.len() == keys.len() {
             rewards.push((version, row));
@@ -532,19 +562,9 @@ pub fn harness(data: &QueryData, query: &HarnessQuery) -> Result<HarnessReport> 
     let mut selected = 0.0;
     let mut abstained = 0;
     for (version, row) in &rewards {
-        let selection = select(
-            data,
-            &SelectionQuery {
-                work_class_id: query.work_class_id.clone(),
-                facets: version.manifest.facets.clone(),
-                candidates: query.candidates.clone(),
-                weights: query.weights,
-                prior: query.prior.clone(),
-                min_cases: query.min_cases,
-                cutoff_at: None,
-                permitted_splits: None,
-            },
-        )?;
+        selection_query.facets = version.manifest.facets.clone();
+        selection_query.target_family = Some(version.manifest.task_family.clone());
+        let selection = select(data, &selection_query)?;
         match selection
             .chosen_key
             .and_then(|key| keys.iter().position(|k| *k == key))
@@ -700,7 +720,219 @@ mod tests {
             min_cases: None,
             cutoff_at: None,
             permitted_splits: None,
+            target_family: None,
         }
+    }
+
+    fn harness_query() -> HarnessQuery {
+        HarnessQuery {
+            work_class_id: "debug".into(),
+            candidates: candidates(),
+            weights: None,
+            prior: vec![configuration("fast")],
+            min_cases: Some(4),
+        }
+    }
+
+    fn repeat_three(data: &mut QueryData) {
+        data.required_repetitions = 3;
+        data.runs[0].request.repetitions = 3;
+        data.attempts = data
+            .attempts
+            .iter()
+            .flat_map(|attempt| {
+                (0..3).map(move |repetition| Attempt {
+                    id: format!("{}-{repetition}", attempt.id),
+                    repetition,
+                    ..attempt.clone()
+                })
+            })
+            .collect();
+    }
+
+    #[test]
+    fn rubric_endpoints_are_averaged_in_selection_and_the_harness() {
+        let mut data = data();
+        repeat_three(&mut data);
+        for version in &mut data.versions {
+            version.manifest.evaluator.kind = "rubric".into();
+        }
+        for attempt in &mut data.attempts {
+            attempt.outcome = Some(
+                if attempt.configuration.model_id == "strong" && attempt.repetition != 1 {
+                    "pass"
+                } else {
+                    "fail"
+                }
+                .into(),
+            );
+        }
+        let selected = select(&data, &query(&[])).unwrap();
+        assert_eq!(selected.source, "evidence");
+        assert!((selected.standings[0].quality.unwrap() - 2.0 / 3.0).abs() < 1e-12);
+        let report = harness(&data, &harness_query()).unwrap();
+        assert_eq!(report.cases, 4);
+        assert_eq!(
+            report
+                .policies
+                .iter()
+                .find(|p| p.policy == "best_fixed")
+                .unwrap()
+                .mean_reward,
+            2.0 / 3.0
+        );
+        // The identical numeric outcomes on an objective case require 3/3.
+        for version in &mut data.versions {
+            version.manifest.evaluator.kind = "exact".into();
+        }
+        assert!(select(&data, &query(&[]))
+            .unwrap()
+            .standings
+            .iter()
+            .all(|s| s.quality == Some(0.0)));
+        assert!(harness(&data, &harness_query())
+            .unwrap()
+            .policies
+            .iter()
+            .all(|p| p.mean_reward == 0.0));
+    }
+
+    #[test]
+    fn incomplete_cells_never_satisfy_selection_coverage() {
+        let mut data = data();
+        repeat_three(&mut data);
+        data.attempts.retain(|a| {
+            !(a.version_id == "case-0" && a.configuration.model_id == "fast" && a.repetition == 2)
+        });
+        assert_eq!(select(&data, &query(&[])).unwrap().shared_cases, 9);
+        data.attempts
+            .retain(|a| a.configuration.model_id != "fast" || a.repetition == 0);
+        let selected = select(&data, &query(&["fast"])).unwrap();
+        assert_eq!(selected.shared_cases, 0);
+        assert_eq!(selected.source, "prior");
+        assert_eq!(harness(&data, &harness_query()).unwrap().cases, 0);
+    }
+
+    #[test]
+    fn an_unmeasured_available_candidate_cannot_disappear_from_the_comparison() {
+        let data = data();
+        let mut q = query(&["strong"]);
+        q.candidates.push(RoutingCandidate {
+            configuration: configuration("new"),
+            available: true,
+            reason: None,
+        });
+        let selected = select(&data, &q).unwrap();
+        assert_eq!(
+            (selected.source.as_str(), selected.shared_cases),
+            ("prior", 0)
+        );
+    }
+
+    #[test]
+    fn resource_scores_cannot_buy_back_failure_or_reward_missing_measurements() {
+        let mut data = data();
+        let selected = select(&data, &query(&[])).unwrap();
+        let fast = selected
+            .standings
+            .iter()
+            .find(|s| s.configuration.model_id == "fast")
+            .unwrap();
+        assert_eq!(fast.quality, Some(0.5));
+        assert_eq!(fast.score, Some(0.5));
+        for attempt in &mut data.attempts {
+            attempt.outcome = Some("pass".into());
+            if attempt.configuration.model_id == "strong" {
+                attempt.duration_ms = None;
+            }
+        }
+        let selected = select(&data, &query(&["strong"])).unwrap();
+        assert_eq!(
+            selected.chosen_key,
+            Some(candidate_key(&configuration("strong")))
+        );
+        assert!(selected
+            .standings
+            .iter()
+            .all(|s| s.score == Some(1.0) && s.speed_share.is_none()));
+    }
+
+    #[test]
+    fn harness_uses_eligible_protocol_cells_and_current_inventory() {
+        let original = data();
+        let mut short = original.clone();
+        short.runs[0].request.timeout_seconds = 1;
+        assert_eq!(harness(&short, &harness_query()).unwrap().cases, 0);
+        let mut preview = original.clone();
+        preview.runs[0].request.preview = true;
+        assert_eq!(harness(&preview, &harness_query()).unwrap().cases, 0);
+        let mut stale = original.clone();
+        for attempt in &mut stale.attempts {
+            attempt.observed.as_mut().unwrap().inventory_revision = Some("old-runtime".into());
+        }
+        assert_eq!(harness(&stale, &harness_query()).unwrap().cases, 0);
+        let mut authored = original.clone();
+        authored.versions[10].manifest.environment["authoredBy"] = serde_json::json!(["strong"]);
+        assert_eq!(harness(&authored, &harness_query()).unwrap().cases, 3);
+        let mut role = original.clone();
+        role.versions[10].manifest.role_context_hash = "different-persona".into();
+        assert_eq!(harness(&role, &harness_query()).unwrap().cases, 3);
+        // An unavailable candidate is not a baseline or an owed cell.
+        let mut q = harness_query();
+        q.candidates[1].available = false;
+        assert_eq!(harness(&original, &q).unwrap().cases, 4);
+        assert!(harness(&original, &q)
+            .unwrap()
+            .policies
+            .iter()
+            .filter_map(|p| p.candidate_key.as_ref())
+            .all(|key| key == &candidate_key(&configuration("strong"))));
+    }
+
+    #[test]
+    fn harness_excludes_the_target_family_from_training() {
+        let mut data = data();
+        for version in data.versions.iter_mut().take(10) {
+            version.manifest.task_family = "family-10".into();
+        }
+        let mut q = harness_query();
+        q.prior = vec![configuration("strong")];
+        let report = harness(&data, &q).unwrap();
+        assert_eq!(
+            report
+                .policies
+                .iter()
+                .find(|p| p.policy == "selector")
+                .unwrap()
+                .mean_reward,
+            0.25
+        );
+        let mut q = query(&["strong"]);
+        q.target_family = Some("family-10".into());
+        let selected = select(&data, &q).unwrap();
+        assert_eq!(
+            (selected.source.as_str(), selected.shared_cases),
+            ("prior", 0)
+        );
+    }
+
+    #[test]
+    fn harness_validates_inputs_even_without_measurements() {
+        let mut data = data();
+        data.attempts.clear();
+        let mut q = harness_query();
+        q.candidates.push(q.candidates[0].clone());
+        assert!(harness(&data, &q).is_err());
+        let mut q = harness_query();
+        q.weights = Some(RoleWeights {
+            quality: f64::NAN,
+            speed: 0.0,
+            cost: 0.0,
+        });
+        assert!(harness(&data, &q).is_err());
+        let mut q = harness_query();
+        q.work_class_id = "unknown".into();
+        assert!(harness(&data, &q).is_err());
     }
 
     #[test]
