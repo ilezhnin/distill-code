@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod effort;
 pub mod evaluation;
 pub mod evidence;
+pub mod executor;
 pub mod export;
 pub mod fixtures;
 pub mod generated;

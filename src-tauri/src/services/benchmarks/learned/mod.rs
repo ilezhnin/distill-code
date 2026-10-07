@@ -6,7 +6,7 @@ pub mod holdout;
 mod persistence;
 pub mod report;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 use super::{routing, selector::RoleWeights, types::*};
 pub use fit::fit;
@@ -258,9 +258,7 @@ fn validate_model(model: &LearnedModel) -> Result<()> {
     Ok(())
 }
 
-/// Pure inference: no QueryData, Store, labels, examples or hidden evaluators.
-pub fn predict(model: &LearnedModel, request: &PredictionRequest) -> Result<Prediction> {
-    validate_model(model)?;
+pub(super) fn validate_public_request(request: &PredictionRequest) -> Result<Vec<f64>> {
     let x = features::extract(&request.task)?;
     let keys: BTreeSet<_> = request
         .candidates
@@ -278,6 +276,13 @@ pub fn predict(model: &LearnedModel, request: &PredictionRequest) -> Result<Pred
             "Prediction needs distinct candidates, family/group and a quality floor from 0 to 1",
         ));
     }
+    Ok(x)
+}
+
+/// Pure inference: no QueryData, Store, labels, examples or hidden evaluators.
+pub fn predict(model: &LearnedModel, request: &PredictionRequest) -> Result<Prediction> {
+    validate_model(model)?;
+    let x = validate_public_request(request)?;
     let mut result = Prediction {
         model_id: model.id.clone(),
         chosen: None,

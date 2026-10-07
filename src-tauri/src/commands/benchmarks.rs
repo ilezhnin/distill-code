@@ -348,6 +348,55 @@ pub async fn benchmark_predict_selector(
         .map_err(|e| BenchmarkError::new("infrastructure_failure", e.to_string()))?
 }
 
+#[tauri::command]
+pub async fn benchmark_preview_executor_decision(
+    app: AppHandle,
+    request: benchmarks::executor::Request,
+) -> Result<benchmarks::executor::Decision> {
+    service(&app)
+        .await?
+        .store
+        .preview_executor_decision(request)
+        .await
+}
+
+#[tauri::command]
+pub async fn benchmark_prepare_executor_decision(
+    app: AppHandle,
+    request: benchmarks::executor::Request,
+) -> Result<benchmarks::executor::Decision> {
+    service(&app)
+        .await?
+        .store
+        .prepare_executor_decision(request)
+        .await
+}
+
+#[tauri::command]
+pub async fn benchmark_get_executor_decision(
+    app: AppHandle,
+    request_key: String,
+) -> Result<Option<benchmarks::executor::Record>> {
+    service(&app)
+        .await?
+        .store
+        .executor_decision(&request_key)
+        .await
+}
+
+#[tauri::command]
+pub async fn benchmark_observe_executor(
+    app: AppHandle,
+    request_key: String,
+    observation: benchmarks::executor::Observation,
+) -> Result<benchmarks::executor::Record> {
+    service(&app)
+        .await?
+        .store
+        .observe_executor(&request_key, observation)
+        .await
+}
+
 /// Reserves unused related families and freezes choices without starting work.
 #[tauri::command]
 pub async fn benchmark_freeze_selector_holdout(

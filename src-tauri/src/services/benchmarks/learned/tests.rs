@@ -1,7 +1,7 @@
 use super::super::{analysis::tests::dataset, store::Store};
 use super::*;
 
-pub(super) fn data() -> QueryData {
+pub(in crate::services::benchmarks) fn data() -> QueryData {
     let mut data = dataset();
     let version = data.versions[0].clone();
     let attempt = data.attempts[0].clone();

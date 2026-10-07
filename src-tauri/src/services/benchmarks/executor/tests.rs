@@ -1,0 +1,356 @@
+use super::*;
+use crate::services::benchmarks::selector::RoleWeights;
+
+fn request() -> Request {
+    let data = learned::tests::data();
+    let candidates: Vec<_> = data.runs[0]
+        .request
+        .configurations
+        .iter()
+        .map(|configuration| RoutingCandidate {
+            configuration: configuration.clone(),
+            available: true,
+            reason: None,
+        })
+        .collect();
+    Request {
+        request_key: "example-wave:step-0".into(),
+        surface: "wave".into(),
+        context_id: "example-wave".into(),
+        prior_keys: candidates
+            .iter()
+            .rev()
+            .map(|row| routing::candidate_key(&row.configuration))
+            .collect(),
+        model_id: None,
+        prediction: learned::PredictionRequest {
+            task: learned::PublicTask::from(&data.versions[0].manifest),
+            target_family: "unseen-family".into(),
+            target_group: "unseen-group".into(),
+            candidates,
+            hard_candidate_key: None,
+            min_quality: 0.5,
+        },
+    }
+}
+
+async fn fitted(store: &Store) -> learned::FitArtifact {
+    let data = learned::tests::data();
+    let artifact = learned::fit(
+        &data,
+        learned::FitRequest {
+            work_class_id: "debug".into(),
+            version_ids: data
+                .versions
+                .iter()
+                .map(|version| version.id.clone())
+                .collect(),
+            configurations: data.runs[0].request.configurations.clone(),
+            cutoff_at: 10,
+            weights: RoleWeights::default(),
+        },
+    )
+    .unwrap();
+    store.save_selector_fit(&artifact).await.unwrap();
+    artifact
+}
+
+fn started(decision: &Decision) -> Observation {
+    Observation {
+        phase: "started".into(),
+        session_id: Some("example-session".into()),
+        run_id: Some("example-run".into()),
+        configuration: decision.chosen.clone(),
+        outcome: None,
+        reason: None,
+    }
+}
+
+#[tokio::test]
+async fn both_surfaces_share_the_policy_and_research_never_overrides_the_prior() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let fit = fitted(&store).await;
+    for surface in ["chat", "wave"] {
+        let mut input = request();
+        input.surface = surface.into();
+        input.model_id = Some(fit.model.id.clone());
+        let result = store.preview_executor_decision(input).await.unwrap();
+        assert_eq!(result.chosen.as_ref().unwrap().model_id, "painter");
+        assert_eq!(
+            result.research_prediction.unwrap().chosen.unwrap().model_id,
+            "parser"
+        );
+        assert_eq!(result.learned_status, "promotion_required");
+        assert!(!result.learned_dispatch_allowed);
+    }
+    assert!(store
+        .executor_decision("example-wave:step-0")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn explicit_pins_and_unavailability_do_not_silently_substitute() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let mut input = request();
+    input.prediction.hard_candidate_key = Some(routing::candidate_key(
+        &input.prediction.candidates[0].configuration,
+    ));
+    let pinned = store
+        .preview_executor_decision(input.clone())
+        .await
+        .unwrap();
+    assert_eq!(pinned.chosen.unwrap().model_id, "parser");
+    assert_eq!(pinned.source, "pin");
+    input.prediction.candidates[0].available = false;
+    let refused = store
+        .preview_executor_decision(input.clone())
+        .await
+        .unwrap();
+    assert!(refused.chosen.is_none());
+    assert_eq!(refused.reason, "pinned_candidate_unavailable");
+    input.prediction.hard_candidate_key = None;
+    input.prediction.candidates[1].available = false;
+    assert!(store
+        .preview_executor_decision(input)
+        .await
+        .unwrap()
+        .chosen
+        .is_none());
+}
+
+#[tokio::test]
+async fn incomplete_fit_availability_uses_declared_prior_and_does_not_load_labels() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let mut input = request();
+    input.model_id = Some("missing-model".into());
+    let missing = store
+        .preview_executor_decision(input.clone())
+        .await
+        .unwrap();
+    assert_eq!(missing.learned_status, "model_unavailable");
+    assert_eq!(missing.chosen.unwrap().model_id, "painter");
+    let artifact = fitted(&store).await;
+    input.model_id = Some(artifact.model.id.clone());
+    sqlx::query("UPDATE selector_fits SET snapshot_json='{}' WHERE id=?")
+        .bind(&artifact.model.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert!(store.selector_fit(&artifact.model.id).await.is_err());
+    assert!(store
+        .preview_executor_decision(input)
+        .await
+        .unwrap()
+        .research_prediction
+        .is_some());
+}
+
+#[tokio::test]
+async fn decisions_survive_restart_are_idempotent_and_reject_changed_inputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let input = request();
+    let (a, b) = tokio::join!(
+        store.prepare_executor_decision(input.clone()),
+        store.prepare_executor_decision(input.clone())
+    );
+    let original = a.unwrap();
+    assert_eq!(original.artifact_hash, b.unwrap().artifact_hash);
+    store.pool.close().await;
+    let reopened = Store::open(directory.path()).await.unwrap();
+    assert_eq!(
+        reopened
+            .prepare_executor_decision(input.clone())
+            .await
+            .unwrap()
+            .artifact_hash,
+        original.artifact_hash
+    );
+    let mut changed = input;
+    changed.prediction.task.prompt += " changed";
+    assert_eq!(
+        reopened
+            .prepare_executor_decision(changed)
+            .await
+            .unwrap_err()
+            .code,
+        "decision_conflict"
+    );
+    sqlx::query("UPDATE executor_decisions SET input_hash='changed'")
+        .execute(&reopened.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .executor_decision(&original.request.request_key)
+            .await
+            .unwrap_err()
+            .code,
+        "invalid_decision"
+    );
+}
+
+#[tokio::test]
+async fn observed_execution_is_immutable_and_mismatch_is_retained() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let decision = store.prepare_executor_decision(request()).await.unwrap();
+    let key = &decision.request.request_key;
+    let mut start = started(&decision);
+    start.configuration = Some(
+        decision.request.prediction.candidates[0]
+            .configuration
+            .clone(),
+    );
+    let result = store.observe_executor(key, start.clone()).await.unwrap();
+    assert_eq!(result.observations[0].matches_selected, Some(false));
+    assert_eq!(
+        store
+            .observe_executor(key, start.clone())
+            .await
+            .unwrap()
+            .observations
+            .len(),
+        1
+    );
+    let mut finish = start.clone();
+    finish.phase = "terminal".into();
+    finish.outcome = Some("completed".into());
+    let result = store.observe_executor(key, finish.clone()).await.unwrap();
+    assert_eq!(result.observations.len(), 2);
+    finish.outcome = Some("failed".into());
+    assert_eq!(
+        store.observe_executor(key, finish).await.unwrap_err().code,
+        "observation_conflict"
+    );
+    let mut substituted = start;
+    substituted.session_id = Some("another-session".into());
+    assert_eq!(
+        store
+            .observe_executor(key, substituted)
+            .await
+            .unwrap_err()
+            .code,
+        "observation_conflict"
+    );
+}
+
+#[tokio::test]
+async fn changed_runtime_is_an_observed_mismatch_even_for_the_same_model() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let decision = store.prepare_executor_decision(request()).await.unwrap();
+    let mut observation = started(&decision);
+    observation
+        .configuration
+        .as_mut()
+        .unwrap()
+        .inventory_revision = Some("different-runtime".into());
+    let record = store
+        .observe_executor(&decision.request.request_key, observation)
+        .await
+        .unwrap();
+    assert_eq!(record.observations[0].matches_selected, Some(false));
+}
+
+#[tokio::test]
+async fn concurrent_start_and_cancel_cannot_record_a_start_after_a_prestart_cancel() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let decision = store.prepare_executor_decision(request()).await.unwrap();
+    let cancelled = Observation {
+        phase: "terminal".into(),
+        session_id: None,
+        run_id: None,
+        configuration: None,
+        outcome: Some("cancelled".into()),
+        reason: None,
+    };
+    let (start, cancel) = tokio::join!(
+        store.observe_executor(&decision.request.request_key, started(&decision)),
+        store.observe_executor(&decision.request.request_key, cancelled),
+    );
+    assert_ne!(start.is_ok(), cancel.is_ok());
+    let record = store
+        .executor_decision(&decision.request.request_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.observations.len(), 1);
+}
+
+#[tokio::test]
+async fn cancellation_before_start_refuses_late_execution_and_success_needs_observation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let decision = store.prepare_executor_decision(request()).await.unwrap();
+    let key = &decision.request.request_key;
+    let mut closed = Observation {
+        phase: "terminal".into(),
+        session_id: None,
+        run_id: None,
+        configuration: None,
+        outcome: Some("completed".into()),
+        reason: None,
+    };
+    assert_eq!(
+        store
+            .observe_executor(key, closed.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "validation"
+    );
+    closed.outcome = Some("cancelled".into());
+    store.observe_executor(key, closed).await.unwrap();
+    assert_eq!(
+        store
+            .observe_executor(key, started(&decision))
+            .await
+            .unwrap_err()
+            .code,
+        "decision_terminal"
+    );
+}
+
+#[tokio::test]
+async fn observation_tampering_and_hidden_input_fields_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let input = request();
+    let mut wire = serde_json::to_value(&input).unwrap();
+    wire["prediction"]["task"]["evaluator"] = serde_json::json!({"expected":"invented-answer"});
+    assert!(serde_json::from_value::<Request>(wire).is_err());
+    let mut invalid = input.clone();
+    invalid.prior_keys.push("not-a-candidate".into());
+    assert_eq!(
+        store
+            .prepare_executor_decision(invalid)
+            .await
+            .unwrap_err()
+            .code,
+        "validation"
+    );
+    let decision = store.prepare_executor_decision(input).await.unwrap();
+    store
+        .observe_executor(&decision.request.request_key, started(&decision))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE executor_observations SET artifact_hash='changed'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .executor_decision(&decision.request.request_key)
+            .await
+            .unwrap_err()
+            .code,
+        "invalid_decision"
+    );
+}
