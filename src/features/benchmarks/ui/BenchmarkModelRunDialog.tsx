@@ -21,6 +21,7 @@ import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
+import { isRankedSplit } from "../lib/benchmarkReleases";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { modelDisplayName, providerVendor } from "../lib/benchmarkLabels";
 import {
@@ -109,6 +110,7 @@ export function BenchmarkModelRunDialog({
                 .sort((a, b) => b.publishedAt - a.publishedAt)
                 .slice(0, 1),
       )
+      .filter((version) => isRankedSplit(version.manifest.split))
       .sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
     const wrote = (version: BenchmarkVersion) =>
       authoredByCandidate(version.manifest.environment, configuration);

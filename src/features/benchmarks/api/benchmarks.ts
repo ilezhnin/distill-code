@@ -185,7 +185,7 @@ export const benchmarkApi = {
   getUsageLedger: () =>
     invoke<UsageLedgerEntry[]>("benchmark_get_usage_ledger"),
   listReleases: () => invoke<PoolRelease[]>("benchmark_list_releases"),
-  /** Freezes every live test's newest version; the name defaults to the next vN. */
+  /** Freezes live training/held-out versions; the name defaults to the next vN. */
   createRelease: (name: string | null) =>
     invoke<PoolRelease>("benchmark_create_release", { name }),
   submitReview: (

@@ -4898,11 +4898,9 @@ mod tests {
         (dir, service, backend)
     }
     async fn request(s: &BenchmarkService) -> RunRequest {
-        let d = s
-            .store
-            .save_draft(None, None, seed_definitions().remove(0))
-            .await
-            .unwrap();
+        let mut draft = seed_definitions().remove(0);
+        draft.split = "train".into();
+        let d = s.store.save_draft(None, None, draft).await.unwrap();
         let v = s.store.publish(&d.id, 1).await.unwrap();
         RunRequest {
             request_key: "test-key".into(),
@@ -5078,6 +5076,7 @@ mod tests {
         let (_dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         let mut draft = seed_definitions().remove(0);
+        draft.split = "train".into();
         draft.workflow = Some(WorkflowSpec {
             schema_version: 1,
             driver_revision: "runner-workflow-test-v1".into(),
@@ -5154,11 +5153,9 @@ mod tests {
     }
     /// A second case for a run, published from the next seed.
     async fn second_case(s: &BenchmarkService) -> String {
-        let d = s
-            .store
-            .save_draft(None, None, seed_definitions().remove(1))
-            .await
-            .unwrap();
+        let mut draft = seed_definitions().remove(1);
+        draft.split = "train".into();
+        let d = s.store.save_draft(None, None, draft).await.unwrap();
         s.store.publish(&d.id, 1).await.unwrap().id
     }
     fn settle(attempt: &Attempt, outcome: &str) -> Attempt {
@@ -7256,6 +7253,7 @@ mod tests {
     async fn rubric_review_settles_quality() {
         let (_dir, s, _) = setup().await;
         let mut draft = seed_definitions().remove(0);
+        draft.split = "train".into();
         draft.evaluator.kind = "rubric".into();
         draft.evaluator.rubric = "The response must correctly identify Mira and total five.".into();
         let d = s.store.save_draft(None, None, draft).await.unwrap();
@@ -7450,17 +7448,49 @@ mod tests {
     /// The pool the boards measure now, as version ids.
     async fn board_pool(s: &BenchmarkService) -> Vec<String> {
         let data = s.query_data().await.unwrap();
-        let mut ids: Vec<String> = super::super::analysis::pool(&data, &ResultQuery::default())
-            .into_iter()
-            .map(|version| version.id.clone())
-            .collect();
+        let mut ids: Vec<String> =
+            super::super::analysis::ranked_pool(&data, &ResultQuery::default())
+                .into_iter()
+                .map(|version| version.id.clone())
+                .collect();
         ids.sort();
         ids
     }
     #[tokio::test]
+    async fn releases_exclude_development_without_removing_diagnostics() {
+        let (_dir, s, _) = setup().await;
+        let mut seeds = seed_definitions();
+        let diagnostic = publish(&s, seeds.remove(0)).await;
+        assert!(s.create_release(None).await.is_err());
+        let mut training = seeds.remove(0);
+        training.split = "train".into();
+        let training = publish(&s, training).await;
+        let mut held_out = seeds.remove(0);
+        held_out.split = "held_out".into();
+        let held_out = publish(&s, held_out).await;
+        let release = s.create_release(None).await.unwrap();
+        let mut expected = vec![training.id, held_out.id];
+        expected.sort();
+        assert_eq!(release.version_ids, expected);
+        assert_eq!(board_pool(&s).await, expected);
+        assert!(s
+            .store
+            .definition(&diagnostic.definition_id)
+            .await
+            .unwrap()
+            .versions
+            .iter()
+            .any(|version| version.id == diagnostic.id));
+        assert!(s.create_release(None).await.is_err());
+    }
+
+    #[tokio::test]
     async fn a_release_freezes_the_pool_until_the_next() {
         let (_dir, s, _) = setup().await;
         let mut seeds = seed_definitions();
+        for draft in &mut seeds {
+            draft.split = "train".into();
+        }
         let first = publish(&s, seeds.remove(0)).await;
         let second = publish(&s, seeds.remove(0)).await;
         let mut frozen = vec![first.id.clone(), second.id.clone()];
@@ -7526,10 +7556,11 @@ mod tests {
     #[tokio::test]
     async fn an_evaluator_only_republish_evaluates_the_stored_outputs_again() {
         let (_dir, s, backend) = setup().await;
-        let draft = seed_definitions()
+        let mut draft = seed_definitions()
             .into_iter()
             .find(|d| d.evaluator.kind == "exact")
             .unwrap();
+        draft.split = "train".into();
         let definition = s.store.save_draft(None, None, draft.clone()).await.unwrap();
         let first = s.publish_version(&definition.id, 1).await.unwrap();
         assert_eq!(first.carries_from, None);
@@ -7622,6 +7653,7 @@ mod tests {
         let (_dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         let mut authored = seed_definitions().remove(0);
+        authored.split = "train".into();
         authored.name.push_str(" written by the candidate");
         authored.environment["authoredBy"] = json!(["fake-pass"]);
         let written = publish(&s, authored).await;

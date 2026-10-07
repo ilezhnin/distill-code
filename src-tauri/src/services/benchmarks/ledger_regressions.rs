@@ -7,6 +7,100 @@ fn before_only() -> QueryData {
     data
 }
 
+#[test]
+fn development_runs_cannot_rank_reset_standing_or_enter_training() {
+    let mut data = before_only();
+    for version in &mut data.versions {
+        version.manifest.split = "train".into();
+    }
+    data.versions[0].manifest.split = "development".into();
+    data.releases.push(PoolRelease {
+        id: "legacy-mixed-release".into(),
+        name: "legacy".into(),
+        created_at: 1,
+        version_ids: data
+            .versions
+            .iter()
+            .map(|version| version.id.clone())
+            .collect(),
+    });
+    let mut diagnostic = data.runs[0].clone();
+    diagnostic.id = "diagnostic".into();
+    diagnostic.created_at = 10;
+    diagnostic.updated_at = 12;
+    diagnostic.request.version_ids = vec!["v0".into()];
+    let mut latest = data.attempts[0].clone();
+    latest.id = "diagnostic-attempt".into();
+    latest.run_id = diagnostic.id.clone();
+    latest.started_at = Some(10);
+    latest.finished_at = Some(11);
+    latest.outcome = Some("fail".into());
+    data.runs.push(diagnostic.clone());
+    data.attempts.push(latest.clone());
+    // A model measured only on development fixtures must not create a ranking
+    // row or an otherwise-empty training matrix column.
+    diagnostic.id = "development-only-model".into();
+    diagnostic.request.configurations[0].model_id = "development-only".into();
+    latest.id = "development-only-attempt".into();
+    latest.run_id = diagnostic.id.clone();
+    latest.configuration = diagnostic.request.configurations[0].clone();
+    latest.observed = Some(latest.configuration.clone());
+    data.runs.push(diagnostic);
+    data.attempts.push(latest);
+
+    for query in [
+        ResultQuery::default(),
+        ResultQuery {
+            run_id: Some("before".into()),
+            ..Default::default()
+        },
+        ResultQuery {
+            version_ids: Some(vec!["v0".into(), "v1".into()]),
+            ..Default::default()
+        },
+    ] {
+        let board = leaderboard(&data, &query);
+        assert_eq!(board.rows.len(), 1);
+        assert_eq!(board.rows[0].quality, Some(1.0));
+        assert!(!board.rows[0].scored_version_ids.contains(&"v0".into()));
+        assert!(!board.cohort.unwrap().version_ids.contains(&"v0".into()));
+    }
+    assert!(leaderboard(
+        &data,
+        &ResultQuery {
+            run_id: Some("diagnostic".into()),
+            ..Default::default()
+        }
+    )
+    .rows
+    .is_empty());
+    let history = history(&data, &data.runs[0].request.configurations[0]);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].run_id, "before");
+
+    for include_held_out in [false, true] {
+        let archive = super::super::export::rows(&data, include_held_out, "test").unwrap();
+        assert!(archive.iter().all(|row| row["split"] != "development"));
+        let ledger = super::super::export::ledger_rows(&data, include_held_out, "test").unwrap();
+        assert_eq!(ledger.len(), 5);
+        for row in ledger {
+            assert_ne!(row["split"], "development");
+            assert_eq!(row["matrix"].as_array().unwrap().len(), 1);
+        }
+    }
+    // Raw attempts and the library's diagnostic statistics remain inspectable.
+    assert!(data.attempts.iter().any(|a| a.id == "diagnostic-attempt"));
+    let tracker = case_tracker(&data);
+    assert_eq!(
+        tracker
+            .iter()
+            .find(|row| row.version_id == "v0")
+            .unwrap()
+            .models,
+        2
+    );
+}
+
 fn evaluation(at: i64, value: Option<f64>, provenance: &str, verdict: &str) -> Evaluation {
     Evaluation {
         id: format!("eval-{at}"),

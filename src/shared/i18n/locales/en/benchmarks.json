@@ -232,7 +232,7 @@
   "run": {
     "repositoryTools": "Repository with tools",
     "title": "Run benchmarks",
-    "description": "Choose published tests and pinned configurations. The execution count and budget are checked before anything starts.",
+    "description": "Choose published tests and pinned configurations. Development tests are diagnostic only and do not affect rankings or training. The execution count and budget are checked before anything starts.",
     "tests": "Published tests",
     "noPublished": "Publish a test in Bench development before running it.",
     "configurations": "Configurations",
@@ -395,7 +395,7 @@
   },
   "releases": {
     "title": "Pool releases",
-    "description": "The boards measure the newest release. A new, revised or archived test reaches them at the next release.",
+    "description": "The boards measure training and held-out tests from the newest release. Development tests stay outside the rating pool. A new, revised or archived test reaches the boards at the next release.",
     "unreleased": "Next release",
     "matches": "The pool matches {{name}}.",
     "changes": "{{added}} new, {{revised}} revised, {{retired}} retired",
@@ -442,7 +442,7 @@
     "purpose": "Purpose",
     "purposes": {
       "analysis": "Analysis (may include the target family)",
-      "selector": "Selector input (excludes the target family and held-out data)"
+      "selector": "Selector input (training data outside the target family)"
     },
     "objective": "Objective",
     "objectives": {

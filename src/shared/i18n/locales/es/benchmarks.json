@@ -232,7 +232,7 @@
   "run": {
     "repositoryTools": "Repositorio con herramientas",
     "title": "Ejecutar benchmarks",
-    "description": "Elige pruebas publicadas y configuraciones fijadas. El número de ejecuciones y el presupuesto se comprueban antes de empezar.",
+    "description": "Elige pruebas publicadas y configuraciones fijadas. Las pruebas de desarrollo son solo diagnósticas y no afectan a las clasificaciones ni al entrenamiento. El número de ejecuciones y el presupuesto se comprueban antes de empezar.",
     "tests": "Pruebas publicadas",
     "noPublished": "Publica una prueba en Desarrollo de pruebas antes de ejecutarla.",
     "configurations": "Configuraciones",
@@ -395,7 +395,7 @@
   },
   "releases": {
     "title": "Versiones del conjunto",
-    "description": "Los tableros miden la versión más reciente. Una prueba nueva, revisada o archivada llega a ellos en la siguiente versión.",
+    "description": "Los tableros miden las pruebas de entrenamiento y evaluación reservada de la versión más reciente. Las pruebas de desarrollo quedan fuera del conjunto de clasificación. Una prueba nueva, revisada o archivada llega a los tableros en la siguiente versión.",
     "unreleased": "Próxima versión",
     "matches": "El conjunto coincide con {{name}}.",
     "changes": "{{added}} nuevas, {{revised}} revisadas, {{retired}} retiradas",
@@ -442,7 +442,7 @@
     "purpose": "Propósito",
     "purposes": {
       "analysis": "Análisis (puede incluir la familia objetivo)",
-      "selector": "Entrada del selector (excluye la familia objetivo y los datos reservados)"
+      "selector": "Entrada del selector (datos de entrenamiento fuera de la familia objetivo)"
     },
     "objective": "Objetivo",
     "objectives": {

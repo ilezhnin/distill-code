@@ -332,11 +332,11 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
         ));
     }
     if q.purpose == "selector"
-        && (q.target_family.trim().is_empty() || q.permitted_splits.iter().any(|s| s == "held_out"))
+        && (q.target_family.trim().is_empty() || q.permitted_splits.iter().any(|s| s != "train"))
     {
         return Err(BenchmarkError::new(
             "validation",
-            "Selector input requires a target family and cannot include held-out labels",
+            "Selector input requires a target family and training evidence only",
         ));
     }
     if q.mode == "exact" && q.target_version_id.is_none() {
@@ -941,6 +941,31 @@ mod tests {
             .iter()
             .all(|c| c.sample_count == 0 && !c.eligible));
     }
+    #[test]
+    fn development_evidence_is_diagnostic_only_even_when_explicitly_requested() {
+        let (mut data, mut q) = matrix();
+        for version in &mut data.versions {
+            version.manifest.split = "development".into();
+        }
+        q.purpose = "analysis".into();
+        q.permitted_splits = vec!["development".into()];
+        assert!(get_evidence(&data, &q)
+            .unwrap()
+            .candidates
+            .iter()
+            .any(|row| row.sample_count > 0));
+        q.purpose = "selector".into();
+        assert!(get_evidence(&data, &q).is_err());
+        q.permitted_splits.push("train".into());
+        assert!(get_evidence(&data, &q).is_err());
+        q.permitted_splits = vec!["train".into()];
+        assert!(get_evidence(&data, &q)
+            .unwrap()
+            .candidates
+            .iter()
+            .all(|row| row.sample_count == 0 && !row.eligible));
+    }
+
     #[test]
     fn explicit_budget_filter_and_fractional_reviews_are_preserved() {
         let (mut data, mut q) = matrix();

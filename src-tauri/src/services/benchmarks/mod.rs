@@ -1123,19 +1123,20 @@ impl BenchmarkService {
         }
         Ok(evaluated)
     }
-    /// Freezes every live test's newest published version as a pool release,
+    /// Freezes every live training/evaluation test's newest published version,
     /// named `name` or the next `vN`. A release that would repeat the newest
     /// one is refused: nothing in the pool changed.
     pub async fn create_release(&self, name: Option<String>) -> Result<PoolRelease> {
         let data = self.query_data().await?;
         let version_ids: Vec<String> = analysis::live_versions(&data, None)
             .into_iter()
+            .filter(|version| analysis::is_ranked_split(&version.manifest.split))
             .map(|version| version.id.clone())
             .collect();
         if version_ids.is_empty() {
             return Err(BenchmarkError::new(
                 "validation",
-                "Publish a test before releasing the pool",
+                "Publish a training or held-out test before releasing the pool",
             ));
         }
         if let Some(newest) = analysis::release_at(&data, None) {

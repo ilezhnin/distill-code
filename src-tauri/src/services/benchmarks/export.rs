@@ -16,6 +16,10 @@ fn public_configuration(c: &Configuration, salt: &str) -> Value {
         "executionProfile":c.execution_profile,"inventoryRevision":c.inventory_revision})
 }
 
+fn exported_split(split: &str, include_held_out: bool) -> bool {
+    split == "train" || (include_held_out && split == "held_out")
+}
+
 pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<Value>> {
     let mut splits: BTreeMap<&str, &str> = BTreeMap::new();
     for version in &data.versions {
@@ -46,7 +50,7 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                 .ok_or_else(|| {
                     BenchmarkError::new("evidence_missing", "Dataset version is unavailable")
                 })?;
-            if version.manifest.split == "held_out" && !include_held_out {
+            if !exported_split(&version.manifest.split, include_held_out) {
                 continue;
             }
             let mut matrix = Vec::new();
@@ -113,7 +117,7 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
         let c = super::analysis::execution_configuration(a);
         runs.contains_key(a.run_id.as_str())
             && versions.get(a.version_id.as_str()).is_some_and(|v| {
-                (include_held_out || v.manifest.split != "held_out")
+                exported_split(&v.manifest.split, include_held_out)
                     && !super::routing::authored_by_candidate(&v.manifest, &c)
             })
             && super::analysis::score(a).is_some()
@@ -180,7 +184,7 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
     }
     let mut result = Vec::new();
     for version in super::analysis::pool(data, &ResultQuery::default()) {
-        if version.manifest.split == "held_out" && !include_held_out {
+        if !exported_split(&version.manifest.split, include_held_out) {
             continue;
         }
         let mut matrix = Vec::new();
@@ -323,12 +327,12 @@ pub async fn export(
     let ledger_hash = format!("{:x}", Sha256::digest(ledger_jsonl.as_bytes()));
     let manifest = json!({"schemaVersion":2,"id":id,"createdAt":now(),"rowCount":rows.len(),"contentHash":hash,"catalogDefinitions":data.definitions.len(),
         "candidateKeyAlgorithm":super::routing::CANDIDATE_KEY_ALGORITHM,
-        "purpose":if include_held_out{"explicit_evaluation_export"}else{"training"},"includesHeldOut":include_held_out,
+        "purpose":if include_held_out{"explicit_evaluation_export"}else{"training"},"includesHeldOut":include_held_out,"includesDevelopment":false,
         "aggregation":"equal frozen-case means over observed repetitions; missing values stay null",
         "archive":"outcomes.jsonl",
         "currentPool":{"path":"ledger.jsonl","rowCount":prepared.len(),"contentHash":ledger_hash,
             "selection":"latest settled repetitions per candidate and current task version; explicit observation masks",
-            "trainingPolicy":"exclude held-out cases; require compatible protocols and every owed candidate cell observed (completeMatrix) before fitting soft targets; a candidate owes only the cases some run planned for it, so author-excluded and not-planned cells are masked, not missing"},
+            "trainingPolicy":"training uses train cases only; development fixtures are never exported and held-out cases require explicit evaluation export; require compatible protocols and every owed candidate cell observed (completeMatrix) before fitting soft targets; a candidate owes only the cases some run planned for it, so author-excluded and not-planned cells are masked, not missing"},
         "quotaSemantics":"whole controlled batch only; mixed and unknown charges are omitted",
         "quota":quota,"versions":rows.iter().map(|row|json!({"version":row["taskVersion"],"family":row["family"],"split":row["split"],"hash":row["contentHash"]})).collect::<Vec<_>>()});
     let path = directory.join("outcomes.jsonl");
@@ -712,15 +716,9 @@ mod tests {
             active: Default::default(),
             app: None,
         };
-        let definition = service
-            .store
-            .save_draft(
-                None,
-                None,
-                super::super::runner::seed_definitions().remove(0),
-            )
-            .await
-            .unwrap();
+        let mut draft = super::super::runner::seed_definitions().remove(0);
+        draft.split = "train".into();
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();
         let inventory = service
             .backend

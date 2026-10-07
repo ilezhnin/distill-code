@@ -17,6 +17,7 @@ export const draft: BenchmarkDraft = {
   name: "Integer transformation",
   category: "text",
   taskFamily: "integer",
+  split: "train",
   prompt: "Return the number 4.",
   source: "local",
   license: "CC0",

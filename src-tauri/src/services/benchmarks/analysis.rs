@@ -764,6 +764,22 @@ pub(super) fn pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a Benc
     pool
 }
 
+/// Development fixtures exercise infrastructure; only these splits measure
+/// model capability. Keep raw catalog and diagnostic evidence available.
+pub(super) fn is_ranked_split(split: &str) -> bool {
+    matches!(split, "train" | "held_out")
+}
+
+pub(super) fn ranked_pool<'a>(
+    data: &'a QueryData,
+    query: &ResultQuery,
+) -> Vec<&'a BenchmarkVersion> {
+    pool(data, query)
+        .into_iter()
+        .filter(|version| is_ranked_split(&version.manifest.split))
+        .collect()
+}
+
 /// A repetition passes at a full objective score, or at half the points or
 /// more of a judged one, the mark every result view draws.
 fn repetition_passed(score: f64) -> bool {
@@ -774,18 +790,23 @@ fn repetition_passed(score: f64) -> bool {
 /// cells, the ones the boards read: which cases separate models, which only
 /// add noise, and which every model passes.
 pub fn case_tracker(data: &QueryData) -> Vec<CaseStats> {
-    let rows = leaderboard(
+    let query = ResultQuery {
+        limit: Some(500),
+        ..Default::default()
+    };
+    let pool = pool(data, &query);
+    // The development library still shows diagnostic outcomes. These internal
+    // statistics are never returned as official leaderboard rows.
+    let rows = leaderboard_from_attempts(
         data,
-        &ResultQuery {
-            limit: Some(500),
-            ..Default::default()
-        },
+        &query,
+        &data.attempts.iter().collect::<Vec<_>>(),
+        pool.clone(),
     )
     .rows;
     let attempts: BTreeMap<&str, &Attempt> =
         data.attempts.iter().map(|a| (a.id.as_str(), a)).collect();
-    pool(data, &ResultQuery::default())
-        .into_iter()
+    pool.into_iter()
         .map(|version| {
             let required = required_repetitions(data, version) as usize;
             // Each model's share of passed repetitions, over complete cells.
@@ -1036,15 +1057,20 @@ pub(super) fn mean_case_cost(attempts: &[&Attempt], as_of: Option<i64>) -> Optio
 /// measurement and no older run fills its gaps; coverage is counted against
 /// the pool, and a rank needs every case complete.
 pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
-    leaderboard_from_attempts(data, query, &data.attempts.iter().collect::<Vec<_>>())
+    leaderboard_from_attempts(
+        data,
+        query,
+        &data.attempts.iter().collect::<Vec<_>>(),
+        ranked_pool(data, query),
+    )
 }
 
 fn leaderboard_from_attempts(
     data: &QueryData,
     query: &ResultQuery,
     source: &[&Attempt],
+    pool: Vec<&BenchmarkVersion>,
 ) -> LeaderboardReport {
-    let pool = pool(data, query);
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
     let runs: BTreeMap<&str, &BenchmarkRun> = data
         .runs
@@ -1470,7 +1496,12 @@ fn recalculated_history_report(
             rows: Vec::new(),
         }
     } else {
-        leaderboard_from_attempts(data, &ResultQuery::default(), &selected)
+        leaderboard_from_attempts(
+            data,
+            &ResultQuery::default(),
+            &selected,
+            ranked_pool(data, &ResultQuery::default()),
+        )
     };
     for row in &mut report.rows {
         // A retrospective estimate has no dated peer comparison or rank.
@@ -1544,6 +1575,12 @@ fn settled_at(attempt: &Attempt) -> Option<i64> {
 /// day later never re-dates what was measured.
 pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySnapshot> {
     let key = leaderboard_key(configuration);
+    let ranked: BTreeSet<&str> = data
+        .versions
+        .iter()
+        .filter(|v| is_ranked_split(&v.manifest.split))
+        .map(|v| v.id.as_str())
+        .collect();
     let runs: BTreeMap<_, _> = data
         .runs
         .iter()
@@ -1556,11 +1593,12 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
         .iter()
         .filter(|a| {
             runs.contains_key(a.run_id.as_str())
+                && ranked.contains(a.version_id.as_str())
                 && leaderboard_key(&ledger_configuration(a, &acknowledged)) == key
         })
         .collect();
     // Today's pool: what every point is recalculated on.
-    let current_pool = pool(data, &ResultQuery::default());
+    let current_pool = ranked_pool(data, &ResultQuery::default());
     let current: BTreeSet<&str> = current_pool.iter().map(|v| v.id.as_str()).collect();
     // The counted attempts of each run: its settled, unsuperseded cells.
     let mut cells: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
@@ -1786,6 +1824,7 @@ pub(super) mod tests {
         let versions = (0..6)
             .map(|index| {
                 let mut manifest = super::super::runner::seed_definitions().remove(0);
+                manifest.split = "train".into();
                 manifest.task_family = format!("family-{index}");
                 BenchmarkVersion {
                     id: format!("v{index}"),

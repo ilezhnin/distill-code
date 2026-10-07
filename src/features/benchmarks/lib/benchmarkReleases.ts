@@ -1,6 +1,11 @@
 import type { BenchmarkDefinition, PoolRelease } from "../types";
 
-/** Every live test's newest published version: what the next release freezes. */
+/** Development fixtures remain diagnostic and never enter capability ratings. */
+export function isRankedSplit(split: string): boolean {
+  return split === "train" || split === "held_out";
+}
+
+/** Every live ranked test's newest version: what the next release freezes. */
 export function liveVersionIds(definitions: BenchmarkDefinition[]): string[] {
   return definitions
     .filter((definition) => !definition.archived)
@@ -8,6 +13,7 @@ export function liveVersionIds(definitions: BenchmarkDefinition[]): string[] {
       [...definition.versions]
         .sort((a, b) => b.publishedAt - a.publishedAt)
         .slice(0, 1)
+        .filter((version) => isRankedSplit(version.manifest.split))
         .map((version) => version.id),
     )
     .sort();

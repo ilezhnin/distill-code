@@ -66,7 +66,7 @@ pub struct SelectionQuery {
     pub min_cases: Option<u32>,
     #[serde(default)]
     pub cutoff_at: Option<i64>,
-    /// Evidence splits; train alone by default, and never held-out.
+    /// Evidence splits; only train is accepted, including explicit requests.
     #[serde(default)]
     pub permitted_splits: Option<Vec<String>>,
     /// Exclude this family when choosing for an unseen task from it.
@@ -170,10 +170,10 @@ pub fn select(data: &QueryData, query: &SelectionQuery) -> Result<Selection> {
         .permitted_splits
         .clone()
         .unwrap_or_else(|| vec!["train".into()]);
-    if splits.iter().any(|split| split == "held_out") {
+    if splits.iter().any(|split| split != "train") {
         return Err(BenchmarkError::new(
             "validation",
-            "A selection never reads held-out evidence",
+            "A selection reads training evidence only",
         ));
     }
     let weights = query.weights.unwrap_or_default();
@@ -795,6 +795,26 @@ mod tests {
             .policies
             .iter()
             .all(|p| p.mean_reward == 0.0));
+    }
+
+    #[test]
+    fn development_results_never_supply_selection_coverage() {
+        let mut data = data();
+        for version in &mut data.versions {
+            if version.manifest.split == "train" {
+                version.manifest.split = "development".into();
+            }
+        }
+        let mut q = query(&["strong"]);
+        let result = select(&data, &q).unwrap();
+        assert_eq!(result.shared_cases, 0);
+        assert_eq!(result.source, "prior");
+        // The direct API and its no-target analysis path must both refuse it.
+        for target in [None, Some("unseen-target".into())] {
+            q.target_family = target;
+            q.permitted_splits = Some(vec!["development".into(), "train".into()]);
+            assert!(select(&data, &q).is_err());
+        }
     }
 
     #[test]

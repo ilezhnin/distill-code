@@ -75,6 +75,18 @@ const definitions: BenchmarkDefinition[] = [
   test(6, "Foxtrot", "exact", ["model-1"]),
   // Archived: not a current test.
   { ...test(7, "Golf"), archived: true },
+  {
+    ...test(9, "Infrastructure only"),
+    versions: [
+      {
+        ...test(9, "Infrastructure only").versions[0],
+        manifest: {
+          ...test(9, "Infrastructure only").versions[0].manifest,
+          split: "development",
+        },
+      },
+    ],
+  },
   // Two published versions: only the newest is current.
   {
     ...test(8, "Hotel"),
@@ -199,6 +211,13 @@ it("lists the released pool, not tests published after it", async () => {
   expect(screen.getByText("Foxtrot")).toBeInTheDocument();
 });
 
+it("keeps development out even when an older release explicitly includes it", async () => {
+  show({ pool: ["version-1", "version-9"] });
+  expect(await screen.findByText("Alpha")).toBeInTheDocument();
+  expect(screen.queryByText("Infrastructure only")).not.toBeInTheDocument();
+  expect(screen.getByText("1 of 1 selected")).toBeInTheDocument();
+});
+
 it("checks every current test, keeps the model's own out, and runs the rest on today's runtime", async () => {
   const user = userEvent.setup();
   // The row's newest attempt ran on a runtime that has since changed.
@@ -221,6 +240,7 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
   expect(within(own).getByRole("checkbox")).toBeDisabled();
   expect(within(own).getByText("Written by this model")).toBeInTheDocument();
   expect(screen.queryByText("Golf")).not.toBeInTheDocument();
+  expect(screen.queryByText("Infrastructure only")).not.toBeInTheDocument();
   await user.click(
     within(screen.getByText("Delta").closest("label") as HTMLElement).getByRole(
       "checkbox",

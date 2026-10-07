@@ -42,6 +42,20 @@ describe("pool releases", () => {
     expect(liveVersionIds(tests)).toEqual(["a2", "b1", "d1"]);
   });
 
+  it("excludes development even when a draft's split differs from its publication", () => {
+    const diagnostic = test("smoke", [["smoke-1", 2]]);
+    diagnostic.versions[0] = {
+      ...diagnostic.versions[0],
+      manifest: { ...diagnostic.versions[0].manifest, split: "development" },
+    };
+    expect(liveVersionIds([...tests, diagnostic])).toEqual(["a2", "b1", "d1"]);
+    expect(
+      liveVersionIds([
+        { ...tests[0], draft: { ...tests[0].draft, split: "development" } },
+      ]),
+    ).toEqual(["a2"]);
+  });
+
   it("counts new, revised and retired tests against the previous release", () => {
     expect(poolChanges(tests, ["a1", "b1", "c1"], ["a2", "b1", "d1"])).toEqual({
       added: 1,

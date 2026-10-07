@@ -1126,7 +1126,7 @@ describe("benchmark authoring and saved evidence", () => {
           mode: "exact",
           purpose: "analysis",
           targetVersionId: "version-1",
-          permittedSplits: ["development", "train"],
+          permittedSplits: ["train"],
           candidates: [
             expect.objectContaining({ available: false, configuration }),
           ],
@@ -1136,6 +1136,51 @@ describe("benchmark authoring and saved evidence", () => {
     expect(
       await screen.findByText("No candidates were supplied."),
     ).toBeInTheDocument();
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it.each([
+    "development",
+    "held_out",
+  ])("keeps %s diagnostics separate from selector training evidence", async (split) => {
+    vi.mocked(benchmarkApi.getRoutingEvidence).mockResolvedValue({
+      schemaVersion: 1,
+      generatedAt: 10,
+      queryHash: "query-hash",
+      mode: "exact",
+      candidates: [],
+    });
+    const user = userEvent.setup();
+    wrap(
+      <BenchmarkRoutingDialog
+        versions={definition.versions.map((version) => ({
+          ...version,
+          manifest: { ...version.manifest, split },
+        }))}
+        runs={[runSummary]}
+        onClose={vi.fn()}
+        onEvidence={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Read evidence" }));
+    await waitFor(() =>
+      expect(benchmarkApi.getRoutingEvidence).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          purpose: "analysis",
+          permittedSplits: [split],
+        }),
+      ),
+    );
+    await user.click(screen.getByRole("combobox", { name: "Purpose" }));
+    await user.click(screen.getByRole("option", { name: /Selector input/ }));
+    await user.click(screen.getByRole("button", { name: "Read evidence" }));
+    await waitFor(() =>
+      expect(benchmarkApi.getRoutingEvidence).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          purpose: "selector",
+          permittedSplits: ["train"],
+        }),
+      ),
+    );
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   });
   it("derives a fresh variant of a generated family and opens it as a draft", async () => {

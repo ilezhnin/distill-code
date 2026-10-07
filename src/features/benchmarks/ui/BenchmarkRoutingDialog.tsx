@@ -104,7 +104,8 @@ export function BenchmarkRoutingDialog({
         reason: candidate.available ? null : t("routing.availabilityUnknown"),
       })),
       cutoffAt: Date.now(),
-      permittedSplits: ["development", "train"],
+      permittedSplits:
+        purpose === "selector" ? ["train"] : [version.manifest.split],
       objective: { kind: objective, minQuality },
       constraints: {
         providerIds: [],
