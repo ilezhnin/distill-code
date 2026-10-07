@@ -348,6 +348,30 @@ pub async fn benchmark_predict_selector(
         .map_err(|e| BenchmarkError::new("infrastructure_failure", e.to_string()))?
 }
 
+/// Reserves unused related families and freezes choices without starting work.
+#[tauri::command]
+pub async fn benchmark_freeze_selector_holdout(
+    app: AppHandle,
+    request: benchmarks::learned::holdout::HoldoutRequest,
+) -> Result<benchmarks::learned::holdout::HoldoutPlan> {
+    let service = service(&app).await?;
+    let plan = service.freeze_selector_holdout(request).await?;
+    service.changed().await;
+    Ok(plan)
+}
+
+#[tauri::command]
+pub async fn benchmark_list_selector_holdouts(
+    app: AppHandle,
+    model_id: String,
+) -> Result<Vec<benchmarks::learned::holdout::HoldoutPlan>> {
+    service(&app)
+        .await?
+        .store
+        .selector_holdouts(&model_id)
+        .await
+}
+
 /// The held-out harness of one class: the selector against fixed policies.
 #[tauri::command]
 pub async fn benchmark_selector_harness(

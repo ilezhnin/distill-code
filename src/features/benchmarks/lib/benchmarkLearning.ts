@@ -139,3 +139,37 @@ export interface SelectorPrediction {
     utility: number;
   }[];
 }
+
+export interface SelectorHoldoutRequest {
+  requestKey: string;
+  modelId: string;
+  versionIds: string[];
+  personaPrior: string[];
+  fallbackKey: string;
+  minQuality: number;
+}
+export interface SelectorHoldoutPlan {
+  id: string;
+  createdAt: number;
+  protocol: string;
+  request: SelectorHoldoutRequest;
+  modelSnapshotHash: string;
+  configurations: Configuration[];
+  cases: {
+    versionId: string;
+    contentHash: string;
+    evaluatorRevision: string;
+    requiredRepetitions: number;
+    minimumTimeoutSeconds: number;
+    family: string;
+    splitGroup: string;
+    publicTaskHash: string;
+    learnedKey: string;
+    learnedAbstention: string | null;
+    aggregateKey: string;
+    aggregateSource: string;
+  }[];
+  policies: string[];
+  dispatchAllowed: false;
+  status: "reserved_research_holdout";
+}

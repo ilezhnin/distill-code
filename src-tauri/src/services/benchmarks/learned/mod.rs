@@ -2,6 +2,7 @@
 //! Promotion and dispatch require separate evidence; this module grants neither.
 mod features;
 mod fit;
+pub mod holdout;
 mod persistence;
 #[cfg(test)]
 mod tests;

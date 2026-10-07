@@ -52,6 +52,22 @@
     "releases": "Pool releases"
   },
   "learning": {
+    "holdout": {
+      "title": "Freeze an independent evaluation plan",
+      "description": "Select at least 8 held-out cases in 4 declared independent groups. The service rejects families already planned in any run or reserved by another evaluation. Predictions and comparator choices are frozen before outcomes.",
+      "selected": "Selected: {{cases}} cases in {{groups}} groups",
+      "chooseCandidate": "Choose a candidate",
+      "persona": "Persona comparator",
+      "fallback": "Fallback when the selector abstains",
+      "reservation": "Freezing permanently reserves the declared related families for this evaluation. It starts no work and grants no spending or dispatch approval. Quality floor: 500/1000. Every fixed candidate, the best fixed, persona, aggregate and oracle are required comparators.",
+      "freeze": "Freeze evaluation plan",
+      "retry": "Retry the same reservation",
+      "edit": "Change inputs",
+      "plan": "Plan {{id}} · {{count}} cases",
+      "pending": "Reserved only. Independent results, family uncertainty, grader qualification and workflow validation are still required.",
+      "choice": "learned: {{learned}}; aggregate: {{aggregate}}",
+      "usedFallback": "Explicit fallback used"
+    },
     "title": "Learned selector",
     "description": "Fit a task-based selector from saved measurements and inspect its recommendations. Training runs locally and makes no model calls.",
     "gate": "Research preview. Grader qualification, independent family evaluation and workflow validation are still required before automatic dispatch.",

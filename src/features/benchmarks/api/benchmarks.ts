@@ -5,6 +5,8 @@ import type {
   SelectorFitArtifact,
   SelectorPredictionRequest,
   SelectorPrediction,
+  SelectorHoldoutRequest,
+  SelectorHoldoutPlan,
 } from "../lib/benchmarkLearning";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -116,6 +118,14 @@ async function listCompletedDesigns(
 }
 
 export const benchmarkApi = {
+  freezeSelectorHoldout: (request: SelectorHoldoutRequest) =>
+    invoke<SelectorHoldoutPlan>("benchmark_freeze_selector_holdout", {
+      request,
+    }),
+  listSelectorHoldouts: (modelId: string) =>
+    invoke<SelectorHoldoutPlan[]>("benchmark_list_selector_holdouts", {
+      modelId,
+    }),
   fitSelector: (request: SelectorFitRequest) =>
     invoke<SelectorFitSummary>("benchmark_fit_selector", { request }),
   listSelectorFits: () =>

@@ -52,6 +52,22 @@
     "releases": "Versiones del conjunto"
   },
   "learning": {
+    "holdout": {
+      "title": "Fijar un plan de evaluación independiente",
+      "description": "Selecciona al menos 8 casos reservados en 4 grupos declarados independientes. El servicio rechaza familias ya previstas en una ejecución o reservadas por otra evaluación. Las predicciones y los comparadores se fijan antes de los resultados.",
+      "selected": "Seleccionados: {{cases}} casos en {{groups}} grupos",
+      "chooseCandidate": "Elige un candidato",
+      "persona": "Comparador de persona",
+      "fallback": "Alternativa cuando el selector se abstiene",
+      "reservation": "Fijar el plan reserva permanentemente las familias relacionadas para esta evaluación. No inicia trabajo ni autoriza gastos o asignaciones. Calidad mínima: 500/1000. Se compararán cada candidato fijo, el mejor fijo, la persona, el selector agregado y el oráculo.",
+      "freeze": "Fijar plan de evaluación",
+      "retry": "Reintentar la misma reserva",
+      "edit": "Cambiar datos",
+      "plan": "Plan {{id}} · {{count}} casos",
+      "pending": "Solo reservado. Aún se requieren resultados independientes, incertidumbre por familia, validación de evaluadores y del flujo.",
+      "choice": "entrenado: {{learned}}; agregado: {{aggregate}}",
+      "usedFallback": "Se utilizó la alternativa explícita"
+    },
     "title": "Selector entrenado",
     "description": "Entrena un selector según la tarea con mediciones guardadas e inspecciona sus recomendaciones. El entrenamiento es local y no llama a modelos.",
     "gate": "Vista previa de investigación. Aún se requieren validación de evaluadores, evaluación de familias independientes y validación de flujos antes de asignar trabajo automáticamente.",
