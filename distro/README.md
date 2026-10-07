@@ -1,54 +1,30 @@
-# Distill bundled app defaults
+# Distill application help
 
-`distro/` contains generic resources and defaults that ship with the single Distill app build. It is not a customer/org profile system.
+`distro/` contains generic application resources and help. Operator roles,
+avatars, working skills, profiles and internal plans are private local data and
+must never be included here or in Git history.
 
-## Supported files
+## Public resources
 
-- `distro.json` — minimal bundled manifest for app-level defaults that still need to be available before runtime config owns them
-- `skills/` — bundled skills seeded into the user's global skills directory
-- `agents/` — bundled agents seeded into the user's global agents directory
+- `skills/distill-help/` documents the application and its commands.
+- `skills/distill-monitor/` documents the monitoring CLI.
+- An optional `distro.json` may supply `appVersion` and generic download locations
+  under `distribution: { npmRegistryUrl, nodeDistBaseUrl }`.
 
-## Discovery
+No ready-made operator role catalog or personal workflow skills are shipped.
+The application retains support for discovering locally installed roles and skills.
 
-The Tauri app resolves bundled defaults in this order:
+## Discovery and installation
 
-1. `DISTILL_DISTRO_DIR`, if set
-2. bundled Tauri resource dir at `resource_dir()/distro`
+The Tauri app resolves resources from `DISTILL_DISTRO_DIR` when set, otherwise
+from `resource_dir()/distro`. The Windows development launcher points the override
+at this directory.
 
-In development, `just dev-windows` (`scripts/windows/Dev-Windows.ps1`) exports `DISTILL_DISTRO_DIR` to this repository's `distro/` directory when it exists.
+Application help is installed into `~/.distill/skills/`. An existing skill is
+updated only when its frontmatter has `metadata.distillBundled: true`; unmarked
+personal skills remain untouched. Removing a packaged source does not delete
+installed local copies. Existing agents and avatars stay in `~/.distill/agents/`.
 
-## Manifest shape
-
-`distro.json` is optional. It carries generic app-level defaults only:
-
-- `appVersion?: string` — optional app version tag supplied by bundled defaults
-- `distribution?: { npmRegistryUrl, nodeDistBaseUrl }` — where the managed Node runtime and ACP bridges are downloaded from
-
-## Runtime effects
-
-When bundled defaults are present, the Tauri shell:
-
-- installs Distill-owned `distro/skills/<name>/` entries into `~/.distill/skills/<name>/`; personal skills remain in `~/.distill/skills`
-- installs `distro/agents/<name>.md` entries into `~/.distill/agents/<name>.md`
-- resolves bundled `agent-avatar:` images from `distro/agents/.avatars/`
-
-Bundled skills reinstall existing copies only when the installed `SKILL.md` frontmatter has the `metadata.distillBundled: true` marker; unmarked personal skills are left untouched.
-
-Bundled agents use the `metadata.distillBundled: true` marker. The app records seeded files in `.distill-bundled-agents.json` so deleted starter agents do not reappear on later launches. Existing unmarked user agents are left untouched.
-
-## Scope guidance
-
-Use bundled app defaults for generic packaged-app resources and shell-level startup defaults only.
-
-Good fits:
-
-- bundled skills
-- bundled agents
-- temporary generic app defaults that cannot yet move to runtime config
-
-Do not use bundled app defaults for policy, provider allowlists, runtime feature toggles, normal app state, user preferences, or ACP-backed data.
-
-Personal skills, agent definitions, prompts and delivery hooks are managed in the
-user's own configuration directories. Keep them outside the shared repository and
-do not add app UI tied to a particular user's skill. Generic built-in skills and
-starter agents remain part of the app distribution.
+Keep account data, credentials, session history, preferences, personal prompts,
+roles, working skills, evaluation tasks and development plans outside the source
+checkout. See [the repository publication rules](../AGENTS.md).

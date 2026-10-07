@@ -1,7 +1,7 @@
 /**
  * The project-folder mirror against the flow it was built for (P31): a
- * project whose folder already carries memories — copied from a colleague,
- * from another machine — joining an app that is already running.
+ * project whose folder already carries memories вЂ” copied from a colleague,
+ * from another machine вЂ” joining an app that is already running.
  *
  * The folder is a real store here: an in-memory map standing in for
  * `<project>/.distill/memory.json`, so a write that replaces the file is
@@ -152,7 +152,7 @@ describe("the project memory mirror and a project that joins late", () => {
     // Any commit at all used to flush the mirror over the folder's file.
     useMemoryStore
       .getState()
-      .remember({ text: "Alex pushes", scope: "global" }, NOW);
+      .remember({ text: "The operator pushes", scope: "global" }, NOW);
     await flushMemoryWrites();
 
     const file = readFile("/work/sample-project");
@@ -179,11 +179,13 @@ describe("the project memory mirror and a project that joins late", () => {
 
     useMemoryStore
       .getState()
-      .remember({ text: "Alex pushes", scope: "global" }, NOW);
+      .remember({ text: "The operator pushes", scope: "global" }, NOW);
     await flushMemoryWrites();
 
     folders.unreadable.clear();
-    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual(["c1"]);
+    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual([
+      "c1",
+    ]);
   });
 
   it("merges a folder that comes back after startup into the store and the file", async () => {
@@ -210,7 +212,7 @@ describe("the project memory mirror and a project that joins late", () => {
   it("does not bring back a line the operator deleted in an earlier run", async () => {
     // The tombstones used to live only in memory, so a delete made while the
     // folder was offline was re-adopted at the first mirror after it came back
-    // — undoing an explicit operator delete, which LAWS/MEMORY.md Sovereignty
+    // вЂ” undoing an explicit operator delete, which LAWS/MEMORY.md Sovereignty
     // puts above every copy on disk.
     putFile("/work/sample-project", [entry({ id: "c1" }), entry({ id: "c2" })]);
     useProjectStore.setState({ projects: [project()] });
@@ -235,12 +237,14 @@ describe("the project memory mirror and a project that joins late", () => {
     await hydrateMemoryStore();
 
     expect(ids(useMemoryStore.getState().entries)).toEqual(["c2"]);
-    // …and the next mirror takes it out of the file as well.
+    // вЂ¦and the next mirror takes it out of the file as well.
     useMemoryStore
       .getState()
-      .remember({ text: "Alex pushes", scope: "global" }, NOW);
+      .remember({ text: "The operator pushes", scope: "global" }, NOW);
     await flushMemoryWrites();
-    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual(["c2"]);
+    expect(ids(readFile("/work/sample-project")?.entries ?? [])).toEqual([
+      "c2",
+    ]);
   });
 
   it("reads the new folder when a project is pointed somewhere else", async () => {

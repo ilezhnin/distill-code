@@ -65,8 +65,7 @@ shape survives only as legacy input that is read, never written (see
   model, because effort menus differ per model on every harness.
 - **Queued messages** — `payload.runSettings` records the values in force when
   the message was queued. Dispatch still reads the chat's intent at send time;
-  the record is not an instruction (open question in
-  `LAWS/PROPOSAL-2026-09-model-effort.md`).
+  the record is not an instruction.
 
 ### Agents, rankings, waves, distillctl
 
