@@ -3,6 +3,8 @@
 
 pre-commit:
   commands:
+    benchmark-privacy:
+      run: node scripts/hooks/benchmark-privacy.mjs --staged
     biome-format:
       # Allowlist of biome-supported extensions; safer than a denylist since
       # ignoreUnknown is false and unknown types would cause biome to error.
@@ -48,6 +50,8 @@ commit-msg:
 pre-push:
   parallel: true
   commands:
+    benchmark-privacy:
+      run: node scripts/hooks/benchmark-privacy.mjs --push
     fmt-check:
       run: just fmt-check
     clippy:

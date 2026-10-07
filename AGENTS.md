@@ -58,6 +58,26 @@ Renderer code should use `getCachedAvatarForRef()` or
 `convertFileSrc(..., "asset")`. Do not fetch remote media or construct CDN URLs
 in UI code.
 
+## Private benchmark material
+
+Keep only benchmark infrastructure and deliberately public development examples
+in the application repository. Actual evaluation tasks and their documentation
+are private local data. Keep prompts, fixtures, repository snapshots, expected
+answers, hidden checks, rubrics, valid alternatives, mutants, calibration results,
+per-task reports and detailed task plans outside every project Git checkout.
+Do not copy that material into source, regression fixtures, documentation, commit
+messages, issues, pull requests, CI artifacts or screenshots intended for sharing.
+Use invented development fixtures to test the generic infrastructure.
+
+The durable private task store is under the configured Distill root at
+`benchmark-tasks`; detailed plans belong in its `documentation` directory.
+Only general template guidance, schema descriptions and application behavior
+belong in repository documentation. Check the index and outgoing history before
+publication: removing a file from the latest tree does not remove earlier blobs
+or commit messages. Never treat a previously public task as an unseen holdout.
+Sending a task to a remote model is a separate data disclosure; verify the
+applicable account's data-use terms and controls before a private evaluation.
+
 ## Common commands
 
 Each `*-windows` recipe and `bundle` wraps a script in `scripts/windows/`; when

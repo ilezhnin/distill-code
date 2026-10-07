@@ -60,3 +60,12 @@ src-tauri/binaries/
 lefthook-local.yml
 lefthook.local.yml
 graphify-out/
+
+# Private benchmark data belongs outside the source checkout.
+benchmark-tasks/
+benchmark-tools/
+benchmark-review-qa/
+benchmark-private/
+**/benchmarks/exports/
+docs/benchmark-private/
+docs/benchmark-workspace-plan.private.md
