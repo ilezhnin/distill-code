@@ -5,6 +5,7 @@ use super::{
     types::*,
     BenchmarkService,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
 use std::{collections::HashSet, time::Instant};
@@ -42,28 +43,91 @@ pub fn validate(draft: &BenchmarkDraft) -> Vec<String> {
     issues
 }
 
-struct SavedStep {
-    index: usize,
-    id: String,
-    parent_id: Option<String>,
-    entry: EntryState,
-    prompt: String,
-    attempt: Attempt,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct StepDecision {
+    pub root_attempt_id: String,
+    pub root_decision_id: String,
+    pub step_index: usize,
+    pub driver_revision: String,
+    pub snapshot: DecisionSnapshot,
+    pub content_hash: String,
 }
 
-async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<SavedStep>> {
-    let rows = sqlx::query("SELECT step_index,step_id,parent_step_id,entry_state_json,prompt,data_json FROM workflow_steps WHERE root_attempt_id=? ORDER BY step_index")
+impl StepDecision {
+    fn hash(&self) -> Result<String> {
+        let mut value = self.clone();
+        value.content_hash.clear();
+        Ok(fixtures::hash(&serde_json::to_vec(&value)?))
+    }
+}
+
+pub(super) struct SavedStep {
+    pub index: usize,
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub entry: EntryState,
+    pub prompt: String,
+    pub attempt: Attempt,
+    pub decision: Option<StepDecision>,
+}
+
+impl SavedStep {
+    pub(super) fn validate_decision(&self, root_id: &str) -> Result<()> {
+        let Some(record) = &self.decision else {
+            return Ok(());
+        };
+        let snapshot = &record.snapshot;
+        if snapshot.schema_version != 1
+            || record.content_hash != record.hash()?
+            || record.root_attempt_id != root_id
+            || record.step_index != self.index
+            || record.root_decision_id.is_empty()
+            || snapshot.run_id != self.attempt.run_id
+            || snapshot.version_id != self.attempt.version_id
+            || snapshot.public_prompt != self.prompt
+            || snapshot.entry_state.as_ref() != Some(&self.entry)
+            || self.entry.root_task_id != root_id
+            || self.entry.step_id != self.id
+            || self.entry.parent_step_id != self.parent_id
+            || self.entry.content_hash != super::routing::entry_hash(&self.entry)
+            || snapshot.selection_provenance != "workflow_root_pin_v1"
+            || snapshot.request.configurations != [self.attempt.configuration.clone()]
+            || snapshot.constraints.hard_candidate_key.as_deref()
+                != Some(super::routing::candidate_key(&self.attempt.configuration).as_str())
+            || self
+                .attempt
+                .started_at
+                .is_some_and(|at| snapshot.created_at > at)
+        {
+            return Err(BenchmarkError::new(
+                "evidence_mismatch",
+                "Workflow input or selection no longer matches its committed pre-dispatch decision",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(super) async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<SavedStep>> {
+    let rows = sqlx::query("SELECT step_index,step_id,parent_step_id,entry_state_json,prompt,data_json,decision_json FROM workflow_steps WHERE root_attempt_id=? ORDER BY step_index")
         .bind(root_id).fetch_all(&store.pool).await?;
     rows.into_iter()
         .map(|row| {
-            Ok(SavedStep {
+            let step = SavedStep {
                 index: row.get::<i64, _>(0) as usize,
                 id: row.get(1),
                 parent_id: row.get(2),
                 entry: serde_json::from_str(row.get(3))?,
                 prompt: row.get(4),
                 attempt: serde_json::from_str(row.get(5))?,
-            })
+                decision: row
+                    .get::<Option<&str>, _>(6)
+                    .map(serde_json::from_str)
+                    .transpose()?,
+            };
+            step.validate_decision(root_id)?;
+            Ok(step)
         })
         .collect()
 }
@@ -170,19 +234,50 @@ async fn prepare_step(
     child.evaluations.clear();
     child.event_cursor = 0;
     child.workflow_steps.clear();
-    let saved = SavedStep {
+    let mut saved = SavedStep {
         index,
         id: spec.id.clone(),
         parent_id: entry.parent_step_id.clone(),
         entry,
         prompt,
         attempt: child,
+        decision: None,
     };
     let mut tx = store.pool.begin().await?;
-    sqlx::query("INSERT INTO workflow_steps(attempt_id,root_attempt_id,step_index,step_id,parent_step_id,entry_state_hash,entry_state_json,prompt,phase,data_json) VALUES(?,?,?,?,?,?,?,?,'pending',?)")
+    let root_decision: String = sqlx::query_scalar(
+        "SELECT data_json FROM decision_snapshots WHERE run_id=? AND version_id=?",
+    )
+    .bind(&root.run_id)
+    .bind(&version.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let root_decision: DecisionSnapshot = serde_json::from_str(&root_decision)?;
+    let mut request = root_decision.request.clone();
+    request.configurations = vec![root.configuration.clone()];
+    request.version_ids = vec![version.id.clone()];
+    request.timeout_seconds = remaining;
+    request.repetitions = 1;
+    request.max_executions = 1;
+    let mut snapshot =
+        super::routing::snapshot(&root.run_id, &step_version(version, &saved), &request);
+    snapshot.selection_provenance = "workflow_root_pin_v1".into();
+    snapshot.candidates[0].reason = Some("Pinned by the root attempt; fresh provider admission is checked separately, no alternative worker was selected".into());
+    let mut decision = StepDecision {
+        root_attempt_id: root.id.clone(),
+        root_decision_id: root_decision.id,
+        step_index: index,
+        driver_revision: workflow.driver_revision.clone(),
+        snapshot,
+        content_hash: String::new(),
+    };
+    decision.content_hash = decision.hash()?;
+    saved.decision = Some(decision);
+    saved.validate_decision(&root.id)?;
+    sqlx::query("INSERT INTO workflow_steps(attempt_id,root_attempt_id,step_index,step_id,parent_step_id,entry_state_hash,entry_state_json,prompt,phase,data_json,decision_json) VALUES(?,?,?,?,?,?,?,?,'pending',?,?)")
         .bind(&saved.attempt.id).bind(&root.id).bind(index as i64).bind(&saved.id).bind(&saved.parent_id)
         .bind(&saved.entry.content_hash).bind(serde_json::to_string(&saved.entry)?).bind(&saved.prompt)
-        .bind(serde_json::to_string(&saved.attempt)?).execute(&mut *tx).await?;
+        .bind(serde_json::to_string(&saved.attempt)?).bind(serde_json::to_string(saved.decision.as_ref().unwrap())?)
+        .execute(&mut *tx).await?;
     event(&mut tx, &root.run_id, "workflow_step_prepared").await?;
     tx.commit().await?;
     Ok(saved)
@@ -599,6 +694,7 @@ mod tests {
             app: None,
         };
         let mut draft = super::super::runner::seed_definitions().remove(0);
+        draft.split = "train".into();
         draft.workflow = Some(WorkflowSpec {
             schema_version: 1,
             driver_revision: "test-v1".into(),
@@ -644,6 +740,252 @@ mod tests {
         root.started_at = Some(now());
         service.store.save_attempt(&root).await.unwrap();
         (directory, service, backend, root, version)
+    }
+
+    #[tokio::test]
+    async fn step_decision_precedes_execution_and_survives_retries_unchanged() {
+        let (_directory, service, backend, root, version) = setup().await;
+        let prepared = prepare_step(&service.store, &root, &version, 0, 17, None)
+            .await
+            .unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        let frozen = serde_json::to_value(prepared.decision.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            frozen["snapshot"]["selectionProvenance"],
+            "workflow_root_pin_v1"
+        );
+        assert_eq!(frozen["snapshot"]["request"]["timeoutSeconds"], 17);
+        assert_eq!(frozen["snapshot"]["request"]["maxExecutions"], 1);
+        assert_eq!(
+            frozen["snapshot"]["request"]["configurations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            frozen["snapshot"]["entryState"]["previousReports"],
+            json!([])
+        );
+        assert!(prepared.attempt.started_at.is_none());
+        let (_tx, cancel) = watch::channel(false);
+        let result = execute(&service, root, version.clone(), 30, cancel.clone())
+            .await
+            .unwrap();
+        let steps = saved_steps(&service.store, &result.id).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(steps[0].decision.as_ref().unwrap()).unwrap(),
+            frozen
+        );
+        assert_eq!(
+            steps[1]
+                .decision
+                .as_ref()
+                .unwrap()
+                .snapshot
+                .entry_state
+                .as_ref()
+                .unwrap()
+                .previous_reports,
+            vec![steps[0].attempt.output.clone().unwrap()]
+        );
+        for step in &steps {
+            assert!(
+                step.decision.as_ref().unwrap().snapshot.created_at
+                    <= step.attempt.started_at.unwrap()
+            );
+        }
+        execute(&service, result.clone(), version, 30, cancel)
+            .await
+            .unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            serde_json::to_value(
+                saved_steps(&service.store, &result.id).await.unwrap()[0]
+                    .decision
+                    .as_ref()
+                    .unwrap()
+            )
+            .unwrap(),
+            frozen
+        );
+    }
+
+    async fn exported_steps(
+        service: &BenchmarkService,
+        include_held_out: bool,
+    ) -> (serde_json::Value, Vec<serde_json::Value>) {
+        let result = super::super::export::export(
+            &service.store,
+            service.query_data().await.unwrap(),
+            include_held_out,
+        )
+        .await
+        .unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(&result.manifest_path).await.unwrap()).unwrap();
+        let body = tokio::fs::read_to_string(
+            std::path::Path::new(&result.path).with_file_name("workflow-steps.jsonl"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            manifest["workflowSteps"]["contentHash"],
+            fixtures::hash(body.as_bytes())
+        );
+        let rows = body
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(manifest["workflowSteps"]["rowCount"], rows.len());
+        (manifest, rows)
+    }
+
+    #[tokio::test]
+    async fn step_export_preserves_causal_inputs_without_root_rewards_or_private_fields() {
+        let (_directory, service, _, root, version) = setup().await;
+        let prepared = prepare_step(&service.store, &root, &version, 0, 23, None)
+            .await
+            .unwrap();
+        let (manifest, rows) = exported_steps(&service, false).await;
+        assert_eq!(manifest["schemaVersion"], 4);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["decisionStatus"], "committed_before_dispatch");
+        assert!(rows[0]["outcome"]["usage"].is_null());
+        assert!(rows[0]["outcome"]["outcome"].is_null());
+        assert_eq!(
+            rows[0]["decision"]["record"]["budget"]["timeoutSeconds"],
+            23
+        );
+        assert_eq!(
+            rows[0]["decision"]["features"]["entryState"]["previousReports"],
+            json!([])
+        );
+        assert_eq!(
+            rows[0]["decision"]["selectedConfiguration"]["candidateKey"],
+            super::super::routing::candidate_key(&prepared.attempt.configuration)
+        );
+        let (_tx, cancel) = watch::channel(false);
+        let mut finished = execute(&service, root, version, 30, cancel).await.unwrap();
+        finished.phase = "terminal".into();
+        finished.outcome = Some("pass".into());
+        finished.output = Some("FINAL-ANSWER-MUST-NOT-BECOME-A-FEATURE".into());
+        service.store.save_attempt(&finished).await.unwrap();
+        let (_, rows) = exported_steps(&service, false).await;
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert!(row["outcome"]["reward"].is_null());
+            assert_eq!(row["outcome"]["observed"], false);
+            assert_eq!(row["independentTask"], false);
+            assert_eq!(row["counterfactualOutcomesAvailable"], false);
+            assert_eq!(row["rootAttemptId"], finished.id);
+            assert_eq!(row["split"], "train");
+            assert!(row["outcome"]["usage"]["cost"].is_null());
+        }
+        let encoded = serde_json::to_string(&rows).unwrap();
+        assert!(!encoded.contains("FINAL-ANSWER-MUST-NOT-BECOME-A-FEATURE"));
+        assert!(!encoded.contains("\"isolated\""));
+        assert!(!encoded.contains("knownGood"));
+        assert!(!encoded.contains("knownBad"));
+        assert!(!encoded.contains("expected"));
+        let saved = saved_steps(&service.store, &finished.id).await.unwrap();
+        assert_eq!(
+            rows[1]["decision"]["features"]["entryState"]["previousReports"],
+            json!([saved[0].attempt.output])
+        );
+        let mut failed = saved[0].attempt.clone();
+        failed.outcome = Some("budget_timeout".into());
+        service.store.save_attempt(&failed).await.unwrap();
+        let (_, rows) = exported_steps(&service, false).await;
+        assert_eq!(rows[0]["outcome"]["outcome"], "budget_timeout");
+        assert!(rows[0]["outcome"]["reward"].is_null());
+    }
+
+    #[tokio::test]
+    async fn changed_step_input_is_refused_before_dispatch_and_export() {
+        let (_directory, service, backend, root, version) = setup().await;
+        let prepared = prepare_step(&service.store, &root, &version, 0, 30, None)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE workflow_steps SET prompt='changed after preparation' WHERE attempt_id=?",
+        )
+        .bind(&prepared.attempt.id)
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+        let (_tx, cancel) = watch::channel(false);
+        assert_eq!(
+            execute(&service, root, version, 30, cancel)
+                .await
+                .unwrap_err()
+                .code,
+            "evidence_mismatch"
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            super::super::export::export(
+                &service.store,
+                service.query_data().await.unwrap(),
+                false
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "evidence_mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_step_export_does_not_invent_a_pre_dispatch_decision() {
+        let (_directory, service, _, root, version) = setup().await;
+        let (_tx, cancel) = watch::channel(false);
+        execute(&service, root, version, 30, cancel).await.unwrap();
+        sqlx::query("UPDATE workflow_steps SET decision_json=NULL")
+            .execute(&service.store.pool)
+            .await
+            .unwrap();
+        let (_, rows) = exported_steps(&service, false).await;
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row["decisionStatus"]
+            == "legacy_missing_pre_dispatch_decision"
+            && row["decision"].is_null()
+            && row["outcome"]["reward"].is_null()));
+    }
+
+    #[tokio::test]
+    async fn step_export_requires_explicit_heldout_scope_and_omits_later_outcomes() {
+        let (_directory, service, _, root, mut version) = setup().await;
+        let (_tx, cancel) = watch::channel(false);
+        let result = execute(&service, root, version.clone(), 30, cancel)
+            .await
+            .unwrap();
+        let mut steps = saved_steps(&service.store, &result.id).await.unwrap();
+        steps[1].attempt.finished_at = Some(now() + 60_000);
+        service.store.save_attempt(&steps[1].attempt).await.unwrap();
+        let (_, rows) = exported_steps(&service, false).await;
+        assert!(rows[1]["outcome"]["usage"].is_null());
+        assert!(rows[1]["outcome"]["outcome"].is_null());
+        assert!(rows[0]["outcome"]["usage"].is_object());
+        // Isolated storage fixture: exercise split filtering without collecting
+        // another worker outcome or modifying any live benchmark version.
+        version.manifest.split = "held_out".into();
+        sqlx::query("UPDATE benchmark_versions SET manifest_json=? WHERE id=?")
+            .bind(serde_json::to_string(&version.manifest).unwrap())
+            .bind(&version.id)
+            .execute(&service.store.pool)
+            .await
+            .unwrap();
+        assert!(exported_steps(&service, false).await.1.is_empty());
+        assert_eq!(exported_steps(&service, true).await.1.len(), 2);
+        version.manifest.split = "development".into();
+        sqlx::query("UPDATE benchmark_versions SET manifest_json=? WHERE id=?")
+            .bind(serde_json::to_string(&version.manifest).unwrap())
+            .bind(&version.id)
+            .execute(&service.store.pool)
+            .await
+            .unwrap();
+        assert!(exported_steps(&service, true).await.1.is_empty());
     }
 
     #[tokio::test]

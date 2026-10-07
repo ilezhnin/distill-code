@@ -7,6 +7,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod workflow;
+
 fn pseudonym(salt: &str, id: &str) -> String {
     format!("account-{:x}", Sha256::digest(format!("{salt}:{id}")))
 }
@@ -427,27 +429,34 @@ pub async fn export(
             "batchPercentagePoints":if sample.attribution=="controlled_batch"{sample.used_percentage_points}else{None},
             "reason":sample.reason,"perTaskCharge":null})
     }).collect();
-    let directory = store.root.join("exports").join(&id);
-    tokio::fs::create_dir_all(&directory).await?;
+    let workflow_rows = workflow::rows(store, &data, &rows, &id, cutoff).await?;
+    let workflow_jsonl = jsonl(&workflow_rows)?;
+    let workflow_hash = format!("{:x}", Sha256::digest(workflow_jsonl.as_bytes()));
     let outcomes_jsonl = jsonl(&rows)?;
     let hash = format!("{:x}", Sha256::digest(outcomes_jsonl.as_bytes()));
     let prepared = ledger_rows_at(&data, include_held_out, &id, cutoff)?;
     let ledger_jsonl = jsonl(&prepared)?;
     let ledger_hash = format!("{:x}", Sha256::digest(ledger_jsonl.as_bytes()));
-    let manifest = json!({"schemaVersion":3,"id":id,"createdAt":now(),"cutoffAt":cutoff,"rowCount":rows.len(),"contentHash":hash,"catalogDefinitions":data.definitions.len(),
+    let manifest = json!({"schemaVersion":4,"id":id,"createdAt":now(),"cutoffAt":cutoff,"rowCount":rows.len(),"contentHash":hash,"catalogDefinitions":data.definitions.len(),
         "candidateKeyAlgorithm":super::routing::CANDIDATE_KEY_ALGORITHM,
         "purpose":if include_held_out{"explicit_evaluation_export"}else{"training"},"includesHeldOut":include_held_out,"includesDevelopment":false,
         "aggregation":"equal frozen-case means over observed repetitions; missing values stay null",
         "archive":"outcomes.jsonl",
+        "workflowSteps":{"path":"workflow-steps.jsonl","schemaVersion":1,"rowCount":workflow_rows.len(),"contentHash":workflow_hash,
+            "decisionPolicy":"Only stored pre-dispatch inputs and root configuration pins; legacy steps are marked missing, never reconstructed from outcomes. Provider admission is separate from the recorded pin.",
+            "labelPolicy":"Dependent steps stay with their root family and split. No independent step quality or unselected-worker counterfactuals; root quality must not be copied onto step rows. Durations and usage are per-step, not additional root costs."},
         "currentPool":{"path":"ledger.jsonl","rowCount":prepared.len(),"contentHash":ledger_hash,
             "schemaVersion":4,"selection":"latest settled cell compatible with the column runtime, minimum repetitions and published timeout, at cutoffAt; every planned repetition must be scored",
             "trainingPolicy":"train only by default; development is never exported; held-out requires an evaluation export. Families and related splitGroup values must not cross splits. completeMatrix covers exported columns only: a fit must separately verify its candidate inventory, class/family coverage and grader qualification. Authored and not-planned cells are masked. Partial, unknown-runtime and incompatible cells have null rewards; historical observations remain in outcomes.jsonl."},
         "quotaSemantics":"whole controlled batch only; mixed and unknown charges are omitted",
         "quota":quota,"versions":rows.iter().map(|row|json!({"version":row["taskVersion"],"family":row["family"],"split":row["split"],"hash":row["contentHash"]})).collect::<Vec<_>>()});
+    let directory = store.root.join("exports").join(&id);
+    tokio::fs::create_dir_all(&directory).await?;
     let path = directory.join("outcomes.jsonl");
     let manifest_path = directory.join("manifest.json");
     tokio::fs::write(&path, outcomes_jsonl).await?;
     tokio::fs::write(directory.join("ledger.jsonl"), ledger_jsonl).await?;
+    tokio::fs::write(directory.join("workflow-steps.jsonl"), workflow_jsonl).await?;
     tokio::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?).await?;
     let mut tx = store.pool.begin().await?;
     sqlx::query("INSERT INTO exports(id,data_json) VALUES(?,?)")
