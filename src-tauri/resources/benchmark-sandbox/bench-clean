@@ -6,5 +6,6 @@ id=${1:-}
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-clean: bad id" >&2; exit 64; }
 /usr/local/sbin/bench-kill session "$id"
 /usr/local/sbin/bench-kill check "$id"
+/usr/local/sbin/bench-auth save "$id"
 /usr/local/sbin/bench-network "$id" clean
-rm -rf "/srv/bench/work/$id" "/srv/bench/base/$id" "/srv/bench/checks/$id" "/srv/bench/staging/$id"
+rm -rf "/srv/bench/work/$id" "/srv/bench/base/$id" "/srv/bench/checks/$id" "/srv/bench/staging/$id" "/srv/bench/auth/$id"

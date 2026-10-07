@@ -33,6 +33,12 @@ done
 [[ ${1:-} == -- ]] && shift
 (($#)) || { echo "bench-run: no command" >&2; exit 64; }
 [[ -z $dir || -d $dir ]] || { echo "bench-run: $dir does not exist" >&2; exit 66; }
+for variable in "${vars[@]}"; do
+  if [[ $variable == DISTILL_BENCH_ACCOUNT_HOME=* ]]; then
+    [[ $mode == session ]] || exit 64
+    /usr/local/sbin/bench-auth prepare "$id" "${variable#*=}"
+  fi
+done
 /usr/local/sbin/bench-net
 # Runs that ended leave empty cgroups; only an empty one can be removed.
 for stale in /sys/fs/cgroup/distill-bench/*/; do rmdir "$stale" 2>/dev/null || true; done

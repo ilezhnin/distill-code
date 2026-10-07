@@ -59,8 +59,62 @@ check "check runs as the checker" "$(run check selftest-a -- id -un)" checker
 check "check sees the answer and its files" "$(run check selftest-a -- bash check.sh && echo pass)" pass
 check "check has no network" "$(run check selftest-a -- curl -s -m 5 https://api.anthropic.com/ >/dev/null; echo $?)" 6
 
+# Synthetic sign-in data only: no real credential is read or changed.
+auth_account=$(mktemp -d /home/candidate/accounts/selftest-auth-XXXXXXXX)
+auth_home=$auth_account/codex
+install -d -m 700 -o candidate -g candidate "$auth_home"
+printf '{"token":"original"}\n' >"$auth_home/auth.json"
+printf 'previous answer\n' >"$auth_home/history.txt"
+chown candidate:candidate "$auth_home/auth.json" "$auth_home/history.txt"
+check "account history is not mounted" "$(run session selftest-a "DISTILL_BENCH_ACCOUNT_HOME=$auth_home" -- bash -c '
+  test ! -e /tmp/provider/history.txt || exit 1
+  printf marker >/tmp/provider/previous-attempt
+  printf "{\"token\":\"refreshed\"}\n" >/tmp/provider/auth.json
+  echo private
+')" private
+/usr/local/sbin/bench-kill session selftest-a
+/usr/local/sbin/bench-clean selftest-a
+check "OAuth refresh survives a stopped attempt" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$auth_home/auth.json")" refreshed
+check "arbitrary provider files are not persisted" "$(test -e "$auth_home/previous-attempt" && echo leaked)" ""
+check "next attempt cannot read previous state" "$(run session selftest-b "DISTILL_BENCH_ACCOUNT_HOME=$auth_home" -- bash -c '
+  test ! -e /tmp/provider/history.txt && test ! -e /tmp/provider/previous-attempt && echo private
+')" private
+/usr/local/sbin/bench-kill session selftest-b
+
+# A stale or linked credential must never overwrite the selected account.
+/usr/local/sbin/bench-auth prepare selftest-auth-a "$auth_home"
+/usr/local/sbin/bench-auth prepare selftest-auth-b "$auth_home"
+printf '{"token":"first"}\n' >/srv/bench/auth/selftest-auth-a/home/auth.json
+printf '{"token":"second"}\n' >/srv/bench/auth/selftest-auth-b/home/auth.json
+/usr/local/sbin/bench-auth save selftest-auth-a
+check "concurrent refresh refuses a stale overwrite" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?)" 70
+rm /srv/bench/auth/selftest-auth-b/home/auth.json
+ln -s "$auth_home/auth.json" /srv/bench/auth/selftest-auth-b/home/auth.json
+check "credential links are refused" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?)" 70
+check "refused refresh preserves the newer credential" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$auth_home/auth.json")" first
+rm -rf /srv/bench/auth/selftest-auth-a /srv/bench/auth/selftest-auth-b
+
+kimi_home=$auth_account/kimi
+install -d -m 700 -o candidate -g candidate "$kimi_home/credentials"
+printf 'default_provider = "test"\n' >"$kimi_home/config.toml"
+printf '{"access_token":"original","refresh_token":"original","expires_at":100}\n' >"$kimi_home/credentials/kimi-code.json"
+for item in a b; do /usr/local/sbin/bench-auth prepare "selftest-kimi-$item" "$kimi_home"; done
+printf '{"access_token":"older","refresh_token":"older","expires_at":200}\n' >/srv/bench/auth/selftest-kimi-a/home/credentials/kimi-code.json
+printf '{"access_token":"newer","refresh_token":"newer","expires_at":300}\n' >/srv/bench/auth/selftest-kimi-b/home/credentials/kimi-code.json
+/usr/local/sbin/bench-auth save selftest-kimi-b
+check "older Kimi refresh settles without an overwrite" "$(/usr/local/sbin/bench-auth save selftest-kimi-a; echo $?)" 0
+check "newest Kimi refresh is retained" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["expires_at"])' "$kimi_home/credentials/kimi-code.json")" 300
+for item in a b; do /usr/local/sbin/bench-clean "selftest-kimi-$item"; done
+for item in a b; do /usr/local/sbin/bench-auth prepare "selftest-kimi-$item" "$kimi_home"; done
+printf '{"access_token":"newer","refresh_token":"newer","expires_at":500}\n' >/srv/bench/auth/selftest-kimi-a/home/credentials/kimi-code.json
+printf '{"access_token":"older","refresh_token":"older","expires_at":400}\n' >/srv/bench/auth/selftest-kimi-b/home/credentials/kimi-code.json
+/usr/local/sbin/bench-auth save selftest-kimi-b
+/usr/local/sbin/bench-auth save selftest-kimi-a
+check "newer Kimi refresh replaces an older completed grant" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["expires_at"])' "$kimi_home/credentials/kimi-code.json")" 500
+for item in a b; do /usr/local/sbin/bench-clean "selftest-kimi-$item"; done
 /usr/local/sbin/bench-clean selftest-a
 /usr/local/sbin/bench-clean selftest-b
+rm -rf "$auth_account"
 rm -rf /tmp/selftest-file /tmp/selftest.tar /tmp/selftest-check /tmp/selftest-check.tar
-check "clean leaves nothing" "$(ls /srv/bench/work /srv/bench/base /srv/bench/checks | grep -c selftest)" 0
+check "clean leaves nothing" "$(ls /srv/bench/work /srv/bench/base /srv/bench/checks /srv/bench/auth | grep -c selftest)" 0
 exit $failed

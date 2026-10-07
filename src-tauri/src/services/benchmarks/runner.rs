@@ -1800,10 +1800,12 @@ impl ExecutionBackend for NativeBackend {
     }
     fn unsupported(&self, c: &Configuration, d: &BenchmarkDraft) -> Option<String> {
         if super::repository::is_repository_case(d) {
-            return profile_refusal(c).or_else(|| {
-                (c.execution_profile != "protected_repository")
-                    .then(|| "Choose the repository configuration for a repository case".into())
-            });
+            return profile_refusal(c)
+                .or_else(|| {
+                    (c.execution_profile != "protected_repository")
+                        .then(|| "Choose the repository configuration for a repository case".into())
+                })
+                .or_else(|| super::repository::permission_issue(d));
         }
         if let Some(reason) = native_refusal(c) {
             return Some(reason);
@@ -4071,6 +4073,8 @@ pub struct FakeBackend {
     /// Turns in flight now, and the most ever at once.
     pub in_flight: std::sync::atomic::AtomicU64,
     pub peak_in_flight: std::sync::atomic::AtomicU64,
+    /// Cancellation tests keep every dispatched turn open until cancelled.
+    pub hold_turns: std::sync::atomic::AtomicBool,
     /// The accounts the fake provider lists, and those whose limit ran out.
     pub accounts_of: std::sync::Mutex<Vec<String>>,
     pub spent_accounts: std::sync::Mutex<Vec<String>>,
@@ -4213,7 +4217,15 @@ impl ExecutionBackend for FakeBackend {
             a.host_run_id = Some(format!("fake-{}", a.id));
             a.observed = Some(a.configuration.clone());
             store.save_attempt(&a).await?;
-            tokio::select! {_=tokio::time::sleep(Duration::from_millis(300))=>{},_=cancel.changed()=>{}}
+            if self.hold_turns.load(Ordering::SeqCst) {
+                while !*cancel.borrow() {
+                    if cancel.changed().await.is_err() {
+                        break;
+                    }
+                }
+            } else {
+                tokio::select! {_=tokio::time::sleep(Duration::from_millis(300))=>{},_=cancel.changed()=>{}}
+            }
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             if *cancel.borrow() {
                 a.outcome = Some("cancelled".into());
@@ -5377,14 +5389,23 @@ mod tests {
     #[tokio::test]
     async fn cancel_stops_every_turn_in_flight() {
         let (_dir, s, backend) = setup().await;
+        backend.hold_turns.store(true, Ordering::SeqCst);
         let run = s.start_run(wide_request(&s, &backend).await).await.unwrap();
         let background = s.clone();
         let tick = tokio::spawn(async move { background.tick().await });
-        while backend.in_flight.load(Ordering::SeqCst) < 2 * ACCOUNT_SLOTS as u64 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while backend.in_flight.load(Ordering::SeqCst) < 2 * ACCOUNT_SLOTS as u64 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("all account slots must dispatch before cancellation");
         s.control(&run.id, "cancel").await.unwrap();
-        tick.await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(30), tick)
+            .await
+            .expect("cancellation must settle every turn")
+            .unwrap()
+            .unwrap();
         s.tick().await.unwrap();
         let run = s.store.run(&run.id).await.unwrap();
         assert_eq!(run.state, "cancelled");

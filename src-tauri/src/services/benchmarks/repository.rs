@@ -107,6 +107,9 @@ pub fn validate(draft: &BenchmarkDraft) -> Vec<String> {
     if draft.execution_profile != "protected_repository" {
         issues.push("The repository check scores only the protected repository profile".into());
     }
+    if let Some(issue) = permission_issue(draft) {
+        issues.push(issue);
+    }
     if let Err(error) = snapshot(draft) {
         issues.push(error.message);
     }
@@ -117,6 +120,17 @@ pub fn validate(draft: &BenchmarkDraft) -> Vec<String> {
         issues.push("A repository case needs the reference patch that passes its check".into());
     }
     issues
+}
+
+/// Native shell tools share the candidate's public-internet namespace.
+/// This fixed profile cannot honestly promise a narrower per-case policy.
+pub fn permission_issue(draft: &BenchmarkDraft) -> Option<String> {
+    let mut tools: Vec<&str> = draft.permissions.tools.iter().map(String::as_str).collect();
+    tools.sort_unstable();
+    (tools != ["filesystem", "terminal"]
+        || !draft.permissions.network
+        || draft.permissions.context != "clean")
+        .then(|| "Repository execution requires filesystem and terminal tools, public network access and clean context; a narrower policy is unavailable".into())
 }
 
 /// Whether `manifest` runs as an ordinary session with tools in a copy of
@@ -518,6 +532,8 @@ mod tests {
     fn manifest(snapshot: &Snapshot) -> BenchmarkDraft {
         let mut draft = super::super::seeds::definitions().remove(0);
         draft.execution_profile = "protected_repository".into();
+        draft.permissions.tools = vec!["filesystem".into(), "terminal".into()];
+        draft.permissions.network = true;
         draft.environment["repository"] = serde_json::json!({
             "path": snapshot.path, "commit": snapshot.commit, "tree": snapshot.tree,
         });
@@ -530,6 +546,20 @@ mod tests {
         })
         .to_string();
         draft
+    }
+
+    #[test]
+    fn repository_permissions_must_describe_the_enforced_profile() {
+        let mut draft = super::super::seeds::definitions().remove(0);
+        assert!(permission_issue(&draft).is_some());
+        draft.permissions.tools = vec!["terminal".into(), "filesystem".into()];
+        draft.permissions.network = true;
+        assert!(permission_issue(&draft).is_none());
+        draft.permissions.network = false;
+        assert!(permission_issue(&draft).is_some());
+        draft.permissions.network = true;
+        draft.permissions.tools.push("delegation".into());
+        assert!(permission_issue(&draft).is_some());
     }
 
     #[tokio::test]

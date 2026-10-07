@@ -31,11 +31,12 @@ for hidden in /tmp/.X11-unix /run/WSL /run/netns; do
 done
 mount -t tmpfs -o mode=1777 none /tmp
 mount -t tmpfs -o mode=1777 none /dev/shm
-# A session sees only its selected sandbox sign-in, never other accounts
-# or an earlier attempt's OS home. Login alone uses the persistent home.
+# A session sees a private copy of its selected sandbox sign-in, never
+# shared CLI state or other accounts. Login alone uses the persistent home.
 if [[ -n $dir ]]; then
   if [[ -n $account_home ]]; then
     [[ $user == candidate && $account_home =~ ^/home/candidate/accounts/[A-Za-z0-9_-]{1,80}/(claude|codex|grok|kimi)$ ]] || exit 64
+    account_home=/srv/bench/auth/$(basename "$dir")/home
     [[ $(realpath -e "$account_home") == "$account_home" ]] || exit 64
     install -d -m 700 -o candidate -g candidate /tmp/provider
     mount --bind "$account_home" /tmp/provider

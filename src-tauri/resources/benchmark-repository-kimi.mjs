@@ -118,7 +118,7 @@ const controls = [
 const usageHelper = `
 import { mkdirSync as distillBenchmarkMkdir, writeFileSync as distillBenchmarkWriteFile } from "node:fs";
 function distillBenchmarkAccountConfig(configPath) {
-\tconst account = parse$8(readFileSync("/tmp/provider/config.toml", "utf8"));
+\tconst account = JSON.parse(readFileSync("/tmp/provider/config.json", "utf8"));
 \tconst config = Object.fromEntries(
 \t\t["default_provider", "default_model", "providers", "models"]
 \t\t\t.filter((key) => account[key] !== undefined)

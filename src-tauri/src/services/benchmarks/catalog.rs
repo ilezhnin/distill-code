@@ -39,6 +39,9 @@ pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
     if d.permissions.context != "clean" {
         issues.push("Benchmark context must be clean".into());
     }
+    if d.environment["authorshipStatus"] == "unverified" {
+        issues.push("Confirm source and task model provenance before publication".into());
+    }
     if d.limits.timeout_seconds == 0
         || d.limits.timeout_seconds > super::MAX_TIME_LIMIT_SECONDS
         || d.limits.max_turns != 1
@@ -288,6 +291,31 @@ pub(super) fn evaluator_only(previous: &BenchmarkDraft, next: &BenchmarkDraft) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn unverified_provenance_stays_editable_but_cannot_be_published() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let mut draft = super::super::seeds::definitions().remove(0);
+        draft.environment["authorshipStatus"] = serde_json::json!("unverified");
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let error = store.publish(&definition.id, 1).await.unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert!(error.message.contains("provenance"));
+        assert!(store
+            .definition(&definition.id)
+            .await
+            .unwrap()
+            .versions
+            .is_empty());
+        let mut fixed = definition.draft;
+        fixed.environment["authorshipStatus"] = serde_json::json!("verified");
+        fixed.environment["authoredBy"] = serde_json::json!(["source-model", "task-model"]);
+        store
+            .save_draft(Some(&definition.id), Some(1), fixed)
+            .await
+            .unwrap();
+        assert!(store.publish(&definition.id, 2).await.is_ok());
+    }
     #[test]
     fn only_a_change_confined_to_the_evaluator_carries_cells() {
         let draft = super::super::seeds::definitions().remove(0);

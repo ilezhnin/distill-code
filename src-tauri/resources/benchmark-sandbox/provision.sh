@@ -15,7 +15,7 @@ if ! command -v iptables >/dev/null || ! command -v git >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends git iptables ca-certificates curl xz-utils python3 >/dev/null
 fi
-for script in bench-net bench-network bench-run bench-enter bench-copy bench-patch bench-check-prep \
+for script in bench-auth bench-net bench-network bench-run bench-enter bench-copy bench-patch bench-check-prep \
   bench-kill bench-clean bench-status bench-login; do
   install -o root -g root -m 755 "$src/$script" "/usr/local/sbin/$script"
 done

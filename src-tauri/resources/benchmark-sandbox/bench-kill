@@ -8,11 +8,12 @@ if [[ ! $mode =~ ^(session|check|login)$ || ! $id =~ ^[A-Za-z0-9_-]{1,80}$ ]]; t
   exit 64
 fi
 cgroup=/sys/fs/cgroup/distill-bench/$mode-$id
-[[ -d $cgroup ]] || exit 0
-echo 1 >"$cgroup/cgroup.kill"
-for _ in $(seq 50); do
-  [[ -z $(cat "$cgroup/cgroup.procs") ]] && break
-  sleep 0.1
-done
-[[ -z $(cat "$cgroup/cgroup.procs") ]] || { echo 'bench-kill: processes did not stop' >&2; exit 70; }
-rmdir "$cgroup" 2>/dev/null || true
+if [[ -d $cgroup ]]; then
+  echo 1 >"$cgroup/cgroup.kill"
+  for _ in $(seq 50); do
+    [[ -z $(cat "$cgroup/cgroup.procs") ]] && break
+    sleep 0.1
+  done
+  [[ -z $(cat "$cgroup/cgroup.procs") ]] || { echo 'bench-kill: processes did not stop' >&2; exit 70; }
+  rmdir "$cgroup" 2>/dev/null || true
+fi

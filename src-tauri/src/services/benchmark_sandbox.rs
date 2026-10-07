@@ -16,6 +16,7 @@ macro_rules! resources {
 }
 
 const FILES: &[(&str, &[u8])] = resources![
+    "bench-auth",
     "bench-check-prep",
     "bench-clean",
     "bench-copy",

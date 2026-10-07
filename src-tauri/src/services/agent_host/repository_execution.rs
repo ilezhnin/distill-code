@@ -291,7 +291,8 @@ mod tests {
                 profile: ExecutionProfile::ProtectedRepositoryV1,
             };
             let env = SpawnEnv {
-                shell_env: std::env::vars()
+                shell_env: crate::services::env_key::process_vars_lossy()
+                    .into_iter()
                     .filter(|(key, _)| {
                         [
                             "SYSTEMROOT",

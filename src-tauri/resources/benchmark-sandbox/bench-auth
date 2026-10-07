@@ -1,0 +1,170 @@
+#!/usr/bin/python3
+"""Prepare private CLI homes; retain only changed OAuth files after a stop."""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import stat
+import sys
+import tomllib
+
+ROOT = Path("/srv/bench/auth")
+ACCOUNTS = Path("/home/candidate/accounts")
+CANDIDATE = pwd.getpwnam("candidate")
+LIMIT = 1024 * 1024
+
+
+def regular_bytes(path):
+    # Save runs after the candidate's cgroup has stopped. Never follow a
+    # submitted link, including a hard link into another writable file.
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > LIMIT:
+        raise ValueError("unsafe credential file")
+    return path.read_bytes()
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def credential_json(data):
+    value = json.loads(data)
+    if not isinstance(value, dict):
+        raise ValueError("invalid credential document")
+    return value
+
+
+def account_path(value):
+    path = Path(value)
+    relative = path.relative_to(ACCOUNTS)
+    if (len(relative.parts) != 2
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", relative.parts[0])
+            or relative.parts[1] not in ("claude", "codex", "grok", "kimi")
+            or path.resolve(strict=True) != path):
+        raise ValueError("invalid sandbox account")
+    return path
+
+
+def write_private(path, data, candidate=False):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(0o600)
+    if candidate:
+        os.chown(path, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+        parent = path.parent
+        while parent != directory:
+            os.chown(parent, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+            parent = parent.parent
+
+
+def prepare(value):
+    account = account_path(value)
+    provider = account.name
+    directory.mkdir(mode=0o700)
+    home = directory / "home"
+    home.mkdir(mode=0o700)
+    os.chown(home, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+    if provider == "kimi":
+        credentials = account / "credentials"
+        if credentials.resolve(strict=True) != credentials:
+            raise ValueError("unsafe credential directory")
+        names = [p.relative_to(account) for p in credentials.rglob("*") if not p.is_dir()]
+        if not 0 < len(names) <= 32:
+            raise ValueError("invalid credential count")
+        config = tomllib.loads(regular_bytes(account / "config.toml").decode())
+        config = {k: config[k] for k in ("default_provider", "default_model", "providers", "models") if k in config}
+        write_private(home / "config.json", json.dumps(config).encode(), True)
+    else:
+        names = [Path(".credentials.json" if provider == "claude" else "auth.json")]
+    originals = {}
+    for name in names:
+        source = account / name
+        if source.resolve(strict=True) != source:
+            raise ValueError("unsafe credential path")
+        data = regular_bytes(source)
+        credential_json(data)
+        originals[str(name)] = digest(data)
+        write_private(home / name, data, True)
+    if provider == "claude" and (account / ".claude.json").exists():
+        settings = json.loads(regular_bytes(account / ".claude.json"))
+        settings = {k: settings[k] for k in ("oauthAccount", "userID", "machineID") if k in settings}
+        write_private(home / ".claude.json", json.dumps(settings).encode(), True)
+    write_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": originals}).encode())
+
+
+def save():
+    receipt_file = directory / "receipt.json"
+    if not receipt_file.exists():
+        return
+    receipt = json.loads(regular_bytes(receipt_file))
+    account = account_path(receipt["account"])
+    pending = []
+    for name, before in receipt["originals"].items():
+        source = directory / "home" / name
+        if source.resolve(strict=True) != source:
+            raise ValueError("unsafe refreshed credential path")
+        data = regular_bytes(source)
+        after = digest(data)
+        if after == before:
+            continue
+        updated = credential_json(data)
+        target = account / name
+        if target.resolve(strict=True) != target:
+            raise ValueError("unsafe account credential path")
+        current_data = regular_bytes(target)
+        current = digest(current_data)
+        if current not in (before, after):
+            # Kimi refreshes at ACP startup, including parallel sessions.
+            # Its expiry is an integer epoch timestamp. Retain the newer
+            # grant regardless of the order in which the turns finish.
+            previous_expiry = credential_json(current_data).get("expires_at")
+            updated_expiry = updated.get("expires_at")
+            if (account.name != "kimi" or type(previous_expiry) is not int
+                    or type(updated_expiry) is not int
+                    or min(previous_expiry, updated_expiry) <= 0
+                    or previous_expiry == updated_expiry):
+                raise ValueError("concurrent credential refresh; inspect sandbox account before retrying")
+            if updated_expiry < previous_expiry:
+                receipt["originals"][name] = after
+                continue
+        pending.append((name, target, data, after))
+    for name, target, data, after in pending:
+        # Import only the OAuth files present at admission, never sessions,
+        # logs, settings or files invented by a turn. Reject stale refreshes.
+        temporary = target.with_name(target.name + ".bench-refresh")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chown(temporary, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        receipt["originals"][name] = after
+    write_private(receipt_file, json.dumps(receipt).encode())
+
+
+try:
+    action, attempt = sys.argv[1:3]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", attempt):
+        raise ValueError("invalid attempt")
+    ROOT.mkdir(mode=0o700, exist_ok=True)
+    directory = ROOT / attempt
+    with open("/run/lock/distill-bench-auth", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if action == "prepare":
+            prepare(sys.argv[3])
+        elif action == "save":
+            save()
+        else:
+            raise ValueError("invalid operation")
+except Exception as error:
+    # Never include provider data or parser excerpts in diagnostics.
+    message = str(error) if type(error) is ValueError else type(error).__name__
+    print("bench-auth: " + message, file=sys.stderr)
+    sys.exit(70)
