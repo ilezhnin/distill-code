@@ -871,6 +871,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       const selectedRunSettings =
         prepared.selected?.runSettings ?? stepRunSettings.runSettings;
       const spawnPromise = spawnConductorChildSession({
+        executorDecisionKey: preparedKey,
         parentSessionId: wave.conductorSessionId,
         role: "worker",
         managedBy: "wave",

@@ -409,7 +409,7 @@ fn carries_text(update: &Value) -> bool {
 
 #[derive(Clone)]
 pub struct SessionStore {
-    pool: SqlitePool,
+    pub(super) pool: SqlitePool,
 }
 
 fn db_error(context: &str, error: sqlx::Error) -> String {

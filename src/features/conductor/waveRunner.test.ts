@@ -27,6 +27,10 @@ const executorSelection = vi.hoisted(() => ({
       ) => Promise<ExecutorDecision>
     >(),
   observe: vi.fn(async (_key: string, _observation: unknown) => undefined),
+  syncOutcome: vi.fn(
+    async (_key: string, _session: string, _run: string, _outcome: string) =>
+      undefined,
+  ),
 }));
 function decisionFor(request: ApplicationExecutorRequest): ExecutorDecision {
   return {
@@ -65,6 +69,7 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (request) => decisionFor(request));
   executorSelection.observe.mockClear();
+  executorSelection.syncOutcome.mockClear();
 });
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
   executorSelection,
@@ -307,6 +312,7 @@ describe("waveRunner", () => {
       expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
     );
     expect(spawnConductorChildSession.mock.calls[0][0]).toMatchObject({
+      executorDecisionKey: executorSelection.select.mock.calls[0][0].requestKey,
       executionTarget: { modelId: "example-two" },
       runSettings: { effort: "high" },
     });
@@ -326,6 +332,20 @@ describe("waveRunner", () => {
     executorSelection.get.mockResolvedValueOnce({
       observations: [{ observation: { phase: "started" } }],
     } as ExecutorDecisionRecord);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
+    );
+    expect(executorSelection.select).not.toHaveBeenCalled();
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses a host dispatch even if the renderer lost its started observation", async () => {
+    selectionPlan();
+    executorSelection.get.mockResolvedValueOnce({
+      observations: [],
+      hostExecution: { start: { hostRunId: "native-run" }, finish: null },
+    } as unknown as ExecutorDecisionRecord);
     runWaveEngineTick();
     await vi.waitFor(() =>
       expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
@@ -450,29 +470,25 @@ describe("waveRunner", () => {
       expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
     );
     const decision = decisionFor(executorSelection.select.mock.calls[0][0]);
-    executorSelection.get.mockResolvedValue({ decision, observations: [] });
+    executorSelection.get.mockResolvedValue({
+      decision,
+      observations: [],
+      hostExecution: null,
+    });
     useConductorGraphStore
       .getState()
       .patchNode("child-0", { status: "completed" });
     runWaveEngineTick();
     await vi.waitFor(() =>
-      expect(executorSelection.observe).toHaveBeenCalledWith(
+      expect(executorSelection.syncOutcome).toHaveBeenCalledWith(
         decision.request.requestKey,
-        expect.objectContaining({
-          phase: "terminal",
-          sessionId: "child-0",
-          runId: "run-1",
-          outcome: "completed",
-          configuration: null,
-        }),
+        "child-0",
+        "run-1",
+        "completed",
       ),
     );
     runWaveEngineTick();
-    expect(
-      executorSelection.observe.mock.calls.filter(
-        ([, row]) => (row as { phase: string }).phase === "terminal",
-      ),
-    ).toHaveLength(1);
+    expect(executorSelection.syncOutcome).toHaveBeenCalledTimes(1);
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
   });
 

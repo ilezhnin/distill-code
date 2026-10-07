@@ -333,6 +333,7 @@ pub fn run() {
             commands::benchmarks::benchmark_preview_executor_decision,
             commands::benchmarks::benchmark_prepare_executor_decision,
             commands::benchmarks::benchmark_get_executor_decision,
+            commands::benchmarks::benchmark_sync_executor_outcome,
             commands::benchmarks::benchmark_observe_executor,
             commands::benchmarks::benchmark_freeze_selector_holdout,
             commands::benchmarks::benchmark_list_selector_holdouts,

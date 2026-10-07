@@ -2,6 +2,7 @@
 //! Research predictions are inspectable, but cannot authorize a worker change.
 
 use super::{learned, routing, store::now, store::Store, types::*};
+use crate::services::agent_host::executor_receipts::ExecutorReceipt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -138,6 +139,8 @@ pub struct RecordedObservation {
 pub struct Record {
     pub decision: Decision,
     pub observations: Vec<RecordedObservation>,
+    /// Joined from the host's durable receipt, never supplied by renderer observations.
+    pub host_execution: Option<ExecutorReceipt>,
 }
 
 fn error(code: &str, message: &str) -> BenchmarkError {
@@ -300,6 +303,7 @@ impl Store {
         Ok(Some(Record {
             decision,
             observations,
+            host_execution: None,
         }))
     }
 
@@ -314,12 +318,51 @@ impl Store {
             .await?
             .ok_or_else(|| error("not_found", "Executor decision was not prepared"))?;
         validate_observation(&record, &observation)?;
-        let matches_selected = observation.configuration.as_ref().map(|configuration| {
-            record.decision.chosen.as_ref().is_some_and(|chosen| {
-                routing::candidate_key(chosen) == routing::candidate_key(configuration)
-                    && chosen.inventory_revision == configuration.inventory_revision
-            })
-        });
+        let matches_selected = observation
+            .configuration
+            .as_ref()
+            .and_then(|configuration| {
+                let Some(chosen) = record.decision.chosen.as_ref() else {
+                    return Some(false);
+                };
+                if chosen.provider_id != configuration.provider_id
+                    || chosen.model_id != configuration.model_id
+                    || chosen.execution_profile != configuration.execution_profile
+                    || chosen
+                        .account_id
+                        .as_ref()
+                        .zip(configuration.account_id.as_ref())
+                        .is_some_and(|(a, b)| a != b)
+                    || chosen
+                        .effort
+                        .as_ref()
+                        .zip(configuration.effort.as_ref())
+                        .is_some_and(|(a, b)| a != b)
+                    || chosen
+                        .fast_mode
+                        .zip(configuration.fast_mode)
+                        .is_some_and(|(a, b)| a != b)
+                    || chosen
+                        .inventory_revision
+                        .as_ref()
+                        .zip(configuration.inventory_revision.as_ref())
+                        .is_some_and(|(a, b)| a != b)
+                {
+                    return Some(false);
+                }
+                // Missing reports are not confirmation of default effort, normal
+                // speed or a matching runtime. Known mismatches still remain false.
+                if configuration.effort.is_none()
+                    || chosen.effort.is_none()
+                    || configuration.fast_mode.is_none()
+                    || chosen.fast_mode.is_none()
+                    || configuration.inventory_revision.is_none()
+                    || chosen.inventory_revision.is_none()
+                {
+                    return None;
+                }
+                Some(routing::candidate_key(chosen) == routing::candidate_key(configuration))
+            });
         let saved = RecordedObservation {
             created_at: now(),
             observation,
@@ -336,6 +379,7 @@ impl Store {
         .await?;
         let current = Record {
             decision: record.decision,
+            host_execution: None,
             observations: rows
                 .iter()
                 .map(|row| serde_json::from_str(row))
@@ -374,6 +418,97 @@ impl Store {
             ));
         }
         Ok(result)
+    }
+}
+
+impl Record {
+    pub fn with_host_execution(mut self, receipt: Option<ExecutorReceipt>) -> Result<Self> {
+        if let Some(receipt) = &receipt {
+            if receipt.start.link.decision_key != self.decision.request.request_key
+                || self.observations.iter().any(|row| {
+                    row.observation
+                        .session_id
+                        .as_ref()
+                        .is_some_and(|id| id != &receipt.start.session_id)
+                        || row
+                            .observation
+                            .run_id
+                            .as_ref()
+                            .is_some_and(|id| id != &receipt.start.link.logical_run_id)
+                })
+            {
+                return Err(error(
+                    "observation_conflict",
+                    "Host dispatch does not match the recorded execution",
+                ));
+            }
+        }
+        self.host_execution = receipt;
+        Ok(self)
+    }
+}
+
+impl Store {
+    /// The renderer reports the graph outcome; only the host may supply actual
+    /// executor fields. The native and logical run IDs remain separately visible.
+    pub async fn observe_host_outcome(
+        &self,
+        request_key: &str,
+        session_id: String,
+        run_id: String,
+        outcome: String,
+        receipt: Option<ExecutorReceipt>,
+    ) -> Result<Record> {
+        if let Some(receipt) = &receipt {
+            if receipt.start.link.decision_key != request_key
+                || receipt.start.session_id != session_id
+                || receipt.start.link.logical_run_id != run_id
+            {
+                return Err(error(
+                    "observation_conflict",
+                    "Host dispatch identity does not match this wave step",
+                ));
+            }
+        }
+        let configuration = receipt.as_ref().and_then(|receipt| {
+            receipt.finish.as_ref().and_then(|finish| {
+                finish
+                    .selection
+                    .model_id
+                    .as_ref()
+                    .map(|model_id| Configuration {
+                        id: format!("host:{}", receipt.start.host_run_id),
+                        provider_id: receipt.start.provider_id.clone(),
+                        account_id: receipt.start.account_id.clone(),
+                        model_id: model_id.clone(),
+                        model_name: finish.selection.model_name.clone(),
+                        effort: finish.selection.effort.clone(),
+                        fast_mode: finish.selection.fast,
+                        billing_mode: "unknown".into(),
+                        execution_profile: "interactive_acp".into(),
+                        inventory_revision: None,
+                    })
+            })
+        });
+        let reason = match &receipt {
+            Some(receipt) if receipt.finish.is_some() => "Provider-reported terminal configuration; full transition history is in the host receipt. Run completion is not a quality verdict.",
+            Some(_) => "Provider dispatch was claimed but terminal acknowledgement is missing; do not retry automatically.",
+            None => "No provider dispatch receipt was found; executor configuration remains unknown.",
+        };
+        let record = self
+            .observe_executor(
+                request_key,
+                Observation {
+                    phase: "terminal".into(),
+                    session_id: Some(session_id),
+                    run_id: Some(run_id),
+                    configuration,
+                    outcome: Some(outcome),
+                    reason: Some(reason.into()),
+                },
+            )
+            .await?;
+        record.with_host_execution(receipt)
     }
 }
 

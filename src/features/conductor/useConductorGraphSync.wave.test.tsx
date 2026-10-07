@@ -32,6 +32,7 @@ vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
       }),
     ),
     observe: vi.fn(async () => undefined),
+    syncOutcome: vi.fn(async () => undefined),
   },
 }));
 

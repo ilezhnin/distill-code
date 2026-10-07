@@ -65,6 +65,8 @@ export async function spawnConductorChildSession(args: {
    * session that cannot run at a value keeps the intent and runs anyway.
    */
   runSettings?: SessionRunSettings;
+  /** Local decision attribution, consumed by the host before provider dispatch. */
+  executorDecisionKey?: string;
   /** The root request this child's work belongs to (P49). */
   taskId?: string;
 }): Promise<{ sessionId: string; runId: string }> {
@@ -265,12 +267,22 @@ export async function spawnConductorChildSession(args: {
         name: args.personaName?.trim() || displayName,
       }
     : { kind: "inherit" as const };
+  const sendOptions = distillctlCrossSessionSendOptions();
+  if (args.executorDecisionKey) {
+    sendOptions.acpPromptMetadata = {
+      ...sendOptions.acpPromptMetadata,
+      executorSelection: {
+        decisionKey: args.executorDecisionKey,
+        logicalRunId: runId,
+      },
+    };
+  }
   const accepted = acceptFirstSend(
     child.id,
     createDeferredQueuedMessagePayload({
       text: childPrompt,
       persona,
-      sendOptions: distillctlCrossSessionSendOptions(),
+      sendOptions,
     }),
     { project, queueReady: true },
   );
@@ -279,7 +291,7 @@ export async function spawnConductorChildSession(args: {
       child.id,
       admitSystemInheritedQueuedMessage({
         text: childPrompt,
-        sendOptions: distillctlCrossSessionSendOptions(),
+        sendOptions,
       }),
     );
   }

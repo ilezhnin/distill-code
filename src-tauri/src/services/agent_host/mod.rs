@@ -5,6 +5,7 @@
 
 pub mod bridge;
 pub mod execution;
+pub mod executor_receipts;
 mod ext;
 pub mod harness;
 mod harness_env;

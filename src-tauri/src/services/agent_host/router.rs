@@ -20,6 +20,9 @@ use super::execution::{
     self, AccountActivity, ExecutionDispatch, NativeProvider, ObservedSelection, OwnedEventPage,
     OwnedSession, OwnedSessionRequest, OwnedTurnImage, OwnedTurnRequest,
 };
+use super::executor_receipts::{
+    ExecutorLink, ReceiptFinish, ReceiptStart, ReportedSelection, REPORTED_KEY,
+};
 use super::ext;
 use super::harness::{self, HarnessSpec};
 use super::harness_env::build_spawn_env;
@@ -257,6 +260,8 @@ struct RunState {
     /// that produced nothing and then failed never happened, so its prompt is
     /// taken back out of the log instead of sitting there unanswered.
     saw_update: bool,
+    configuration_changes: Vec<ReportedSelection>,
+    changes_truncated: bool,
 }
 
 impl RunState {
@@ -268,6 +273,8 @@ impl RunState {
             agent_text: String::new(),
             saw_agent_message: false,
             saw_update: false,
+            configuration_changes: Vec::new(),
+            changes_truncated: false,
         }
     }
 }
@@ -2177,7 +2184,13 @@ impl Inner {
                         params["update"]["_meta"]["executionViolation"] =
                             json!("native selection changed during owned execution");
                     }
+                    Self::capture_reported(
+                        &mut runtime.snapshot,
+                        &json!({"configOptions": options}),
+                        None,
+                    );
                     runtime.snapshot["configOptions"] = options;
+                    Self::record_configuration_change(runtime);
                     runtime.has_model_option = Self::has_model_option(&runtime.snapshot);
                     reconfigured = Some((runtime.snapshot.clone(), selection));
                 }
@@ -2951,12 +2964,80 @@ impl Inner {
         })
     }
 
+    /// Keep receipt provenance separate from the UI snapshot, which may also
+    /// contain requested values and preserved menus. Only bridge replies enter
+    /// this field; an empty acknowledgement of a write invalidates that field.
+    fn capture_reported(snapshot: &mut Value, answer: &Value, written: Option<OptionRole>) {
+        let acknowledged = Self::selection_from(&answer["configOptions"]);
+        let model = Self::current_model(answer).filter(|id| !id.trim().is_empty());
+        let name = model.as_deref().and_then(|id| {
+            Self::model_option(answer)
+                .and_then(|option| option["options"].as_array())
+                .and_then(|rows| rows.iter().find(|row| row["value"].as_str() == Some(id)))
+                .or_else(|| {
+                    answer
+                        .pointer("/models/availableModels")
+                        .and_then(Value::as_array)
+                        .and_then(|rows| {
+                            rows.iter().find(|row| row["modelId"].as_str() == Some(id))
+                        })
+                })
+                .and_then(|row| row["name"].as_str())
+                .map(str::to_string)
+        });
+        let stated = model.is_some()
+            || answer["configOptions"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty());
+        let reported = if written.is_none() || stated || written == Some(OptionRole::Model) {
+            ReportedSelection {
+                model_id: model,
+                model_name: name,
+                effort: acknowledged.effort,
+                fast: acknowledged.fast,
+            }
+        } else {
+            let mut previous = ReportedSelection::read(snapshot);
+            match written {
+                Some(OptionRole::Effort) => previous.effort = None,
+                Some(OptionRole::Fast) => previous.fast = None,
+                _ => {}
+            }
+            previous
+        };
+        snapshot[REPORTED_KEY] = json!(reported);
+    }
+
+    fn record_configuration_change(runtime: &mut SessionRuntime) {
+        let reported = ReportedSelection::read(&runtime.snapshot);
+        let Some(run) = runtime.run.as_mut() else {
+            return;
+        };
+        if run.configuration_changes.last() == Some(&reported) {
+            return;
+        }
+        if run.configuration_changes.len() < 64 {
+            run.configuration_changes.push(reported);
+        } else {
+            run.changes_truncated = true;
+        }
+    }
+
+    async fn invalidate_reported_write(&self, session_id: &str, role: OptionRole) {
+        if let Some(runtime) = self.sessions.lock().await.get_mut(session_id) {
+            Self::capture_reported(&mut runtime.snapshot, &Value::Null, Some(role));
+            Self::record_configuration_change(runtime);
+        }
+    }
+
     fn snapshot_from(result: &Value) -> Value {
-        json!({
+        let mut snapshot = json!({
             "modes": result.get("modes").cloned().unwrap_or(Value::Null),
             "models": result.get("models").cloned().unwrap_or(Value::Null),
             "configOptions": result.get("configOptions").cloned().unwrap_or(Value::Array(vec![])),
-        })
+        });
+        Self::capture_reported(&mut snapshot, result, None);
+        snapshot
     }
 
     fn has_model_option(snapshot: &Value) -> bool {
@@ -3047,6 +3128,9 @@ impl Inner {
         }
         presented.extend(options);
         let mut out = snapshot.clone();
+        if let Some(object) = out.as_object_mut() {
+            object.remove(REPORTED_KEY);
+        }
         out["configOptions"] = Value::Array(presented);
         out
     }
@@ -3341,10 +3425,11 @@ impl Inner {
             .bridge_session_id
             .clone()
             .unwrap_or_else(|| record.id.clone());
-        let snapshot = record
+        let mut snapshot = record
             .snapshot
             .clone()
             .unwrap_or_else(|| Self::snapshot_from(&Value::Null));
+        snapshot[REPORTED_KEY] = json!(ReportedSelection::default());
 
         // Register early with `loading` so replayed history from the bridge is
         // swallowed rather than duplicated in the renderer.
@@ -3440,6 +3525,7 @@ impl Inner {
                 Ok(result) => {
                     resumed = true;
                     let loaded = Self::snapshot_from(&result);
+                    snapshot[REPORTED_KEY] = loaded[REPORTED_KEY].clone();
                     if Self::replaces_snapshot(&loaded, &snapshot) {
                         snapshot = loaded;
                     }
@@ -3461,6 +3547,7 @@ impl Inner {
             bridge_session_id = protocol::session_id(&result)
                 .ok_or_else(|| protocol::internal("bridge returned no sessionId"))?;
             let fresh = Self::snapshot_from(&result);
+            snapshot[REPORTED_KEY] = fresh[REPORTED_KEY].clone();
             if Self::replaces_snapshot(&fresh, &snapshot) {
                 snapshot = fresh;
             }
@@ -4167,6 +4254,7 @@ impl Inner {
                     match write(OptionRole::Model, request).await {
                         Ok(answer) => {
                             Self::take_options(snapshot, &answer);
+                            Self::capture_reported(snapshot, &answer, Some(OptionRole::Model));
                             // A bridge that also lists models reports the
                             // chosen one there and answers the write itself
                             // with nothing.
@@ -4195,6 +4283,7 @@ impl Inner {
                             }
                         }
                         Err(error) => {
+                            Self::capture_reported(snapshot, &Value::Null, Some(OptionRole::Model));
                             let reason = error_text(&error);
                             log::info!(
                                 "[agent-host] {harness_id} would not run {model_id}: {reason}"
@@ -4241,6 +4330,7 @@ impl Inner {
                     match write(OptionRole::Effort, request).await {
                         Ok(answer) => {
                             Self::take_options(snapshot, &answer);
+                            Self::capture_reported(snapshot, &answer, Some(OptionRole::Effort));
                             let applied = Self::effort_state(snapshot, effort)
                                 .and_then(|(_, current, _)| current);
                             if applied.as_deref() != Some(effort) {
@@ -4253,6 +4343,11 @@ impl Inner {
                             }
                         }
                         Err(error) => {
+                            Self::capture_reported(
+                                snapshot,
+                                &Value::Null,
+                                Some(OptionRole::Effort),
+                            );
                             let reason = error_text(&error);
                             log::info!("[agent-host] {harness_id} kept its effort: {reason}");
                             substitutions.push(Self::substitution("effort", effort, None, reason));
@@ -4284,6 +4379,7 @@ impl Inner {
                     match write(OptionRole::Fast, request).await {
                         Ok(answer) => {
                             Self::take_options(snapshot, &answer);
+                            Self::capture_reported(snapshot, &answer, Some(OptionRole::Fast));
                             let applied = Self::fast_state(snapshot).and_then(|(_, on, _)| on);
                             if applied != Some(fast) {
                                 substitutions.push(Self::substitution(
@@ -4295,6 +4391,7 @@ impl Inner {
                             }
                         }
                         Err(error) => {
+                            Self::capture_reported(snapshot, &Value::Null, Some(OptionRole::Fast));
                             let reason = error_text(&error);
                             log::info!("[agent-host] {harness_id} kept its fast mode: {reason}");
                             substitutions.push(Self::substitution(
@@ -4406,9 +4503,14 @@ impl Inner {
                 if Self::opens_on_model(&record.harness, &snapshot, &model_id) {
                     return self.reopen_on_model(&session_id, &model_id).await;
                 }
+                // An in-flight or failed write is not confirmation that the
+                // previous value still applies.
+                self.invalidate_reported_write(&session_id, OptionRole::Model)
+                    .await;
                 let result = self
                     .apply_model(&bridge, &bridge_session_id, &model_id, &snapshot)
                     .await?;
+                Self::capture_reported(&mut snapshot, &result, Some(OptionRole::Model));
                 if has_model_option {
                     if let Some(options) = result.get("configOptions") {
                         snapshot["configOptions"] = options.clone();
@@ -4453,6 +4555,11 @@ impl Inner {
                 }
             }
             _ => {
+                self.invalidate_reported_write(
+                    &session_id,
+                    Self::option_role(&snapshot, &config_id),
+                )
+                .await;
                 let result = bridge
                     .request(
                         "session/set_config_option",
@@ -4460,6 +4567,7 @@ impl Inner {
                     )
                     .await?;
                 let role = Self::write_role(&snapshot, &result, &config_id);
+                Self::capture_reported(&mut snapshot, &result, Some(role));
                 // The write went out under the bridge's own id and value
                 // shape; only what it means to this session is ours. An answer
                 // with no options at all states nothing, so nothing moves.
@@ -4513,6 +4621,7 @@ impl Inner {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.get_mut(&session_id) {
                 runtime.snapshot = snapshot.clone();
+                Self::record_configuration_change(runtime);
                 // The last word on this session, so a chat reopened later is
                 // told the same thing — and a write the bridge did honour
                 // clears a notice left by one it did not.
@@ -5647,21 +5756,46 @@ impl Inner {
         session_id: &str,
         bridge_session_id: &str,
         prompt: Value,
-        meta: Value,
+        mut meta: Value,
     ) -> Result<Value, Value> {
+        let link = ExecutorLink::take(&mut meta).map_err(invalid_params)?;
         let mut request = json!({ "sessionId": bridge_session_id, "prompt": prompt });
         if meta.as_object().is_some_and(|meta| !meta.is_empty()) {
             request["_meta"] = meta;
         }
-        let run_id = self
-            .sessions
-            .lock()
-            .await
-            .get(session_id)
-            .and_then(|runtime| runtime.run.as_ref())
-            .map(|run| run.run_id.clone())
-            .ok_or_else(|| protocol::internal("Turn ended before its provider request"))?;
-        let raw_result = bridge.prompt(request, run_id).await;
+        let (run_id, receipt_start) = {
+            let sessions = self.sessions.lock().await;
+            let runtime = sessions
+                .get(session_id)
+                .ok_or_else(|| protocol::internal("Session ended before its provider request"))?;
+            let run = runtime
+                .run
+                .as_ref()
+                .ok_or_else(|| protocol::internal("Turn ended before its provider request"))?;
+            let receipt = link.map(|link| ReceiptStart {
+                link,
+                session_id: session_id.to_string(),
+                host_run_id: run.run_id.clone(),
+                message_id: run.message_id.clone(),
+                bridge_generation: runtime.generation,
+                provider_id: runtime.harness.clone(),
+                account_id: runtime.account_id.clone(),
+                started_at: now_iso(),
+                selection: ReportedSelection::read(&runtime.snapshot),
+            });
+            (run.run_id.clone(), receipt)
+        };
+        if let Some(start) = &receipt_start {
+            if !self
+                .store
+                .claim_executor_receipt(start)
+                .await
+                .map_err(protocol::internal)?
+            {
+                return Err(invalid_params("This executor decision already claimed a provider dispatch; inspect its recorded run before retrying"));
+            }
+        }
+        let raw_result = bridge.prompt(request, run_id.clone()).await;
         if let Some((owner, _)) = self
             .store
             .execution_owner(session_id)
@@ -5693,6 +5827,47 @@ impl Inner {
                 error_text(&error)
             );
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        if let Some(start) = &receipt_start {
+            let (selection, changes, changes_truncated) = {
+                let sessions = self.sessions.lock().await;
+                match sessions
+                    .get(session_id)
+                    .filter(|runtime| runtime.generation == start.bridge_generation)
+                    .and_then(|runtime| {
+                        runtime
+                            .run
+                            .as_ref()
+                            .filter(|run| run.run_id == run_id)
+                            .map(|run| (runtime, run))
+                    }) {
+                    Some((runtime, run)) => (
+                        ReportedSelection::read(&runtime.snapshot),
+                        run.configuration_changes.clone(),
+                        run.changes_truncated,
+                    ),
+                    None => (ReportedSelection::default(), Vec::new(), true),
+                }
+            };
+            let status = match &result {
+                Ok(value) if value["stopReason"].as_str() == Some("cancelled") => "cancelled",
+                Ok(_) => "completed",
+                Err(_) => "failed",
+            };
+            let finish = ReceiptFinish {
+                finished_at: now_iso(),
+                status: status.into(),
+                selection,
+                changes,
+                changes_truncated,
+            };
+            // A completed provider request must never turn into a retryable
+            // send error because recording its receipt failed. Keep retrying
+            // the identical local write while the run remains claimed.
+            while let Err(error) = self.store.finish_executor_receipt(start, &finish).await {
+                log::error!("[agent-host] executor terminal receipt not committed: {error}");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
         }
         let (agent_text, saw_agent_message) = {
             let sessions = self.sessions.lock().await;
@@ -7041,6 +7216,87 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_selection_uses_bridge_acknowledgement_not_display_intent() {
+        let answer = claude_answer("example-model", Some("high"), EVERY_EFFORT, Some(false));
+        let mut snapshot = Inner::snapshot_from(&answer);
+        let reported = ReportedSelection::read(&snapshot);
+        assert_eq!(reported.model_id.as_deref(), Some("example-model"));
+        assert_eq!(reported.effort.as_deref(), Some("high"));
+        assert_eq!(reported.fast, Some(false));
+        assert_eq!(reported.model_name, None);
+        snapshot["models"] = json!({"currentModelId":"requested-only"});
+        assert_eq!(ReportedSelection::read(&snapshot), reported);
+        assert!(Inner::presented_snapshot("claude-acp", &snapshot, true)
+            .get(REPORTED_KEY)
+            .is_none());
+        // An empty model-write reply cannot acknowledge the requested model.
+        Inner::capture_reported(&mut snapshot, &json!({}), Some(OptionRole::Model));
+        assert_eq!(
+            ReportedSelection::read(&snapshot),
+            ReportedSelection::default()
+        );
+        // A native reply cannot inject the host's provenance marker.
+        let forged = json!({REPORTED_KEY:reported});
+        assert_eq!(
+            ReportedSelection::read(&Inner::snapshot_from(&forged)),
+            ReportedSelection::default()
+        );
+    }
+
+    #[test]
+    fn incomplete_write_answers_leave_unreported_fields_unknown() {
+        let answer = claude_answer("example-model", Some("high"), EVERY_EFFORT, Some(false));
+        let mut snapshot = Inner::snapshot_from(&answer);
+        Inner::capture_reported(&mut snapshot, &Value::Null, Some(OptionRole::Effort));
+        let reported = ReportedSelection::read(&snapshot);
+        assert_eq!(reported.model_id.as_deref(), Some("example-model"));
+        assert_eq!(reported.fast, Some(false));
+        assert!(reported.effort.is_none());
+        Inner::capture_reported(&mut snapshot, &Value::Null, Some(OptionRole::Fast));
+        assert!(ReportedSelection::read(&snapshot).fast.is_none());
+        Inner::capture_reported(
+            &mut snapshot,
+            &json!({"models":{"currentModelId":"actual-other"}}),
+            Some(OptionRole::Model),
+        );
+        assert_eq!(
+            ReportedSelection::read(&snapshot),
+            ReportedSelection {
+                model_id: Some("actual-other".into()),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn receipt_configuration_changes_keep_transitions_and_mark_overflow() {
+        let mut runtime = runtime("example-provider", "account", 1);
+        runtime.run = Some(RunState::start(&ids()));
+        for index in 0..70 {
+            Inner::capture_reported(
+                &mut runtime.snapshot,
+                &json!({"models":{"currentModelId": format!("model-{index}")}}),
+                None,
+            );
+            Inner::record_configuration_change(&mut runtime);
+            Inner::record_configuration_change(&mut runtime);
+        }
+        let run = runtime.run.unwrap();
+        assert_eq!(run.configuration_changes.len(), 64);
+        assert!(run.changes_truncated);
+        assert_eq!(
+            run.configuration_changes[0].model_id.as_deref(),
+            Some("model-0")
+        );
+        assert_eq!(
+            ReportedSelection::read(&runtime.snapshot)
+                .model_id
+                .as_deref(),
+            Some("model-69")
+        );
+    }
 
     #[test]
     fn benchmark_activity_generation_matches_provider_and_account_scope() {
@@ -8843,7 +9099,11 @@ mod tests {
             .await;
         assert_eq!(substitutions.len(), 1);
         assert_eq!(substitutions[0]["applied"], Value::Null);
-        assert_eq!(refused, claude_session());
+        assert_eq!(ReportedSelection::read(&refused).effort, None);
+        assert_eq!(
+            Inner::presented_snapshot("claude-acp", &refused, true),
+            Inner::presented_snapshot("claude-acp", &claude_session(), true)
+        );
     }
 
     #[tokio::test]

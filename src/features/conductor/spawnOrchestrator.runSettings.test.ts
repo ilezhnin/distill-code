@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { acceptFirstSend } from "@/features/chat/lib/firstWorkspaceSend";
+import {
+  createDeferredQueuedMessagePayload,
+  admitSystemInheritedQueuedMessage,
+} from "@/features/chat/lib/admittedSend";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import type { CreateSessionOpts } from "@/features/chat/stores/chatSessionStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -58,6 +63,7 @@ describe("spawnConductorChildSession run settings", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(acceptFirstSend).mockReturnValue({ accepted: true } as never);
     created = [];
     useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
     useConductorGraphStore.getState().registerNode(conductorNode());
@@ -91,6 +97,33 @@ describe("spawnConductorChildSession run settings", () => {
         return child;
       },
     } as never);
+  });
+
+  it.each([
+    true,
+    false,
+  ])("carries the recorded decision and logical run through first-send admission: %s", async (accepted) => {
+    vi.mocked(acceptFirstSend).mockReturnValue({ accepted } as never);
+    useChatStore.setState({ enqueueTransportReadyMessage: vi.fn() });
+    const spawned = await spawnConductorChildSession({
+      parentSessionId: PARENT_ID,
+      role: "worker",
+      task: "Inspect the example",
+      executorDecisionKey: "wave:example:step:0",
+    });
+    const expected = expect.objectContaining({
+      sendOptions: {
+        acpPromptMetadata: {
+          executorSelection: {
+            decisionKey: "wave:example:step:0",
+            logicalRunId: spawned.runId,
+          },
+        },
+      },
+    });
+    expect(createDeferredQueuedMessagePayload).toHaveBeenCalledWith(expected);
+    if (!accepted)
+      expect(admitSystemInheritedQueuedMessage).toHaveBeenCalledWith(expected);
   });
 
   it("opens the child on the step's effort and fast mode and keeps them as its intent", async () => {

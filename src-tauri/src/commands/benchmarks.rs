@@ -392,10 +392,46 @@ pub async fn benchmark_get_executor_decision(
     app: AppHandle,
     request_key: String,
 ) -> Result<Option<benchmarks::executor::Record>> {
-    service(&app)
+    let record = service(&app)
         .await?
         .store
         .executor_decision(&request_key)
+        .await?;
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    let receipt = executor_host_receipt(&app, &request_key).await?;
+    Ok(Some(record.with_host_execution(receipt)?))
+}
+
+async fn executor_host_receipt(
+    app: &AppHandle,
+    key: &str,
+) -> Result<Option<crate::services::agent_host::executor_receipts::ExecutorReceipt>> {
+    let host = app
+        .state::<crate::services::agent_host::AgentHost>()
+        .get_or_start(app)
+        .await
+        .map_err(|message| BenchmarkError::new("host_unavailable", message))?;
+    host.store
+        .executor_receipt(key)
+        .await
+        .map_err(|message| BenchmarkError::new("host_evidence", message))
+}
+
+#[tauri::command]
+pub async fn benchmark_sync_executor_outcome(
+    app: AppHandle,
+    request_key: String,
+    session_id: String,
+    run_id: String,
+    outcome: String,
+) -> Result<benchmarks::executor::Record> {
+    let receipt = executor_host_receipt(&app, &request_key).await?;
+    service(&app)
+        .await?
+        .store
+        .observe_host_outcome(&request_key, session_id, run_id, outcome, receipt)
         .await
 }
 

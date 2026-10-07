@@ -53,8 +53,37 @@ export interface ExecutorObservation {
   reason: string | null;
 }
 
+export interface ReportedExecutorSelection {
+  modelId: string | null;
+  modelName: string | null;
+  effort: string | null;
+  fast: boolean | null;
+}
+
+export interface ExecutorHostReceipt {
+  start: {
+    link: { decisionKey: string; logicalRunId: string };
+    sessionId: string;
+    hostRunId: string;
+    messageId: string;
+    bridgeGeneration: number;
+    providerId: string;
+    accountId: string | null;
+    startedAt: string;
+    selection: ReportedExecutorSelection;
+  };
+  finish: {
+    finishedAt: string;
+    status: string;
+    selection: ReportedExecutorSelection;
+    changes: ReportedExecutorSelection[];
+    changesTruncated: boolean;
+  } | null;
+}
+
 export interface ExecutorDecisionRecord {
   decision: ExecutorDecision;
+  hostExecution: ExecutorHostReceipt | null;
   observations: {
     createdAt: number;
     observation: ExecutorObservation;
@@ -77,6 +106,18 @@ export const executorSelection = {
   get: (requestKey: string) =>
     invoke<ExecutorDecisionRecord | null>("benchmark_get_executor_decision", {
       requestKey,
+    }),
+  syncOutcome: (
+    requestKey: string,
+    sessionId: string,
+    runId: string,
+    outcome: "completed" | "failed" | "cancelled",
+  ) =>
+    invoke<ExecutorDecisionRecord>("benchmark_sync_executor_outcome", {
+      requestKey,
+      sessionId,
+      runId,
+      outcome,
     }),
   observe: (requestKey: string, observation: ExecutorObservation) =>
     invoke<ExecutorDecisionRecord>("benchmark_observe_executor", {

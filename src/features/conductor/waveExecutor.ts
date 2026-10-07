@@ -75,7 +75,7 @@ export async function prepareWaveExecutor(
   }));
   const requestKey = waveExecutorKey(wave.waveId, request.stepIndex);
   const existing = await executorSelection.get(requestKey);
-  if (existing?.observations.length) {
+  if (existing?.observations.length || existing?.hostExecution) {
     throw new Error(
       "This wave step already has a recorded execution; refusing another dispatch",
     );
@@ -152,6 +152,7 @@ export function syncWaveExecutorOutcomes(
     )
       continue;
     const key = waveExecutorKey(node.waveId, node.stepIndex);
+    const runId = node.runId;
     if (
       recordedOutcomes.has(key) ||
       outcomesInFlight.has(key) ||
@@ -169,15 +170,7 @@ export function syncWaveExecutorOutcomes(
         recordedOutcomes.add(key);
         return;
       }
-      await executorSelection.observe(key, {
-        phase: "terminal",
-        sessionId: node.sessionId,
-        runId: node.runId,
-        configuration: null,
-        outcome,
-        reason:
-          "Conductor run status; provider configuration was not captured. Completion is not a quality verdict.",
-      });
+      await executorSelection.syncOutcome(key, node.sessionId, runId, outcome);
       recordedOutcomes.add(key);
       failedOutcomes.delete(key);
     })()

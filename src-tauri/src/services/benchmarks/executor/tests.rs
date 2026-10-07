@@ -428,3 +428,155 @@ async fn observation_tampering_and_hidden_input_fields_are_rejected() {
         "invalid_decision"
     );
 }
+
+#[tokio::test]
+async fn host_receipt_reconciles_the_actual_executor_across_store_restart() {
+    use crate::services::agent_host::{
+        executor_receipts::{ExecutorLink, ReceiptFinish, ReceiptStart, ReportedSelection},
+        store::SessionStore,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("bench")).await.unwrap();
+    let decision = store.prepare_executor_decision(request()).await.unwrap();
+    let key = &decision.request.request_key;
+    let host_path = dir.path().join("host.sqlite");
+    let host = SessionStore::open(&host_path).await.unwrap();
+    let start = ReceiptStart {
+        link: ExecutorLink {
+            decision_key: key.clone(),
+            logical_run_id: "example-run".into(),
+        },
+        session_id: "example-session".into(),
+        host_run_id: "separate-native-run".into(),
+        message_id: "message".into(),
+        bridge_generation: 4,
+        provider_id: "actual-provider".into(),
+        account_id: Some("actual-account".into()),
+        started_at: "2026-01-01T00:00:00Z".into(),
+        selection: ReportedSelection::default(),
+    };
+    host.claim_executor_receipt(&start).await.unwrap();
+    // The renderer can recover the native claim before recording 'started'.
+    let recovered = store
+        .executor_decision(key)
+        .await
+        .unwrap()
+        .unwrap()
+        .with_host_execution(host.executor_receipt(key).await.unwrap())
+        .unwrap();
+    assert!(recovered.observations.is_empty());
+    assert!(recovered.host_execution.unwrap().finish.is_none());
+    let finish = ReceiptFinish {
+        finished_at: "2026-01-01T00:00:01Z".into(),
+        status: "completed".into(),
+        selection: ReportedSelection {
+            model_id: Some("actual-model".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        },
+        changes: vec![ReportedSelection::default()],
+        changes_truncated: false,
+    };
+    host.finish_executor_receipt(&start, &finish).await.unwrap();
+    drop(host);
+    let host = SessionStore::open(&host_path).await.unwrap();
+    let record = store
+        .observe_host_outcome(
+            key,
+            start.session_id.clone(),
+            start.link.logical_run_id.clone(),
+            "completed".into(),
+            host.executor_receipt(key).await.unwrap(),
+        )
+        .await
+        .unwrap();
+    let observed = &record.observations[0];
+    let actual = observed.observation.configuration.as_ref().unwrap();
+    assert_eq!(actual.model_id, "actual-model");
+    assert_eq!(actual.provider_id, "actual-provider");
+    assert_eq!(actual.account_id.as_deref(), Some("actual-account"));
+    assert_eq!(actual.effort.as_deref(), Some("high"));
+    assert_eq!(actual.fast_mode, None);
+    assert_eq!(actual.inventory_revision, None);
+    assert_eq!(observed.matches_selected, Some(false));
+    assert_eq!(
+        record.host_execution.unwrap().start.host_run_id,
+        "separate-native-run"
+    );
+    assert_eq!(observed.observation.run_id.as_deref(), Some("example-run"));
+    assert_eq!(
+        store
+            .observe_host_outcome(
+                key,
+                start.session_id.clone(),
+                start.link.logical_run_id.clone(),
+                "completed".into(),
+                host.executor_receipt(key).await.unwrap()
+            )
+            .await
+            .unwrap()
+            .observations
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .observe_host_outcome(
+                key,
+                "unrelated-session".into(),
+                "example-run".into(),
+                "completed".into(),
+                host.executor_receipt(key).await.unwrap()
+            )
+            .await
+            .unwrap_err()
+            .code,
+        "observation_conflict"
+    );
+    let mut wrong = host.executor_receipt(key).await.unwrap().unwrap();
+    wrong.start.link.logical_run_id = "other-run".into();
+    assert_eq!(
+        store
+            .executor_decision(key)
+            .await
+            .unwrap()
+            .unwrap()
+            .with_host_execution(Some(wrong))
+            .unwrap_err()
+            .code,
+        "observation_conflict"
+    );
+}
+
+#[tokio::test]
+async fn absent_host_evidence_and_partial_configuration_never_confirm_selected_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    let decision = store.prepare_executor_decision(request()).await.unwrap();
+    let key = &decision.request.request_key;
+    let mut observation = started(&decision);
+    observation.configuration.as_mut().unwrap().fast_mode = None;
+    assert_eq!(
+        store
+            .observe_executor(key, observation)
+            .await
+            .unwrap()
+            .observations[0]
+            .matches_selected,
+        None
+    );
+    let record = store
+        .observe_host_outcome(
+            key,
+            "example-session".into(),
+            "example-run".into(),
+            "failed".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let terminal = &record.observations[1];
+    assert!(terminal.observation.configuration.is_none());
+    assert!(terminal.matches_selected.is_none());
+    assert!(record.host_execution.is_none());
+}
