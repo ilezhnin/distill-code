@@ -56,6 +56,8 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
         prior_ids: vec!["painter".into(), "parser".into()],
         fixed_candidate_id: None,
         min_quality: 0.0,
+        class_model_ids: Default::default(),
+        class_prior_ids: Default::default(),
     };
     let request = |key: &str, policy: WorkflowPolicy| {
         RunRequest::try_from(WorkflowRunRequest {

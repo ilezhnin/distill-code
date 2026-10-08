@@ -123,6 +123,7 @@ async fn campaign(
             repetitions: 3,
             timeout_seconds: 10,
             max_executions: 240,
+            class_model_ids: Default::default(),
         })
         .await
         .unwrap()
@@ -555,7 +556,9 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         })
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(30), async {
+    // A hang guard only: the offline matrix settles in seconds alone but
+    // shares the machine with the whole parallel test suite.
+    tokio::time::timeout(Duration::from_secs(180), async {
         loop {
             service.tick().await.unwrap();
             let current = service.store.run(&run.id).await.unwrap();
@@ -594,6 +597,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
             repetitions: 3,
             timeout_seconds: 10,
             max_executions: 240,
+            class_model_ids: Default::default(),
         })
         .await
         .unwrap();
@@ -606,7 +610,9 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(30), async {
+    // A hang guard only: the offline matrix settles in seconds alone but
+    // shares the machine with the whole parallel test suite.
+    tokio::time::timeout(Duration::from_secs(180), async {
         loop {
             service.tick().await.unwrap();
             let current = service

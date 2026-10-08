@@ -72,6 +72,7 @@ fn request(fit: &learned::FitArtifact, roots: &[BenchmarkVersion], key: &str) ->
         repetitions: 3,
         timeout_seconds: 10,
         max_executions: 240,
+        class_model_ids: Default::default(),
     }
 }
 async fn finish(service: &Arc<BenchmarkService>, id: &str) -> Campaign {
@@ -206,6 +207,193 @@ async fn preregistered_campaign_executes_every_policy_and_reports_whole_trajecto
     assert_eq!(backend.calls.load(Ordering::SeqCst), 288);
 }
 
+/// One invented class's training set: role, class and budget recipe are
+/// rewritten on published entry tasks so each class has its own scope.
+async fn class_training(
+    service: &Arc<BenchmarkService>,
+    class: &str,
+    role: (&str, &str),
+    verb: &str,
+) -> (Vec<BenchmarkVersion>, learned::FitArtifact) {
+    let mut versions = Vec::new();
+    for (index, template) in publish_with_entry(service, "train", 8, true)
+        .await
+        .into_iter()
+        .enumerate()
+    {
+        let mut draft = template.manifest;
+        draft.work_class_id = class.into();
+        draft.role_id = Some(role.0.into());
+        draft.role_prompt = role.1.into();
+        draft.task_family = format!("{class}-train-{index}");
+        draft.environment = json!({
+            "splitGroup": format!("{class}-train-group-{}", index / 2),
+            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
+        });
+        draft.prompt = draft.prompt.replace("Repair", verb);
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        versions.push(
+            service
+                .publish_version(&definition.id, definition.draft_revision)
+                .await
+                .unwrap(),
+        );
+    }
+    measure(service, &versions, &format!("{class}-training")).await;
+    let fit = learned::fit(
+        &service.query_data().await.unwrap(),
+        learned::FitRequest {
+            work_class_id: class.into(),
+            version_ids: versions.iter().map(|v| v.id.clone()).collect(),
+            configurations: configurations(),
+            cutoff_at: now(),
+            weights: RoleWeights::default(),
+        },
+    )
+    .unwrap();
+    service.store.save_selector_fit(&fit).await.unwrap();
+    (versions, fit)
+}
+
+#[tokio::test]
+async fn a_mixed_role_campaign_uses_each_step_class_model_over_whole_trajectories() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(OfflineWorkers::default());
+    let service = open(dir.path(), backend.clone()).await;
+    let implementer = ("invented-implementer", "Implement carefully.");
+    let reviewer = ("invented-reviewer", "Review carefully.");
+    let (implement, implement_fit) = class_training(&service, "debug", implementer, "Repair").await;
+    let (_, review_fit) = class_training(&service, "code-review", reviewer, "Review").await;
+    let scope = |role: (&str, &str), class: &str, purpose: &str| {
+        Some(WorkflowScope {
+            role_id: role.0.into(),
+            role_prompt: role.1.into(),
+            work_class_id: class.into(),
+            purpose: purpose.into(),
+            step_budget_seconds: 10,
+        })
+    };
+    let mut roots = Vec::new();
+    for index in 0..8 {
+        let mut draft = implement[0].manifest.clone();
+        draft.split = "held_out".into();
+        draft.task_family = format!("mixed-family-{index}");
+        draft.environment = json!({
+            "splitGroup": format!("mixed-group-{}", index / 2),
+            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
+        });
+        draft.entry_state = None;
+        draft.prompt = "Produce a reviewed artifact.".into();
+        draft.workflow = Some(WorkflowSpec {
+            schema_version: 2,
+            driver_revision: "offline-mixed-v1".into(),
+            steps: vec![
+                WorkflowStep {
+                    id: "implement".into(),
+                    prompt: "Repair parser tokenizer grammar syntax".into(),
+                    include_previous_output: false,
+                    scope: scope(implementer, "debug", "implement"),
+                },
+                WorkflowStep {
+                    id: "qa".into(),
+                    prompt: "Review painter canvas colors pixels".into(),
+                    include_previous_output: true,
+                    scope: scope(reviewer, "code-review", "closing_qa"),
+                },
+            ],
+        });
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        roots.push(
+            service
+                .publish_version(&definition.id, definition.draft_revision)
+                .await
+                .unwrap(),
+        );
+    }
+    let mut request = request(&implement_fit, &roots, "mixed-comparison");
+    // A single-class campaign cannot evaluate a trajectory outside its scope.
+    assert!(service
+        .freeze_workflow_campaign(request.clone())
+        .await
+        .is_err());
+    request.class_model_ids = [
+        ("debug".to_owned(), implement_fit.model.id.clone()),
+        ("code-review".to_owned(), review_fit.model.id.clone()),
+    ]
+    .into();
+    let mut misfiled = request.clone();
+    misfiled.request_key = "misfiled".into();
+    misfiled
+        .class_model_ids
+        .insert("code-review".into(), implement_fit.model.id.clone());
+    assert!(service.freeze_workflow_campaign(misfiled).await.is_err());
+    let frozen = service.freeze_workflow_campaign(request).await.unwrap();
+    assert_eq!(frozen.plan.class_snapshot_hashes.len(), 2);
+    assert_eq!(frozen.plan.cells.len(), 120);
+    let aggregate = frozen
+        .plan
+        .policies
+        .iter()
+        .find(|policy| policy.mode == "aggregate")
+        .unwrap();
+    assert_eq!(aggregate.class_prior_ids.len(), 2);
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    assert_eq!(finish(&service, &frozen.plan.id).await.state, "completed");
+    // 96 training calls, then two steps for each of 120 trajectories.
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 96 + 240);
+    let report = service
+        .store
+        .workflow_campaign_report(&frozen.plan.id)
+        .await
+        .unwrap();
+    let quality = |name: &str| {
+        report
+            .policies
+            .iter()
+            .find(|policy| policy.policy == name)
+            .unwrap()
+            .quality
+    };
+    // Learned steps consulted the model fitted for their own step class.
+    let decisions: Vec<String> = sqlx::query_scalar(
+        "SELECT decision_json FROM executor_decisions WHERE request_key LIKE 'workflow:%'",
+    )
+    .fetch_all(&service.store.pool)
+    .await
+    .unwrap();
+    let mut consulted = std::collections::BTreeSet::new();
+    for body in decisions {
+        let decision: executor::Decision = serde_json::from_str(&body).unwrap();
+        if decision.source == "research_learned" {
+            consulted.insert((
+                decision.request.prediction.task.work_class_id.clone(),
+                decision.request.model_id.clone().unwrap(),
+            ));
+        }
+    }
+    assert_eq!(
+        consulted,
+        [
+            ("code-review".to_owned(), review_fit.model.id.clone()),
+            ("debug".to_owned(), implement_fit.model.id.clone()),
+        ]
+        .into()
+    );
+    // Per-step class models pick the parser to implement and the painter to
+    // review; every single fixed worker fails one of the two steps.
+    assert_eq!(quality("learned"), 1.0);
+    for policy in report
+        .policies
+        .iter()
+        .filter(|p| p.policy != "learned" && p.policy != "oracle")
+    {
+        assert_eq!(policy.quality, 0.0, "{}", policy.policy);
+    }
+}
+
 #[tokio::test]
 async fn campaign_preserves_refusal_and_requires_explicit_resume_after_restart() {
     let dir = tempfile::tempdir().unwrap();
@@ -316,6 +504,8 @@ async fn reservations_cover_historical_relations_exposure_and_existing_holdouts(
         prior_ids: vec!["parser".into(), "painter".into()],
         fixed_candidate_id: None,
         min_quality: 0.0,
+        class_model_ids: Default::default(),
+        class_prior_ids: Default::default(),
     };
     let run: RunRequest = WorkflowRunRequest {
         request_key: "preexisting-plan".into(),

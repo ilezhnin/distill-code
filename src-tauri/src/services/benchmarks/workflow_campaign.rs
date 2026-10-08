@@ -40,6 +40,10 @@ pub struct Request {
     pub repetitions: u32,
     pub timeout_seconds: u32,
     pub max_executions: u32,
+    /// Mixed-role workflows: the fitted model for every step work class.
+    /// `model_id` must be one of them. Absent for single-class campaigns.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub class_model_ids: BTreeMap<String, String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +76,37 @@ pub struct Plan {
     pub order_algorithm: String,
     pub aggregate_recipe: String,
     pub evaluation: learned::report::ReportProtocol,
+    /// Frozen snapshot hash of every class model of a mixed campaign.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub class_snapshot_hashes: BTreeMap<String, String>,
+}
+
+/// The public task each workflow step receives, with its schema-2 scope.
+pub(super) fn step_task(
+    draft: &BenchmarkDraft,
+    index: usize,
+    remaining_budget_seconds: u32,
+) -> Result<learned::PublicTask> {
+    let step = draft
+        .workflow
+        .as_ref()
+        .and_then(|workflow| workflow.steps.get(index))
+        .ok_or_else(|| invalid("Unknown workflow step"))?;
+    let mut scoped = draft.clone();
+    if let Some(scope) = &step.scope {
+        scoped.role_id = Some(scope.role_id.clone());
+        scoped.role_prompt = scope.role_prompt.clone();
+        scoped.work_class_id = scope.work_class_id.clone();
+        scoped.limits.timeout_seconds = scope.step_budget_seconds;
+    }
+    let mut task = learned::PublicTask::from(&scoped);
+    // Every workflow step supplies an entry, even when the root does not.
+    task.entry = Some(learned::PublicEntry {
+        conversation_prefix: String::new(),
+        previous_reports: vec![],
+        remaining_budget_seconds,
+    });
+    Ok(task)
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -168,10 +203,38 @@ impl BenchmarkService {
             return Ok(saved);
         }
         let fit = self.store.selector_fit(&request.model_id).await?;
+        let mixed = !request.class_model_ids.is_empty();
+        // Every step class of a mixed trajectory has its own fitted model;
+        // all of them share candidates and the report's utility weights.
+        let mut fits = BTreeMap::new();
+        if mixed {
+            if !request
+                .class_model_ids
+                .values()
+                .any(|id| id == &request.model_id)
+            {
+                return Err(invalid("The primary model must be one of the class models"));
+            }
+            for (class, id) in &request.class_model_ids {
+                let class_fit = self.store.selector_fit(id).await?;
+                if &class_fit.model.work_class_id != class
+                    || serde_json::to_value(class_fit.model.weights)?
+                        != serde_json::to_value(fit.model.weights)?
+                {
+                    return Err(invalid(
+                        "Each class model must fit its own class with the shared utility weights",
+                    ));
+                }
+                fits.insert(class.clone(), class_fit);
+            }
+        } else {
+            fits.insert(fit.model.work_class_id.clone(), fit.clone());
+        }
         let data = self.query_data().await?;
         let pool = super::analysis::pool(&data, &ResultQuery::default());
         let mut versions = Vec::new();
         let mut cases = Vec::new();
+        let mut shape: Option<Vec<String>> = None;
         for id in &request.version_ids {
             let version = pool
                 .iter()
@@ -182,20 +245,47 @@ impl BenchmarkService {
                 .workflow
                 .as_ref()
                 .ok_or_else(|| invalid("Campaign requires objective workflows"))?;
-            let mut task = learned::PublicTask::from(draft);
-            // Every workflow step supplies an entry, even when the root does not.
-            task.entry = Some(learned::PublicEntry {
-                conversation_prefix: String::new(),
-                previous_reports: vec![],
-                remaining_budget_seconds: request.timeout_seconds,
-            });
-            if draft.split != "held_out"
-                || fit.model.training_families.contains(&draft.task_family)
-                || fit.model.training_groups.iter().any(|g| g == group(draft))
-                || !fit
+            // A single-class campaign keeps its root-scope rule. A mixed one
+            // checks every step against the model fitted for that step class,
+            // and all cases share one class sequence: a certificate later
+            // speaks for that exact trajectory shape.
+            if mixed {
+                let classes = super::workflow_policy::step_classes(draft);
+                if shape.get_or_insert_with(|| classes.clone()) != &classes {
+                    return Err(invalid(
+                        "A mixed campaign needs one shared step class sequence",
+                    ));
+                }
+            }
+            // Every step is checked: a schema-2 step with another role or
+            // class is outside a single-class fit even when its root is not.
+            let tasks = (0..workflow.steps.len())
+                .map(|index| step_task(draft, index, request.timeout_seconds))
+                .collect::<Result<Vec<_>>>()?;
+            let mut outside_scope = false;
+            for task in &tasks {
+                let Some(class_fit) = fits.get(&task.work_class_id) else {
+                    outside_scope = true;
+                    continue;
+                };
+                outside_scope |= !class_fit
                     .model
                     .scope_hashes
-                    .contains(&learned::scope_hash(&task)?)
+                    .contains(&learned::scope_hash(task)?);
+            }
+            if draft.split != "held_out"
+                || fits.values().any(|class_fit| {
+                    class_fit
+                        .model
+                        .training_families
+                        .contains(&draft.task_family)
+                        || class_fit
+                            .model
+                            .training_groups
+                            .iter()
+                            .any(|g| g == group(draft))
+                })
+                || outside_scope
                 || request.repetitions < super::analysis::required_repetitions(&data, version)
                 || request.timeout_seconds < draft.limits.timeout_seconds
             {
@@ -230,11 +320,21 @@ impl BenchmarkService {
             prior_ids: request.persona_prior_ids.clone(),
             fixed_candidate_id: None,
             min_quality: request.min_quality,
+            class_model_ids: request.class_model_ids.clone(),
+            class_prior_ids: BTreeMap::new(),
         };
         let mut policies = vec![base.clone()];
         let mut aggregate = base.clone();
         aggregate.mode = "aggregate".into();
         aggregate.prior_ids = aggregate_order(&fit, &request.candidates)?;
+        if mixed {
+            for (class, class_fit) in &fits {
+                aggregate.class_prior_ids.insert(
+                    class.clone(),
+                    aggregate_order(class_fit, &request.candidates)?,
+                );
+            }
+        }
         policies.push(aggregate);
         let mut persona = base.clone();
         persona.mode = "persona".into();
@@ -264,6 +364,15 @@ impl BenchmarkService {
             order_algorithm: "sha256-campaign-cell-v1".into(),
             aggregate_recipe: "fitted-common-cases-equal-group-mean-utility-v1".into(),
             evaluation: report::protocol(fit.model.weights),
+            class_snapshot_hashes: if mixed {
+                fits.iter()
+                    .map(|(class, class_fit)| {
+                        (class.clone(), class_fit.model.snapshot_hash.clone())
+                    })
+                    .collect()
+            } else {
+                BTreeMap::new()
+            },
         };
         for case_index in 0..plan.cases.len() {
             for policy_index in 0..plan.policies.len() {

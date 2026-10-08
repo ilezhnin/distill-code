@@ -461,7 +461,9 @@ async fn measure(service: &Arc<BenchmarkService>, versions: &[BenchmarkVersion],
     };
     let run = service.start_run(request.clone()).await.unwrap();
     assert_eq!(service.start_run(request).await.unwrap().id, run.id);
-    tokio::time::timeout(Duration::from_secs(30), async {
+    // A hang guard only: the offline matrix settles in seconds alone but
+    // shares the machine with the whole parallel test suite.
+    tokio::time::timeout(Duration::from_secs(180), async {
         loop {
             service.tick().await.unwrap();
             let run = service.store.run(&run.id).await.unwrap();

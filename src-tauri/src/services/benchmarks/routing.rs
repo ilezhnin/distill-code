@@ -164,9 +164,11 @@ pub fn validate_draft(d: &BenchmarkDraft) -> Vec<String> {
     }
     if let Some(w) = &d.workflow {
         let ids: BTreeSet<_> = w.steps.iter().map(|s| &s.id).collect();
-        if w.schema_version != 1
+        // Schema 2 adds per-step roles and a closing QA step (up to five
+        // steps); workflow::validate owns its detailed scope rules.
+        if !matches!(w.schema_version, 1 | 2)
             || w.driver_revision.trim().is_empty()
-            || !(2..=4).contains(&w.steps.len())
+            || !(2..=if w.schema_version == 2 { 5 } else { 4 }).contains(&w.steps.len())
             || ids.len() != w.steps.len()
             || w.steps.first().is_some_and(|s| s.include_previous_output)
             || w.steps.iter().any(|s| {

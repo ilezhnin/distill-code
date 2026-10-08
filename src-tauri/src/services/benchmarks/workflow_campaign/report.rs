@@ -72,7 +72,14 @@ impl Store {
         }
         let plan = &saved.plan;
         let fit = self.selector_fit(&plan.request.model_id).await?;
+        let mut class_changed =
+            plan.class_snapshot_hashes.len() != plan.request.class_model_ids.len();
+        for (class, id) in &plan.request.class_model_ids {
+            class_changed |= plan.class_snapshot_hashes.get(class)
+                != Some(&self.selector_model(id).await?.snapshot_hash);
+        }
         if fit.model.snapshot_hash != plan.model_snapshot_hash
+            || class_changed
             || hash(&protocol(fit.model.weights))? != hash(&plan.evaluation)?
         {
             return Err(invalid(

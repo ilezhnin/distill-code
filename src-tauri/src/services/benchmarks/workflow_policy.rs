@@ -14,13 +14,75 @@ pub struct WorkflowPolicy {
     pub prior_ids: Vec<String>,
     pub fixed_candidate_id: Option<String>,
     pub min_quality: f64,
+    /// Mixed-role trajectories: the fitted model for each step work class.
+    /// Absent for single-class policies, so their identity is unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub class_model_ids: BTreeMap<String, String>,
+    /// The aggregate baseline's frozen order for each step work class.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub class_prior_ids: BTreeMap<String, Vec<String>>,
 }
 
 fn invalid(message: &str) -> BenchmarkError {
     BenchmarkError::new("invalid_workflow_policy", message)
 }
 
+/// The work class of every step: its schema-2 scope, else the root's class.
+pub(super) fn step_classes(manifest: &BenchmarkDraft) -> Vec<String> {
+    manifest
+        .workflow
+        .as_ref()
+        .map_or_else(Vec::new, |workflow| {
+            workflow
+                .steps
+                .iter()
+                .map(|step| {
+                    step.scope.as_ref().map_or_else(
+                        || manifest.work_class_id.clone(),
+                        |scope| scope.work_class_id.clone(),
+                    )
+                })
+                .collect()
+        })
+}
+
 impl WorkflowPolicy {
+    /// Each work class's fitted model; a single-class policy has one entry.
+    pub(super) async fn class_models(
+        &self,
+        service: &BenchmarkService,
+    ) -> Result<BTreeMap<String, learned::LearnedModel>> {
+        let ids = if self.class_model_ids.is_empty() {
+            let model = service.store.selector_model(&self.model_id).await?;
+            BTreeMap::from([(model.work_class_id.clone(), self.model_id.clone())])
+        } else {
+            self.class_model_ids.clone()
+        };
+        let mut models = BTreeMap::new();
+        for (class, id) in ids {
+            let model = service.store.selector_model(&id).await?;
+            if model.work_class_id != class {
+                return Err(invalid("A class model was fitted for another work class"));
+            }
+            models.insert(class, model);
+        }
+        Ok(models)
+    }
+    fn model_for(&self, class: &str) -> Result<String> {
+        if self.class_model_ids.is_empty() {
+            return Ok(self.model_id.clone());
+        }
+        self.class_model_ids
+            .get(class)
+            .cloned()
+            .ok_or_else(|| invalid("No fitted model covers this step work class"))
+    }
+    fn prior_for(&self, class: &str) -> Vec<String> {
+        self.class_prior_ids
+            .get(class)
+            .cloned()
+            .unwrap_or_else(|| self.prior_ids.clone())
+    }
     pub fn configuration(&self) -> Result<Configuration> {
         let digest = fixtures::hash(&serde_json::to_vec(self)?);
         Ok(Configuration {
@@ -43,26 +105,52 @@ impl WorkflowPolicy {
         request: &RunRequest,
         versions: &[BenchmarkVersion],
     ) -> Result<()> {
-        let model = service.store.selector_model(&self.model_id).await?;
-        if self.mode == "aggregate"
-            && self.prior_ids
-                != super::workflow_campaign::aggregate_order(
-                    &service.store.selector_fit(&self.model_id).await?,
-                    &self.candidates,
-                )?
-        {
+        let models = self.class_models(service).await?;
+        let mixed = !self.class_model_ids.is_empty();
+        if mixed && !self.class_model_ids.values().any(|id| id == &self.model_id) {
             return Err(invalid(
-                "Aggregate preference must match the frozen fitted training snapshot",
+                "A mixed policy's primary model must be one of its class models",
+            ));
+        }
+        if self.mode == "aggregate" {
+            for (class, model) in &models {
+                let order = super::workflow_campaign::aggregate_order(
+                    &service.store.selector_fit(&model.id).await?,
+                    &self.candidates,
+                )?;
+                if self.prior_for(class) != order {
+                    return Err(invalid(
+                        "Aggregate preference must match the frozen fitted training snapshot",
+                    ));
+                }
+            }
+        } else if !self.class_prior_ids.is_empty() {
+            return Err(invalid(
+                "Only the aggregate baseline carries per-class orders",
             ));
         }
         let keys: BTreeSet<_> = self.candidates.iter().map(routing::candidate_key).collect();
         let ids: BTreeSet<_> = self.candidates.iter().map(|c| &c.id).collect();
         let prior: BTreeSet<_> = self.prior_ids.iter().collect();
-        let fitted: BTreeSet<_> = model
-            .candidates
-            .iter()
-            .map(|c| c.candidate_key.clone())
-            .collect();
+        if models.values().any(|model| {
+            model
+                .candidates
+                .iter()
+                .map(|c| c.candidate_key.clone())
+                .collect::<BTreeSet<_>>()
+                != keys
+                || self.candidates.iter().any(|c| {
+                    model
+                        .candidates
+                        .iter()
+                        .find(|m| m.candidate_key == routing::candidate_key(c))
+                        .is_none_or(|m| m.configuration.inventory_revision != c.inventory_revision)
+                })
+        }) {
+            return Err(invalid(
+                "Every class model must be fitted on the exact frozen candidate runtimes",
+            ));
+        }
         if !matches!(
             self.mode.as_str(),
             "learned" | "aggregate" | "persona" | "fixed"
@@ -72,7 +160,6 @@ impl WorkflowPolicy {
             .any(|c| c.id.trim().is_empty() || c.id.len() > 256)
             || self.candidates.len() != keys.len()
             || self.candidates.len() != ids.len()
-            || keys != fitted
             || ids != prior
             || self.prior_ids.len() != prior.len()
             || self
@@ -86,18 +173,15 @@ impl WorkflowPolicy {
             || request.parallelism != Some(1)
             || versions.iter().any(|v| {
                 v.manifest.workflow.is_none()
-                    || v.manifest.work_class_id != model.work_class_id
+                    // Every step's class needs its fitted model; a
+                    // single-class policy covers schema-1 steps only.
+                    || step_classes(&v.manifest)
+                        .iter()
+                        .any(|class| !models.contains_key(class))
                     || self.candidates.iter().any(|c| {
                         c.execution_profile != v.manifest.execution_profile
                             || routing::authored_by_candidate(&v.manifest, c)
                     })
-            })
-            || self.candidates.iter().any(|c| {
-                model
-                    .candidates
-                    .iter()
-                    .find(|m| m.candidate_key == routing::candidate_key(c))
-                    .is_none_or(|m| m.configuration.inventory_revision != c.inventory_revision)
             })
         {
             return Err(invalid("Workflow research requires a stored fit, its exact candidate runtimes, complete preference order, objective workflow roots and one serial policy column"));
@@ -190,9 +274,11 @@ impl WorkflowPolicy {
                 .unwrap_or(&version.manifest.task_family)
                 .into(),
             candidates,
-            prior_ids: self.prior_ids.clone(),
+            // The step's own class decides the model and aggregate order of a
+            // mixed trajectory; `version` is already the scoped step manifest.
+            prior_ids: self.prior_for(&version.manifest.work_class_id),
             hard_candidate_id: self.fixed_candidate_id.clone(),
-            model_id: Some(self.model_id.clone()),
+            model_id: Some(self.model_for(&version.manifest.work_class_id)?),
             min_quality: self.min_quality,
         }
         .try_into()?;
