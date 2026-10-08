@@ -50,8 +50,10 @@ commit-msg:
 pre-push:
   parallel: true
   commands:
-    benchmark-privacy:
-      run: node scripts/hooks/benchmark-privacy.mjs --push
+    private-history:
+      # Plain sh like no-ai-attribution: a GUI client's trimmed PATH, or a
+      # local override that skips the heavy checks, must not skip this one.
+      run: sh scripts/hooks/private-history-guard.sh
     fmt-check:
       run: just fmt-check
     clippy:
