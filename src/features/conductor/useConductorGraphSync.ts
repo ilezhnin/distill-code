@@ -276,6 +276,17 @@ function syncOwnedWaveChild(node: SessionNode): void {
             ? "cancelled"
             : "failed"
           : "completed";
+    // After a restart the persisted report already came from this immutable
+    // native terminal. Re-attaching a fresh copy would drop its
+    // publishedToParent flag and offer an already digested report again.
+    if (
+      receipt.phase === "terminal" &&
+      graph.getReport(runId) &&
+      graph.getNode(node.sessionId)?.status === status
+    ) {
+      ownedTerminalSynced.add(key);
+      return;
+    }
     let output =
       receipt.error?.message ??
       "Native task execution is unknown; inspect its receipt before retrying.";

@@ -15,6 +15,7 @@ import {
   syncWaveExecutorOutcomes,
 } from "./waveExecutor";
 import { useConductorGraphStore } from "./conductorGraphStore";
+import { parseStructuredReport } from "./orchestratorReport";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { resetWaveEngineStateCache, getWaveEngineState } from "./waveStore";
@@ -416,6 +417,51 @@ it("restored registered native child reconciles a later sealed terminal result w
   );
   expect(io.prepare).not.toHaveBeenCalled();
   expect(io.ordinary).not.toHaveBeenCalled();
+  hook.unmount();
+});
+
+it("a restored terminal child keeps its persisted published report instead of re-attaching it", async () => {
+  vi.useFakeTimers();
+  vi.clearAllMocks();
+  resetWaveEngineStateCache();
+  io.prepared.clear();
+  io.statuses.clear();
+  const { status, parent, waveId } = restoreNativeChild("published");
+  io.statuses.set("published", { ...status, phase: "terminal" });
+  const graph = useConductorGraphStore.getState();
+  graph.registerNode({
+    sessionId: status.sessionId,
+    projectId: "invented-project",
+    role: "worker",
+    managedBy: "wave",
+    parentSessionId: parent,
+    rootConductorId: parent,
+    runId: status.requestKey,
+    displayName: "Restored digested native task",
+    status: "completed",
+    harnessId: "claude-acp",
+    waveId,
+    stepIndex: 0,
+  });
+  graph.attachReport({
+    ...parseStructuredReport(
+      status.requestKey,
+      "completed",
+      report("Digested native result"),
+    ),
+    publishedToParent: true,
+  });
+  io.publicResult.mockReset();
+  const hook = renderHook(() => useConductorGraphSync());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_000);
+  });
+  expect(io.status).toHaveBeenCalled();
+  expect(io.publicResult).not.toHaveBeenCalled();
+  expect(graph.getReport(status.requestKey)?.publishedToParent).toBe(true);
+  expect(graph.getReport(status.requestKey)?.summary).toBe(
+    "Digested native result",
+  );
   hook.unmount();
 });
 

@@ -956,7 +956,7 @@
     "noPolicy": "No compatible learned policy",
     "processingAccepted": "Native processing acknowledged this exact task. Its terminal outcome remains available in the task chat.",
     "editContract": "Review a different contract",
-    "nativeWaveScope": "This opt-in applies only to matching native wave roles and committed predecessor reports. Artifact progression and revisions are not supported by this contract. Ordinary conductor execution keeps its own context.",
+    "nativeWaveScope": "This opt-in applies only to matching native wave roles. Each step, including a revision, continues the committed reports and sealed repository artifact of its root request within one root budget. Ordinary conductor execution keeps its own context.",
     "currentWaveContract": "Current conductor's native contract",
     "savedReferences": "Exact saved contract references",
     "savedStepBudget": "Frozen native step budget: {{seconds}} seconds. The artifact cap is bound to the referenced mode.",

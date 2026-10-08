@@ -4,6 +4,7 @@ import { i18n } from "@/shared/i18n";
 
 import type { WaveStep } from "./distillWave";
 import { waveRejectionNoticeText } from "./waveNotices";
+import { parseWaveEngineState } from "./waveStore";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import {
   UNSTARTED_STEP_REPORT_SUMMARY,
@@ -284,6 +285,28 @@ describe("advanceWave scheduling", () => {
     expect(advanced.spawn[0].previousReports[0].report.summary).toBe(
       UNSTARTED_STEP_REPORT_SUMMARY,
     );
+  });
+
+  it("keeps the refusal reason of a failed spawn through persistence and into its report", () => {
+    const reason = "The invented native lineage refused this step";
+    const failed = withWaveStepPhase(
+      waveOf([step("scout", "one"), step("qa", "two", "all")]),
+      0,
+      { phase: "failed", failureReason: reason },
+    );
+    const restored = parseWaveEngineState(
+      JSON.parse(JSON.stringify({ version: 2, waves: [failed] })),
+    ).waves[0];
+    expect(restored.steps[0].failureReason).toBe(reason);
+    const advanced = advanceWave(restored, { nodes: [], reportOf: noReports });
+    expect(advanced.spawn[0].previousReports[0].report.summary).toBe(
+      `${UNSTARTED_STEP_REPORT_SUMMARY} The app refused it: ${reason}`,
+    );
+    // A later phase change that is not a failure drops the stale reason.
+    expect(
+      withWaveStepPhase(restored, 0, { phase: "pending" }).steps[0]
+        .failureReason,
+    ).toBeUndefined();
   });
 });
 

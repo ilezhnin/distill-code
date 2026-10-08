@@ -158,6 +158,11 @@ function parseStep(value: unknown): WaveStepState | null {
     phase: raw.phase,
     ...(typeof raw.sessionId === "string" ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.runId === "string" ? { runId: raw.runId } : {}),
+    ...(raw.phase === "failed" &&
+    typeof raw.failureReason === "string" &&
+    raw.failureReason
+      ? { failureReason: raw.failureReason.slice(0, 2000) }
+      : {}),
     ...(raw.reportDegraded === true ? { reportDegraded: true } : {}),
     ...(raw.reportVerified === true ? { reportVerified: true } : {}),
     ...(raw.verificationFailed === true ? { verificationFailed: true } : {}),
@@ -190,6 +195,22 @@ function parseStepBudget(value: unknown): WaveStepBudget | null {
 
 function isWavePhase(value: unknown): value is WavePhase {
   return (WAVE_PHASES as readonly unknown[]).includes(value);
+}
+
+/** Why a parked wave was closed, as recorded when it was closed. */
+function parseClosure(value: unknown): WaveState["closure"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.reason !== "string" || !raw.reason) return undefined;
+  const text = (input: unknown) =>
+    typeof input === "string" && input ? input.slice(0, 4000) : undefined;
+  const note = text(raw.note);
+  const detail = text(raw.detail);
+  return {
+    reason: raw.reason as NonNullable<WaveState["closure"]>["reason"],
+    ...(note ? { note } : {}),
+    ...(detail ? { detail } : {}),
+  };
 }
 
 /** The Q5 retry note: why the last answer to this wave's digest was unusable. */
@@ -340,6 +361,9 @@ function parseWave(value: unknown): WaveState | null {
       ? { carriedBindingIds: parseCarriedBindingIds(raw.carriedBindingIds) }
       : {}),
     ...(verdictIssue ? { verdictIssue } : {}),
+    ...(raw.phase === "needsOperator" && parseClosure(raw.closure)
+      ? { closure: parseClosure(raw.closure) }
+      : {}),
     ...(isDirtyCount(raw.gitDirtyAtAdmission)
       ? { gitDirtyAtAdmission: raw.gitDirtyAtAdmission }
       : {}),

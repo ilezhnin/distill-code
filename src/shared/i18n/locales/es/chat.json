@@ -956,7 +956,7 @@
     "noPolicy": "Sin política aprendida compatible",
     "processingAccepted": "El procesamiento nativo ha confirmado esta tarea exacta. Su resultado final sigue disponible en el chat de tarea.",
     "editContract": "Revisar otro contrato",
-    "nativeWaveScope": "Esta opción solo se aplica a los roles nativos de wave compatibles y a informes anteriores confirmados. Este contrato no admite progresión de artefactos ni revisiones. El conductor ordinario conserva su propio contexto.",
+    "nativeWaveScope": "Esta opción solo se aplica a los roles nativos de wave compatibles. Cada paso, incluidas las revisiones, continúa los informes confirmados y el artefacto sellado del repositorio de su solicitud raíz dentro de un único presupuesto raíz. El conductor ordinario conserva su propio contexto.",
     "currentWaveContract": "Contrato nativo actual del conductor",
     "savedReferences": "Referencias exactas del contrato guardado",
     "savedStepBudget": "Presupuesto nativo de paso fijado: {{seconds}} segundos. El límite del artefacto está vinculado al modo referido.",

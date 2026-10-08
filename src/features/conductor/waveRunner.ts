@@ -70,6 +70,7 @@ import {
   processWaveDigests,
   processWaveVerdicts,
   resetWaveLifecycleForTests,
+  restoreParkedWaveNotices,
   startDigestDispatch,
   type PendingDigestDispatch,
 } from "./waveLifecycle";
@@ -1079,7 +1080,14 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         if (!current) return state;
         return withWave(
           state,
-          withWaveStepPhase(current, request.stepIndex, { phase: "failed" }),
+          withWaveStepPhase(current, request.stepIndex, {
+            phase: "failed",
+            // The notice below is transient; the step keeps the reason.
+            failureReason: (error instanceof Error
+              ? error.message
+              : String(error)
+            ).slice(0, 2000),
+          }),
         );
       });
       // A spawn the ACL refused already posted its own notice at the
@@ -1410,6 +1418,7 @@ export function runWaveEngineTick(): void {
     const advanced = advanceWaves(admitted);
     const digested = processWaveDigests(advanced.state, runWaveEngineTick);
     setWaveEngineState(digested.state);
+    restoreParkedWaveNotices(digested.state, runWaveEngineTick);
     // P61's heartbeat: a wedged child streams nothing, and nothing else
     // re-ticks a quiet engine — so as long as any wave is running, the next
     // stall sample is guaranteed a wake-up. One timer, self-rearming. A wave

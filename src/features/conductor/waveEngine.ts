@@ -24,6 +24,7 @@ import type {
 import { roleStage, workerRoleIdsForStage } from "./roleLayers";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import type { CompletedWaveStepReport } from "./wavePrompts";
+import type { WaveClosure } from "./waveVerdict";
 
 /**
  * Every lifecycle a single step inside a persisted wave can be in.
@@ -76,6 +77,12 @@ export interface WaveStepState {
   sessionId?: string;
   /** Child run id, once the spawn produced one. */
   runId?: string;
+  /**
+   * Why the spawn of a `failed` step was refused, as the app stated it then.
+   * Persisted so the digest and a restarted app still say why, after the
+   * transient notice is gone.
+   */
+  failureReason?: string;
   /**
    * True once this completed-but-reportless step was allowed to go terminal
    * on the synthesized "result unknown" stub after the runner's grace expired
@@ -189,6 +196,12 @@ export interface WaveState {
    * new root. Empty or absent for a first wave and for unowned waves.
    */
   carriedBindingIds?: string[];
+  /**
+   * Why a wave parked on `needsOperator` was closed. The closure notice in
+   * the conductor chat is not persisted; this lets a restarted app say it
+   * again instead of showing a parked wave with no reason.
+   */
+  closure?: WaveClosure;
   /**
    * What went wrong with the last answer to this wave's digest. Set only while
    * the wave is parked on `needsOperator` for an unreadable verdict; the next
@@ -352,6 +365,13 @@ export const MISSING_STEP_REPORT_SUMMARY =
 /** Summary used for a step whose worker could never be started at all. */
 export const UNSTARTED_STEP_REPORT_SUMMARY =
   "This step could not be started, so it produced no result.";
+
+/** The unstarted summary, with the refusal the app recorded when it has one. */
+function unstartedStepSummary(step: Pick<WaveStepState, "failureReason">) {
+  return step.failureReason
+    ? `${UNSTARTED_STEP_REPORT_SUMMARY} The app refused it: ${step.failureReason}`
+    : UNSTARTED_STEP_REPORT_SUMMARY;
+}
 
 /**
  * Summary for a step whose executor ended without completing.
@@ -825,7 +845,7 @@ export function collectWaveStepReports(
           ? synthesizeMissingStepReport(
               fallbackRunId,
               "failed",
-              UNSTARTED_STEP_REPORT_SUMMARY,
+              unstartedStepSummary(step),
             )
           : synthesizeMissingStepReport(
               fallbackRunId,
@@ -857,11 +877,16 @@ export function withWaveStepPhase(
     phase: WaveStepPhase;
     sessionId?: string;
     runId?: string;
+    failureReason?: string;
   },
 ): WaveState {
   let changed = false;
   const steps = wave.steps.map((step) => {
     if (step.stepIndex !== stepIndex) return step;
+    const failureReason =
+      patch.phase === "failed"
+        ? (patch.failureReason ?? step.failureReason)
+        : undefined;
     const next: WaveStepState = {
       stepIndex: step.stepIndex,
       role: step.role,
@@ -875,8 +900,10 @@ export function withWaveStepPhase(
       ...((patch.runId ?? step.runId)
         ? { runId: patch.runId ?? step.runId }
         : {}),
+      ...(failureReason ? { failureReason } : {}),
     };
-    if (!sameStep(step, next)) changed = true;
+    if (!sameStep(step, next) || step.failureReason !== next.failureReason)
+      changed = true;
     return next;
   });
   return changed ? { ...wave, steps } : wave;
@@ -1172,7 +1199,7 @@ export function advanceWave(
         ? synthesizeMissingStepReport(
             fallbackRunId,
             "failed",
-            UNSTARTED_STEP_REPORT_SUMMARY,
+            unstartedStepSummary(previous),
           )
         : synthesizeMissingStepReport(
             fallbackRunId,

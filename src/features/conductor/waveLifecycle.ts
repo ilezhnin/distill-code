@@ -144,6 +144,40 @@ function appendNotice(
     .addMessage(sessionId, createSystemNotificationMessage(text, type, action));
 }
 
+/** Parked waves whose closure notice this renderer process has shown. */
+const announcedClosures = new Set<string>();
+
+/**
+ * Restates why a parked wave was closed after a reload or restart: the
+ * live notice is not part of the persisted transcript. Each wave is
+ * announced once per renderer process, after its conductor transcript is
+ * loaded, so the notice lands after the history instead of before it.
+ */
+export function restoreParkedWaveNotices(
+  state: WaveEngineState,
+  onHydrated: () => void,
+): void {
+  for (const wave of state.waves) {
+    if (
+      wave.phase !== "needsOperator" ||
+      !wave.closure ||
+      announcedClosures.has(wave.waveId)
+    )
+      continue;
+    const transcript = readConductorTranscript(
+      wave.conductorSessionId,
+      onHydrated,
+    );
+    if (transcript.kind !== "loaded") continue;
+    announcedClosures.add(wave.waveId);
+    appendNotice(
+      wave.conductorSessionId,
+      waveClosureNoticeText(wave.closure),
+      "error",
+    );
+  }
+}
+
 function nodesByWave(waveId: string): Map<number, SessionNode> {
   const byStep = new Map<number, SessionNode>();
   for (const node of Object.values(
@@ -334,10 +368,14 @@ function parkUndecidedWave(
   decision: WaveVerdictDecision,
 ): WaveEngineState {
   clearVerdictSilence(wave);
-  const parked = withWavePhase(
+  const phased = withWavePhase(
     withVerdictIssue(wave, decision.verdictIssue),
     decision.phase,
   );
+  const parked = decision.closure
+    ? { ...phased, closure: decision.closure }
+    : phased;
+  if (parked.closure) announcedClosures.add(parked.waveId);
   const next = withWave(state, parked);
   setWaveEngineState(next);
   recordWaveClose(
@@ -471,7 +509,13 @@ function applyVerdictDecision(
   // retry can re-ask in terms the conductor can act on. It is cleared whenever
   // the answer *was* readable, so a later retry never quotes a stale failure.
   const judged = withVerdictIssue(wave, decision.verdictIssue);
-  const closed = withWavePhase(judged, decision.phase);
+  const phased = withWavePhase(judged, decision.phase);
+  // The closure notice is transient; the parked wave keeps its reason.
+  const closed =
+    decision.phase === "needsOperator" && decision.closure
+      ? { ...phased, closure: decision.closure }
+      : phased;
+  if (closed.closure) announcedClosures.add(closed.waveId);
   // P33: the record already holds this wave's steps; this is the one fact it
   // could not know when it was written.
   void recordTaskMemoryVerdict({
@@ -501,13 +545,20 @@ function applyVerdictDecision(
     if (admission.kind === "rejected") {
       // The revision wave itself is unrunnable (a model nothing installed can
       // run, say). No revision is spent and the operator sees why.
-      const parked = withWavePhase(
-        withVerdictIssue(judged, {
-          reason: "invalid",
+      const parked = {
+        ...withWavePhase(
+          withVerdictIssue(judged, {
+            reason: "invalid",
+            detail: admission.detail,
+          }),
+          "needsOperator",
+        ),
+        closure: {
+          reason: "verdict-invalid" as const,
           detail: admission.detail,
-        }),
-        "needsOperator",
-      );
+        },
+      };
+      announcedClosures.add(parked.waveId);
       next = withWave(next, parked);
       recordWaveClose(parked, "needs-operator", "verdict-invalid");
       appendNotice(
@@ -839,6 +890,7 @@ export function startDigestDispatch(
 /** Clears the process-local guards. Tests only. */
 export function resetWaveLifecycleForTests(): void {
   inFlightDigests.clear();
+  announcedClosures.clear();
   verdictSilence.clear();
   resetWaveGitProbeForTests();
   resetWaveArtifactProbeForTests();
