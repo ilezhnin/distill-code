@@ -17,6 +17,8 @@
  */
 
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
+import { sameSessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
+import { sameSessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import {
   closeUnstartedWaveExecutor,
   prepareWaveExecutor,
@@ -108,10 +110,12 @@ import {
   checkWaveStepModelDowngrade,
   checkWaveStepRunSettings,
   conductorExecutionTarget,
+  judgeWaveStepRunSettings,
   modelDisplayName,
   planWaveStepRunSettings,
   resolveExplicitWaveStepModel,
   resolveWaveStepTarget,
+  resolveWaveStepTargets,
 } from "./waveStepTarget";
 import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
@@ -613,21 +617,6 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   const stepTarget = explicitModel
     ? undefined
     : resolveWaveStepTarget(request.step.role, request.step.modelClass);
-  if (stepTarget && (stepTarget.fallback || stepTarget.nearLimit)) {
-    // D5: a step that is not running on its first choice says so, once, where
-    // the operator is already watching the wave.
-    appendConductorNotice(
-      wave.conductorSessionId,
-      waveStepModelNoticeText({
-        stepIndex: request.stepIndex,
-        name: roleDisplayName(request.step.role),
-        model: stepTarget.label,
-        nearLimit: stepTarget.nearLimit,
-      }),
-      false,
-      "warning",
-    );
-  }
   void (async () => {
     let timedOut = false;
     let preparedKey: string | undefined;
@@ -667,20 +656,17 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       // warned, because killing the step over a meter that moved is worse
       // than the cut-off the meter predicts.
       let executionTarget = stepTarget?.target;
-      // The row the step's effort and fast mode are judged against, and how a
-      // notice names it: the plan's model, else the ranking's, else the
-      // conductor's own, which a step with no target inherits.
+      // This is the baseline presented to executor selection. Notices below
+      // are judged against the choice that actually reaches dispatch.
       let settingsModel = stepTarget
         ? advertisedModelForTarget(stepTarget.target)
         : undefined;
-      let settingsModelLabel = stepTarget?.label;
       let legacyEffort: string | undefined;
       if (explicitModel) {
         const resolved = resolveExplicitWaveStepModel(explicitModel);
         if (!resolved.ok) throw new Error(resolved.detail);
         executionTarget = resolved.target;
         settingsModel = resolved.model;
-        settingsModelLabel = resolved.label;
         legacyEffort = resolved.legacyEffort;
         if (legacyEffort) {
           // Tolerated, not taught: the step runs split, and the conductor is
@@ -759,7 +745,6 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         settingsModel = advertisedModelForTarget(
           conductorExecutionTarget(wave.conductorSessionId),
         );
-        settingsModelLabel = undefined;
       }
       const stepRunSettings = planWaveStepRunSettings({
         step: request.step,
@@ -767,43 +752,6 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         ...(stepTarget ? { ranked: stepTarget } : {}),
         model: settingsModel,
       });
-      // WAVES: nothing about how a step runs is substituted without saying so
-      // where the step is shown. Admission refused this for what the plan
-      // named; what reaches here is the ranking's preference, or an inventory
-      // that changed since admission — the step runs, and says so.
-      const noticeModel =
-        settingsModelLabel ??
-        (settingsModel ? modelDisplayName(settingsModel) : undefined);
-      if (noticeModel) {
-        const effort = stepRunSettings.runSettings?.effort;
-        if (effort && !stepRunSettings.effortApplied) {
-          appendConductorNotice(
-            wave.conductorSessionId,
-            waveStepRunSettingsNoticeText({
-              stepIndex: request.stepIndex,
-              name: roleDisplayName(request.step.role),
-              model: noticeModel,
-              kind: "effort",
-              effort,
-            }),
-            false,
-            "warning",
-          );
-        }
-        if (!stepRunSettings.fastApplied) {
-          appendConductorNotice(
-            wave.conductorSessionId,
-            waveStepRunSettingsNoticeText({
-              stepIndex: request.stepIndex,
-              name: roleDisplayName(request.step.role),
-              model: noticeModel,
-              kind: "fast",
-            }),
-            false,
-            "warning",
-          );
-        }
-      }
       const prompt = buildWaveStepPrompt(step, request.previousReports, {
         stepIndex: request.stepIndex,
         totalSteps: request.totalSteps,
@@ -867,9 +815,96 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           "Selected executor is no longer available for dispatch",
         );
       }
+      const baselineTarget =
+        executionTarget ?? conductorExecutionTarget(wave.conductorSessionId);
       executionTarget = prepared.selected?.target ?? executionTarget;
-      const selectedRunSettings =
-        prepared.selected?.runSettings ?? stepRunSettings.runSettings;
+      // An absent settings record on a selected option means use its defaults,
+      // never borrow the baseline model's effort or fast mode.
+      const selectedRunSettings = prepared.selected
+        ? prepared.selected.runSettings
+        : stepRunSettings.runSettings;
+      settingsModel = advertisedModelForTarget(
+        executionTarget ?? baselineTarget,
+      );
+      const noticeModel = settingsModel
+        ? modelDisplayName(settingsModel)
+        : executionTarget?.modelName;
+      const selectedRanking = explicitModel
+        ? undefined
+        : resolveWaveStepTargets(
+            request.step.role,
+            request.step.modelClass,
+          ).find(
+            (ranked) =>
+              sameSessionExecutionTarget(ranked.target, executionTarget) &&
+              sameSessionRunSettings(
+                planWaveStepRunSettings({
+                  step: request.step,
+                  ranked,
+                  model: settingsModel,
+                }).runSettings,
+                selectedRunSettings,
+              ),
+          );
+      const selectionChanged = Boolean(
+        prepared.selected &&
+          !sameSessionExecutionTarget(prepared.selected.target, baselineTarget),
+      );
+      if (
+        noticeModel &&
+        (selectionChanged ||
+          selectedRanking?.fallback ||
+          selectedRanking?.nearLimit)
+      ) {
+        appendConductorNotice(
+          wave.conductorSessionId,
+          waveStepModelNoticeText({
+            stepIndex: request.stepIndex,
+            name: roleDisplayName(request.step.role),
+            model: noticeModel,
+            nearLimit: selectedRanking?.nearLimit === true,
+            selectionChanged,
+          }),
+          false,
+          "warning",
+        );
+      }
+      // WAVES: judge and name the same model/settings passed to the child,
+      // after cancellation and live availability checks have succeeded.
+      const dispatchedSettings = judgeWaveStepRunSettings(
+        settingsModel,
+        selectedRunSettings ?? {},
+      );
+      if (noticeModel) {
+        const effort = selectedRunSettings?.effort;
+        if (effort && !dispatchedSettings.effortApplied) {
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepRunSettingsNoticeText({
+              stepIndex: request.stepIndex,
+              name: roleDisplayName(request.step.role),
+              model: noticeModel,
+              kind: "effort",
+              effort,
+            }),
+            false,
+            "warning",
+          );
+        }
+        if (!dispatchedSettings.fastApplied) {
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepRunSettingsNoticeText({
+              stepIndex: request.stepIndex,
+              name: roleDisplayName(request.step.role),
+              model: noticeModel,
+              kind: "fast",
+            }),
+            false,
+            "warning",
+          );
+        }
+      }
       const spawnPromise = spawnConductorChildSession({
         executorDecisionKey: preparedKey,
         parentSessionId: wave.conductorSessionId,

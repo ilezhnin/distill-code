@@ -1,4 +1,5 @@
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   appendAttachmentPaths,
@@ -69,6 +70,7 @@ export interface SendCorePersona {
 }
 
 export interface SendCoreOptions {
+  executorRequestKey?: string;
   persona?: SendCorePersona;
   /** Attachment drafts included with the foreground prompt. */
   attachments?: ChatAttachmentDraft[];
@@ -252,6 +254,9 @@ export async function dispatchPrompt(
   let userMessageCommitted = false;
   let preCommitRejected = false;
   const userMessageId = crypto.randomUUID();
+  let preparedExecutor:
+    | Awaited<ReturnType<typeof prepareChatExecutorDispatch>>
+    | undefined;
 
   const { addMessage, setChatState, setError, setPendingAssistantProvider } =
     useChatStore.getState();
@@ -278,6 +283,7 @@ export async function dispatchPrompt(
     const commitUserMessage = () => {
       throwIfAborted(signal);
       beforeUserMessageCommitted?.();
+      preparedExecutor?.assertCurrent();
       const userMessage = createUserMessage(
         displayText ?? text,
         buildMessageAttachments(attachments),
@@ -378,6 +384,24 @@ export async function dispatchPrompt(
         : promptWithPaths;
     const acpPrompt =
       promptWithUltracode || (images?.length ? " " : promptWithUltracode);
+    // Wave sends already carry the shared decision prepared by their owner.
+    // Ordinary accepted chat tasks use this same native boundary here.
+    if (!acpPromptMetadata?.executorSelection) {
+      preparedExecutor = await prepareChatExecutorDispatch({
+        sessionId,
+        requestKey:
+          opts.executorRequestKey ??
+          `chat:${sessionId}:message:${userMessageId}`,
+        prompt:
+          acpPrompt.trim() ||
+          (images?.length ? "Image attachments" : (assistantPrompt ?? "")),
+        systemPrompt: effectiveSystemPrompt,
+        assistantPrompt,
+        personaId: persona?.id,
+        attachments,
+      });
+      throwIfAborted(signal);
+    }
     const tAcp = performance.now();
     if (!background) {
       perfLog(
@@ -389,7 +413,13 @@ export async function dispatchPrompt(
       ...(assistantPrompt ? { assistantPrompt } : {}),
       personaId: persona?.id,
       personaName: persona?.name,
-      promptMeta: { ...acpPromptMetadata, messageId: userMessageId },
+      promptMeta: {
+        ...acpPromptMetadata,
+        ...(preparedExecutor
+          ? { executorSelection: preparedExecutor.metadata }
+          : {}),
+        messageId: userMessageId,
+      },
       images: images?.map(
         (img) => [img.base64, img.mimeType] as [string, string],
       ),

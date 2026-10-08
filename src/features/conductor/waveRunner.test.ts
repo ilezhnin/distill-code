@@ -6,12 +6,14 @@ import type {
   ExecutorDecisionRecord,
 } from "@/features/benchmarks/lib/executorSelection";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import type { SessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode } from "./types";
+import { roleDisplayName } from "./roleLayers";
 import {
   resetWaveStepTargetIoForTests,
   setWaveStepTargetIoForTests,
@@ -234,7 +236,17 @@ describe("waveRunner", () => {
     resetWaveStepTargetIoForTests();
   });
 
-  function selectionPlan(explicit = false): void {
+  function selectionPlan(
+    explicit = false,
+    options: {
+      secondSettings?: SessionRunSettings | null;
+      unsupportedSettings?: boolean;
+    } = {},
+  ): void {
+    const secondSettings =
+      options.secondSettings === null
+        ? undefined
+        : (options.secondSettings ?? { effort: "high" });
     setWaveStepTargetIoForTests({
       personas: () => [
         {
@@ -256,7 +268,12 @@ describe("waveRunner", () => {
                 platform: "codex-acp",
                 modelId: "example-two",
                 label: "Two",
-                effort: "high",
+                ...(secondSettings?.effort
+                  ? { effort: secondSettings.effort }
+                  : {}),
+                ...(secondSettings?.fast !== undefined
+                  ? { fastMode: secondSettings.fast }
+                  : {}),
               },
             ],
           }),
@@ -264,8 +281,22 @@ describe("waveRunner", () => {
       ],
       providers: () => [{ id: "codex-acp", label: "Example" }] as never,
       modelsForHarness: () => [
-        { id: "example-one", name: "One", displayName: "One" },
-        { id: "example-two", name: "Two", displayName: "Two" },
+        {
+          id: "example-one",
+          name: "One",
+          displayName: "One",
+          ...(options.unsupportedSettings
+            ? { efforts: [{ id: "high", name: "High" }], supportsFast: false }
+            : {}),
+        },
+        {
+          id: "example-two",
+          name: "Two",
+          displayName: "Two",
+          ...(options.unsupportedSettings
+            ? { efforts: [{ id: "low", name: "Low" }], supportsFast: false }
+            : {}),
+        },
       ],
       rateLimits: () => [],
       conductorTarget: () => undefined,
@@ -290,11 +321,15 @@ describe("waveRunner", () => {
     ]);
   }
 
-  it("records the full preference pool before dispatch and dispatches the returned choice", async () => {
-    selectionPlan();
+  it("records the preference pool and reconciles dispatch notices with the returned model and settings", async () => {
+    selectionPlan(false, {
+      secondSettings: { effort: "high", fast: true },
+      unsupportedSettings: true,
+    });
     executorSelection.select.mockImplementationOnce(async (request, record) => {
       expect(record).toBe(true);
       expect(spawnConductorChildSession).not.toHaveBeenCalled();
+      expect(noticeTexts()).toEqual([]);
       expect(
         request.candidates.map((row) => row.configuration.modelId),
       ).toEqual(["example-one", "example-two"]);
@@ -314,8 +349,26 @@ describe("waveRunner", () => {
     expect(spawnConductorChildSession.mock.calls[0][0]).toMatchObject({
       executorDecisionKey: executorSelection.select.mock.calls[0][0].requestKey,
       executionTarget: { modelId: "example-two" },
-      runSettings: { effort: "high" },
+      runSettings: { effort: "high", fast: true },
     });
+    expect(noticeTexts()).toEqual([
+      i18n.t("chat:conductor.wave.stepModel.selected", {
+        step: 1,
+        name: roleDisplayName("scout"),
+        model: "Two",
+      }),
+      i18n.t("chat:conductor.wave.stepModel.effortNotApplied", {
+        step: 1,
+        name: roleDisplayName("scout"),
+        model: "Two",
+        effort: "high",
+      }),
+      i18n.t("chat:conductor.wave.stepModel.fastNotApplied", {
+        step: 1,
+        name: roleDisplayName("scout"),
+        model: "Two",
+      }),
+    ]);
     expect(executorSelection.observe).toHaveBeenCalledWith(
       executorSelection.select.mock.calls[0][0].requestKey,
       expect.objectContaining({
@@ -325,6 +378,28 @@ describe("waveRunner", () => {
         configuration: null,
       }),
     );
+  });
+
+  it("keeps a selected model's unspecified settings instead of borrowing the baseline effort", async () => {
+    selectionPlan(false, { secondSettings: null });
+    executorSelection.select.mockImplementationOnce(async (request) => ({
+      ...decisionFor(request),
+      chosen: request.candidates[1].configuration,
+    }));
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+    const args = spawnConductorChildSession.mock.calls[0][0];
+    expect(args.executionTarget.modelId).toBe("example-two");
+    expect(args).not.toHaveProperty("runSettings");
+    expect(noticeTexts()).toEqual([
+      i18n.t("chat:conductor.wave.stepModel.selected", {
+        step: 1,
+        name: roleDisplayName("scout"),
+        model: "Two",
+      }),
+    ]);
   });
 
   it("does not redispatch a step with a durable execution record after a restart", async () => {

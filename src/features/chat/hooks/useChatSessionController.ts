@@ -88,6 +88,8 @@ import {
 } from "../lib/firstWorkspaceSend";
 export type { WorkspaceNameRequest } from "../lib/firstWorkspaceSend";
 import { activateSession } from "../lib/sessionActivation";
+import { selectInitialChatExecutor } from "../lib/chatExecutorDispatch";
+import type { ApplicationExecutorOption } from "@/features/benchmarks/lib/applicationExecutor";
 import {
   previewChatExecutor,
   type ChatExecutorSuggestionSource,
@@ -416,6 +418,13 @@ export function useChatSessionController({
   const explicitRunSettingsBySessionRef = useRef<
     Record<string, SessionRunSettings>
   >({});
+  const personaTargetEpochRef = useRef(0);
+  useEffect(() => {
+    void stateSessionId;
+    return () => {
+      personaTargetEpochRef.current += 1;
+    };
+  }, [stateSessionId]);
   // What a composer with no session shows and later hands to its session:
   // the persona's values under the operator's own.
   const pendingRunSettingsForDisplay = useMemo(
@@ -1590,6 +1599,7 @@ export function useChatSessionController({
 
   const handleProviderChangeWithContextReset = useCallback(
     (providerId: string) => {
+      personaTargetEpochRef.current += 1;
       if (providerId === selectedProvider) {
         return;
       }
@@ -1602,6 +1612,7 @@ export function useChatSessionController({
 
   const handleModelChangeWithContextReset = useCallback(
     (modelId: string, model?: ModelOption) => {
+      personaTargetEpochRef.current += 1;
       const nextModelProviderId = model?.providerId;
       if (
         modelId === effectiveModelSelection?.id &&
@@ -1852,7 +1863,8 @@ export function useChatSessionController({
   );
 
   const handlePersonaChange = useCallback(
-    (personaId: string | null) => {
+    async (personaId: string | null) => {
+      const selectionEpoch = ++personaTargetEpochRef.current;
       if (personaId === selectedPersonaId) {
         return;
       }
@@ -1868,12 +1880,58 @@ export function useChatSessionController({
         session?.creationState === "pending" ||
         session?.creationState === "failed" ||
         !session?.executionTarget;
-      const personaResolution = persona
+      let personaResolution: ApplicationExecutorOption | undefined = persona
         ? resolvePersonaTarget(persona, {
             applyRanking: establishesTarget,
             notify: true,
           })
         : undefined;
+      if (persona && establishesTarget) {
+        const targetAtRequest = useChatSessionStore
+          .getState()
+          .getSession(stateSessionId)?.executionTarget;
+        try {
+          personaResolution = await selectInitialChatExecutor({
+            contextId: stateSessionId,
+            // Only context actually available now: a draft or the role's own
+            // instructions. Empty context preserves the existing manual path.
+            prompt:
+              useChatStore.getState().draftsBySession[stateSessionId] ??
+              persona.systemPrompt,
+            persona,
+            fallback: personaResolution,
+            context: {
+              providers,
+              getModelsForHarness: getInstalledModelsForAgent,
+              rateLimits:
+                useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
+              classOverrides: getRoutingPolicy().classOverrides,
+              nearLimitPercent: getRoutingPolicy().chatNearLimitPercent,
+            },
+          });
+        } catch (error) {
+          // Initial lookup is advisory until a task is accepted. A local
+          // selection-store failure must not disable the operator's persona.
+          console.warn(
+            "Initial chat executor lookup failed; preserving persona target",
+            error,
+          );
+        }
+        const liveSession = useChatSessionStore
+          .getState()
+          .getSession(stateSessionId);
+        if (
+          selectionEpoch !== personaTargetEpochRef.current ||
+          !sameSessionExecutionTarget(
+            liveSession?.executionTarget,
+            targetAtRequest,
+          ) ||
+          (sessionId &&
+            liveSession?.creationState == null &&
+            liveSession?.executionTarget)
+        )
+          return;
+      }
       const personaTarget = personaResolution?.target;
       // A persona's effort and fast mode describe the model it names, so they
       // come along only with a concrete model. They are intent, never a
@@ -1885,14 +1943,17 @@ export function useChatSessionController({
         : undefined;
       if (!sessionId) {
         setPendingPersonaRunSettings(personaRunSettingsForTarget);
-      } else if (personaRunSettingsForTarget) {
+      } else if (
+        personaRunSettingsForTarget ||
+        (establishesTarget && personaTarget)
+      ) {
         // Recorded before the model apply below starts, so the reconcile that
         // follows its acknowledgement already judges against this intent.
         const liveSession = useChatSessionStore
           .getState()
           .getSession(sessionId);
         const desiredRunSettings = normalizeSessionRunSettings({
-          ...liveSession?.desiredRunSettings,
+          ...(!establishesTarget ? liveSession?.desiredRunSettings : undefined),
           ...personaRunSettingsForTarget,
           ...explicitRunSettingsBySessionRef.current[sessionId],
         });
@@ -2050,6 +2111,9 @@ export function useChatSessionController({
       prepareSelectedProvider,
       recreateSessionForProvider,
       resolvePersonaTarget,
+      providers,
+      getInstalledModelsForAgent,
+      stateSessionId,
       session?.creationState,
       session?.executionTarget,
       sessionId,

@@ -35,6 +35,7 @@ import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePr
 import type { AcpSessionInfo, AcpSessionsPage } from "@/shared/api/acp";
 import { createUserMessage } from "@/shared/types/messages";
 import { clearAccountQuotaWait } from "@/features/chat/lib/accountQuotaWait";
+import type { ApplicationExecutorRequest } from "@/features/benchmarks/lib/executorSelection";
 
 const mocks = vi.hoisted(() => ({
   acpCreateSession: vi.fn(),
@@ -43,6 +44,8 @@ const mocks = vi.hoisted(() => ({
   acpListSessionsPage: vi.fn(),
   acpPrepareSession: vi.fn(),
   acpSendMessage: vi.fn(),
+  executorGet: vi.fn(),
+  executorSelect: vi.fn(),
   loadSessionMessages: vi.fn(),
   acpSteerMessage: vi.fn(),
   discoverAcpProviders: vi.fn(),
@@ -71,6 +74,13 @@ const mocks = vi.hoisted(() => ({
   createSkill: vi.fn(),
   listSkills: vi.fn(),
   terminalChatSessionIds: new Set<string>(),
+}));
+
+vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
+  executorSelection: {
+    get: (...args: unknown[]) => mocks.executorGet(...args),
+    select: (...args: unknown[]) => mocks.executorSelect(...args),
+  },
 }));
 
 vi.mock("@/features/terminal/lib/terminalSessionManager", () => ({
@@ -408,6 +418,13 @@ beforeEach(() => {
     Object.assign(new Error("Resource not found"), { code: -32002 }),
   );
   mocks.acpPrepareSession.mockResolvedValue(undefined);
+  mocks.executorGet.mockResolvedValue(null);
+  mocks.executorSelect.mockImplementation(
+    async (request: ApplicationExecutorRequest) => ({
+      source: request.hardCandidateId ? "pin" : "none",
+      chosen: request.candidates[0]?.configuration ?? null,
+    }),
+  );
   mocks.acpSendMessage.mockResolvedValue(undefined);
   mocks.loadSessionMessages.mockResolvedValue(true);
   mocks.acpSteerMessage.mockResolvedValue({
@@ -932,6 +949,19 @@ describe("sessions.send", () => {
     expect(result).toMatchObject({ send_status: "queued" });
     const head = useChatStore.getState().queuedMessageBySession["session-1"][0];
     expect(head.payload.text).toBe("retry after reset");
+    expect(head.payload.executorRequestKey).toMatch(/^chat:/);
+    expect(head.payload.sendOptions?.executorRequestKey).toBe(
+      head.payload.executorRequestKey,
+    );
+    expect(mocks.executorGet).toHaveBeenCalledWith(
+      head.payload.executorRequestKey,
+    );
+    expect(
+      mocks.acpSendMessage.mock.calls[0][2].promptMeta.executorSelection,
+    ).toEqual({
+      decisionKey: head.payload.executorRequestKey,
+      logicalRunId: head.payload.executorRequestKey,
+    });
     expect(
       head.payload.sendOptions?.userMessageMetadata?.distillDeliveryId,
     ).toBe("quota-delivery");
@@ -942,6 +972,64 @@ describe("sessions.send", () => {
           (message) => message.role === "user",
         ) ?? false,
     ).toBe(false);
+    clearAccountQuotaWait("session-1");
+  });
+
+  it("restores an acknowledged but proven-unaccepted direct send with the same executor identity", async () => {
+    mockSessionFound({ providerId: "codex-acp" });
+    let rejectTurn!: (error: unknown) => void;
+    mocks.acpSendMessage.mockReturnValueOnce(
+      new Promise<void>((_resolve, reject) => {
+        rejectTurn = reject;
+      }),
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const result = await dispatchCommand(
+      "sessions",
+      {
+        action: "send",
+        session_id: "session-1",
+        prompt: "preserve acknowledged intent",
+        delivery_id: "withdrawn-delivery",
+      },
+      ctx,
+    );
+    expect(result).toEqual({
+      session_id: "session-1",
+      send_status: "dispatched",
+    });
+    const link =
+      mocks.acpSendMessage.mock.calls[0][2].promptMeta.executorSelection;
+    expect(link.decisionKey).toMatch(/^chat:/);
+    rejectTurn({
+      data: {
+        kind: "account_quota_wait",
+        dispatchStarted: false,
+        promptNotAccepted: true,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        useChatStore.getState().queuedMessageBySession["session-1"],
+      ).toHaveLength(1),
+    );
+    const [head] = useChatStore.getState().queuedMessageBySession["session-1"];
+    expect(head.payload.executorRequestKey).toBe(link.decisionKey);
+    expect(head.payload.sendOptions?.executorRequestKey).toBe(link.decisionKey);
+    expect(
+      head.payload.sendOptions?.userMessageMetadata?.distillDeliveryId,
+    ).toBe("withdrawn-delivery");
+    expect(
+      useChatStore
+        .getState()
+        .messagesBySession["session-1"]?.some(
+          (message) => message.role === "user",
+        ) ?? false,
+    ).toBe(false);
+    expect(mocks.acpSendMessage).toHaveBeenCalledOnce();
+    consoleError.mockRestore();
     clearAccountQuotaWait("session-1");
   });
 
@@ -1037,6 +1125,10 @@ describe("sessions.send", () => {
           (record) => record.payload.text,
         ),
     ).toEqual(["preserve this prompt"]);
+    const head = useChatStore.getState().queuedMessageBySession["session-1"][0];
+    expect(head.payload.executorRequestKey).toBe(
+      mocks.executorSelect.mock.calls[0][0].requestKey,
+    );
     expect(
       useChatStore.getState().messagesBySession["session-1"],
     ).toBeUndefined();

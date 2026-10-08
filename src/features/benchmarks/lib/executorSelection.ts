@@ -60,7 +60,7 @@ export interface ReportedExecutorSelection {
   fast: boolean | null;
 }
 
-export interface ExecutorHostReceipt {
+export interface ExecutorHostAttempt {
   start: {
     link: { decisionKey: string; logicalRunId: string };
     sessionId: string;
@@ -79,6 +79,18 @@ export interface ExecutorHostReceipt {
     changes: ReportedExecutorSelection[];
     changesTruncated: boolean;
   } | null;
+  /** Native proof recorded only after a quota-rejected prompt was withdrawn. */
+  rejection?: {
+    reason: "quota_not_accepted";
+    confirmedAt: string;
+    accountId: string;
+    automaticAccountRouting: boolean;
+  } | null;
+  attemptIndex?: number;
+}
+
+export interface ExecutorHostReceipt extends ExecutorHostAttempt {
+  previousAttempts?: ExecutorHostAttempt[];
 }
 
 export interface ExecutorDecisionRecord {

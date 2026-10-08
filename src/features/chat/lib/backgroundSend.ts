@@ -139,6 +139,7 @@ export async function sendPromptInBackground(
     chips: sendOptions.chips,
     userMessageMetadata: sendOptions.userMessageMetadata,
     acpPromptMetadata: sendOptions.acpPromptMetadata,
+    executorRequestKey: sendOptions.executorRequestKey,
     // Compose only caller-provided target-session context, the requested
     // persona and the operator protocols (scoped to the target session) —
     // never foreground UI state.

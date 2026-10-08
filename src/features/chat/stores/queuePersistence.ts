@@ -200,11 +200,15 @@ export function withQueuedRunSettings<T extends QueuedMessagePayload>(
   sessionId: string,
   payload: T,
 ): T {
-  if (payload.runSettings) return payload;
   const runSettings = normalizeSessionRunSettings(
     useChatSessionStore.getState().getSession(sessionId)?.desiredRunSettings,
   );
-  return runSettings ? { ...payload, runSettings } : payload;
+  return {
+    ...payload,
+    executorRequestKey:
+      payload.executorRequestKey ?? `chat:${crypto.randomUUID()}`,
+    ...(!payload.runSettings && runSettings ? { runSettings } : {}),
+  };
 }
 
 export async function loadPersistedMessageQueues(): Promise<PersistedQueues> {

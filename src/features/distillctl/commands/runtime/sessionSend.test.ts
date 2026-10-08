@@ -20,6 +20,7 @@ import {
   transitionSessionTarget,
 } from "@/features/chat/lib/sessionTargetCoordinator";
 import { beginModelSelectionIntent } from "@/features/chat/model-selection/modelSelectionIntent";
+import type { ApplicationExecutorRequest } from "@/features/benchmarks/lib/executorSelection";
 import {
   sendPromptToExistingSessionInBackground,
   sendQueuedPromptToExistingSessionInBackground,
@@ -31,6 +32,8 @@ const mocks = vi.hoisted(() => ({
   acpLoadSession: vi.fn(),
   acpPrepareSession: vi.fn(),
   acpSendMessage: vi.fn(),
+  executorGet: vi.fn(),
+  executorSelect: vi.fn(),
   preparedProviderBySession: new Map<string, string>(),
   transportProviders: [] as string[],
   resolveSessionCwd: vi.fn(),
@@ -38,6 +41,13 @@ const mocks = vi.hoisted(() => ({
   listSkills: vi.fn(),
   listProjectDocuments: vi.fn(),
   listProjects: vi.fn(),
+}));
+
+vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
+  executorSelection: {
+    get: (...args: unknown[]) => mocks.executorGet(...args),
+    select: (...args: unknown[]) => mocks.executorSelect(...args),
+  },
 }));
 
 vi.mock("@/shared/api/acp", () => ({
@@ -182,6 +192,13 @@ describe("sendPromptToExistingSessionInBackground", () => {
     useAgentStore.setState({ personas: [] });
 
     mocks.acpGetSessionInfo.mockResolvedValue(null);
+    mocks.executorGet.mockResolvedValue(null);
+    mocks.executorSelect.mockImplementation(
+      async (request: ApplicationExecutorRequest) => ({
+        source: request.hardCandidateId ? "pin" : "none",
+        chosen: request.candidates[0]?.configuration ?? null,
+      }),
+    );
     mocks.acpLoadSession.mockResolvedValue(undefined);
     mocks.acpSendMessage.mockResolvedValue(undefined);
     mocks.resolveSessionCwd.mockResolvedValue("/tmp/project");
@@ -714,6 +731,28 @@ describe("sendPromptToExistingSessionInBackground", () => {
     mocks.acpPrepareSession.mockImplementationOnce(() => {
       order.push("prepare");
     });
+    mocks.executorSelect.mockImplementationOnce(
+      async (request: ApplicationExecutorRequest) => {
+        order.push("executor-decision");
+        expect(acquireSessionDispatchTarget(SESSION_ID)).toMatchObject({
+          status: "contended",
+        });
+        expect(request).toMatchObject({
+          requestKey: "chat:accepted-during-hydration",
+          surface: "chat",
+          contextId: SESSION_ID,
+          task: {
+            executionProfile: "interactive_acp",
+            prompt: "resume after hydration",
+          },
+        });
+        expect(request.candidates[0].configuration).toMatchObject({
+          modelId: INITIAL_TARGET.modelId,
+          providerId: INITIAL_TARGET.modelProviderId,
+        });
+        return { source: "pin", chosen: request.candidates[0].configuration };
+      },
+    );
     mocks.acpSendMessage.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
@@ -727,6 +766,7 @@ describe("sendPromptToExistingSessionInBackground", () => {
       recordId: "load-before-acquire",
       releasedFromDeferred: true,
       payload: {
+        executorRequestKey: "chat:accepted-during-hydration",
         text: "resume after hydration",
         persona: { kind: "inherit" },
       },
@@ -742,7 +782,19 @@ describe("sendPromptToExistingSessionInBackground", () => {
 
     resolveLoad?.();
     await vi.waitFor(() => expect(mocks.acpSendMessage).toHaveBeenCalledOnce());
-    expect(order).toEqual(["load-start", "load-end", "prepare", "transport"]);
+    expect(order).toEqual([
+      "load-start",
+      "load-end",
+      "prepare",
+      "executor-decision",
+      "transport",
+    ]);
+    expect(
+      mocks.acpSendMessage.mock.calls[0][2].promptMeta.executorSelection,
+    ).toEqual({
+      decisionKey: "chat:accepted-during-hydration",
+      logicalRunId: "chat:accepted-during-hydration",
+    });
     expect(mocks.acpLoadSession).toHaveBeenCalledOnce();
     expect(acquireSessionDispatchTarget(SESSION_ID)).toMatchObject({
       status: "contended",

@@ -321,11 +321,14 @@ export function waveStepModelNoticeText(facts: {
   name: string;
   model: string;
   nearLimit: boolean;
+  selectionChanged?: boolean;
 }): string {
   return i18n.t(
     facts.nearLimit
       ? "chat:conductor.wave.stepModel.nearLimit"
-      : "chat:conductor.wave.stepModel.fallback",
+      : facts.selectionChanged
+        ? "chat:conductor.wave.stepModel.selected"
+        : "chat:conductor.wave.stepModel.fallback",
     {
       step: facts.stepIndex + 1,
       name: facts.name,

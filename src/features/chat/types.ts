@@ -93,6 +93,8 @@ export interface ChatSkillDraft {
 }
 
 export interface ChatSendOptions {
+  /** Durable identity of one accepted queue payload, regenerated on an edit. */
+  executorRequestKey?: string;
   /** Internal target snapshot owned by the active queued dispatch attempt. */
   sessionSelection?: SessionExecutionTarget;
   /** Coordinator token proving ownership of sessionSelection. */

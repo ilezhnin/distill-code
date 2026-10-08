@@ -21,7 +21,7 @@ use super::execution::{
     OwnedSession, OwnedSessionRequest, OwnedTurnImage, OwnedTurnRequest,
 };
 use super::executor_receipts::{
-    ExecutorLink, ReceiptFinish, ReceiptStart, ReportedSelection, REPORTED_KEY,
+    ExecutorLink, ReceiptFinish, ReceiptRejection, ReceiptStart, ReportedSelection, REPORTED_KEY,
 };
 use super::ext;
 use super::harness::{self, HarnessSpec};
@@ -5536,6 +5536,7 @@ impl Inner {
             .cloned()
             .unwrap_or_else(|| Value::Array(vec![]));
         let meta = params.get("_meta").cloned().unwrap_or_else(|| json!({}));
+        let executor_link = ExecutorLink::take(&mut meta.clone()).map_err(invalid_params)?;
         // A chat that came here from another agent owes this one the
         // conversation so far. Built before the turn is claimed: reading the
         // log means waiting for the event loop to catch up, and whatever a
@@ -5669,6 +5670,27 @@ impl Inner {
             Err(error) => {
                 let withdrawn = self.discard_rejected_prompt(&session_id, recorded).await;
                 error["data"]["promptNotAccepted"] = json!(withdrawn);
+                if let (Some(link), Some(rejection)) = (
+                    executor_link.as_ref(),
+                    ReceiptRejection::quota_not_accepted(
+                        error,
+                        self.automatic_account_switching(&record.harness)
+                            .unwrap_or(false),
+                    ),
+                ) {
+                    // Keep the claim until the host's withdrawal proof is durable.
+                    // Neither a renderer error flag nor a failed receipt permits retry.
+                    while let Err(error) = self
+                        .store
+                        .mark_executor_prompt_unaccepted(link, &session_id, &ids.run_id, &rejection)
+                        .await
+                    {
+                        log::error!(
+                            "[agent-host] unaccepted executor proof not committed: {error}"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
             }
         }
         // Steering while the turn ran: send the queued messages one after the
@@ -5788,7 +5810,10 @@ impl Inner {
         if let Some(start) = &receipt_start {
             if !self
                 .store
-                .claim_executor_receipt(start)
+                .claim_executor_receipt_with_routing(
+                    start,
+                    self.automatic_account_switching(&start.provider_id)?,
+                )
                 .await
                 .map_err(protocol::internal)?
             {

@@ -7,6 +7,9 @@ import { clearReplayBuffer, ensureReplayBuffer } from "../replayBuffer";
 
 const mockAcpSendMessage = vi.fn();
 const mockAcpLoadSession = vi.fn();
+vi.mock("../../lib/chatExecutorDispatch", () => ({
+  prepareChatExecutorDispatch: vi.fn(async () => undefined),
+}));
 
 vi.mock("@/shared/api/acp", () => ({
   acpSendMessage: (...args: unknown[]) => mockAcpSendMessage(...args),

@@ -64,6 +64,20 @@ function resetChatStore(): void {
   });
 }
 
+function expectedDispatchOptions(
+  executorRequestKey: unknown = expect.stringMatching(/^chat:/),
+) {
+  return {
+    returnOnDispatch: true,
+    onPromptNotAccepted: expect.any(Function),
+    sendOptions: {
+      executorRequestKey,
+      userMessageMetadata: { origin: "distillctl_cross_session" },
+      acpPromptMetadata: { origin: "distillctl_cross_session" },
+    },
+  };
+}
+
 describe("useDistillctlQueuedMessageDrain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -250,6 +264,11 @@ describe("useDistillctlQueuedMessageDrain", () => {
       ).toHaveBeenCalledTimes(2),
     );
     expect(waiter.wait).toHaveBeenCalledOnce();
+    const attempts = mocks.sendPromptToExistingSessionInBackground.mock.calls;
+    expect(attempts[0][3].sendOptions.executorRequestKey).toMatch(/^chat:/);
+    expect(attempts[1][3].sendOptions.executorRequestKey).toBe(
+      attempts[0][3].sendOptions.executorRequestKey,
+    );
   });
 
   it("waits for session-list hydration before draining restored distillctl queues", async () => {
@@ -277,7 +296,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "restored prompt",
         expect.any(Function),
-        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+        expectedDispatchOptions(),
       );
     });
   });
@@ -332,6 +351,8 @@ describe("useDistillctlQueuedMessageDrain", () => {
         userMessageMetadata: { origin: "distillctl_cross_session" as const },
       },
     });
+    const [first, second] =
+      useChatStore.getState().queuedMessageBySession["session-1"];
 
     render(<DrainHarness />);
 
@@ -341,13 +362,13 @@ describe("useDistillctlQueuedMessageDrain", () => {
           "session-1",
           "first prompt",
           expect.any(Function),
-          { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+          expectedDispatchOptions(first.payload.executorRequestKey),
         ],
         [
           "session-1",
           "second prompt",
           expect.any(Function),
-          { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+          expectedDispatchOptions(second.payload.executorRequestKey),
         ],
       ]);
     });
@@ -374,6 +395,9 @@ describe("useDistillctlQueuedMessageDrain", () => {
         acpPromptMetadata: { origin: "distillctl_cross_session" },
       },
     });
+    const original =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    expect(original.payload.executorRequestKey).toMatch(/^chat:/);
     render(<DrainHarness />);
 
     act(() => {
@@ -387,7 +411,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "queued prompt",
         expect.any(Function),
-        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+        expectedDispatchOptions(original.payload.executorRequestKey),
       );
     });
     await waitFor(() => {
@@ -399,6 +423,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
     const head =
       useChatStore.getState().queuedMessageBySession["session-1"]?.[0];
     expect(head?.payload).toEqual({
+      executorRequestKey: original.payload.executorRequestKey,
       persona: { kind: "inherit" },
       text: "queued prompt",
       sendOptions: {
@@ -406,6 +431,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         acpPromptMetadata: { origin: "distillctl_cross_session" },
       },
     });
+    expect(head?.payload).toBe(original.payload);
     // Parked as failed, so neither this run nor the next start retries it.
     expect(head).toMatchObject({
       kind: "deferred",
@@ -450,7 +476,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
       "session-1",
       "cached prompt",
       expect.any(Function),
-      { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+      expectedDispatchOptions("chat:session-1:queue:cached-record"),
     );
   });
 
@@ -487,7 +513,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "owned-session",
         "queued while source runs",
         expect.any(Function),
-        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+        expectedDispatchOptions(),
       );
     });
   });
@@ -551,10 +577,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         beforeUserMessageCommitted: () => void,
         options?: { returnOnDispatch?: boolean },
       ) => {
-        expect(options).toEqual({
-          returnOnDispatch: true,
-          onPromptNotAccepted: expect.any(Function),
-        });
+        expect(options).toEqual(expectedDispatchOptions());
         beforeUserMessageCommitted();
         useChatStore.getState().setActiveRunId("session-1", "held-turn");
         // Match the real helper's split contract: queue ownership completes
@@ -615,7 +638,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "replacement prompt",
         expect.any(Function),
-        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+        expectedDispatchOptions(),
       );
     });
   });
@@ -648,7 +671,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "original prompt",
         expect.any(Function),
-        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
+        expectedDispatchOptions(),
       );
     });
 

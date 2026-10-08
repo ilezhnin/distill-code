@@ -345,6 +345,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
 
   it("commits only the submitted replacement when editing starts during preparation", async () => {
     const released = releasedRecord();
+    released.payload.executorRequestKey = "chat:original-released-task";
     const committedPayloads: QueuedMessageRecord["payload"][] = [];
     mocks.sendQueuedPromptToExistingSessionInBackground
       .mockImplementationOnce(
@@ -398,8 +399,20 @@ describe("useBackgroundQueuedMessageDrain", () => {
     });
 
     await waitFor(() => {
-      expect(committedPayloads).toEqual([replacementPayload]);
+      expect(committedPayloads).toEqual([
+        {
+          ...replacementPayload,
+          executorRequestKey: expect.stringMatching(/^chat:/),
+        },
+      ]);
     });
+    const submittedRecord = mocks.sendQueuedPromptToExistingSessionInBackground
+      .mock.calls[1][1] as QueuedMessageRecord;
+    expect(committedPayloads[0]).toBe(submittedRecord.payload);
+    expect(submittedRecord.recordId).toBe(released.recordId);
+    expect(submittedRecord.payload.executorRequestKey).not.toBe(
+      released.payload.executorRequestKey,
+    );
   });
 
   it("serializes a synchronous contention release after attempt settlement", async () => {

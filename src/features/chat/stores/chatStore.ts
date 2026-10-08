@@ -1771,10 +1771,31 @@ const createChatStore: StateCreator<
     const { editing: _editing, ...record } = queue[index];
     // Editing the text is not re-queueing: the message keeps the run settings
     // it was queued under.
-    const payload =
+    const editedSnapshot =
       editedPayload.runSettings || !record.payload.runSettings
         ? editedPayload
         : { ...editedPayload, runSettings: record.payload.runSettings };
+    const acceptedContent = (value: QueuedMessagePayload) =>
+      JSON.stringify([
+        value.text,
+        value.persona,
+        value.attachments,
+        value.runSettings,
+        value.sendOptions?.systemPrompt,
+        value.sendOptions?.executionSystemPrompt,
+        value.sendOptions?.capturedPersonaSystemPrompt,
+        value.sendOptions?.assistantPrompt,
+        value.sendOptions?.acpPromptMetadata,
+      ]);
+    const payload = {
+      ...editedSnapshot,
+      // Retry visibility is not a new accepted task. Preserve its receipt join.
+      executorRequestKey:
+        !_editing &&
+        acceptedContent(record.payload) === acceptedContent(editedSnapshot)
+          ? record.payload.executorRequestKey
+          : `chat:${crypto.randomUUID()}`,
+    };
     const deferredState =
       record.kind === "deferred"
         ? (record.state as { status?: unknown })

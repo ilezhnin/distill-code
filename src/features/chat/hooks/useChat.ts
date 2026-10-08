@@ -213,6 +213,7 @@ export function useChat(
           chips: sendOptions?.chips,
           userMessageMetadata: sendOptions?.userMessageMetadata,
           acpPromptMetadata: sendOptions?.acpPromptMetadata,
+          executorRequestKey: sendOptions?.executorRequestKey,
           providerId,
           systemPrompt,
           beforeUserMessageCommitted: sendOptions?.beforeUserMessageCommitted,

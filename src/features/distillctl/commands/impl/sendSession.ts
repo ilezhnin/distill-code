@@ -117,9 +117,18 @@ Result:
       import("@/features/chat/lib/accountQuotaWait"),
       import("../runtime/sessionSend"),
     ]);
-    const sendOptions = distillctlCrossSessionSendOptions({
-      senderLabel: args.from,
-      deliveryId: args.delivery_id,
+    const executorRequestKey = `chat:${crypto.randomUUID()}`;
+    const sendOptions = {
+      ...distillctlCrossSessionSendOptions({
+        senderLabel: args.from,
+        deliveryId: args.delivery_id,
+      }),
+      executorRequestKey,
+    };
+    const sendPayload = admitSystemInheritedQueuedMessage({
+      executorRequestKey,
+      text: args.prompt,
+      sendOptions,
     });
 
     await loadSessionForDistillctl(args.session_id);
@@ -146,10 +155,7 @@ Result:
         );
       }
       if (isAccountQuotaWaiting(args.session_id)) {
-        chatStore.enqueueTransportReadyMessage(
-          args.session_id,
-          admitSystemInheritedQueuedMessage({ text: args.prompt, sendOptions }),
-        );
+        chatStore.enqueueTransportReadyMessage(args.session_id, sendPayload);
         return { session_id: session.id, send_status: "queued" };
       }
       if (!isQueuedSessionReady(runtime)) {
@@ -179,10 +185,7 @@ Result:
           case "queue":
             chatStore.enqueueTransportReadyMessage(
               args.session_id,
-              admitSystemInheritedQueuedMessage({
-                text: args.prompt,
-                sendOptions,
-              }),
+              sendPayload,
             );
             return { session_id: session.id, send_status: "queued" };
 
@@ -198,11 +201,7 @@ Result:
         : null;
       const firstSend = acceptFirstSend(
         args.session_id,
-        createDeferredQueuedMessagePayload({
-          text: args.prompt,
-          persona: { kind: "inherit" },
-          sendOptions,
-        }),
+        createDeferredQueuedMessagePayload(sendPayload),
         { startupName: args.startup_name, project },
       );
       if (firstSend.needsName) {
@@ -217,23 +216,14 @@ Result:
       if (
         (chatStore.queuedMessageBySession[args.session_id]?.length ?? 0) > 0
       ) {
-        chatStore.enqueueTransportReadyMessage(
-          args.session_id,
-          admitSystemInheritedQueuedMessage({
-            text: args.prompt,
-            sendOptions,
-          }),
-        );
+        chatStore.enqueueTransportReadyMessage(args.session_id, sendPayload);
         return { session_id: session.id, send_status: "queued" };
       }
 
       const retryRecord = {
         kind: "transport-ready" as const,
         recordId: crypto.randomUUID(),
-        payload: admitSystemInheritedQueuedMessage({
-          text: args.prompt,
-          sendOptions,
-        }),
+        payload: sendPayload,
       };
       try {
         await sendPromptToExistingSessionInBackground(
@@ -277,13 +267,9 @@ Result:
         }
         if (error instanceof SessionDispatchContentionError) {
           if (args.if_running === "queue") {
-            useChatStore.getState().enqueueTransportReadyMessage(
-              args.session_id,
-              admitSystemInheritedQueuedMessage({
-                text: args.prompt,
-                sendOptions,
-              }),
-            );
+            useChatStore
+              .getState()
+              .enqueueTransportReadyMessage(args.session_id, sendPayload);
             return { session_id: session.id, send_status: "queued" };
           }
           throw new CommandError(
@@ -296,13 +282,9 @@ Result:
         }
         if (error instanceof PreCommitSendRejectedError) {
           if (args.if_running === "queue") {
-            useChatStore.getState().enqueueTransportReadyMessage(
-              args.session_id,
-              admitSystemInheritedQueuedMessage({
-                text: args.prompt,
-                sendOptions,
-              }),
-            );
+            useChatStore
+              .getState()
+              .enqueueTransportReadyMessage(args.session_id, sendPayload);
             return { session_id: session.id, send_status: "queued" };
           }
           throw new CommandError(

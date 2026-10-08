@@ -241,6 +241,9 @@ export function useMessageQueue(
       let promptNotAccepted = false;
       const queuedSendOptions = {
         ...sendOptions,
+        executorRequestKey:
+          payload.executorRequestKey ??
+          `chat:${sessionId}:queue:${queuedMsg.recordId}`,
         beforeUserMessageCommitted: () => {
           const state = useChatStore.getState();
           const latestQueuedMessage =

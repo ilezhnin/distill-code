@@ -17,6 +17,7 @@ import {
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   DistillctlDeliveryAlreadyAcceptedError,
+  distillctlCrossSessionSendOptions,
   hasAcceptedDistillctlDeliveryInTranscript,
   isDistillctlCrossSessionQueuedMessage,
   sendPromptToExistingSessionInBackground,
@@ -121,17 +122,19 @@ function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
     },
     {
       returnOnDispatch: true,
+      sendOptions: {
+        ...distillctlCrossSessionSendOptions(),
+        ...queuedMessage.payload.sendOptions,
+        executorRequestKey:
+          queuedMessage.payload.executorRequestKey ??
+          `chat:${queuedSessionId}:queue:${queuedMessage.recordId}`,
+      },
       onPromptNotAccepted: () => {
         promptNotAccepted = true;
         useChatStore
           .getState()
           .restoreUnacceptedQueuedMessage(queuedSessionId, queuedMessage);
       },
-      ...(queuedMessage.payload.sendOptions?.userMessageMetadata
-        ?.distillSenderLabel ||
-      queuedMessage.payload.sendOptions?.userMessageMetadata?.distillDeliveryId
-        ? { sendOptions: queuedMessage.payload.sendOptions }
-        : {}),
       ...(deliveryId
         ? {
             validateHydratedTranscript: () => {

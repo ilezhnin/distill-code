@@ -16,6 +16,9 @@ const mockAcpCancelSession = vi.fn();
 const mockAcpLoadSession = vi.fn();
 const mockAcpPrepareSession = vi.fn();
 let mockAcpDispatches = true;
+vi.mock("../../lib/chatExecutorDispatch", () => ({
+  prepareChatExecutorDispatch: vi.fn(async () => undefined),
+}));
 
 vi.mock("@/shared/api/acp", () => ({
   acpSendMessage: (...args: unknown[]) => {

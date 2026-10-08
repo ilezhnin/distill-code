@@ -474,6 +474,9 @@ export async function sendQueuedPromptToExistingSessionInBackground(
       {
         ...sendOptions,
         executionSystemPrompt,
+        executorRequestKey:
+          payload.executorRequestKey ??
+          `chat:${sessionId}:queue:${queuedMessage.recordId}`,
       },
       payload.attachments,
       () => {

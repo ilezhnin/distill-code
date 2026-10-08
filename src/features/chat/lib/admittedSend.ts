@@ -8,6 +8,8 @@ export type PersonaIntent =
   | { kind: "persona"; id: string; name?: string };
 
 export interface QueuedMessagePayload {
+  /** Stable decision/receipt identity for this accepted payload. */
+  executorRequestKey?: string;
   text: string;
   persona: PersonaIntent;
   attachments?: ChatAttachmentDraft[];

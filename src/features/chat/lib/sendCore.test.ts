@@ -22,6 +22,9 @@ const mocks = vi.hoisted(() => ({
   acpSteerMessage: vi.fn(),
   acpPrepareSession: vi.fn(),
 }));
+vi.mock("./chatExecutorDispatch", () => ({
+  prepareChatExecutorDispatch: vi.fn(async () => undefined),
+}));
 
 describe("dispatchPrompt account quota deferral", () => {
   beforeEach(() => {

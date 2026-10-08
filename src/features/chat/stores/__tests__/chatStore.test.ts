@@ -258,6 +258,9 @@ describe("chatStore", () => {
       attachments: [queuedAttachment],
       sendOptions: queuedSendOptions,
     });
+    const queuedBeforePromotion =
+      useChatStore.getState().queuedMessageBySession["local-session"][0];
+    expect(queuedBeforePromotion.payload.executorRequestKey).toMatch(/^chat:/);
     store.setSessionLoading("local-session", true);
     store.setScrollTargetMessage("local-session", "message-1", "query");
 
@@ -284,11 +287,15 @@ describe("chatStore", () => {
     ]);
     expect(state.draftAttachmentsBySession["local-session"]).toBeUndefined();
     expect(state.queuedMessageBySession["acp-session"]?.[0]?.payload).toEqual({
+      executorRequestKey: queuedBeforePromotion.payload.executorRequestKey,
       persona: { kind: "persona", id: "reviewer" },
       text: "@Reviewer queued text",
       attachments: [queuedAttachment],
       sendOptions: queuedSendOptions,
     });
+    expect(state.queuedMessageBySession["acp-session"]?.[0]).toBe(
+      queuedBeforePromotion,
+    );
     expect(state.loadingSessionIds.has("acp-session")).toBe(true);
     expect(state.loadingSessionIds.has("local-session")).toBe(false);
     expect(state.scrollTargetMessageBySession["acp-session"]).toEqual({

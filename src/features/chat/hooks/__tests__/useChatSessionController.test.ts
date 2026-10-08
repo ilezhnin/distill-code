@@ -22,8 +22,19 @@ import { resetSessionTargetCoordinatorsForTests } from "../../lib/sessionTargetC
 import { workspaceAttachmentIdForPath } from "../../lib/workspaceAttachments";
 import type { ChatSendOptions, ModelOption } from "../../types";
 import { ModelFailedAfterProviderMoveError } from "@/shared/api/acpSessionRegistry";
+import type {
+  ApplicationExecutorRequest,
+  ExecutorDecision,
+} from "@/features/benchmarks/lib/executorSelection";
 
-const mockExecutorSelect = vi.hoisted(() => vi.fn(async () => null));
+const mockExecutorSelect = vi.hoisted(() =>
+  vi.fn<
+    (
+      request: ApplicationExecutorRequest,
+      record: boolean,
+    ) => Promise<ExecutorDecision | null>
+  >(async () => null),
+);
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
   executorSelection: { select: mockExecutorSelect },
 }));
@@ -654,7 +665,7 @@ describe("useChatSessionController", () => {
       ];
     }
 
-    it("keeps an effort chosen in the composer over the persona's", () => {
+    it("keeps an effort chosen in the composer over the persona's", async () => {
       useAgentStore.setState({ personas: [rankedPersona()] });
       offerOpus();
 
@@ -664,14 +675,210 @@ describe("useChatSessionController", () => {
       act(() => {
         result.current.handleReasoningEffortChange("low");
       });
-      act(() => {
-        result.current.handlePersonaChange("persona-1");
+      await act(async () => {
+        await result.current.handlePersonaChange("persona-1");
       });
 
       expect(result.current.pendingRunSettings).toEqual({
         effort: "low",
         fast: true,
       });
+    });
+
+    it("uses the native returned first target and its native run settings", async () => {
+      useAgentStore.setState({
+        personas: [
+          personaFixture({
+            modelRanking: serializeAgentModelRanking({
+              version: 1,
+              entries: [
+                {
+                  platform: "claude-acp",
+                  modelId: "claude-opus-5",
+                  label: "Opus",
+                  effort: "xhigh",
+                  fastMode: true,
+                },
+                {
+                  platform: "claude-acp",
+                  modelId: "gpt-5.4",
+                  label: "Example alternate",
+                  effort: "low",
+                  fastMode: false,
+                },
+              ],
+            }),
+          }),
+        ],
+      });
+      offerOpus();
+      mockPickerState.availableModels.push({
+        id: "gpt-5.4",
+        name: "GPT-5.4",
+        providerId: "claude-acp",
+        efforts: OPUS_EFFORTS,
+        supportsFast: true,
+      });
+      useChatStore
+        .getState()
+        .setDraft("__home_pending__", "Check an invented example.");
+      mockExecutorSelect.mockImplementationOnce(async (request: unknown) => {
+        const input = request as {
+          candidates: { configuration: Record<string, unknown> }[];
+        };
+        return {
+          source: "prior",
+          chosen: input.candidates[1].configuration,
+        } as never;
+      });
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: null, isHomeSession: true }),
+      );
+      await act(async () => {
+        await result.current.handlePersonaChange("persona-1");
+      });
+      expect(mockExecutorSelect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          surface: "chat",
+          hardCandidateId: null,
+          modelId: null,
+        }),
+        false,
+      );
+      expect(result.current.currentModelId).toBe("gpt-5.4");
+      expect(result.current.pendingRunSettings).toEqual({
+        effort: "low",
+        fast: false,
+      });
+    });
+
+    it("does not replace a newer manual model pick with an unresolved persona choice", async () => {
+      useAgentStore.setState({ personas: [rankedPersona()] });
+      offerOpus();
+      useChatStore
+        .getState()
+        .setDraft("__home_pending__", "Check an invented example.");
+      const lookup = deferred<never>();
+      mockExecutorSelect.mockReturnValueOnce(lookup.promise);
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: null, isHomeSession: true }),
+      );
+      let personaChoice!: Promise<void>;
+      act(() => {
+        personaChoice = result.current.handlePersonaChange("persona-1");
+      });
+      act(() => {
+        result.current.handleModelChange("gpt-5.4");
+      });
+      await act(async () => {
+        lookup.resolve(null as never);
+        await personaChoice;
+      });
+      expect(result.current.currentModelId).toBe("gpt-5.4");
+    });
+
+    it.each([
+      { label: "absent", effort: undefined, expected: undefined },
+      { label: "partial", effort: "low", expected: { effort: "low" } },
+    ])("replaces previous persona settings with a new $label initial choice", async ({
+      effort,
+      expected,
+    }) => {
+      const persona = personaFixture({
+        modelRanking: serializeAgentModelRanking({
+          version: 1,
+          entries: [
+            {
+              platform: "claude-acp",
+              modelId: "claude-opus-5",
+              label: "Opus",
+              ...(effort ? { effort } : {}),
+            },
+          ],
+        }),
+      });
+      useAgentStore.setState({ personas: [persona] });
+      offerOpus();
+      useChatSessionStore.setState({
+        sessions: [
+          sessionFixture({
+            creationState: "pending",
+            desiredRunSettings: { effort: "xhigh", fast: true },
+          }),
+        ],
+      });
+      mockExecutorSelect.mockImplementationOnce(
+        async (request: unknown) =>
+          ({
+            source: "prior",
+            chosen: (request as { candidates: { configuration: unknown }[] })
+              .candidates[0].configuration,
+          }) as never,
+      );
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      await act(async () => {
+        await result.current.handlePersonaChange("persona-1");
+      });
+      expect(
+        useChatSessionStore.getState().getSession("session-1")
+          ?.desiredRunSettings,
+      ).toEqual(expected);
+    });
+
+    it("clears stale initial persona settings while preserving the composer's explicit effort", async () => {
+      useAgentStore.setState({
+        personas: [
+          personaFixture({
+            modelRanking: serializeAgentModelRanking({
+              version: 1,
+              entries: [
+                {
+                  platform: "claude-acp",
+                  modelId: "claude-opus-5",
+                  label: "Opus",
+                },
+              ],
+            }),
+          }),
+        ],
+      });
+      offerOpus();
+      useChatSessionStore.setState({
+        sessions: [
+          sessionFixture({
+            creationState: "pending",
+            desiredRunSettings: { effort: "xhigh", fast: true },
+            reasoningEffort: {
+              configId: "effort",
+              currentValue: "low",
+              options: OPUS_EFFORTS,
+            },
+          }),
+        ],
+      });
+      mockExecutorSelect.mockImplementationOnce(
+        async (request: unknown) =>
+          ({
+            source: "prior",
+            chosen: (request as { candidates: { configuration: unknown }[] })
+              .candidates[0].configuration,
+          }) as never,
+      );
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      act(() => {
+        result.current.handleReasoningEffortChange("low");
+      });
+      await act(async () => {
+        await result.current.handlePersonaChange("persona-1");
+      });
+      expect(
+        useChatSessionStore.getState().getSession("session-1")
+          ?.desiredRunSettings,
+      ).toEqual({ effort: "low" });
     });
   });
 
@@ -1662,6 +1869,7 @@ describe("useChatSessionController", () => {
       useChatStore.getState().queuedMessageBySession.__home_pending__?.[0]
         ?.payload,
     ).toEqual({
+      executorRequestKey: expect.any(String),
       persona: { kind: "inherit" },
       text: "",
       attachments: [imageDraft],
@@ -1693,6 +1901,7 @@ describe("useChatSessionController", () => {
           "session-home-attachments"
         ]?.[0]?.payload,
       ).toEqual({
+        executorRequestKey: expect.any(String),
         persona: { kind: "inherit" },
         text: "",
         attachments: [imageDraft],
