@@ -934,6 +934,10 @@ it("asks for the fitted model of every other step class and freezes the class ma
   await choose(user, "Persona comparator", "claude-acp / model-1 / high");
   const save = screen.getByRole("button", { name: "Save comparison plan" });
   expect(save).toBeDisabled();
+  // The invented step role is not a conductor worker role.
+  expect(
+    screen.getByText(/Conductor waves can name only their worker roles/),
+  ).toHaveTextContent("invented-code-review");
   await choose(user, "Model for Review and audit steps", / · review-f/);
   expect(save).toBeEnabled();
   await user.click(save);

@@ -740,7 +740,8 @@
     "classModels": "Modelos para otras clases de pasos",
     "classModelsHint": "Estos flujos tienen pasos de otra clase de trabajo. Elige el modelo ajustado para cada clase; todos los modelos de clase deben usar los mismos pesos de utilidad.",
     "classSequenceMismatch": "Los flujos seleccionados no comparten una misma secuencia de clases de pasos. Elige flujos cuyos pasos usen las mismas clases en el mismo orden.",
-    "classModel": "Modelo para los pasos de {{workClass}}"
+    "classModel": "Modelo para los pasos de {{workClass}}",
+    "unusableWaveRoles": "Las oleadas del conductor solo pueden nombrar sus roles de trabajador, y estos roles de paso no están entre ellos: {{roles}}. Un certificado para esta trayectoria nunca se usaría; la comparación queda solo como investigación."
   },
   "governance": {
     "revocationReason": "Motivo de revocación",

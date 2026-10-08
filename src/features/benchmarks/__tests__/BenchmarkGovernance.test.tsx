@@ -10,14 +10,16 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkGovernanceApi as api } from "../api/benchmarkGovernance";
-import type {
-  DeploymentContract,
-  PromotionRegistration,
-  PromotionState,
-  QualificationBinding,
-  QualificationRecord,
-  QualificationRequest,
-  RegisteredPromotionRule,
+import { workerLayerRoleIds } from "@/features/conductor/roleLayers";
+import {
+  type DeploymentContract,
+  type PromotionRegistration,
+  type PromotionState,
+  type QualificationBinding,
+  type QualificationRecord,
+  type QualificationRequest,
+  type RegisteredPromotionRule,
+  rolesWavesCannotName,
 } from "../lib/benchmarkGovernance";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import { BenchmarkQualificationPanel } from "../ui/BenchmarkQualificationPanel";
@@ -661,6 +663,9 @@ it("registers and shows the exact native trajectory a mixed-role campaign evalua
   expect(
     await screen.findByText(/exact 2-step trajectory with a 120 s root budget/),
   ).toBeVisible();
+  expect(
+    screen.getByText(/Conductor waves can name only their worker roles/),
+  ).toHaveTextContent("invented-reviewer");
   await user.click(
     screen.getByRole("button", { name: "Approve and freeze deployment rule" }),
   );
@@ -705,4 +710,11 @@ it("says a trajectory certificate covers only its exact step sequence", async ()
   expect(
     await screen.findByText(/covers only its exact 2-step trajectory/),
   ).toBeVisible();
+});
+
+it("names only the step roles a conductor wave cannot use", () => {
+  const worker = workerLayerRoleIds()[0];
+  expect(
+    rolesWavesCannotName([worker, null, "invented-role", "invented-role"]),
+  ).toEqual(["invented-role"]);
 });

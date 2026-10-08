@@ -1,3 +1,4 @@
+import { isWorkerLayerRole } from "@/features/conductor/roleLayers";
 import type { BenchmarkDraft, Evaluation } from "../types";
 
 // Mirrors the native qualification and promotion wire contracts.
@@ -141,4 +142,16 @@ export interface PromotionState {
   certificate: PromotionCertificate;
   revokedAt: number | null;
   revocationReason: string | null;
+}
+
+/**
+ * Step roles a conductor wave cannot name. Only waves use a trajectory
+ * certificate, so one for these roles would never select a worker.
+ */
+export function rolesWavesCannotName(
+  roleIds: readonly (string | null | undefined)[],
+): string[] {
+  return [...new Set(roleIds.filter((id): id is string => Boolean(id)))].filter(
+    (id) => !isWorkerLayerRole(id),
+  );
 }

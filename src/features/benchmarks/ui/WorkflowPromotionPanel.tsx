@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { Alert, AlertDescription } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkGovernanceApi as api } from "../api/benchmarkGovernance";
-import type {
-  DeploymentContract,
-  PromotionRegistration,
-  PromotionState,
-  RegisteredPromotionRule,
+import {
+  type DeploymentContract,
+  type PromotionRegistration,
+  type PromotionState,
+  type RegisteredPromotionRule,
+  rolesWavesCannotName,
 } from "../lib/benchmarkGovernance";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import { BenchmarkAlert, Field } from "./BenchmarkPrimitives";
@@ -145,6 +147,9 @@ export function WorkflowPromotionPanel({
   });
   const contract = deployment.data?.contract ?? null;
   const trajectory = deployment.data?.trajectory ?? null;
+  const unusableRoles = trajectory
+    ? rolesWavesCannotName(trajectory.steps.map((step) => step.roleId))
+    : [];
   const ids = qualificationIds.split(/[\s,]+/).filter(Boolean);
   const valid =
     Boolean(contract) &&
@@ -341,6 +346,15 @@ export function WorkflowPromotionPanel({
                   )}
                 </Field>
                 <p className="text-xs">{t("promotion.scopeHint")}</p>
+                {unusableRoles.length ? (
+                  <Alert>
+                    <AlertDescription>
+                      {t("campaign.unusableWaveRoles", {
+                        roles: unusableRoles.join(", "),
+                      })}
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
                 {trajectory ? (
                   <p className="text-xs">
                     {t("promotion.trajectoryScope", {

@@ -2,11 +2,13 @@ import { useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
+import { Alert, AlertDescription } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
 import { Input } from "@/shared/ui/input";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
+import { rolesWavesCannotName } from "../lib/benchmarkGovernance";
 import { shortId, workClassLabel } from "../lib/benchmarkLabels";
 import {
   selectorTaskGroup,
@@ -18,6 +20,15 @@ import type {
 } from "../lib/workflowCampaign";
 import type { BenchmarkVersion } from "../types";
 import { BenchmarkAlert, Field, SelectField } from "./BenchmarkPrimitives";
+
+/** The role of every step, in order: its own scope, else the root's. */
+function stepRoles(version: BenchmarkVersion): (string | null)[] {
+  return (
+    version.manifest.workflow?.steps.map(
+      (step) => step.scope?.roleId ?? version.manifest.roleId,
+    ) ?? []
+  );
+}
 
 /** The work class of every step, in order: its own scope, else the root's. */
 function stepClasses(version: BenchmarkVersion): string[] {
@@ -100,6 +111,11 @@ export function WorkflowCampaignForm({
     .filter((workClass) => workClass !== artifact.model.workClassId)
     .sort();
   const mixed = otherClasses.length > 0;
+  // Steps that change role or class are certified as a trajectory, and only
+  // a conductor wave can follow one.
+  const roles = chosen.flatMap(stepRoles);
+  const unusableRoles =
+    mixed || new Set(roles).size > 1 ? rolesWavesCannotName(roles) : [];
   const classModelsReady =
     !mixed ||
     (sequences.size === 1 &&
@@ -206,6 +222,7 @@ export function WorkflowCampaignForm({
                 "Campaign requires distinct held-out cases, a request key and bounded repetitions, time and executions",
                 "Campaign version is not in the current pool",
                 "Campaign requires objective workflows",
+                "The fit weights speed or cost that its training measurements did not record; the comparison could not score them. Refit with those weights at zero, or measure with them recorded",
                 "Campaign needs unused held-out workflow families in the fitted scope and all required repetitions/budgets",
                 "Campaign requires four independent declared groups",
                 "Campaign execution budget does not cover all policies and repetitions",
@@ -324,6 +341,15 @@ export function WorkflowCampaignForm({
           />
         )}
       </Field>
+      {unusableRoles.length ? (
+        <Alert>
+          <AlertDescription>
+            {t("campaign.unusableWaveRoles", {
+              roles: unusableRoles.join(", "),
+            })}
+          </AlertDescription>
+        </Alert>
+      ) : null}
       {mixed ? (
         <fieldset disabled={locked} className="space-y-2">
           <legend className="text-sm">{t("campaign.classModels")}</legend>

@@ -642,3 +642,45 @@ async fn reservations_cover_historical_relations_exposure_and_existing_holdouts(
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn a_cost_weighted_fit_without_recorded_costs_refuses_before_any_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(OfflineWorkers::default());
+    backend.no_cost.store(true, Ordering::SeqCst);
+    let service = open(dir.path(), backend.clone()).await;
+    let (train, weighted) = training(&service).await;
+    let roots = roots(&service, &train, "unpriced").await;
+    let calls = backend.calls.load(Ordering::SeqCst);
+    let error = service
+        .freeze_workflow_campaign(request(&weighted, &roots, "unpriced-weighted"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("did not record"),
+        "{}",
+        error.message
+    );
+    // The same measurements with cost left out of the weights are comparable.
+    let unweighted = learned::fit(
+        &service.query_data().await.unwrap(),
+        learned::FitRequest {
+            work_class_id: "debug".into(),
+            version_ids: train.iter().map(|v| v.id.clone()).collect(),
+            configurations: configurations(),
+            cutoff_at: now(),
+            weights: RoleWeights {
+                quality: 0.85,
+                speed: 0.15,
+                cost: 0.0,
+            },
+        },
+    )
+    .unwrap();
+    service.store.save_selector_fit(&unweighted).await.unwrap();
+    service
+        .freeze_workflow_campaign(request(&unweighted, &roots, "unpriced-unweighted"))
+        .await
+        .unwrap();
+    assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
+}

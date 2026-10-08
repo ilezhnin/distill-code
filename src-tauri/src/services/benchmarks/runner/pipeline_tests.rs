@@ -27,6 +27,8 @@ struct OfflineWorkers {
     prepare_calls: AtomicU64,
     changed_runtime: std::sync::atomic::AtomicBool,
     wrong_ack: std::sync::atomic::AtomicBool,
+    /// Workers whose usage reports no cost, like a runtime without prices.
+    no_cost: std::sync::atomic::AtomicBool,
 }
 
 fn configurations() -> Vec<Configuration> {
@@ -348,7 +350,7 @@ impl ExecutionBackend for OfflineWorkers {
             attempt.duration_ms = Some(10);
             attempt.native_execution_ms = Some(8);
             attempt.finished_at = Some(now());
-            attempt.usage.cost = Some(0.01);
+            attempt.usage.cost = (!self.no_cost.load(Ordering::SeqCst)).then_some(0.01);
             attempt.usage.schema = "offline-pipeline-v1".into();
             let events = if self.native_v2_inventory {
                 self.native_fixture_events(&mut attempt).await?

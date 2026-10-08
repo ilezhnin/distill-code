@@ -740,7 +740,8 @@
     "classModels": "Models for other step classes",
     "classModelsHint": "These workflows have steps of another work class. Choose the model fitted for each class; every class model must use the same utility weights.",
     "classSequenceMismatch": "The selected workflows do not share one step class sequence. Choose workflows whose steps use the same classes in the same order.",
-    "classModel": "Model for {{workClass}} steps"
+    "classModel": "Model for {{workClass}} steps",
+    "unusableWaveRoles": "Conductor waves can name only their worker roles, and these step roles are not among them: {{roles}}. A certificate for this trajectory would never be used; the comparison remains research only."
   },
   "governance": {
     "revocationReason": "Reason for revocation",

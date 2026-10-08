@@ -137,6 +137,24 @@ impl Plan {
     }
 }
 
+/// Whether the training measurements recorded every resource the fit weights
+/// for each successful answer. The same workers will not record it in the
+/// comparison either, and its report refuses an unknown weighted resource
+/// only after every execution; this lets freezing refuse first.
+fn weighted_resources_recorded(fit: &learned::FitArtifact) -> bool {
+    let weights = fit.model.weights;
+    fit.snapshot.examples.iter().all(|example| {
+        example
+            .targets
+            .iter()
+            .filter(|target| target.reward.is_some_and(|reward| reward > 0.0))
+            .all(|target| {
+                (weights.speed == 0.0 || target.mean_duration_ms.is_some())
+                    && (weights.cost == 0.0 || target.mean_cost.is_some())
+            })
+    })
+}
+
 /// Equal weight per declared training group, using only the fitted snapshot.
 /// The same complete training cases determine every worker's fixed ordering.
 pub(super) fn aggregate_order(
@@ -229,6 +247,11 @@ impl BenchmarkService {
             }
         } else {
             fits.insert(fit.model.work_class_id.clone(), fit.clone());
+        }
+        if !fits.values().all(weighted_resources_recorded) {
+            return Err(invalid(
+                "The fit weights speed or cost that its training measurements did not record; the comparison could not score them. Refit with those weights at zero, or measure with them recorded",
+            ));
         }
         let data = self.query_data().await?;
         let pool = super::analysis::pool(&data, &ResultQuery::default());
