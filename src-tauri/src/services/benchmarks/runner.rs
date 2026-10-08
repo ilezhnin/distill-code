@@ -3489,6 +3489,7 @@ impl BenchmarkService {
         self.recover_interrupted().await?;
         self.bake_closed_windows().await?;
         super::campaigns::tick(self).await?;
+        super::workflow_campaign::tick(self).await?;
         // Attempts and judge panels in flight, each its own task; each settles
         // its own attempt and frees its slot, and the next fill takes the slot
         // up again.
@@ -3525,6 +3526,15 @@ impl BenchmarkService {
             .unbaked_runs(at - super::analysis::RUN_WINDOW_MS)
             .await?
         {
+            if self
+                .store
+                .workflow_campaign_owns(&run.request.request_key)
+                .await?
+            {
+                // A campaign owns first attempts across its whole repetition
+                // series; ordinary sitting expiry must not supersede them.
+                continue;
+            }
             if self.flying(&run.id).await > 0 {
                 continue;
             }
@@ -4042,7 +4052,12 @@ impl BenchmarkService {
     /// nothing starts once the run's window closed.
     async fn dispatchable(&self, run: &BenchmarkRun) -> Result<Vec<(Attempt, BenchmarkVersion)>> {
         let mut ready = Vec::new();
-        if now() >= super::analysis::window_closes(run) {
+        if now() >= super::analysis::window_closes(run)
+            && !self
+                .store
+                .workflow_campaign_owns(&run.request.request_key)
+                .await?
+        {
             return Ok(ready);
         }
         let mut versions: std::collections::HashMap<String, BenchmarkVersion> =

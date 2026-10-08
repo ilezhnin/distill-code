@@ -20,6 +20,7 @@ pub mod store;
 pub mod types;
 pub mod worker;
 pub mod workflow;
+pub mod workflow_campaign;
 pub mod workflow_policy;
 
 use std::collections::{BTreeSet, HashMap};
@@ -206,6 +207,7 @@ impl BenchmarkState {
     }
     pub async fn park(&self) -> Result<()> {
         if let Some(service) = self.service.get() {
+            service.store.park_workflow_campaigns().await?;
             for run in service.store.active_runs().await? {
                 if run.state == "running" {
                     service.store.set_run_state(&run.id, "pausing").await?;
@@ -523,6 +525,9 @@ impl BenchmarkService {
         let replaced =
             if let Some(previous_id) = replace_run_id {
                 let previous = self.store.run(previous_id).await?;
+                self.store
+                    .require_independent_run(&previous.request.request_key)
+                    .await?;
                 if previous.baked_at.is_some()
                     || previous.request.preview
                     || request.preview
@@ -601,6 +606,7 @@ impl BenchmarkService {
             }
             return Ok(run);
         }
+        workflow_campaign::check_admission(&mut tx, &request).await?;
         // Persist the seeded cell order before any cell can become runnable.
         for version in &versions {
             routing::persist_snapshot(&mut tx, &routing::snapshot(&id, version, &request)).await?;
@@ -637,6 +643,9 @@ impl BenchmarkService {
     /// window closed the run is final and nothing resumes it.
     pub async fn control(&self, id: &str, action: &str) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
+        self.store
+            .require_independent_run(&run.request.request_key)
+            .await?;
         let next = match (action, run.state.as_str()) {
             ("pause", "running") => "pausing",
             ("pause", "pausing" | "paused") => return Ok(run),
@@ -703,6 +712,9 @@ impl BenchmarkService {
                 "Research workflow policy conditions are frozen",
             ));
         }
+        self.store
+            .require_independent_run(&run.request.request_key)
+            .await?;
         if run.baked_at.is_some() || now() >= analysis::window_closes(&run) {
             return Err(BenchmarkError::new(
                 "validation",
@@ -950,6 +962,9 @@ impl BenchmarkService {
             ));
         }
         let mut a = self.store.attempt(id).await?;
+        self.store
+            .require_independent_run(&self.store.run(&a.run_id).await?.request.request_key)
+            .await?;
         let v = self.store.version(&a.version_id).await?;
         let visual = matches!(v.manifest.evaluator.kind.as_str(), "javascript" | "browser");
         let rubric = if visual {
@@ -1034,6 +1049,9 @@ impl BenchmarkService {
                 "Only a finished attempt can be rescored",
             ));
         }
+        self.store
+            .require_independent_run(&self.store.run(&a.run_id).await?.request.request_key)
+            .await?;
         // Budget failures, cancellations, exclusions and infrastructure outcomes
         // keep their recorded outcome; only an evaluated result is evaluated again.
         if !matches!(

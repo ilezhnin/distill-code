@@ -9,6 +9,7 @@ pub mod report;
 pub(super) mod tests;
 
 use super::{routing, selector::RoleWeights, types::*};
+pub(super) use features::scope_hash;
 pub use fit::fit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

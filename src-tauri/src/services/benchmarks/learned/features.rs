@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn scope_hash(task: &PublicTask) -> Result<String> {
+pub(in crate::services::benchmarks) fn scope_hash(task: &PublicTask) -> Result<String> {
     let mut permissions = task.permissions.clone();
     permissions.tools.sort();
     permissions.tools.dedup();

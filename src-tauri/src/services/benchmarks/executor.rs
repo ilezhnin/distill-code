@@ -197,6 +197,7 @@ impl Store {
     pub(super) async fn prepare_workflow_research_decision(
         &self,
         request: Request,
+        mode: &str,
     ) -> Result<Decision> {
         if request.surface != "benchmark" {
             return Err(error(
@@ -208,6 +209,10 @@ impl Store {
             return same_request(record.decision, &request);
         }
         let mut decision = self.preview_executor_decision(request).await?;
+        if mode == "aggregate" {
+            decision.source = "research_aggregate".into();
+            decision.reason = "workflow_frozen_aggregate_order".into();
+        }
         if decision.request.prediction.hard_candidate_key.is_none() {
             if let Some(prediction) = &decision.research_prediction {
                 if let Some(chosen) = &prediction.chosen {

@@ -422,6 +422,13 @@ impl Store {
         }
         for (kind, values) in [("family", families), ("group", groups)] {
             for value in values {
+                let shared = sqlx::query("INSERT OR IGNORE INTO evaluation_reservations(kind,value,owner_kind,owner_id) VALUES(?,?,'executor_holdout',?)")
+                    .bind(kind).bind(&value).bind(&plan.id).execute(&mut *tx).await?.rows_affected();
+                if shared == 0 {
+                    return Err(exposure_error(
+                        "A selected family or group is reserved by another evaluation",
+                    ));
+                }
                 let reserved = sqlx::query("INSERT OR IGNORE INTO selector_holdout_reservations(kind,value,plan_id) VALUES(?,?,?)")
                     .bind(kind).bind(value).bind(&plan.id).execute(&mut *tx).await?.rows_affected();
                 if reserved == 0 {

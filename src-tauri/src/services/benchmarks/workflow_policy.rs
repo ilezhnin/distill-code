@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowPolicy {
     pub model_id: String,
-    /// `learned`, `persona`, or `fixed`. All share the same candidate pool.
+    /// `learned`, `aggregate`, `persona`, or `fixed`, with the same candidate pool.
     pub mode: String,
     pub candidates: Vec<Configuration>,
     pub prior_ids: Vec<String>,
@@ -44,6 +44,17 @@ impl WorkflowPolicy {
         versions: &[BenchmarkVersion],
     ) -> Result<()> {
         let model = service.store.selector_model(&self.model_id).await?;
+        if self.mode == "aggregate"
+            && self.prior_ids
+                != super::workflow_campaign::aggregate_order(
+                    &service.store.selector_fit(&self.model_id).await?,
+                    &self.candidates,
+                )?
+        {
+            return Err(invalid(
+                "Aggregate preference must match the frozen fitted training snapshot",
+            ));
+        }
         let keys: BTreeSet<_> = self.candidates.iter().map(routing::candidate_key).collect();
         let ids: BTreeSet<_> = self.candidates.iter().map(|c| &c.id).collect();
         let prior: BTreeSet<_> = self.prior_ids.iter().collect();
@@ -52,11 +63,13 @@ impl WorkflowPolicy {
             .iter()
             .map(|c| c.candidate_key.clone())
             .collect();
-        if !matches!(self.mode.as_str(), "learned" | "persona" | "fixed")
-            || self
-                .candidates
-                .iter()
-                .any(|c| c.id.trim().is_empty() || c.id.len() > 256)
+        if !matches!(
+            self.mode.as_str(),
+            "learned" | "aggregate" | "persona" | "fixed"
+        ) || self
+            .candidates
+            .iter()
+            .any(|c| c.id.trim().is_empty() || c.id.len() > 256)
             || self.candidates.len() != keys.len()
             || self.candidates.len() != ids.len()
             || keys != fitted
@@ -189,7 +202,7 @@ impl WorkflowPolicy {
         }
         service
             .store
-            .prepare_workflow_research_decision(request)
+            .prepare_workflow_research_decision(request, &self.mode)
             .await
     }
 }

@@ -21,7 +21,7 @@ pub struct ReportProtocol {
     pub weights: RoleWeights,
 }
 impl ReportProtocol {
-    pub(super) fn new(weights: RoleWeights) -> Self {
+    pub(in crate::services::benchmarks) fn new(weights: RoleWeights) -> Self {
         Self {
             recipe: "family-paired-report-v1".into(),
             cell_selection: "first_planned_exact_candidate_all_repetitions".into(),
@@ -122,7 +122,11 @@ fn mean(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
 
 /// The earliest settled score is fixed even if the operator opens the report
 /// after a regrade. A different evaluator cannot silently replace this one.
-fn first_score(attempt: &Attempt, revision: &str, after: i64) -> Result<RepeatEvidence> {
+pub(in crate::services::benchmarks) fn first_score(
+    attempt: &Attempt,
+    revision: &str,
+    after: i64,
+) -> Result<RepeatEvidence> {
     let end = attempt
         .finished_at
         .ok_or_else(|| incomplete("Attempt has not finished"))?;
@@ -353,19 +357,34 @@ fn best_fixed(groups: &[Vec<&ReportCase>], sampled: &[usize], keys: &[String]) -
 
 fn summarize(cases: &[ReportCase], plan: &HoldoutPlan) -> Vec<PolicyResult> {
     let protocol = plan.evaluation.as_ref().expect("validated recipe");
+    let keys: Vec<_> = plan
+        .configurations
+        .iter()
+        .map(routing::candidate_key)
+        .collect();
+    summarize_policies(
+        cases,
+        protocol,
+        &plan.policies,
+        &keys,
+        &plan.request.persona_prior[0],
+    )
+}
+
+pub(in crate::services::benchmarks) fn summarize_policies(
+    cases: &[ReportCase],
+    protocol: &ReportProtocol,
+    policies: &[String],
+    keys: &[String],
+    persona: &str,
+) -> Vec<PolicyResult> {
     let mut grouped: BTreeMap<&str, Vec<&ReportCase>> = BTreeMap::new();
     for case in cases {
         grouped.entry(&case.group).or_default().push(case);
     }
     let groups: Vec<_> = grouped.into_values().collect();
     let all: Vec<_> = (0..groups.len()).collect();
-    let keys: Vec<_> = plan
-        .configurations
-        .iter()
-        .map(routing::candidate_key)
-        .collect();
-    let best = best_fixed(&groups, &all, &keys);
-    let persona = &plan.request.persona_prior[0];
+    let best = best_fixed(&groups, &all, keys);
     let metric =
         |policy: &str, fixed: &str, sampled: &[usize], measure: fn(&ReportCell) -> Option<f64>| {
             mean(sampled.iter().map(|i| {
@@ -377,7 +396,7 @@ fn summarize(cases: &[ReportCase], plan: &HoldoutPlan) -> Vec<PolicyResult> {
     let quality = |c: &ReportCell| Some(c.quality);
     let utility = |c: &ReportCell| Some(c.utility);
     let learned = metric("learned", &best, &all, utility).expect("complete");
-    let mut samples = vec![Vec::new(); plan.policies.len()];
+    let mut samples = vec![Vec::new(); policies.len()];
     let mut gains = samples.clone();
     // Fixed SplitMix64 stream; multiply-high maps to a group index. One shared
     // resample pairs all policies and retains all cases/repeats in each group.
@@ -394,9 +413,9 @@ fn summarize(cases: &[ReportCase], plan: &HoldoutPlan) -> Vec<PolicyResult> {
                 ((u128::from(z) * groups.len() as u128) >> 64) as usize
             })
             .collect();
-        let fixed = best_fixed(&groups, &sampled, &keys);
+        let fixed = best_fixed(&groups, &sampled, keys);
         let own = metric("learned", &fixed, &sampled, utility).expect("complete");
-        for (i, policy) in plan.policies.iter().enumerate() {
+        for (i, policy) in policies.iter().enumerate() {
             let value = metric(policy, &fixed, &sampled, utility).expect("complete");
             samples[i].push(value);
             gains[i].push(own - value);
@@ -415,7 +434,7 @@ fn summarize(cases: &[ReportCase], plan: &HoldoutPlan) -> Vec<PolicyResult> {
             upper: quantile(0.975),
         }
     };
-    plan.policies
+    policies
         .iter()
         .enumerate()
         .map(|(i, policy)| {

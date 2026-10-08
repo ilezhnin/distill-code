@@ -1,5 +1,10 @@
 import type { HistorySnapshot } from "../hooks/useBenchmarks";
 import type {
+  WorkflowCampaign,
+  WorkflowCampaignRequest,
+  WorkflowCampaignReport,
+} from "../lib/workflowCampaign";
+import type {
   SelectorFitRequest,
   SelectorFitSummary,
   SelectorFitArtifact,
@@ -180,6 +185,24 @@ export const benchmarkApi = {
     invoke<RunPreview>("benchmark_preview_run", { request }),
   previewWorkflowPolicy: (request: WorkflowPolicyRunRequest) =>
     invoke<RunPreview>("benchmark_preview_workflow_policy", { request }),
+  freezeWorkflowCampaign: (request: WorkflowCampaignRequest) =>
+    invoke<WorkflowCampaign>("benchmark_freeze_workflow_campaign", { request }),
+  listWorkflowCampaigns: () =>
+    invoke<WorkflowCampaign[]>("benchmark_list_workflow_campaigns"),
+  getWorkflowCampaign: (id: string) =>
+    invoke<WorkflowCampaign>("benchmark_get_workflow_campaign", { id }),
+  controlWorkflowCampaign: (
+    id: string,
+    action: "start" | "pause" | "resume" | "cancel",
+  ) =>
+    invoke<WorkflowCampaign>("benchmark_control_workflow_campaign", {
+      id,
+      action,
+    }),
+  workflowCampaignReport: (id: string) =>
+    invoke<WorkflowCampaignReport>("benchmark_workflow_campaign_report", {
+      id,
+    }),
   startWorkflowPolicy: (request: WorkflowPolicyRunRequest) =>
     invoke<BenchmarkRun>("benchmark_start_workflow_policy", { request }),
   getWorkflowTrace: (rootAttemptId: string) =>

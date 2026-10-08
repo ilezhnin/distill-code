@@ -709,6 +709,12 @@ impl Store {
             .bind(serde_json::to_string(attempt)?)
             .execute(&mut *tx)
             .await?;
+        super::workflow_campaign::check_reserved_versions(
+            &mut tx,
+            std::slice::from_ref(&attempt.version_id),
+            None,
+        )
+        .await?;
         event(&mut tx, &attempt.run_id, "run_changed").await?;
         tx.commit().await?;
         Ok(())
@@ -804,6 +810,7 @@ impl Store {
         Ok(())
     }
     pub async fn recover(&self) -> Result<()> {
+        self.park_workflow_campaigns().await?;
         // Never retry an attempt that may have crossed the host acceptance boundary.
         // A rendering awaiting its panel has a sealed generation; its run asks the
         // panel after resume, and reconciliation settles any judge turn cut off.

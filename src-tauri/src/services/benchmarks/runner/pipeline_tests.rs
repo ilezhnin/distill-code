@@ -7,6 +7,8 @@ use crate::services::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "workflow_campaign_tests.rs"]
+mod workflow_campaign_tests;
 #[path = "workflow_policy_tests.rs"]
 mod workflow_policy_tests;
 

@@ -74,7 +74,7 @@ pub(super) struct SavedStep {
     pub decision: Option<StepDecision>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceStep {
     pub index: usize,
@@ -87,7 +87,7 @@ pub struct TraceStep {
     pub executor_decision: Option<super::executor::Decision>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Trace {
     pub root: Attempt,

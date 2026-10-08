@@ -37,7 +37,7 @@ export interface ExecutorDecision {
   policyVersion: string;
   chosen: Configuration | null;
   chosenKey: string | null;
-  source: "pin" | "prior" | "none" | "research_learned";
+  source: "pin" | "prior" | "none" | "research_learned" | "research_aggregate";
   reason: string;
   learnedStatus: string;
   researchPrediction: SelectorPrediction | null;

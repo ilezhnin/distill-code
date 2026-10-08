@@ -138,6 +138,34 @@ requires qualified independent coverage, frozen baselines and a preregistered
 evaluation, resource accounting and complete workflow verification. Explicit
 model pins and current worker availability remain binding at dispatch.
 
+## Research workflow campaigns
+
+Research workflow comparisons can be frozen through
+`benchmark_freeze_workflow_campaign`, then explicitly started, paused, resumed
+or cancelled through `benchmark_control_workflow_campaign`. Freezing makes no
+provider calls. The immutable plan binds the fit, candidate settings/accounts,
+unused held-out families, every policy, repetitions, budgets, execution order
+and report recipe. Learned, training-aggregate, persona and every fixed-worker
+policy run as separate complete trajectories in the same serial campaign.
+The aggregate order uses equal-group mean utility on common cases from the
+fit's saved training snapshot. Its order is checked before admission.
+
+Campaign reservations share family/group ownership with executor holdouts.
+Related versions cannot be run outside the registered campaign. Campaign child
+runs cannot be extended, replaced, manually rescored or resumed independently.
+Stopping the app pauses the campaign; explicit resume preserves its first
+attempts and never replaces an uncertain or failed trajectory. An unscored
+trajectory pauses the series; resuming can finish the remaining cells but cannot
+make that missing first measurement disappear.
+
+`benchmark_workflow_campaign_report` requires all planned first measurements.
+It compares whole trajectories with equal group weights, paired group bootstrap
+intervals, best-fixed reselection within each resample, and a hindsight upper
+bound over the registered policies. Timing covers whole workflow wall time;
+cost remains the reported generation cost. Missing weighted resources prevent
+a complete utility comparison. Reports and traces remain private local data.
+Exploratory intervals do not establish qualification or authorize promotion.
+
 ## Verification and maintenance
 
 Follow `AGENTS.md` for source checks, tests and Windows runtime validation.

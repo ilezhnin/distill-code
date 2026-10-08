@@ -107,7 +107,7 @@ export interface Configuration {
 }
 export interface WorkflowPolicy {
   modelId: string;
-  mode: "learned" | "persona" | "fixed";
+  mode: "learned" | "aggregate" | "persona" | "fixed";
   candidates: Configuration[];
   priorIds: string[];
   fixedCandidateId: string | null;

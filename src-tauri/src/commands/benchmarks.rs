@@ -88,6 +88,51 @@ pub async fn benchmark_preview_workflow_policy(
     service(&app).await?.preview_run(&request.try_into()?).await
 }
 #[tauri::command]
+pub async fn benchmark_freeze_workflow_campaign(
+    app: AppHandle,
+    request: benchmarks::workflow_campaign::Request,
+) -> Result<benchmarks::workflow_campaign::Campaign> {
+    let s = service(&app).await?;
+    let result = s.freeze_workflow_campaign(request).await?;
+    s.changed().await;
+    Ok(result)
+}
+#[tauri::command]
+pub async fn benchmark_list_workflow_campaigns(
+    app: AppHandle,
+) -> Result<Vec<benchmarks::workflow_campaign::Campaign>> {
+    service(&app).await?.store.workflow_campaigns().await
+}
+#[tauri::command]
+pub async fn benchmark_get_workflow_campaign(
+    app: AppHandle,
+    id: String,
+) -> Result<benchmarks::workflow_campaign::Campaign> {
+    service(&app).await?.store.workflow_campaign(&id).await
+}
+#[tauri::command]
+pub async fn benchmark_control_workflow_campaign(
+    app: AppHandle,
+    id: String,
+    action: String,
+) -> Result<benchmarks::workflow_campaign::Campaign> {
+    service(&app)
+        .await?
+        .control_workflow_campaign(&id, &action)
+        .await
+}
+#[tauri::command]
+pub async fn benchmark_workflow_campaign_report(
+    app: AppHandle,
+    id: String,
+) -> Result<benchmarks::workflow_campaign::report::Report> {
+    service(&app)
+        .await?
+        .store
+        .workflow_campaign_report(&id)
+        .await
+}
+#[tauri::command]
 pub async fn benchmark_start_workflow_policy(
     app: AppHandle,
     request: benchmarks::workflow_policy::WorkflowRunRequest,
