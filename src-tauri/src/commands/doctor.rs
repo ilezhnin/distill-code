@@ -816,8 +816,8 @@ fn managed_bridge_probe(
 
 /// The upstream doctor resolver joins bare executable names onto PATH entries.
 /// Windows does not apply PATHEXT to that manual join, so Distill's intentional
-/// `<binary>.cmd` managed shims are invisible there. Re-probe only managed
-/// Windows bridges from the exact managed directory and repair those results;
+/// `<binary>.cmd` shims are invisible there. Re-probe Windows bridge identities
+/// from the exact managed or developer override directory and repair those results;
 /// other checks and platforms remain upstream-owned.
 pub(crate) async fn repair_windows_managed_bridge_checks(
     checks: &mut [doctor::DoctorCheck],
@@ -828,17 +828,36 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
     let _ = (checks, bundled_tools_dir, env_vars);
 
     #[cfg(windows)]
-    for tool in managed_acp_tools::managed_tools() {
+    for tool in managed_acp_tools::MANAGED_TOOLS {
         let check_id = crate::commands::agent_setup::crate_check_id(tool.id);
         let Some(check) = checks.iter_mut().find(|check| check.id == check_id) else {
             continue;
         };
         let shim_path = bundled_tools_dir.join(format!("{}.cmd", tool.binary));
+        let explicit_override =
+            managed_acp_tools::dev_tools_override_dir().is_some_and(|dir| dir == bundled_tools_dir);
         if !shim_path.is_file() {
+            if explicit_override {
+                check.status = CheckStatus::Fail;
+                check.message = "Developer override provider runtime is missing".into();
+                check.path = None;
+                check.bridge_path = None;
+                check.auth_status = None;
+                check.fix_url = None;
+                check.fix_type = None;
+                check.fix_command = None;
+                check.install_source = None;
+                check.main = None;
+                check.bridge = None;
+                check.raw_output = Some(format!(
+                    "Missing developer override: {}",
+                    shim_path.display()
+                ));
+            }
             continue;
         }
 
-        let (args, probe_label) = managed_bridge_probe(tool);
+        let (args, probe_label) = managed_bridge_probe(*tool);
         let mut command = Command::new(&shim_path);
         command
             .args(args)
@@ -877,7 +896,7 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
         check.status = status;
         check.message = message;
         check.fix_url = None;
-        check.fix_type = fix_type;
+        check.fix_type = if explicit_override { None } else { fix_type };
         check.fix_command = fix_command;
         check.path = Some(shim_path.to_string_lossy().into_owned());
         check.bridge_path = None;
@@ -898,6 +917,89 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
     }
 }
 
+#[cfg(windows)]
+async fn windows_override_bridge_checks(
+    override_dir: &Path,
+    env_vars: &[(String, String)],
+) -> Vec<doctor::DoctorCheck> {
+    // The explicit directory supplies these identities independently of the
+    // install-enabled set. Do not probe another install, auth CLI or registry.
+    let mut checks = managed_acp_tools::MANAGED_TOOLS
+        .iter()
+        .map(|tool| {
+            let meta = LocalCheckMeta {
+                id: tool.id,
+                label: crate::services::agent_host::harness::harness(tool.id)
+                    .map_or(tool.id, |spec| spec.label),
+                category: AGENTS_CATEGORY,
+                category_label: AGENTS_CATEGORY_LABEL,
+                fix: None,
+                fix_url: None,
+                debug_output: None,
+            };
+            let mut check: doctor::DoctorCheck = build_local_result(
+                &meta,
+                CheckStatus::Fail,
+                "Developer override runtime not checked",
+                None,
+                None,
+            )
+            .into();
+            check.id = crate::commands::agent_setup::crate_check_id(tool.id);
+            check
+        })
+        .collect::<Vec<_>>();
+    repair_windows_managed_bridge_checks(&mut checks, override_dir, env_vars).await;
+    checks
+}
+
+#[cfg(windows)]
+async fn windows_override_system_checks(env_vars: &[(String, String)]) -> Vec<doctor::DoctorCheck> {
+    let mut vars = env_vars.to_vec();
+    // The upstream resolver's snapshot lookup is case-sensitive. Windows's
+    // captured `Path` must be visible as `PATH` for the same discovery view.
+    if let Some((_, value)) = vars
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+    {
+        let value = value.clone();
+        vars.retain(|(key, _)| !key.eq_ignore_ascii_case("PATH"));
+        vars.push(("PATH".into(), value));
+    }
+    tokio::task::spawn_blocking(move || {
+        let env = doctor::DoctorEnv::new(vars);
+        let git = doctor::resolve::resolve_binary_with_env("git", &env);
+        let gh = doctor::resolve::resolve_binary_with_env("gh", &env);
+        let lfs = doctor::resolve::resolve_binary_with_env("git-lfs", &env);
+        vec![
+            doctor::checks::check_git(&git, Some(&env)),
+            doctor::checks::check_gh(&gh, Some(&env)),
+            doctor::checks::check_gh_auth(&gh, Some(&env)),
+            doctor::checks::check_git_lfs(&git, &lfs, Some(&env)),
+        ]
+    })
+    .await
+    .unwrap_or_else(|error| {
+        let meta = LocalCheckMeta {
+            id: "doctor-override-health",
+            label: "Environment health",
+            category: ENVIRONMENT_HEALTH_CATEGORY,
+            category_label: ENVIRONMENT_HEALTH_CATEGORY_LABEL,
+            fix: None,
+            fix_url: None,
+            debug_output: None,
+        };
+        vec![build_local_result(
+            &meta,
+            CheckStatus::Fail,
+            "Environment health checks failed",
+            None,
+            Some(error.to_string()),
+        )
+        .into()]
+    })
+}
+
 /// Account authorization belongs to Distill's registry, independently of any
 /// login discovered by the upstream CLI diagnostics.
 pub(crate) fn apply_managed_account_checks(app: &AppHandle, checks: &mut [doctor::DoctorCheck]) {
@@ -908,7 +1010,7 @@ pub(crate) fn apply_managed_account_checks(app: &AppHandle, checks: &mut [doctor
         let Some(check) = checks.iter_mut().find(|check| check.id == id) else {
             continue;
         };
-        if check.path.is_none() {
+        if check.path.is_none() || check.status == CheckStatus::Fail {
             continue;
         }
         let connected = accounts.as_ref().ok().is_some_and(|snapshot| {
@@ -920,28 +1022,36 @@ pub(crate) fn apply_managed_account_checks(app: &AppHandle, checks: &mut [doctor
                     provider_accounts::account_has_credentials(app, account).unwrap_or(false)
                 })
         });
-        check.auth_status = Some(if connected {
-            AuthStatus::Authenticated
+        apply_managed_account_authorization(check, connected);
+    }
+}
+
+fn apply_managed_account_authorization(check: &mut doctor::DoctorCheck, connected: bool) {
+    // Credentials cannot make a missing or failed runtime executable usable.
+    if check.path.is_none() || check.status == CheckStatus::Fail {
+        return;
+    }
+    check.auth_status = Some(if connected {
+        AuthStatus::Authenticated
+    } else {
+        AuthStatus::NotAuthenticated
+    });
+    if check.fix_type == Some(FixType::Auth) {
+        check.fix_type = None;
+        check.fix_command = None;
+    }
+    if check.fix_type.is_none() {
+        check.status = if connected {
+            CheckStatus::Pass
         } else {
-            AuthStatus::NotAuthenticated
-        });
-        if check.fix_type == Some(FixType::Auth) {
-            check.fix_type = None;
-            check.fix_command = None;
+            CheckStatus::Warn
+        };
+        check.message = if connected {
+            "Installed"
+        } else {
+            "Sign in to an account in Settings > AI providers"
         }
-        if check.fix_type.is_none() {
-            check.status = if connected {
-                CheckStatus::Pass
-            } else {
-                CheckStatus::Warn
-            };
-            check.message = if connected {
-                "Installed"
-            } else {
-                "Sign in to an account in Settings > AI providers"
-            }
-            .into();
-        }
+        .into();
     }
 }
 
@@ -960,31 +1070,49 @@ async fn run_doctor_impl(
     // private-prefix view the fixes install into, so a check never contradicts
     // the fix that just ran.
     let doctor_env_vars = managed_acp_tools::provider_setup_env(app).await;
+    #[cfg(windows)]
+    let override_checks = if let Some(override_dir) = managed_acp_tools::dev_tools_override_dir() {
+        // An explicit override owns these two ACP identities. Upstream has no
+        // selective provider API and would probe auth/fallback installations;
+        // retain its general health checks without that provider fan-out.
+        let mut checks = windows_override_bridge_checks(&override_dir, &doctor_env_vars).await;
+        checks.extend(windows_override_system_checks(&doctor_env_vars).await);
+        Some(checks)
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
+    let override_checks: Option<Vec<doctor::DoctorCheck>> = None;
     let bundled_tools_dir = managed_acp_tools::bundled_tools_dir_for_checks(app);
     let managed_runtime = ManagedRuntimePaths::resolve(app);
-    let mut checks = doctor::run_checks_with_options(
-        doctor::RunChecksOptions {
-            npm_registry: crate::commands::agent_setup::npm_registry_for_distro(distro_state),
-            check_freshness,
-            // Freshness, when enabled, runs against the network (and the crate's
-            // 1-hour disk cache); `offline` would suppress the registry lookups we
-            // want here.
-            offline: false,
-            env: None,
-            // The crate labels binaries resolving from this dir as bundled
-            // (install source + readout flag) and suppresses registry
-            // install/update fixes for them — Distill installs and upgrades these
-            // bridges itself, so no manual update nag is shown.
-            bundled_tools_dir: bundled_tools_dir.clone(),
+    let mut checks = if let Some(checks) = override_checks {
+        checks
+    } else {
+        let mut report = doctor::run_checks_with_options(
+            doctor::RunChecksOptions {
+                npm_registry: crate::commands::agent_setup::npm_registry_for_distro(distro_state),
+                check_freshness,
+                // Freshness, when enabled, runs against the network (and the crate's
+                // 1-hour disk cache); `offline` would suppress the registry lookups we
+                // want here.
+                offline: false,
+                env: None,
+                // The crate labels binaries resolving from this dir as bundled
+                // (install source + readout flag) and suppresses registry
+                // install/update fixes for them — Distill installs and upgrades these
+                // bridges itself, so no manual update nag is shown.
+                bundled_tools_dir: bundled_tools_dir.clone(),
+            }
+            .with_env_snapshot(doctor_env_vars.clone()),
+        )
+        .await;
+        if let Some(dir) = bundled_tools_dir.as_deref() {
+            repair_windows_managed_bridge_checks(&mut report.checks, dir, &doctor_env_vars).await;
         }
-        .with_env_snapshot(doctor_env_vars.clone()),
-    )
-    .await;
-    if let Some(dir) = bundled_tools_dir.as_deref() {
-        repair_windows_managed_bridge_checks(&mut checks.checks, dir, &doctor_env_vars).await;
-    }
-    apply_managed_account_checks(app, &mut checks.checks);
-    let mut checks: Vec<DoctorCheck> = checks.checks.into_iter().map(DoctorCheck::from).collect();
+        report.checks
+    };
+    apply_managed_account_checks(app, &mut checks);
+    let mut checks: Vec<DoctorCheck> = checks.into_iter().map(DoctorCheck::from).collect();
     if doctor_internal_tooling_checks_enabled(runtime_config) {
         let local_checks = run_local_checks(registry, &doctor_env_vars.into_iter().collect()).await;
         checks.extend(local_checks);
@@ -1495,6 +1623,112 @@ mod tests {
         assert!(codex.raw_output.as_deref().is_some_and(
             |output| output.contains("exit code: 1") || output.contains("exit status: 1")
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checks_explicit_windows_override_without_managed_install_or_external_fallback() {
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("codex-acp.cmd"),
+            "@echo off\r\necho %1 %2>>\"%~dp0probes.txt\"\r\nif \"%1 %2\"==\"cli --version\" exit /b 0\r\nexit /b 9\r\n",
+        )
+        .unwrap();
+        let saved = std::env::var_os(managed_acp_tools::ACP_TOOLS_DIR_ENV);
+        // SAFETY: this test holds the crate-wide environment lock.
+        unsafe { std::env::set_var(managed_acp_tools::ACP_TOOLS_DIR_ENV, dir.path()) };
+        assert!(managed_acp_tools::managed_tools().is_empty());
+        let mut checks = vec![
+            upstream_check("ai-agent-claude"),
+            upstream_check("ai-agent-codex"),
+        ];
+        checks[0].path = Some("C:\\invented-external-cli\\claude.exe".into());
+        checks[1].status = CheckStatus::Warn;
+        checks[1].message = "Not installed".into();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(repair_windows_managed_bridge_checks(
+                &mut checks,
+                dir.path(),
+                &[],
+            ));
+        let healthy = checks[1].clone();
+        let probes = fs::read_to_string(dir.path().join("probes.txt")).unwrap();
+        fs::write(dir.path().join("codex-acp.cmd"), "@exit /b 9\r\n").unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(repair_windows_managed_bridge_checks(
+                &mut checks,
+                dir.path(),
+                &[],
+            ));
+        // Restore before assertions, including when the regression fails.
+        unsafe {
+            match saved {
+                Some(value) => std::env::set_var(managed_acp_tools::ACP_TOOLS_DIR_ENV, value),
+                None => std::env::remove_var(managed_acp_tools::ACP_TOOLS_DIR_ENV),
+            }
+        }
+        let codex = &healthy;
+        assert_eq!(codex.status, CheckStatus::Pass);
+        assert!(codex.path.as_deref().unwrap().ends_with("codex-acp.cmd"));
+        assert_eq!(codex.auth_status, None);
+        assert!(codex.fix_type.is_none());
+        assert_eq!(probes.trim(), "cli --version");
+        let broken = &checks[1];
+        assert_eq!(broken.status, CheckStatus::Fail);
+        assert!(broken.path.as_deref().unwrap().ends_with("codex-acp.cmd"));
+        assert!(broken.fix_type.is_none());
+        assert!(broken.fix_command.is_none());
+        let missing = &checks[0];
+        assert_eq!(missing.status, CheckStatus::Fail);
+        assert!(missing.path.is_none());
+        assert!(missing.fix_type.is_none());
+        assert!(missing.fix_command.is_none());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn override_keeps_system_health_without_provider_probe_fanout() {
+        let dir = tempfile::tempdir().unwrap();
+        for command in ["git", "gh", "git-lfs"] {
+            fs::write(dir.path().join(command), "invented inert executable").unwrap();
+        }
+        fs::write(
+            dir.path().join("codex-acp.cmd"),
+            "@echo provider-probed>\"%~dp0provider.txt\"\r\nexit /b 9\r\n",
+        )
+        .unwrap();
+        let vars = vec![("Path".into(), dir.path().to_string_lossy().into_owned())];
+        let checks = windows_override_system_checks(&vars).await;
+        assert_eq!(
+            checks
+                .iter()
+                .map(|check| check.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["git", "gh", "gh-auth", "git-lfs"]
+        );
+        assert!(checks.iter().all(|check| check.status != CheckStatus::Pass));
+        assert!(!dir.path().join("provider.txt").exists());
+        assert!(checks[0]
+            .path
+            .as_deref()
+            .is_some_and(|path| path.starts_with(dir.path().to_str().unwrap())));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn connected_account_cannot_mask_a_failed_override_runtime() {
+        let mut check = upstream_check("ai-agent-codex");
+        check.status = CheckStatus::Fail;
+        check.path = Some("C:\\invented-override\\codex-acp.cmd".into());
+        check.message = "Provider runtime could not start".into();
+        apply_managed_account_authorization(&mut check, true);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert_eq!(check.auth_status, None);
+        assert!(check.fix_type.is_none());
+        assert_eq!(check.message, "Provider runtime could not start");
     }
 
     fn grok_path_check() -> &'static LocalPathCheck {
