@@ -5496,6 +5496,9 @@ pub struct FakeBackend {
     pub peak_in_flight: std::sync::atomic::AtomicU64,
     /// Cancellation tests keep every dispatched turn open until cancelled.
     pub hold_turns: std::sync::atomic::AtomicBool,
+    /// When set, no turn finishes before this many have been in flight at
+    /// once, so overlap tests do not race a slow machine's clock.
+    pub gate_in_flight: std::sync::atomic::AtomicU64,
     /// The accounts the fake provider lists, and those whose limit ran out.
     pub accounts_of: std::sync::Mutex<Vec<String>>,
     pub spent_accounts: std::sync::Mutex<Vec<String>>,
@@ -5638,6 +5641,13 @@ impl ExecutionBackend for FakeBackend {
             a.host_run_id = Some(format!("fake-{}", a.id));
             a.observed = Some(a.configuration.clone());
             store.save_attempt(&a).await?;
+            let gate = self.gate_in_flight.load(Ordering::SeqCst);
+            let opened = std::time::Instant::now() + Duration::from_secs(10);
+            while self.peak_in_flight.load(Ordering::SeqCst) < gate
+                && std::time::Instant::now() < opened
+            {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
             if self.hold_turns.load(Ordering::SeqCst) {
                 while !*cancel.borrow() {
                     if cancel.changed().await.is_err() {
@@ -7033,6 +7043,10 @@ mod tests {
     #[tokio::test]
     async fn a_run_flies_its_configurations_side_by_side_within_account_slots() {
         let (_dir, s, backend) = setup().await;
+        // Every account slot dispatches before any turn may finish.
+        backend
+            .gate_in_flight
+            .store(2 * ACCOUNT_SLOTS as u64, Ordering::SeqCst);
         let run = s.start_run(wide_request(&s, &backend).await).await.unwrap();
         for _ in 0..4 {
             s.tick().await.unwrap();
