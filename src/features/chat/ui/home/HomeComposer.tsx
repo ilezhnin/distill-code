@@ -131,6 +131,7 @@ export function HomeComposer({
         availableModels: controller.availableModels,
         modelsLoading: controller.modelsLoading,
         modelStatusMessage: controller.modelStatusMessage,
+        readExecutorSuggestion: controller.readExecutorSuggestion,
         onModelChange: controller.handleModelChange,
         onPickerOpen: controller.handlePickerOpen,
       }}

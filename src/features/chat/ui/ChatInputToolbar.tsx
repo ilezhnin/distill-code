@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ArrowUp, File, FolderOpen, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
@@ -109,6 +109,7 @@ export function ChatInputToolbar({
     availableModels = [],
     modelsLoading = false,
     modelStatusMessage = null,
+    readExecutorSuggestion,
     onModelChange,
     onPickerOpen,
     providerColumnMode,
@@ -137,6 +138,26 @@ export function ChatInputToolbar({
     openMenu === "model",
   );
   const pickerModels = accountModels.models ?? availableModels;
+  const readScopedExecutorSuggestion = useCallback(() => {
+    if (!readExecutorSuggestion || (account && accountModels.loading))
+      return Promise.resolve(null);
+    return readExecutorSuggestion(
+      account
+        ? {
+            harnessId: selectedProvider,
+            accountId: account.id,
+            models: accountModels.error ? [] : (accountModels.models ?? []),
+          }
+        : undefined,
+    );
+  }, [
+    readExecutorSuggestion,
+    account,
+    accountModels.loading,
+    accountModels.error,
+    accountModels.models,
+    selectedProvider,
+  ]);
   const {
     enabled: projectPickerEnabled = true,
     selectedProjectId = null,
@@ -324,6 +345,11 @@ export function ChatInputToolbar({
         {agentModelPickerEnabled &&
           (agentProviders.length > 0 || providersLoading) && (
             <AgentModelPicker
+              readExecutorSuggestion={
+                readExecutorSuggestion
+                  ? readScopedExecutorSuggestion
+                  : undefined
+              }
               agents={agentProviders}
               selectedAgentId={selectedProvider}
               onAgentChange={(providerId) => onProviderChange?.(providerId)}

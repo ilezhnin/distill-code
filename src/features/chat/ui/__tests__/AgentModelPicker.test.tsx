@@ -84,6 +84,82 @@ function moreColumnHidden() {
 }
 
 describe("AgentModelPicker", () => {
+  it("shows a read-only preference hint through the existing picker", async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    const onAgentChange = vi.fn();
+    const read = vi.fn(
+      async () =>
+        ({
+          chosen: {
+            modelName: "Example Beta",
+            modelId: "beta",
+            providerId: "codex-acp",
+            effort: "high",
+            fastMode: false,
+          },
+          source: "prior",
+          reason: "persona_prior",
+          request: { prediction: { task: { workClassId: "general" } } },
+        }) as import("@/features/benchmarks/lib/executorSelection").ExecutorDecision,
+    );
+    render(
+      <AgentModelPicker
+        agents={[{ id: CLAUDE_PROVIDER_ID, label: "Agent" }]}
+        selectedAgentId={CLAUDE_PROVIDER_ID}
+        currentModelId="default"
+        currentModelProviderId={CLAUDE_PROVIDER_ID}
+        availableModels={claudeModels}
+        onModelChange={onModelChange}
+        onAgentChange={onAgentChange}
+        readExecutorSuggestion={read}
+      />,
+    );
+    expect(read).not.toHaveBeenCalled();
+    await openPicker(user);
+    expect(
+      await screen.findByText(/Suggested from preferences: Example Beta/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/No approved Bench evidence used/),
+    ).toBeInTheDocument();
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(onAgentChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps model controls usable when the local suggestion fails", async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    render(
+      <AgentModelPicker
+        agents={[{ id: CLAUDE_PROVIDER_ID, label: "Agent" }]}
+        selectedAgentId={CLAUDE_PROVIDER_ID}
+        currentModelId="default"
+        currentModelProviderId={CLAUDE_PROVIDER_ID}
+        availableModels={claudeModels}
+        onModelChange={onModelChange}
+        onAgentChange={vi.fn()}
+        readExecutorSuggestion={async () => {
+          throw new Error("unavailable");
+        }}
+      />,
+    );
+    await openPicker(user);
+    expect(
+      await screen.findByText(
+        "Model suggestion is unavailable. Your selection is unchanged.",
+      ),
+    ).toBeInTheDocument();
+    expect(onModelChange).not.toHaveBeenCalled();
+    await user.click(modelRow("model", "Sonnet 5"));
+    expect(onModelChange).toHaveBeenCalledWith(
+      "sonnet",
+      expect.objectContaining({ id: "sonnet" }),
+    );
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("lets a chat on Default explicitly select Opus without switching through another model", async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();

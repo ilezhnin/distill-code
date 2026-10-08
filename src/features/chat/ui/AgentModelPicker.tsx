@@ -47,9 +47,12 @@ import {
   modelMatchesSelection,
   type ModelListHandle,
 } from "./AgentModelPickerLists";
+import { ChatExecutorHint } from "./ChatExecutorHint";
+import type { ExecutorHintReader } from "../hooks/useChatExecutorHint";
 import { PickerItem } from "./AgentModelPickerItem";
 
 interface AgentModelPickerProps {
+  readExecutorSuggestion?: ExecutorHintReader;
   agents: AgentPickerOption[];
   selectedAgentId: string;
   onAgentChange: (agentId: string) => void;
@@ -97,6 +100,7 @@ const PICKER_WIDTH_PX = 420;
 const NAV_ITEM_SELECTOR = "button[data-picker-nav-item]:not(:disabled)";
 
 export function AgentModelPicker({
+  readExecutorSuggestion,
   agents,
   selectedAgentId,
   onAgentChange,
@@ -772,6 +776,7 @@ export function AgentModelPicker({
             ) : null}
           </div>
 
+          <ChatExecutorHint open={open} read={readExecutorSuggestion} />
           {showSwitchProviderFooter ? (
             <div className="shrink-0 border-t px-1 py-1">
               <button

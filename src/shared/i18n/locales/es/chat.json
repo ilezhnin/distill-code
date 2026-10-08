@@ -905,5 +905,15 @@
     "confirmTitle": "¿Abrir un archivo fuera de las carpetas de este chat?",
     "confirmOpen": "Abrir",
     "confirmCancel": "Cancelar"
+  },
+  "executorHint": {
+    "failed": "La sugerencia de modelo no está disponible. Tu selección no ha cambiado.",
+    "pinUnavailable": "El modelo seleccionado no está en el inventario confirmado. Tu selección no ha cambiado.",
+    "unavailable": "No se ha podido sugerir un modelo disponible.",
+    "pinned": "Selección actual: {{model}}",
+    "prior": "Sugerido según las preferencias: {{model}}",
+    "fast": "rápido",
+    "standard": "velocidad normal",
+    "basis": "{{workClass}} · Basado en el borrador y el rol. Sin evidencia aprobada de Bench."
   }
 }

@@ -23,6 +23,11 @@ import { workspaceAttachmentIdForPath } from "../../lib/workspaceAttachments";
 import type { ChatSendOptions, ModelOption } from "../../types";
 import { ModelFailedAfterProviderMoveError } from "@/shared/api/acpSessionRegistry";
 
+const mockExecutorSelect = vi.hoisted(() => vi.fn(async () => null));
+vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
+  executorSelection: { select: mockExecutorSelect },
+}));
+
 const mockAcpPrepareSession = vi.fn();
 const mockAcpSetSessionConfigOption = vi.fn();
 const mockSetSelectedProvider = vi.fn();
@@ -562,6 +567,54 @@ describe("useChatSessionController", () => {
       isRightRailOpen: false,
       activeWorkspaceBySession: {},
     });
+  });
+
+  it("previews the current draft through the common selector without changing a pinned chat or its queue", async () => {
+    useChatSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        executionTargetSource: "ui" as const,
+        desiredRunSettings: { effort: "high", fast: false },
+      })),
+    }));
+    useChatStore.setState({
+      draftsBySession: { "session-1": "Inspect the current draft." },
+    });
+    const { result } = renderHook(() =>
+      useChatSessionController({ sessionId: "session-1" }),
+    );
+    const targetBefore = useChatSessionStore
+      .getState()
+      .getSession("session-1")?.executionTarget;
+    const queueBefore = useChatStore.getState().queuedMessageBySession;
+    const configCalls = mockAcpSetSessionConfigOption.mock.calls.length;
+    const sendCalls = mockUseChatSendMessage.mock.calls.length;
+    await act(async () => {
+      await result.current.readExecutorSuggestion();
+    });
+    const [request, record] = mockExecutorSelect.mock.calls.at(
+      -1,
+    ) as unknown as [
+      import("@/features/benchmarks/lib/executorSelection").ApplicationExecutorRequest,
+      boolean,
+    ];
+    expect(record).toBe(false);
+    expect(request.task.prompt).toBe("Inspect the current draft.");
+    expect(request.surface).toBe("chat");
+    expect(request.hardCandidateId).toBe(
+      request.candidates[0].configuration.id,
+    );
+    expect(request.candidates[0].configuration).toMatchObject({
+      modelId: "gpt-4o",
+      effort: "high",
+      fastMode: false,
+    });
+    expect(
+      useChatSessionStore.getState().getSession("session-1")?.executionTarget,
+    ).toEqual(targetBefore);
+    expect(useChatStore.getState().queuedMessageBySession).toEqual(queueBefore);
+    expect(mockAcpSetSessionConfigOption).toHaveBeenCalledTimes(configCalls);
+    expect(mockUseChatSendMessage).toHaveBeenCalledTimes(sendCalls);
   });
 
   describe("persona run settings", () => {

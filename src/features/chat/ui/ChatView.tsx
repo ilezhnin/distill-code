@@ -1193,6 +1193,7 @@ export function ChatView({
             availableModels: controller.availableModels,
             modelsLoading: controller.modelsLoading,
             modelStatusMessage: controller.modelStatusMessage,
+            readExecutorSuggestion: controller.readExecutorSuggestion,
             onModelChange: controller.handleModelChange,
             onPickerOpen: controller.handlePickerOpen,
             // Switching provider in a live session can recreate it, so keep the

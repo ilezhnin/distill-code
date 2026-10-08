@@ -1,3 +1,4 @@
+import type { ChatExecutorSuggestionSource } from "./lib/chatExecutorSuggestion";
 import type { MessagePart } from "@/shared/types/messageParts";
 import type { ReactNode, RefObject } from "react";
 import type { AcpProvider } from "@/shared/api/acp";
@@ -180,6 +181,7 @@ export interface AgentPickerOption extends AcpProvider {
 }
 
 export interface ChatInputAgentModelPicker {
+  readExecutorSuggestion?: ChatExecutorSuggestionSource;
   accountSessionId?: string;
   providers?: AgentPickerOption[];
   providersLoading?: boolean;

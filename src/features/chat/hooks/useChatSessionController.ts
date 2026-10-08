@@ -88,6 +88,10 @@ import {
 } from "../lib/firstWorkspaceSend";
 export type { WorkspaceNameRequest } from "../lib/firstWorkspaceSend";
 import { activateSession } from "../lib/sessionActivation";
+import {
+  previewChatExecutor,
+  type ChatExecutorSuggestionSource,
+} from "../lib/chatExecutorSuggestion";
 import { useResolvedAgentModelPicker } from "./useResolvedAgentModelPicker";
 import { retryDraftSessionCreation } from "@/features/chat/lib/draftSessionRetry";
 import { composeBuilderSendOptions } from "./useBuilderSendInterceptor";
@@ -108,7 +112,10 @@ import {
   personaRunSettings,
 } from "@/features/agents/lib/personaExecutionTarget";
 import { rankedPersonaExecutionTarget } from "@/features/agents/lib/rankedPersonaTarget";
-import { getRoutingPolicy } from "@/features/agents/stores/routingPolicyStore";
+import {
+  getRoutingPolicy,
+  useRoutingPolicyStore,
+} from "@/features/agents/stores/routingPolicyStore";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { toast } from "sonner";
 import { i18n } from "@/shared/i18n";
@@ -3106,6 +3113,65 @@ export function useChatSessionController({
     ? sessionDraftAttachments
     : pendingDraftAttachments;
   const draftValue = sessionId ? sessionDraftValue : pendingDraftValue;
+  const executorPolicy = useRoutingPolicyStore((state) => state.policy);
+  const executorLimits = useProviderRateLimitsStore((state) => state.snapshot);
+  const readExecutorSuggestion = useCallback<ChatExecutorSuggestionSource>(
+    async (inventory) => {
+      if (readOnly) return null;
+      const target =
+        pendingExecutionTarget ??
+        session?.executionTarget ??
+        (effectiveModelSelection?.id && effectiveModelSelection.modelProviderId
+          ? targetFromAgentModelSelection(selectedAgentId, {
+              modelProviderId: effectiveModelSelection.modelProviderId,
+              modelId: effectiveModelSelection.id,
+              modelName: effectiveModelSelection.name,
+            })
+          : undefined);
+      return previewChatExecutor({
+        contextId: stateSessionId,
+        prompt: draftValue,
+        persona: selectedPersona,
+        current: target
+          ? {
+              target,
+              runSettings: sessionId
+                ? session?.desiredRunSettings
+                : pendingRunSettingsForDisplay,
+            }
+          : undefined,
+        pinned:
+          session?.executionTargetSource === "ui" ||
+          Boolean(pendingExecutionTarget),
+        context: {
+          providers,
+          getModelsForHarness: getInstalledModelsForAgent,
+          rateLimits: executorLimits?.providers ?? [],
+          classOverrides: executorPolicy.classOverrides,
+          nearLimitPercent: executorPolicy.chatNearLimitPercent,
+        },
+        inventory,
+      });
+    },
+    [
+      readOnly,
+      stateSessionId,
+      draftValue,
+      selectedPersona,
+      pendingExecutionTarget,
+      session?.executionTarget,
+      session?.executionTargetSource,
+      session?.desiredRunSettings,
+      sessionId,
+      pendingRunSettingsForDisplay,
+      effectiveModelSelection,
+      selectedAgentId,
+      providers,
+      getInstalledModelsForAgent,
+      executorLimits,
+      executorPolicy,
+    ],
+  );
   const storedSelectedSkills = sessionId
     ? sessionSkillDrafts
     : pendingSkillDrafts;
@@ -3704,6 +3770,7 @@ export function useChatSessionController({
     modelStatusMessage,
     handleModelChange: handleModelChangeWithContextReset,
     handlePickerOpen: handlePickerOpenWithReasoningRefresh,
+    readExecutorSuggestion,
     reasoningEffort: session?.reasoningEffort,
     handleReasoningEffortChange,
     ultracodeArmed: session?.ultracodeArmed ?? false,

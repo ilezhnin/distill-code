@@ -905,5 +905,15 @@
     "confirmTitle": "Open a file outside this chat's folders?",
     "confirmOpen": "Open",
     "confirmCancel": "Cancel"
+  },
+  "executorHint": {
+    "failed": "Model suggestion is unavailable. Your selection is unchanged.",
+    "pinUnavailable": "The selected model is not in the confirmed inventory. Your selection is unchanged.",
+    "unavailable": "No available model could be suggested.",
+    "pinned": "Current choice: {{model}}",
+    "prior": "Suggested from preferences: {{model}}",
+    "fast": "fast",
+    "standard": "standard speed",
+    "basis": "{{workClass}} · Based on draft and role. No approved Bench evidence used."
   }
 }
