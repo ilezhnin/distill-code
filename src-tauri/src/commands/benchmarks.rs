@@ -213,6 +213,19 @@ pub async fn benchmark_register_promotion_rule(
     s.changed().await;
     Ok(value)
 }
+/// The exact contract or step-by-step trajectory a campaign evaluated, for
+/// the operator to acknowledge in its rule.
+#[tauri::command]
+pub async fn benchmark_campaign_deployment(
+    app: AppHandle,
+    campaign_id: String,
+) -> Result<benchmarks::promotion::Deployment> {
+    service(&app)
+        .await?
+        .store
+        .campaign_deployment(&campaign_id)
+        .await
+}
 #[tauri::command]
 pub async fn benchmark_get_promotion_rule(
     app: AppHandle,

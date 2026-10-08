@@ -7,6 +7,7 @@ import { Checkbox } from "@/shared/ui/checkbox";
 import { Input } from "@/shared/ui/input";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
+import { shortId, workClassLabel } from "../lib/benchmarkLabels";
 import {
   selectorTaskGroup,
   type SelectorFitArtifact,
@@ -17,6 +18,15 @@ import type {
 } from "../lib/workflowCampaign";
 import type { BenchmarkVersion } from "../types";
 import { BenchmarkAlert, Field, SelectField } from "./BenchmarkPrimitives";
+
+/** The work class of every step, in order: its own scope, else the root's. */
+function stepClasses(version: BenchmarkVersion): string[] {
+  return (
+    version.manifest.workflow?.steps.map(
+      (step) => step.scope?.workClassId ?? version.manifest.workClassId,
+    ) ?? []
+  );
+}
 
 export function WorkflowCampaignForm({
   artifact,
@@ -38,6 +48,7 @@ export function WorkflowCampaignForm({
   const [persona, setPersona] = useState("none");
   const [repetitions, setRepetitions] = useState(3);
   const [minQuality, setMinQuality] = useState(0.5);
+  const [classModels, setClassModels] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<WorkflowCampaignRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +61,10 @@ export function WorkflowCampaignForm({
   const capabilities = useQuery({
     queryKey: ["benchmarks", "capabilities"],
     queryFn: benchmarkApi.getCapabilities,
+  });
+  const fits = useQuery({
+    queryKey: ["benchmarks", "learned-fits"],
+    queryFn: benchmarkApi.listSelectorFits,
   });
   const candidates = artifact.model.candidates;
   const bindings = candidates.map((candidate) => {
@@ -78,6 +93,22 @@ export function WorkflowCampaignForm({
   );
   const chosen = eligible.filter((v) => selected.includes(v.id));
   const groups = new Set(chosen.map((v) => selectorTaskGroup(v.manifest))).size;
+  // Steps of another class need the model fitted for that class, and all
+  // cases must share one step class sequence the certificate can name.
+  const sequences = new Set(chosen.map((v) => stepClasses(v).join("\n")));
+  const otherClasses = [...new Set(chosen.flatMap(stepClasses))]
+    .filter((workClass) => workClass !== artifact.model.workClassId)
+    .sort();
+  const mixed = otherClasses.length > 0;
+  const classModelsReady =
+    !mixed ||
+    (sequences.size === 1 &&
+      otherClasses.every((workClass) =>
+        fits.data?.some(
+          (fit) =>
+            fit.id === classModels[workClass] && fit.workClassId === workClass,
+        ),
+      ));
   const policies = candidates.length + 3;
   const executions =
     chosen.reduce(
@@ -110,7 +141,8 @@ export function WorkflowCampaignForm({
     timeoutSeconds <= 3600 &&
     Number.isFinite(minQuality) &&
     minQuality >= 0 &&
-    minQuality <= 1;
+    minQuality <= 1 &&
+    classModelsReady;
   const freeze = async () => {
     if (
       disabled ||
@@ -139,6 +171,17 @@ export function WorkflowCampaignForm({
       repetitions,
       timeoutSeconds,
       maxExecutions: executions,
+      ...(mixed
+        ? {
+            classModelIds: Object.fromEntries([
+              [artifact.model.workClassId, artifact.model.id],
+              ...otherClasses.map((workClass) => [
+                workClass,
+                classModels[workClass],
+              ]),
+            ]),
+          }
+        : {}),
     };
     setPending(request);
     setBusy(true);
@@ -188,7 +231,7 @@ export function WorkflowCampaignForm({
       <p className="text-xs text-muted-foreground">
         {t("campaign.requirements")}
       </p>
-      {[error, accountQuery.error, capabilities.error]
+      {[error, accountQuery.error, capabilities.error, fits.error]
         .filter(Boolean)
         .map((failure) => (
           <BenchmarkAlert key={benchmarkErrorMessage(failure)}>
@@ -281,6 +324,49 @@ export function WorkflowCampaignForm({
           />
         )}
       </Field>
+      {mixed ? (
+        <fieldset disabled={locked} className="space-y-2">
+          <legend className="text-sm">{t("campaign.classModels")}</legend>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              sequences.size === 1
+                ? "campaign.classModelsHint"
+                : "campaign.classSequenceMismatch",
+            )}
+          </p>
+          {otherClasses.map((workClass) => (
+            <Field
+              key={workClass}
+              label={t("campaign.classModel", {
+                workClass: workClassLabel(t, workClass),
+              })}
+            >
+              {(id) => (
+                <SelectField
+                  id={id}
+                  value={classModels[workClass] || "none"}
+                  disabled={locked}
+                  options={[
+                    { value: "none", label: t("learning.chooseFit") },
+                    ...(fits.data ?? [])
+                      .filter((fit) => fit.workClassId === workClass)
+                      .map((fit) => ({
+                        value: fit.id,
+                        label: `${workClassLabel(t, fit.workClassId)} · ${shortId(fit.id)}`,
+                      })),
+                  ]}
+                  onChange={(value) =>
+                    setClassModels({
+                      ...classModels,
+                      [workClass]: value === "none" ? "" : value,
+                    })
+                  }
+                />
+              )}
+            </Field>
+          ))}
+        </fieldset>
+      ) : null}
       <div className="grid grid-cols-2 gap-3">
         <Field label={t("fields.repetitions")}>
           {(id) => (

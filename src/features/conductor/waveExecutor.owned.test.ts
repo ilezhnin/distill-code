@@ -158,6 +158,39 @@ describe("owned v2 wave executor", () => {
     );
   });
 
+  it("plans the whole step sequence at a fresh root only, so the host can find its trajectory certificate", async () => {
+    await prepareWaveExecutor(wave(), spawn(0), "", {});
+    expect(requested().plannedTrajectory).toEqual([
+      {
+        roleSourceId: "source-implementer",
+        workClassId: "code-implement",
+        stepBudgetSeconds: 600,
+      },
+      {
+        roleSourceId: "source-reviewer",
+        workClassId: "code-review",
+        stepBudgetSeconds: 600,
+      },
+      {
+        roleSourceId: "source-qa",
+        workClassId: "testing",
+        stepBudgetSeconds: 600,
+      },
+    ]);
+    // A step whose own shape cannot resolve fails at its own spawn; the
+    // root then plans nothing instead of refusing its own valid step.
+    const unresolved = wave({
+      steps: [plan[0], { ...plan[1], role: "architect" }],
+    });
+    await prepareWaveExecutor(unresolved, spawn(0), "", {});
+    expect(requested().plannedTrajectory).toBeNull();
+    io.bindings.set("child-0", "binding-0");
+    const later = wave();
+    later.steps[0] = { ...later.steps[0], sessionId: "child-0" };
+    await prepareWaveExecutor(later, spawn(1), "", {});
+    expect(requested().plannedTrajectory).toBeNull();
+  });
+
   it("chains later steps to the committed root and adopts the root's native context", async () => {
     io.bindings.set("child-0", "binding-0");
     const first = wave();

@@ -108,6 +108,34 @@ pub struct RequestV2 {
     pub hard_candidate_key: Option<String>,
     pub entry: Option<WaveEntry>,
     pub step_budget_seconds: u32,
+    /// A wave root's whole planned step sequence, this request first. It
+    /// lets the root find a certificate for that exact trajectory; later
+    /// steps inherit it from the root and never restate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_trajectory: Option<Vec<PlannedStep>>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlannedStep {
+    pub role_source_id: String,
+    pub work_class_id: String,
+    pub step_budget_seconds: u32,
+}
+impl PlannedStep {
+    fn of(intent: &RequestV2) -> Self {
+        Self {
+            role_source_id: intent.role_source_id.clone(),
+            work_class_id: intent.work_class_id.clone(),
+            step_budget_seconds: intent.step_budget_seconds,
+        }
+    }
+}
+/// The native candidates a step is selected from and its role prior.
+#[derive(Clone, Copy)]
+struct Pool<'a> {
+    base: &'a [RoutingCandidate],
+    choices: &'a [RoutingCandidate],
+    prior_keys: &'a [String],
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -886,6 +914,12 @@ impl BenchmarkService {
             || intent.prompt.trim().is_empty()
             || intent.prompt.len() > 128 * 1024
             || (intent.surface == "chat" && intent.entry.is_some())
+            || intent.planned_trajectory.as_ref().is_some_and(|plan| {
+                intent.surface != "wave"
+                    || intent.entry.is_some()
+                    || !(2..=16).contains(&plan.len())
+                    || plan.first() != Some(&PlannedStep::of(&intent))
+            })
         {
             return Err(invalid(
                 "Native v2 task needs bounded frozen identity and prompt",
@@ -969,31 +1003,17 @@ impl BenchmarkService {
         }
         let contract = promotion::Contract::from_task(&task);
         let prior_keys: Vec<_> = candidates.iter().map(|candidate| routing::candidate_key(&candidate.configuration)).collect();
-        // A certificate is evaluated on trajectories of its own role and
-        // class. A step after a different role is outside that evidence until
-        // a whole mixed trajectory is certified, so it keeps prior or pin.
-        let mut mixed_lineage = false;
-        if let Some(entry) = &intent.entry {
-            for id in &entry.previous_binding_ids {
-                let prior = self.store.task_binding(id).await?;
-                let prior_role = &prior
-                    .context_v2
-                    .as_ref()
-                    .ok_or_else(|| invalid("Legacy and v2 wave lineage cannot be mixed"))?
-                    .role;
-                mixed_lineage |= prior_role.role_id != role.role_id
-                    || prior_role.work_class_id != role.work_class_id;
-            }
-        }
+        let pool = Pool {base: &base, choices: &choices, prior_keys: &prior_keys};
         let discovery = if intent.hard_candidate_key.is_some() {promotion::Discovery::Pinned}
             else if !mode.consent.complete || !unknown_reasons.is_empty() {promotion::Discovery::Refused("incomplete_native_role_preferences")}
-            else if mixed_lineage {promotion::Discovery::Refused("mixed_role_trajectory_uncertified")} else {
-            self.store.discover_active_policy(&contract, &choices, &prior_keys).await?
-        };
+            else {Box::pin(self.discover_v2(&intent, &mode, &task, &contract, &role, pool)).await?};
         let certificate = match &discovery {promotion::Discovery::Unique(certificate) => Some(certificate), _ => None};
+        let step_index = intent.entry.as_ref().map_or(0, |entry| entry.previous_binding_ids.len());
         // Policy candidates are an explicitly certified pool, resolved back to
-        // actual inventory. Prior/pin never requires that model to exist.
-        let model = match certificate {Some(certificate) => Some(self.store.selector_model(&certificate.model_id).await?), None => None};
+        // actual inventory. Prior/pin never requires that model to exist. A
+        // trajectory step uses the class model certified for its position.
+        let model = match certificate {Some(certificate) => Some(self.store.selector_model(certificate.model_for_step(step_index)
+            .ok_or_else(|| invalid("The certified trajectory has no model for this step"))?).await?), None => None};
         let prediction_candidates = if let Some(model) = &model {
             choices.iter().filter(|candidate| model.candidates.iter().any(|trained|
                 trained.candidate_key == routing::candidate_key(&candidate.configuration)
@@ -1073,12 +1093,164 @@ impl BenchmarkService {
         }
     }
 
+    /// The policy a v2 step may use. A wave root with a planned trajectory
+    /// looks for a certificate of that exact step sequence; its later steps
+    /// stay on the root's certificate at their own position. Without one,
+    /// single-role evidence covers every step until the role changes: a
+    /// step after a different role keeps prior or pin.
+    async fn discover_v2(
+        &self,
+        intent: &RequestV2,
+        mode: &ModeV2,
+        task: &learned::PublicTask,
+        contract: &promotion::Contract,
+        role: &NativeRole,
+        pool: Pool<'_>,
+    ) -> Result<promotion::Discovery> {
+        use promotion::Discovery::{Refused, Unique};
+        let Some(entry) = &intent.entry else {
+            if let Some(trajectory) = intent
+                .planned_trajectory
+                .as_deref()
+                .and_then(|plan| Self::planned_contracts(plan, mode, task, pool))
+            {
+                if let found @ Unique(_) = self
+                    .store
+                    .discover_active_trajectory(&trajectory, pool.choices, pool.prior_keys)
+                    .await?
+                {
+                    return Ok(found);
+                }
+            }
+            // A root runs before any other role, so a certificate of its own
+            // contract covers it whatever the rest of the plan holds.
+            return self
+                .store
+                .discover_active_policy(contract, pool.choices, pool.prior_keys)
+                .await;
+        };
+        let root = self.store.task_binding(&entry.root_binding_id).await?;
+        let root_context = root
+            .context_v2
+            .as_ref()
+            .ok_or_else(|| invalid("Native v2 root lineage is absent"))?;
+        let root_certificate = match &root_context.selected_policy_id {
+            Some(id) => Some(self.store.promotion(id).await?.certificate),
+            None => None,
+        };
+        if let (Some(plan), Some(certificate)) = (
+            &root_context.intent.planned_trajectory,
+            root_certificate.filter(|certificate| certificate.trajectory.is_some()),
+        ) {
+            let index = entry.previous_binding_ids.len();
+            if plan.get(index) != Some(&PlannedStep::of(intent)) {
+                return Ok(Refused("trajectory_plan_departed"));
+            }
+            for id in &entry.previous_binding_ids {
+                let prior = self.store.task_binding(id).await?;
+                if prior
+                    .context_v2
+                    .as_ref()
+                    .and_then(|context| context.selected_policy_id.as_ref())
+                    != Some(&certificate.id)
+                {
+                    return Ok(Refused("trajectory_lineage_left_certificate"));
+                }
+            }
+            let Some(certified) = &certificate.trajectory else {
+                return Ok(Refused("trajectory_root_certificate_changed"));
+            };
+            return Ok(
+                match self
+                    .store
+                    .discover_active_trajectory(
+                        &certified.contract(),
+                        pool.choices,
+                        pool.prior_keys,
+                    )
+                    .await?
+                {
+                    Unique(found) if found.id == certificate.id => {
+                        if found.covers(contract, index) {
+                            Unique(found)
+                        } else {
+                            Refused("trajectory_step_contract_changed")
+                        }
+                    }
+                    Refused(reason) => Refused(reason),
+                    _ => Refused("trajectory_root_certificate_changed"),
+                },
+            );
+        }
+        for id in &entry.previous_binding_ids {
+            let prior = self.store.task_binding(id).await?;
+            let prior_role = &prior
+                .context_v2
+                .as_ref()
+                .ok_or_else(|| invalid("Legacy and v2 wave lineage cannot be mixed"))?
+                .role;
+            if prior_role.role_id != role.role_id || prior_role.work_class_id != role.work_class_id
+            {
+                return Ok(Refused("mixed_role_trajectory_uncertified"));
+            }
+        }
+        self.store
+            .discover_active_policy(contract, pool.choices, pool.prior_keys)
+            .await
+    }
+
+    /// Every planned step's exact contract under this consent, built like
+    /// the root's own task, or none when the plan cannot be certified: an
+    /// unacknowledged role or allowance, or a role whose complete native
+    /// prior differs from the root's (the evaluated trajectory shared one).
+    fn planned_contracts(
+        plan: &[PlannedStep],
+        mode: &ModeV2,
+        task: &learned::PublicTask,
+        pool: Pool<'_>,
+    ) -> Option<promotion::TrajectoryContract> {
+        let mut steps = Vec::new();
+        for step in plan {
+            let role = mode.consent.roles.iter().find(|role| {
+                role.source_id == step.role_source_id && role.work_class_id == step.work_class_id
+            })?;
+            if step.step_budget_seconds == 0
+                || step.step_budget_seconds > mode.consent.limits.timeout_seconds
+            {
+                return None;
+            }
+            let (candidates, unknown) = Self::native_prior_v2(role, pool.base, pool.choices);
+            if !unknown.is_empty()
+                || candidates
+                    .iter()
+                    .map(|candidate| routing::candidate_key(&candidate.configuration))
+                    .collect::<Vec<_>>()
+                    != pool.prior_keys
+            {
+                return None;
+            }
+            let mut planned = task.clone();
+            planned.work_class_id = role.work_class_id.clone();
+            planned.role_id = Some(role.role_id.clone());
+            planned.role_prompt = role.role_prompt.clone();
+            planned.limits.timeout_seconds = step.step_budget_seconds;
+            steps.push(promotion::Contract::from_task(&planned));
+        }
+        let starts_here = steps.first() == Some(&promotion::Contract::from_task(task));
+        starts_here.then_some(promotion::TrajectoryContract {
+            root_budget_seconds: mode.consent.limits.timeout_seconds,
+            steps,
+        })
+    }
+
     pub async fn prepare_owned_task_intent(&self, intent: PrepareIntent) -> Result<Prepared> {
         match intent {
             PrepareIntent::V1(request) => self.prepare_owned_task(request).await,
+            // Boxed: binding and preparation are deep native futures, and a
+            // debug build would otherwise hold them whole on a 2 MiB stack.
             PrepareIntent::V2(request) => {
-                let binding = self.bind_task_v2(request).await?;
-                self.prepare_bound_task(binding).await
+                let binding = Box::pin(self.bind_task_v2(request)).await?;
+                Box::pin(self.prepare_bound_task(binding)).await
             }
         }
     }

@@ -524,7 +524,6 @@ function CampaignResult({
       </details>
       <WorkflowPromotionPanel
         campaign={campaign}
-        versions={versions}
         disabled={promotionDisabled}
         onPendingChange={onPendingChange}
       />

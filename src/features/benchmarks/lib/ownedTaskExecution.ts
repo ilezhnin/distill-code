@@ -101,6 +101,13 @@ export interface OwnedTaskRequestV2 {
   hardCandidateKey: string | null;
   entry: OwnedTaskRequest["entry"];
   stepBudgetSeconds: number;
+  /** A wave root's whole planned step sequence, this request first. */
+  plannedTrajectory?: PlannedOwnedStep[] | null;
+}
+export interface PlannedOwnedStep {
+  roleSourceId: string;
+  workClassId: string;
+  stepBudgetSeconds: number;
 }
 export type OwnedTaskPrepareIntent = OwnedTaskRequest | OwnedTaskRequestV2;
 export interface NativeTaskContextV2 {

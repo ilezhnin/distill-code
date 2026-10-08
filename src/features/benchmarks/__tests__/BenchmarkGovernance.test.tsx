@@ -10,14 +10,14 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkGovernanceApi as api } from "../api/benchmarkGovernance";
-import {
-  deploymentContract,
-  type PromotionRegistration,
-  type PromotionState,
-  type QualificationBinding,
-  type QualificationRecord,
-  type QualificationRequest,
-  type RegisteredPromotionRule,
+import type {
+  DeploymentContract,
+  PromotionRegistration,
+  PromotionState,
+  QualificationBinding,
+  QualificationRecord,
+  QualificationRequest,
+  RegisteredPromotionRule,
 } from "../lib/benchmarkGovernance";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import { BenchmarkQualificationPanel } from "../ui/BenchmarkQualificationPanel";
@@ -31,6 +31,7 @@ vi.mock("../api/benchmarkGovernance", () => ({
     qualificationBindings: vi.fn(),
     revokeQualification: vi.fn(),
     registerPromotionRule: vi.fn(),
+    campaignDeployment: vi.fn(),
     getPromotionRule: vi.fn(),
     promoteSelector: vi.fn(),
     listPromotions: vi.fn(),
@@ -168,6 +169,17 @@ const campaign: WorkflowCampaign = {
   nextCell: 0,
   revision: 1,
 };
+// The native projection of what the frozen campaign evaluated.
+const contract: DeploymentContract = {
+  workClassId: version.manifest.workClassId,
+  roleId: version.manifest.roleId,
+  rolePrompt: version.manifest.rolePrompt,
+  permissions: version.manifest.permissions,
+  executionProfile: "native_text",
+  limits: version.manifest.limits,
+  entryPresent: true,
+  budgetRecipe: "native-root-wall-budget-v1",
+};
 const registration: PromotionRegistration = {
   requestKey: "rule-request",
   campaignId: "campaign",
@@ -178,7 +190,7 @@ const registration: PromotionRegistration = {
     minimumGroupUtilityGain: 0.1,
     minimumObservedQuality: 0.8,
   },
-  contract: deploymentContract(version.manifest),
+  contract,
   qualificationIds: ["qualification"],
 };
 const registered: RegisteredPromotionRule = {
@@ -223,6 +235,10 @@ beforeEach(() => {
   vi.mocked(api.qualificationBindings).mockResolvedValue([]);
   vi.mocked(api.getPromotionRule).mockResolvedValue(null);
   vi.mocked(api.listPromotions).mockResolvedValue([]);
+  vi.mocked(api.campaignDeployment).mockResolvedValue({
+    contract,
+    trajectory: null,
+  });
 });
 afterEach(cleanup);
 function show(
@@ -381,11 +397,7 @@ it("never defaults to approval and freezes explicit rule, exact scope and qualif
   });
   const pending = vi.fn();
   show(
-    <WorkflowPromotionPanel
-      campaign={campaign}
-      versions={[version]}
-      onPendingChange={pending}
-    />,
+    <WorkflowPromotionPanel campaign={campaign} onPendingChange={pending} />,
   );
   const user = userEvent.setup();
   await user.click(
@@ -422,11 +434,7 @@ it("never defaults to approval and freezes explicit rule, exact scope and qualif
 it("keeps campaign start blocked while registration cannot be reconciled and retries identical inputs", async () => {
   const pending = vi.fn();
   show(
-    <WorkflowPromotionPanel
-      campaign={campaign}
-      versions={[version]}
-      onPendingChange={pending}
-    />,
+    <WorkflowPromotionPanel campaign={campaign} onPendingChange={pending} />,
   );
   const user = await fillRule();
   vi.mocked(api.registerPromotionRule).mockRejectedValue({
@@ -456,7 +464,6 @@ it("cannot approve an already started research campaign", async () => {
   show(
     <WorkflowPromotionPanel
       campaign={{ ...campaign, state: "paused", nextCell: 1 }}
-      versions={[version]}
       onPendingChange={vi.fn()}
     />,
   );
@@ -488,11 +495,7 @@ it.each([
     defaultOptions: { queries: { retry: false } },
   });
   show(
-    <WorkflowPromotionPanel
-      campaign={campaign}
-      versions={[version]}
-      onPendingChange={pending}
-    />,
+    <WorkflowPromotionPanel campaign={campaign} onPendingChange={pending} />,
     client,
   );
   const user = await fillRule();
@@ -563,11 +566,7 @@ it.each([
 it("refuses a rule operation when a sibling already owns admission even before disabled props update", async () => {
   const pending = vi.fn(() => false);
   show(
-    <WorkflowPromotionPanel
-      campaign={campaign}
-      versions={[version]}
-      onPendingChange={pending}
-    />,
+    <WorkflowPromotionPanel campaign={campaign} onPendingChange={pending} />,
   );
   const user = await fillRule();
   await user.click(
@@ -597,7 +596,6 @@ it("activates only a completed preregistered report and exposes certificate fall
   show(
     <WorkflowPromotionPanel
       campaign={{ ...campaign, state: "completed" }}
-      versions={[version]}
       onPendingChange={vi.fn()}
     />,
   );
@@ -635,4 +633,76 @@ it("activates only a completed preregistered report and exposes certificate fall
       name: "Validate evidence and activate promotion",
     }),
   ).not.toBeInTheDocument();
+});
+
+it("registers and shows the exact native trajectory a mixed-role campaign evaluated", async () => {
+  const review: DeploymentContract = {
+    ...contract,
+    workClassId: "code-review",
+    roleId: "invented-reviewer",
+    rolePrompt: "Review carefully.",
+    limits: { ...contract.limits, timeoutSeconds: 60 },
+  };
+  const trajectory = { rootBudgetSeconds: 120, steps: [contract, review] };
+  vi.mocked(api.campaignDeployment).mockResolvedValue({
+    contract,
+    trajectory,
+  });
+  let saved: RegisteredPromotionRule | null = null;
+  vi.mocked(api.getPromotionRule).mockImplementation(async () => saved);
+  vi.mocked(api.registerPromotionRule).mockImplementation(async (request) => {
+    saved = { ...registered, request };
+    return saved;
+  });
+  show(
+    <WorkflowPromotionPanel campaign={campaign} onPendingChange={vi.fn()} />,
+  );
+  const user = await fillRule();
+  expect(
+    await screen.findByText(/exact 2-step trajectory with a 120 s root budget/),
+  ).toBeVisible();
+  await user.click(
+    screen.getByRole("button", { name: "Approve and freeze deployment rule" }),
+  );
+  expect(
+    await screen.findByText("Deployment rule registered before execution"),
+  ).toBeVisible();
+  expect(api.campaignDeployment).toHaveBeenCalledWith("campaign");
+  expect(api.registerPromotionRule).toHaveBeenCalledWith({
+    ...registration,
+    requestKey: expect.any(String),
+    qualificationIds: ["qualification", "second-qualification"],
+    trajectory,
+  });
+});
+
+it("says a trajectory certificate covers only its exact step sequence", async () => {
+  const certified: PromotionState = {
+    ...state,
+    certificate: {
+      ...state.certificate,
+      trajectory: {
+        rootBudgetSeconds: 120,
+        steps: [
+          { contract, modelId: "fit", modelSnapshotHash: "snapshot" },
+          {
+            contract: { ...contract, workClassId: "code-review" },
+            modelId: "review-fit",
+            modelSnapshotHash: "review-snapshot",
+          },
+        ],
+      },
+    },
+  };
+  vi.mocked(api.getPromotionRule).mockResolvedValue(registered);
+  vi.mocked(api.listPromotions).mockResolvedValue([certified]);
+  show(
+    <WorkflowPromotionPanel
+      campaign={{ ...campaign, state: "completed" }}
+      onPendingChange={vi.fn()}
+    />,
+  );
+  expect(
+    await screen.findByText(/covers only its exact 2-step trajectory/),
+  ).toBeVisible();
 });

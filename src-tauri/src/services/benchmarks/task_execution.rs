@@ -115,6 +115,13 @@ pub struct Binding {
     pub context_v2: Option<ContextV2>,
 }
 impl Binding {
+    /// This step's position in its native lineage; a root is step zero.
+    pub(super) fn step_index(&self) -> usize {
+        self.context_v2
+            .as_ref()
+            .and_then(|context| context.intent.entry.as_ref())
+            .map_or(0, |entry| entry.previous_binding_ids.len())
+    }
     pub(super) fn remaining_ms(&self) -> Result<u64> {
         if let Some(budget) = self
             .context_v2
@@ -275,6 +282,11 @@ impl Store {
             return Ok(None);
         };
         let certificate = self.require_active_promotion(id).await?;
+        if certificate.trajectory.is_some() {
+            return Err(invalid(
+                "A trajectory certificate authorizes only its exact step sequence, not a single task",
+            ));
+        }
         if certificate.artifact_hash != request.acknowledged_certificate_hash
             || (certificate.contract.execution_profile == "protected_repository")
                 != request.repository.is_some()
@@ -507,7 +519,10 @@ impl BenchmarkService {
                 .require_active_promotion(&binding.request.promotion_id)
                 .await?;
             if active.artifact_hash != binding.certificate_hash
-                || promotion::Contract::from_task(&binding.task) != active.contract
+                || !active.covers(
+                    &promotion::Contract::from_task(&binding.task),
+                    binding.step_index(),
+                )
             {
                 return Err(invalid(
                     "Learned task authority changed before provider handoff",
@@ -766,7 +781,9 @@ impl BenchmarkService {
         self.require_task_mode(&request).await?;
         let state = self.store.promotion(&request.promotion_id).await?;
         let certificate = state.certificate;
-        if certificate.artifact_hash != request.acknowledged_certificate_hash {
+        if certificate.artifact_hash != request.acknowledged_certificate_hash
+            || certificate.trajectory.is_some()
+        {
             return Err(invalid(
                 "The operator has not acknowledged this exact native execution contract",
             ));
@@ -1039,7 +1056,10 @@ impl BenchmarkService {
                 .require_active_promotion(&binding.request.promotion_id)
                 .await?;
             if active.artifact_hash != binding.certificate_hash
-                || promotion::Contract::from_task(&binding.task) != active.contract
+                || !active.covers(
+                    &promotion::Contract::from_task(&binding.task),
+                    binding.step_index(),
+                )
             {
                 return Err(invalid("Native role or context authority changed"));
             }

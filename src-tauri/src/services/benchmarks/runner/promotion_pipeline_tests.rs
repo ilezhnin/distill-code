@@ -145,6 +145,7 @@ fn registration(
         },
         contract: Contract::from_task(&learned::PublicTask::from(&training[0].manifest)),
         qualification_ids: ids,
+        trajectory: None,
     }
 }
 #[tokio::test]
@@ -695,6 +696,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
             .artifact_hash,
         prepared.binding.artifact_hash
     );
+    single_certificate_covers_planned_waves(&service, dir.path(), &source, &training).await;
     service
         .store
         .revoke_promotion(&state.certificate.id, "Invented v2 revoke")
@@ -725,5 +727,785 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         .dispatch_owned_task(&fallback.binding.id)
         .await
         .unwrap();
-    assert_eq!(backend.owned_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.owned_calls.load(Ordering::SeqCst), 4);
+}
+
+/// One invented class's training set with its own role and scope, qualified
+/// before its first native admission, measured and fitted.
+async fn qualified_class(
+    service: &Arc<BenchmarkService>,
+    class: &str,
+    role: (&str, &str),
+    verb: &str,
+) -> (Vec<String>, learned::FitArtifact) {
+    let mut versions = Vec::new();
+    for (index, template) in publish_with_entry(service, "train", 8, true)
+        .await
+        .into_iter()
+        .enumerate()
+    {
+        let mut draft = template.manifest;
+        draft.work_class_id = class.into();
+        draft.role_id = Some(role.0.into());
+        draft.role_prompt = role.1.into();
+        draft.task_family = format!("{class}-train-{index}");
+        draft.environment = json!({
+            "splitGroup": format!("{class}-train-group-{}", index / 2),
+            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
+        });
+        draft.prompt = draft.prompt.replace("Repair", verb);
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        versions.push(
+            service
+                .publish_version(&definition.id, definition.draft_revision)
+                .await
+                .unwrap(),
+        );
+    }
+    let ids = qualify(service, &versions).await;
+    measure(service, &versions, &format!("{class}-qualified-training")).await;
+    let fit = learned::fit(
+        &service.query_data().await.unwrap(),
+        learned::FitRequest {
+            work_class_id: class.into(),
+            version_ids: versions.iter().map(|v| v.id.clone()).collect(),
+            configurations: configurations(),
+            cutoff_at: now(),
+            weights: RoleWeights::default(),
+        },
+    )
+    .unwrap();
+    service.store.save_selector_fit(&fit).await.unwrap();
+    (ids, fit)
+}
+
+#[tokio::test]
+async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(OfflineWorkers::default());
+    let service = open(dir.path(), backend.clone()).await;
+    let implementer = ("invented-implementer", "Implement carefully.");
+    let reviewer = ("invented-reviewer", "Review carefully.");
+    let (implement_ids, implement_fit) =
+        qualified_class(&service, "debug", implementer, "Repair").await;
+    let (review_ids, review_fit) =
+        qualified_class(&service, "code-review", reviewer, "Review").await;
+    let scope = |role: (&str, &str), class: &str, purpose: &str| {
+        Some(WorkflowScope {
+            role_id: role.0.into(),
+            role_prompt: role.1.into(),
+            work_class_id: class.into(),
+            purpose: purpose.into(),
+            step_budget_seconds: 10,
+        })
+    };
+    let template = service
+        .store
+        .version(&implement_fit.snapshot.examples[0].version_id)
+        .await
+        .unwrap();
+    let mut held = Vec::new();
+    for index in 0..8 {
+        let mut draft = template.manifest.clone();
+        draft.split = "held_out".into();
+        draft.task_family = format!("trajectory-family-{index}");
+        draft.environment = json!({
+            "splitGroup": format!("trajectory-group-{index}"),
+            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
+        });
+        draft.entry_state = None;
+        draft.prompt = "Produce a reviewed artifact.".into();
+        draft.workflow = Some(WorkflowSpec {
+            schema_version: 2,
+            driver_revision: "invented-trajectory-v1".into(),
+            steps: vec![
+                WorkflowStep {
+                    id: "implement".into(),
+                    prompt: "Repair parser tokenizer grammar syntax".into(),
+                    include_previous_output: false,
+                    scope: scope(implementer, "debug", "implement"),
+                },
+                WorkflowStep {
+                    id: "qa".into(),
+                    prompt: "Review painter canvas colors pixels".into(),
+                    include_previous_output: true,
+                    scope: scope(reviewer, "code-review", "closing_qa"),
+                },
+            ],
+        });
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        held.push(
+            service
+                .publish_version(&definition.id, definition.draft_revision)
+                .await
+                .unwrap(),
+        );
+    }
+    let held_ids = qualify(&service, &held).await;
+    let frozen = service
+        .freeze_workflow_campaign(workflow_campaign::Request {
+            request_key: "invented-trajectory-comparison".into(),
+            model_id: implement_fit.model.id.clone(),
+            version_ids: held.iter().map(|v| v.id.clone()).collect(),
+            candidates: configurations(),
+            persona_prior_ids: vec!["painter".into(), "parser".into()],
+            min_quality: 0.0,
+            repetitions: 3,
+            timeout_seconds: 10,
+            max_executions: 240,
+            class_model_ids: [
+                ("debug".to_owned(), implement_fit.model.id.clone()),
+                ("code-review".to_owned(), review_fit.model.id.clone()),
+            ]
+            .into(),
+        })
+        .await
+        .unwrap();
+    // The native projection is the trajectory the operator acknowledges.
+    let deployment = service
+        .store
+        .campaign_deployment(&frozen.plan.id)
+        .await
+        .unwrap();
+    let trajectory = deployment.trajectory.clone().unwrap();
+    assert_eq!(trajectory.root_budget_seconds, 10);
+    assert_eq!(
+        trajectory
+            .steps
+            .iter()
+            .map(|step| (step.work_class_id.as_str(), step.role_id.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            ("debug", Some(implementer.0)),
+            ("code-review", Some(reviewer.0))
+        ]
+    );
+    assert_eq!(deployment.contract, trajectory.steps[0]);
+    let all_ids: Vec<String> = implement_ids
+        .iter()
+        .chain(&review_ids)
+        .chain(&held_ids)
+        .cloned()
+        .collect();
+    let rule = |trajectory: Option<TrajectoryContract>, ids: &[String]| Registration {
+        request_key: "invented-trajectory-rule".into(),
+        campaign_id: frozen.plan.id.clone(),
+        operator: "Invented acceptance operator".into(),
+        rule: acceptance::Rule {
+            recipe: "independent-group-sign-holm-v1".into(),
+            alpha: 0.05,
+            minimum_group_utility_gain: 0.0,
+            minimum_observed_quality: 1.0,
+        },
+        contract: deployment.contract.clone(),
+        qualification_ids: ids.to_vec(),
+        trajectory,
+    };
+    // Neither the first step alone nor a reordered or rebudgeted trajectory
+    // stands for what the campaign evaluated.
+    let mut reordered = trajectory.clone();
+    reordered.steps.reverse();
+    let mut rebudgeted = trajectory.clone();
+    rebudgeted.root_budget_seconds = 20;
+    for wrong in [None, Some(reordered), Some(rebudgeted)] {
+        assert!(service
+            .store
+            .register_promotion_rule(rule(wrong, &all_ids))
+            .await
+            .is_err());
+    }
+    // The review class fit's training versions need qualification too.
+    let without_review: Vec<String> = implement_ids.iter().chain(&held_ids).cloned().collect();
+    assert!(service
+        .store
+        .register_promotion_rule(rule(Some(trajectory.clone()), &without_review))
+        .await
+        .is_err());
+    service
+        .store
+        .register_promotion_rule(rule(Some(trajectory.clone()), &all_ids))
+        .await
+        .unwrap();
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    // A hang guard only: the offline matrix settles in seconds alone but
+    // shares the machine with the whole parallel test suite.
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            service.tick().await.unwrap();
+            let current = service
+                .store
+                .workflow_campaign(&frozen.plan.id)
+                .await
+                .unwrap();
+            if current.state != "running" {
+                assert_eq!(current.state, "completed");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let state = service
+        .store
+        .promote_selector(&frozen.plan.id)
+        .await
+        .unwrap();
+    assert!(state.certificate.assessment.passed);
+    let certified = state.certificate.trajectory.clone().unwrap();
+    assert_eq!(certified.contract(), trajectory);
+    assert_eq!(
+        certified
+            .steps
+            .iter()
+            .map(|step| (step.model_id.clone(), step.model_snapshot_hash.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                implement_fit.model.id.clone(),
+                implement_fit.model.snapshot_hash.clone()
+            ),
+            (
+                review_fit.model.id.clone(),
+                review_fit.model.snapshot_hash.clone()
+            ),
+        ]
+    );
+    service
+        .store
+        .require_active_promotion(&state.certificate.id)
+        .await
+        .unwrap();
+    // Single-contract discovery never sees it; trajectory discovery does,
+    // and then refuses only because this offline inventory is unattested.
+    let priors = state.certificate.prior_keys.clone();
+    assert_eq!(
+        service
+            .store
+            .discover_active_policy(&deployment.contract, &[], &priors)
+            .await
+            .unwrap()
+            .reason(),
+        "no_exact_active_policy"
+    );
+    assert_eq!(
+        service
+            .store
+            .discover_active_trajectory(&trajectory, &[], &priors)
+            .await
+            .unwrap()
+            .reason(),
+        "legacy_unattested_native_inventory"
+    );
+    // A single owned task cannot opt into a trajectory certificate.
+    assert!(service
+        .store
+        .set_owned_task_mode(crate::services::benchmarks::task_execution::ModeRequest {
+            context_id: "invented-trajectory-conductor".into(),
+            promotion_id: Some(state.certificate.id.clone()),
+            acknowledged_certificate_hash: state.certificate.artifact_hash.clone(),
+            repository: None,
+        })
+        .await
+        .is_err());
+}
+
+/// One invented role file and its class training on the attested native
+/// inventory, qualified before its first native admission.
+async fn native_class(
+    service: &Arc<BenchmarkService>,
+    root: &std::path::Path,
+    class: &str,
+    role: (&str, &str),
+    verb: &str,
+) -> (
+    std::path::PathBuf,
+    Vec<BenchmarkVersion>,
+    Vec<String>,
+    learned::FitArtifact,
+) {
+    let source = root.join("agents").join(format!("{}.md", role.0));
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, format!("---\ndisplay_name: {}\nmodel: claude-acp:painter\neffort: high\nfast_mode: false\n---\n{}", role.0, role.1)).unwrap();
+    let mut training = vec![];
+    for (index, version) in publish_with_entry(service, "train", 8, true)
+        .await
+        .into_iter()
+        .enumerate()
+    {
+        let mut draft = version.manifest;
+        draft.work_class_id = class.into();
+        draft.role_id = Some(role.0.into());
+        draft.role_prompt = role.1.into();
+        draft.task_family = format!("{class}-native-train-{index}");
+        draft.environment = json!({
+            "splitGroup": format!("{class}-native-group-{}", index / 2),
+            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
+        });
+        draft.prompt = draft.prompt.replace("Repair", verb);
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        training.push(
+            service
+                .publish_version(&definition.id, definition.draft_revision)
+                .await
+                .unwrap(),
+        );
+    }
+    let qualifications = qualify(service, &training).await;
+    let run = service
+        .start_run(RunRequest {
+            request_key: format!("{class}-native-training"),
+            version_ids: training.iter().map(|version| version.id.clone()).collect(),
+            configurations: native_v2_configurations(),
+            repetitions: 3,
+            timeout_seconds: 10,
+            max_executions: 48,
+            preview: false,
+            parallelism: Some(4),
+            workflow_policy: None,
+        })
+        .await
+        .unwrap();
+    // A hang guard only: the offline matrix settles in seconds alone but
+    // shares the machine with the whole parallel test suite.
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            service.tick().await.unwrap();
+            let current = service.store.run(&run.id).await.unwrap();
+            if current.state == "completed" {
+                break;
+            }
+            assert_eq!(current.state, "running");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let fit = learned::fit(
+        &service.query_data().await.unwrap(),
+        learned::FitRequest {
+            work_class_id: class.into(),
+            version_ids: training.iter().map(|version| version.id.clone()).collect(),
+            configurations: native_v2_configurations(),
+            cutoff_at: now(),
+            weights: RoleWeights::default(),
+        },
+    )
+    .unwrap();
+    service.store.save_selector_fit(&fit).await.unwrap();
+    (source, training, qualifications, fit)
+}
+
+#[tokio::test]
+async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_position() {
+    use crate::services::benchmarks::task_execution::{
+        ModeEnvelope, ModeIntent, ModeRequestV2, PrepareIntent,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(OfflineWorkers {
+        native_v2_inventory: true,
+        ..Default::default()
+    });
+    let service = open(dir.path(), backend.clone()).await;
+    let implementer = ("invented-implementer", "Implement carefully.");
+    let reviewer = ("invented-reviewer", "Review carefully.");
+    let (implement_source, training, mut ids, implement_fit) =
+        native_class(&service, dir.path(), "debug", implementer, "Repair").await;
+    let (review_source, _, review_ids, review_fit) =
+        native_class(&service, dir.path(), "code-review", reviewer, "Review").await;
+    ids.extend(review_ids);
+    let scope = |role: (&str, &str), class: &str, purpose: &str| {
+        Some(WorkflowScope {
+            role_id: role.0.into(),
+            role_prompt: role.1.into(),
+            work_class_id: class.into(),
+            purpose: purpose.into(),
+            step_budget_seconds: 10,
+        })
+    };
+    let mut held = Vec::new();
+    for index in 0..8 {
+        let mut draft = training[0].manifest.clone();
+        draft.split = "held_out".into();
+        draft.task_family = format!("native-trajectory-family-{index}");
+        draft.environment = json!({
+            "splitGroup": format!("native-trajectory-group-{index}"),
+            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
+        });
+        draft.entry_state = None;
+        draft.prompt = "Produce a reviewed artifact.".into();
+        draft.workflow = Some(WorkflowSpec {
+            schema_version: 2,
+            driver_revision: "invented-native-trajectory-v1".into(),
+            steps: vec![
+                WorkflowStep {
+                    id: "implement".into(),
+                    prompt: "Repair parser tokenizer grammar syntax".into(),
+                    include_previous_output: false,
+                    scope: scope(implementer, "debug", "implement"),
+                },
+                WorkflowStep {
+                    id: "qa".into(),
+                    prompt: "Review painter canvas colors pixels".into(),
+                    include_previous_output: true,
+                    scope: scope(reviewer, "code-review", "closing_qa"),
+                },
+            ],
+        });
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        held.push(
+            service
+                .publish_version(&definition.id, definition.draft_revision)
+                .await
+                .unwrap(),
+        );
+    }
+    ids.extend(qualify(&service, &held).await);
+    let frozen = service
+        .freeze_workflow_campaign(workflow_campaign::Request {
+            request_key: "invented-native-trajectory-comparison".into(),
+            model_id: implement_fit.model.id.clone(),
+            version_ids: held.iter().map(|version| version.id.clone()).collect(),
+            candidates: native_v2_configurations(),
+            persona_prior_ids: vec!["painter".into(), "parser".into()],
+            min_quality: 0.0,
+            repetitions: 3,
+            timeout_seconds: 10,
+            max_executions: 240,
+            class_model_ids: [
+                ("debug".to_owned(), implement_fit.model.id.clone()),
+                ("code-review".to_owned(), review_fit.model.id.clone()),
+            ]
+            .into(),
+        })
+        .await
+        .unwrap();
+    let deployment = service
+        .store
+        .campaign_deployment(&frozen.plan.id)
+        .await
+        .unwrap();
+    service
+        .store
+        .register_promotion_rule(Registration {
+            request_key: "invented-native-trajectory-rule".into(),
+            campaign_id: frozen.plan.id.clone(),
+            operator: "Invented acceptance operator".into(),
+            rule: acceptance::Rule {
+                recipe: "independent-group-sign-holm-v1".into(),
+                alpha: 0.05,
+                minimum_group_utility_gain: 0.0,
+                minimum_observed_quality: 1.0,
+            },
+            contract: deployment.contract.clone(),
+            qualification_ids: ids,
+            trajectory: deployment.trajectory.clone(),
+        })
+        .await
+        .unwrap();
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    // A hang guard only: the offline matrix settles in seconds alone but
+    // shares the machine with the whole parallel test suite.
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            service.tick().await.unwrap();
+            let current = service
+                .store
+                .workflow_campaign(&frozen.plan.id)
+                .await
+                .unwrap();
+            if current.state != "running" {
+                assert_eq!(current.state, "completed");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let state = service
+        .store
+        .promote_selector(&frozen.plan.id)
+        .await
+        .unwrap();
+    assert!(state.certificate.native_inventory.is_some());
+    let mut mode_request = ModeRequestV2 {
+        schema_version: 2,
+        context_id: "invented-trajectory-conductor".into(),
+        surface: "wave".into(),
+        execution_profile: "native_text".into(),
+        repository: None,
+        limits: training[0].manifest.limits.clone(),
+        roles: serde_json::from_value(json!([
+            {"sourcePath": implement_source, "workClassId": "debug"},
+            {"sourcePath": review_source, "workClassId": "code-review"},
+        ]))
+        .unwrap(),
+        provider_ids: vec!["claude-acp".into()],
+        acknowledged_contract_hash: String::new(),
+    };
+    mode_request.acknowledged_contract_hash = service
+        .inspect_owned_task_mode(&mode_request)
+        .await
+        .unwrap()
+        .artifact_hash;
+    let Some(ModeEnvelope::V2(mode)) = service
+        .set_owned_task_mode_intent(ModeIntent::V2(mode_request))
+        .await
+        .unwrap()
+    else {
+        panic!("v2 mode")
+    };
+    let planned = |role: usize| {
+        json!({"roleSourceId": mode.consent.roles[role].source_id,
+            "workClassId": mode.consent.roles[role].work_class_id, "stepBudgetSeconds": 10})
+    };
+    let plan = vec![planned(0), planned(1)];
+    let step = |key: &str,
+                role: usize,
+                prompt: &str,
+                previous: Vec<String>,
+                plan: Option<Vec<serde_json::Value>>| {
+        serde_json::from_value::<PrepareIntent>(json!({"schemaVersion": 2,
+            "requestKey": key, "surface": "wave",
+            "contextId": "invented-trajectory-conductor:wave:root:invented-request",
+            "mode": {"contextId": mode.request.context_id, "artifactHash": mode.artifact_hash},
+            "roleSourceId": mode.consent.roles[role].source_id,
+            "workClassId": mode.consent.roles[role].work_class_id,
+            "prompt": prompt, "hardCandidateKey": null,
+            "entry": previous.first().map(|root| json!({"rootBindingId": root,
+                "previousBindingIds": previous, "includePreviousOutput": true})),
+            "stepBudgetSeconds": 10, "plannedTrajectory": plan}))
+        .unwrap()
+    };
+    let implement = "Repair parser tokenizer grammar syntax";
+    let review = "Review painter canvas colors pixels";
+    // A root without its plan sees no single-contract certificate.
+    let unplanned = service
+        .prepare_owned_task_intent(step("wave:unplanned:step:0", 0, implement, vec![], None))
+        .await
+        .unwrap();
+    assert_eq!(unplanned.binding.decision.source, "prior");
+    assert_eq!(
+        unplanned.binding.decision.learned_status,
+        "no_exact_active_policy"
+    );
+    // A plan that is not the first step of itself is malformed.
+    assert!(service
+        .prepare_owned_task_intent(step(
+            "wave:malformed:step:0",
+            0,
+            implement,
+            vec![],
+            Some(vec![planned(1), planned(0)]),
+        ))
+        .await
+        .is_err());
+    let root = service
+        .prepare_owned_task_intent(step(
+            "wave:planned:step:0",
+            0,
+            implement,
+            vec![],
+            Some(plan.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        root.binding.decision.source, "learned",
+        "{:#?}",
+        root.binding.decision
+    );
+    assert!(root.binding.decision.learned_dispatch_allowed);
+    let context = root.binding.context_v2.as_ref().unwrap();
+    assert_eq!(
+        context.selected_policy_id.as_deref(),
+        Some(state.certificate.id.as_str())
+    );
+    assert_eq!(
+        root.binding
+            .decision
+            .research_prediction
+            .as_ref()
+            .unwrap()
+            .model_id,
+        implement_fit.model.id
+    );
+    service.dispatch_owned_task(&root.binding.id).await.unwrap();
+    let r = root.binding.id.clone();
+    // A later step that departs from the plan keeps its prior.
+    let departed = service
+        .prepare_owned_task_intent(step(
+            "wave:planned:departed:1",
+            0,
+            implement,
+            vec![r.clone()],
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(departed.binding.decision.source, "prior");
+    assert_eq!(
+        departed.binding.decision.learned_status,
+        "trajectory_plan_departed"
+    );
+    // The planned review step uses the class model certified for its place.
+    let qa = service
+        .prepare_owned_task_intent(step(
+            "wave:planned:step:1",
+            1,
+            review,
+            vec![r.clone()],
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        qa.binding.decision.source, "learned",
+        "{:#?}",
+        qa.binding.decision
+    );
+    assert_eq!(
+        qa.binding
+            .decision
+            .research_prediction
+            .as_ref()
+            .unwrap()
+            .model_id,
+        review_fit.model.id
+    );
+    service.dispatch_owned_task(&qa.binding.id).await.unwrap();
+    assert_eq!(backend.owned_calls.load(Ordering::SeqCst), 2);
+    // A step beyond the certified sequence is outside its evidence.
+    let beyond = service
+        .prepare_owned_task_intent(step(
+            "wave:planned:step:2",
+            1,
+            review,
+            vec![r, qa.binding.id.clone()],
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(beyond.binding.decision.source, "prior");
+    assert_eq!(
+        beyond.binding.decision.learned_status,
+        "trajectory_plan_departed"
+    );
+}
+
+/// In a planned wave, a certificate of one contract covers every step until
+/// the role changes, whether or not the whole plan is uniform.
+async fn single_certificate_covers_planned_waves(
+    service: &Arc<BenchmarkService>,
+    root: &std::path::Path,
+    source: &std::path::Path,
+    training: &[BenchmarkVersion],
+) {
+    use crate::services::benchmarks::task_execution::{
+        ModeEnvelope, ModeIntent, ModeRequestV2, PrepareIntent,
+    };
+    let reviewer = root.join("agents").join("invented-reviewer.md");
+    std::fs::write(&reviewer, "---\ndisplay_name: Invented reviewer\nmodel: claude-acp:painter\neffort: high\nfast_mode: false\n---\nReview carefully.").unwrap();
+    let mut wave_request = ModeRequestV2 {
+        schema_version: 2,
+        context_id: "v2-wave-conductor".into(),
+        surface: "wave".into(),
+        execution_profile: "native_text".into(),
+        repository: None,
+        limits: training[0].manifest.limits.clone(),
+        roles: serde_json::from_value(json!([
+            {"sourcePath": source, "workClassId": "debug"},
+            {"sourcePath": reviewer, "workClassId": "code-review"},
+        ]))
+        .unwrap(),
+        provider_ids: vec!["claude-acp".into()],
+        acknowledged_contract_hash: String::new(),
+    };
+    wave_request.acknowledged_contract_hash = service
+        .inspect_owned_task_mode(&wave_request)
+        .await
+        .unwrap()
+        .artifact_hash;
+    let Some(ModeEnvelope::V2(wave)) = service
+        .set_owned_task_mode_intent(ModeIntent::V2(wave_request))
+        .await
+        .unwrap()
+    else {
+        panic!("v2 wave mode")
+    };
+    let planned = |role: usize| {
+        json!({"roleSourceId": wave.consent.roles[role].source_id,
+            "workClassId": wave.consent.roles[role].work_class_id, "stepBudgetSeconds": 10})
+    };
+    let step = |key: &str,
+                context: &str,
+                role: usize,
+                previous: Vec<String>,
+                plan: Option<Vec<serde_json::Value>>| {
+        serde_json::from_value::<PrepareIntent>(json!({"schemaVersion": 2,
+            "requestKey": key, "surface": "wave", "contextId": context,
+            "mode": {"contextId": wave.request.context_id, "artifactHash": wave.artifact_hash},
+            "roleSourceId": wave.consent.roles[role].source_id,
+            "workClassId": wave.consent.roles[role].work_class_id,
+            "prompt": training[0].manifest.prompt, "hardCandidateKey": null,
+            "entry": previous.first().map(|root| json!({"rootBindingId": root,
+                "previousBindingIds": previous, "includePreviousOutput": true})),
+            "stepBudgetSeconds": 10, "plannedTrajectory": plan}))
+        .unwrap()
+    };
+    for (name, plan) in [
+        ("uniform", vec![planned(0), planned(0)]),
+        ("mixed", vec![planned(0), planned(0), planned(1)]),
+    ] {
+        let context = format!("v2-wave-conductor:wave:root:{name}");
+        let root = service
+            .prepare_owned_task_intent(step(
+                &format!("wave:{name}:0"),
+                &context,
+                0,
+                vec![],
+                Some(plan),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(root.binding.decision.source, "learned", "{name}");
+        service.dispatch_owned_task(&root.binding.id).await.unwrap();
+        let r = root.binding.id.clone();
+        let same = service
+            .prepare_owned_task_intent(step(
+                &format!("wave:{name}:1"),
+                &context,
+                0,
+                vec![r.clone()],
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(same.binding.decision.source, "learned", "{name}");
+        if name == "mixed" {
+            service.dispatch_owned_task(&same.binding.id).await.unwrap();
+            let review = service
+                .prepare_owned_task_intent(step(
+                    "wave:mixed:2",
+                    &context,
+                    1,
+                    vec![r, same.binding.id.clone()],
+                    None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(review.binding.decision.source, "prior");
+            assert_eq!(
+                review.binding.decision.learned_status,
+                "mixed_role_trajectory_uncertified"
+            );
+        }
+    }
 }

@@ -46,6 +46,7 @@ vi.mock("../api/benchmarkGovernance", () => ({
     getPromotionRule: vi.fn(async () => null),
     listPromotions: vi.fn(async () => []),
     registerPromotionRule: vi.fn(),
+    campaignDeployment: vi.fn(),
   },
 }));
 
@@ -174,6 +175,18 @@ beforeEach(() => {
   ]);
   vi.mocked(benchmarkApi.getSelectorFit).mockResolvedValue(artifact);
   vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([]);
+  vi.mocked(benchmarkGovernanceApi.campaignDeployment).mockResolvedValue({
+    contract: {
+      workClassId: definition.draft.workClassId,
+      roleId: definition.draft.roleId,
+      rolePrompt: definition.draft.rolePrompt,
+      permissions: definition.draft.permissions,
+      executionProfile: definition.draft.executionProfile,
+      limits: definition.draft.limits,
+      entryPresent: true,
+    },
+    trajectory: null,
+  });
   vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue(
     workers.map((c) => ({
       providerId: c.providerId,
@@ -861,4 +874,79 @@ it("keeps a completed comparison visible when the saved report cannot be read", 
   expect(screen.getByText("Recorded comparison")).toBeVisible();
   expect(screen.queryByRole("table")).not.toBeInTheDocument();
   expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+});
+
+it("asks for the fitted model of every other step class and freezes the class map", async () => {
+  const user = userEvent.setup();
+  const scoped = (workClassId: string) => ({
+    roleId: `invented-${workClassId}`,
+    rolePrompt: "Invented role instructions.",
+    workClassId,
+    purpose: "closing_qa" as const,
+    stepBudgetSeconds: 60,
+  });
+  const mixed = versions.map((version) => ({
+    ...version,
+    manifest: {
+      ...version.manifest,
+      workflow: {
+        schemaVersion: 2,
+        driverRevision: "test",
+        steps: [
+          { id: "first", prompt: "Return 4.", includePreviousOutput: false },
+          {
+            id: "second",
+            prompt: "Review the previous number.",
+            includePreviousOutput: true,
+            scope: scoped("code-review"),
+          },
+        ],
+      },
+    },
+  }));
+  vi.mocked(benchmarkApi.listSelectorFits).mockResolvedValue([
+    {
+      id: "review-fit",
+      createdAt: 1,
+      workClassId: "code-review",
+      trainingCases: 8,
+      commonCases: 8,
+      groups: 4,
+      candidates: 2,
+      dispatchAllowed: false,
+      status: "research_only",
+    },
+  ]);
+  vi.mocked(benchmarkApi.freezeWorkflowCampaign).mockResolvedValue(campaign);
+  wrap(
+    <WorkflowCampaignForm
+      artifact={artifact}
+      versions={mixed}
+      onFrozen={vi.fn()}
+    />,
+  );
+  for (const version of mixed)
+    await user.click(
+      await screen.findByRole("checkbox", { name: version.manifest.name }),
+    );
+  await choose(user, "claude-acp / model-1 / high · Account", "Test account");
+  await choose(user, "codex-acp / model-2 / high · Account", "CLI sign-in");
+  await choose(user, "Persona comparator", "claude-acp / model-1 / high");
+  const save = screen.getByRole("button", { name: "Save comparison plan" });
+  expect(save).toBeDisabled();
+  await choose(user, "Model for Review and audit steps", / · review-f/);
+  expect(save).toBeEnabled();
+  await user.click(save);
+  await waitFor(() =>
+    expect(benchmarkApi.freezeWorkflowCampaign).toHaveBeenCalledOnce(),
+  );
+  expect(
+    vi.mocked(benchmarkApi.freezeWorkflowCampaign).mock.calls[0][0],
+  ).toMatchObject({
+    modelId: "fit",
+    classModelIds: {
+      [artifact.model.workClassId]: "fit",
+      "code-review": "review-fit",
+    },
+  });
 });

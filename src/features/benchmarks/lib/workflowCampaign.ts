@@ -11,6 +11,8 @@ export interface WorkflowCampaignRequest {
   repetitions: number;
   timeoutSeconds: number;
   maxExecutions: number;
+  /** Mixed-role workflows: the fitted model for every step work class. */
+  classModelIds?: Record<string, string>;
 }
 export interface WorkflowCampaignProtocol {
   recipe: string;

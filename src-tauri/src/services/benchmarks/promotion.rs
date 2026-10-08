@@ -153,6 +153,52 @@ pub struct Registration {
     pub rule: acceptance::Rule,
     pub contract: Contract,
     pub qualification_ids: Vec<String>,
+    /// A campaign registers every step, in order, when its steps do not all
+    /// share one contract or it names a model per step class; `contract` is
+    /// then its first step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trajectory: Option<TrajectoryContract>,
+}
+/// The exact step sequence and root wall budget a trajectory rule covers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrajectoryContract {
+    pub root_budget_seconds: u32,
+    pub steps: Vec<Contract>,
+}
+/// What an operator acknowledges for a campaign, computed natively from its
+/// frozen cases: one shared contract, or a step-by-step trajectory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Deployment {
+    pub contract: Contract,
+    pub trajectory: Option<TrajectoryContract>,
+}
+/// One step of a certified trajectory and the class model it uses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CertifiedStep {
+    pub contract: Contract,
+    pub model_id: String,
+    pub model_snapshot_hash: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CertifiedTrajectory {
+    pub root_budget_seconds: u32,
+    pub steps: Vec<CertifiedStep>,
+}
+impl CertifiedTrajectory {
+    pub fn contract(&self) -> TrajectoryContract {
+        TrajectoryContract {
+            root_budget_seconds: self.root_budget_seconds,
+            steps: self
+                .steps
+                .iter()
+                .map(|step| step.contract.clone())
+                .collect(),
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +230,34 @@ pub struct Certificate {
     /// Omitted for old certificates, preserving their original hashes/authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_inventory: Option<Vec<Configuration>>,
+    /// A trajectory certificate speaks only for this exact step sequence,
+    /// never for a lone step of its first contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trajectory: Option<CertifiedTrajectory>,
+}
+impl Certificate {
+    /// Whether this certificate authorizes that contract at that lineage
+    /// position: any position for a single contract, exactly its own step
+    /// for a trajectory.
+    pub fn covers(&self, contract: &Contract, step_index: usize) -> bool {
+        match &self.trajectory {
+            None => self.contract == *contract,
+            Some(trajectory) => trajectory
+                .steps
+                .get(step_index)
+                .is_some_and(|step| step.contract == *contract),
+        }
+    }
+    /// The fitted model that selects the worker at that lineage position.
+    pub fn model_for_step(&self, step_index: usize) -> Option<&str> {
+        match &self.trajectory {
+            None => Some(&self.model_id),
+            Some(trajectory) => trajectory
+                .steps
+                .get(step_index)
+                .map(|step| step.model_id.as_str()),
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -329,6 +403,43 @@ impl Store {
         inventory: &[RoutingCandidate],
         native_prior_keys: &[String],
     ) -> Result<Discovery> {
+        // A trajectory certificate never authorizes a lone step, even when
+        // that step equals its first contract.
+        self.discover(
+            |certificate| certificate.trajectory.is_none() && &certificate.contract == contract,
+            inventory,
+            native_prior_keys,
+        )
+        .await
+    }
+
+    /// The root of a planned trajectory finds the one active certificate for
+    /// that exact step sequence and root budget.
+    pub(super) async fn discover_active_trajectory(
+        &self,
+        trajectory: &TrajectoryContract,
+        inventory: &[RoutingCandidate],
+        native_prior_keys: &[String],
+    ) -> Result<Discovery> {
+        self.discover(
+            |certificate| {
+                certificate
+                    .trajectory
+                    .as_ref()
+                    .is_some_and(|certified| certified.contract() == *trajectory)
+            },
+            inventory,
+            native_prior_keys,
+        )
+        .await
+    }
+
+    async fn discover(
+        &self,
+        covers: impl Fn(&Certificate) -> bool,
+        inventory: &[RoutingCandidate],
+        native_prior_keys: &[String],
+    ) -> Result<Discovery> {
         let ids: Vec<String> = sqlx::query_scalar(
             "SELECT id FROM selector_promotions WHERE revoked_at IS NULL ORDER BY id LIMIT 257",
         )
@@ -341,7 +452,7 @@ impl Store {
         let mut unattested = false;
         for id in ids {
             let state = self.promotion(&id).await?;
-            if &state.certificate.contract != contract {
+            if !covers(&state.certificate) {
                 continue;
             }
             let certificate = match self.require_active_promotion(&id).await {
@@ -349,13 +460,20 @@ impl Store {
                 Err(error) if error.code == "invalid_promotion" => continue,
                 Err(error) => return Err(error),
             };
-            let model = self.selector_model(&certificate.model_id).await?;
+            let mut models = vec![self.selector_model(&certificate.model_id).await?];
+            for step in certificate.trajectory.iter().flat_map(|t| &t.steps) {
+                if models.iter().all(|model| model.id != step.model_id) {
+                    models.push(self.selector_model(&step.model_id).await?);
+                }
+            }
             if certificate.prior_keys != native_prior_keys
-                || !native_prior_keys.iter().all(|key| {
-                    model
-                        .candidates
-                        .iter()
-                        .any(|trained| &trained.candidate_key == key)
+                || !models.iter().all(|model| {
+                    native_prior_keys.iter().all(|key| {
+                        model
+                            .candidates
+                            .iter()
+                            .any(|trained| &trained.candidate_key == key)
+                    })
                 })
             {
                 continue;
@@ -364,16 +482,20 @@ impl Store {
                 unattested = true;
                 continue;
             };
-            if model.candidates.iter().all(|trained| {
-                inventory.iter().any(|row| {
-                    super::routing::candidate_key(&row.configuration) == trained.candidate_key
-                        && row.configuration.inventory_revision
-                            == trained.configuration.inventory_revision
-                        && attested
-                            .iter()
-                            .any(|proof| native_configuration_matches(proof, &row.configuration))
+            if models
+                .iter()
+                .flat_map(|model| &model.candidates)
+                .all(|trained| {
+                    inventory.iter().any(|row| {
+                        super::routing::candidate_key(&row.configuration) == trained.candidate_key
+                            && row.configuration.inventory_revision
+                                == trained.configuration.inventory_revision
+                            && attested.iter().any(|proof| {
+                                native_configuration_matches(proof, &row.configuration)
+                            })
+                    })
                 })
-            }) {
+            {
                 compatible.push(certificate);
             }
         }
@@ -444,6 +566,191 @@ impl Store {
         Ok(())
     }
 
+    /// Every fitted model a campaign evaluated, checked against its frozen
+    /// snapshot: one for a single-class campaign, one per class otherwise.
+    async fn campaign_fits(
+        &self,
+        campaign: &super::workflow_campaign::Campaign,
+    ) -> Result<Vec<learned::FitArtifact>> {
+        let request = &campaign.plan.request;
+        let primary = self.selector_fit(&request.model_id).await?;
+        if primary.model.snapshot_hash != campaign.plan.model_snapshot_hash {
+            return Err(invalid("The frozen campaign model changed"));
+        }
+        if request.class_model_ids.is_empty() {
+            return Ok(vec![primary]);
+        }
+        let mut fits = Vec::new();
+        for (class, id) in &request.class_model_ids {
+            let fit = self.selector_fit(id).await?;
+            if &fit.model.work_class_id != class
+                || campaign.plan.class_snapshot_hashes.get(class) != Some(&fit.model.snapshot_hash)
+            {
+                return Err(invalid("A frozen class model changed"));
+            }
+            fits.push(fit);
+        }
+        Ok(fits)
+    }
+
+    /// The exact deployment a campaign evaluated, computed natively from its
+    /// frozen cases. The operator acknowledges this projection; a renderer
+    /// never assembles it. Steps that do not all share one contract, or a
+    /// campaign with class models, form a trajectory every case shares.
+    pub async fn campaign_deployment(&self, campaign_id: &str) -> Result<Deployment> {
+        let campaign = self.workflow_campaign(campaign_id).await?;
+        let mut cases = Vec::new();
+        for case in &campaign.plan.cases {
+            let version = self.version(&case.version_id).await?;
+            if hash(&version.manifest)? != case.manifest_hash {
+                return Err(invalid("Frozen workflow manifest changed"));
+            }
+            let steps = version
+                .manifest
+                .workflow
+                .as_ref()
+                .ok_or_else(|| invalid("Frozen workflow is absent"))?
+                .steps
+                .len();
+            let contracts = (0..steps)
+                .map(|index| {
+                    super::workflow_campaign::step_task(
+                        &version.manifest,
+                        index,
+                        campaign.plan.request.timeout_seconds,
+                    )
+                    .map(|task| Contract::from_task(&task))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            cases.push(contracts);
+        }
+        let first = cases
+            .first()
+            .and_then(|steps| steps.first())
+            .cloned()
+            .ok_or_else(|| invalid("Campaign has no frozen cases"))?;
+        if campaign.plan.request.class_model_ids.is_empty()
+            && cases.iter().flatten().all(|contract| *contract == first)
+        {
+            return Ok(Deployment {
+                contract: first,
+                trajectory: None,
+            });
+        }
+        if cases.windows(2).any(|pair| pair[0] != pair[1]) {
+            return Err(invalid(
+                "Campaign cases do not share one deployment trajectory",
+            ));
+        }
+        Ok(Deployment {
+            contract: first,
+            trajectory: Some(TrajectoryContract {
+                root_budget_seconds: campaign.plan.request.timeout_seconds,
+                steps: cases.remove(0),
+            }),
+        })
+    }
+
+    async fn validate_single_registration(
+        &self,
+        campaign: &super::workflow_campaign::Campaign,
+        contract: &Contract,
+    ) -> Result<()> {
+        let fit = self.selector_fit(&campaign.plan.request.model_id).await?;
+        let public = contract.task(
+            "Scope validation".into(),
+            Some(learned::PublicEntry {
+                conversation_prefix: String::new(),
+                previous_reports: vec![],
+                remaining_budget_seconds: contract.limits.timeout_seconds,
+            }),
+        )?;
+        if !fit
+            .model
+            .scope_hashes
+            .contains(&learned::scope_hash(&public)?)
+            || fit
+                .snapshot
+                .examples
+                .iter()
+                .any(|example| Contract::from_task(&example.task) != *contract)
+            || campaign.plan.request.timeout_seconds != contract.limits.timeout_seconds
+            || campaign
+                .plan
+                .request
+                .candidates
+                .iter()
+                .any(|c| c.execution_profile != contract.execution_profile)
+        {
+            return Err(invalid(
+                "The deployment contract must match the exact fitted and evaluated owned scope and budgets",
+            ));
+        }
+        self.validate_training_budget(&fit, contract).await?;
+        self.validate_campaign_contract(campaign, contract).await
+    }
+
+    /// A trajectory rule binds each step's exact contract to the model fitted
+    /// for that step's class, with the scope and budget checks a single rule
+    /// receives, and fixes the root wall budget every step shares.
+    async fn validate_trajectory_registration(
+        &self,
+        campaign: &super::workflow_campaign::Campaign,
+        trajectory: &TrajectoryContract,
+    ) -> Result<()> {
+        let fits = self.campaign_fits(campaign).await?;
+        for contract in &trajectory.steps {
+            contract.validate()?;
+            let fit = fits
+                .iter()
+                .find(|fit| fit.model.work_class_id == contract.work_class_id)
+                .ok_or_else(|| invalid("A trajectory step has no class model"))?;
+            let public = contract.task(
+                "Scope validation".into(),
+                Some(learned::PublicEntry {
+                    conversation_prefix: String::new(),
+                    previous_reports: vec![],
+                    remaining_budget_seconds: contract.limits.timeout_seconds,
+                }),
+            )?;
+            if !fit
+                .model
+                .scope_hashes
+                .contains(&learned::scope_hash(&public)?)
+                || fit
+                    .snapshot
+                    .examples
+                    .iter()
+                    .any(|example| Contract::from_task(&example.task) != *contract)
+                || contract.limits.timeout_seconds > trajectory.root_budget_seconds
+                || campaign
+                    .plan
+                    .request
+                    .candidates
+                    .iter()
+                    .any(|c| c.execution_profile != contract.execution_profile)
+            {
+                return Err(invalid(
+                    "Every trajectory step must match its class model's exact fitted scope and budgets",
+                ));
+            }
+            self.validate_training_budget(fit, contract).await?;
+        }
+        for case in &campaign.plan.cases {
+            let version = self.version(&case.version_id).await?;
+            if super::runner::effective_timeout_seconds(
+                campaign.plan.request.timeout_seconds,
+                &version.manifest,
+            ) != trajectory.root_budget_seconds
+            {
+                return Err(invalid(
+                    "Every frozen trajectory must start with the registered root budget",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn validate_campaign_contract(
         &self,
         campaign: &super::workflow_campaign::Campaign,
@@ -459,18 +766,18 @@ impl Store {
                 .workflow
                 .as_ref()
                 .ok_or_else(|| invalid("Frozen workflow is absent"))?;
-            // workflow::prepare_step inherits role, permissions, profile and
-            // limits unchanged. Only prompt and native entry vary per step.
-            // The root budget is the initial cap; each fresh step receives
-            // the remaining cap after native measured prior work. This is the
-            // same explicit remaining-budget mapping used at deployment.
-            for _step in &workflow.steps {
-                let mut task = learned::PublicTask::from(&version.manifest);
-                task.entry = Some(learned::PublicEntry {
-                    conversation_prefix: String::new(),
-                    previous_reports: vec![],
-                    remaining_budget_seconds: campaign.plan.request.timeout_seconds,
-                });
+            // workflow::prepare_step applies a step's own scope; without one
+            // the step inherits the root role, permissions, profile and limits.
+            // Only prompt and native entry vary per step. The root budget is
+            // the initial cap; each fresh step receives the remaining cap after
+            // native measured prior work. This is the same explicit
+            // remaining-budget mapping used at deployment.
+            for index in 0..workflow.steps.len() {
+                let task = super::workflow_campaign::step_task(
+                    &version.manifest,
+                    index,
+                    campaign.plan.request.timeout_seconds,
+                )?;
                 if Contract::from_task(&task) != *contract
                     || super::runner::effective_timeout_seconds(
                         campaign.plan.request.timeout_seconds,
@@ -491,10 +798,10 @@ impl Store {
         request: &Registration,
     ) -> Result<Vec<qualification::Binding>> {
         let campaign = self.workflow_campaign(&request.campaign_id).await?;
-        let fit = self.selector_fit(&campaign.plan.request.model_id).await?;
-        let needed: BTreeSet<_> = fit
-            .snapshot
-            .examples
+        // Every class model's training versions need qualification too.
+        let fits = self.campaign_fits(&campaign).await?;
+        let examples: Vec<_> = fits.iter().flat_map(|fit| &fit.snapshot.examples).collect();
+        let needed: BTreeSet<_> = examples
             .iter()
             .map(|e| &e.version_id)
             .chain(campaign.plan.cases.iter().map(|c| &c.version_id))
@@ -510,16 +817,18 @@ impl Store {
                 .find(|b| &b.id == id)
                 .ok_or_else(|| invalid("Qualification binding disappeared"))?;
             let version = self.version(&binding.version_id).await?;
-            let deadline = if let Some(example) = fit
-                .snapshot
-                .examples
+            // Training versions qualify before their first native admission,
+            // the earliest one when class fits share a version; held-out
+            // cases qualify before the campaign was reserved.
+            let mut deadline: Option<i64> = None;
+            for example in examples
                 .iter()
-                .find(|e| e.version_id == binding.version_id)
+                .filter(|e| e.version_id == binding.version_id)
             {
-                self.training_admission(example).await?
-            } else {
-                campaign.plan.created_at
-            };
+                let admitted = self.training_admission(example).await?;
+                deadline = Some(deadline.map_or(admitted, |at| at.min(admitted)));
+            }
+            let deadline = deadline.unwrap_or(campaign.plan.created_at);
             if !needed.contains(&binding.version_id)
                 || !covered.insert(binding.version_id.clone())
                 || binding.revoked_at.is_some()
@@ -546,8 +855,15 @@ impl Store {
         &self,
         mut request: Registration,
     ) -> Result<RegisteredRule> {
-        request.contract.permissions.tools.sort();
-        request.contract.permissions.tools.dedup();
+        for contract in std::iter::once(&mut request.contract).chain(
+            request
+                .trajectory
+                .iter_mut()
+                .flat_map(|trajectory| trajectory.steps.iter_mut()),
+        ) {
+            contract.permissions.tools.sort();
+            contract.permissions.tools.dedup();
+        }
         request.qualification_ids.sort();
         if request.request_key.trim().is_empty()
             || request.request_key.len() > 128
@@ -574,40 +890,21 @@ impl Store {
             return Ok(saved);
         }
         let campaign = self.workflow_campaign(&request.campaign_id).await?;
-        let fit = self.selector_fit(&campaign.plan.request.model_id).await?;
-        let public = request.contract.task(
-            "Scope validation".into(),
-            Some(learned::PublicEntry {
-                conversation_prefix: String::new(),
-                previous_reports: vec![],
-                remaining_budget_seconds: request.contract.limits.timeout_seconds,
-            }),
-        )?;
-        if !fit
-            .model
-            .scope_hashes
-            .contains(&learned::scope_hash(&public)?)
-            || fit
-                .snapshot
-                .examples
-                .iter()
-                .any(|example| Contract::from_task(&example.task) != request.contract)
-            || campaign.plan.request.timeout_seconds != request.contract.limits.timeout_seconds
-            || campaign
-                .plan
-                .request
-                .candidates
-                .iter()
-                .any(|c| c.execution_profile != request.contract.execution_profile)
-        {
+        // The rule acknowledges exactly what the campaign evaluated: one
+        // shared contract, or every step of one shared trajectory.
+        let deployment = self.campaign_deployment(&request.campaign_id).await?;
+        if deployment.contract != request.contract || deployment.trajectory != request.trajectory {
             return Err(invalid(
-                "The deployment contract must match the exact fitted and evaluated owned scope and budgets",
+                "The rule must acknowledge the campaign's exact deployment contract or step-by-step trajectory",
             ));
         }
-        self.validate_training_budget(&fit, &request.contract)
-            .await?;
-        self.validate_campaign_contract(&campaign, &request.contract)
-            .await?;
+        if let Some(trajectory) = &request.trajectory {
+            self.validate_trajectory_registration(&campaign, trajectory)
+                .await?;
+        } else {
+            self.validate_single_registration(&campaign, &request.contract)
+                .await?;
+        }
         let bindings = self.registration_qualifications(&request).await?;
         let mut saved = RegisteredRule {
             request,
@@ -665,6 +962,16 @@ impl Store {
             .await?
             .ok_or_else(|| invalid("No preregistered deployment rule exists"))?;
         let campaign = self.workflow_campaign(campaign_id).await?;
+        // The rule must still name exactly what the campaign evaluated, also
+        // for rules registered before trajectories had their own form.
+        let deployment = self.campaign_deployment(campaign_id).await?;
+        if deployment.contract != registration.request.contract
+            || deployment.trajectory != registration.request.trajectory
+        {
+            return Err(invalid(
+                "The registered rule does not name what the campaign evaluated",
+            ));
+        }
         let report = self.workflow_campaign_report(campaign_id).await?;
         let fit = self.selector_fit(&campaign.plan.request.model_id).await?;
         let qualifications = self
@@ -695,6 +1002,31 @@ impl Store {
             )));
         }
         let native_inventory = self.attest_campaign_inventory(&campaign).await?;
+        let trajectory = match &registration.request.trajectory {
+            None => None,
+            Some(registered) => {
+                let fits = self.campaign_fits(&campaign).await?;
+                let steps = registered
+                    .steps
+                    .iter()
+                    .map(|contract| {
+                        let fit = fits
+                            .iter()
+                            .find(|fit| fit.model.work_class_id == contract.work_class_id)
+                            .ok_or_else(|| invalid("A trajectory step has no class model"))?;
+                        Ok(CertifiedStep {
+                            contract: contract.clone(),
+                            model_id: fit.model.id.clone(),
+                            model_snapshot_hash: fit.model.snapshot_hash.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Some(CertifiedTrajectory {
+                    root_budget_seconds: registered.root_budget_seconds,
+                    steps,
+                })
+            }
+        };
         let mut certificate = Certificate {
             id: String::new(),
             created_at: now(),
@@ -725,6 +1057,7 @@ impl Store {
             min_prediction_quality: campaign.plan.request.min_quality,
             artifact_hash: String::new(),
             native_inventory,
+            trajectory,
         };
         certificate.id = hash(&certificate)?;
         certificate.artifact_hash = hash(&certificate)?;
@@ -792,6 +1125,12 @@ impl Store {
         let model = self.selector_model(&state.certificate.model_id).await?;
         if model.snapshot_hash != state.certificate.model_snapshot_hash {
             return Err(invalid("Promoted fit changed"));
+        }
+        for step in state.certificate.trajectory.iter().flat_map(|t| &t.steps) {
+            if self.selector_model(&step.model_id).await?.snapshot_hash != step.model_snapshot_hash
+            {
+                return Err(invalid("A promoted class fit changed"));
+            }
         }
         Ok(state.certificate)
     }

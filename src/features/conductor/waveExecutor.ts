@@ -7,11 +7,13 @@ import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
 import {
   ownedTaskExecution,
   isOwnedTaskModeV2,
+  type OwnedTaskModeV2,
+  type PlannedOwnedStep,
   type PreparedOwnedTask,
 } from "@/features/benchmarks/lib/ownedTaskExecution";
 import { benchmarkGovernanceApi } from "@/features/benchmarks/api/benchmarkGovernance";
 import { taskBindingId } from "@/features/chat/lib/executionOwnership";
-import type { WaveSpawnRequest, WaveState } from "./waveEngine";
+import type { WaveSpawnRequest, WaveState, WaveStepState } from "./waveEngine";
 import type { SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
 import {
@@ -57,6 +59,63 @@ export function ownedWaveLineage(
   return [...(wave.carriedBindingIds ?? []), ...own];
 }
 
+/** The acknowledged native role source, class and time allowance of a step. */
+function ownedStepShape(
+  mode: OwnedTaskModeV2,
+  step: Pick<WaveStepState, "role" | "modelClass" | "budget">,
+): PlannedOwnedStep {
+  const roles = mode.consent.roles.filter(
+    (role) =>
+      role.roleId === step.role &&
+      (!step.modelClass || role.workClassId === step.modelClass),
+  );
+  if (roles.length !== 1)
+    throw new Error(
+      "The wave role/class does not identify one acknowledged native role source",
+    );
+  const budget = step.budget;
+  if (budget?.usd !== undefined || budget?.tokens !== undefined)
+    throw new Error(
+      "This native contract does not attest monetary or token step caps",
+    );
+  const seconds =
+    budget?.minutes === undefined
+      ? mode.consent.limits.timeoutSeconds
+      : Math.floor(budget.minutes * 60);
+  if (
+    !Number.isSafeInteger(seconds) ||
+    seconds <= 0 ||
+    seconds > mode.consent.limits.timeoutSeconds
+  )
+    throw new Error(
+      "The wave step allowance exceeds the acknowledged native root cap",
+    );
+  return {
+    roleSourceId: roles[0].sourceId,
+    workClassId: roles[0].workClassId,
+    stepBudgetSeconds: seconds,
+  };
+}
+
+/**
+ * The whole planned step sequence a wave root sends, so the host can find a
+ * certificate for that exact trajectory. A step that cannot resolve its own
+ * native shape fails at its own spawn; the root then simply plans nothing.
+ */
+function ownedWavePlan(
+  mode: OwnedTaskModeV2,
+  wave: WaveState,
+): PlannedOwnedStep[] | null {
+  if (wave.steps.length < 2 || wave.steps.length > 16) return null;
+  try {
+    return [...wave.steps]
+      .sort((left, right) => left.stepIndex - right.stepIndex)
+      .map((step) => ownedStepShape(mode, step));
+  } catch {
+    return null;
+  }
+}
+
 export async function prepareWaveExecutor(
   wave: WaveState,
   request: WaveSpawnRequest,
@@ -76,33 +135,7 @@ export async function prepareWaveExecutor(
       throw new Error(
         "This owned revision has no completed native step of the earlier wave to continue from; start a new request instead",
       );
-    const roles = mode.consent.roles.filter(
-      (role) =>
-        role.roleId === request.step.role &&
-        (!request.step.modelClass ||
-          role.workClassId === request.step.modelClass),
-    );
-    if (roles.length !== 1)
-      throw new Error(
-        "The wave role/class does not identify one acknowledged native role source",
-      );
-    const budget = request.step.budget;
-    if (budget?.usd !== undefined || budget?.tokens !== undefined)
-      throw new Error(
-        "This native contract does not attest monetary or token step caps",
-      );
-    const seconds =
-      budget?.minutes === undefined
-        ? mode.consent.limits.timeoutSeconds
-        : Math.floor(budget.minutes * 60);
-    if (
-      !Number.isSafeInteger(seconds) ||
-      seconds <= 0 ||
-      seconds > mode.consent.limits.timeoutSeconds
-    )
-      throw new Error(
-        "The wave step allowance exceeds the acknowledged native root cap",
-      );
+    const shape = ownedStepShape(mode, request.step);
     let hardCandidateKey: string | null = null;
     if (
       request.step.model ||
@@ -155,11 +188,11 @@ export async function prepareWaveExecutor(
         contextId: wave.conductorSessionId,
         artifactHash: mode.artifactHash,
       },
-      roleSourceId: roles[0].sourceId,
-      workClassId: roles[0].workClassId,
+      roleSourceId: shape.roleSourceId,
+      workClassId: shape.workClassId,
       prompt: request.step.subtask,
       hardCandidateKey,
-      stepBudgetSeconds: seconds,
+      stepBudgetSeconds: shape.stepBudgetSeconds,
       entry: predecessorIds.length
         ? {
             rootBindingId: predecessorIds[0],
@@ -167,6 +200,10 @@ export async function prepareWaveExecutor(
             includePreviousOutput: request.step.access === "all",
           }
         : null,
+      // Only a fresh root plans; its later steps inherit the root's plan.
+      plannedTrajectory: predecessorIds.length
+        ? null
+        : ownedWavePlan(mode, wave),
     });
     return {
       requestKey: owned.binding.request.requestKey,

@@ -62,7 +62,20 @@ export interface EntryState {
 export interface WorkflowSpec {
   schemaVersion: number;
   driverRevision: string;
-  steps: { id: string; prompt: string; includePreviousOutput: boolean }[];
+  steps: {
+    id: string;
+    prompt: string;
+    includePreviousOutput: boolean;
+    /** Schema 2: this step's own role, class and time allowance. */
+    scope?: WorkflowScope | null;
+  }[];
+}
+export interface WorkflowScope {
+  roleId: string;
+  rolePrompt: string;
+  workClassId: string;
+  purpose: "implement" | "review" | "closing_qa";
+  stepBudgetSeconds: number;
 }
 export interface BenchmarkVersion {
   id: string;

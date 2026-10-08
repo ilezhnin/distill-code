@@ -736,7 +736,11 @@
     "reportLimitations": "Limitaciones del informe",
     "attempts": "Intentos y pruebas de los flujos",
     "attempt": "Repetición {{repetition}} · calidad {{quality}}",
-    "plan": "Plan e informe guardados"
+    "plan": "Plan e informe guardados",
+    "classModels": "Modelos para otras clases de pasos",
+    "classModelsHint": "Estos flujos tienen pasos de otra clase de trabajo. Elige el modelo ajustado para cada clase; todos los modelos de clase deben usar los mismos pesos de utilidad.",
+    "classSequenceMismatch": "Los flujos seleccionados no comparten una misma secuencia de clases de pasos. Elige flujos cuyos pasos usen las mismas clases en el mismo orden.",
+    "classModel": "Modelo para los pasos de {{workClass}}"
   },
   "governance": {
     "revocationReason": "Motivo de revocación",
@@ -783,8 +787,7 @@
     "quality": "Calidad observada mínima (0–1)",
     "qualifications": "IDs exactos de registros de cualificación",
     "qualificationsHint": "Separa IDs con espacios o comas. Incluye cada versión de entrenamiento y evaluación congelada, cualificada antes de su primera medición o reserva. Se rechazan registros revocados, fallidos o incompletos.",
-    "scopeHint": "Alcance propuesto de la versión congelada del flujo. Rol, permisos, perfil, límites y forma de entrada son inmutables; la validación nativa compara cada ejemplo de entrenamiento y cada paso.",
-    "missingVersion": "La versión congelada del flujo no está disponible. Carga la versión publicada antes de registrar una regla.",
+    "scopeHint": "Alcance exacto que el servicio nativo calculó a partir de los casos congelados del flujo. El rol, los permisos, el perfil, los límites, la receta de presupuesto y la forma de entrada son inmutables; la validación nativa compara cada ejemplo de entrenamiento y cada paso del flujo.",
     "register": "Aprobar y congelar regla de despliegue",
     "retry": "Reintentar el mismo registro de regla",
     "immutableRetry": "Esta solicitud está congelada. El reintento usa datos idénticos; una regla guardada no puede rebajarse ni sustituirse.",
@@ -797,6 +800,8 @@
     "dispatchNotice": "El despacho nativo vuelve a comprobar revocaciones, contexto, entorno y disponibilidad de cuentas. Un certificado no cualifica el historial interactivo ordinario, paneles semánticos o visuales ni todas las clases de trabajo.",
     "fallback": "Orden congelado de preferencia y respaldo: {{keys}} · calidad predicha mínima: {{quality}}. Los modelos fijados explícitamente siguen siendo obligatorios.",
     "certificate": "Evidencia, evaluación, alcance y límites del certificado",
-    "revoke": "Revocar promoción"
+    "revoke": "Revocar promoción",
+    "trajectoryScope": "La regla cubre esta trayectoria exacta de {{count}} pasos con un presupuesto raíz de {{seconds}} s, porque sus pasos no comparten un mismo contrato o cada clase de paso tiene su propio modelo. Cada paso se comprueba con el modelo ajustado para su propia clase.",
+    "trajectoryCertificate": "Este certificado cubre solo su trayectoria exacta de {{count}} pasos. Cada paso usa el modelo ajustado para su propia clase; una tarea suelta o una secuencia de pasos distinta conserva su preferencia previa."
   }
 }

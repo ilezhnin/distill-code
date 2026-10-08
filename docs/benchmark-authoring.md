@@ -166,6 +166,22 @@ cost remains the reported generation cost. Missing weighted resources prevent
 a complete utility comparison. Reports and traces remain private local data.
 Exploratory intervals do not establish qualification or authorize promotion.
 
+Schema-2 workflows give each step its own role, work class and time allowance.
+A campaign over steps of several classes names the fitted model for every step
+class; all its cases share one step class sequence and every class model uses
+the same utility weights. `benchmark_campaign_deployment` returns what a
+campaign evaluated, computed from its frozen cases: one shared contract, or the
+exact step-by-step trajectory with its root wall budget. A promotion rule
+acknowledges that projection unchanged, and qualification covers the training
+versions of every class model. A trajectory certificate names each step's
+contract and class model and authorizes only that exact sequence. A wave root
+that plans the same steps finds it, and each later step uses the model
+certified for its own position. The root holds that authority for its own
+step even when later steps never run. A single task, a step that departs from
+the plan, or a lineage longer than the certified sequence keeps its prior or
+explicit pin. Without a trajectory certificate, a certificate of one contract
+covers each step until the role or class changes.
+
 ## Verification and maintenance
 
 Follow `AGENTS.md` for source checks, tests and Windows runtime validation.

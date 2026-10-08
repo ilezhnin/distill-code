@@ -1,10 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, expect, it, vi } from "vitest";
 import { benchmarkGovernanceApi as api } from "../api/benchmarkGovernance";
-import {
-  deploymentContract,
-  type PromotionRegistration,
-  type QualificationRequest,
+import type {
+  PromotionRegistration,
+  QualificationRequest,
 } from "../lib/benchmarkGovernance";
 import { definition } from "./fixtures";
 
@@ -35,7 +34,15 @@ it("maps the nine governance operations to native commands with camelCase argume
       minimumGroupUtilityGain: 0.1,
       minimumObservedQuality: 0.8,
     },
-    contract: deploymentContract(definition.draft),
+    contract: {
+      workClassId: definition.draft.workClassId,
+      roleId: definition.draft.roleId,
+      rolePrompt: definition.draft.rolePrompt,
+      permissions: definition.draft.permissions,
+      executionProfile: definition.draft.executionProfile,
+      limits: definition.draft.limits,
+      entryPresent: true,
+    },
     qualificationIds: ["qualification"],
   };
   await api.qualifyVersion(request);
@@ -43,6 +50,7 @@ it("maps the nine governance operations to native commands with camelCase argume
   await api.qualificationBindings("version");
   await api.revokeQualification("qualification", "Review withdrawn");
   await api.registerPromotionRule(registration);
+  await api.campaignDeployment("campaign");
   await api.getPromotionRule("campaign");
   await api.promoteSelector("campaign");
   await api.listPromotions();
@@ -56,6 +64,7 @@ it("maps the nine governance operations to native commands with camelCase argume
       { id: "qualification", reason: "Review withdrawn" },
     ],
     ["benchmark_register_promotion_rule", { request: registration }],
+    ["benchmark_campaign_deployment", { campaignId: "campaign" }],
     ["benchmark_get_promotion_rule", { campaignId: "campaign" }],
     ["benchmark_promote_selector", { campaignId: "campaign" }],
     ["benchmark_list_promotions"],

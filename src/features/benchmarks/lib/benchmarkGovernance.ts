@@ -68,6 +68,18 @@ export interface DeploymentContract {
   executionProfile: string;
   limits: BenchmarkDraft["limits"];
   entryPresent: boolean;
+  budgetRecipe?: string;
+  repositoryRecipe?: string;
+}
+/** The exact step sequence and root wall budget a trajectory rule covers. */
+export interface TrajectoryContract {
+  rootBudgetSeconds: number;
+  steps: DeploymentContract[];
+}
+/** What a campaign evaluated, computed natively from its frozen cases. */
+export interface CampaignDeployment {
+  contract: DeploymentContract;
+  trajectory: TrajectoryContract | null;
 }
 export interface PromotionRegistration {
   requestKey: string;
@@ -76,6 +88,7 @@ export interface PromotionRegistration {
   rule: PromotionRule;
   contract: DeploymentContract;
   qualificationIds: string[];
+  trajectory?: TrajectoryContract | null;
 }
 export interface RegisteredPromotionRule {
   request: PromotionRegistration;
@@ -115,27 +128,17 @@ export interface PromotionCertificate {
   priorKeys: string[];
   minPredictionQuality: number;
   artifactHash: string;
+  trajectory?: {
+    rootBudgetSeconds: number;
+    steps: {
+      contract: DeploymentContract;
+      modelId: string;
+      modelSnapshotHash: string;
+    }[];
+  };
 }
 export interface PromotionState {
   certificate: PromotionCertificate;
   revokedAt: number | null;
   revocationReason: string | null;
-}
-
-/** Displayed proposal only; native registration validates the actual fit and campaign. */
-export function deploymentContract(
-  manifest: BenchmarkDraft,
-): DeploymentContract {
-  return {
-    workClassId: manifest.workClassId,
-    roleId: manifest.roleId,
-    rolePrompt: manifest.rolePrompt,
-    permissions: {
-      ...manifest.permissions,
-      tools: [...new Set(manifest.permissions.tools)].sort(),
-    },
-    executionProfile: manifest.executionProfile,
-    limits: { ...manifest.limits },
-    entryPresent: true,
-  };
 }

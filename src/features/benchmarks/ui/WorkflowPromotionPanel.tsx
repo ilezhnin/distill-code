@@ -6,29 +6,19 @@ import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkGovernanceApi as api } from "../api/benchmarkGovernance";
-import {
-  deploymentContract,
-  type PromotionRegistration,
-  type PromotionState,
-  type RegisteredPromotionRule,
+import type {
+  DeploymentContract,
+  PromotionRegistration,
+  PromotionState,
+  RegisteredPromotionRule,
 } from "../lib/benchmarkGovernance";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
-import type { BenchmarkVersion } from "../types";
 import { BenchmarkAlert, Field } from "./BenchmarkPrimitives";
 
 const promotionsKey = ["benchmarks", "promotions"];
 
-function registrationIdentity(request: PromotionRegistration): string {
-  const { rule, contract } = request;
-  // Native registration canonicalizes only these sets; every other field is exact.
-  return JSON.stringify([
-    request.requestKey,
-    request.campaignId,
-    request.operator,
-    rule.recipe,
-    rule.alpha,
-    rule.minimumGroupUtilityGain,
-    rule.minimumObservedQuality,
+function contractIdentity(contract: DeploymentContract) {
+  return [
     contract.workClassId,
     contract.roleId,
     contract.rolePrompt,
@@ -40,6 +30,26 @@ function registrationIdentity(request: PromotionRegistration): string {
     contract.limits.timeoutSeconds,
     contract.limits.maxTurns,
     contract.limits.maxArtifactBytes,
+    contract.budgetRecipe ?? null,
+    contract.repositoryRecipe ?? null,
+  ];
+}
+
+function registrationIdentity(request: PromotionRegistration): string {
+  const { rule, contract, trajectory } = request;
+  // Native registration canonicalizes only these sets; every other field is exact.
+  return JSON.stringify([
+    request.requestKey,
+    request.campaignId,
+    request.operator,
+    rule.recipe,
+    rule.alpha,
+    rule.minimumGroupUtilityGain,
+    rule.minimumObservedQuality,
+    contractIdentity(contract),
+    trajectory
+      ? [trajectory.rootBudgetSeconds, trajectory.steps.map(contractIdentity)]
+      : null,
     [...request.qualificationIds].sort(),
   ]);
 }
@@ -58,12 +68,10 @@ function matchesRegistration(
 
 export function WorkflowPromotionPanel({
   campaign,
-  versions,
   onPendingChange,
   disabled = false,
 }: {
   campaign: WorkflowCampaign;
-  versions: BenchmarkVersion[];
   onPendingChange: (pending: boolean) => boolean | undefined;
   disabled?: boolean;
 }) {
@@ -126,14 +134,17 @@ export function WorkflowPromotionPanel({
   const promotion = promotions.data?.find(
     (p) => p.certificate.campaignId === campaign.plan.id,
   );
-  const version = versions.find(
-    (v) =>
-      v.id ===
-      (campaign.plan.cases[0]?.versionId ??
-        campaign.plan.request.versionIds[0]),
-  );
-  const contract = version ? deploymentContract(version.manifest) : null;
   const pristine = campaign.state === "reserved" && campaign.nextCell === 0;
+  // The exact contract or trajectory the campaign evaluated, computed
+  // natively from its frozen cases; the renderer never assembles it.
+  const deployment = useQuery({
+    queryKey: ["benchmarks", "campaign-deployment", campaign.plan.id],
+    queryFn: () => api.campaignDeployment(campaign.plan.id),
+    enabled: pristine && rule.data === null,
+    retry: false,
+  });
+  const contract = deployment.data?.contract ?? null;
+  const trajectory = deployment.data?.trajectory ?? null;
   const ids = qualificationIds.split(/[\s,]+/).filter(Boolean);
   const valid =
     Boolean(contract) &&
@@ -173,6 +184,7 @@ export function WorkflowPromotionPanel({
       },
       contract,
       qualificationIds: ids,
+      ...(trajectory ? { trajectory } : {}),
     };
     setSubmitted(request);
     setRegistrationPending(true);
@@ -257,11 +269,13 @@ export function WorkflowPromotionPanel({
     >
       <h4 className="text-sm font-medium">{t("promotion.title")}</h4>
       <p className="text-xs text-muted-foreground">{t("promotion.notice")}</p>
-      {[error, rule.error, promotions.error].filter(Boolean).map((failure) => (
-        <BenchmarkAlert key={benchmarkErrorMessage(failure)}>
-          {benchmarkErrorMessage(failure)}
-        </BenchmarkAlert>
-      ))}
+      {[error, rule.error, promotions.error, deployment.error]
+        .filter(Boolean)
+        .map((failure) => (
+          <BenchmarkAlert key={benchmarkErrorMessage(failure)}>
+            {benchmarkErrorMessage(failure)}
+          </BenchmarkAlert>
+        ))}
       {rule.isPending ? <p className="text-sm">{t("loading")}</p> : null}
       {confirmedRule ? (
         <>
@@ -327,15 +341,21 @@ export function WorkflowPromotionPanel({
                   )}
                 </Field>
                 <p className="text-xs">{t("promotion.scopeHint")}</p>
-                {contract ? (
+                {trajectory ? (
+                  <p className="text-xs">
+                    {t("promotion.trajectoryScope", {
+                      count: trajectory.steps.length,
+                      seconds: trajectory.rootBudgetSeconds,
+                    })}
+                  </p>
+                ) : null}
+                {deployment.data ? (
                   <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs">
-                    {JSON.stringify(contract, null, 2)}
+                    {JSON.stringify(trajectory ?? contract, null, 2)}
                   </pre>
-                ) : (
-                  <BenchmarkAlert>
-                    {t("promotion.missingVersion")}
-                  </BenchmarkAlert>
-                )}
+                ) : deployment.isPending ? (
+                  <p className="text-sm">{t("loading")}</p>
+                ) : null}
                 {submitted ? (
                   <p className="text-xs">{t("promotion.immutableRetry")}</p>
                 ) : null}
@@ -412,6 +432,13 @@ export function WorkflowPromotionPanel({
           <p className="text-xs text-muted-foreground">
             {t("promotion.dispatchNotice")}
           </p>
+          {promotion.certificate.trajectory ? (
+            <p className="text-xs">
+              {t("promotion.trajectoryCertificate", {
+                count: promotion.certificate.trajectory.steps.length,
+              })}
+            </p>
+          ) : null}
           <p className="text-xs">
             {t("promotion.fallback", {
               keys: promotion.certificate.priorKeys.join(", "),

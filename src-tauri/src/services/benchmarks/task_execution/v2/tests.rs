@@ -251,6 +251,7 @@ async fn fixture() -> (
         hard_candidate_key: None,
         entry: None,
         step_budget_seconds: 10,
+        planned_trajectory: None,
     };
     (dir, service, backend, mode, request)
 }
@@ -659,6 +660,7 @@ async fn a_descendant_of_an_expired_root_is_a_definite_pre_write_refusal() {
         hard_candidate_key: None,
         entry,
         step_budget_seconds: 1,
+        planned_trajectory: None,
     };
     let root = service
         .prepare_owned_task_intent(PrepareIntent::V2(step("wave:invented:step:0", None)))
@@ -718,6 +720,7 @@ async fn a_revision_continues_the_exact_root_lineage_and_budget() {
             include_previous_output: true,
         }),
         step_budget_seconds: 10,
+        planned_trajectory: None,
     };
     let context = "invented-conductor:wave:root:invented-request";
     let prepare =
@@ -836,6 +839,7 @@ async fn a_mixed_role_lineage_never_borrows_a_single_role_certificate() {
             include_previous_output: true,
         }),
         step_budget_seconds: 10,
+        planned_trajectory: None,
     };
     let prepare =
         |request: RequestV2| service.prepare_owned_task_intent(PrepareIntent::V2(request));

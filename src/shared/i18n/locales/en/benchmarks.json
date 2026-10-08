@@ -736,7 +736,11 @@
     "reportLimitations": "Report limitations",
     "attempts": "Workflow attempts and evidence",
     "attempt": "Repeat {{repetition}} · quality {{quality}}",
-    "plan": "Saved plan and report"
+    "plan": "Saved plan and report",
+    "classModels": "Models for other step classes",
+    "classModelsHint": "These workflows have steps of another work class. Choose the model fitted for each class; every class model must use the same utility weights.",
+    "classSequenceMismatch": "The selected workflows do not share one step class sequence. Choose workflows whose steps use the same classes in the same order.",
+    "classModel": "Model for {{workClass}} steps"
   },
   "governance": {
     "revocationReason": "Reason for revocation",
@@ -783,8 +787,7 @@
     "quality": "Minimum observed quality (0–1)",
     "qualifications": "Exact qualification record IDs",
     "qualificationsHint": "Separate IDs by whitespace or commas. Include every frozen training and held-out version, qualified before its earliest measurement or reservation. Revoked, failed or incomplete records are refused.",
-    "scopeHint": "Proposed scope from the frozen workflow version. Role, permissions, profile, limits and entry shape are immutable; native validation compares every training example and workflow step.",
-    "missingVersion": "The frozen workflow version is unavailable. Load the published version before registering a rule.",
+    "scopeHint": "Exact scope the native service computed from the frozen workflow cases. Role, permissions, profile, limits, budget recipe and entry shape are immutable; native validation compares every training example and workflow step.",
     "register": "Approve and freeze deployment rule",
     "retry": "Retry the same rule registration",
     "immutableRetry": "This registration request is frozen. Retry uses identical inputs; a saved rule cannot be lowered or replaced.",
@@ -797,6 +800,8 @@
     "dispatchNotice": "Native dispatch rechecks qualification revocations, context, runtime and account availability. A certificate does not qualify ordinary interactive history, semantic or visual panels, or every work class.",
     "fallback": "Frozen prior/fallback order: {{keys}} · minimum predicted quality: {{quality}}. Explicit model pins remain binding.",
     "certificate": "Certificate evidence, assessment, scope and limits",
-    "revoke": "Revoke promotion"
+    "revoke": "Revoke promotion",
+    "trajectoryScope": "The rule covers this exact {{count}}-step trajectory with a {{seconds}} s root budget, because its steps do not all share one contract or each step class has its own model. Each step is checked against the model fitted for its own class.",
+    "trajectoryCertificate": "This certificate covers only its exact {{count}}-step trajectory. Each step uses the model fitted for its own class; a single task or a different step sequence keeps its prior."
   }
 }
