@@ -161,15 +161,43 @@ pub fn read_agent_source_file(
     app: tauri::AppHandle,
     source_path: String,
 ) -> Result<ImportFileReadResult, String> {
+    read_native_agent_source(&app, &source_path)
+}
+
+/// The owned execution contract resolves the same native source as the agent
+/// editor. It never accepts a renderer copy of the file's prompt as authority.
+pub(crate) fn read_native_agent_source(
+    app: &tauri::AppHandle,
+    source_path: &str,
+) -> Result<ImportFileReadResult, String> {
     let roots = match app.try_state::<crate::services::e2e_mode::E2eMode>() {
         Some(mode) => vec![mode.agents_dir()],
-        None => agent_source_roots(
-            &crate::services::distill_root::app_root(&app)?,
-            &source_path,
-        ),
+        None => agent_source_roots(&crate::services::distill_root::app_root(app)?, source_path),
     };
-    let path = validate_agent_source_path_with_roots(&source_path, &roots)?;
-    read_persona_file(path, "agent source")
+    read_native_agent_source_with_roots(source_path, &roots)
+}
+
+pub(crate) fn read_native_agent_source_with_roots(
+    source_path: &str,
+    roots: &[PathBuf],
+) -> Result<ImportFileReadResult, String> {
+    let path = validate_agent_source_path_with_roots(source_path, roots)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Selected file is missing a valid filename".to_owned())?
+        .to_owned();
+    let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PERSONA_IMPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    validate_file_size(bytes.len() as u64, "Agent source file")?;
+    let file_contents = String::from_utf8(bytes).map_err(|error| error.to_string())?;
+    Ok(ImportFileReadResult {
+        file_name,
+        file_contents,
+    })
 }
 
 /// Where an agent file may be read from: the Distill root's `agents`, and the
@@ -188,28 +216,6 @@ fn agent_source_roots(distill_root: &Path, source_path: &str) -> Vec<PathBuf> {
         roots.push(parent.to_path_buf());
     }
     roots
-}
-
-fn read_persona_file(path: PathBuf, context: &'static str) -> Result<ImportFileReadResult, String> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "Selected file is missing a valid filename".to_string())?
-        .to_string();
-    let file_bytes = std::fs::read(&path).map_err(|err| {
-        format!(
-            "Failed to read {context} file '{}': {}",
-            path.display(),
-            err
-        )
-    })?;
-    let file_contents =
-        String::from_utf8(file_bytes).map_err(|_| "File is not valid UTF-8 text".to_string())?;
-
-    Ok(ImportFileReadResult {
-        file_contents,
-        file_name,
-    })
 }
 
 #[cfg(test)]

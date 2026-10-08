@@ -1874,6 +1874,7 @@ pub(super) mod tests {
                     workflow_steps: Vec::new(),
                     native_execution_ms: None,
                     resolved_model: None,
+                    repository_result: None,
                 })
                 .collect::<Vec<_>>()
         };

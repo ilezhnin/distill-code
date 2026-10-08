@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod v2;
+pub use v2::{Consent, ContextV2, ModeEnvelope, ModeIntent, ModeRequestV2, PrepareIntent};
+
 fn invalid(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("invalid_task_authority", message)
 }
@@ -93,6 +96,8 @@ pub struct WaveEntry {
 pub struct NativeOutput {
     pub text: String,
     pub elapsed_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_result: Option<super::artifact_context::PublicResult>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +110,36 @@ pub struct Binding {
     pub context_hash: String,
     pub decision: executor::Decision,
     pub artifact_hash: String,
+    /// Omitted for legacy records: their original serialized bytes remain stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_v2: Option<ContextV2>,
+}
+impl Binding {
+    pub(super) fn remaining_ms(&self) -> Result<u64> {
+        if let Some(budget) = self
+            .context_v2
+            .as_ref()
+            .and_then(|context| context.root_budget.as_ref())
+        {
+            budget.remaining_ms(now())
+        } else {
+            Ok(u64::from(
+                self.task
+                    .entry
+                    .as_ref()
+                    .map_or(self.task.limits.timeout_seconds, |entry| {
+                        entry.remaining_budget_seconds
+                    }),
+            ) * 1000)
+        }
+    }
+    pub(super) fn deadline_at_ms(&self) -> Result<Option<i64>> {
+        self.context_v2
+            .as_ref()
+            .and_then(|context| context.root_budget.as_ref())
+            .map(|budget| budget.deadline_at_ms())
+            .transpose()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,8 +156,93 @@ pub struct Prepared {
     pub session: Session,
 }
 
+/// Rust-only proof from the existing host owner/dispatch locks. A session ID
+/// here is an inspection target, never a substitute configuration receipt.
+#[derive(Debug, Clone)]
+pub struct NativePreparationLookup {
+    pub session_id: Option<String>,
+    pub no_provider_start: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparationRefusal {
+    pub schema_version: u32,
+    pub binding_id: String,
+    pub binding_hash: String,
+    pub request_key: String,
+    pub session_id: Option<String>,
+    pub outcome: String,
+    pub proof: String,
+}
+fn preparation_refusal_error(refusal: PreparationRefusal) -> BenchmarkError {
+    BenchmarkError::new("owned_task_preparation_refused","Native setup exhausted its root budget before any provider prompt; inspect or explicitly start a new task")
+        .with_details(serde_json::to_value(refusal).expect("native preparation refusal"))
+}
+
 impl Store {
+    async fn task_preparation_refusal(
+        &self,
+        binding: &Binding,
+    ) -> Result<Option<PreparationRefusal>> {
+        let row = sqlx::query(
+            "SELECT refusal_json,refusal_hash FROM task_budget_bindings WHERE request_key=?",
+        )
+        .bind(&binding.request.request_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let Some(body) = row.try_get::<Option<String>, _>("refusal_json")? else {
+            return Ok(None);
+        };
+        let refusal: PreparationRefusal = serde_json::from_str(&body)?;
+        if row.try_get::<Option<String>, _>("refusal_hash")?.as_deref()
+            != Some(fixtures::hash(body.as_bytes()).as_str())
+            || refusal.schema_version != 1
+            || refusal.binding_id != binding.id
+            || refusal.binding_hash != binding.artifact_hash
+            || refusal.request_key != binding.request.request_key
+            || refusal.outcome != "budget_timeout"
+            || refusal.proof != "native-owned-no-provider-start-v1"
+        {
+            return Err(invalid(
+                "Native terminal preparation refusal integrity changed",
+            ));
+        }
+        Ok(Some(refusal))
+    }
+    async fn save_task_preparation_refusal(
+        &self,
+        binding: &Binding,
+        lookup: NativePreparationLookup,
+    ) -> Result<PreparationRefusal> {
+        if !lookup.no_provider_start {
+            return Err(BenchmarkError::new(
+                "dispatch_uncertain",
+                "Native setup expired but provider-start absence is unconfirmed",
+            ));
+        }
+        let refusal = PreparationRefusal {
+            schema_version: 1,
+            binding_id: binding.id.clone(),
+            binding_hash: binding.artifact_hash.clone(),
+            request_key: binding.request.request_key.clone(),
+            session_id: lookup.session_id,
+            outcome: "budget_timeout".into(),
+            proof: "native-owned-no-provider-start-v1".into(),
+        };
+        let body = serde_json::to_string(&refusal)?;
+        sqlx::query("UPDATE task_budget_bindings SET refusal_json=?,refusal_hash=? WHERE request_key=? AND refusal_json IS NULL")
+            .bind(&body).bind(fixtures::hash(body.as_bytes())).bind(&binding.request.request_key).execute(&self.pool).await?;
+        self.task_preparation_refusal(binding)
+            .await?
+            .ok_or_else(|| invalid("Native preparation refusal was not durably recorded"))
+    }
     pub async fn owned_task_mode(&self, context_id: &str) -> Result<Option<Mode>> {
+        if let Some(ModeEnvelope::V2(_)) = self.owned_task_mode_envelope(context_id).await? {
+            return Ok(None);
+        }
         let row = sqlx::query(
             "SELECT mode_json,artifact_hash FROM task_mode_consents WHERE context_id=?",
         )
@@ -189,7 +309,7 @@ impl Store {
             || value.artifact_hash != row.try_get::<String, _>("binding_hash")?
             || value.request.request_key != row.try_get::<String, _>("request_key")?
             || hash(&value.request)? != row.try_get::<String, _>("request_hash")?
-            || hash(&(&value.task, &value.request.repository))? != value.context_hash
+            || value.effective_context_hash()? != value.context_hash
         {
             return Err(invalid("Task binding integrity check failed"));
         }
@@ -206,7 +326,9 @@ impl Store {
             Some(id) => {
                 let saved = self.task_binding(&id).await?;
                 if hash(&saved.request)? != hash(request)? {
-                    return Err(invalid("Task key is already bound to different inputs; explicitly edit and save a new task"));
+                    return Err(invalid(
+                        "Task key is already bound to different inputs; explicitly edit and save a new task",
+                    ));
                 }
                 Ok(Some(saved))
             }
@@ -229,6 +351,15 @@ impl Store {
             return Err(invalid("Task session authority changed"));
         }
         Ok(Some(session))
+    }
+}
+
+impl Binding {
+    fn effective_context_hash(&self) -> Result<String> {
+        match &self.context_v2 {
+            Some(context) => hash(&(&self.task, &self.request.repository, context)),
+            None => hash(&(&self.task, &self.request.repository)),
+        }
     }
 }
 impl BenchmarkService {
@@ -273,7 +404,7 @@ impl BenchmarkService {
                 "Native task key or session differs at provider handoff",
             ));
         }
-        self.require_task_mode(&binding.request).await?;
+        self.validate_context_v2(&binding).await?;
         if binding.decision.learned_dispatch_allowed {
             let active = self
                 .store
@@ -306,6 +437,34 @@ impl BenchmarkService {
         self.backend
             .validate_owned_task_context(&binding, &session)
             .await?;
+        binding.remaining_ms()?;
+        Ok(())
+    }
+    pub(crate) async fn owned_task_deadline_at_ms(&self, id: &str) -> Result<Option<i64>> {
+        self.store.task_binding(id).await?.deadline_at_ms()
+    }
+    pub(crate) async fn expired_owned_task_identity(
+        &self,
+        id: &str,
+        session_id: &str,
+        key: &str,
+    ) -> Result<()> {
+        let binding = self.store.task_binding(id).await?;
+        let session = self
+            .store
+            .task_session(&binding)
+            .await?
+            .ok_or_else(|| invalid("Native task session proof is absent"))?;
+        if binding.request.request_key != key
+            || session.owned.session_id != session_id
+            || binding
+                .deadline_at_ms()?
+                .is_none_or(|deadline| deadline > now())
+        {
+            return Err(invalid(
+                "Native task refusal identity or expired deadline differs",
+            ));
+        }
         Ok(())
     }
     pub async fn reopen_owned_task(&self, id: &str) -> Result<()> {
@@ -503,6 +662,8 @@ impl BenchmarkService {
                 fixtures::hash(request.request_key.as_bytes())
             );
         }
+        let lock = super::evaluation_lock(&format!("bind:{}", request.request_key));
+        let _guard = lock.lock().await;
         if let Some(saved) = self.store.task_binding_retry(&request).await? {
             return Ok(saved);
         }
@@ -588,6 +749,7 @@ impl BenchmarkService {
             task,
             decision,
             artifact_hash: String::new(),
+            context_v2: None,
         };
         binding.artifact_hash = hash(&binding)?;
         sqlx::query("INSERT OR IGNORE INTO task_context_bindings(id,request_key,request_hash,binding_json,binding_hash) VALUES(?,?,?,?,?)")
@@ -599,8 +761,14 @@ impl BenchmarkService {
     }
     pub async fn prepare_owned_task(&self, request: Request) -> Result<Prepared> {
         let binding = self.bind_task(request).await?;
+        self.prepare_bound_task(binding).await
+    }
+    async fn prepare_bound_task(&self, binding: Binding) -> Result<Prepared> {
         let lock = super::evaluation_lock(&format!("task:{}", binding.id));
         let _guard = lock.lock().await;
+        if let Some(refusal) = self.store.task_preparation_refusal(&binding).await? {
+            return Err(preparation_refusal_error(refusal));
+        }
         let chosen = binding.decision.chosen.as_ref().ok_or_else(|| {
             invalid(format!(
                 "No native owned worker available: {}",
@@ -610,10 +778,51 @@ impl BenchmarkService {
         if let Some(session) = self.store.task_session(&binding).await? {
             return Ok(Prepared { binding, session });
         }
-        let session = self
+        if let Some(context) = &binding.context_v2 {
+            let budget = context
+                .root_budget
+                .as_ref()
+                .ok_or_else(|| invalid("Native budget authority is absent"))?;
+            if let Err(error) = self
+                .store
+                .verify_task_budget(budget, &binding.id, &context.consent_hash)
+                .await
+            {
+                return Err(self.resolve_preparation_failure(&binding, error).await);
+            }
+        }
+        let preparation = self
             .backend
-            .prepare_owned_task(&self.store, &binding, chosen)
-            .await?;
+            .prepare_owned_task(&self.store, &binding, chosen);
+        let result = if binding.context_v2.is_some() {
+            let remaining = match binding.remaining_ms() {
+                Ok(remaining) => remaining,
+                Err(error) => return Err(self.resolve_preparation_failure(&binding, error).await),
+            };
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(remaining.saturating_add(5_000)),
+                preparation,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(BenchmarkError::new(
+                    "budget_timeout",
+                    "Native root budget expired during owned session setup",
+                )),
+            }
+        } else {
+            preparation.await
+        };
+        let session = match result {
+            Ok(session) => session,
+            Err(error) => return Err(self.resolve_preparation_failure(&binding, error).await),
+        };
+        if binding.context_v2.is_some() {
+            if let Err(error) = binding.remaining_ms() {
+                return Err(self.resolve_preparation_failure(&binding, error).await);
+            }
+        }
         if &session.observed != chosen
             || session.context_hash != binding.context_hash
             || !session.owned.substitutions.is_empty()
@@ -631,6 +840,39 @@ impl BenchmarkService {
             .ok_or_else(|| invalid("Task session disappeared"))?;
         Ok(Prepared { binding, session })
     }
+    async fn resolve_preparation_failure(
+        &self,
+        binding: &Binding,
+        error: BenchmarkError,
+    ) -> BenchmarkError {
+        if error.code != "budget_timeout" || binding.context_v2.is_none() {
+            return error;
+        }
+        match self.backend.recover_owned_task_preparation(binding).await {
+            Ok(lookup) if lookup.no_provider_start => match self
+                .store
+                .save_task_preparation_refusal(binding, lookup)
+                .await
+            {
+                Ok(refusal) => preparation_refusal_error(refusal),
+                Err(error) => error,
+            },
+            Ok(lookup) => BenchmarkError::new(
+                "dispatch_uncertain",
+                "Setup expired; recover the exact native task and inspect its existing claim",
+            )
+            .with_details(
+                serde_json::json!({"bindingId":binding.id,"sessionId":lookup.session_id}),
+            ),
+            Err(error) => BenchmarkError::new(
+                "dispatch_uncertain",
+                format!(
+                    "Setup expired; native provider-start proof is unresolved: {}",
+                    error.message
+                ),
+            ),
+        }
+    }
     /// Runtime/selection setup has already awaited. Recheck authority and native
     /// runtime while holding the same gate as revoke, through durable dispatch.
     pub async fn dispatch_owned_task(&self, id: &str) -> Result<ExecutionDispatch> {
@@ -642,6 +884,15 @@ impl BenchmarkService {
             .ok_or_else(|| invalid("Task has no native session proof"))?;
         if let Some(existing) = self.backend.owned_task_status(&binding, &session).await? {
             return Ok(existing);
+        }
+        if let Err(error) = binding.remaining_ms() {
+            if error.code == "budget_timeout" && binding.context_v2.is_some() {
+                return self
+                    .backend
+                    .refuse_owned_task_dispatch(&binding, &session)
+                    .await;
+            }
+            return Err(error);
         }
         let inventory = self
             .backend
@@ -660,7 +911,15 @@ impl BenchmarkService {
             ));
         }
         let guard = promotion::admission_gate().lock_owned().await;
-        self.require_task_mode(&binding.request).await?;
+        if let Err(error) = self.validate_context_v2(&binding).await {
+            if error.code == "budget_timeout" && binding.context_v2.is_some() {
+                return self
+                    .backend
+                    .refuse_owned_task_dispatch(&binding, &session)
+                    .await;
+            }
+            return Err(error);
+        }
         if binding.decision.learned_dispatch_allowed {
             let active = self
                 .store

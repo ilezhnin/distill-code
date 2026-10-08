@@ -215,6 +215,30 @@ struct TurnIds {
     run_id: String,
     message_id: String,
     assistant_message_id: String,
+    owned_deadline: Option<tokio::time::Instant>,
+}
+
+fn owned_turn_deadline(timeout_ms: u64, absolute_ms: Option<i64>) -> tokio::time::Instant {
+    let remaining = absolute_ms
+        .map(|deadline| {
+            deadline
+                .saturating_sub(chrono::Utc::now().timestamp_millis())
+                .max(0) as u64
+        })
+        .unwrap_or(timeout_ms)
+        .min(timeout_ms);
+    tokio::time::Instant::now() + std::time::Duration::from_millis(remaining)
+}
+
+fn check_owned_deadline(deadline: Option<tokio::time::Instant>) -> Result<(), Value> {
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        return Err(protocol::error_with_data(
+            -32000,
+            "Native root budget expired before provider submission",
+            json!({"kind":"budget_timeout"}),
+        ));
+    }
+    Ok(())
 }
 
 impl TurnIds {
@@ -223,6 +247,7 @@ impl TurnIds {
             run_id: uuid::Uuid::new_v4().to_string(),
             message_id: uuid::Uuid::new_v4().to_string(),
             assistant_message_id: uuid::Uuid::new_v4().to_string(),
+            owned_deadline: None,
         }
     }
 
@@ -5518,6 +5543,7 @@ impl Inner {
         steer: bool,
         task_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
     ) -> Result<Value, Value> {
+        check_owned_deadline(ids.owned_deadline)?;
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let mut record = self.session_record(&session_id).await?;
@@ -5590,6 +5616,7 @@ impl Inner {
         // after this prompt's rows. The previous turn's own tail is already in:
         // `run_prompt` drains before a turn it ran ends.
         self.drain_bridge_events().await?;
+        check_owned_deadline(ids.owned_deadline)?;
         // The bridge session the prompt goes to is the one the runtime names
         // in the very lock the run is registered in. `attach_session` released
         // its own lock before returning, and a `reopen_on_model` that took it
@@ -5675,6 +5702,7 @@ impl Inner {
                 sent,
                 meta,
                 task_admission,
+                ids.owned_deadline,
             )
             .await;
         if let Err(error) = &mut result {
@@ -5826,10 +5854,19 @@ impl Inner {
         prompt: Value,
         meta: Value,
     ) -> Result<Value, Value> {
-        self.run_prompt_with_admission(bridge, session_id, bridge_session_id, prompt, meta, None)
-            .await
+        self.run_prompt_with_admission(
+            bridge,
+            session_id,
+            bridge_session_id,
+            prompt,
+            meta,
+            None,
+            None,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_prompt_with_admission(
         &self,
         bridge: &Bridge,
@@ -5838,6 +5875,7 @@ impl Inner {
         prompt: Value,
         mut meta: Value,
         task_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+        owned_deadline: Option<tokio::time::Instant>,
     ) -> Result<Value, Value> {
         let link = ExecutorLink::take(&mut meta).map_err(invalid_params)?;
         if link
@@ -5916,6 +5954,7 @@ impl Inner {
             (run.run_id.clone(), receipt)
         };
         if let Some(start) = &receipt_start {
+            check_owned_deadline(owned_deadline)?;
             if !self
                 .store
                 .claim_executor_receipt_with_routing(
@@ -5931,10 +5970,17 @@ impl Inner {
         let raw_result = match task_admission {
             Some(admission) => {
                 bridge
-                    .prompt_with_admission(request, run_id.clone(), Some(admission))
+                    .prompt_with_admission(request, run_id.clone(), Some(admission), owned_deadline)
                     .await
             }
-            None => bridge.prompt(request, run_id.clone()).await,
+            None => match owned_deadline {
+                Some(deadline) => {
+                    bridge
+                        .prompt_with_admission(request, run_id.clone(), None, Some(deadline))
+                        .await
+                }
+                None => bridge.prompt(request, run_id.clone()).await,
+            },
         };
         if let Some((owner, _)) = self
             .store
@@ -6395,11 +6441,153 @@ impl Inner {
         )
     }
 
+    /// Observe setup under the very same owner/create and dispatch locks used
+    /// by effects. No new bridge/session or model probe is started here.
+    pub(crate) async fn lookup_owned_task_preparation(
+        &self,
+        owner_id: &str,
+        request_key: &str,
+    ) -> Result<crate::services::benchmarks::task_execution::NativePreparationLookup, String> {
+        if !owner_id.starts_with("task:") || !request_key.starts_with("owned-task:") {
+            return Err("validation: native task preparation identity is invalid".into());
+        }
+        let owner_lock = self.owned_lock(&format!("owner:{owner_id}")).await;
+        let _owner_guard = owner_lock.lock().await;
+        let session_id = self.store.owned_session_id(owner_id).await?;
+        let dispatch_lock = match &session_id {
+            Some(id) => Some(self.owned_lock(&format!("dispatch:{id}")).await),
+            None => None,
+        };
+        let _dispatch_guard = match &dispatch_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        if let Some(id) = &session_id {
+            let (owner, _) = self
+                .store
+                .execution_owner(id)
+                .await?
+                .ok_or("evidence_missing: native task owner is absent")?;
+            if owner.owner_id != owner_id
+                || self.store.owned_session_purpose(id).await?.as_deref() != Some("task")
+            {
+                return Err("validation: native setup belongs to another purpose or owner".into());
+            }
+            if self.store.get_session(id).await?.is_none() {
+                return Err("evidence_missing: native setup record is absent".into());
+            }
+        }
+        let dispatch = self.store.execution_dispatch(request_key).await?;
+        let receipt = self.store.executor_receipt(request_key).await?;
+        let active = session_id.as_ref().is_some_and(|id| {
+            self.sessions.try_lock().map_or(true, |sessions| {
+                sessions
+                    .get(id)
+                    .is_some_and(|runtime| runtime.run.is_some())
+            })
+        });
+        Ok(
+            crate::services::benchmarks::task_execution::NativePreparationLookup {
+                session_id,
+                no_provider_start: dispatch.is_none() && receipt.is_none() && !active,
+            },
+        )
+    }
+
     pub async fn dispatch_owned_turn(
         self: &Arc<Self>,
         request: OwnedTurnRequest,
     ) -> Result<ExecutionDispatch, String> {
-        self.dispatch_owned_turn_with_link(request, None, None, None)
+        self.dispatch_owned_turn_with_link(request, None, None, None, None)
+            .await
+    }
+
+    /// Persist the no-prompt terminal outcome on the existing dispatch ledger.
+    /// Only a native expired binding and exact owned session may use this path.
+    pub(crate) async fn refuse_task_owned_turn(
+        &self,
+        session_id: &str,
+        request_key: &str,
+        owner_id: &str,
+        policy_hash: &str,
+    ) -> Result<ExecutionDispatch, String> {
+        let lock = self.owned_lock(&format!("dispatch:{session_id}")).await;
+        let _guard = lock.lock().await;
+        let (owner, hash) = self
+            .store
+            .execution_owner(session_id)
+            .await?
+            .ok_or("validation: task owner is absent")?;
+        if owner.owner_id != owner_id
+            || hash != policy_hash
+            || self
+                .store
+                .owned_session_purpose(session_id)
+                .await?
+                .as_deref()
+                != Some("task")
+        {
+            return Err("validation: task refusal owner or policy differs".into());
+        }
+        let id = owner_id
+            .strip_prefix("task:")
+            .ok_or("validation: task binding is absent")?;
+        let service = self
+            .app
+            .state::<crate::services::benchmarks::BenchmarkState>()
+            .get(&self.app)
+            .await
+            .map_err(|error| error.message)?;
+        service
+            .expired_owned_task_identity(id, session_id, request_key)
+            .await
+            .map_err(|error| error.message)?;
+        if let Some(dispatch) = self.store.execution_dispatch(request_key).await? {
+            return Ok(dispatch);
+        }
+        if self.store.executor_receipt(request_key).await?.is_some()
+            || self
+                .sessions
+                .lock()
+                .await
+                .get(session_id)
+                .is_some_and(|runtime| runtime.run.is_some())
+        {
+            return Err("dispatch_uncertain: native provider-start absence is unconfirmed".into());
+        }
+        let ids = TurnIds::new();
+        let dispatch = ExecutionDispatch {
+            request_key: request_key.into(),
+            session_id: session_id.into(),
+            run_id: ids.run_id,
+            user_message_id: ids.message_id,
+            phase: "reserved".into(),
+            event_cursor: 0,
+            result: None,
+            error: None,
+        };
+        // The identity is immutable even when no user prompt was transmitted.
+        self.store
+            .reserve_dispatch(&dispatch, &execution::digest(b"native-budget-no-prompt-v1"))
+            .await?;
+        let error = json!({"kind":"budget_timeout","message":"Native root budget expired before any provider prompt","proof":"native-owned-no-provider-start-v1"});
+        self.store
+            .settle_dispatch(request_key, "terminal", None, Some(&error))
+            .await?;
+        self.store
+            .execution_dispatch(request_key)
+            .await?
+            .ok_or("evidence_missing: native refusal disappeared".into())
+    }
+
+    /// Rust-only collection admission supplies the shared native root deadline;
+    /// this is not a renderer dispatch parameter or a replacement receipt path.
+    pub(crate) async fn dispatch_owned_turn_with_deadline(
+        self: &Arc<Self>,
+        request: OwnedTurnRequest,
+        deadline_at_ms: i64,
+    ) -> Result<ExecutionDispatch, String> {
+        self.dispatch_owned_turn_with_link(request, None, None, None, Some(deadline_at_ms))
             .await
     }
 
@@ -6419,11 +6607,31 @@ impl Inner {
         {
             return Err("validation: session is not an application task owner".into());
         }
+        let (owner, _) = self
+            .store
+            .execution_owner(&request.session_id)
+            .await?
+            .ok_or("validation: native task owner is absent")?;
+        let binding_id = owner
+            .owner_id
+            .strip_prefix("task:")
+            .ok_or("validation: native task binding is absent")?;
+        let service = self
+            .app
+            .state::<crate::services::benchmarks::BenchmarkState>()
+            .get(&self.app)
+            .await
+            .map_err(|error| error.message)?;
+        let deadline = service
+            .owned_task_deadline_at_ms(binding_id)
+            .await
+            .map_err(|error| error.message)?;
         self.dispatch_owned_turn_with_link(
             request,
             Some(link),
             Some(admission),
             Some(max_artifact_bytes),
+            deadline,
         )
         .await
     }
@@ -6434,6 +6642,7 @@ impl Inner {
         link: Option<ExecutorLink>,
         task_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
         task_answer_cap: Option<u64>,
+        deadline_at_ms: Option<i64>,
     ) -> Result<ExecutionDispatch, String> {
         if request.request_key.trim().is_empty()
             || request.request_key.len() > 256
@@ -6480,7 +6689,11 @@ impl Inner {
             );
         }
         let provider = NativeProvider::for_harness(&current.harness);
-        let ids = TurnIds::new();
+        let mut ids = TurnIds::new();
+        // Anchor before reservation and every worker await. The UTC cap is
+        // projected once onto the monotonic clock; setup never restores time.
+        let monotonic_deadline = owned_turn_deadline(request.timeout_ms, deadline_at_ms);
+        ids.owned_deadline = deadline_at_ms.map(|_| monotonic_deadline);
         let dispatch = ExecutionDispatch {
             request_key: request.request_key.clone(),
             session_id: request.session_id.clone(),
@@ -6500,6 +6713,14 @@ impl Inner {
         }
         let host = Arc::clone(self);
         tokio::spawn(async move {
+            if tokio::time::Instant::now() >= monotonic_deadline {
+                let error = json!({"kind":"budget_timeout","message":"Native root wall budget expired before dispatch"});
+                let _ = host
+                    .store
+                    .settle_dispatch(&request.request_key, "terminal", None, Some(&error))
+                    .await;
+                return;
+            }
             if let Err(error) = host
                 .store
                 .settle_dispatch(&request.request_key, "running", None, None)
@@ -6571,6 +6792,20 @@ impl Inner {
                 }
             };
             let outcome = tokio::select! {
+                biased;
+                _=tokio::time::sleep_until(monotonic_deadline)=>{
+                    timed_out=true;
+                    let _=host.cancel_owned_turn(&request.request_key).await;
+                    match tokio::time::timeout(std::time::Duration::from_secs(15),&mut task).await {
+                        Ok(result)=>result,
+                        Err(_)=>{
+                            let error=json!({"kind":"dispatch_uncertain","message":"Budget cancellation was not acknowledged; the account remains busy"});
+                            let _=host.store.settle_dispatch(&request.request_key,"uncertain",None,Some(&error)).await;
+                            let _=task.await;
+                            return;
+                        }
+                    }
+                }
                 result=&mut task => result,
                 failure=policy_monitor=>{
                     policy_failure=Some(failure);
@@ -6593,20 +6828,6 @@ impl Inner {
                         Err(_)=>{
                             let error=json!({"kind":"dispatch_uncertain","message":"Cancellation was not acknowledged; the account remains busy"});
                             let _=host.store.settle_dispatch(&request.request_key,"uncertain",None,Some(&error)).await;
-                            let _=task.await;
-                            return;
-                        }
-                    }
-                }
-                _=tokio::time::sleep(std::time::Duration::from_millis(request.timeout_ms))=>{
-                    timed_out=true;
-                    let _=host.cancel_owned_turn(&request.request_key).await;
-                    match tokio::time::timeout(std::time::Duration::from_secs(15),&mut task).await {
-                        Ok(result)=>result,
-                        Err(_)=>{
-                            let error=json!({"kind":"dispatch_uncertain","message":"Cancellation was not acknowledged; the account remains busy"});
-                            let _=host.store.settle_dispatch(&request.request_key,"uncertain",None,Some(&error)).await;
-                            // Keep the future alive so the live turn retains its owner and drains on completion.
                             let _=task.await;
                             return;
                         }
@@ -7985,6 +8206,7 @@ mod tests {
             run_id: "run-1".to_string(),
             message_id: "user-1".to_string(),
             assistant_message_id: "reply-1".to_string(),
+            owned_deadline: None,
         }
     }
 

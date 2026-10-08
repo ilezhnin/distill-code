@@ -6,6 +6,7 @@ import {
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
 import {
   ownedTaskExecution,
+  isOwnedTaskModeV2,
   type PreparedOwnedTask,
 } from "@/features/benchmarks/lib/ownedTaskExecution";
 import { benchmarkGovernanceApi } from "@/features/benchmarks/api/benchmarkGovernance";
@@ -38,6 +39,103 @@ export async function prepareWaveExecutor(
   },
 ) {
   const mode = await ownedTaskExecution.getMode(wave.conductorSessionId);
+  if (mode && isOwnedTaskModeV2(mode)) {
+    if (wave.revisionCount || wave.carriedReports?.length)
+      throw new Error(
+        "Carried revision context needs a committed native v2 root lineage",
+      );
+    const roles = mode.consent.roles.filter(
+      (role) =>
+        role.roleId === request.step.role &&
+        (!request.step.modelClass ||
+          role.workClassId === request.step.modelClass),
+    );
+    if (roles.length !== 1)
+      throw new Error(
+        "The wave role/class does not identify one acknowledged native role source",
+      );
+    const budget = request.step.budget;
+    if (budget?.usd !== undefined || budget?.tokens !== undefined)
+      throw new Error(
+        "This native contract does not attest monetary or token step caps",
+      );
+    const seconds =
+      budget?.minutes === undefined
+        ? mode.consent.limits.timeoutSeconds
+        : Math.floor(budget.minutes * 60);
+    if (
+      !Number.isSafeInteger(seconds) ||
+      seconds <= 0 ||
+      seconds > mode.consent.limits.timeoutSeconds
+    )
+      throw new Error(
+        "The wave step allowance exceeds the acknowledged native root cap",
+      );
+    let hardCandidateKey: string | null = null;
+    if (
+      request.step.model ||
+      request.step.effort ||
+      request.step.fast !== undefined
+    ) {
+      const choices = await ownedTaskExecution.nativeChoices(
+        wave.conductorSessionId,
+      );
+      const compatible = choices.filter(
+        ({ configuration }) =>
+          (!request.step.model ||
+            (configuration.providerId === baseline.target?.harnessId &&
+              configuration.modelId === baseline.target.modelId)) &&
+          (!request.step.effort ||
+            configuration.effort === request.step.effort) &&
+          (request.step.fast === undefined ||
+            configuration.fastMode === request.step.fast),
+      );
+      if (compatible.length !== 1 || !compatible[0].available)
+        throw new Error(
+          "The explicit wave pin does not identify one available native candidate/control choice",
+        );
+      hardCandidateKey = compatible[0].candidateKey;
+    }
+    const previousBindingIds = wave.steps
+      .slice(0, request.stepIndex)
+      .map((step) => (step.sessionId ? taskBindingId(step.sessionId) : null));
+    if (previousBindingIds.some((id) => !id))
+      throw new Error(
+        "Native v2 wave entry needs committed predecessor bindings",
+      );
+    const predecessorIds = previousBindingIds.filter((id): id is string =>
+      Boolean(id),
+    );
+    const owned = await ownedTaskExecution.prepare({
+      schemaVersion: 2,
+      requestKey: waveExecutorKey(wave.waveId, request.stepIndex),
+      surface: "wave",
+      contextId: `${wave.conductorSessionId}:wave:${wave.waveId}`,
+      mode: {
+        contextId: wave.conductorSessionId,
+        artifactHash: mode.artifactHash,
+      },
+      roleSourceId: roles[0].sourceId,
+      workClassId: roles[0].workClassId,
+      prompt: request.step.subtask,
+      hardCandidateKey,
+      stepBudgetSeconds: seconds,
+      entry: predecessorIds.length
+        ? {
+            rootBindingId: predecessorIds[0],
+            previousBindingIds: predecessorIds,
+            includePreviousOutput: request.step.access === "all",
+          }
+        : null,
+    });
+    return {
+      requestKey: owned.binding.request.requestKey,
+      decision: owned.binding.decision,
+      selected: undefined,
+      error: undefined,
+      owned: owned as PreparedOwnedTask | undefined,
+    };
+  }
   if (mode?.request.promotionId) {
     const promotion = (await benchmarkGovernanceApi.listPromotions()).find(
       (row) => row.certificate.id === mode.request.promotionId,

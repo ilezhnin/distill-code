@@ -16,20 +16,48 @@ pub fn validate(draft: &BenchmarkDraft) -> Vec<String> {
         return Vec::new();
     };
     let mut issues = Vec::new();
-    if workflow.schema_version != 1 || workflow.driver_revision.trim().is_empty() {
+    if ![1, 2].contains(&workflow.schema_version) || workflow.driver_revision.trim().is_empty() {
         issues.push("Workflow requires schema 1 and a frozen driver revision".into());
     }
-    if !(2..=4).contains(&workflow.steps.len()) {
+    if !(2..=if workflow.schema_version == 2 { 5 } else { 4 }).contains(&workflow.steps.len()) {
         issues.push("A bounded workflow requires 2–4 steps".into());
     }
     if !matches!(
         draft.evaluator.kind.as_str(),
-        "exact" | "json" | "javascript" | "browser"
+        "exact" | "json" | "javascript" | "browser" | "repository"
     ) {
         issues.push("A workflow requires a final objective evaluator".into());
     }
     let mut ids = HashSet::new();
     for (index, step) in workflow.steps.iter().enumerate() {
+        if workflow.schema_version == 2 {
+            if draft
+                .environment
+                .get("nativeBudgetRecipe")
+                .and_then(serde_json::Value::as_str)
+                != Some(super::artifact_context::CLOCK_RECIPE)
+                || step.scope.as_ref().is_none_or(|scope| {
+                    scope.role_id.trim().is_empty()
+                        || scope.role_prompt.trim().is_empty()
+                        || scope.role_prompt.len() > 64 * 1024
+                        || !super::routing::WORK_CLASSES.contains(&scope.work_class_id.as_str())
+                        || !matches!(
+                            scope.purpose.as_str(),
+                            "implement" | "review" | "closing_qa"
+                        )
+                        || scope.step_budget_seconds == 0
+                        || scope.step_budget_seconds > draft.limits.timeout_seconds
+                })
+                || (index + 1 == workflow.steps.len()
+                    && step.scope.as_ref().is_none_or(|scope| {
+                        scope.purpose != "closing_qa" || !step.include_previous_output
+                    }))
+            {
+                issues.push("Schema-2 workflows require native root wall accounting, exact role/class/step budgets and a final closing QA with artifact access".into());
+            }
+        } else if step.scope.is_some() {
+            issues.push("Per-step roles require the versioned schema-2 workflow recipe".into());
+        }
         if step.id.trim().is_empty() || step.id.len() > 128 || !ids.insert(&step.id) {
             issues.push("Workflow step IDs must be unique, nonempty and bounded".into());
         }
@@ -54,6 +82,15 @@ pub(super) struct StepDecision {
     pub driver_revision: String,
     pub snapshot: DecisionSnapshot,
     pub content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_context: Option<NativeStepContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct NativeStepContext {
+    pub budget: super::artifact_context::BudgetLease,
+    pub repository: Option<super::artifact_context::Input>,
 }
 
 impl StepDecision {
@@ -72,6 +109,7 @@ pub(super) struct SavedStep {
     pub prompt: String,
     pub attempt: Attempt,
     pub decision: Option<StepDecision>,
+    pub native_context: Option<NativeStepContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +186,7 @@ impl SavedStep {
             || record.content_hash != record.hash()?
             || record.root_attempt_id != root_id
             || record.step_index != self.index
+            || record.native_context != self.native_context
             || record.root_decision_id.is_empty()
             || snapshot.run_id != self.attempt.run_id
             || snapshot.version_id != self.attempt.version_id
@@ -193,6 +232,10 @@ pub(super) async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<Save
     let steps: Vec<SavedStep> = rows
         .into_iter()
         .map(|row| {
+            let decision: Option<StepDecision> = row
+                .get::<Option<&str>, _>(6)
+                .map(serde_json::from_str)
+                .transpose()?;
             let step = SavedStep {
                 index: row.get::<i64, _>(0) as usize,
                 id: row.get(1),
@@ -200,10 +243,10 @@ pub(super) async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<Save
                 entry: serde_json::from_str(row.get(3))?,
                 prompt: row.get(4),
                 attempt: serde_json::from_str(row.get(5))?,
-                decision: row
-                    .get::<Option<&str>, _>(6)
-                    .map(serde_json::from_str)
-                    .transpose()?,
+                native_context: decision
+                    .as_ref()
+                    .and_then(|record| record.native_context.clone()),
+                decision,
             };
             step.validate_decision(root_id)?;
             Ok(step)
@@ -266,6 +309,41 @@ pub(super) async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<Save
     Ok(steps)
 }
 
+/// Recovery uses the same immutable pre-dispatch input record as collection.
+/// Original version metadata alone cannot reconstruct a cumulative child.
+pub(super) async fn effective_version_for_attempt(
+    store: &Store,
+    attempt: &Attempt,
+) -> Result<BenchmarkVersion> {
+    let root = sqlx::query_scalar::<_, String>(
+        "SELECT root_attempt_id FROM workflow_steps WHERE attempt_id=?",
+    )
+    .bind(&attempt.id)
+    .fetch_optional(&store.pool)
+    .await?;
+    let version = store.version(&attempt.version_id).await?;
+    let Some(root) = root else {
+        return Ok(version);
+    };
+    let step = saved_steps(store, &root)
+        .await?
+        .into_iter()
+        .find(|step| step.attempt.id == attempt.id)
+        .ok_or_else(|| {
+            BenchmarkError::new("evidence_missing", "Native child input record is absent")
+        })?;
+    if step.attempt.run_id != attempt.run_id
+        || step.attempt.version_id != attempt.version_id
+        || step.attempt.configuration != attempt.configuration
+    {
+        return Err(BenchmarkError::new(
+            "evidence_mismatch",
+            "Native child recovery belongs to another frozen input or worker",
+        ));
+    }
+    Ok(step_version(&version, &step))
+}
+
 fn step_entry(
     root: &Attempt,
     draft: &BenchmarkDraft,
@@ -324,6 +402,99 @@ async fn prepare_step(
     let workflow = version.manifest.workflow.as_ref().unwrap();
     let spec = &workflow.steps[index];
     let mut entry = step_entry(root, &version.manifest, index, remaining, previous)?;
+    let new_clock = version
+        .manifest
+        .environment
+        .get("nativeBudgetRecipe")
+        .and_then(serde_json::Value::as_str)
+        == Some(super::artifact_context::CLOCK_RECIPE);
+    let budget = if new_clock {
+        let origin = root.started_at.ok_or_else(|| {
+            BenchmarkError::new(
+                "budget_clock_conflict",
+                "Native workflow root clock is absent",
+            )
+        })?;
+        let root_budget = super::artifact_context::BudgetLease {
+            recipe: super::artifact_context::CLOCK_RECIPE.into(),
+            root_id: root.id.clone(),
+            root_started_at_ms: origin,
+            root_cap_seconds: store.run(&root.run_id).await?.request.timeout_seconds,
+            step_key: format!("workflow-root:{}", root.id),
+            step_started_at_ms: origin,
+            step_cap_seconds: store.run(&root.run_id).await?.request.timeout_seconds,
+        };
+        Some(
+            store
+                .reserve_task_budget(
+                    &format!("workflow:{}:{index}", root.id),
+                    &fixtures::hash(&serde_json::to_vec(&(
+                        &root.id,
+                        &version.content_hash,
+                        index,
+                        spec,
+                    ))?),
+                    &version.content_hash,
+                    Some(&root_budget),
+                    root_budget.root_cap_seconds,
+                    spec.scope
+                        .as_ref()
+                        .map_or(version.manifest.limits.timeout_seconds, |scope| {
+                            scope.step_budget_seconds
+                        }),
+                    &root.id,
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
+    let mut repository_context = None;
+    if version.manifest.execution_profile == "protected_repository" && new_clock {
+        let snapshot = super::repository::snapshot(&version.manifest)?;
+        let mut lineage = vec![];
+        for prior in saved_steps(store, &root.id).await? {
+            let result = prior.attempt.repository_result.as_ref().ok_or_else(|| {
+                BenchmarkError::new(
+                    "evidence_missing",
+                    "Native workflow predecessor has no sealed cumulative artifact",
+                )
+            })?;
+            result.validate(version.manifest.limits.max_artifact_bytes as usize)?;
+            if prior
+                .native_context
+                .as_ref()
+                .and_then(|context| context.repository.as_ref())
+                .is_none_or(|input| !input.access_all)
+            {
+                lineage.clear();
+            }
+            lineage.push(result.artifact.clone());
+        }
+        let package = super::repository::advance_until(
+            &snapshot,
+            &lineage,
+            spec.include_previous_output,
+            version.manifest.limits.max_artifact_bytes as usize,
+            budget
+                .as_ref()
+                .unwrap()
+                .deadline_at_ms()?
+                .try_into()
+                .map_err(|_| {
+                    BenchmarkError::new("budget_clock_conflict", "Native deadline is invalid")
+                })?,
+        )
+        .await?;
+        repository_context = Some(super::artifact_context::Input {
+            before: package.artifact,
+            lineage,
+            access_all: spec.include_previous_output,
+        });
+    }
+    if let Some(budget) = &budget {
+        entry.remaining_budget_seconds = budget.remaining_seconds(now())?;
+    }
     if spec.include_previous_output {
         if let Some(reports) = native_reports {
             entry.previous_reports = reports;
@@ -377,6 +548,7 @@ async fn prepare_step(
     child.evaluations.clear();
     child.event_cursor = 0;
     child.workflow_steps.clear();
+    child.repository_result = None;
     let mut saved = SavedStep {
         index,
         id: spec.id.clone(),
@@ -385,6 +557,10 @@ async fn prepare_step(
         prompt,
         attempt: child,
         decision: None,
+        native_context: budget.map(|budget| NativeStepContext {
+            budget,
+            repository: repository_context,
+        }),
     };
     let policy = store.run(&root.run_id).await?.request.workflow_policy;
     let executor = if let Some(policy) = &policy {
@@ -438,6 +614,7 @@ async fn prepare_step(
         driver_revision: workflow.driver_revision.clone(),
         snapshot,
         content_hash: String::new(),
+        native_context: saved.native_context.clone(),
     };
     decision.content_hash = decision.hash()?;
     saved.decision = Some(decision);
@@ -457,6 +634,26 @@ fn step_version(version: &BenchmarkVersion, saved: &SavedStep) -> BenchmarkVersi
     result.manifest.workflow = None;
     result.manifest.prompt = saved.prompt.clone();
     result.manifest.entry_state = Some(saved.entry.clone());
+    if let Some(scope) = version
+        .manifest
+        .workflow
+        .as_ref()
+        .and_then(|workflow| workflow.steps.get(saved.index))
+        .and_then(|step| step.scope.as_ref())
+    {
+        result.manifest.role_id = Some(scope.role_id.clone());
+        result.manifest.role_prompt = scope.role_prompt.clone();
+        result.manifest.work_class_id = scope.work_class_id.clone();
+        result.manifest.limits.timeout_seconds = scope.step_budget_seconds;
+    }
+    if let Some(context) = &saved.native_context {
+        result.manifest.environment[super::artifact_context::CLOCK_KEY] =
+            serde_json::to_value(&context.budget).expect("native budget");
+        if let Some(input) = &context.repository {
+            result.manifest.environment[super::artifact_context::INPUT_KEY] =
+                serde_json::to_value(input).expect("native artifact input");
+        }
+    }
     result
 }
 
@@ -528,7 +725,9 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
             .iter()
             .filter_map(|step| step.attempt.started_at)
             .min();
-        root.started_at = if root.configuration.execution_profile == "workflow_policy" {
+        root.started_at = if root.configuration.execution_profile == "workflow_policy"
+            || steps.iter().any(|step| step.native_context.is_some())
+        {
             root.started_at.into_iter().chain(first_step).min()
         } else {
             first_step
@@ -659,6 +858,59 @@ pub async fn execute(
         .ok_or_else(|| BenchmarkError::new("validation", "Workflow is absent"))?
         .steps
         .len();
+    let new_clock = version
+        .manifest
+        .environment
+        .get("nativeBudgetRecipe")
+        .and_then(serde_json::Value::as_str)
+        == Some(super::artifact_context::CLOCK_RECIPE);
+    if new_clock {
+        let key = format!("workflow-root:{}", root.id);
+        let old = service.store.native_budget(&key).await?;
+        let origin = old
+            .as_ref()
+            .map(|lease| lease.root_started_at_ms)
+            .or(root.started_at)
+            .unwrap_or_else(now);
+        root.started_at = Some(origin);
+        service.store.save_attempt(&root).await?;
+        let lease = super::artifact_context::BudgetLease {
+            recipe: super::artifact_context::CLOCK_RECIPE.into(),
+            root_id: root.id.clone(),
+            root_started_at_ms: origin,
+            root_cap_seconds: timeout,
+            step_key: key.clone(),
+            step_started_at_ms: origin,
+            step_cap_seconds: timeout,
+        };
+        if let Err(error) = service
+            .store
+            .reserve_task_budget(
+                &key,
+                &fixtures::hash(&serde_json::to_vec(&(
+                    &root.id,
+                    &version.content_hash,
+                    timeout,
+                ))?),
+                &version.content_hash,
+                Some(&lease),
+                timeout,
+                timeout,
+                &root.id,
+            )
+            .await
+        {
+            if error.code != "budget_timeout" {
+                return Err(error);
+            }
+            root.phase = "collecting".into();
+            root.outcome = Some(error.code);
+            root.reason = Some(error.message);
+            let steps = saved_steps(&service.store, &root.id).await?;
+            seal_root(&service.store, &mut root, &steps).await?;
+            return Ok(root);
+        }
+    }
     let mut steps = saved_steps(&service.store, &root.id).await?;
     let consumed = steps
         .iter()
@@ -722,7 +974,10 @@ pub async fn execute(
         let remaining_ms = budget_ms
             .saturating_sub(consumed.unwrap_or(budget_ms))
             .saturating_sub(start.elapsed().as_millis() as u64);
-        let remaining = if let Some(elapsed) = native_elapsed {
+        let remaining = if new_clock {
+            super::artifact_context::remaining_seconds(root.started_at.unwrap(), now(), timeout)
+                .unwrap_or(0)
+        } else if let Some(elapsed) = native_elapsed {
             remaining_seconds(timeout, elapsed).unwrap_or(0)
         } else {
             remaining_ms.div_ceil(1000) as u32
@@ -736,7 +991,13 @@ pub async fn execute(
             let native_report = if native_elapsed.is_some() {
                 steps
                     .last()
-                    .and_then(|s| s.attempt.output.as_deref())
+                    .and_then(|s| {
+                        s.attempt
+                            .repository_result
+                            .as_ref()
+                            .map(|result| result.report.as_str())
+                            .or(s.attempt.output.as_deref())
+                    })
                     .map(committed_report)
             } else {
                 None
@@ -747,22 +1008,35 @@ pub async fn execute(
             let native_reports = native_elapsed.map(|_| {
                 steps
                     .iter()
-                    .filter_map(|step| step.attempt.output.as_deref())
+                    .filter_map(|step| {
+                        step.attempt
+                            .repository_result
+                            .as_ref()
+                            .map(|result| result.report.as_str())
+                            .or(step.attempt.output.as_deref())
+                    })
                     .map(committed_report)
                     .collect()
             });
-            steps.push(
-                prepare_step(
-                    service,
-                    &root,
-                    &version,
-                    index,
-                    remaining,
-                    previous,
-                    native_reports,
-                )
-                .await?,
-            );
+            let prepared = prepare_step(
+                service,
+                &root,
+                &version,
+                index,
+                remaining,
+                previous,
+                native_reports,
+            )
+            .await;
+            match prepared {
+                Ok(step) => steps.push(step),
+                Err(error) if error.code == "budget_timeout" => {
+                    root.outcome = Some(error.code);
+                    root.reason = Some(error.message);
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
             aggregate(&mut root, &steps);
             service.store.save_attempt(&root).await?;
         }
@@ -989,11 +1263,13 @@ mod tests {
                     id: "plan".into(),
                     prompt: "Produce a plan.".into(),
                     include_previous_output: false,
+                    scope: None,
                 },
                 WorkflowStep {
                     id: "answer".into(),
                     prompt: "Produce the final structured answer.".into(),
                     include_previous_output: true,
+                    scope: None,
                 },
             ],
         });
@@ -1541,6 +1817,7 @@ mod tests {
                 id: "a".into(),
                 prompt: "p".into(),
                 include_previous_output: true,
+                scope: None,
             }],
         });
         assert!(validate(&draft).len() >= 2);

@@ -2,7 +2,7 @@ import { acpGetSessionInfo } from "@/shared/api/acp";
 import { acpSessionToChatSession } from "./acpSessionMapping";
 import {
   ownedTaskExecution,
-  type OwnedTaskRequest,
+  type OwnedTaskPrepareIntent,
   type PreparedOwnedTask,
 } from "@/features/benchmarks/lib/ownedTaskExecution";
 import { useChatSessionStore } from "../stores/chatSessionStore";
@@ -374,12 +374,18 @@ export async function dispatchOwnedTaskInChat(
 }
 
 export async function startInitialOwnedChatTask(
-  request: OwnedTaskRequest,
+  request: OwnedTaskPrepareIntent,
   onAttached?: (sessionId: string) => void,
+  onPrepared?: (prepared: PreparedOwnedTask) => void,
 ) {
-  if (request.surface !== "chat" || request.entry || request.waveMode)
+  if (
+    request.surface !== "chat" ||
+    request.entry ||
+    ("waveMode" in request && request.waveMode)
+  )
     throw new Error("Initial owned chat needs a fresh native entry");
   const prepared = await ownedTaskExecution.prepare(request);
+  onPrepared?.(prepared);
   const session = await attachPreparedOwnedTask(prepared);
   useChatSessionStore.getState().setActiveSession(session.id);
   onAttached?.(session.id);

@@ -16,6 +16,8 @@ mod workflow_policy_tests;
 
 #[derive(Default)]
 struct OfflineWorkers {
+    native_v2_inventory: bool,
+    native_store: std::sync::OnceLock<Arc<SessionStore>>,
     calls: AtomicU64,
     unavailable: std::sync::Mutex<Vec<String>>,
     cancel_after: AtomicU64,
@@ -43,6 +45,132 @@ fn configurations() -> Vec<Configuration> {
             model_name: None,
         })
         .collect()
+}
+
+fn native_v2_configurations() -> Vec<Configuration> {
+    configurations()
+        .into_iter()
+        .map(|mut configuration| {
+            configuration.provider_id = "claude-acp".into();
+            configuration.account_id = Some("invented-owned-account".into());
+            configuration.inventory_revision =
+                Some(fixtures::hash(b"invented-native-pipeline-runtime-v1"));
+            configuration
+        })
+        .collect()
+}
+
+impl OfflineWorkers {
+    /// This independent adapter fixture records the host acknowledgement and
+    /// exercises the production receipt joins. It proves plumbing, not quality.
+    async fn native_fixture_events(&self, attempt: &mut Attempt) -> Result<Value> {
+        use crate::services::agent_host::{
+            execution::{ExecutionProfile, NativeProvider, OwnedSessionRequest},
+            store::SessionRecord,
+        };
+        let host = self.native_store.get().expect("invented native host");
+        let owner_id = turn_owner(attempt);
+        let session_id = format!("invented-native-session:{}", attempt.id);
+        let owner = OwnedSessionRequest {
+            owner_id: owner_id.clone(),
+            provider_id: "claude-acp".into(),
+            account_id: "invented-owned-account".into(),
+            model_id: match attempt.configuration.model_id.as_str() {
+                "parser" => "parser",
+                "painter" => "painter",
+                _ => panic!("unadvertised fixture model"),
+            }
+            .into(),
+            reasoning_effort: Some("high".into()),
+            fast_mode: Some(false),
+            cwd: "C:/invented-native-owned-workspace".into(),
+            title: "Invented receipt fixture".into(),
+            profile: ExecutionProfile::NativeTextV1,
+        };
+        let record = SessionRecord {
+            id: session_id.clone(),
+            harness: owner.provider_id.clone(),
+            account_id: Some(owner.account_id.clone()),
+            bridge_session_id: Some(format!("invented-bridge:{}", attempt.id)),
+            cwd: owner.cwd.clone(),
+            title: Some(owner.title.clone()),
+            user_set_name: false,
+            project_id: None,
+            persona_id: None,
+            model_id: Some(owner.model_id.clone()),
+            reasoning_effort: owner.reasoning_effort.clone(),
+            fast_mode: owner.fast_mode,
+            legacy_model_id: None,
+            hidden: true,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            last_message_at: None,
+            archived_at: None,
+            message_count: 0,
+            last_snippet: None,
+            snapshot: None,
+        };
+        let error = |message| BenchmarkError::new("invented_native_host", message);
+        let policy = NativeProvider::Claude.policy_hash(&owner).map_err(error)?;
+        host.insert_owned_session(&record, &owner, &policy)
+            .await
+            .map_err(error)?;
+        let dispatch = ExecutionDispatch {
+            request_key: format!("benchmark:{owner_id}"),
+            session_id: session_id.clone(),
+            run_id: format!("invented-host-run:{}", attempt.id),
+            user_message_id: format!("invented-host-user:{}", attempt.id),
+            phase: "reserved".into(),
+            event_cursor: 0,
+            result: None,
+            error: None,
+        };
+        assert!(host
+            .reserve_dispatch(&dispatch, "invented-fixture-prompt")
+            .await
+            .map_err(error)?);
+        let selection = crate::services::agent_host::execution::ObservedSelection {
+            model_id: record.model_id,
+            reasoning_effort: record.reasoning_effort,
+            fast_mode: record.fast_mode,
+        };
+        host.settle_dispatch(
+            &dispatch.request_key,
+            "terminal",
+            Some(&json!({"observedSelection":selection,
+            "stopReason":"end_turn", "nativeExecutionMs":8})),
+            None,
+        )
+        .await
+        .map_err(error)?;
+        let runtime = native_receipt::VerifiedRuntime {
+            provider_id: owner.provider_id,
+            account_id: owner.account_id,
+            model_id: owner.model_id,
+            execution_profile: "native_text".into(),
+            inventory_revision: fixtures::hash(b"invented-native-pipeline-runtime-v1"),
+            repository_revision: None,
+        };
+        let receipt = native_receipt::attest(
+            host,
+            &dispatch.request_key,
+            &session_id,
+            &dispatch.run_id,
+            &owner_id,
+            &runtime,
+        )
+        .await?;
+        let terminal = host
+            .execution_dispatch(&dispatch.request_key)
+            .await
+            .map_err(error)?
+            .unwrap();
+        attempt.session_id = Some(session_id);
+        attempt.host_run_id = Some(dispatch.run_id);
+        Ok(
+            json!({"offlineStub":true,"nativeExecutionReceipt":receipt,"turnEvents":[{"terminalDispatch":terminal}]}),
+        )
+    }
 }
 
 impl ExecutionBackend for OfflineWorkers {
@@ -136,6 +264,7 @@ impl ExecutionBackend for OfflineWorkers {
             Ok(super::super::task_execution::NativeOutput {
                 text: super::super::workflow::committed_report("ok"),
                 elapsed_ms: 8,
+                repository_result: None,
             })
         })
     }
@@ -150,31 +279,35 @@ impl ExecutionBackend for OfflineWorkers {
         _: bool,
     ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
         Box::pin(async move {
-            Ok(configurations()
-                .into_iter()
-                .map(|mut configuration| {
-                    configuration.account_id = account.map(str::to_owned);
-                    if account.is_some() {
-                        configuration.effort = None;
-                        configuration.fast_mode = None;
-                    }
-                    if self.changed_runtime.load(Ordering::SeqCst) {
-                        configuration.inventory_revision = Some("invented-changed-runtime".into());
-                    }
-                    InventoryModel {
-                        name: configuration.model_id.clone(),
-                        available: !self
-                            .unavailable
-                            .lock()
-                            .unwrap()
-                            .contains(&configuration.model_id),
-                        configuration,
-                        efforts: vec!["high".into()],
-                        supports_fast_mode: true,
-                        reason: None,
-                    }
-                })
-                .collect())
+            Ok((if self.native_v2_inventory {
+                native_v2_configurations()
+            } else {
+                configurations()
+            })
+            .into_iter()
+            .map(|mut configuration| {
+                configuration.account_id = account.map(str::to_owned);
+                if account.is_some() {
+                    configuration.effort = None;
+                    configuration.fast_mode = None;
+                }
+                if self.changed_runtime.load(Ordering::SeqCst) {
+                    configuration.inventory_revision = Some("invented-changed-runtime".into());
+                }
+                InventoryModel {
+                    name: configuration.model_id.clone(),
+                    available: !self
+                        .unavailable
+                        .lock()
+                        .unwrap()
+                        .contains(&configuration.model_id),
+                    configuration,
+                    efforts: vec!["high".into()],
+                    supports_fast_mode: true,
+                    reason: None,
+                }
+            })
+            .collect())
         })
     }
 
@@ -217,8 +350,12 @@ impl ExecutionBackend for OfflineWorkers {
             attempt.finished_at = Some(now());
             attempt.usage.cost = Some(0.01);
             attempt.usage.schema = "offline-pipeline-v1".into();
-            attempt.evidence_hash =
-                Some(fixtures::seal(&store.root, &attempt, &json!({"offlineStub":true})).await?);
+            let events = if self.native_v2_inventory {
+                self.native_fixture_events(&mut attempt).await?
+            } else {
+                json!({"offlineStub":true})
+            };
+            attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &events).await?);
             if self.cancel_after.load(Ordering::SeqCst) == call {
                 store.set_run_state(&attempt.run_id, "cancelling").await?;
             }
@@ -228,6 +365,16 @@ impl ExecutionBackend for OfflineWorkers {
 }
 
 async fn open(root: &std::path::Path, backend: Arc<OfflineWorkers>) -> Arc<BenchmarkService> {
+    if backend.native_v2_inventory && backend.native_store.get().is_none() {
+        assert!(backend
+            .native_store
+            .set(Arc::new(
+                SessionStore::open(&root.join("invented-native-host.sqlite"))
+                    .await
+                    .unwrap()
+            ))
+            .is_ok());
+    }
     let store = Store::open(root).await.unwrap();
     store.recover().await.unwrap();
     Arc::new(BenchmarkService {

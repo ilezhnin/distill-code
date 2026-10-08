@@ -15,7 +15,7 @@ if ! command -v iptables >/dev/null || ! command -v git >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends git iptables ca-certificates curl xz-utils python3 >/dev/null
 fi
-for script in bench-auth bench-net bench-network bench-run bench-enter bench-copy bench-patch bench-check-prep \
+for script in bench-auth bench-net bench-network bench-run bench-enter bench-copy bench-patch bench-artifact bench-check-prep \
   bench-kill bench-clean bench-status bench-login bench-judge; do
   install -o root -g root -m 755 "$src/$script" "/usr/local/sbin/$script"
 done
@@ -33,7 +33,7 @@ for user in candidate checker; do
 done
 install -d -o candidate -g candidate -m 700 /home/candidate/accounts
 install -d -o root -g root -m 700 /srv/bench /srv/bench/work /srv/bench/base \
-  /srv/bench/checks /srv/bench/staging /srv/bench/probes /srv/bench/pairs /srv/bench/submissions
+  /srv/bench/checks /srv/bench/staging /srv/bench/probes /srv/bench/pairs /srv/bench/submissions /srv/bench/artifacts
 install -d -o root -g root -m 755 /workspace
 install -d -o root -g root -m 755 /submission
 /usr/local/sbin/bench-net

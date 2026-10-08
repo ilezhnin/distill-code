@@ -343,11 +343,13 @@ fn seeds() -> Vec<Seed> {
                         id: "diagnose".into(),
                         prompt: "Inspect the public modules and describe the quantity and rounding defects. Do not invent test results.".into(),
                         include_previous_output: false,
+                        scope: None,
                     },
                     WorkflowStep {
                         id: "repair".into(),
                         prompt: "Deliver the corrected invoice(items) function described in the task. Return only the function source.".into(),
                         include_previous_output: true,
+                        scope: None,
                     },
                 ],
             }),

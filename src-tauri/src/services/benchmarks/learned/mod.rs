@@ -47,6 +47,12 @@ pub struct PublicTask {
     pub execution_profile: String,
     pub limits: Limits,
     pub entry: Option<PublicEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_recipe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_recipe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_artifact: Option<super::repository::Artifact>,
 }
 
 impl From<&BenchmarkDraft> for PublicTask {
@@ -66,6 +72,22 @@ impl From<&BenchmarkDraft> for PublicTask {
                 previous_reports: entry.previous_reports.clone(),
                 remaining_budget_seconds: entry.remaining_budget_seconds,
             }),
+            budget_recipe: draft
+                .environment
+                .get("nativeBudgetRecipe")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            repository_recipe: draft
+                .environment
+                .get(super::artifact_context::INPUT_KEY)
+                .and_then(|input| input.pointer("/before/recipe"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            repository_artifact: draft
+                .environment
+                .get(super::artifact_context::INPUT_KEY)
+                .and_then(|input| input.get("before"))
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
         }
     }
 }

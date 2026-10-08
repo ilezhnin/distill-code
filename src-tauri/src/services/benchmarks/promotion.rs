@@ -1,6 +1,6 @@
 //! Explicit deployment authority. Research reports never authorize dispatch.
 use super::{
-    fixtures, learned, qualification,
+    fixtures, learned, qualification, repository,
     store::{now, Store},
     types::*,
     workflow_campaign::acceptance,
@@ -25,6 +25,33 @@ fn hash(value: &impl Serialize) -> Result<String> {
     Ok(fixtures::hash(&serde_json::to_vec(value)?))
 }
 
+pub(super) enum Discovery {
+    Pinned,
+    Unique(Box<Certificate>),
+    Refused(&'static str),
+}
+impl Discovery {
+    pub(super) fn reason(&self) -> &'static str {
+        match self {
+            Self::Pinned => "explicit_native_pin",
+            Self::Unique(_) => "unique_exact_active_policy",
+            Self::Refused(reason) => reason,
+        }
+    }
+}
+
+fn native_configuration_matches(expected: &Configuration, actual: &Configuration) -> bool {
+    super::routing::candidate_key(expected) == super::routing::candidate_key(actual)
+        && expected.provider_id == actual.provider_id
+        && expected.account_id == actual.account_id
+        && expected.model_id == actual.model_id
+        && expected.effort == actual.effort
+        && expected.fast_mode == actual.fast_mode
+        && expected.billing_mode == actual.billing_mode
+        && expected.inventory_revision == actual.inventory_revision
+        && expected.execution_profile == actual.execution_profile
+}
+
 /// This exact owned contract is shown before the operator opts a task into it.
 /// It cannot attest an ordinary interactive session or its opaque context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,6 +64,10 @@ pub struct Contract {
     pub execution_profile: String,
     pub limits: Limits,
     pub entry_present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_recipe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_recipe: Option<String>,
 }
 impl Contract {
     pub fn from_task(task: &learned::PublicTask) -> Self {
@@ -51,6 +82,8 @@ impl Contract {
             execution_profile: task.execution_profile.clone(),
             limits: task.limits.clone(),
             entry_present: task.entry.is_some(),
+            budget_recipe: task.budget_recipe.clone(),
+            repository_recipe: task.repository_recipe.clone(),
         }
     }
     pub fn task(
@@ -74,6 +107,9 @@ impl Contract {
             execution_profile: self.execution_profile.clone(),
             limits: self.limits.clone(),
             entry,
+            budget_recipe: self.budget_recipe.clone(),
+            repository_recipe: self.repository_recipe.clone(),
+            repository_artifact: None,
         })
     }
     fn validate(&self) -> Result<()> {
@@ -85,13 +121,24 @@ impl Contract {
             || self.limits.max_turns != 1
             || self.limits.max_artifact_bytes == 0
             || !self.entry_present
+            || self
+                .budget_recipe
+                .as_deref()
+                .is_some_and(|recipe| recipe != super::artifact_context::CLOCK_RECIPE)
+            || self.repository_recipe.as_deref().is_some_and(|recipe| {
+                recipe != repository::ARTIFACT_RECIPE
+                    || self.execution_profile != "protected_repository"
+                    || self.budget_recipe.is_none()
+            })
             || (self.execution_profile == "native_text"
                 && (!self.permissions.tools.is_empty() || self.permissions.network))
             || (self.execution_profile == "protected_repository"
                 && (!self.permissions.network
                     || self.permissions.tools != ["filesystem", "terminal"]))
         {
-            return Err(invalid("Deployment requires the genuine bounded owned profile, explicit permissions and frozen entry contract"));
+            return Err(invalid(
+                "Deployment requires the genuine bounded owned profile, explicit permissions and frozen entry contract",
+            ));
         }
         Ok(())
     }
@@ -133,6 +180,10 @@ pub struct Certificate {
     pub prior_keys: Vec<String>,
     pub min_prediction_quality: f64,
     pub artifact_hash: String,
+    /// Native accounts are not stored in the account-neutral coefficient model.
+    /// Omitted for old certificates, preserving their original hashes/authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventory: Option<Vec<Configuration>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +193,197 @@ pub struct State {
     pub revocation_reason: Option<String>,
 }
 impl Store {
+    /// Issuance may inspect complete immutable first trajectories. Inference
+    /// uses only the resulting certificate projection, never these outcomes.
+    async fn attest_campaign_inventory(
+        &self,
+        campaign: &super::workflow_campaign::Campaign,
+    ) -> Result<Option<Vec<Configuration>>> {
+        let candidates = &campaign.plan.request.candidates;
+        if candidates
+            .iter()
+            .any(|candidate| candidate.account_id.is_none())
+        {
+            return Ok(None);
+        }
+        let mut observed = BTreeSet::new();
+        for index in 0..campaign.plan.cells.len() {
+            let request = campaign.plan.run_request(index)?;
+            let row = sqlx::query(
+                "SELECT result_json,result_hash FROM workflow_campaign_cells WHERE request_key=?",
+            )
+            .bind(&request.request_key)
+            .fetch_one(&self.pool)
+            .await?;
+            let body: String = row.try_get("result_json")?;
+            let trace: super::workflow::Trace = serde_json::from_str(&body)?;
+            if hash(&trace)? != row.try_get::<String, _>("result_hash")? {
+                return Err(invalid("Native deployment trajectory integrity changed"));
+            }
+            for step in &trace.steps {
+                let Some(actual) = &step.attempt.observed else {
+                    return Ok(None);
+                };
+                let expected = candidates
+                    .iter()
+                    .find(|candidate| {
+                        super::routing::candidate_key(candidate)
+                            == super::routing::candidate_key(actual)
+                    })
+                    .ok_or_else(|| invalid("Native deployment observed an unregistered worker"))?;
+                if !native_configuration_matches(expected, actual)
+                    || !native_configuration_matches(&step.attempt.configuration, actual)
+                {
+                    return Err(invalid(
+                        "Native deployment account/runtime/settings acknowledgement differs from the frozen campaign",
+                    ));
+                }
+                let Some(digest) = &step.attempt.evidence_hash else {
+                    return Ok(None);
+                };
+                if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(invalid("Native deployment receipt seal is invalid"));
+                }
+                let path = self
+                    .root
+                    .join("runs")
+                    .join(&step.attempt.run_id)
+                    .join(&step.attempt.id)
+                    .join("evidence")
+                    .join(format!("{digest}.json"));
+                let bytes = tokio::fs::read(path).await?;
+                if fixtures::hash(&bytes) != *digest {
+                    return Err(invalid("Native deployment receipt seal changed"));
+                }
+                let evidence: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let Some(receipt) = evidence.pointer("/events/nativeExecutionReceipt") else {
+                    return Ok(None);
+                };
+                let receipt: super::runner::native_receipt::NativeExecutionReceipt =
+                    serde_json::from_value(receipt.clone())?;
+                receipt.validate_policy_metadata()?;
+                if evidence["attemptId"].as_str() != Some(step.attempt.id.as_str())
+                    || evidence["sessionId"].as_str() != step.attempt.session_id.as_deref()
+                    || receipt.owner_id
+                        != format!(
+                            "{}:{}",
+                            step.attempt.id,
+                            step.attempt.started_at.unwrap_or_default()
+                        )
+                    || receipt.request_key
+                        != format!(
+                            "benchmark:{}:{}",
+                            step.attempt.id,
+                            step.attempt.started_at.unwrap_or_default()
+                        )
+                    || Some(receipt.session_id.as_str()) != step.attempt.session_id.as_deref()
+                    || Some(receipt.host_run_id.as_str()) != step.attempt.host_run_id.as_deref()
+                    || receipt.provider_id != actual.provider_id
+                    || Some(receipt.account_id.as_str()) != actual.account_id.as_deref()
+                    || receipt.model_id != actual.model_id
+                    || receipt.effort != actual.effort
+                    || receipt.fast_mode != actual.fast_mode
+                    || receipt.execution_profile != actual.execution_profile
+                    || Some(receipt.inventory_revision.as_str())
+                        != actual.inventory_revision.as_deref()
+                {
+                    return Err(invalid(
+                        "Native deployment sealed receipt differs from actual acknowledged execution",
+                    ));
+                }
+                let terminal = evidence
+                    .pointer("/events/turnEvents")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|events| {
+                        events
+                            .iter()
+                            .find_map(|event| event.get("terminalDispatch"))
+                    })
+                    .ok_or_else(|| {
+                        invalid("Native deployment receipt has no sealed terminal dispatch")
+                    })?;
+                let terminal: crate::services::agent_host::execution::ExecutionDispatch =
+                    serde_json::from_value(terminal.clone())?;
+                receipt.validate_terminal_dispatch(&terminal)?;
+                if Some(receipt.native_execution_ms) != step.attempt.native_execution_ms {
+                    return Err(invalid(
+                        "Native deployment terminal receipt/settings/runtime clock joins differ",
+                    ));
+                }
+                observed.insert(super::routing::candidate_key(expected));
+            }
+        }
+        if candidates
+            .iter()
+            .any(|candidate| !observed.contains(&super::routing::candidate_key(candidate)))
+        {
+            return Ok(None);
+        }
+        Ok(Some(candidates.clone()))
+    }
+    /// Only immutable certificates, native authority metadata and coefficient
+    /// models are read here. No fit labels, grader payloads or control records.
+    pub(super) async fn discover_active_policy(
+        &self,
+        contract: &Contract,
+        inventory: &[RoutingCandidate],
+        native_prior_keys: &[String],
+    ) -> Result<Discovery> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM selector_promotions WHERE revoked_at IS NULL ORDER BY id LIMIT 257",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        if ids.len() > 256 {
+            return Ok(Discovery::Refused("active_policy_discovery_bound"));
+        }
+        let mut compatible = Vec::new();
+        let mut unattested = false;
+        for id in ids {
+            let state = self.promotion(&id).await?;
+            if &state.certificate.contract != contract {
+                continue;
+            }
+            let certificate = match self.require_active_promotion(&id).await {
+                Ok(certificate) => certificate,
+                Err(error) if error.code == "invalid_promotion" => continue,
+                Err(error) => return Err(error),
+            };
+            let model = self.selector_model(&certificate.model_id).await?;
+            if certificate.prior_keys != native_prior_keys
+                || !native_prior_keys.iter().all(|key| {
+                    model
+                        .candidates
+                        .iter()
+                        .any(|trained| &trained.candidate_key == key)
+                })
+            {
+                continue;
+            }
+            let Some(attested) = &certificate.native_inventory else {
+                unattested = true;
+                continue;
+            };
+            if model.candidates.iter().all(|trained| {
+                inventory.iter().any(|row| {
+                    super::routing::candidate_key(&row.configuration) == trained.candidate_key
+                        && row.configuration.inventory_revision
+                            == trained.configuration.inventory_revision
+                        && attested
+                            .iter()
+                            .any(|proof| native_configuration_matches(proof, &row.configuration))
+                })
+            }) {
+                compatible.push(certificate);
+            }
+        }
+        Ok(match compatible.len() {
+            0 if unattested => Discovery::Refused("legacy_unattested_native_inventory"),
+            0 => Discovery::Refused("no_exact_active_policy"),
+            1 => Discovery::Unique(Box::new(compatible.remove(0))),
+            _ => Discovery::Refused("ambiguous_exact_active_policies"),
+        })
+    }
     /// The first native admission is the deadline, including unsuccessful or
     /// preview admissions. A later fit cutoff cannot launder unqualified data.
     async fn training_admission(&self, example: &learned::TrainingExample) -> Result<i64> {
@@ -179,7 +421,9 @@ impl Store {
                 if target.evidence["effectiveTimeoutSeconds"].as_u64()
                     != Some(u64::from(contract.limits.timeout_seconds))
                 {
-                    return Err(invalid("The deployment budget differs from the effective collected training budget"));
+                    return Err(invalid(
+                        "The deployment budget differs from the effective collected training budget",
+                    ));
                 }
                 let run_id = target.evidence["runId"]
                     .as_str()
@@ -233,7 +477,9 @@ impl Store {
                         &version.manifest,
                     ) != contract.limits.timeout_seconds
                 {
-                    return Err(invalid("Every frozen workflow step must use the exact deployment contract and initial native budget"));
+                    return Err(invalid(
+                        "Every frozen workflow step must use the exact deployment contract and initial native budget",
+                    ));
                 }
             }
         }
@@ -283,7 +529,9 @@ impl Store {
                 || binding.manifest_hash != hash(&version.manifest)?
                 || binding.evaluator_revision != version.manifest.evaluator.revision
             {
-                return Err(invalid("Every frozen training and workflow version needs its exact unrevoked first qualification before the evidence cutoff/reservation"));
+                return Err(invalid(
+                    "Every frozen training and workflow version needs its exact unrevoked first qualification before the evidence cutoff/reservation",
+                ));
             }
             bindings.push(binding);
         }
@@ -311,7 +559,9 @@ impl Store {
                 .windows(2)
                 .any(|ids| ids[0] == ids[1])
         {
-            return Err(invalid("Registration needs bounded request/operator IDs and distinct qualification records"));
+            return Err(invalid(
+                "Registration needs bounded request/operator IDs and distinct qualification records",
+            ));
         }
         request.rule.validate()?;
         request.contract.validate()?;
@@ -350,7 +600,9 @@ impl Store {
                 .iter()
                 .any(|c| c.execution_profile != request.contract.execution_profile)
         {
-            return Err(invalid("The deployment contract must match the exact fitted and evaluated owned scope and budgets"));
+            return Err(invalid(
+                "The deployment contract must match the exact fitted and evaluated owned scope and budgets",
+            ));
         }
         self.validate_training_budget(&fit, &request.contract)
             .await?;
@@ -442,6 +694,7 @@ impl Store {
                 assessment.reasons.join(", ")
             )));
         }
+        let native_inventory = self.attest_campaign_inventory(&campaign).await?;
         let mut certificate = Certificate {
             id: String::new(),
             created_at: now(),
@@ -471,6 +724,7 @@ impl Store {
                 .collect(),
             min_prediction_quality: campaign.plan.request.min_quality,
             artifact_hash: String::new(),
+            native_inventory,
         };
         certificate.id = hash(&certificate)?;
         certificate.artifact_hash = hash(&certificate)?;

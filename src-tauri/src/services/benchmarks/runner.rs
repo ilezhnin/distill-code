@@ -19,6 +19,8 @@ use std::{
 use tauri::Manager;
 use tokio::sync::watch;
 
+pub(crate) mod native_receipt;
+
 /// Fewest judges whose votes may settle a rendering.
 pub(crate) const MIN_JUDGES: usize = 2;
 /// Most judges on one panel; plan admission reserves this many calls.
@@ -121,6 +123,17 @@ pub trait ExecutionBackend: Send + Sync {
             ))
         })
     }
+    fn recover_owned_task_preparation<'a>(
+        &'a self,
+        _binding: &'a super::task_execution::Binding,
+    ) -> BoxFuture<'a, Result<super::task_execution::NativePreparationLookup>> {
+        Box::pin(async {
+            Ok(super::task_execution::NativePreparationLookup {
+                session_id: None,
+                no_provider_start: false,
+            })
+        })
+    }
     fn dispatch_owned_task<'a>(
         &'a self,
         _store: &'a Store,
@@ -132,6 +145,20 @@ pub trait ExecutionBackend: Send + Sync {
             Err(BenchmarkError::new(
                 "capability_missing",
                 "This backend has no application owned dispatch",
+            ))
+        })
+    }
+    /// Records the native no-prompt terminal outcome for a prepared task whose
+    /// root budget expired before dispatch. Only the host can prove absence.
+    fn refuse_owned_task_dispatch<'a>(
+        &'a self,
+        _binding: &'a super::task_execution::Binding,
+        _session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<ExecutionDispatch>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend cannot record a native budget refusal",
             ))
         })
     }
@@ -235,6 +262,105 @@ pub struct NativeBackend {
 }
 
 impl NativeBackend {
+    async fn native_execution_receipt(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        attempt: &Attempt,
+        terminal: &Value,
+    ) -> Result<Option<native_receipt::NativeExecutionReceipt>> {
+        let dispatch: ExecutionDispatch =
+            serde_json::from_value(terminal["terminalDispatch"].clone())?;
+        if dispatch.phase != "terminal"
+            || dispatch.error.is_some()
+            || dispatch.result.is_none()
+            || dispatch.request_key != dispatch_key(attempt)
+            || attempt
+                .observed
+                .as_ref()
+                .and_then(|value| value.inventory_revision.as_ref())
+                .is_none()
+        {
+            // Legacy/failed/unknown turns retain their evidence; none can gain
+            // a native deployment attestation from selected intent.
+            return Ok(None);
+        }
+        let (owner, _) = host
+            .store
+            .execution_owner(&dispatch.session_id)
+            .await
+            .map_err(host_error)?
+            .ok_or_else(|| {
+                BenchmarkError::new(
+                    "native_receipt_conflict",
+                    "Native execution owner disappeared",
+                )
+            })?;
+        let provider = NativeProvider::for_harness(&owner.provider_id).ok_or_else(|| {
+            BenchmarkError::new(
+                "native_receipt_conflict",
+                "Native receipt provider is unsupported",
+            )
+        })?;
+        let inventory = self
+            .run_inventory(host, &attempt.run_id, &owner.provider_id, &owner.account_id)
+            .await?;
+        let repository_revision = if owner.profile == ExecutionProfile::ProtectedRepositoryV1 {
+            let status = repository_execution::readiness(provider, &owner.account_id)
+                .await
+                .map_err(host_error)?;
+            Some(repository_execution::revision(provider, &status))
+        } else {
+            None
+        };
+        let inventory_revision = if let Some(revision) = &repository_revision {
+            repository_inventory_revision(revision, &inventory, &owner.model_id)
+        } else {
+            inventory_fingerprint(
+                &inventory,
+                provider,
+                crate::services::managed_acp_tools::native_cli_path(&self.app, &owner.provider_id),
+                &owner.model_id,
+            )
+            .await?
+        };
+        if attempt
+            .observed
+            .as_ref()
+            .and_then(|value| value.inventory_revision.as_ref())
+            != Some(&inventory_revision)
+        {
+            return Err(BenchmarkError::new(
+                "native_receipt_conflict",
+                "Actual native runtime changed since execution acknowledgement",
+            ));
+        }
+        let receipt = native_receipt::attest(
+            &host.store,
+            &dispatch.request_key,
+            attempt.session_id.as_deref().ok_or_else(|| {
+                BenchmarkError::new(
+                    "native_receipt_conflict",
+                    "Native session identity is absent",
+                )
+            })?,
+            attempt.host_run_id.as_deref().ok_or_else(|| {
+                BenchmarkError::new("native_receipt_conflict", "Native run identity is absent")
+            })?,
+            &turn_owner(attempt),
+            &native_receipt::VerifiedRuntime {
+                provider_id: owner.provider_id.clone(),
+                account_id: owner.account_id.clone(),
+                model_id: owner.model_id.clone(),
+                execution_profile: native_receipt::profile(&owner).into(),
+                inventory_revision,
+                repository_revision,
+            },
+        )
+        .await?;
+        receipt.validate_terminal_dispatch(&dispatch)?;
+        Ok(Some(receipt))
+    }
+
     pub fn new(app: tauri::AppHandle) -> Self {
         Self {
             app,
@@ -402,9 +528,56 @@ async fn repository_runtime(c: &Configuration) -> Result<String> {
 
 /// A repository answer comes from the stopped working copy, never the agent's
 /// final message. A collection error cannot masquerade as an empty patch.
+#[cfg(test)]
 async fn collect_repository(attempt: &mut Attempt, id: &str, cap: u64) -> Result<()> {
+    collect_repository_until(attempt, id, cap, None).await
+}
+
+fn sandbox_setup_error(error: std::io::Error) -> BenchmarkError {
+    if error.kind() == std::io::ErrorKind::TimedOut {
+        BenchmarkError::new("budget_timeout", error.to_string())
+    } else {
+        error.into()
+    }
+}
+
+fn unsigned_deadline(deadline: i64) -> Result<u64> {
+    deadline
+        .try_into()
+        .map_err(|_| BenchmarkError::new("budget_clock_conflict", "Native deadline is invalid"))
+}
+
+fn collection_budget(
+    draft: &BenchmarkDraft,
+) -> Result<Option<super::artifact_context::BudgetLease>> {
+    draft
+        .environment
+        .get(super::artifact_context::CLOCK_KEY)
+        .map(|value| serde_json::from_value(value.clone()).map_err(Into::into))
+        .transpose()
+}
+
+fn turn_timeout_ms(
+    seconds: u32,
+    budget: Option<&super::artifact_context::BudgetLease>,
+) -> Result<u64> {
+    let cap = u64::from(seconds) * 1000;
+    budget.map_or(Ok(cap), |budget| Ok(cap.min(budget.remaining_ms(now())?)))
+}
+
+async fn collect_repository_until(
+    attempt: &mut Attempt,
+    id: &str,
+    cap: u64,
+    deadline: Option<u64>,
+) -> Result<()> {
     sandbox::kill("session", id).await?;
-    match sandbox::patch(id, usize::try_from(cap).unwrap_or(usize::MAX)).await {
+    let limit = usize::try_from(cap).unwrap_or(usize::MAX);
+    let patch = match deadline {
+        Some(deadline) => sandbox::patch_until(id, limit, deadline).await,
+        None => sandbox::patch(id, limit).await,
+    };
+    match patch {
         Ok(bytes) => {
             attempt.output = Some(String::from_utf8(bytes).map_err(|_| {
                 BenchmarkError::new("infrastructure_failure", "Repository patch is not UTF-8")
@@ -415,9 +588,89 @@ async fn collect_repository(attempt: &mut Attempt, id: &str, cap: u64) -> Result
             attempt.outcome = Some("budget_reached".into());
             attempt.reason = Some("The repository patch exceeds the published artifact cap".into());
         }
-        Err(error) => return Err(error.into()),
+        Err(error) if deadline.is_some() && error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(BenchmarkError::new(
+                "candidate_artifact_invalid",
+                error.to_string(),
+            ));
+        }
+        Err(error) => return Err(sandbox_setup_error(error)),
     }
     Ok(())
+}
+
+async fn finalize_repository(
+    attempt: &mut Attempt,
+    id: &str,
+    draft: &BenchmarkDraft,
+    input: Option<&super::artifact_context::Input>,
+    deadline: Option<u64>,
+) -> Result<()> {
+    let report = attempt.output.clone().unwrap_or_default();
+    if input.is_some() && report.len() > 128 * 1024 {
+        return Err(BenchmarkError::new(
+            "budget_reached",
+            "Repository report exceeds its sealed report limit",
+        ));
+    }
+    collect_repository_until(attempt, id, draft.limits.max_artifact_bytes, deadline).await?;
+    if attempt.outcome.as_deref() == Some("budget_reached") {
+        return Ok(());
+    }
+    if let Some(input) = input {
+        let snapshot = super::repository::snapshot(draft)?;
+        let deadline = deadline.ok_or_else(|| {
+            BenchmarkError::new(
+                "budget_clock_conflict",
+                "Cumulative repository collection has no native root deadline",
+            )
+        })?;
+        let sealed = super::repository::seal_until(
+            &snapshot,
+            &input.before,
+            attempt.output.as_deref().unwrap_or_default(),
+            draft.limits.max_artifact_bytes as usize,
+            deadline,
+        )
+        .await?;
+        let result = super::artifact_context::PublicResult {
+            schema_version: 2,
+            recipe: super::repository::ARTIFACT_RECIPE.into(),
+            report,
+            artifact: sealed.artifact,
+        };
+        result.validate(draft.limits.max_artifact_bytes as usize)?;
+        attempt.output = Some(result.artifact.patch.clone());
+        attempt.repository_result = Some(result);
+    }
+    Ok(())
+}
+
+fn repository_collection_failure(attempt: &mut Attempt, error: &BenchmarkError) {
+    if attempt
+        .outcome
+        .as_deref()
+        .is_none_or(|outcome| outcome == "completed")
+    {
+        attempt.outcome = Some(
+            match error.code.as_str() {
+                "budget_timeout" => "budget_timeout",
+                "budget_reached" => "budget_reached",
+                "candidate_artifact_invalid" => "fail",
+                _ => "infrastructure_failure",
+            }
+            .into(),
+        );
+    }
+    let diagnostic = format!("Repository artifact: {}", error.message);
+    attempt.reason = Some(
+        attempt
+            .reason
+            .as_ref()
+            .map_or(diagnostic.clone(), |reason| {
+                format!("{reason}; {diagnostic}")
+            }),
+    );
 }
 
 /// Why a panel cannot settle a rendering, before any judge is asked.
@@ -1811,11 +2064,50 @@ impl ExecutionBackend for NativeBackend {
                 .map_err(host_error)?;
             let owner = format!("task:{}", binding.id);
             let repository = binding.task.execution_profile == "protected_repository";
+            let deadline = binding
+                .deadline_at_ms()?
+                .map(unsigned_deadline)
+                .transpose()?;
             let cwd = if repository {
                 let source = binding.request.repository.as_ref().ok_or_else(|| {
                     BenchmarkError::new("validation", "An explicit repository snapshot is required")
                 })?;
-                let archive = super::repository::archive(source).await?;
+                let archive = if let Some(context) = &binding.context_v2 {
+                    let before = context.artifact_before.as_ref().ok_or_else(|| {
+                        BenchmarkError::new(
+                            "invalid_task_authority",
+                            "Native repository artifact authority is absent",
+                        )
+                    })?;
+                    let deadline = deadline.ok_or_else(|| {
+                        BenchmarkError::new(
+                            "invalid_task_authority",
+                            "Native repository root deadline is absent",
+                        )
+                    })?;
+                    let prepared = super::repository::advance_until(
+                        source,
+                        &context.artifact_lineage,
+                        context.artifact_access_all.ok_or_else(|| {
+                            BenchmarkError::new(
+                                "invalid_task_authority",
+                                "Native repository access is absent",
+                            )
+                        })?,
+                        binding.task.limits.max_artifact_bytes as usize,
+                        deadline,
+                    )
+                    .await?;
+                    if &prepared.artifact != before {
+                        return Err(BenchmarkError::new(
+                            "evidence_mismatch",
+                            "Native repository setup differs from its frozen predecessor artifact",
+                        ));
+                    }
+                    prepared.archive
+                } else {
+                    super::repository::archive(source).await?
+                };
                 let marker_dir = store.root.join("task-executions").join(&binding.id);
                 tokio::fs::create_dir_all(&marker_dir).await?;
                 let marker = marker_dir.join("copy-preparation.json");
@@ -1834,7 +2126,11 @@ impl ExecutionBackend for NativeBackend {
                         sandbox::clean(&copy_id).await?;
                     }
                     tokio::fs::write(&marker,serde_json::to_vec(&json!({"bindingId":binding.id,"contextHash":binding.context_hash,"phase":"copying"}))?).await?;
-                    sandbox::copy(&copy_id, &archive).await?;
+                    match deadline {
+                        Some(deadline) => sandbox::copy_until(&copy_id, &archive, deadline).await,
+                        None => sandbox::copy(&copy_id, &archive).await,
+                    }
+                    .map_err(sandbox_setup_error)?;
                 }
                 "/workspace".into()
             } else {
@@ -1866,7 +2162,7 @@ impl ExecutionBackend for NativeBackend {
                             ExecutionProfile::NativeTextV1
                         },
                     },
-                    u64::from(binding.task.limits.timeout_seconds) * 1000,
+                    binding.remaining_ms()?,
                 )
                 .await
                 .map_err(host_error)?;
@@ -1907,6 +2203,25 @@ impl ExecutionBackend for NativeBackend {
                 observed,
                 context_hash: binding.context_hash.clone(),
             })
+        })
+    }
+    fn recover_owned_task_preparation<'a>(
+        &'a self,
+        binding: &'a super::task_execution::Binding,
+    ) -> BoxFuture<'a, Result<super::task_execution::NativePreparationLookup>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            host.lookup_owned_task_preparation(
+                &format!("task:{}", binding.id),
+                &binding.request.request_key,
+            )
+            .await
+            .map_err(host_error)
         })
     }
     fn dispatch_owned_task<'a>(
@@ -1967,15 +2282,7 @@ impl ExecutionBackend for NativeBackend {
                     request_key: binding.request.request_key.clone(),
                     prompt: public_task_prompt(&binding.task)?,
                     policy_hash: session.owned.policy_hash.clone(),
-                    timeout_ms: u64::from(
-                        binding
-                            .task
-                            .entry
-                            .as_ref()
-                            .map_or(binding.task.limits.timeout_seconds, |entry| {
-                                entry.remaining_budget_seconds
-                            }),
-                    ) * 1000,
+                    timeout_ms: binding.remaining_ms()?,
                     images: vec![],
                 },
                 crate::services::agent_host::executor_receipts::ExecutorLink {
@@ -1984,6 +2291,28 @@ impl ExecutionBackend for NativeBackend {
                 },
                 admission,
                 binding.task.limits.max_artifact_bytes,
+            )
+            .await
+            .map_err(host_error)
+        })
+    }
+    fn refuse_owned_task_dispatch<'a>(
+        &'a self,
+        binding: &'a super::task_execution::Binding,
+        session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<ExecutionDispatch>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            host.refuse_task_owned_turn(
+                &session.owned.session_id,
+                &binding.request.request_key,
+                &format!("task:{}", binding.id),
+                &session.owned.policy_hash,
             )
             .await
             .map_err(host_error)
@@ -2443,6 +2772,20 @@ impl ExecutionBackend for NativeBackend {
             };
             busy().await?;
             let repository = super::repository::is_repository_case(&version.manifest);
+            let budget = collection_budget(&version.manifest)?;
+            let deadline = budget
+                .as_ref()
+                .map(|budget| budget.deadline_at_ms())
+                .transpose()?
+                .map(unsigned_deadline)
+                .transpose()?;
+            let artifact_input = super::artifact_context::input(&version.manifest)?;
+            if artifact_input.is_some() && (!repository || deadline.is_none()) {
+                return Err(BenchmarkError::new(
+                    "budget_clock_conflict",
+                    "Cumulative repository collection requires a native root lease",
+                ));
+            }
             let mut cleanup = sandbox::Cleanup(
                 repository.then(|| repository_execution::attempt_id(&turn_owner(&attempt))),
             );
@@ -2523,8 +2866,32 @@ impl ExecutionBackend for NativeBackend {
             }
             let cwd = if let Some(id) = cleanup.0.as_deref() {
                 let snapshot = super::repository::snapshot(&version.manifest)?;
-                let archive = super::repository::archive(&snapshot).await?;
-                sandbox::copy(id, &archive).await?;
+                let archive = if let Some(input) = &artifact_input {
+                    let prepared = super::repository::advance_until(
+                        &snapshot,
+                        &input.lineage,
+                        input.access_all,
+                        version.manifest.limits.max_artifact_bytes as usize,
+                        deadline.expect("validated artifact deadline"),
+                    )
+                    .await?;
+                    if prepared.artifact != input.before {
+                        return Err(BenchmarkError::new(
+                            "evidence_mismatch",
+                            "Collection predecessor differs from its native artifact input",
+                        ));
+                    }
+                    prepared.archive
+                } else if let Some(deadline) = deadline {
+                    super::repository::archive_until(&snapshot, deadline).await?
+                } else {
+                    super::repository::archive(&snapshot).await?
+                };
+                match deadline {
+                    Some(deadline) => sandbox::copy_until(id, &archive, deadline).await,
+                    None => sandbox::copy(id, &archive).await,
+                }
+                .map_err(sandbox_setup_error)?;
                 "/workspace".to_owned()
             } else {
                 let cwd = store
@@ -2557,7 +2924,7 @@ impl ExecutionBackend for NativeBackend {
                             ExecutionProfile::NativeTextV1
                         },
                     },
-                    u64::from(timeout_seconds) * 1000,
+                    turn_timeout_ms(timeout_seconds, budget.as_ref())?,
                 )
                 .await
                 .map_err(host_error)?;
@@ -2567,6 +2934,12 @@ impl ExecutionBackend for NativeBackend {
             observed.effort = session.selection.reasoning_effort;
             observed.fast_mode = session.selection.fast_mode;
             observed.inventory_revision = Some(runtime_revision);
+            let actual_session = host
+                .session_record(&session.session_id)
+                .await
+                .map_err(|error| host_error(error.to_string()))?;
+            observed.provider_id = actual_session.harness;
+            observed.account_id = actual_session.account_id;
             attempt.observed = Some(observed.clone());
             if !session.substitutions.is_empty()
                 || !matches_selection(&attempt.configuration, &observed)
@@ -2592,17 +2965,22 @@ impl ExecutionBackend for NativeBackend {
             store.save_attempt(&attempt).await?;
             let key = dispatch_key(&attempt);
             let started = Instant::now();
-            let dispatch = host
-                .dispatch_owned_turn(OwnedTurnRequest {
-                    session_id: session.session_id.clone(),
-                    request_key: key.clone(),
-                    prompt: prompt_with_fixtures(&version.manifest)?,
-                    policy_hash: session.policy_hash,
-                    timeout_ms: u64::from(timeout_seconds) * 1000,
-                    images: Vec::new(),
-                })
-                .await
-                .map_err(host_error)?;
+            let request = OwnedTurnRequest {
+                session_id: session.session_id.clone(),
+                request_key: key.clone(),
+                prompt: prompt_with_fixtures(&version.manifest)?,
+                policy_hash: session.policy_hash,
+                timeout_ms: turn_timeout_ms(timeout_seconds, budget.as_ref())?,
+                images: Vec::new(),
+            };
+            let dispatch = match deadline {
+                Some(deadline) => {
+                    host.dispatch_owned_turn_with_deadline(request, deadline as i64)
+                        .await
+                }
+                None => host.dispatch_owned_turn(request).await,
+            }
+            .map_err(host_error)?;
             attempt.host_run_id = Some(dispatch.run_id);
             attempt.phase = "running".into();
             store.save_attempt(&attempt).await?;
@@ -2615,7 +2993,10 @@ impl ExecutionBackend for NativeBackend {
             let terminal;
             loop {
                 if (*cancel.borrow()
-                    || started.elapsed() > Duration::from_secs(u64::from(timeout_seconds)))
+                    || started.elapsed() > Duration::from_secs(u64::from(timeout_seconds))
+                    || budget
+                        .as_ref()
+                        .is_some_and(|budget| budget.remaining_ms(now()).is_err()))
                     && !cancelled
                 {
                     timed_out = !*cancel.borrow();
@@ -2746,15 +3127,36 @@ impl ExecutionBackend for NativeBackend {
             );
             attempt.finished_at = Some(now());
             attempt.phase = "collecting".into();
+            let mut artifact_error = None;
             if let Some(id) = cleanup.0.as_deref() {
-                host.stop_owned_sandbox(&session.session_id)
+                let collected = async {
+                    host.stop_owned_sandbox(&session.session_id)
+                        .await
+                        .map_err(host_error)?;
+                    finalize_repository(
+                        &mut attempt,
+                        id,
+                        &version.manifest,
+                        artifact_input.as_ref(),
+                        deadline,
+                    )
                     .await
-                    .map_err(host_error)?;
-                collect_repository(&mut attempt, id, version.manifest.limits.max_artifact_bytes)
-                    .await?;
+                }
+                .await;
+                if let Err(error) = collected {
+                    repository_collection_failure(&mut attempt, &error);
+                    artifact_error = Some(json!({"code":error.code,"message":error.message}));
+                }
             }
             mark_auxiliary_profile(&mut attempt);
+            let receipt = self
+                .native_execution_receipt(&host, &attempt, &terminal)
+                .await;
             let evidence = capture.evidence.close(terminal);
+            let mut evidence = native_receipt::sealed_events(evidence, receipt);
+            if let Some(error) = artifact_error {
+                evidence["repositoryArtifactError"] = error;
+            }
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             store.save_attempt(&attempt).await?;
             if let Some(id) = cleanup.0.as_deref() {
@@ -2812,6 +3214,20 @@ impl ExecutionBackend for NativeBackend {
             if status.phase != "terminal" {
                 return Ok(None);
             }
+            if attempt
+                .session_id
+                .as_ref()
+                .is_some_and(|id| id != &status.session_id)
+                || attempt
+                    .host_run_id
+                    .as_ref()
+                    .is_some_and(|id| id != &status.run_id)
+            {
+                return Err(BenchmarkError::new(
+                    "native_receipt_conflict",
+                    "Recovered native dispatch belongs to another saved session or run",
+                ));
+            }
             attempt.session_id = Some(status.session_id.clone());
             attempt.host_run_id = Some(status.run_id.clone());
             attempt.native_execution_ms = host
@@ -2824,12 +3240,16 @@ impl ExecutionBackend for NativeBackend {
             attempt.resolved_model = None;
             // The same caps as a turn the runner watched: the published one
             // on the answer, the evidence ceiling on the record.
-            let cap = store
-                .version(&attempt.version_id)
-                .await?
-                .manifest
-                .limits
-                .max_artifact_bytes;
+            let version = super::workflow::effective_version_for_attempt(store, &attempt).await?;
+            let cap = version.manifest.limits.max_artifact_bytes;
+            let budget = collection_budget(&version.manifest)?;
+            let deadline = budget
+                .as_ref()
+                .map(|budget| budget.deadline_at_ms())
+                .transpose()?
+                .map(unsigned_deadline)
+                .transpose()?;
+            let artifact_input = super::artifact_context::input(&version.manifest)?;
             let mut capture = TurnCapture::new(cap);
             loop {
                 let page = host
@@ -2895,18 +3315,33 @@ impl ExecutionBackend for NativeBackend {
                 attempt.outcome = Some("execution_violation".into());
                 attempt.reason = Some(violation);
             }
+            let mut artifact_error = None;
             if let Some(id) = cleanup.0.as_deref() {
-                match collect_repository(&mut attempt, id, cap).await {
+                match finalize_repository(
+                    &mut attempt,
+                    id,
+                    &version.manifest,
+                    artifact_input.as_ref(),
+                    deadline,
+                )
+                .await
+                {
                     Ok(()) => {}
                     Err(error) => {
-                        attempt.output = None;
-                        attempt.outcome = Some("infrastructure_failure".into());
-                        attempt.reason = Some(error.message);
+                        repository_collection_failure(&mut attempt, &error);
+                        artifact_error = Some(json!({"code":error.code,"message":error.message}));
                     }
                 }
             }
             mark_auxiliary_profile(&mut attempt);
+            let receipt = self
+                .native_execution_receipt(&host, &attempt, &terminal)
+                .await;
             let evidence = capture.evidence.close(terminal);
+            let mut evidence = native_receipt::sealed_events(evidence, receipt);
+            if let Some(error) = artifact_error {
+                evidence["repositoryArtifactError"] = error;
+            }
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             // Persist the patch before removing its only working copy. Recovery
             // can repeat cleanup if the process exits between these operations.
@@ -2961,9 +3396,26 @@ async fn read_owned_task_output(
         .task_public_result(key, session)
         .await
         .map_err(host_error)?;
+    let (owner, _) = store
+        .execution_owner(session)
+        .await
+        .map_err(host_error)?
+        .ok_or_else(|| {
+            BenchmarkError::new("evidence_missing", "Native predecessor owner is absent")
+        })?;
+    let repository_result = if owner.profile == ExecutionProfile::ProtectedRepositoryV1 {
+        super::artifact_context::decode(&output, 256 * 1024 * 1024)?
+    } else {
+        None
+    };
     Ok(super::task_execution::NativeOutput {
-        text: super::workflow::committed_report(&output),
+        text: super::workflow::committed_report(
+            repository_result
+                .as_ref()
+                .map_or(output.as_str(), |result| result.report.as_str()),
+        ),
         elapsed_ms,
+        repository_result,
     })
 }
 
@@ -2983,6 +3435,47 @@ pub(crate) async fn owned_task_public_output(
         }
     };
     let repository = owner.profile == ExecutionProfile::ProtectedRepositoryV1;
+    let binding = if repository && terminal {
+        let purpose = host
+            .store
+            .owned_session_purpose(session)
+            .await
+            .map_err(|error| json!({"kind":"dispatch_uncertain","message":error}))?;
+        if purpose.as_deref() != Some("task") {
+            return Err(
+                json!({"kind":"dispatch_uncertain","message":"Repository output requires a native task owner"}),
+            );
+        }
+        let id = owner.owner_id.strip_prefix("task:").ok_or_else(
+            || json!({"kind":"dispatch_uncertain","message":"Native task binding is absent"}),
+        )?;
+        let service = host
+            .app
+            .state::<super::BenchmarkState>()
+            .get(&host.app)
+            .await
+            .map_err(|error| json!({"kind":error.code,"message":error.message}))?;
+        let binding = service
+            .store
+            .task_binding(id)
+            .await
+            .map_err(|error| json!({"kind":error.code,"message":error.message}))?;
+        let saved = service
+            .store
+            .task_session(&binding)
+            .await
+            .map_err(|error| json!({"kind":error.code,"message":error.message}))?;
+        if saved.as_ref().is_none_or(|saved| {
+            saved.owned.session_id != session || saved.owned.owner_id != owner.owner_id
+        }) {
+            return Err(
+                json!({"kind":"dispatch_uncertain","message":"Native task binding belongs to another session"}),
+            );
+        }
+        Some(binding)
+    } else {
+        None
+    };
     let mut attempt = super::pending_attempt(
         "application",
         "public-policy",
@@ -3011,6 +3504,11 @@ pub(crate) async fn owned_task_public_output(
             if let Err(error) = capture.read(event.payload, &mut attempt) {
                 return Err(json!({"kind":"dispatch_uncertain","message":error.message}));
             }
+            if repository && capture.output.len() > 128 * 1024 {
+                return Err(
+                    json!({"kind":"artifact_limit","message":"Native repository report exceeds its sealed report limit"}),
+                );
+            }
         }
         cursor = page.cursor;
         if !page.has_more {
@@ -3021,14 +3519,24 @@ pub(crate) async fn owned_task_public_output(
         if let Err(error) = host.stop_owned_sandbox(session).await {
             return Err(json!({"kind":"dispatch_uncertain","message":error}));
         }
-        if let Err(error) = collect_repository(
+        let deadline = binding
+            .as_ref()
+            .map(|binding| binding.deadline_at_ms())
+            .transpose()
+            .map_err(|error| json!({"kind":error.code,"message":error.message}))?
+            .flatten()
+            .map(unsigned_deadline)
+            .transpose()
+            .map_err(|error| json!({"kind":error.code,"message":error.message}))?;
+        if let Err(error) = collect_repository_until(
             &mut attempt,
             &repository_execution::attempt_id(&owner.owner_id),
             cap,
+            deadline,
         )
         .await
         {
-            return Err(json!({"kind":"dispatch_uncertain","message":error.message}));
+            return Err(json!({"kind":error.code,"message":error.message}));
         }
         if attempt.outcome.as_deref() == Some("budget_reached") {
             return Err(
@@ -3043,6 +3551,49 @@ pub(crate) async fn owned_task_public_output(
     }
     if let Some(message) = capture.violation {
         return Err(json!({"kind":"execution_violation","message":message}));
+    }
+    if let Some(binding) = &binding {
+        if let Some(context) = &binding.context_v2 {
+            let result = async {
+                let snapshot = binding.request.repository.as_ref().ok_or_else(|| {
+                    BenchmarkError::new(
+                        "invalid_task_authority",
+                        "Native repository snapshot is absent",
+                    )
+                })?;
+                let before = context.artifact_before.as_ref().ok_or_else(|| {
+                    BenchmarkError::new(
+                        "invalid_task_authority",
+                        "Native repository predecessor is absent",
+                    )
+                })?;
+                let deadline = binding.deadline_at_ms()?.ok_or_else(|| {
+                    BenchmarkError::new(
+                        "invalid_task_authority",
+                        "Native repository deadline is absent",
+                    )
+                })?;
+                let sealed = super::repository::seal_until(
+                    snapshot,
+                    before,
+                    attempt.output.as_deref().unwrap_or_default(),
+                    cap as usize,
+                    unsigned_deadline(deadline)?,
+                )
+                .await?;
+                super::artifact_context::PublicResult {
+                    schema_version: 2,
+                    recipe: super::repository::ARTIFACT_RECIPE.into(),
+                    report: capture.output,
+                    artifact: sealed.artifact,
+                }
+                .encode(cap as usize)
+            }
+            .await;
+            return result.map(Some).map_err(
+                |error: BenchmarkError| json!({"kind":error.code,"message":error.message}),
+            );
+        }
     }
     Ok(terminal.then(|| {
         if repository {
@@ -3712,6 +4263,7 @@ fn terminal_error_outcome(error: &Value) -> &'static str {
         Some("cancelled") => "cancelled",
         Some("selection_changed") => "selection_changed",
         Some("execution_violation") => "execution_violation",
+        Some("candidate_artifact_invalid") => "fail",
         Some("quota_blocked" | "quota_exhausted") => "quota_blocked",
         Some("dispatch_uncertain") => "dispatch_uncertain",
         Some("policy_violation" | "capability_missing") => "unsupported",
@@ -5252,6 +5804,87 @@ mod tests {
                 .text,
             first.text
         );
+        // A v2 repository terminal carries a report separately from its
+        // cumulative patch. Reopening reads only the immutable sealed value.
+        let artifact = super::super::artifact_context::PublicResult {
+            schema_version: 2,
+            recipe: super::super::repository::ARTIFACT_RECIPE.into(),
+            report: "Review passed without another patch".into(),
+            artifact: super::super::repository::Artifact {
+                recipe: super::super::repository::ARTIFACT_RECIPE.into(),
+                root_tree: "a".repeat(40),
+                before_tree: "b".repeat(40),
+                after_tree: "b".repeat(40),
+                patch: output.clone(),
+                patch_hash: fixtures::hash(output.as_bytes()),
+                archive_hash: fixtures::hash(b"invented immutable archive"),
+            },
+        };
+        let envelope = artifact.encode(4096).unwrap();
+        // Each owned session holds exactly one turn, so the review step owns
+        // its own native session, as the wave consumer prepares it.
+        let review_owner = OwnedSessionRequest {
+            owner_id: "task:invented-review".into(),
+            ..owner.clone()
+        };
+        let review_record = SessionRecord {
+            id: "native-review-task".into(),
+            ..record.clone()
+        };
+        store
+            .insert_owned_session_for_purpose(&review_record, &review_owner, "policy", "task")
+            .await
+            .unwrap();
+        let second_dispatch = ExecutionDispatch {
+            request_key: "owned-task:invented-review".into(),
+            session_id: review_record.id.clone(),
+            run_id: "native-review-run".into(),
+            user_message_id: "native-review-user".into(),
+            phase: "reserved".into(),
+            result: None,
+            error: None,
+            ..dispatch.clone()
+        };
+        store
+            .reserve_dispatch(&second_dispatch, "Review the predecessor")
+            .await
+            .unwrap();
+        store
+            .settle_task_dispatch(
+                &second_dispatch.request_key,
+                &review_record.id,
+                Some(&result),
+                None,
+                Some(&envelope),
+                1201,
+            )
+            .await
+            .unwrap();
+        for native_store in [&store, &restarted] {
+            let restored = super::read_owned_task_output(
+                native_store,
+                &second_dispatch.request_key,
+                &review_record.id,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                restored.text,
+                super::super::workflow::committed_report(&artifact.report)
+            );
+            assert_eq!(restored.repository_result.as_ref(), Some(&artifact));
+        }
+        assert!(store
+            .settle_task_dispatch(
+                &second_dispatch.request_key,
+                &review_record.id,
+                Some(&result),
+                None,
+                Some("rewritten"),
+                1201
+            )
+            .await
+            .is_err());
         // A sealed artifact does not authorize an uncertain dispatch. The
         // production reader also checks status in its own metadata join.
         store
@@ -5935,11 +6568,13 @@ mod tests {
                     id: "plan".into(),
                     prompt: "Prepare the public plan.".into(),
                     include_previous_output: false,
+                    scope: None,
                 },
                 WorkflowStep {
                     id: "answer".into(),
                     prompt: "Produce the final structured answer.".into(),
                     include_previous_output: true,
+                    scope: None,
                 },
             ],
         });
@@ -6571,6 +7206,7 @@ mod tests {
             workflow_steps: vec![],
             native_execution_ms: None,
             resolved_model: None,
+            repository_result: None,
         };
         let version = |id: &str| BenchmarkVersion {
             id: id.into(),

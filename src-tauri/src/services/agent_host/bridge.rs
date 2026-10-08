@@ -816,7 +816,7 @@ impl Bridge {
     /// Capture turn ownership at stdout receipt, before notifications can
     /// wait behind another session's disk writes in the host event queue.
     pub async fn prompt(&self, params: Value, run_id: String) -> Result<Value, Value> {
-        self.prompt_with_admission(params, run_id, None).await
+        self.prompt_with_admission(params, run_id, None, None).await
     }
 
     pub(super) async fn prompt_with_admission(
@@ -824,6 +824,7 @@ impl Bridge {
         params: Value,
         run_id: String,
         admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+        owned_deadline: Option<tokio::time::Instant>,
     ) -> Result<Value, Value> {
         let session_id = protocol::session_id(&params)
             .ok_or_else(|| protocol::invalid_params("sessionId required"))?;
@@ -833,6 +834,7 @@ impl Bridge {
             None,
             Some((session_id, run_id)),
             admission,
+            owned_deadline,
         )
         .await
     }
@@ -844,7 +846,7 @@ impl Bridge {
         deadline: Option<Duration>,
         turn: Option<(String, String)>,
     ) -> Result<Value, Value> {
-        self.request_owned_with_admission(method, params, deadline, turn, None)
+        self.request_owned_with_admission(method, params, deadline, turn, None, None)
             .await
     }
 
@@ -855,6 +857,7 @@ impl Bridge {
         deadline: Option<Duration>,
         turn: Option<(String, String)>,
         admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+        owned_deadline: Option<tokio::time::Instant>,
     ) -> Result<Value, Value> {
         if !self.is_alive() {
             return Err(protocol::internal(format!(
@@ -872,6 +875,14 @@ impl Bridge {
             )));
         }
         let line = protocol::request(json!(id), method, params);
+        if owned_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            self.forget(id);
+            return Err(protocol::error_with_data(
+                -32000,
+                "Native root budget expired before provider submission",
+                json!({"kind":"budget_timeout"}),
+            ));
+        }
         if self.writer.send(line).is_err() {
             self.forget(id);
             return Err(protocol::internal(format!(

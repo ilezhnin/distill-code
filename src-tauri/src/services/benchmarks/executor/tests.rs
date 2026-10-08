@@ -133,6 +133,7 @@ async fn native_journal_fixture(
         task,
         decision,
         artifact_hash: String::new(),
+        context_v2: None,
     };
     binding.artifact_hash = hash(&binding).unwrap();
     sqlx::query("INSERT INTO task_context_bindings(id,request_key,request_hash,binding_json,binding_hash) VALUES(?,?,?,?,?)").bind(&id).bind(&binding.request.request_key).bind(hash(&binding.request).unwrap()).bind(serde_json::to_string(&binding).unwrap()).bind(&binding.artifact_hash).execute(&store.pool).await.unwrap();

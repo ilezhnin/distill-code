@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod artifact_context;
 pub mod campaigns;
 pub mod catalog;
 pub mod effort;
@@ -131,6 +132,7 @@ fn pending_attempt(
         workflow_steps: Vec::new(),
         native_execution_ms: None,
         resolved_model: None,
+        repository_result: None,
     }
 }
 

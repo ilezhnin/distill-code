@@ -1,0 +1,303 @@
+#!/usr/bin/python3
+"""Sealed repository transitions. No checkout, candidate command or hidden check.
+
+Input/output are bounded tar packages, never extracted. All Git objects and
+indexes belong to root staging; repository attributes remain ordinary data.
+"""
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+
+RECIPE = 'repository-cumulative-v1'
+MAX_ARCHIVE = 256 * 1024 * 1024
+MAX_PACKAGE = 512 * 1024 * 1024
+MAX_PREDECESSORS = 32
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def safe_path(path):
+    reserved = {'CON', 'PRN', 'AUX', 'NUL'} | {
+        f'{prefix}{n}' for prefix in ('COM', 'LPT') for n in range(1, 10)
+    }
+    return (bool(path) and '\\' not in path and ':' not in path
+            and all(part and part not in ('.', '..')
+                    and part.lower() != '.git' and not part.endswith(('.', ' '))
+                    and not any(ord(c) < 32 or ord(c) == 127 for c in part)
+                    and part.split('.')[0].upper() not in reserved
+                    for part in path.split('/')))
+
+
+def unpack_package(data):
+    if len(data) > MAX_PACKAGE:
+        raise ValueError('Artifact package exceeds its byte limit')
+    result = {}
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r:') as package:
+        for item in package:
+            if not item.isfile() or not safe_path(item.name) or item.name in result:
+                raise ValueError('Unsafe or duplicate artifact package entry')
+            if item.size > MAX_ARCHIVE or sum(map(len, result.values())) + item.size > MAX_PACKAGE:
+                raise ValueError('Artifact package exceeds its byte limit')
+            result[item.name] = package.extractfile(item).read()
+    return result
+
+
+class BoundedBuffer(io.BytesIO):
+    def __init__(self, limit):
+        super().__init__()
+        self.limit = limit
+
+    def write(self, data):
+        if self.tell() + len(data) > self.limit:
+            raise ValueError('Artifact archive or package exceeds its byte limit')
+        return super().write(data)
+
+
+def pack_files(files, limit=None):
+    out = BoundedBuffer(MAX_PACKAGE if limit is None else limit)
+    with tarfile.open(fileobj=out, mode='w:', format=tarfile.PAX_FORMAT) as package:
+        for name, data, mode in files:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = mode
+            info.mtime = 0
+            package.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+def child_limits():
+    # A compressed binary patch can expand inside Git before a tree exists.
+    # Limit the actual child, not just the bytes read back after it exits.
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024,) * 2)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_PACKAGE,) * 2)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+class Objects:
+    def __init__(self, directory, root_tree):
+        self.directory = directory
+        # Exclude inherited Git config, alternate indexes/object directories,
+        # tracing, attributes and executable hooks/filter/diff configuration.
+        self.env = {k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')}
+        self.env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_ATTR_NOSYSTEM='1', GIT_TERMINAL_PROMPT='0',
+                        GIT_CONFIG_SYSTEM=os.devnull)
+        self.git('init', '-q', '--bare', '--template=',
+                 '--object-format=' + ('sha256' if len(root_tree) == 64 else 'sha1'))
+
+    def git(self, *args, data=None, limit=None):
+        limit = MAX_PACKAGE if limit is None else limit
+        output, errors, failures = bytearray(), bytearray(), []
+        # A seekable input avoids a pipe deadlock while both output streams are
+        # drained with hard retention bounds. The file is in protected staging.
+        with tempfile.TemporaryFile(dir=self.directory) as source:
+            if data is not None:
+                source.write(data)
+            source.seek(0)
+            child = subprocess.Popen(
+                ['/usr/bin/git' if os.name == 'posix' else 'git',
+                 '-c', 'core.hooksPath=' + os.devnull, '-c', 'core.autocrlf=false',
+                 '-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=' + os.devnull,
+                 '-c', 'diff.external=', '-c', 'diff.renames=false', *args],
+                cwd=self.directory, env=self.env, stdin=source, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, preexec_fn=child_limits if os.name == 'posix' else None,
+            )
+
+            def drain(stream, target, cap, tail=False):
+                try:
+                    with stream:
+                        while block := stream.read(8192):
+                            if not tail and len(target) + len(block) > cap:
+                                raise ValueError('Artifact Git output exceeds its byte limit')
+                            target.extend(block)
+                            if tail and len(target) > cap:
+                                del target[:-cap]
+                except Exception as error:
+                    failures.append(error)
+                    child.kill()
+
+            readers = [threading.Thread(target=drain, args=(child.stdout, output, limit)),
+                       threading.Thread(target=drain, args=(child.stderr, errors, 8192, True))]
+            try:
+                for reader in readers:
+                    reader.start()
+                child.wait(timeout=110)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.wait()
+                for reader in readers:
+                    if reader.ident is not None:
+                        reader.join()
+            if failures:
+                raise failures[0]
+            if child.returncode:
+                raise ValueError('Artifact Git operation refused: ' + errors[-2000:].decode('utf-8', 'replace'))
+        return bytes(output)
+
+    def import_snapshot(self, archive):
+        if len(archive) > MAX_ARCHIVE:
+            raise ValueError('Snapshot exceeds its byte limit')
+        paths, entries, size = set(), [], 0
+        with tarfile.open(fileobj=io.BytesIO(archive), mode='r:') as source:
+            for item in source:
+                path = item.name.rstrip('/') if item.isdir() else item.name
+                if not safe_path(path) or path in paths or not (item.isfile() or item.isdir()):
+                    raise ValueError('Unsafe, linked or duplicate snapshot entry')
+                paths.add(path)
+                if item.isdir():
+                    continue
+                size += item.size
+                if item.size < 0 or size > MAX_ARCHIVE:
+                    raise ValueError('Snapshot contents exceed their byte limit')
+                blob = self.git('hash-object', '-w', '--stdin', data=source.extractfile(item).read()).strip()
+                mode = b'100755' if item.mode & 0o111 else b'100644'
+                entries.append(mode + b' ' + blob + b'\t' + path.encode('utf-8') + b'\0')
+        self.git('read-tree', '--empty')
+        self.git('update-index', '-z', '--index-info', data=b''.join(entries))
+        return self.tree()
+
+    def tree(self):
+        return self.git('write-tree').decode('ascii').strip()
+
+    def apply(self, patch):
+        if patch:
+            self.git('apply', '--cached', '--binary', '--whitespace=nowarn', '-', data=patch)
+
+    def export(self, root_tree, tree, max_bytes):
+        # ls-tree validates the resulting index before any extraction can occur
+        # elsewhere. Symlinks/submodules/metadata paths are unsupported.
+        files, total = [], 0
+        for entry in self.git('ls-tree', '-rz', '--full-tree', tree).split(b'\0'):
+            if not entry:
+                continue
+            header, path = entry.split(b'\t', 1)
+            mode, kind, blob = header.split(b' ')
+            path = path.decode('utf-8')
+            if mode not in (b'100644', b'100755') or kind != b'blob' or not safe_path(path):
+                raise ValueError('Unsupported or unsafe artifact tree entry')
+            blob = blob.decode('ascii')
+            size = int(self.git('cat-file', '-s', blob, limit=64))
+            if size < 0 or total + size > MAX_ARCHIVE:
+                raise ValueError('Artifact contents exceed their byte limit')
+            data = self.git('cat-file', 'blob', blob, limit=MAX_ARCHIVE - total)
+            if len(data) != size:
+                raise ValueError('Artifact blob size differs')
+            total += size
+            files.append((path, data, 0o755 if mode == b'100755' else 0o644))
+        archive = pack_files(files, MAX_ARCHIVE)
+        patch = self.git('diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv',
+                         '--src-prefix=a/', '--dst-prefix=b/', root_tree, tree, '--', limit=max_bytes)
+        return patch, archive
+
+
+def transform(package, directory):
+    files = unpack_package(package)
+    request = json.loads(files['request.json'])
+    root_tree = request['rootTree']
+    max_bytes = request['maxBytes']
+    predecessors = request['predecessors']
+    if (set(request) != {'schemaVersion', 'mode', 'rootTree', 'maxBytes', 'predecessors'}
+            or request['schemaVersion'] != 1 or request['mode'] not in ('advance', 'seal')
+            or not isinstance(root_tree, str) or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', root_tree)
+            or type(max_bytes) is not int or not 0 < max_bytes <= MAX_ARCHIVE
+            or not isinstance(predecessors, list) or len(predecessors) > MAX_PREDECESSORS
+            or (request['mode'] == 'seal' and len(predecessors) != 1)):
+        raise ValueError('Invalid artifact transition request')
+    expected_files = {'request.json', 'snapshot.tar', 'step.patch'} | {
+        f'predecessor-{i}.patch' for i in range(len(predecessors))
+    }
+    if set(files) != expected_files:
+        raise ValueError('Unexpected artifact package entries')
+    objects = Objects(directory, root_tree)
+    if objects.import_snapshot(files['snapshot.tar']) != root_tree:
+        raise ValueError('Snapshot bytes do not hold the published root tree')
+    previous = root_tree
+    last = None
+    for i, artifact in enumerate(predecessors):
+        patch = files[f'predecessor-{i}.patch']
+        if (set(artifact) != {'recipe', 'rootTree', 'beforeTree', 'afterTree', 'patch', 'patchHash', 'archiveHash'}
+                or artifact['recipe'] != RECIPE or artifact['rootTree'] != root_tree or artifact['patch'] != ''
+                or not all(isinstance(artifact[k], str) and re.fullmatch(r'[0-9a-f]{' + str(len(root_tree)) + '}', artifact[k])
+                           for k in ('beforeTree', 'afterTree'))
+                or len(patch) > max_bytes or digest(patch) != artifact['patchHash']
+                or (request['mode'] == 'advance' and artifact['beforeTree'] != previous)):
+            raise ValueError('Artifact lineage or patch evidence differs')
+        objects.git('read-tree', root_tree)
+        objects.apply(patch)
+        after = objects.tree()
+        canonical_patch, archive = objects.export(root_tree, after, max_bytes)
+        if (after != artifact['afterTree'] or canonical_patch != patch
+                or digest(archive) != artifact['archiveHash']):
+            raise ValueError('Artifact tree or archive evidence differs')
+        previous, last = after, artifact
+    step = files['step.patch']
+    if len(step) > max_bytes or (request['mode'] == 'advance' and step):
+        raise ValueError('Invalid or over-budget artifact step patch')
+    before_tree = previous
+    objects.apply(step)
+    after_tree = objects.tree()
+    patch, archive = objects.export(root_tree, after_tree, max_bytes)
+    artifact = dict(recipe=RECIPE, rootTree=root_tree, beforeTree=before_tree,
+                    afterTree=after_tree, patch='', patchHash=digest(patch), archiveHash=digest(archive))
+    if request['mode'] == 'advance' and last is not None:
+        artifact = last
+    return pack_files([('artifact.json', json.dumps(artifact, separators=(',', ':')).encode(), 0o644),
+                       ('artifact.patch', patch, 0o644), ('snapshot.tar', archive, 0o644)])
+
+
+def main():
+    # No alternate staging root or command is accepted from the host/candidate.
+    if os.name != 'posix' or os.geteuid() != 0 or len(sys.argv) not in (2, 3) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', sys.argv[1]):
+        raise ValueError('bench-artifact requires root and a bounded transition id')
+    deadline = None
+    if len(sys.argv) == 3:
+        if not re.fullmatch(r'[0-9]{1,16}', sys.argv[2]):
+            raise ValueError('Invalid native artifact deadline')
+        deadline = int(sys.argv[2])
+    parent = Path('/srv/bench/artifacts')
+    for path in (Path('/srv'), Path('/srv/bench'), parent):
+        if path.is_symlink() or not path.is_dir() or path.stat().st_uid != 0 or path.stat().st_mode & 0o022:
+            raise ValueError('Artifact staging must be root owned and protected')
+    directory = parent / sys.argv[1]
+    remaining_ms = 110000 if deadline is None else min(110000, deadline - time.time_ns() // 1000000)
+    if remaining_ms <= 0:
+        raise TimeoutError('Artifact deadline expired before staging')
+    directory.mkdir(mode=0o700)
+    try:
+        def expired(_signal, _frame):
+            raise TimeoutError('Artifact transition exceeded its time limit')
+        signal.signal(signal.SIGALRM, expired)
+        # The native absolute deadline includes transport/startup overhead.
+        # A fresh full-duration timer here would extend the shared root lease.
+        remaining_ms = remaining_ms if deadline is None else min(remaining_ms, deadline - time.time_ns() // 1000000)
+        if remaining_ms <= 0:
+            raise TimeoutError('Artifact deadline expired before input')
+        signal.setitimer(signal.ITIMER_REAL, remaining_ms / 1000)
+        data = sys.stdin.buffer.read(MAX_PACKAGE + 1)
+        sys.stdout.buffer.write(transform(data, directory))
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        shutil.rmtree(directory)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(2)

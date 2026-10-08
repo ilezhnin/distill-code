@@ -1,27 +1,98 @@
 #!/bin/bash
-# bench-copy ID < snapshot.tar
+# bench-copy ID [ABSOLUTE_DEADLINE_EPOCH_MS] < snapshot.tar
 # Writes the snapshot's files twice: the candidate's copy in
 # /srv/bench/work/ID (one commit, no history, owned by the candidate) and a
 # pristine base in /srv/bench/base/ID that only root reaches, against which
 # bench-patch reads the answer whatever the candidate did to its own .git.
 set -euo pipefail
-id=${1:-}
+[[ $EUID == 0 ]] || { echo "bench-copy: root required" >&2; exit 77; }
+# The deadline supervisor owns a separate Linux process group, including the
+# tar/cp/Git children. Killing wsl.exe alone does not stop those processes.
+if [[ ${1:-} != --worker && $# == 2 ]]; then
+  exec /usr/bin/python3 -c '
+import os, re, signal, subprocess, sys, time
+entry, ident, deadline = sys.argv[1:]
+if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", ident) or not re.fullmatch(r"[0-9]{1,16}", deadline):
+    print("bench-copy: bad id/deadline", file=sys.stderr); sys.exit(64)
+remaining = min(120.0, (int(deadline) - time.time_ns() // 1_000_000) / 1000)
+if remaining <= 0:
+    print("bench-copy: native deadline expired", file=sys.stderr); sys.exit(124)
+child = subprocess.Popen(["/bin/bash", entry, "--worker", ident], start_new_session=True)
+try:
+    sys.exit(child.wait(timeout=remaining))
+except subprocess.TimeoutExpired:
+    os.killpg(child.pid, signal.SIGTERM)
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+    print("bench-copy: native deadline expired", file=sys.stderr)
+    sys.exit(124)
+' "$0" "$1" "$2"
+fi
+if [[ ${1:-} == --worker ]]; then
+  [[ $# == 2 ]] || exit 64
+  id=$2
+else
+  [[ $# == 1 ]] || exit 64
+  id=${1:-}
+fi
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-copy: bad id" >&2; exit 64; }
 work=/srv/bench/work/$id
 base=/srv/bench/base/$id
-[[ ! -e $work && ! -e $base ]] || { echo "bench-copy: $id exists" >&2; exit 73; }
+protected_parent() {
+  local path=$1 owner mode
+  [[ -d $path && ! -L $path ]] || return 1
+  owner=$(/usr/bin/stat -c %u "$path")
+  mode=$(/usr/bin/stat -c %a "$path")
+  [[ $owner == 0 && $((8#$mode & 0022)) == 0 ]]
+}
+for parent in /srv /srv/bench /srv/bench/work /srv/bench/base; do
+  protected_parent "$parent" || { echo "bench-copy: unprotected parent" >&2; exit 77; }
+done
+[[ ! -e $work && ! -L $work && ! -e $base && ! -L $base ]] || { echo "bench-copy: $id exists" >&2; exit 73; }
+made_work=0 made_base=0
+cleanup() {
+  # Only directories created by this call are removable. Protected parents
+  # prevent a candidate from replacing their entries during cancellation.
+  for parent in /srv /srv/bench /srv/bench/work /srv/bench/base; do
+    protected_parent "$parent" || return 1
+  done
+  if (( made_work )) && [[ -d $work && ! -L $work ]]; then /usr/bin/rm -rf -- "$work"; fi
+  if (( made_base )) && [[ -d $base && ! -L $base ]]; then /usr/bin/rm -rf -- "$base"; fi
+}
+trap cleanup EXIT
+trap 'exit 124' TERM INT HUP
+# No inherited Git configuration, template, hook or filter can execute while
+# root constructs the initial commits from the data-only snapshot.
+for name in ${!GIT_@}; do unset "$name"; done
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TEMPLATE_DIR= GIT_ATTR_NOSYSTEM=1
 git_commit=(-c user.name=Distill -c user.email=bench@distill.invalid -c commit.gpgsign=false
-  -c core.autocrlf=false -c init.defaultBranch=main)
-mkdir -p "$base" "$work"
+  -c core.autocrlf=false -c init.defaultBranch=main -c core.hooksPath=/dev/null
+  -c core.attributesFile=/dev/null -c core.fsmonitor=false)
+mkdir -m 700 -- "$base"
+made_base=1
+mkdir -m 700 -- "$work"
+made_work=1
 chmod 700 "$base" "$work"
 tar -x -C "$base" --no-same-owner --no-same-permissions
 cp -a "$base/." "$work/"
 # Both start as the same single commit, made here before the candidate owns
 # anything, so no configuration of its runs as root.
 for dir in "$base" "$work"; do
-  git "${git_commit[@]}" -C "$dir" init -q
-  git "${git_commit[@]}" -C "$dir" add -A
-  git "${git_commit[@]}" -C "$dir" commit -q --allow-empty -m snapshot
+  /usr/bin/git "${git_commit[@]}" -C "$dir" init -q
+  # Preserve the verified archive tree exactly. `git add` would apply its
+  # .gitattributes encodings/filters and omit tracked .gitignore entries.
+  while IFS= read -r -d '' path; do
+    relative=${path#"$dir/"}
+    mode=100644
+    [[ -x $path ]] && mode=100755
+    blob=$(/usr/bin/git "${git_commit[@]}" -C "$dir" hash-object -w --no-filters -- "$path")
+    /usr/bin/git "${git_commit[@]}" -C "$dir" update-index --add --cacheinfo "$mode,$blob,$relative"
+  done < <(/usr/bin/find "$dir" -path "$dir/.git" -prune -o -type f -print0)
+  /usr/bin/git "${git_commit[@]}" -C "$dir" commit -q --allow-empty -m snapshot
 done
 chown -R candidate:candidate "$work"
+trap - EXIT TERM INT HUP
 echo "copied $id"

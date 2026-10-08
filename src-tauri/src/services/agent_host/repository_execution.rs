@@ -57,7 +57,7 @@ pub(crate) fn revision(provider: NativeProvider, status: &sandbox::Status) -> St
     })))
 }
 
-pub(super) fn policy_hash(request: &OwnedSessionRequest, revision: &str) -> Result<String, String> {
+pub(crate) fn policy_hash(request: &OwnedSessionRequest, revision: &str) -> Result<String, String> {
     serde_json::to_vec(&json!({"request":request,"runtimeRevision":revision}))
         .map(execution::digest)
         .map_err(|error| error.to_string())

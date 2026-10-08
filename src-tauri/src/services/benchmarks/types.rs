@@ -7,13 +7,20 @@ use serde_json::Value;
 pub struct BenchmarkError {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 impl BenchmarkError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
+            details: None,
         }
+    }
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 impl From<sqlx::Error> for BenchmarkError {
@@ -146,6 +153,18 @@ pub struct WorkflowStep {
     pub id: String,
     pub prompt: String,
     pub include_previous_output: bool,
+    /// Schema-2 trajectories bind each authored role, class and step allowance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<WorkflowScope>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowScope {
+    pub role_id: String,
+    pub role_prompt: String,
+    pub work_class_id: String,
+    pub purpose: String,
+    pub step_budget_seconds: u32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -460,6 +479,10 @@ pub struct Attempt {
     /// names none, and on attempts recorded before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_model: Option<String>,
+    /// Cumulative repository transition and assistant report, sealed with the
+    /// terminal attempt. output remains the patch consumed by the grader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_result: Option<super::artifact_context::PublicResult>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

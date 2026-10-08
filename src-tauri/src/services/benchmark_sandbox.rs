@@ -16,6 +16,7 @@ macro_rules! resources {
 }
 
 const FILES: &[(&str, &[u8])] = resources![
+    "bench-artifact",
     "bench-auth",
     "bench-check-prep",
     "bench-clean",
@@ -282,6 +283,133 @@ pub(crate) async fn copy(id: &str, archive: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+fn remaining_ms(deadline_ms: u64) -> io::Result<u64> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_millis() as u64;
+    deadline_ms
+        .checked_sub(now_ms)
+        .filter(|remaining| *remaining > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "Native sandbox deadline expired"))
+}
+
+pub(crate) async fn copy_until(id: &str, archive: &[u8], deadline_ms: u64) -> io::Result<()> {
+    valid_id(id)?;
+    let remaining = remaining_ms(deadline_ms)?.min(120_000);
+    let deadline = deadline_ms.to_string();
+    let out = invoke(
+        "/usr/local/sbin/bench-copy",
+        &[id, &deadline],
+        Some(archive),
+        TAIL_BYTES,
+        Duration::from_millis(remaining) + Duration::from_secs(5),
+    )
+    .await?;
+    if out.code == Some(124) {
+        return Err(io::Error::new(io::ErrorKind::TimedOut, out.reason()));
+    }
+    out.require_success("copy")?;
+    Ok(())
+}
+
+// The Linux worker owns its process group. The native absolute deadline is
+// recomputed there after WSL startup, before any Git/status work can begin.
+const DEADLINE_WORKER: &str = r#"import os, signal, subprocess, sys, time
+program, ident, deadline = sys.argv[1:]
+remaining = min(120.0, (int(deadline) - time.time_ns() // 1_000_000) / 1000)
+if remaining <= 0:
+    sys.exit(124)
+child = subprocess.Popen([program] + ([ident] if ident else []), start_new_session=True)
+try:
+    sys.exit(child.wait(timeout=remaining))
+except subprocess.TimeoutExpired:
+    os.killpg(child.pid, signal.SIGTERM)
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+    sys.exit(124)
+"#;
+
+async fn invoke_until(program: &str, id: &str, cap: usize, deadline_ms: u64) -> io::Result<Output> {
+    let remaining = remaining_ms(deadline_ms)?.min(120_000);
+    let deadline = deadline_ms.to_string();
+    let out = invoke(
+        "/usr/bin/python3",
+        &["-c", DEADLINE_WORKER, program, id, &deadline],
+        None,
+        cap,
+        Duration::from_millis(remaining) + Duration::from_secs(5),
+    )
+    .await?;
+    if out.code == Some(124) {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Native sandbox deadline expired",
+        ));
+    }
+    Ok(out)
+}
+
+pub(crate) async fn ready_until(deadline_ms: u64) -> io::Result<Status> {
+    let out = invoke_until("/usr/local/sbin/bench-status", "", 128 * 1024, deadline_ms)
+        .await?
+        .require_success("status")?;
+    if out.truncated {
+        return Err(io::Error::other("Sandbox status exceeded its limit"));
+    }
+    parse_status(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Apply/export data-only repository transitions in protected root staging.
+/// The helper never checks out or executes candidate files.
+pub(crate) async fn artifact(id: &str, package: &[u8], deadline_ms: u64) -> io::Result<Vec<u8>> {
+    valid_id(id)?;
+    const MAX_PACKAGE: usize = 512 * 1024 * 1024;
+    if package.len() > MAX_PACKAGE {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "Artifact package exceeds its byte limit",
+        ));
+    }
+    let remaining_ms = remaining_ms(deadline_ms)?.min(110_000);
+    let deadline = deadline_ms.to_string();
+    let out = invoke(
+        "/usr/local/sbin/bench-artifact",
+        &[id, &deadline],
+        Some(package),
+        MAX_PACKAGE,
+        // The worker expires itself at the root deadline and kills/reaps Git.
+        // This bounded grace lets that cleanup finish before the host gives up.
+        Duration::from_millis(remaining_ms) + Duration::from_secs(5),
+    )
+    .await?;
+    let reason = String::from_utf8_lossy(&out.stderr);
+    if out.code == Some(2)
+        && matches!(
+            reason.trim(),
+            "Artifact transition exceeded its time limit"
+                | "Artifact deadline expired before staging"
+                | "Artifact deadline expired before input"
+        )
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            reason.trim().to_owned(),
+        ));
+    }
+    let out = out.require_success("artifact transition")?;
+    if out.truncated {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "Artifact result exceeds its byte limit",
+        ));
+    }
+    Ok(out.stdout)
+}
+
 pub(crate) async fn patch(id: &str, max_bytes: usize) -> io::Result<Vec<u8>> {
     valid_id(id)?;
     let out = invoke(
@@ -291,8 +419,8 @@ pub(crate) async fn patch(id: &str, max_bytes: usize) -> io::Result<Vec<u8>> {
         max_bytes,
         CONTROL_TIMEOUT,
     )
-    .await?
-    .require_success("patch")?;
+    .await?;
+    let out = require_patch(out)?;
     if out.truncated {
         return Err(io::Error::new(
             io::ErrorKind::FileTooLarge,
@@ -300,6 +428,41 @@ pub(crate) async fn patch(id: &str, max_bytes: usize) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(out.stdout)
+}
+
+pub(crate) async fn patch_until(
+    id: &str,
+    max_bytes: usize,
+    deadline_ms: u64,
+) -> io::Result<Vec<u8>> {
+    valid_id(id)?;
+    let out = invoke_until("/usr/local/sbin/bench-patch", id, max_bytes, deadline_ms).await?;
+    let out = require_patch(out)?;
+    if out.truncated {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "The patch exceeds the artifact budget",
+        ));
+    }
+    Ok(out.stdout)
+}
+
+fn require_patch(out: Output) -> io::Result<Output> {
+    let diagnostic = String::from_utf8_lossy(&out.stderr);
+    // Git's explicit candidate encoding failures are measured invalid
+    // artifacts. Filesystem/process/unknown Git failures remain infrastructure.
+    if !out.success()
+        && [
+            "failed to encode",
+            "BOM is required",
+            "contains a byte order mark",
+        ]
+        .iter()
+        .any(|message| diagnostic.contains(message))
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, out.reason()));
+    }
+    out.require_success("patch")
 }
 
 pub(crate) async fn prepare_check(id: &str, archive: &[u8]) -> io::Result<Output> {
@@ -458,6 +621,35 @@ mod tests {
         let (tail, truncated) = read_tail(bytes.as_slice(), 100).await.unwrap();
         assert_eq!(tail, vec![b'x'; 100]);
         assert!(truncated);
+    }
+
+    #[tokio::test]
+    async fn expired_native_deadlines_refuse_before_starting_any_wsl_process() {
+        assert_eq!(
+            copy_until("invented-expired", b"unread input", 0)
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            artifact("invented-expired", b"unread input", 0)
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            patch_until("invented-expired", 1024, 0)
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            ready_until(0).await.unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 
     #[tokio::test]

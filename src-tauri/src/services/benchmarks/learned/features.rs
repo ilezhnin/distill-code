@@ -4,13 +4,23 @@ pub(in crate::services::benchmarks) fn scope_hash(task: &PublicTask) -> Result<S
     let mut permissions = task.permissions.clone();
     permissions.tools.sort();
     permissions.tools.dedup();
-    hash(&(
+    let legacy = (
         task.role_id.as_ref(),
         &task.role_prompt,
         permissions,
         &task.execution_profile,
         task.entry.is_some(),
-    ))
+    );
+    if task.budget_recipe.is_none() && task.repository_recipe.is_none() {
+        hash(&legacy)
+    } else {
+        hash(&(
+            "public-owned-context-v2",
+            legacy,
+            &task.budget_recipe,
+            &task.repository_recipe,
+        ))
+    }
 }
 
 /// Fixed signed hashing and L2 normalization. Index zero is an unpenalized bias.
@@ -43,6 +53,10 @@ pub(super) fn extract(task: &PublicTask) -> Result<Vec<f64>> {
     };
     words("prompt", &task.prompt);
     words("role", &task.role_prompt);
+    if let Some(artifact) = &task.repository_artifact {
+        words("cumulative-patch", &artifact.patch);
+        words("artifact-recipe", &artifact.recipe);
+    }
     for fixture in &task.fixtures {
         words("path", &fixture.path);
         words("fixture", &fixture.content);

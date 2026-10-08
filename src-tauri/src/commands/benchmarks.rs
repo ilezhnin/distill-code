@@ -42,29 +42,35 @@ pub fn benchmark_execution_backend_metadata(app: AppHandle) -> serde_json::Value
 pub async fn benchmark_get_owned_task_mode(
     app: AppHandle,
     context_id: String,
-) -> Result<Option<benchmarks::task_execution::Mode>> {
+) -> Result<Option<benchmarks::task_execution::ModeEnvelope>> {
     service(&app)
         .await?
         .store
-        .owned_task_mode(&context_id)
+        .owned_task_mode_envelope(&context_id)
         .await
 }
 #[tauri::command]
 pub async fn benchmark_set_owned_task_mode(
     app: AppHandle,
-    request: benchmarks::task_execution::ModeRequest,
-) -> Result<Option<benchmarks::task_execution::Mode>> {
+    request: benchmarks::task_execution::ModeIntent,
+) -> Result<Option<benchmarks::task_execution::ModeEnvelope>> {
+    let svc = service(&app).await?;
+    let clearing_fresh = matches!(&request, benchmarks::task_execution::ModeIntent::V1(value) if value.promotion_id.is_none())
+        && matches!(svc.store.owned_task_mode_envelope(request.context_id()).await?, Some(benchmarks::task_execution::ModeEnvelope::V2(mode)) if mode.request.surface == "chat");
+    if request.is_fresh_chat() || clearing_fresh {
+        return svc.set_owned_task_mode_intent(request).await;
+    }
     let host = app
         .state::<crate::services::agent_host::AgentHost>()
         .get_or_start(&app)
         .await
         .map_err(|e| BenchmarkError::new("infrastructure_failure", e))?;
-    host.session_record(&request.context_id)
+    host.session_record(request.context_id())
         .await
         .map_err(|e| BenchmarkError::new("validation", e.to_string()))?;
     if host
         .store
-        .execution_owner(&request.context_id)
+        .execution_owner(request.context_id())
         .await
         .map_err(|e| BenchmarkError::new("infrastructure_failure", e))?
         .is_some()
@@ -76,16 +82,36 @@ pub async fn benchmark_set_owned_task_mode(
     }
     service(&app)
         .await?
-        .store
-        .set_owned_task_mode(request)
+        .set_owned_task_mode_intent(request)
         .await
 }
 #[tauri::command]
 pub async fn benchmark_prepare_owned_task(
     app: AppHandle,
-    request: benchmarks::task_execution::Request,
+    request: benchmarks::task_execution::PrepareIntent,
 ) -> Result<benchmarks::task_execution::Prepared> {
-    service(&app).await?.prepare_owned_task(request).await
+    service(&app)
+        .await?
+        .prepare_owned_task_intent(request)
+        .await
+}
+
+#[tauri::command]
+pub async fn benchmark_inspect_owned_task_mode(
+    app: AppHandle,
+    request: benchmarks::task_execution::ModeRequestV2,
+) -> Result<benchmarks::task_execution::Consent> {
+    service(&app).await?.inspect_owned_task_mode(&request).await
+}
+#[tauri::command]
+pub async fn benchmark_owned_task_native_choices(
+    app: AppHandle,
+    context_id: String,
+) -> Result<Vec<benchmarks::task_execution::Choice>> {
+    service(&app)
+        .await?
+        .owned_task_choices_v2(&context_id)
+        .await
 }
 #[tauri::command]
 pub async fn benchmark_dispatch_owned_task(

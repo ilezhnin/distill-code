@@ -70,7 +70,13 @@ async fn roots(service: &BenchmarkService, training: &[BenchmarkVersion]) -> Vec
         let mut draft = training[0].manifest.clone();
         draft.split = "held_out".into();
         draft.task_family = format!("promotion-holdout-{index}");
-        draft.environment = json!({"splitGroup":format!("promotion-holdout-group-{index}")});
+        let mut environment = json!({"splitGroup":format!("promotion-holdout-group-{index}")});
+        // The budget recipe is part of the public scope: evaluation must use
+        // the same native clock contract as the training collection.
+        if let Some(recipe) = training[0].manifest.environment.get("nativeBudgetRecipe") {
+            environment["nativeBudgetRecipe"] = recipe.clone();
+        }
+        draft.environment = environment;
         draft.entry_state = None;
         draft.prompt = "Produce an artifact.".into();
         draft.workflow = Some(WorkflowSpec {
@@ -81,11 +87,13 @@ async fn roots(service: &BenchmarkService, training: &[BenchmarkVersion]) -> Vec
                     id: "parse".into(),
                     prompt: training[0].manifest.prompt.clone(),
                     include_previous_output: false,
+                    scope: None,
                 },
                 WorkflowStep {
                     id: "paint".into(),
                     prompt: training[1].manifest.prompt.clone(),
                     include_previous_output: true,
+                    scope: None,
                 },
             ],
         });
@@ -500,4 +508,216 @@ async fn effective_training_timeout_and_workflow_limits_must_match_deployment() 
         .validate_campaign_contract(&frozen, &contract)
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_records() {
+    use crate::services::benchmarks::task_execution::{
+        ModeEnvelope, ModeIntent, ModeRequestV2, PrepareIntent,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(OfflineWorkers {
+        native_v2_inventory: true,
+        ..Default::default()
+    });
+    let service = open(dir.path(), backend.clone()).await;
+    let source = dir.path().join("agents").join("invented-role.md");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "---\ndisplay_name: Invented role\nmodel: claude-acp:painter\neffort: high\nfast_mode: false\n---\nWork carefully.").unwrap();
+    let templates = publish_with_entry(&service, "train", 8, true).await;
+    let mut training = vec![];
+    for version in templates {
+        let mut draft = version.manifest;
+        draft.role_id = Some("invented-role".into());
+        draft.role_prompt = "Work carefully.".into();
+        draft.environment["nativeBudgetRecipe"] =
+            json!(super::super::super::artifact_context::CLOCK_RECIPE);
+        let definition = service.store.save_draft(None, None, draft).await.unwrap();
+        training.push(
+            service
+                .publish_version(&definition.id, definition.draft_revision)
+                .await
+                .unwrap(),
+        );
+    }
+    let mut qualifications = qualify(&service, &training).await;
+    let run = service
+        .start_run(RunRequest {
+            request_key: "v2-qualified-training".into(),
+            version_ids: training.iter().map(|version| version.id.clone()).collect(),
+            configurations: native_v2_configurations(),
+            repetitions: 3,
+            timeout_seconds: 10,
+            max_executions: 48,
+            preview: false,
+            parallelism: Some(4),
+            workflow_policy: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            service.tick().await.unwrap();
+            let current = service.store.run(&run.id).await.unwrap();
+            if current.state == "completed" {
+                assert_eq!(current.attempts.len(), 48);
+                break;
+            }
+            assert_eq!(current.state, "running");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let fit = learned::fit(
+        &service.query_data().await.unwrap(),
+        learned::FitRequest {
+            work_class_id: "debug".into(),
+            version_ids: training.iter().map(|version| version.id.clone()).collect(),
+            configurations: native_v2_configurations(),
+            cutoff_at: now(),
+            weights: RoleWeights::default(),
+        },
+    )
+    .unwrap();
+    service.store.save_selector_fit(&fit).await.unwrap();
+    let held = roots(&service, &training).await;
+    qualifications.extend(qualify(&service, &held).await);
+    let frozen = service
+        .freeze_workflow_campaign(workflow_campaign::Request {
+            request_key: "v2-preregistered-comparison".into(),
+            model_id: fit.model.id.clone(),
+            version_ids: held.iter().map(|version| version.id.clone()).collect(),
+            candidates: native_v2_configurations(),
+            persona_prior_ids: vec!["painter".into(), "parser".into()],
+            min_quality: 0.0,
+            repetitions: 3,
+            timeout_seconds: 10,
+            max_executions: 240,
+        })
+        .await
+        .unwrap();
+    service
+        .store
+        .register_promotion_rule(registration(&frozen, &training, qualifications))
+        .await
+        .unwrap();
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            service.tick().await.unwrap();
+            let current = service
+                .store
+                .workflow_campaign(&frozen.plan.id)
+                .await
+                .unwrap();
+            if current.state != "running" {
+                assert_eq!(current.state, "completed");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let state = service
+        .store
+        .promote_selector(&frozen.plan.id)
+        .await
+        .unwrap();
+    let mut mode_request = ModeRequestV2 {
+        schema_version: 2,
+        context_id: "v2-actual-boundary".into(),
+        surface: "chat".into(),
+        execution_profile: "native_text".into(),
+        repository: None,
+        limits: training[0].manifest.limits.clone(),
+        roles: serde_json::from_value(json!([{"sourcePath":source,"workClassId":"debug"}]))
+            .unwrap(),
+        provider_ids: vec!["claude-acp".into()],
+        acknowledged_contract_hash: String::new(),
+    };
+    mode_request.acknowledged_contract_hash = service
+        .inspect_owned_task_mode(&mode_request)
+        .await
+        .unwrap()
+        .artifact_hash;
+    let Some(ModeEnvelope::V2(mode)) = service
+        .set_owned_task_mode_intent(ModeIntent::V2(mode_request))
+        .await
+        .unwrap()
+    else {
+        panic!("v2 mode")
+    };
+    let request = |key: &str| {
+        serde_json::from_value::<PrepareIntent>(json!({"schemaVersion":2,
+        "requestKey":key,"surface":"chat","contextId":mode.request.context_id,
+        "mode":{"contextId":mode.request.context_id,"artifactHash":mode.artifact_hash},
+        "roleSourceId":mode.consent.roles[0].source_id,"workClassId":"debug", "prompt":training[0].manifest.prompt,
+        "hardCandidateKey":null,"entry":null,"stepBudgetSeconds":10})).unwrap()
+    };
+    let prepared = service
+        .prepare_owned_task_intent(request("v2-positive"))
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared.binding.decision.source, "learned",
+        "{:#?}",
+        prepared.binding.decision
+    );
+    assert!(prepared.binding.decision.learned_dispatch_allowed);
+    assert_eq!(
+        prepared
+            .binding
+            .context_v2
+            .as_ref()
+            .unwrap()
+            .selected_policy_id
+            .as_deref(),
+        Some(state.certificate.id.as_str())
+    );
+    let encoded = serde_json::to_vec(&prepared.binding).unwrap();
+    assert_eq!(
+        service
+            .prepare_owned_task_intent(request("v2-positive"))
+            .await
+            .unwrap()
+            .binding
+            .artifact_hash,
+        prepared.binding.artifact_hash
+    );
+    service
+        .store
+        .revoke_promotion(&state.certificate.id, "Invented v2 revoke")
+        .await
+        .unwrap();
+    assert!(service
+        .dispatch_owned_task(&prepared.binding.id)
+        .await
+        .is_err());
+    assert_eq!(
+        serde_json::to_vec(
+            &service
+                .store
+                .task_binding(&prepared.binding.id)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        encoded
+    );
+    let fallback = service
+        .prepare_owned_task_intent(request("v2-after-revoke"))
+        .await
+        .unwrap();
+    assert_eq!(fallback.binding.decision.source, "prior");
+    assert!(!fallback.binding.decision.learned_dispatch_allowed);
+    service
+        .dispatch_owned_task(&fallback.binding.id)
+        .await
+        .unwrap();
+    assert_eq!(backend.owned_calls.load(Ordering::SeqCst), 1);
 }

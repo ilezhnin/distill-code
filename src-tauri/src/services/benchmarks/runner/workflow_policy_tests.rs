@@ -34,11 +34,13 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
                 id: "parse".into(),
                 prompt: training[0].manifest.prompt.clone(),
                 include_previous_output: false,
+                scope: None,
             },
             WorkflowStep {
                 id: "paint".into(),
                 prompt: training[1].manifest.prompt.clone(),
                 include_previous_output: true,
+                scope: None,
             },
         ],
     });

@@ -68,7 +68,10 @@ vi.mock("@/features/benchmarks/api/benchmarkGovernance", () => ({
     ]),
   },
 }));
-vi.mock("@/features/benchmarks/lib/ownedTaskExecution", () => ({
+vi.mock("@/features/benchmarks/lib/ownedTaskExecution", async (original) => ({
+  ...(await original<
+    typeof import("@/features/benchmarks/lib/ownedTaskExecution")
+  >()),
   ownedTaskExecution: {
     getMode: vi.fn(async () => ({
       request: {

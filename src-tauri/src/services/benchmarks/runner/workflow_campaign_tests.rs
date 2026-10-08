@@ -41,11 +41,13 @@ async fn roots(
                     id: "parse".into(),
                     prompt: training[0].manifest.prompt.clone(),
                     include_previous_output: false,
+                    scope: None,
                 },
                 WorkflowStep {
                     id: "paint".into(),
                     prompt: training[1].manifest.prompt.clone(),
                     include_previous_output: true,
+                    scope: None,
                 },
             ],
         });
