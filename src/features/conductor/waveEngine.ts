@@ -183,6 +183,13 @@ export interface WaveState {
    */
   carriedReports?: CompletedWaveStepReport[];
   /**
+   * Native task bindings of the earlier waves of this root request whose
+   * owned steps completed, in step order. An owned revision continues this
+   * lineage, its sealed artifacts and its root budget instead of opening a
+   * new root. Empty or absent for a first wave and for unowned waves.
+   */
+  carriedBindingIds?: string[];
+  /**
    * What went wrong with the last answer to this wave's digest. Set only while
    * the wave is parked on `needsOperator` for an unreadable verdict; the next
    * digest quotes it so the retry is not the same question twice.
@@ -666,6 +673,7 @@ export function createWaveState(args: {
   rootRequestId?: string;
   revisionCount?: number;
   carriedReports?: readonly CompletedWaveStepReport[];
+  carriedBindingIds?: readonly string[];
 }): WaveState {
   return {
     waveId: args.waveId,
@@ -678,6 +686,9 @@ export function createWaveState(args: {
     digestAttempt: 0,
     ...(args.carriedReports?.length
       ? { carriedReports: [...args.carriedReports] }
+      : {}),
+    ...(args.carriedBindingIds?.length
+      ? { carriedBindingIds: [...args.carriedBindingIds] }
       : {}),
     steps: args.steps.map((step, stepIndex) => ({
       stepIndex,

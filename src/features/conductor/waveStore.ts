@@ -336,6 +336,9 @@ function parseWave(value: unknown): WaveState | null {
         ? raw.digestAttempt
         : 0,
     ...(carriedReports.length > 0 ? { carriedReports } : {}),
+    ...(parseCarriedBindingIds(raw.carriedBindingIds).length > 0
+      ? { carriedBindingIds: parseCarriedBindingIds(raw.carriedBindingIds) }
+      : {}),
     ...(verdictIssue ? { verdictIssue } : {}),
     ...(isDirtyCount(raw.gitDirtyAtAdmission)
       ? { gitDirtyAtAdmission: raw.gitDirtyAtAdmission }
@@ -384,6 +387,21 @@ function parseMissingArtifacts(value: unknown): string[] {
 }
 
 /** A salvageable E3a git measurement: a non-negative integer. */
+/**
+ * A revision's native lineage. It is all-or-nothing: a lineage with an
+ * unreadable entry would no longer be the exact prefix the host committed,
+ * so it is dropped and the revision refuses at spawn with a stated reason.
+ */
+function parseCarriedBindingIds(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > 64 ||
+    !value.every((id) => typeof id === "string" && id.length > 0)
+  )
+    return [];
+  return [...value];
+}
+
 function isDirtyCount(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }

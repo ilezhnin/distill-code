@@ -205,6 +205,19 @@ function deriveOrchestratorStatus(
  * settled would turn a non-converging write into a hang instead of a crash,
  * which is not an improvement.
  */
+/**
+ * A wave child's native context belongs to this conductor: a per-wave context
+ * (bindings made before the per-request one) or its root request's, which a
+ * revision inherits from an earlier wave. The request key, checked beside
+ * this, already names the exact wave and step.
+ */
+function ownedWaveContextBelongsTo(
+  contextId: string,
+  parentSessionId: string,
+): boolean {
+  return contextId.startsWith(`${parentSessionId}:wave:`);
+}
+
 let syncing = false;
 let syncRequestedWhileRunning = false;
 const ownedSyncInFlight = new Set<string>();
@@ -222,6 +235,7 @@ function syncOwnedWaveChild(node: SessionNode): void {
     return;
   const key = `${bindingId}:${node.runId}`;
   const runId = node.runId;
+  const parentSessionId = node.parentSessionId;
   if (ownedSyncInFlight.has(key) || ownedTerminalSynced.has(key)) return;
   ownedSyncInFlight.add(key);
   void (async () => {
@@ -231,8 +245,10 @@ function syncOwnedWaveChild(node: SessionNode): void {
       prepared.session.owned.ownerId !== `task:${bindingId}` ||
       prepared.binding.request.requestKey !== node.runId ||
       prepared.binding.request.surface !== "wave" ||
-      prepared.binding.request.contextId !==
-        `${node.parentSessionId}:wave:${node.waveId}` ||
+      !ownedWaveContextBelongsTo(
+        prepared.binding.request.contextId,
+        parentSessionId,
+      ) ||
       prepared.binding.request.waveMode?.contextId !== node.parentSessionId
     )
       throw new Error(

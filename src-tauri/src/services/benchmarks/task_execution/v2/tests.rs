@@ -138,6 +138,19 @@ impl ExecutionBackend for NativeFixture {
     ) -> BoxFuture<'a, Result<Option<ExecutionDispatch>>> {
         Box::pin(async { Ok(None) })
     }
+    fn owned_task_output<'a>(
+        &'a self,
+        binding: &'a Binding,
+        _: &'a Session,
+    ) -> BoxFuture<'a, Result<NativeOutput>> {
+        Box::pin(async move {
+            Ok(NativeOutput {
+                text: format!("Invented committed report of {}", binding.id),
+                elapsed_ms: 1,
+                repository_result: None,
+            })
+        })
+    }
     fn recover_owned_task_preparation<'a>(
         &'a self,
         _: &'a Binding,
@@ -666,4 +679,112 @@ async fn a_descendant_of_an_expired_root_is_a_definite_pre_write_refusal() {
     // Nothing was bound or decided, so the request may be explicitly edited.
     assert_eq!(error.code, "owned_task_intent_refused");
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_revision_continues_the_exact_root_lineage_and_budget() {
+    let (_dir, service, _, chat_mode, _) = fixture().await;
+    let mut wave = chat_mode.request.clone();
+    wave.context_id = "invented-conductor".into();
+    wave.surface = "wave".into();
+    wave.acknowledged_contract_hash = service
+        .inspect_owned_task_mode(&wave)
+        .await
+        .unwrap()
+        .artifact_hash;
+    let Some(ModeEnvelope::V2(mode)) = service
+        .set_owned_task_mode_intent(ModeIntent::V2(wave))
+        .await
+        .unwrap()
+    else {
+        panic!("mode")
+    };
+    let step = |key: &str, context: &str, entry: Option<(String, Vec<String>)>| RequestV2 {
+        schema_version: 2,
+        request_key: key.into(),
+        surface: "wave".into(),
+        context_id: context.into(),
+        mode: ModeReference {
+            context_id: mode.request.context_id.clone(),
+            artifact_hash: mode.artifact_hash.clone(),
+        },
+        role_source_id: mode.consent.roles[0].source_id.clone(),
+        work_class_id: "debug".into(),
+        prompt: "Repair this example.".into(),
+        hard_candidate_key: None,
+        entry: entry.map(|(root, previous)| WaveEntry {
+            root_binding_id: root,
+            previous_binding_ids: previous,
+            include_previous_output: true,
+        }),
+        step_budget_seconds: 10,
+    };
+    let context = "invented-conductor:wave:root:invented-request";
+    let prepare =
+        |request: RequestV2| service.prepare_owned_task_intent(PrepareIntent::V2(request));
+    let root = prepare(step("wave:first:step:0", context, None))
+        .await
+        .unwrap();
+    let r = root.binding.id.clone();
+    let review = prepare(step(
+        "wave:first:step:1",
+        context,
+        Some((r.clone(), vec![r.clone()])),
+    ))
+    .await
+    .unwrap();
+    let v = review.binding.id.clone();
+    // The revision wave's first step extends the committed prefix.
+    let revision = prepare(step(
+        "wave:second:step:0",
+        context,
+        Some((r.clone(), vec![r.clone(), v.clone()])),
+    ))
+    .await
+    .unwrap();
+    let budget = |binding: &Binding| {
+        binding
+            .context_v2
+            .as_ref()
+            .unwrap()
+            .root_budget
+            .clone()
+            .unwrap()
+    };
+    assert_eq!(
+        budget(&revision.binding).root_id,
+        budget(&root.binding).root_id
+    );
+    assert_eq!(
+        budget(&revision.binding).root_started_at_ms,
+        budget(&root.binding).root_started_at_ms
+    );
+    assert_eq!(
+        revision
+            .binding
+            .task
+            .entry
+            .as_ref()
+            .unwrap()
+            .previous_reports
+            .len(),
+        2
+    );
+    // Skipping a committed predecessor, or moving the lineage to another
+    // context, is not the prefix the host committed.
+    let n = revision.binding.id.clone();
+    for request in [
+        step(
+            "wave:second:step:1",
+            context,
+            Some((r.clone(), vec![r.clone(), n.clone()])),
+        ),
+        step(
+            "wave:second:step:2",
+            "invented-conductor:wave:root:another-request",
+            Some((r.clone(), vec![r.clone(), v.clone(), n.clone()])),
+        ),
+    ] {
+        assert!(prepare(request).await.is_err());
+    }
 }

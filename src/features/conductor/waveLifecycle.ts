@@ -60,6 +60,7 @@ import {
   type WavePhase,
   type WaveState,
 } from "./waveEngine";
+import { ownedWaveLineage } from "./waveExecutor";
 import {
   buildWaveDigest,
   findDigestMessageIndex,
@@ -541,6 +542,11 @@ function applyVerdictDecision(
         useConductorGraphStore.getState().getReport,
         (stepIndex) => nodesByWave(wave.waveId).get(stepIndex)?.status,
       ).map((entry) => ({ ...entry, fromPreviousWave: true })),
+      // An owned revision continues the native lineage and root budget.
+      carriedBindingIds: ownedWaveLineage(
+        wave,
+        (stepIndex) => nodesByWave(wave.waveId).get(stepIndex)?.status,
+      ),
     });
     next = withWave(next, revision);
     bumpWaveTelemetryCounter("admittedWaves");

@@ -28,6 +28,35 @@ export function waveExecutorKey(waveId: string, stepIndex: number): string {
   return `wave:${waveId}:step:${stepIndex}`;
 }
 
+/**
+ * The native context every owned step of one root request shares. The host
+ * admits wave contexts under the conductor's `:wave:` namespace only.
+ */
+export function ownedWaveRootContextId(wave: WaveState): string {
+  return `${wave.conductorSessionId}:wave:root:${wave.rootRequestId}`;
+}
+
+/**
+ * The native lineage a revision of this wave continues: the earlier waves'
+ * lineage, then this wave's owned steps whose children completed, in step
+ * order. A step after the first failure is never bound by the host, so the
+ * completed steps are exactly the committed prefix.
+ */
+export function ownedWaveLineage(
+  wave: WaveState,
+  statusOf: (stepIndex: number) => string | undefined,
+): string[] {
+  const own = [...wave.steps]
+    .sort((left, right) => left.stepIndex - right.stepIndex)
+    .flatMap((step) => {
+      const binding = step.sessionId ? taskBindingId(step.sessionId) : null;
+      return binding && statusOf(step.stepIndex) === "completed"
+        ? [binding]
+        : [];
+    });
+  return [...(wave.carriedBindingIds ?? []), ...own];
+}
+
 export async function prepareWaveExecutor(
   wave: WaveState,
   request: WaveSpawnRequest,
@@ -40,9 +69,12 @@ export async function prepareWaveExecutor(
 ) {
   const mode = await ownedTaskExecution.getMode(wave.conductorSessionId);
   if (mode && isOwnedTaskModeV2(mode)) {
-    if (wave.revisionCount || wave.carriedReports?.length)
+    const carried = wave.carriedBindingIds ?? [];
+    // A revision continues the root request's lineage and root budget; it
+    // never opens a fresh root for work the earlier waves already spent.
+    if ((wave.revisionCount || wave.carriedReports?.length) && !carried.length)
       throw new Error(
-        "Carried revision context needs a committed native v2 root lineage",
+        "This owned revision has no completed native step of the earlier wave to continue from; start a new request instead",
       );
     const roles = mode.consent.roles.filter(
       (role) =>
@@ -96,21 +128,29 @@ export async function prepareWaveExecutor(
         );
       hardCandidateKey = compatible[0].candidateKey;
     }
-    const previousBindingIds = wave.steps
-      .slice(0, request.stepIndex)
+    const previousBindingIds = [...wave.steps]
+      .sort((left, right) => left.stepIndex - right.stepIndex)
+      .filter((step) => step.stepIndex < request.stepIndex)
       .map((step) => (step.sessionId ? taskBindingId(step.sessionId) : null));
     if (previousBindingIds.some((id) => !id))
       throw new Error(
         "Native v2 wave entry needs committed predecessor bindings",
       );
-    const predecessorIds = previousBindingIds.filter((id): id is string =>
-      Boolean(id),
-    );
+    const predecessorIds = [
+      ...carried,
+      ...previousBindingIds.filter((id): id is string => Boolean(id)),
+    ];
+    // Every step of a lineage shares its root's native context; a root made
+    // before the per-request context keeps its own.
+    const contextId = predecessorIds.length
+      ? (await ownedTaskExecution.get(predecessorIds[0])).binding.request
+          .contextId
+      : ownedWaveRootContextId(wave);
     const owned = await ownedTaskExecution.prepare({
       schemaVersion: 2,
       requestKey: waveExecutorKey(wave.waveId, request.stepIndex),
       surface: "wave",
-      contextId: `${wave.conductorSessionId}:wave:${wave.waveId}`,
+      contextId,
       mode: {
         contextId: wave.conductorSessionId,
         artifactHash: mode.artifactHash,
