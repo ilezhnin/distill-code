@@ -34,6 +34,7 @@ import type { WaveState, WaveVerdictIssue } from "./waveEngine";
 import {
   AGENT_DIGEST_INSTRUCTION,
   buildWaveArtifactLine,
+  buildWaveNativeChangeLine,
   buildWaveDigestInstruction,
   buildWaveStalledLine,
   buildWaveGitDeltaLine,
@@ -295,7 +296,17 @@ export function buildWaveDigest(args: {
    * (E3b), stated beside the git delta for the same reason: both are facts
    * the conductor should read before any model's account of itself.
    */
-  artifacts?: { checked: number; missing: readonly string[] };
+  artifacts?: {
+    checked: number;
+    missing: readonly string[];
+    source?: "native";
+  };
+  /**
+   * Files an owned wave's sealed native artifact changes relative to its
+   * published snapshot. Stands in for the working-folder git delta, which
+   * owned task copies never touch.
+   */
+  nativeChangedFiles?: number;
   /**
    * The wave was cut short by the stall detector (P61). The digest opens by
    * saying so — the conductor must judge a shortened digest knowingly.
@@ -310,6 +321,9 @@ export function buildWaveDigest(args: {
       : "",
     buildWaveDigestInstruction(args.entries.length),
     args.gitDelta ? buildWaveGitDeltaLine(args.gitDelta) : "",
+    args.nativeChangedFiles !== undefined
+      ? buildWaveNativeChangeLine(args.nativeChangedFiles)
+      : "",
     args.artifacts ? buildWaveArtifactLine(args.artifacts) : "",
     digestBody(args.entries),
   ]

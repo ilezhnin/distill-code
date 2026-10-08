@@ -437,11 +437,14 @@ async fn prepare_step(
                     &version.content_hash,
                     Some(&root_budget),
                     root_budget.root_cap_seconds,
+                    // A run may set a shorter time limit than the case; no step
+                    // allowance can then exceed the root it belongs to.
                     spec.scope
                         .as_ref()
                         .map_or(version.manifest.limits.timeout_seconds, |scope| {
                             scope.step_budget_seconds
-                        }),
+                        })
+                        .min(root_budget.root_cap_seconds),
                     &root.id,
                 )
                 .await?,
@@ -975,8 +978,17 @@ pub async fn execute(
             .saturating_sub(consumed.unwrap_or(budget_ms))
             .saturating_sub(start.elapsed().as_millis() as u64);
         let remaining = if new_clock {
-            super::artifact_context::remaining_seconds(root.started_at.unwrap(), now(), timeout)
-                .unwrap_or(0)
+            // Exhaustion is the timeout outcome; a clock that moved backwards
+            // is a conflict to surface, never a recorded budget timeout.
+            match super::artifact_context::remaining_seconds(
+                root.started_at.unwrap(),
+                now(),
+                timeout,
+            ) {
+                Ok(seconds) => seconds,
+                Err(error) if error.code == "budget_timeout" => 0,
+                Err(error) => return Err(error),
+            }
         } else if let Some(elapsed) = native_elapsed {
             remaining_seconds(timeout, elapsed).unwrap_or(0)
         } else {

@@ -167,4 +167,24 @@ describe("buildWaveDigest", () => {
       buildWaveDigest({ waveId: "wave-1", attempt: 0, entries }),
     ).not.toContain("APP MEASUREMENT");
   });
+
+  it("states an owned wave's native artifact facts instead of the folder's", () => {
+    const digest = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 0,
+      entries,
+      nativeChangedFiles: 2,
+      artifacts: { checked: 2, missing: ["src/ghost.ts"], source: "native" },
+    });
+    expect(digest).toContain(
+      "the final sealed repository artifact of this wave changes 2 files",
+    );
+    expect(digest).toContain(
+      'does not exist in the final sealed repository artifact of this wave: "src/ghost.ts"',
+    );
+    expect(digest).not.toContain("on disk");
+    expect(digest.lastIndexOf("APP MEASUREMENT")).toBeLessThan(
+      digest.indexOf("Curie"),
+    );
+  });
 });

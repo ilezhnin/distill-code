@@ -15,6 +15,17 @@ pub async fn benchmark_owned_task_choices(
     service(&app).await?.owned_task_choices(&promotion_id).await
 }
 #[tauri::command]
+pub async fn benchmark_owned_task_artifact_facts(
+    app: AppHandle,
+    binding_id: String,
+    paths: Vec<String>,
+) -> Result<benchmarks::task_execution::ArtifactFacts> {
+    service(&app)
+        .await?
+        .owned_task_artifact_facts(&binding_id, paths)
+        .await
+}
+#[tauri::command]
 pub async fn benchmark_owned_task_public_result(
     app: AppHandle,
     binding_id: String,

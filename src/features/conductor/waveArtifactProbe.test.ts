@@ -11,6 +11,7 @@ import {
 import { createWaveState } from "./waveEngine";
 import {
   getWaveEngineState,
+  parseWaveEngineState,
   resetWaveEngineStateCache,
   setWaveEngineState,
   withWave,
@@ -172,5 +173,122 @@ describe("startWaveArtifactProbe", () => {
     );
     expect(asked).toBe(MAX_CHECKED_ARTIFACT_PATHS);
     expect(waveNow().checkedArtifacts).toBe(MAX_CHECKED_ARTIFACT_PATHS);
+  });
+
+  const ownedSteps = [
+    { stepIndex: 0, sessionId: "owned-implement" },
+    { stepIndex: 1, sessionId: "owned-review" },
+    { stepIndex: 2, sessionId: "owned-qa" },
+  ];
+  const bindings: Record<string, string> = {
+    "owned-implement": "binding-implement",
+    "owned-review": "binding-review",
+    "owned-qa": "binding-qa",
+  };
+
+  it("checks an owned wave against its final sealed artifact, never the conductor folder", async () => {
+    seedWave();
+    const disk: string[] = [];
+    const native: Array<{ bindingId: string; paths: readonly string[] }> = [];
+    setWaveArtifactProbeIoForTests({
+      canProbe: () => true,
+      workingDirOf: () => "/conductor",
+      exists: async (path) => {
+        disk.push(path);
+        return true;
+      },
+      bindingOf: (sessionId) => bindings[sessionId] ?? null,
+      completed: () => true,
+      nativeFacts: async (bindingId, paths) => {
+        native.push({ bindingId, paths });
+        return {
+          checked: 2,
+          missing: ["src/ghost.ts"],
+          unchecked: 1,
+          changedFiles: 3,
+          afterTree: "f".repeat(40),
+        };
+      },
+    });
+    await settled(
+      startWaveArtifactProbe({
+        waveId: "w1",
+        conductorSessionId: "c1",
+        steps: ownedSteps,
+        reports: [
+          report({
+            artifacts: [
+              { label: "real", path: "src/real.ts" },
+              { label: "ghost", path: "src/ghost.ts" },
+              { label: "ci", path: "https://ci.example/run/1" },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(disk).toEqual([]);
+    expect(native).toEqual([
+      {
+        bindingId: "binding-qa",
+        paths: ["src/real.ts", "src/ghost.ts", "https://ci.example/run/1"],
+      },
+    ]);
+    expect(waveNow().artifactSource).toBe("native");
+    expect(waveNow().checkedArtifacts).toBe(2);
+    expect(waveNow().missingArtifacts).toEqual(["src/ghost.ts"]);
+    expect(waveNow().nativeChangedFiles).toBe(3);
+    // The facts survive a restart before the digest is built.
+    const restored = parseWaveEngineState(
+      JSON.parse(JSON.stringify(getWaveEngineState())),
+    ).waves.find((wave) => wave.waveId === "w1");
+    expect(restored?.artifactSource).toBe("native");
+    expect(restored?.nativeChangedFiles).toBe(3);
+  });
+
+  it("uses the latest completed owned step and settles with nothing checked when none completed or the host fails", async () => {
+    seedWave();
+    const asked: string[] = [];
+    setWaveArtifactProbeIoForTests({
+      canProbe: () => true,
+      bindingOf: (sessionId) => bindings[sessionId] ?? null,
+      completed: (sessionId) => sessionId !== "owned-qa",
+      nativeFacts: async (bindingId) => {
+        asked.push(bindingId);
+        throw new Error("sandbox unavailable");
+      },
+    });
+    await settled(
+      startWaveArtifactProbe({
+        waveId: "w1",
+        conductorSessionId: "c1",
+        steps: ownedSteps,
+        reports: [report({ artifacts: [{ label: "a", path: "src/a.ts" }] })],
+      }),
+    );
+    expect(asked).toEqual(["binding-review"]);
+    expect(waveNow().artifactsProbed).toBe(true);
+    expect(waveNow().checkedArtifacts).toBe(0);
+    expect(waveNow().missingArtifacts).toBeUndefined();
+    expect(waveNow().nativeChangedFiles).toBeUndefined();
+
+    resetWaveEngineStateCache();
+    seedWave();
+    setWaveArtifactProbeIoForTests({
+      canProbe: () => true,
+      exists: async () => false,
+      bindingOf: (sessionId) => bindings[sessionId] ?? null,
+      completed: () => false,
+    });
+    expect(
+      startWaveArtifactProbe({
+        waveId: "w1",
+        conductorSessionId: "c1",
+        steps: ownedSteps,
+        reports: [report({ artifacts: [{ label: "a", path: "src/a.ts" }] })],
+      }),
+    ).toBe(false);
+    expect(waveNow().artifactsProbed).toBe(true);
+    expect(waveNow().artifactSource).toBe("native");
+    expect(waveNow().missingArtifacts).toBeUndefined();
   });
 });

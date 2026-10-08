@@ -362,7 +362,103 @@ impl Binding {
         }
     }
 }
+/// What the app itself found about the files a wave's reports named, read from
+/// the sealed native repository artifact rather than any working folder.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactFacts {
+    /// Reported paths that name a file inside the task copy and were looked up.
+    pub checked: usize,
+    /// Those of the checked paths absent from the final sealed tree.
+    pub missing: Vec<String>,
+    /// Reported paths that cannot name a file in the copy (URIs, outside paths).
+    pub unchecked: usize,
+    /// Files the cumulative patch changes relative to the published snapshot.
+    pub changed_files: usize,
+    pub after_tree: String,
+}
+
+const MAX_ARTIFACT_FACT_PATHS: usize = 40;
+const ARTIFACT_FACTS_DEADLINE_MS: u64 = 60_000;
+
 impl BenchmarkService {
+    /// Checks reported paths against the final tree of this task's sealed
+    /// cumulative artifact. The tree is regenerated from the published root and
+    /// the committed lineage; a missing path is a fact, a failure is not.
+    pub async fn owned_task_artifact_facts(
+        &self,
+        id: &str,
+        paths: Vec<String>,
+    ) -> Result<ArtifactFacts> {
+        if paths.len() > MAX_ARTIFACT_FACT_PATHS || paths.iter().any(|path| path.len() > 4096) {
+            return Err(invalid("Too many or too long artifact paths"));
+        }
+        let binding = self.store.task_binding(id).await?;
+        let unsupported = || {
+            BenchmarkError::new(
+                "capability_missing",
+                "Only a native v2 repository task has a sealed cumulative artifact",
+            )
+        };
+        let context = binding.context_v2.as_ref().ok_or_else(unsupported)?;
+        let snapshot = binding
+            .request
+            .repository
+            .as_ref()
+            .ok_or_else(unsupported)?;
+        let session = self
+            .store
+            .task_session(&binding)
+            .await?
+            .ok_or_else(|| invalid("Native task proof is missing"))?;
+        let result = self
+            .backend
+            .owned_task_output(&binding, &session)
+            .await?
+            .repository_result
+            .ok_or_else(unsupported)?;
+        let max_bytes = binding.task.limits.max_artifact_bytes as usize;
+        result.validate(max_bytes)?;
+        let mut chain = if context.artifact_access_all == Some(true) {
+            context.artifact_lineage.clone()
+        } else {
+            vec![]
+        };
+        chain.push(result.artifact.clone());
+        let files = repository::final_tree_files(
+            snapshot,
+            &chain,
+            max_bytes,
+            (now() as u64).saturating_add(ARTIFACT_FACTS_DEADLINE_MS),
+        )
+        .await?;
+        let mut checked = 0;
+        let mut unchecked = 0;
+        let mut missing = vec![];
+        for reported in paths {
+            match repository::workspace_relative(&reported) {
+                Some(path) => {
+                    checked += 1;
+                    if !files.contains(&path) {
+                        missing.push(reported);
+                    }
+                }
+                None => unchecked += 1,
+            }
+        }
+        Ok(ArtifactFacts {
+            checked,
+            missing,
+            unchecked,
+            changed_files: result
+                .artifact
+                .patch
+                .lines()
+                .filter(|line| line.starts_with("diff --git "))
+                .count(),
+            after_tree: result.artifact.after_tree,
+        })
+    }
     pub async fn owned_task_public_result(&self, id: &str) -> Result<NativeOutput> {
         let binding = self.store.task_binding(id).await?;
         let session = self
@@ -847,6 +943,23 @@ impl BenchmarkService {
     ) -> BenchmarkError {
         if error.code != "budget_timeout" || binding.context_v2.is_none() {
             return error;
+        }
+        // The durable refusal states that the root budget is exhausted, so it
+        // needs the bound deadline itself to have passed, not merely a helper
+        // that reported a timeout of its own.
+        if binding
+            .deadline_at_ms()
+            .ok()
+            .flatten()
+            .is_none_or(|deadline| deadline > now())
+        {
+            return BenchmarkError::new(
+                "dispatch_uncertain",
+                format!(
+                    "Setup stopped before its native deadline; recover the exact task: {}",
+                    error.message
+                ),
+            );
         }
         match self.backend.recover_owned_task_preparation(binding).await {
             Ok(lookup) if lookup.no_provider_start => match self

@@ -161,7 +161,20 @@ export interface OwnedTaskDispatch {
   result: unknown;
   error: { kind?: string; message?: string } | null;
 }
+/** App-measured facts about reported paths, from the sealed native artifact. */
+export interface OwnedTaskArtifactFacts {
+  checked: number;
+  missing: string[];
+  unchecked: number;
+  changedFiles: number;
+  afterTree: string;
+}
 export const ownedTaskExecution = {
+  artifactFacts: (bindingId: string, paths: readonly string[]) =>
+    invoke<OwnedTaskArtifactFacts>("benchmark_owned_task_artifact_facts", {
+      bindingId,
+      paths,
+    }),
   inspectMode: (request: OwnedTaskModeRequestV2) =>
     invoke<NativeTaskConsent>("benchmark_inspect_owned_task_mode", { request }),
   nativeChoices: (contextId: string) =>

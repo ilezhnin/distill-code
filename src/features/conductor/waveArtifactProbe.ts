@@ -21,11 +21,17 @@
  * backend answers "no" about is a fact and is used as one.
  */
 
+import {
+  ownedTaskExecution,
+  type OwnedTaskArtifactFacts,
+} from "@/features/benchmarks/lib/ownedTaskExecution";
+import { taskBindingId } from "@/features/chat/lib/executionOwnership";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { pathExists } from "@/shared/api/system";
 
+import { useConductorGraphStore } from "./conductorGraphStore";
 import type { StructuredReport } from "./types";
-import type { WaveState } from "./waveEngine";
+import type { WaveState, WaveStepState } from "./waveEngine";
 import { updateWaveEngineState, withWave } from "./waveStore";
 
 /**
@@ -45,6 +51,13 @@ export const WAVE_ARTIFACT_PROBE_TIMEOUT_MS = 10_000;
  */
 export const MAX_CHECKED_ARTIFACT_PATHS = 40;
 
+/**
+ * Bound on the owned-wave check. The host regenerates the final tree through
+ * the sandbox helper (native limit 60 s), so it gets more room than a disk
+ * lookup while still never parking the digest indefinitely.
+ */
+export const WAVE_NATIVE_ARTIFACT_PROBE_TIMEOUT_MS = 70_000;
+
 export interface WaveArtifactFacts {
   /** How many distinct paths the app actually asked about. */
   checked: number;
@@ -57,6 +70,14 @@ interface WaveArtifactProbeIo {
   canProbe: () => boolean;
   exists: (path: string) => Promise<boolean>;
   workingDirOf: (sessionId: string) => string | undefined;
+  /** The native task binding a child session executes, if it is owned. */
+  bindingOf: (sessionId: string) => string | null;
+  /** True when the child's graph node reached `completed`. */
+  completed: (sessionId: string) => boolean;
+  nativeFacts: (
+    bindingId: string,
+    paths: readonly string[],
+  ) => Promise<OwnedTaskArtifactFacts>;
 }
 
 const defaultIo: WaveArtifactProbeIo = {
@@ -66,7 +87,32 @@ const defaultIo: WaveArtifactProbeIo = {
   workingDirOf: (sessionId) =>
     useChatSessionStore.getState().getSession(sessionId)?.workingDir?.trim() ||
     undefined,
+  bindingOf: taskBindingId,
+  completed: (sessionId) =>
+    useConductorGraphStore.getState().getNode(sessionId)?.status ===
+    "completed",
+  nativeFacts: ownedTaskExecution.artifactFacts,
 };
+
+/**
+ * Whether a wave ran native owned tasks, and which binding holds its final
+ * sealed artifact: the latest completed owned step in step order. An owned
+ * wave's files live in task copies, never in the conductor's folder, so it is
+ * never checked against that folder.
+ */
+export function ownedWaveFinalBinding(
+  steps: readonly Pick<WaveStepState, "stepIndex" | "sessionId">[],
+): { owned: boolean; bindingId: string | null } {
+  let owned = false;
+  let bindingId: string | null = null;
+  for (const step of [...steps].sort((a, b) => a.stepIndex - b.stepIndex)) {
+    const binding = step.sessionId ? io.bindingOf(step.sessionId) : null;
+    if (!binding || !step.sessionId) continue;
+    owned = true;
+    if (io.completed(step.sessionId)) bindingId = binding;
+  }
+  return { owned, bindingId };
+}
 
 let io: WaveArtifactProbeIo = defaultIo;
 
@@ -148,7 +194,11 @@ export function resolveArtifactPath(
   return `${workingDir.replace(/[\\/]+$/, "")}${separator}${path.replace(/^\.[\\/]/, "")}`;
 }
 
-function settle(waveId: string, facts: WaveArtifactFacts): void {
+function settle(
+  waveId: string,
+  facts: WaveArtifactFacts,
+  native?: { changedFiles?: number },
+): void {
   updateWaveEngineState((engineState) => {
     const wave = engineState.waves.find(
       (candidate) => candidate.waveId === waveId,
@@ -159,8 +209,62 @@ function settle(waveId: string, facts: WaveArtifactFacts): void {
       artifactsProbed: true,
       checkedArtifacts: facts.checked,
       ...(facts.missing.length > 0 ? { missingArtifacts: facts.missing } : {}),
+      ...(native ? { artifactSource: "native" as const } : {}),
+      ...(native?.changedFiles !== undefined
+        ? { nativeChangedFiles: native.changedFiles }
+        : {}),
     });
   });
+}
+
+/**
+ * The owned-wave check: the app asks the native host about the final sealed
+ * artifact. A failure settles with nothing checked, the same one-directional
+ * fail-soft as the disk check; it never falls back to the conductor folder.
+ */
+function startNativeArtifactProbe(args: {
+  waveId: string;
+  bindingId: string | null;
+  paths: readonly string[];
+  onSettled?: () => void;
+}): boolean {
+  if (!args.bindingId) {
+    settle(args.waveId, { checked: 0, missing: [] }, {});
+    return false;
+  }
+  const bindingId = args.bindingId;
+  inFlightProbes.add(args.waveId);
+  void (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const looked = args.paths.slice(0, MAX_CHECKED_ARTIFACT_PATHS);
+      const check = io.nativeFacts(bindingId, looked);
+      check.catch(() => {});
+      const facts = await Promise.race([
+        check,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(
+            () => resolve(null),
+            WAVE_NATIVE_ARTIFACT_PROBE_TIMEOUT_MS,
+          );
+        }),
+      ]).catch(() => null);
+      if (facts) {
+        settle(
+          args.waveId,
+          { checked: facts.checked, missing: facts.missing },
+          { changedFiles: facts.changedFiles },
+        );
+      } else {
+        settle(args.waveId, { checked: 0, missing: [] }, {});
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      inFlightProbes.delete(args.waveId);
+      args.onSettled?.();
+    }
+  })();
+  return true;
 }
 
 /**
@@ -175,11 +279,22 @@ export function startWaveArtifactProbe(args: {
   waveId: string;
   conductorSessionId: string;
   reports: readonly StructuredReport[];
+  /** The wave's steps; an owned wave is checked against its native artifact. */
+  steps?: readonly Pick<WaveStepState, "stepIndex" | "sessionId">[];
   /** Re-runs the engine tick once the check has settled. */
   onSettled?: () => void;
 }): boolean {
   if (inFlightProbes.has(args.waveId)) return true;
   if (!io.canProbe()) return false;
+  const owned = args.steps ? ownedWaveFinalBinding(args.steps) : undefined;
+  if (owned?.owned) {
+    return startNativeArtifactProbe({
+      waveId: args.waveId,
+      bindingId: owned.bindingId,
+      paths: artifactPathsOf(args.reports),
+      onSettled: args.onSettled,
+    });
+  }
   const paths = artifactPathsOf(args.reports).filter(isCheckableArtifactPath);
   if (paths.length === 0) return false;
 
@@ -228,12 +343,16 @@ export function startWaveArtifactProbe(args: {
  * must stay so: only the second may be stated to the conductor as evidence.
  */
 export function waveArtifactFactsOf(
-  wave: Pick<WaveState, "checkedArtifacts" | "missingArtifacts">,
-): WaveArtifactFacts | undefined {
+  wave: Pick<
+    WaveState,
+    "checkedArtifacts" | "missingArtifacts" | "artifactSource"
+  >,
+): (WaveArtifactFacts & { source?: "native" }) | undefined {
   if (!wave.checkedArtifacts) return undefined;
   return {
     checked: wave.checkedArtifacts,
     missing: wave.missingArtifacts ?? [],
+    ...(wave.artifactSource ? { source: wave.artifactSource } : {}),
   };
 }
 

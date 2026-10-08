@@ -308,6 +308,7 @@ pub fn run() {
             commands::benchmarks::benchmark_owned_task_native_choices,
             commands::benchmarks::benchmark_inspect_owned_task_mode,
             commands::benchmarks::benchmark_owned_task_public_result,
+            commands::benchmarks::benchmark_owned_task_artifact_facts,
             commands::benchmarks::benchmark_set_owned_task_mode,
             commands::benchmarks::benchmark_prepare_owned_task,
             commands::benchmarks::benchmark_dispatch_owned_task,

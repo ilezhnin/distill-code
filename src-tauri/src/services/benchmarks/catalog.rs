@@ -43,6 +43,18 @@ pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
     if d.environment["authorshipStatus"] == "unverified" {
         issues.push("Confirm source and task model provenance before publication".into());
     }
+    // Only the native workflow runner writes these into a step's derived
+    // manifest; an authored definition cannot carry clock or lineage authority.
+    for key in [
+        super::artifact_context::CLOCK_KEY,
+        super::artifact_context::INPUT_KEY,
+    ] {
+        if d.environment.get(key).is_some() {
+            issues.push(format!(
+                "environment.{key} is reserved for native execution"
+            ));
+        }
+    }
     if d.limits.timeout_seconds == 0
         || d.limits.timeout_seconds > super::MAX_TIME_LIMIT_SECONDS
         || d.limits.max_turns != 1

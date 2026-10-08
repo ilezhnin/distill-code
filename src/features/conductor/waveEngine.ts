@@ -211,6 +211,17 @@ export interface WaveState {
    */
   missingArtifacts?: readonly string[];
   /**
+   * Set when the paths were checked against the sealed native repository
+   * artifact of an owned wave instead of the conductor's working folder.
+   */
+  artifactSource?: "native";
+  /**
+   * Files the owned wave's sealed cumulative artifact changes relative to its
+   * published snapshot. App-measured; it replaces the working-folder git count,
+   * which owned repository copies never touch.
+   */
+  nativeChangedFiles?: number;
+  /**
    * True once the artifact check has settled, with or without a number. The
    * digest pass waits on this the way it waits on the git probe.
    */

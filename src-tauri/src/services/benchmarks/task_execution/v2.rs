@@ -1029,7 +1029,11 @@ impl BenchmarkService {
         self.store.task_binding(&binding.id).await
         }.await;
         match result {
-            Err(error) if error.code == "invalid_task_authority" => {
+            // An authority change or a budget already exhausted before any
+            // binding or decision exists is a definite pre-write refusal.
+            Err(error)
+                if error.code == "invalid_task_authority" || error.code == "budget_timeout" =>
+            {
                 let bound: bool = sqlx::query_scalar(
                     "SELECT EXISTS(SELECT 1 FROM task_context_bindings WHERE request_key=?)",
                 )

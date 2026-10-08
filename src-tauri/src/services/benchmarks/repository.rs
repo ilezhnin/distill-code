@@ -390,6 +390,69 @@ pub async fn seal_until(
     .await
 }
 
+/// The files of the final tree of an ordered cumulative chain. The tree is
+/// regenerated from the published root and the sealed bytes through the same
+/// helper that prepared each step; no candidate copy or conductor folder is read.
+pub async fn final_tree_files(
+    snapshot: &Snapshot,
+    chain: &[Artifact],
+    max_bytes: usize,
+    deadline_ms: u64,
+) -> Result<std::collections::BTreeSet<String>> {
+    let Some(last) = chain.last() else {
+        return Err(BenchmarkError::new(
+            "validation",
+            "A final tree needs at least one sealed repository artifact",
+        ));
+    };
+    let prepared = advance_until(snapshot, chain, true, max_bytes, deadline_ms).await?;
+    if &prepared.artifact != last {
+        return Err(BenchmarkError::new(
+            "evidence_missing",
+            "The regenerated repository tree differs from its sealed artifact",
+        ));
+    }
+    archive_files(&prepared.archive)
+}
+
+fn archive_files(bytes: &[u8]) -> Result<std::collections::BTreeSet<String>> {
+    let mut files = std::collections::BTreeSet::new();
+    for entry in tar::Archive::new(bytes).entries()? {
+        let entry = entry?;
+        if entry.header().entry_type().is_file() {
+            let path = entry.path()?;
+            files.insert(path.to_string_lossy().trim_start_matches("./").to_owned());
+        }
+    }
+    Ok(files)
+}
+
+/// A reported artifact path as a path inside the task's repository copy, or
+/// `None` when it cannot name a file there (a URI, a home path, a path
+/// outside the copy). A trailing `:line` or `:line:col` citation is dropped.
+pub fn workspace_relative(reported: &str) -> Option<String> {
+    let mut path = reported.trim();
+    if path.is_empty() || path.starts_with('~') || path.contains("://") {
+        return None;
+    }
+    for _ in 0..2 {
+        match path.rsplit_once(':') {
+            Some((head, tail))
+                if !head.is_empty()
+                    && !tail.is_empty()
+                    && tail.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                path = head;
+            }
+            _ => break,
+        }
+    }
+    let path = path.replace('\\', "/");
+    let path = path.strip_prefix("/workspace/").unwrap_or(&path);
+    let path = path.trim_start_matches("./");
+    fixtures::safe_relative(path).then(|| path.to_owned())
+}
+
 /// The check that scores a repository case, kept out of every working copy.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -913,7 +976,7 @@ mod tests {
             &[
                 implemented.artifact.clone(),
                 review.artifact.clone(),
-                qa.artifact,
+                qa.artifact.clone(),
             ],
             true,
             1 << 20,
@@ -921,6 +984,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(reopened, review);
+        let final_files = final_tree_files(
+            &snapshot,
+            &[
+                implemented.artifact.clone(),
+                review.artifact.clone(),
+                qa.artifact.clone(),
+            ],
+            1 << 20,
+            (super::super::store::now() as u64).saturating_add(110_000),
+        )
+        .await
+        .unwrap();
+        assert!(final_files.contains("sum.js"));
         assert_eq!(
             advance(&snapshot, &[implemented.artifact], false, 1 << 20)
                 .await
@@ -1147,6 +1223,10 @@ else:
         .await
         .unwrap();
         assert_eq!(reopened, reviewed);
+        assert_eq!(
+            archive_files(&reopened.archive).unwrap(),
+            ["sum.js".to_owned()].into()
+        );
         let isolated = local_advance(&snapshot, &[implemented.artifact], false, 1 << 20)
             .await
             .unwrap();
@@ -1161,6 +1241,29 @@ else:
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn reported_paths_resolve_inside_the_task_copy_only() {
+        for (reported, expected) in [
+            ("src/sum.js", Some("src/sum.js")),
+            ("./src/sum.js:12", Some("src/sum.js")),
+            ("src\\sum.js:12:4", Some("src/sum.js")),
+            ("/workspace/src/sum.js", Some("src/sum.js")),
+            ("  sum.js  ", Some("sum.js")),
+            ("/etc/passwd", None),
+            ("C:/invented/sum.js", None),
+            ("../outside.js", None),
+            ("~/notes.md", None),
+            ("https://example.invalid/run/1", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                workspace_relative(reported).as_deref(),
+                expected,
+                "{reported}"
+            );
+        }
     }
 
     #[tokio::test]

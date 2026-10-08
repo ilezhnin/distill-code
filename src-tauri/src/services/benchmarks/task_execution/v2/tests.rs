@@ -16,6 +16,8 @@ struct NativeFixture {
     starts: AtomicUsize,
     /// Setup reports the native root deadline as exhausted.
     setup_expires: AtomicBool,
+    /// How long that failing setup takes before it reports.
+    setup_delay_ms: std::sync::atomic::AtomicU64,
     /// The host cannot prove that no provider prompt started.
     provider_start_unproven: AtomicBool,
     prepares: AtomicUsize,
@@ -82,6 +84,10 @@ impl ExecutionBackend for NativeFixture {
         Box::pin(async move {
             self.prepares.fetch_add(1, Ordering::SeqCst);
             if self.setup_expires.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    self.setup_delay_ms.load(Ordering::SeqCst),
+                ))
+                .await;
                 return Err(BenchmarkError::new(
                     "budget_timeout",
                     "Invented setup exhausted the native root deadline",
@@ -509,7 +515,18 @@ async fn native_v2_definite_refusal_requires_absence_and_lost_commits_recover_ex
 
 #[tokio::test]
 async fn expired_setup_records_a_native_refusal_only_with_provider_start_absence() {
-    let (_dir, service, backend, _, request) = fixture().await;
+    let (_dir, service, backend, _, mut request) = fixture().await;
+    let refusals = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM task_budget_bindings WHERE refusal_json IS NOT NULL",
+        )
+        .fetch_one(&service.store.pool)
+        .await
+        .unwrap()
+    };
+    // Setup outlives a one-second root budget.
+    request.step_budget_seconds = 1;
+    backend.setup_delay_ms.store(1_100, Ordering::SeqCst);
     backend.setup_expires.store(true, Ordering::SeqCst);
     let error = service
         .prepare_owned_task_intent(PrepareIntent::V2(request.clone()))
@@ -531,9 +548,9 @@ async fn expired_setup_records_a_native_refusal_only_with_provider_start_absence
     assert_eq!(backend.prepares.load(Ordering::SeqCst), 1);
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
 
-    // Without native absence proof the outcome stays unknown: nothing is
-    // recorded as refused and the same key remains recoverable.
-    let mut unproven = request;
+    // Without native absence proof the outcome stays unknown and nothing is
+    // recorded; once the host proves absence the same key records it.
+    let mut unproven = request.clone();
     unproven.request_key = "invented-unproven-setup".into();
     backend.setup_expires.store(true, Ordering::SeqCst);
     backend
@@ -544,22 +561,37 @@ async fn expired_setup_records_a_native_refusal_only_with_provider_start_absence
         .await
         .unwrap_err();
     assert_eq!(error.code, "dispatch_uncertain");
-    let refused: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM task_budget_bindings WHERE refusal_json IS NOT NULL",
-    )
-    .fetch_one(&service.store.pool)
-    .await
-    .unwrap();
-    assert_eq!(refused, 1);
+    assert_eq!(refusals().await, 1);
+    backend
+        .provider_start_unproven
+        .store(false, Ordering::SeqCst);
+    let proven = service
+        .prepare_owned_task_intent(PrepareIntent::V2(unproven))
+        .await
+        .unwrap_err();
+    assert_eq!(proven.code, "owned_task_preparation_refused");
+    assert_eq!(refusals().await, 2);
+
+    // A helper that stops at its own limit while the root budget remains is
+    // not budget exhaustion: nothing is recorded and the same key recovers.
+    let mut early = request;
+    early.request_key = "invented-early-helper-stop".into();
+    early.step_budget_seconds = 10;
+    backend.setup_delay_ms.store(0, Ordering::SeqCst);
+    let error = service
+        .prepare_owned_task_intent(PrepareIntent::V2(early.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "dispatch_uncertain");
+    assert_eq!(refusals().await, 2);
     backend.setup_expires.store(false, Ordering::SeqCst);
     let recovered = service
-        .prepare_owned_task_intent(PrepareIntent::V2(unproven))
+        .prepare_owned_task_intent(PrepareIntent::V2(early))
         .await
         .unwrap();
     assert_eq!(recovered.binding.decision.source, "prior");
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
 }
-
 #[tokio::test]
 async fn an_expired_prepared_task_records_the_no_prompt_outcome_instead_of_dispatching() {
     let (_dir, service, backend, _, mut request) = fixture().await;
@@ -576,5 +608,62 @@ async fn an_expired_prepared_task_records_the_no_prompt_outcome_instead_of_dispa
     assert_eq!(dispatch.phase, "terminal");
     assert_eq!(dispatch.error.unwrap()["kind"], "budget_timeout");
     assert_eq!(backend.refusals.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_descendant_of_an_expired_root_is_a_definite_pre_write_refusal() {
+    let (_dir, service, backend, chat_mode, _) = fixture().await;
+    let mut wave = chat_mode.request.clone();
+    wave.context_id = "invented-conductor".into();
+    wave.surface = "wave".into();
+    // The root wall budget is the consent's cap, shared by every step.
+    wave.limits.timeout_seconds = 1;
+    wave.acknowledged_contract_hash = service
+        .inspect_owned_task_mode(&wave)
+        .await
+        .unwrap()
+        .artifact_hash;
+    let Some(ModeEnvelope::V2(mode)) = service
+        .set_owned_task_mode_intent(ModeIntent::V2(wave))
+        .await
+        .unwrap()
+    else {
+        panic!("mode")
+    };
+    let step = |key: &str, entry: Option<WaveEntry>| RequestV2 {
+        schema_version: 2,
+        request_key: key.into(),
+        surface: "wave".into(),
+        context_id: "invented-conductor:wave:invented".into(),
+        mode: ModeReference {
+            context_id: mode.request.context_id.clone(),
+            artifact_hash: mode.artifact_hash.clone(),
+        },
+        role_source_id: mode.consent.roles[0].source_id.clone(),
+        work_class_id: "debug".into(),
+        prompt: "Repair this example.".into(),
+        hard_candidate_key: None,
+        entry,
+        step_budget_seconds: 1,
+    };
+    let root = service
+        .prepare_owned_task_intent(PrepareIntent::V2(step("wave:invented:step:0", None)))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let error = service
+        .prepare_owned_task_intent(PrepareIntent::V2(step(
+            "wave:invented:step:1",
+            Some(WaveEntry {
+                root_binding_id: root.binding.id.clone(),
+                previous_binding_ids: vec![root.binding.id.clone()],
+                include_previous_output: false,
+            }),
+        )))
+        .await
+        .unwrap_err();
+    // Nothing was bound or decided, so the request may be explicitly edited.
+    assert_eq!(error.code, "owned_task_intent_refused");
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
 }

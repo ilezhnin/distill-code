@@ -294,7 +294,25 @@ fn remaining_ms(deadline_ms: u64) -> io::Result<u64> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "Native sandbox deadline expired"))
 }
 
+/// Helpers also stop at their own fixed limits. Only an expired native
+/// deadline is a timeout of the caller's budget; a helper that stopped early
+/// is an infrastructure failure and must not be recorded as budget exhaustion.
+fn deadline_outcome(error: io::Error, deadline_ms: u64) -> io::Error {
+    if error.kind() != io::ErrorKind::TimedOut || remaining_ms(deadline_ms).is_err() {
+        return error;
+    }
+    io::Error::other(format!(
+        "Sandbox operation stopped at its fixed time limit before the native deadline: {error}"
+    ))
+}
+
 pub(crate) async fn copy_until(id: &str, archive: &[u8], deadline_ms: u64) -> io::Result<()> {
+    copy_until_inner(id, archive, deadline_ms)
+        .await
+        .map_err(|error| deadline_outcome(error, deadline_ms))
+}
+
+async fn copy_until_inner(id: &str, archive: &[u8], deadline_ms: u64) -> io::Result<()> {
     valid_id(id)?;
     let remaining = remaining_ms(deadline_ms)?.min(120_000);
     let deadline = deadline_ms.to_string();
@@ -334,6 +352,17 @@ except subprocess.TimeoutExpired:
 "#;
 
 async fn invoke_until(program: &str, id: &str, cap: usize, deadline_ms: u64) -> io::Result<Output> {
+    invoke_until_inner(program, id, cap, deadline_ms)
+        .await
+        .map_err(|error| deadline_outcome(error, deadline_ms))
+}
+
+async fn invoke_until_inner(
+    program: &str,
+    id: &str,
+    cap: usize,
+    deadline_ms: u64,
+) -> io::Result<Output> {
     let remaining = remaining_ms(deadline_ms)?.min(120_000);
     let deadline = deadline_ms.to_string();
     let out = invoke(
@@ -366,6 +395,12 @@ pub(crate) async fn ready_until(deadline_ms: u64) -> io::Result<Status> {
 /// Apply/export data-only repository transitions in protected root staging.
 /// The helper never checks out or executes candidate files.
 pub(crate) async fn artifact(id: &str, package: &[u8], deadline_ms: u64) -> io::Result<Vec<u8>> {
+    artifact_inner(id, package, deadline_ms)
+        .await
+        .map_err(|error| deadline_outcome(error, deadline_ms))
+}
+
+async fn artifact_inner(id: &str, package: &[u8], deadline_ms: u64) -> io::Result<Vec<u8>> {
     valid_id(id)?;
     const MAX_PACKAGE: usize = 512 * 1024 * 1024;
     if package.len() > MAX_PACKAGE {
@@ -597,6 +632,27 @@ mod tests {
         lines.push("netns up".into());
         lines.join("\n")
     }
+    #[test]
+    fn only_an_expired_native_deadline_is_a_budget_timeout() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let stopped = || io::Error::new(io::ErrorKind::TimedOut, "helper limit");
+        assert_eq!(
+            deadline_outcome(stopped(), now + 3_600_000).kind(),
+            io::ErrorKind::Other
+        );
+        assert_eq!(
+            deadline_outcome(stopped(), now.saturating_sub(1)).kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            deadline_outcome(io::Error::other("unrelated"), now + 3_600_000).kind(),
+            io::ErrorKind::Other
+        );
+    }
+
     #[test]
     fn readiness_pins_resources_and_runtime_and_never_infers_a_sign_in() {
         let base = status();

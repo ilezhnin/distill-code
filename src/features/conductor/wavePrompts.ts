@@ -506,13 +506,26 @@ export function buildWaveGitDeltaLine(facts: WaveGitDeltaFacts): string {
 export function buildWaveArtifactLine(facts: {
   checked: number;
   missing: readonly string[];
+  source?: "native";
 }): string {
   const head = `APP MEASUREMENT — this line is written by the app, not by any worker: of the ${facts.checked} file path${facts.checked === 1 ? "" : "s"} the reports named`;
+  const where =
+    facts.source === "native"
+      ? "in the final sealed repository artifact of this wave"
+      : "on disk";
   if (facts.missing.length === 0) {
-    return `${head}, every one exists on disk.`;
+    return `${head}, every one exists ${where}.`;
   }
   const named = facts.missing.map((path) => `"${path}"`).join(", ");
-  return `${head}, ${facts.missing.length} do${facts.missing.length === 1 ? "es" : ""} not exist: ${named}. A report naming a file that is not there did not produce it, whatever the summary says. Do not accept on that report's evidence.`;
+  return `${head}, ${facts.missing.length} do${facts.missing.length === 1 ? "es" : ""} not exist ${where}: ${named}. A report naming a file that is not there did not produce it, whatever the summary says. Do not accept on that report's evidence.`;
+}
+
+/**
+ * The owned-wave counterpart of the git delta: the app's count of files the
+ * sealed cumulative artifact changes, read from the native host.
+ */
+export function buildWaveNativeChangeLine(changedFiles: number): string {
+  return `APP MEASUREMENT — this line is written by the app, not by any worker: the executors worked in isolated task copies, and the final sealed repository artifact of this wave changes ${changedFiles} file${changedFiles === 1 ? "" : "s"} relative to the published snapshot.`;
 }
 
 /**

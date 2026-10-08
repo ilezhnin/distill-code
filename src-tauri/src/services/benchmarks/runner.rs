@@ -533,8 +533,11 @@ async fn collect_repository(attempt: &mut Attempt, id: &str, cap: u64) -> Result
     collect_repository_until(attempt, id, cap, None).await
 }
 
-fn sandbox_setup_error(error: std::io::Error) -> BenchmarkError {
-    if error.kind() == std::io::ErrorKind::TimedOut {
+/// A `*_until` helper reports `TimedOut` only once the native deadline has
+/// passed. Without a deadline a timeout is the helper's own control limit,
+/// an infrastructure failure rather than budget exhaustion.
+fn sandbox_setup_error(error: std::io::Error, deadline: Option<u64>) -> BenchmarkError {
+    if deadline.is_some() && error.kind() == std::io::ErrorKind::TimedOut {
         BenchmarkError::new("budget_timeout", error.to_string())
     } else {
         error.into()
@@ -594,7 +597,7 @@ async fn collect_repository_until(
                 error.to_string(),
             ));
         }
-        Err(error) => return Err(sandbox_setup_error(error)),
+        Err(error) => return Err(sandbox_setup_error(error, deadline)),
     }
     Ok(())
 }
@@ -2130,7 +2133,7 @@ impl ExecutionBackend for NativeBackend {
                         Some(deadline) => sandbox::copy_until(&copy_id, &archive, deadline).await,
                         None => sandbox::copy(&copy_id, &archive).await,
                     }
-                    .map_err(sandbox_setup_error)?;
+                    .map_err(|error| sandbox_setup_error(error, deadline))?;
                 }
                 "/workspace".into()
             } else {
@@ -2891,7 +2894,7 @@ impl ExecutionBackend for NativeBackend {
                     Some(deadline) => sandbox::copy_until(id, &archive, deadline).await,
                     None => sandbox::copy(id, &archive).await,
                 }
-                .map_err(sandbox_setup_error)?;
+                .map_err(|error| sandbox_setup_error(error, deadline))?;
                 "/workspace".to_owned()
             } else {
                 let cwd = store
@@ -3090,8 +3093,17 @@ impl ExecutionBackend for NativeBackend {
                         attempt.outcome = Some("budget_reached".into());
                         attempt.reason = Some(ANSWER_CAP_REASON.into());
                     } else if let Some(error) = status.error {
-                        attempt.outcome =
-                            Some(terminal_outcome(&error, &attempt.configuration.model_id).into());
+                        // A cancellation this loop issued because the time or
+                        // root budget ran out is that timeout, whichever clock
+                        // (this wall check or the host's deadline) fired first.
+                        attempt.outcome = Some(
+                            if timed_out && error["kind"] == "cancelled" {
+                                "budget_timeout"
+                            } else {
+                                terminal_outcome(&error, &attempt.configuration.model_id)
+                            }
+                            .into(),
+                        );
                         attempt.reason = Some(error.to_string());
                     } else if cancelled {
                         attempt.outcome = Some(

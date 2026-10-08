@@ -69,6 +69,7 @@ import {
   type DigestEntry,
 } from "./waveDigest";
 import {
+  ownedWaveFinalBinding,
   resetWaveArtifactProbeForTests,
   startWaveArtifactProbe,
   waveArtifactFactsOf,
@@ -676,8 +677,13 @@ export function processWaveDigests(
     // digest no model authored. A probe that can never run (no Tauri, no
     // working folder) settles inline, so tests and degraded builds never wait.
     let live = wave;
+    // Owned children work in native task copies; the conductor's folder is
+    // not where their changes are, so its git count would be a false zero.
+    // Their app-measured change count comes from the sealed artifact below.
+    const ownedWave = ownedWaveFinalBinding(live.steps).owned;
     if (!live.gitDigestProbed) {
       if (
+        !ownedWave &&
         startWaveGitProbe({
           waveId: live.waveId,
           conductorSessionId: live.conductorSessionId,
@@ -698,6 +704,7 @@ export function processWaveDigests(
           waveId: live.waveId,
           conductorSessionId: live.conductorSessionId,
           reports: digestEntriesFor(live).map((entry) => entry.report),
+          steps: live.steps,
           onSettled: onHydrated,
         })
       ) {
@@ -718,6 +725,9 @@ export function processWaveDigests(
       ...(live.stalled ? { stalled: true } : {}),
       ...(gitDelta ? { gitDelta } : {}),
       ...(artifacts ? { artifacts } : {}),
+      ...(live.nativeChangedFiles !== undefined
+        ? { nativeChangedFiles: live.nativeChangedFiles }
+        : {}),
       // Q5/M3: a re-asked digest says why it is being asked again. Re-sending
       // a byte-identical question to a model that already failed to answer it
       // is a model call spent on the same failure.

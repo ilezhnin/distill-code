@@ -350,6 +350,12 @@ function parseWave(value: unknown): WaveState | null {
     ...(parseMissingArtifacts(raw.missingArtifacts).length > 0
       ? { missingArtifacts: parseMissingArtifacts(raw.missingArtifacts) }
       : {}),
+    ...(raw.artifactSource === "native"
+      ? { artifactSource: "native" as const }
+      : {}),
+    ...(isDirtyCount(raw.nativeChangedFiles)
+      ? { nativeChangedFiles: raw.nativeChangedFiles }
+      : {}),
     ...(raw.artifactsProbed === true ? { artifactsProbed: true } : {}),
     ...(typeof raw.lastProgressAt === "number" && raw.lastProgressAt > 0
       ? { lastProgressAt: raw.lastProgressAt }
