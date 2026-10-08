@@ -788,3 +788,95 @@ async fn a_revision_continues_the_exact_root_lineage_and_budget() {
         assert!(prepare(request).await.is_err());
     }
 }
+
+#[tokio::test]
+async fn a_mixed_role_lineage_never_borrows_a_single_role_certificate() {
+    let (dir, service, _, chat_mode, _) = fixture().await;
+    let reviewer = dir.path().join("agents").join("invented-reviewer.md");
+    std::fs::write(
+        &reviewer,
+        "---\ndisplay_name: Invented reviewer\n---\nReview the supplied text.\n",
+    )
+    .unwrap();
+    let mut wave = chat_mode.request.clone();
+    wave.context_id = "invented-conductor".into();
+    wave.surface = "wave".into();
+    wave.roles.push(RoleIntent {
+        source_path: reviewer.to_string_lossy().into_owned(),
+        work_class_id: "code-review".into(),
+    });
+    wave.acknowledged_contract_hash = service
+        .inspect_owned_task_mode(&wave)
+        .await
+        .unwrap()
+        .artifact_hash;
+    let Some(ModeEnvelope::V2(mode)) = service
+        .set_owned_task_mode_intent(ModeIntent::V2(wave))
+        .await
+        .unwrap()
+    else {
+        panic!("mode")
+    };
+    let step = |key: &str, role: usize, previous: Vec<String>, pin: Option<String>| RequestV2 {
+        schema_version: 2,
+        request_key: key.into(),
+        surface: "wave".into(),
+        context_id: "invented-conductor:wave:root:invented-request".into(),
+        mode: ModeReference {
+            context_id: mode.request.context_id.clone(),
+            artifact_hash: mode.artifact_hash.clone(),
+        },
+        role_source_id: mode.consent.roles[role].source_id.clone(),
+        work_class_id: mode.consent.roles[role].work_class_id.clone(),
+        prompt: "Handle this example.".into(),
+        hard_candidate_key: pin,
+        entry: previous.first().cloned().map(|root| WaveEntry {
+            root_binding_id: root,
+            previous_binding_ids: previous.clone(),
+            include_previous_output: true,
+        }),
+        step_budget_seconds: 10,
+    };
+    let prepare =
+        |request: RequestV2| service.prepare_owned_task_intent(PrepareIntent::V2(request));
+    let root = prepare(step("wave:mixed:step:0", 0, vec![], None))
+        .await
+        .unwrap();
+    let r = root.binding.id.clone();
+    let same = prepare(step("wave:mixed:step:1", 0, vec![r.clone()], None))
+        .await
+        .unwrap();
+    assert_eq!(
+        same.binding.decision.learned_status,
+        "no_exact_active_policy"
+    );
+    let s = same.binding.id.clone();
+    let mixed = prepare(step(
+        "wave:mixed:step:2",
+        1,
+        vec![r.clone(), s.clone()],
+        None,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(mixed.binding.decision.source, "prior");
+    assert_eq!(
+        mixed.binding.decision.learned_status,
+        "mixed_role_trajectory_uncertified"
+    );
+    assert!(!mixed.binding.decision.learned_dispatch_allowed);
+    // An explicit native pin remains binding in a mixed trajectory.
+    let choices = service
+        .owned_task_choices_v2(&mode.request.context_id)
+        .await
+        .unwrap();
+    let pinned = prepare(step(
+        "wave:mixed:step:3",
+        1,
+        vec![r, s, mixed.binding.id.clone()],
+        Some(choices[0].candidate_key.clone()),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(pinned.binding.decision.source, "pin");
+}

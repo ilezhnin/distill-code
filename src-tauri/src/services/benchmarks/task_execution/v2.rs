@@ -969,8 +969,25 @@ impl BenchmarkService {
         }
         let contract = promotion::Contract::from_task(&task);
         let prior_keys: Vec<_> = candidates.iter().map(|candidate| routing::candidate_key(&candidate.configuration)).collect();
+        // A certificate is evaluated on trajectories of its own role and
+        // class. A step after a different role is outside that evidence until
+        // a whole mixed trajectory is certified, so it keeps prior or pin.
+        let mut mixed_lineage = false;
+        if let Some(entry) = &intent.entry {
+            for id in &entry.previous_binding_ids {
+                let prior = self.store.task_binding(id).await?;
+                let prior_role = &prior
+                    .context_v2
+                    .as_ref()
+                    .ok_or_else(|| invalid("Legacy and v2 wave lineage cannot be mixed"))?
+                    .role;
+                mixed_lineage |= prior_role.role_id != role.role_id
+                    || prior_role.work_class_id != role.work_class_id;
+            }
+        }
         let discovery = if intent.hard_candidate_key.is_some() {promotion::Discovery::Pinned}
-            else if !mode.consent.complete || !unknown_reasons.is_empty() {promotion::Discovery::Refused("incomplete_native_role_preferences")} else {
+            else if !mode.consent.complete || !unknown_reasons.is_empty() {promotion::Discovery::Refused("incomplete_native_role_preferences")}
+            else if mixed_lineage {promotion::Discovery::Refused("mixed_role_trajectory_uncertified")} else {
             self.store.discover_active_policy(&contract, &choices, &prior_keys).await?
         };
         let certificate = match &discovery {promotion::Discovery::Unique(certificate) => Some(certificate), _ => None};
