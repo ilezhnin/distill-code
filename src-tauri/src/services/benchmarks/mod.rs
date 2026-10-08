@@ -20,6 +20,7 @@ pub mod store;
 pub mod types;
 pub mod worker;
 pub mod workflow;
+pub mod workflow_policy;
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock, Weak};
@@ -251,6 +252,9 @@ impl BenchmarkService {
             .flat_map(|d| d.versions.clone())
             .collect();
         let mut runs = self.store.all_runs().await?;
+        // A mixed-worker trajectory is not a measurement of its root column
+        // or of any one of its workers. Raw run/attempt views retain it.
+        runs.retain(|run| run.request.workflow_policy.is_none());
         // A cost the provider left out is its tokens at the list prices of the
         // day, so every board and the model page price every provider alike.
         let catalog = self.store.catalog_entries().await?;
@@ -312,6 +316,23 @@ impl BenchmarkService {
             versions.push(self.store.version(id).await?);
         }
         let count = owed_executions(&versions, request);
+        if let Some(policy) = &request.workflow_policy {
+            policy.validate(self, request, &versions).await?;
+        } else if request
+            .configurations
+            .iter()
+            .any(|c| c.execution_profile == "workflow_policy")
+        {
+            return Err(BenchmarkError::new(
+                "validation",
+                "A workflow policy column requires its frozen policy",
+            ));
+        }
+        let workers = request
+            .workflow_policy
+            .as_ref()
+            .map(|policy| &policy.candidates)
+            .unwrap_or(&request.configurations);
         if !versions.is_empty()
             && request
                 .configurations
@@ -330,7 +351,12 @@ impl BenchmarkService {
         }
         // A pinned runtime that changed since selection would fail every cell.
         let mut runtimes: HashMap<(String, Option<String>), Vec<InventoryModel>> = HashMap::new();
-        for c in &request.configurations {
+        for c in workers {
+            // Research policies retain unavailable alternatives in their frozen
+            // pool; each step checks admission and records its feasible subset.
+            if request.workflow_policy.is_some() {
+                continue;
+            }
             if let Err(error) = self.backend.readiness(c).await {
                 issues.push(error.message);
             }
@@ -443,7 +469,7 @@ impl BenchmarkService {
         for version in &versions {
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
                 .await?;
-            for config in &request.configurations {
+            for config in workers {
                 if let Some(reason) = self.backend.unsupported(config, &version.manifest) {
                     issues.push(reason);
                 }
@@ -671,6 +697,12 @@ impl BenchmarkService {
             ));
         }
         let run = self.store.run(id).await?;
+        if run.request.workflow_policy.is_some() && parallelism != 1 {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Research workflow policy conditions are frozen",
+            ));
+        }
         if run.baked_at.is_some() || now() >= analysis::window_closes(&run) {
             return Err(BenchmarkError::new(
                 "validation",
@@ -686,6 +718,12 @@ impl BenchmarkService {
     }
     pub async fn extend_run(&self, id: &str, version_ids: &[String]) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
+        if run.request.workflow_policy.is_some() {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Research workflow cases are frozen; use explicit resume to continue",
+            ));
+        }
         if run.baked_at.is_some() || now() >= analysis::window_closes(&run) {
             return Err(BenchmarkError::new(
                 "validation",

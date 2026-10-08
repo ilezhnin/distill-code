@@ -529,6 +529,7 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         };
         let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();
@@ -581,6 +582,7 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         };
         let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();
@@ -634,6 +636,7 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         };
         let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":1},"maxRuns":2,"maxTotalExecutions":4})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();
@@ -689,6 +692,7 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         };
         let mut schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":false,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();

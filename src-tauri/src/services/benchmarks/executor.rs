@@ -168,7 +168,7 @@ fn validate(request: &Request) -> Result<()> {
         || request.request_key.len() > 256
         || request.context_id.trim().is_empty()
         || request.context_id.len() > 256
-        || !matches!(request.surface.as_str(), "chat" | "wave")
+        || !matches!(request.surface.as_str(), "chat" | "wave" | "benchmark")
         || candidates.len() > 32
         || candidates.iter().any(|candidate| {
             candidate.configuration.provider_id.trim().is_empty()
@@ -192,6 +192,39 @@ fn validate(request: &Request) -> Result<()> {
 }
 
 impl Store {
+    /// Only the bounded workflow runner uses predictions for research turns.
+    /// The public chat/wave entry points still require production promotion.
+    pub(super) async fn prepare_workflow_research_decision(
+        &self,
+        request: Request,
+    ) -> Result<Decision> {
+        if request.surface != "benchmark" {
+            return Err(error(
+                "validation",
+                "Research decisions require a benchmark workflow",
+            ));
+        }
+        if let Some(record) = self.executor_decision(&request.request_key).await? {
+            return same_request(record.decision, &request);
+        }
+        let mut decision = self.preview_executor_decision(request).await?;
+        if decision.request.prediction.hard_candidate_key.is_none() {
+            if let Some(prediction) = &decision.research_prediction {
+                if let Some(chosen) = &prediction.chosen {
+                    decision.chosen = Some(chosen.clone());
+                    decision.chosen_key = prediction.chosen_key.clone();
+                    decision.source = "research_learned".into();
+                    decision.reason = "workflow_research_prediction".into();
+                } else {
+                    decision.reason = format!("workflow_research_abstained:{}", prediction.reason);
+                }
+            }
+        }
+        decision.policy_version = "executor-selection-v1/workflow-research-v1".into();
+        decision.artifact_hash = artifact_hash(&decision)?;
+        self.persist_executor_decision(decision).await
+    }
+
     /// Reads model coefficients only. This path never loads training labels or runs.
     pub async fn preview_executor_decision(&self, request: Request) -> Result<Decision> {
         validate(&request)?;
@@ -256,6 +289,10 @@ impl Store {
             return same_request(record.decision, &request);
         }
         let decision = self.preview_executor_decision(request).await?;
+        self.persist_executor_decision(decision).await
+    }
+
+    async fn persist_executor_decision(&self, decision: Decision) -> Result<Decision> {
         sqlx::query("INSERT OR IGNORE INTO executor_decisions(request_key,input_hash,created_at,decision_json) VALUES(?,?,?,?)")
             .bind(&decision.request.request_key).bind(&decision.input_hash).bind(decision.created_at)
             .bind(serde_json::to_string(&decision)?).execute(&self.pool).await?;

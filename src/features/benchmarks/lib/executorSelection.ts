@@ -22,7 +22,7 @@ export interface ApplicationExecutorRequest {
 
 export interface ExecutorSelectionRequest {
   requestKey: string;
-  surface: "chat" | "wave";
+  surface: "chat" | "wave" | "benchmark";
   contextId: string;
   prediction: SelectorPredictionRequest;
   priorKeys: string[];
@@ -37,7 +37,7 @@ export interface ExecutorDecision {
   policyVersion: string;
   chosen: Configuration | null;
   chosenKey: string | null;
-  source: "pin" | "prior" | "none";
+  source: "pin" | "prior" | "none" | "research_learned";
   reason: string;
   learnedStatus: string;
   researchPrediction: SelectorPrediction | null;

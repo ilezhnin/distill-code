@@ -105,7 +105,41 @@ export interface Configuration {
   /** Display name the bridge reported for the model id, for example "Opus 5.5". */
   modelName?: string | null;
 }
+export interface WorkflowPolicy {
+  modelId: string;
+  mode: "learned" | "persona" | "fixed";
+  candidates: Configuration[];
+  priorIds: string[];
+  fixedCandidateId: string | null;
+  minQuality: number;
+}
+
+export interface WorkflowPolicyRunRequest {
+  requestKey: string;
+  versionIds: string[];
+  policy: WorkflowPolicy;
+  repetitions: number;
+  timeoutSeconds: number;
+  maxExecutions: number;
+}
+
+export interface WorkflowTrace {
+  root: Attempt;
+  policy: WorkflowPolicy | null;
+  steps: {
+    index: number;
+    id: string;
+    parentId: string | null;
+    entry: EntryState;
+    prompt: string;
+    attempt: Attempt;
+    inputHash: string | null;
+    executorDecision: import("./lib/executorSelection").ExecutorDecision | null;
+  }[];
+}
+
 export interface RunRequest {
+  workflowPolicy?: WorkflowPolicy;
   requestKey: string;
   versionIds: string[];
   configurations: Configuration[];

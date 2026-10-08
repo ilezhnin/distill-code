@@ -2025,13 +2025,14 @@ impl ExecutionBackend for NativeBackend {
             // run moved to another account (its usage limit ran out) runs on
             // that account's runtime, which lists that account's models, and
             // records it below.
-            let moved = !store
-                .run(&attempt.run_id)
-                .await?
-                .request
-                .configurations
-                .iter()
-                .any(|c| c.account_id == attempt.configuration.account_id);
+            let request = store.run(&attempt.run_id).await?.request;
+            // Research workflows have a synthetic root column. It must never
+            // masquerade as an account move and waive the selected runtime pin.
+            let moved = request.workflow_policy.is_none()
+                && !request
+                    .configurations
+                    .iter()
+                    .any(|c| c.account_id == attempt.configuration.account_id);
             if !moved
                 && attempt
                     .configuration
@@ -3819,6 +3820,61 @@ impl BenchmarkService {
         });
         Ok(true)
     }
+    /// Transfer the root's existing slot to the selected worker for this turn.
+    /// Synthetic policy columns must not bypass normal model/account limits.
+    pub(super) async fn execute_workflow_policy_step(
+        &self,
+        root_id: &str,
+        attempt: Attempt,
+        version: BenchmarkVersion,
+        timeout: u32,
+        cancel: watch::Receiver<bool>,
+    ) -> Result<Attempt> {
+        let lane = super::analysis::configuration_key(&attempt.configuration);
+        let account = format!(
+            "{}\u{1f}{}",
+            attempt.configuration.provider_id,
+            attempt
+                .configuration
+                .account_id
+                .as_deref()
+                .unwrap_or_default()
+        );
+        let previous = {
+            let mut active = self.active.lock().await;
+            let others = || active.iter().filter(|(id, _)| id.as_str() != root_id);
+            if others().any(|(_, flight)| flight.lane == lane)
+                || others()
+                    .filter(|(_, flight)| flight.account == account)
+                    .count()
+                    >= account_slots(&attempt.run_id, &attempt.configuration.provider_id)
+            {
+                return Err(BenchmarkError::new(
+                    "account_busy",
+                    "Workflow worker slots are occupied",
+                ));
+            }
+            let root = active.get_mut(root_id).ok_or_else(|| {
+                BenchmarkError::new(
+                    "dispatch_uncertain",
+                    "Workflow has no active root reservation",
+                )
+            })?;
+            (
+                std::mem::replace(&mut root.lane, lane),
+                std::mem::replace(&mut root.account, account),
+            )
+        };
+        let result = self
+            .backend
+            .execute(&self.store, attempt, version, timeout, cancel)
+            .await;
+        if let Some(root) = self.active.lock().await.get_mut(root_id) {
+            (root.lane, root.account) = previous;
+        }
+        result
+    }
+
     /// Runs one attempt to its settlement, as the runner always has.
     async fn run_attempt(
         &self,
@@ -4925,6 +4981,7 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         }
     }
     /// [`request`] flown one attempt at a time, so a refused turn is the
@@ -5765,6 +5822,7 @@ mod tests {
                 max_executions: 9,
                 preview: false,
                 parallelism: None,
+                workflow_policy: None,
             },
             attempts,
         };

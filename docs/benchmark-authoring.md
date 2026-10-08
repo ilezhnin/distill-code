@@ -102,6 +102,25 @@ a decision from a later answer or silently replay an ambiguous accepted turn.
 Step records are dependent trajectory evidence, not additional independent tasks;
 the final task score must not be copied into intermediate rewards.
 
+Research workflow runs can freeze a learned, persona-prior or fixed-worker
+policy using `benchmark_preview_workflow_policy` and
+`benchmark_start_workflow_policy`. The request names a saved fit, its exact
+candidate runtimes and accounts, preference order, quality floor, root versions,
+repetitions and an explicit execution/time budget. These runs are serial and
+cannot add cases or change concurrency after admission. Selection checks current
+availability at each step, commits the shared executor decision before execution,
+and preserves explicit fixed-worker pins. A learned abstention uses the declared
+available preference order. Quota or worker refusals terminate the trajectory
+without silently moving accounts or retrying the worker.
+
+`benchmark_get_workflow_trace` reads a root attempt with verified step inputs,
+selection decisions and actual per-step attempts. The root retains summed worker
+usage and durations; its start/end timestamps separately bound whole-trajectory
+wall time. A mixed-worker result has no single observed executor and does not
+enter individual-worker leaderboards, training exports or ordinary selection
+evidence. These research runs do not authorize learned routing in chat or waves,
+and are not a preregistered comparative promotion campaign by themselves.
+
 ## Analysis, exports and selection
 
 Leaderboard views and exports read the common service evidence. Development

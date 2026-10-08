@@ -7,8 +7,16 @@ use crate::services::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "workflow_policy_tests.rs"]
+mod workflow_policy_tests;
+
 #[derive(Default)]
-struct OfflineWorkers(AtomicU64);
+struct OfflineWorkers {
+    calls: AtomicU64,
+    unavailable: std::sync::Mutex<Vec<String>>,
+    cancel_after: AtomicU64,
+    refuse_next: std::sync::Mutex<Option<String>>,
+}
 
 fn configurations() -> Vec<Configuration> {
     ["parser", "painter"]
@@ -39,15 +47,19 @@ impl ExecutionBackend for OfflineWorkers {
         _: Option<&'a str>,
         _: bool,
     ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
-        Box::pin(async {
+        Box::pin(async move {
             Ok(configurations()
                 .into_iter()
                 .map(|configuration| InventoryModel {
                     name: configuration.model_id.clone(),
+                    available: !self
+                        .unavailable
+                        .lock()
+                        .unwrap()
+                        .contains(&configuration.model_id),
                     configuration,
                     efforts: vec!["high".into()],
                     supports_fast_mode: true,
-                    available: true,
                     reason: None,
                 })
                 .collect())
@@ -63,11 +75,24 @@ impl ExecutionBackend for OfflineWorkers {
         _: watch::Receiver<bool>,
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            if let Some(code) = self.refuse_next.lock().unwrap().take() {
+                return Err(BenchmarkError::new(&code, "Offline pre-dispatch refusal"));
+            }
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            assert!(matches!(
+                attempt.configuration.model_id.as_str(),
+                "parser" | "painter"
+            ));
             // Two specializations and a failed third repeat create soft labels.
             let suitable = version.manifest.prompt.contains("parser")
                 == (attempt.configuration.model_id == "parser");
-            attempt.output = Some(if suitable && attempt.repetition != 2 {
+            let feedback_valid = version.manifest.entry_state.as_ref().is_none_or(|entry| {
+                !entry
+                    .previous_reports
+                    .iter()
+                    .any(|report| report == "wrong")
+            });
+            attempt.output = Some(if suitable && feedback_valid && attempt.repetition != 2 {
                 "ok".into()
             } else {
                 "wrong".into()
@@ -80,6 +105,9 @@ impl ExecutionBackend for OfflineWorkers {
             attempt.usage.schema = "offline-pipeline-v1".into();
             attempt.evidence_hash =
                 Some(fixtures::seal(&store.root, &attempt, &json!({"offlineStub":true})).await?);
+            if self.cancel_after.load(Ordering::SeqCst) == call {
+                store.set_run_state(&attempt.run_id, "cancelling").await?;
+            }
             Ok(attempt)
         })
     }
@@ -98,6 +126,15 @@ async fn open(root: &std::path::Path, backend: Arc<OfflineWorkers>) -> Arc<Bench
 }
 
 async fn publish(service: &BenchmarkService, split: &str, count: usize) -> Vec<BenchmarkVersion> {
+    publish_with_entry(service, split, count, false).await
+}
+
+async fn publish_with_entry(
+    service: &BenchmarkService,
+    split: &str,
+    count: usize,
+    entry: bool,
+) -> Vec<BenchmarkVersion> {
     let mut versions = Vec::new();
     for index in 0..count {
         let mut draft = seed_definitions().remove(0);
@@ -117,6 +154,19 @@ async fn publish(service: &BenchmarkService, split: &str, count: usize) -> Vec<B
         draft.fixtures.clear();
         draft.repetitions = 3;
         draft.limits.timeout_seconds = 10;
+        if entry {
+            draft.entry_state = Some(EntryState {
+                schema_version: 1,
+                root_task_id: "offline-entry".into(),
+                step_id: "work".into(),
+                parent_step_id: None,
+                fixture_snapshot_hash: String::new(),
+                conversation_prefix: String::new(),
+                previous_reports: vec![],
+                remaining_budget_seconds: 10,
+                content_hash: String::new(),
+            });
+        }
         draft.evaluator = Evaluator {
             kind: "exact".into(),
             expected: "ok".into(),
@@ -146,6 +196,7 @@ async fn measure(service: &Arc<BenchmarkService>, versions: &[BenchmarkVersion],
         max_executions: versions.len() as u32 * 6,
         preview: false,
         parallelism: Some(4),
+        workflow_policy: None,
     };
     let run = service.start_run(request.clone()).await.unwrap();
     assert_eq!(service.start_run(request).await.unwrap().id, run.id);
@@ -226,7 +277,7 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
         .unwrap();
     assert!(best.learned_utility_gain > 0.0);
     assert!(!report.dispatch_allowed);
-    assert_eq!(backend.0.load(Ordering::SeqCst), 96);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 96);
 
     let mut application = executor::ApplicationRequest {
         request_key: "offline-wave:step:0".into(),
@@ -441,5 +492,5 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
         "native-run"
     );
     assert!(!host.claim_executor_receipt(&start).await.unwrap());
-    assert_eq!(backend.0.load(Ordering::SeqCst), 96);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 96);
 }

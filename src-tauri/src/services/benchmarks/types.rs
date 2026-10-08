@@ -202,6 +202,9 @@ pub struct Configuration {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunRequest {
+    /// Experimental whole-workflow policy; never an individual model score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_policy: Option<super::workflow_policy::WorkflowPolicy>,
     pub request_key: String,
     pub version_ids: Vec<String>,
     pub configurations: Vec<Configuration>,

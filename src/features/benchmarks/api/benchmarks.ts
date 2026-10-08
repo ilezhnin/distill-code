@@ -32,6 +32,8 @@ import type {
   PoolRelease,
   RunPreview,
   RunRequest,
+  WorkflowPolicyRunRequest,
+  WorkflowTrace,
   RunSummary,
   ValidationReport,
 } from "../types";
@@ -176,6 +178,12 @@ export const benchmarkApi = {
     invoke<BenchmarkDefinition>("benchmark_import_definition", { draft }),
   previewRun: (request: RunRequest) =>
     invoke<RunPreview>("benchmark_preview_run", { request }),
+  previewWorkflowPolicy: (request: WorkflowPolicyRunRequest) =>
+    invoke<RunPreview>("benchmark_preview_workflow_policy", { request }),
+  startWorkflowPolicy: (request: WorkflowPolicyRunRequest) =>
+    invoke<BenchmarkRun>("benchmark_start_workflow_policy", { request }),
+  getWorkflowTrace: (rootAttemptId: string) =>
+    invoke<WorkflowTrace>("benchmark_get_workflow_trace", { rootAttemptId }),
   startRun: (request: RunRequest, replaceRunId?: string) =>
     invoke<BenchmarkRun>("benchmark_start_run", {
       request,

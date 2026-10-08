@@ -1845,6 +1845,7 @@ pub(super) mod tests {
             max_executions: 6,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         };
         let attempts = |run: &str, outcome: &str| {
             versions

@@ -46,6 +46,8 @@ pub fn validate(draft: &BenchmarkDraft) -> Vec<String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct StepDecision {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<super::executor::Decision>,
     pub root_attempt_id: String,
     pub root_decision_id: String,
     pub step_index: usize,
@@ -72,6 +74,70 @@ pub(super) struct SavedStep {
     pub decision: Option<StepDecision>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceStep {
+    pub index: usize,
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub entry: EntryState,
+    pub prompt: String,
+    pub attempt: Attempt,
+    pub input_hash: Option<String>,
+    pub executor_decision: Option<super::executor::Decision>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Trace {
+    pub root: Attempt,
+    pub policy: Option<super::workflow_policy::WorkflowPolicy>,
+    pub steps: Vec<TraceStep>,
+}
+
+impl Store {
+    pub async fn workflow_trace(&self, root_id: &str) -> Result<Trace> {
+        let root = self.attempt(root_id).await?;
+        let is_root: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attempts WHERE id=?)")
+            .bind(root_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if !is_root
+            || self
+                .version(&root.version_id)
+                .await?
+                .manifest
+                .workflow
+                .is_none()
+        {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Select a workflow root attempt",
+            ));
+        }
+        let policy = self.run(&root.run_id).await?.request.workflow_policy;
+        let steps = saved_steps(self, root_id)
+            .await?
+            .into_iter()
+            .map(|step| TraceStep {
+                index: step.index,
+                id: step.id,
+                parent_id: step.parent_id,
+                entry: step.entry,
+                prompt: step.prompt,
+                attempt: step.attempt,
+                input_hash: step.decision.as_ref().map(|d| d.content_hash.clone()),
+                executor_decision: step.decision.and_then(|d| d.executor),
+            })
+            .collect();
+        Ok(Trace {
+            root,
+            policy,
+            steps,
+        })
+    }
+}
+
 impl SavedStep {
     pub(super) fn validate_decision(&self, root_id: &str) -> Result<()> {
         let Some(record) = &self.decision else {
@@ -91,7 +157,19 @@ impl SavedStep {
             || self.entry.step_id != self.id
             || self.entry.parent_step_id != self.parent_id
             || self.entry.content_hash != super::routing::entry_hash(&self.entry)
-            || snapshot.selection_provenance != "workflow_root_pin_v1"
+            || snapshot.selection_provenance
+                != if record.executor.is_some() {
+                    "workflow_research_policy_v1"
+                } else {
+                    "workflow_root_pin_v1"
+                }
+            || record.executor.as_ref().is_some_and(|d| {
+                d.request.surface != "benchmark"
+                    || d.request.request_key != format!("workflow:{root_id}:{}", self.index)
+                    || d.chosen.as_ref() != Some(&self.attempt.configuration)
+                    || d.request.prediction.task.prompt != self.prompt
+                    || d.created_at > snapshot.created_at
+            })
             || snapshot.request.configurations != [self.attempt.configuration.clone()]
             || snapshot.constraints.hard_candidate_key.as_deref()
                 != Some(super::routing::candidate_key(&self.attempt.configuration).as_str())
@@ -112,7 +190,8 @@ impl SavedStep {
 pub(super) async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<SavedStep>> {
     let rows = sqlx::query("SELECT step_index,step_id,parent_step_id,entry_state_json,prompt,data_json,decision_json FROM workflow_steps WHERE root_attempt_id=? ORDER BY step_index")
         .bind(root_id).fetch_all(&store.pool).await?;
-    rows.into_iter()
+    let steps: Vec<SavedStep> = rows
+        .into_iter()
         .map(|row| {
             let step = SavedStep {
                 index: row.get::<i64, _>(0) as usize,
@@ -129,7 +208,62 @@ pub(super) async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<Save
             step.validate_decision(root_id)?;
             Ok(step)
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    for step in &steps {
+        if let Some(decision) = step.decision.as_ref().and_then(|d| d.executor.as_ref()) {
+            let saved = store
+                .executor_decision(&decision.request.request_key)
+                .await?
+                .ok_or_else(|| {
+                    BenchmarkError::new("evidence_missing", "Workflow executor decision is missing")
+                })?;
+            if saved.decision.artifact_hash != decision.artifact_hash {
+                return Err(BenchmarkError::new(
+                    "evidence_mismatch",
+                    "Workflow executor decision changed",
+                ));
+            }
+        }
+    }
+    if steps
+        .iter()
+        .any(|s| s.decision.as_ref().is_some_and(|d| d.executor.is_some()))
+    {
+        let root = store.attempt(root_id).await?;
+        let version = store.version(&root.version_id).await?;
+        let policy = store
+            .run(&root.run_id)
+            .await?
+            .request
+            .workflow_policy
+            .ok_or_else(|| {
+                BenchmarkError::new("evidence_mismatch", "Research workflow policy is missing")
+            })?;
+        let configuration = policy.configuration()?;
+        for step in &steps {
+            let selection = step
+                .decision
+                .as_ref()
+                .and_then(|d| d.executor.as_ref())
+                .ok_or_else(|| {
+                    BenchmarkError::new(
+                        "evidence_missing",
+                        "Research workflow selection is missing",
+                    )
+                })?;
+            if root.configuration != configuration
+                || selection.request.context_id != configuration.id
+                || selection.request.prediction.task
+                    != super::learned::PublicTask::from(&step_version(&version, step).manifest)
+            {
+                return Err(BenchmarkError::new(
+                    "evidence_mismatch",
+                    "Research workflow inputs no longer match the frozen policy",
+                ));
+            }
+        }
+    }
+    Ok(steps)
 }
 
 fn step_entry(
@@ -178,13 +312,14 @@ fn step_entry(
 }
 
 async fn prepare_step(
-    store: &Store,
+    service: &BenchmarkService,
     root: &Attempt,
     version: &BenchmarkVersion,
     index: usize,
     remaining: u32,
     previous: Option<&str>,
 ) -> Result<SavedStep> {
+    let store = &service.store;
     let workflow = version.manifest.workflow.as_ref().unwrap();
     let spec = &workflow.steps[index];
     let entry = step_entry(root, &version.manifest, index, remaining, previous)?;
@@ -243,6 +378,21 @@ async fn prepare_step(
         attempt: child,
         decision: None,
     };
+    let policy = store.run(&root.run_id).await?.request.workflow_policy;
+    let executor = if let Some(policy) = &policy {
+        let selected = policy
+            .select(service, root, &step_version(version, &saved), index)
+            .await?;
+        saved.attempt.configuration = selected.chosen.clone().ok_or_else(|| {
+            BenchmarkError::new(
+                "no_available_worker",
+                "No eligible worker for the frozen workflow policy",
+            )
+        })?;
+        Some(selected)
+    } else {
+        None
+    };
     let mut tx = store.pool.begin().await?;
     let root_decision: String = sqlx::query_scalar(
         "SELECT data_json FROM decision_snapshots WHERE run_id=? AND version_id=?",
@@ -253,16 +403,27 @@ async fn prepare_step(
     .await?;
     let root_decision: DecisionSnapshot = serde_json::from_str(&root_decision)?;
     let mut request = root_decision.request.clone();
-    request.configurations = vec![root.configuration.clone()];
+    request.configurations = vec![saved.attempt.configuration.clone()];
+    request.workflow_policy = None;
     request.version_ids = vec![version.id.clone()];
     request.timeout_seconds = remaining;
     request.repetitions = 1;
     request.max_executions = 1;
     let mut snapshot =
         super::routing::snapshot(&root.run_id, &step_version(version, &saved), &request);
-    snapshot.selection_provenance = "workflow_root_pin_v1".into();
-    snapshot.candidates[0].reason = Some("Pinned by the root attempt; fresh provider admission is checked separately, no alternative worker was selected".into());
+    snapshot.selection_provenance = if executor.is_some() {
+        "workflow_research_policy_v1"
+    } else {
+        "workflow_root_pin_v1"
+    }
+    .into();
+    snapshot.candidates[0].reason = Some(if executor.is_some() {
+        "Committed research policy choice; availability and fallback are in the linked executor decision"
+    } else {
+        "Pinned by the root attempt; fresh provider admission is checked separately, no alternative worker was selected"
+    }.into());
     let mut decision = StepDecision {
+        executor,
         root_attempt_id: root.id.clone(),
         root_decision_id: root_decision.id,
         step_index: index,
@@ -339,17 +500,22 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
                 .and_then(|value| total.checked_add(value))
         })
     };
-    // Every step runs the root's configuration; the newest step that named
-    // the model that answered speaks for the task.
+    // A root-pinned workflow names its most recent worker. Research policies
+    // clear that single-worker attribution below and retain the step records.
     root.resolved_model = executed
         .iter()
         .rev()
         .find_map(|step| step.attempt.resolved_model.clone());
     if let Some(last) = executed.last() {
-        root.started_at = executed
+        let first_step = executed
             .iter()
             .filter_map(|step| step.attempt.started_at)
             .min();
+        root.started_at = if root.configuration.execution_profile == "workflow_policy" {
+            root.started_at.into_iter().chain(first_step).min()
+        } else {
+            first_step
+        };
         root.session_id = last.attempt.session_id.clone();
         root.host_run_id = last.attempt.host_run_id.clone();
         root.observed = last.attempt.observed.clone();
@@ -367,6 +533,12 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
             observed.execution_profile = "native_text_auxiliary".into();
         }
     }
+    if root.configuration.execution_profile == "workflow_policy" {
+        // No single executor produced this result. Each step keeps its own
+        // observed configuration, and the root remains a policy measurement.
+        root.observed = None;
+        root.resolved_model = None;
+    }
 }
 
 async fn seal_root(store: &Store, root: &mut Attempt, steps: &[SavedStep]) -> Result<()> {
@@ -376,6 +548,11 @@ async fn seal_root(store: &Store, root: &mut Attempt, steps: &[SavedStep]) -> Re
         .filter_map(|step| step.attempt.finished_at)
         .max()
         .or_else(|| Some(now()));
+    if root.configuration.execution_profile == "workflow_policy" {
+        // Whole-trajectory wall time includes selection and orchestration.
+        // duration_ms separately retains the sum of measured worker durations.
+        root.finished_at = Some(now());
+    }
     root.evidence_hash = Some(
         fixtures::seal(
             &store.root,
@@ -399,7 +576,23 @@ fn prefix_violation(steps: &[SavedStep], budget_ms: u64) -> Option<(&'static str
         .iter()
         .filter(|step| step.attempt.outcome.as_deref() == Some("completed"))
         .collect();
-    if let Some(first) = completed.first() {
+    if completed
+        .iter()
+        .any(|s| s.decision.as_ref().is_some_and(|d| d.executor.is_some()))
+    {
+        if completed.iter().any(|s| {
+            s.attempt.observed.as_ref().is_none_or(|observed| {
+                super::routing::candidate_key(observed)
+                    != super::routing::candidate_key(&s.attempt.configuration)
+                    || observed.inventory_revision != s.attempt.configuration.inventory_revision
+            })
+        }) {
+            return Some((
+                "selection_changed",
+                "A workflow worker did not acknowledge its committed selection",
+            ));
+        }
+    } else if let Some(first) = completed.first() {
         if first.attempt.observed.is_none()
             || completed
                 .iter()
@@ -502,9 +695,7 @@ pub async fn execute(
         }
         if steps.len() == index {
             let previous = steps.last().and_then(|s| s.attempt.output.as_deref());
-            steps.push(
-                prepare_step(&service.store, &root, &version, index, remaining, previous).await?,
-            );
+            steps.push(prepare_step(service, &root, &version, index, remaining, previous).await?);
             aggregate(&mut root, &steps);
             service.store.save_attempt(&root).await?;
         }
@@ -513,20 +704,47 @@ pub async fn execute(
         saved.attempt.started_at = Some(now());
         service.store.save_attempt(&saved.attempt).await?;
         let effective_version = step_version(&version, saved);
-        let result = service
-            .backend
-            .execute(
-                &service.store,
-                saved.attempt.clone(),
-                effective_version,
-                remaining.min(saved.entry.remaining_budget_seconds),
-                cancel.clone(),
-            )
-            .await;
+        let result = if root.configuration.execution_profile == "workflow_policy" {
+            service
+                .execute_workflow_policy_step(
+                    &root.id,
+                    saved.attempt.clone(),
+                    effective_version,
+                    remaining.min(saved.entry.remaining_budget_seconds),
+                    cancel.clone(),
+                )
+                .await
+        } else {
+            service
+                .backend
+                .execute(
+                    &service.store,
+                    saved.attempt.clone(),
+                    effective_version,
+                    remaining.min(saved.entry.remaining_budget_seconds),
+                    cancel.clone(),
+                )
+                .await
+        };
         match result {
             Ok(mut completed) => {
                 completed.phase = "terminal".into();
                 saved.attempt = completed;
+            }
+            Err(error)
+                if root.configuration.execution_profile == "workflow_policy"
+                    && !matches!(
+                        error.code.as_str(),
+                        "dispatch_uncertain" | "storage_unavailable"
+                    ) =>
+            {
+                // A research trajectory records its actual unavailable/quota
+                // outcome. It cannot silently move accounts or retry a worker.
+                saved.attempt = service.store.attempt(&saved.attempt.id).await?;
+                saved.attempt.phase = "terminal".into();
+                saved.attempt.outcome = Some(error.code);
+                saved.attempt.reason = Some(error.message);
+                saved.attempt.finished_at = Some(now());
             }
             Err(error) if error.code == "account_busy" => {
                 saved.attempt = service.store.attempt(&saved.attempt.id).await?;
@@ -733,6 +951,7 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         };
         let run = service.start_run(request).await.unwrap();
         let mut root = run.attempts[0].clone();
@@ -745,7 +964,7 @@ mod tests {
     #[tokio::test]
     async fn step_decision_precedes_execution_and_survives_retries_unchanged() {
         let (_directory, service, backend, root, version) = setup().await;
-        let prepared = prepare_step(&service.store, &root, &version, 0, 17, None)
+        let prepared = prepare_step(&service, &root, &version, 0, 17, None)
             .await
             .unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
@@ -844,7 +1063,7 @@ mod tests {
     #[tokio::test]
     async fn step_export_preserves_causal_inputs_without_root_rewards_or_private_fields() {
         let (_directory, service, _, root, version) = setup().await;
-        let prepared = prepare_step(&service.store, &root, &version, 0, 23, None)
+        let prepared = prepare_step(&service, &root, &version, 0, 23, None)
             .await
             .unwrap();
         let (manifest, rows) = exported_steps(&service, false).await;
@@ -904,7 +1123,7 @@ mod tests {
     #[tokio::test]
     async fn changed_step_input_is_refused_before_dispatch_and_export() {
         let (_directory, service, backend, root, version) = setup().await;
-        let prepared = prepare_step(&service.store, &root, &version, 0, 30, None)
+        let prepared = prepare_step(&service, &root, &version, 0, 30, None)
             .await
             .unwrap();
         sqlx::query(
@@ -1107,7 +1326,7 @@ mod tests {
     #[tokio::test]
     async fn workflow_recovery_waits_for_resume_and_never_repeats_completed_prefix() {
         let (_directory, service, backend, root, version) = setup().await;
-        let mut first = prepare_step(&service.store, &root, &version, 0, 30, None)
+        let mut first = prepare_step(&service, &root, &version, 0, 30, None)
             .await
             .unwrap();
         first.attempt.phase = "preparing".into();
@@ -1150,7 +1369,7 @@ mod tests {
     #[tokio::test]
     async fn uncertain_workflow_step_is_never_automatically_resent() {
         let (_directory, service, backend, root, version) = setup().await;
-        let mut first = prepare_step(&service.store, &root, &version, 0, 30, None)
+        let mut first = prepare_step(&service, &root, &version, 0, 30, None)
             .await
             .unwrap();
         first.attempt.phase = "dispatching".into();
@@ -1171,19 +1390,12 @@ mod tests {
     #[tokio::test]
     async fn workflow_recovery_checks_selection_and_budget_before_final_evaluation() {
         let (_directory, service, backend, root, version) = setup().await;
-        let mut first = prepare_step(&service.store, &root, &version, 0, 30, None)
+        let mut first = prepare_step(&service, &root, &version, 0, 30, None)
             .await
             .unwrap();
-        let mut second = prepare_step(
-            &service.store,
-            &root,
-            &version,
-            1,
-            29,
-            Some("public report"),
-        )
-        .await
-        .unwrap();
+        let mut second = prepare_step(&service, &root, &version, 1, 29, Some("public report"))
+            .await
+            .unwrap();
         for saved in [&mut first, &mut second] {
             saved.attempt.phase = "terminal".into();
             saved.attempt.outcome = Some("completed".into());

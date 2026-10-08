@@ -81,6 +81,31 @@ pub async fn benchmark_preview_run(app: AppHandle, request: RunRequest) -> Resul
     service(&app).await?.preview_run(&request).await
 }
 #[tauri::command]
+pub async fn benchmark_preview_workflow_policy(
+    app: AppHandle,
+    request: benchmarks::workflow_policy::WorkflowRunRequest,
+) -> Result<RunPreview> {
+    service(&app).await?.preview_run(&request.try_into()?).await
+}
+#[tauri::command]
+pub async fn benchmark_start_workflow_policy(
+    app: AppHandle,
+    request: benchmarks::workflow_policy::WorkflowRunRequest,
+) -> Result<BenchmarkRun> {
+    service(&app).await?.start_run(request.try_into()?).await
+}
+#[tauri::command]
+pub async fn benchmark_get_workflow_trace(
+    app: AppHandle,
+    root_attempt_id: String,
+) -> Result<benchmarks::workflow::Trace> {
+    service(&app)
+        .await?
+        .store
+        .workflow_trace(&root_attempt_id)
+        .await
+}
+#[tauri::command]
 pub async fn benchmark_start_run(
     app: AppHandle,
     request: RunRequest,

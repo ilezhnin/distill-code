@@ -673,6 +673,7 @@ mod tests {
             max_executions: 20,
             preview: false,
             parallelism: None,
+            workflow_policy: None,
         }
     }
     fn matrix() -> (QueryData, RoutingEvidenceQuery) {
