@@ -4435,6 +4435,9 @@ pub fn seed_definitions() -> Vec<BenchmarkDraft> {
 }
 
 #[cfg(test)]
+mod pipeline_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn repository_pins_track_the_model_and_sandbox_but_not_unrelated_rows() {
