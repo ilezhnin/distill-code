@@ -32,6 +32,7 @@ import {
   SectionHeading,
   SelectField,
 } from "./BenchmarkPrimitives";
+import { BenchmarkQualificationPanel } from "./BenchmarkQualificationPanel";
 
 interface Props {
   definition?: BenchmarkDefinition;
@@ -819,27 +820,27 @@ export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
           <SectionHeading title={t("benchmarks:editor.versions")} />
           <ul className="divide-y divide-border">
             {definition.versions.map((version) => (
-              <li
-                key={version.id}
-                className="flex items-center justify-between gap-3 py-2"
-              >
-                <div className="min-w-0 text-sm">
-                  {formatDate(version.publishedAt, {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                  })}
-                  <code className="ml-2 text-xs text-muted-foreground">
-                    {shortId(version.contentHash)}
-                  </code>
+              <li key={version.id} className="space-y-2 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 text-sm">
+                    {formatDate(version.publishedAt, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                    <code className="ml-2 text-xs text-muted-foreground">
+                      {shortId(version.contentHash)}
+                    </code>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => onRun(version.id)}
+                  >
+                    {t("benchmarks:actions.preview")}
+                  </Button>
                 </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => onRun(version.id)}
-                >
-                  {t("benchmarks:actions.preview")}
-                </Button>
+                <BenchmarkQualificationPanel version={version} />
               </li>
             ))}
           </ul>

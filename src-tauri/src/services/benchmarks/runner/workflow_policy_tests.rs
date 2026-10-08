@@ -129,9 +129,37 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
                 .collect::<Vec<_>>(),
             expected
         );
+        assert_eq!(steps[0].attempt.native_execution_ms, Some(8));
+        assert_eq!(steps[1].entry.previous_reports.len(), 1);
+        // The common native entry recipe commits a bounded public result,
+        // never a root verdict or a renderer-formatted report. Its exact
+        // outcome/output envelope is also what the deployment path consumes.
+        let public_result: Value =
+            serde_json::from_str(&steps[1].entry.previous_reports[0]).unwrap();
         assert_eq!(
-            steps[1].entry.previous_reports,
-            [steps[0].attempt.output.clone().unwrap()]
+            public_result,
+            json!({"outcome":"completed","output":steps[0].attempt.output.as_ref().unwrap()})
+        );
+        assert_eq!(
+            steps[1].entry.content_hash,
+            crate::services::benchmarks::routing::entry_hash(&steps[1].entry)
+        );
+        assert_eq!(
+            steps[1]
+                .decision
+                .as_ref()
+                .unwrap()
+                .executor
+                .as_ref()
+                .unwrap()
+                .request
+                .prediction
+                .task
+                .entry
+                .as_ref()
+                .unwrap()
+                .previous_reports,
+            steps[1].entry.previous_reports
         );
         assert!(steps.iter().all(|s| s.attempt.evaluations.is_empty()));
         for step in &steps {

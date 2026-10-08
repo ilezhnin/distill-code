@@ -216,10 +216,60 @@ fn fingerprint_of(harness_id: &str, executable: &Path) -> Value {
 /// happens to match it would be re-spelled with any further arguments on its
 /// line silently dropped.
 fn managed_launcher(harness_id: &str, executable: &Path) -> Option<(PathBuf, PathBuf)> {
-    if !managed_acp_tools::is_managed(harness_id) {
+    if managed_acp_tools::is_managed(harness_id) {
+        return managed_cmd_launcher(executable);
+    }
+    // An explicit tools directory disables managed installation. An isolated
+    // app-driver fixture can still name a Node entrypoint, but only its exact
+    // validated path and bytes authorize bypassing this deliberately simple
+    // wrapper. Production pins and arbitrary third-party launchers stay on the
+    // existing path above.
+    #[cfg(feature = "app-test-driver")]
+    {
+        fixture_cmd_launcher(harness_id, executable, |entrypoint| {
+            matches!(super::execution_fixture::verified(entrypoint), Ok(Some(_)))
+        })
+    }
+    #[cfg(not(feature = "app-test-driver"))]
+    {
+        None
+    }
+}
+
+#[cfg(feature = "app-test-driver")]
+fn fixture_cmd_launcher(
+    harness_id: &str,
+    shim: &Path,
+    verified: impl FnOnce(&Path) -> bool,
+) -> Option<(PathBuf, PathBuf)> {
+    if harness_id != "claude-acp"
+        || !shim
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+    {
         return None;
     }
-    managed_cmd_launcher(executable)
+    let body = std::fs::read_to_string(shim).ok()?;
+    let mut lines = body.lines().map(str::trim).filter(|line| !line.is_empty());
+    if !lines.next()?.eq_ignore_ascii_case("@echo off") {
+        return None;
+    }
+    let line = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let (node, entrypoint) = line
+        .strip_prefix('"')?
+        .strip_suffix("\" %*")?
+        .split_once("\" \"")?;
+    // Never silently drop shell commands or extra launcher arguments. Only
+    // the two quoted paths and literal argument forwarding are accepted.
+    if node.contains('"') || entrypoint.contains('"') {
+        return None;
+    }
+    let node = cmd_launcher_target(node, shim.parent()?);
+    let entrypoint = cmd_launcher_target(entrypoint, shim.parent()?);
+    (node.is_file() && verified(&entrypoint)).then_some((node, entrypoint))
 }
 
 fn managed_cmd_launcher(shim: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -766,10 +816,25 @@ impl Bridge {
     /// Capture turn ownership at stdout receipt, before notifications can
     /// wait behind another session's disk writes in the host event queue.
     pub async fn prompt(&self, params: Value, run_id: String) -> Result<Value, Value> {
+        self.prompt_with_admission(params, run_id, None).await
+    }
+
+    pub(super) async fn prompt_with_admission(
+        &self,
+        params: Value,
+        run_id: String,
+        admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> Result<Value, Value> {
         let session_id = protocol::session_id(&params)
             .ok_or_else(|| protocol::invalid_params("sessionId required"))?;
-        self.request_owned("session/prompt", params, None, Some((session_id, run_id)))
-            .await
+        self.request_owned_with_admission(
+            "session/prompt",
+            params,
+            None,
+            Some((session_id, run_id)),
+            admission,
+        )
+        .await
     }
 
     async fn request_owned(
@@ -778,6 +843,18 @@ impl Bridge {
         params: Value,
         deadline: Option<Duration>,
         turn: Option<(String, String)>,
+    ) -> Result<Value, Value> {
+        self.request_owned_with_admission(method, params, deadline, turn, None)
+            .await
+    }
+
+    async fn request_owned_with_admission(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: Option<Duration>,
+        turn: Option<(String, String)>,
+        admission: Option<tokio::sync::OwnedMutexGuard<()>>,
     ) -> Result<Value, Value> {
         if !self.is_alive() {
             return Err(protocol::internal(format!(
@@ -802,6 +879,11 @@ impl Bridge {
                 self.harness
             )));
         }
+        // Revocation linearizes against this synchronous native RPC submission,
+        // after the receipt claim and every awaited host preparation step.
+        // Already submitted work retains its durable identity; no lock is held
+        // while waiting for a provider answer.
+        drop(admission);
         let answer = match deadline {
             Some(deadline) => match tokio::time::timeout(deadline, rx).await {
                 Ok(answer) => answer,
@@ -1319,6 +1401,155 @@ pub(super) mod tests {
         // The body itself is one we would have written, so the gate is the only
         // thing refusing it.
         assert!(managed_cmd_launcher(&shim).is_some());
+    }
+
+    #[cfg(feature = "app-test-driver")]
+    #[test]
+    fn fixture_launcher_requires_exact_authority_and_preserves_other_shell_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("node.exe");
+        let entrypoint = dir.path().join("invented.mjs");
+        let shim = dir.path().join("fixture.cmd");
+        std::fs::write(&node, "not executed").unwrap();
+        std::fs::write(&entrypoint, "invented protocol fixture").unwrap();
+        let body = format!(
+            "@echo off\r\n\"{}\" \"{}\" %*\r\n",
+            node.display(),
+            entrypoint.display()
+        );
+        std::fs::write(&shim, &body).unwrap();
+        let expected = (node.clone(), entrypoint.clone());
+        assert_eq!(
+            fixture_cmd_launcher("claude-acp", &shim, |path| path == entrypoint),
+            Some(expected)
+        );
+        assert!(fixture_cmd_launcher("claude-acp", &shim, |_| false).is_none());
+        assert!(fixture_cmd_launcher("codex-acp", &shim, |_| true).is_none());
+        assert!(fixture_cmd_launcher("grok-acp", &shim, |_| true).is_none());
+        for changed in [
+            body.replace(" %*", " --other %*"),
+            body.replace(" %*", " %* & echo other"),
+            format!("{body}echo other\r\n"),
+            body.replace("@echo off", "@echo off\r\necho other"),
+            body.replace(" %*", ""),
+        ] {
+            std::fs::write(&shim, changed).unwrap();
+            assert!(fixture_cmd_launcher("claude-acp", &shim, |_| {
+                panic!("unrecognized shell behavior must be refused before fixture verification")
+            })
+            .is_none());
+        }
+    }
+
+    #[cfg(all(feature = "app-test-driver", windows))]
+    #[test]
+    fn an_isolated_fixture_override_fingerprints_and_launches_the_attested_entrypoint() {
+        const CHILD_ENV: &str = "DISTILL_FIXTURE_LAUNCHER_REGRESSION_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Isolate startup-only fixture state and the tools override from
+            // every other test. This child never starts Node or a provider.
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("fixture-launcher-regression");
+            std::fs::create_dir(&root).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "services::agent_host::bridge::tests::an_isolated_fixture_override_fingerprints_and_launches_the_attested_entrypoint",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("DISTILL_E2E_MODE", "1")
+                .env("DISTILL_E2E_RUN_ID", "fixture-launcher-regression")
+                .env("DISTILL_E2E_RUN_ROOT", &root)
+                .env("APP_TEST_DRIVER_TOKEN", "a".repeat(32))
+                .env("DISTILL_ACP_TOOLS_DIR", &root)
+                .env_remove("DISTILL_E2E_RUNTIME_CONFIG");
+            crate::services::process::apply_no_window(&mut command);
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "fixture regression child failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let root = PathBuf::from(std::env::var_os("DISTILL_E2E_RUN_ROOT").unwrap());
+        let node = root.join("node.exe");
+        let entrypoint = root.join("invented.mjs");
+        let shim = root.join("claude-agent-acp.cmd");
+        let manifest = root.join("fixture.json");
+        std::fs::write(&node, "not executed").unwrap();
+        std::fs::write(&entrypoint, "invented protocol fixture").unwrap();
+        std::fs::write(
+            &shim,
+            format!(
+                "@echo off\r\n\"{}\" \"{}\" %*\r\n",
+                node.display(),
+                entrypoint.display()
+            ),
+        )
+        .unwrap();
+        assert!(managed_launcher("claude-acp", &shim).is_none());
+        assert_eq!(
+            fingerprint_of("claude-acp", &shim)["path"],
+            shim.to_string_lossy().as_ref()
+        );
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&json!({
+                "schemaVersion":1,"kind":"invented-native-text","entrypoint":entrypoint,
+                "sha256":super::super::execution::file_digest(&entrypoint).unwrap()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::env::set_var("DISTILL_E2E_NATIVE_FIXTURE_MANIFEST", &manifest);
+        let mode = crate::services::e2e_mode::E2eMode::from_process_env(
+            "com.levocat.distill.e2e.fixture-launcher-regression",
+        )
+        .unwrap()
+        .unwrap();
+        super::super::execution_fixture::initialize(&mode).unwrap();
+        assert!(!managed_acp_tools::is_managed("claude-acp"));
+        assert!(managed_launcher("codex-acp", &shim).is_none());
+        assert_eq!(
+            fingerprint_of("claude-acp", &shim)["path"],
+            entrypoint.to_string_lossy().as_ref()
+        );
+        let spec = super::super::harness::harness("claude-acp").unwrap();
+        let env = SpawnEnv {
+            shell_env: HashMap::new(),
+            prepend_dirs: vec![root.clone()],
+            extra_env: Vec::new(),
+            remove_env: Vec::new(),
+        };
+        let launch = owned_launch(NativeProvider::Claude, spec, &env, None, None).unwrap();
+        assert_eq!(launch.program, node);
+        assert_eq!(launch.fingerprint_target, entrypoint);
+        assert_eq!(launch.args[0], "--import");
+        assert!(launch.args[1].starts_with("data:text/javascript;base64,"));
+        let other = root.join("other.mjs");
+        std::fs::copy(&entrypoint, &other).unwrap();
+        let body = std::fs::read_to_string(&shim).unwrap();
+        std::fs::write(
+            &shim,
+            body.replace(entrypoint.to_str().unwrap(), other.to_str().unwrap()),
+        )
+        .unwrap();
+        assert!(managed_launcher("claude-acp", &shim).is_none());
+        assert!(owned_launch(NativeProvider::Claude, spec, &env, None, None).is_err());
+        std::fs::write(&shim, body).unwrap();
+        // Missing/changed attestation cannot preserve entrypoint provenance or
+        // acquire an owned launch, even while a cached inventory exists.
+        std::fs::write(&entrypoint, "changed fixture").unwrap();
+        assert_eq!(
+            fingerprint_of("claude-acp", &shim)["path"],
+            shim.to_string_lossy().as_ref()
+        );
+        assert!(owned_launch(NativeProvider::Claude, spec, &env, None, None).is_err());
     }
 
     #[tokio::test]

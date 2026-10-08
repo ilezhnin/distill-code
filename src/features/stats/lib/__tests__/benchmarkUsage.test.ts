@@ -4,12 +4,75 @@ import {
   projectBenchmarkUsage,
   resetUsageLedgerForTests,
 } from "../usageLedger";
-import { recordAcpSessionUsage } from "../usageRecorder";
+import {
+  recordAcpSessionUsage,
+  syncChatSessionsIntoUsageLedger,
+} from "../usageRecorder";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { observeExecutionOwner } from "@/features/chat/lib/executionOwnership";
 
 beforeEach(() => {
   localStorage.clear();
   resetUsageLedgerForTests();
+});
+it("records application-owned work before session hydration and preserves it on replay", () => {
+  const task = "application-owned-usage";
+  const benchmark = "benchmark-owned-usage";
+  observeExecutionOwner(task, { kind: "task", id: "task:usage-binding" });
+  observeExecutionOwner(benchmark, {
+    kind: "benchmark",
+    id: "benchmark-usage-attempt",
+  });
+  recordAcpSessionUsage(task, {
+    mode: "add",
+    inputTokens: 30,
+    outputTokens: 10,
+    costUsd: 0.01,
+    turnsDelta: 1,
+  });
+  recordAcpSessionUsage(task, {
+    mode: "replace",
+    inputTokens: 30,
+    outputTokens: 10,
+    costUsd: 0.01,
+  });
+  recordAcpSessionUsage(benchmark, {
+    mode: "add",
+    inputTokens: 90,
+    outputTokens: 90,
+    turnsDelta: 1,
+  });
+  expect(getUsageLedger().sessions[task]).toMatchObject({
+    inputTokens: 30,
+    outputTokens: 10,
+    turns: 1,
+    costUsd: 0.01,
+  });
+  expect(getUsageLedger().sessions[benchmark]).toBeUndefined();
+  const base = {
+    type: "agent" as const,
+    title: "Invented task",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    messageCount: 1,
+  };
+  useChatSessionStore.setState({
+    sessions: [
+      {
+        ...base,
+        id: task,
+        executionOwner: { kind: "task", id: "task:usage-binding" },
+      },
+      {
+        ...base,
+        id: benchmark,
+        executionOwner: { kind: "benchmark", id: "benchmark-usage-attempt" },
+      },
+    ],
+  });
+  syncChatSessionsIntoUsageLedger();
+  expect(getUsageLedger().sessions[task].totalTokens).toBe(40);
+  expect(getUsageLedger().sessions[benchmark]).toBeUndefined();
 });
 
 it("projects sealed benchmark usage once and ignores live/replayed accounting", () => {

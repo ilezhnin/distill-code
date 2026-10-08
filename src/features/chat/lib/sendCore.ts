@@ -1,5 +1,6 @@
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
+import { dispatchOwnedTaskInChat } from "./ownedTaskDispatch";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   appendAttachmentPaths,
@@ -70,6 +71,7 @@ export interface SendCorePersona {
 }
 
 export interface SendCoreOptions {
+  ownedTaskBindingId?: string;
   executorRequestKey?: string;
   persona?: SendCorePersona;
   /** Attachment drafts included with the foreground prompt. */
@@ -216,6 +218,8 @@ export async function dispatchPrompt(
   text: string,
   opts: SendCoreOptions,
 ): Promise<void> {
+  if (opts.ownedTaskBindingId)
+    return dispatchOwnedTaskInChat(sessionId, text, opts);
   const sid = logSessionId(sessionId);
   const tSendStart = performance.now();
   const {

@@ -1872,6 +1872,7 @@ pub(super) mod tests {
                     evaluations: vec![],
                     event_cursor: 1,
                     workflow_steps: Vec::new(),
+                    native_execution_ms: None,
                     resolved_model: None,
                 })
                 .collect::<Vec<_>>()

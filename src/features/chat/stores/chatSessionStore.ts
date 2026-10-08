@@ -212,7 +212,7 @@ export function getVisibleSessions<
 ): T[] {
   return sessions.filter(
     (session) =>
-      !session.executionOwner &&
+      session.executionOwner?.kind !== "benchmark" &&
       hasSessionStarted(session, messagesBySession[session.id]),
   );
 }

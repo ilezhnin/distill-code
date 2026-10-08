@@ -34,6 +34,10 @@ const acpLoadSession = vi.hoisted(() => vi.fn());
 const acpPrepareSession = vi.hoisted(() => vi.fn());
 const resolvePath = vi.hoisted(() => vi.fn());
 const checkDirectoriesExist = vi.hoisted(() => vi.fn());
+const reconcile = vi.hoisted(() => vi.fn(async (_sessionId: string) => false));
+vi.mock("@/features/chat/lib/ownedTaskDispatch", () => ({
+  reconcileOwnedTaskSession: reconcile,
+}));
 
 vi.mock("@/shared/api/acp", () => ({
   acpGetSessionInfo: (...args: unknown[]) => acpGetSessionInfo(...args),
@@ -133,6 +137,7 @@ function notificationFromLastMessage(
 describe("loadSessionMessages", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    reconcile.mockReset().mockResolvedValue(false);
     resetSessionTargetCoordinatorsForTests();
     clearReplayAssistantTracking();
     window.localStorage.clear();
@@ -507,5 +512,55 @@ describe("loadSessionMessages", () => {
 
     expect(acpLoadSession).toHaveBeenCalledTimes(2);
     expect(messagesFor("s5").map((m) => m.role)).toEqual(["user"]);
+  });
+
+  it("reconciles an owned task after replay releases its transcript without inferring completion from null activeRunId", async () => {
+    const id = "owned-task-replay-recovery";
+    seedSession(
+      {
+        id,
+        workingDir: "/invented/task",
+        executionOwner: { kind: "task", id: "task:invented-replay-binding" },
+        activeRunId: null,
+      },
+      { replay: false },
+    );
+    ensureReplayBuffer(id).push(replayUserMessage("native-owned-user"));
+    const reply = ensureReplayAssistantMessage(id, "native-owned-assistant", 2);
+    reply.content = [{ type: "text", text: "Native replay reply" }];
+    reconcile.mockImplementation(async (sessionId: string) => {
+      expect(sessionId).toBe(id);
+      expect(useChatStore.getState().loadingSessionIds.has(id)).toBe(false);
+      expect(messagesFor(id).map((message) => message.id)).toEqual([
+        "native-owned-user",
+        "native-owned-assistant",
+      ]);
+      expect(messagesFor(id)[1].metadata?.completionStatus).toBe("inProgress");
+      return false;
+    });
+    await expect(loadSessionMessages(id)).resolves.toBe(true);
+    expect(reconcile).toHaveBeenCalledWith(id);
+    expect(messagesFor(id)[1].metadata?.completionStatus).toBe("inProgress");
+  });
+
+  it("rechecks a cached owned transcript on reopening without another native replay or changes to its messages", async () => {
+    const id = "owned-task-cached-recovery";
+    seedSession(
+      {
+        id,
+        workingDir: "/invented/task",
+        executionOwner: { kind: "task", id: "task:invented-cached-binding" },
+      },
+      { replay: false },
+    );
+    const messages = [
+      { ...replayUserMessage("canonical-owned-user"), created: 1 },
+    ];
+    useChatStore.getState().setMessages(id, messages);
+    await expect(loadSessionMessages(id)).resolves.toBe(true);
+    await expect(loadSessionMessages(id)).resolves.toBe(true);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(acpLoadSession).not.toHaveBeenCalled();
+    expect(messagesFor(id)).toEqual(messages);
   });
 });

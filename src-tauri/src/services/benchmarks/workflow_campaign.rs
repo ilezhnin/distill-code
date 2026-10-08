@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod acceptance;
 pub mod report;
 
 fn invalid(message: impl Into<String>) -> BenchmarkError {

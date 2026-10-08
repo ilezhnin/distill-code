@@ -495,6 +495,12 @@ impl NativeProvider {
 
     /// Checks that `runtime` is the build the profile was verified against.
     pub fn verify_runtime(self, runtime: &RuntimePaths) -> Result<(), String> {
+        #[cfg(feature = "app-test-driver")]
+        if self == NativeProvider::Claude
+            && super::execution_fixture::verified(runtime.entrypoint)?.is_some()
+        {
+            return Ok(());
+        }
         let Some(policy) = self.policy() else {
             return validate_native_runtime(runtime.entrypoint);
         };

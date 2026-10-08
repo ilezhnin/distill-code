@@ -481,6 +481,29 @@ impl SessionStore {
         }
     }
 
+    fn row_to_owned_session(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, String> {
+        let mut record = Self::row_to_session(row);
+        let policy: Option<String> = row.get("execution_policy_json");
+        if let Some(policy) = policy {
+            let owner: OwnedSessionRequest = serde_json::from_str(&policy)
+                .map_err(|error| format!("invalid execution policy: {error}"))?;
+            let purpose: String = row.get("execution_owner_purpose");
+            if !matches!(purpose.as_str(), "benchmark" | "task") {
+                return Err("invalid execution owner purpose".into());
+            }
+            let snapshot = record.snapshot.get_or_insert_with(|| serde_json::json!({}));
+            if !snapshot.is_object() {
+                *snapshot = serde_json::json!({});
+            }
+            if !snapshot["_meta"].is_object() {
+                snapshot["_meta"] = serde_json::json!({});
+            }
+            snapshot["_meta"]["executionOwner"] =
+                serde_json::json!({"kind":purpose,"id":owner.owner_id});
+        }
+        Ok(record)
+    }
+
     pub async fn insert_session(&self, record: &SessionRecord) -> Result<(), String> {
         Self::insert_session_query(record)
             .execute(&self.pool)
@@ -554,20 +577,12 @@ impl SessionStore {
     }
 
     pub async fn get_session(&self, id: &str) -> Result<Option<SessionRecord>, String> {
-        let row = sqlx::query("SELECT * FROM sessions WHERE id = ?")
+        let row = sqlx::query("SELECT s.*, o.policy_json AS execution_policy_json, o.owner_purpose AS execution_owner_purpose FROM sessions s LEFT JOIN session_execution_owners o ON o.session_id = s.id WHERE s.id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|error| db_error("failed to read session", error))?;
-        let mut record = row.as_ref().map(Self::row_to_session);
-        if let Some(record) = record.as_mut() {
-            if let Some((owner, _)) = self.execution_owner(id).await? {
-                let snapshot = record.snapshot.get_or_insert_with(|| serde_json::json!({}));
-                snapshot["_meta"]["executionOwner"] =
-                    serde_json::json!({"kind":"benchmark","id":owner.owner_id});
-            }
-        }
-        Ok(record)
+        row.as_ref().map(Self::row_to_owned_session).transpose()
     }
 
     pub async fn insert_owned_session(
@@ -576,6 +591,20 @@ impl SessionStore {
         owner: &OwnedSessionRequest,
         policy_hash: &str,
     ) -> Result<(), String> {
+        self.insert_owned_session_for_purpose(record, owner, policy_hash, "benchmark")
+            .await
+    }
+
+    pub(crate) async fn insert_owned_session_for_purpose(
+        &self,
+        record: &SessionRecord,
+        owner: &OwnedSessionRequest,
+        policy_hash: &str,
+        purpose: &str,
+    ) -> Result<(), String> {
+        if !matches!(purpose, "benchmark" | "task") {
+            return Err("invalid execution owner purpose".into());
+        }
         let mut tx = self
             .pool
             .begin()
@@ -585,12 +614,21 @@ impl SessionStore {
             .execute(&mut *tx)
             .await
             .map_err(|e| db_error("insert owned session", e))?;
-        sqlx::query("INSERT INTO session_execution_owners(session_id,owner_kind,owner_id,policy_json,policy_hash) VALUES (?,'benchmark',?,?,?)")
+        sqlx::query("INSERT INTO session_execution_owners(session_id,owner_kind,owner_id,policy_json,policy_hash,owner_purpose) VALUES (?,'benchmark',?,?,?,?)")
             .bind(&record.id).bind(&owner.owner_id).bind(serde_json::to_string(owner).map_err(|e| e.to_string())?).bind(policy_hash)
+            .bind(purpose)
             .execute(&mut *tx).await.map_err(|e| db_error("insert execution owner", e))?;
         tx.commit()
             .await
             .map_err(|e| db_error("commit owned session", e))
+    }
+
+    pub async fn owned_session_purpose(&self, id: &str) -> Result<Option<String>, String> {
+        sqlx::query_scalar("SELECT owner_purpose FROM session_execution_owners WHERE session_id=?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| db_error("read owner purpose", e))
     }
 
     pub async fn execution_owner(
@@ -620,6 +658,40 @@ impl SessionStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| db_error("read owner session", e))
+    }
+    /// The common native dispatch-to-turn-result clock. Artifact collection
+    /// and orchestration overhead stay in the separate wall latency metrics.
+    pub async fn execution_elapsed_ms(&self, key: &str) -> Result<u64, String> {
+        let row =
+            sqlx::query("SELECT outcome_json,phase FROM execution_dispatches WHERE request_key=?")
+                .bind(key)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| db_error("read dispatch duration", e))?;
+        if row.get::<String, _>("phase") != "terminal" {
+            return Err("dispatch_uncertain: native result is not terminal".into());
+        }
+        let outcome: Value = serde_json::from_str(&row.get::<String, _>("outcome_json"))
+            .map_err(|e| e.to_string())?;
+        outcome
+            .pointer("/result/nativeExecutionMs")
+            .or_else(|| outcome.pointer("/error/nativeExecutionMs"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                "evidence_missing: native execution clock is absent from this legacy result".into()
+            })
+    }
+    pub async fn execution_clock_now(&self, key: &str) -> Result<u64, String> {
+        let created: String =
+            sqlx::query_scalar("SELECT created_at FROM execution_dispatches WHERE request_key=?")
+                .bind(key)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| db_error("read native execution clock", e))?;
+        let started = chrono::DateTime::parse_from_rfc3339(&created).map_err(|e| e.to_string())?;
+        let finished =
+            chrono::DateTime::parse_from_rfc3339(&now_iso()).map_err(|e| e.to_string())?;
+        Ok((finished - started).num_milliseconds().max(0) as u64)
     }
 
     pub async fn reserve_dispatch(
@@ -699,6 +771,115 @@ impl SessionStore {
         sqlx::query("UPDATE execution_dispatches SET phase=?,outcome_json=?,updated_at=? WHERE request_key=?")
             .bind(phase).bind(serde_json::json!({"result":result,"error":error}).to_string()).bind(now_iso()).bind(request_key)
             .execute(&self.pool).await.map_err(|e| db_error("settle execution dispatch", e))?;
+        Ok(())
+    }
+    /// Terminal success and its bounded public output commit together. No
+    /// history reader returns to a mutable provider workspace or event stream.
+    pub async fn settle_task_dispatch(
+        &self,
+        key: &str,
+        session: &str,
+        result: Option<&Value>,
+        error: Option<&Value>,
+        output: Option<&str>,
+        elapsed: u64,
+    ) -> Result<(), String> {
+        if error.is_none() && (output.is_none() || result.is_none()) {
+            return Err(
+                "task terminal success has no sealed public output or native result".into(),
+            );
+        }
+        if self.owned_session_purpose(session).await?.as_deref() != Some("task") {
+            return Err("task terminal output belongs to another owner purpose".into());
+        }
+        let record = serde_json::json!({"requestKey":key,"sessionId":session,"output":output,"result":result,"error":error,"nativeExecutionMs":elapsed}).to_string();
+        let hash = super::execution::digest(record.as_bytes());
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| db_error("begin sealed task result", e))?;
+        let target =
+            sqlx::query("SELECT session_id,phase FROM execution_dispatches WHERE request_key=?")
+                .bind(key)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| db_error("read task result owner", e))?;
+        if target.get::<String, _>("session_id") != session {
+            return Err("task terminal key belongs to another session".into());
+        }
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT result_hash FROM task_terminal_outputs WHERE request_key=?")
+                .bind(key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| db_error("read first task result", e))?;
+        let phase: String = target.get("phase");
+        if phase == "uncertain" || (phase == "terminal" && existing.is_none()) {
+            return Err(
+                "an unknown or already settled native task cannot gain a new terminal result"
+                    .into(),
+            );
+        }
+        if existing.as_ref().is_some_and(|first| first != &hash) {
+            return Err("the first native task result is immutable".into());
+        }
+        sqlx::query("INSERT OR IGNORE INTO task_terminal_outputs(request_key,session_id,result_json,result_hash) VALUES(?,?,?,?)").bind(key).bind(session).bind(&record).bind(&hash).execute(&mut *tx).await.map_err(|e| db_error("seal native task output", e))?;
+        let existing: String =
+            sqlx::query_scalar("SELECT result_hash FROM task_terminal_outputs WHERE request_key=?")
+                .bind(key)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| db_error("read sealed task result", e))?;
+        if existing != hash {
+            return Err("the first native task result is immutable".into());
+        }
+        sqlx::query("UPDATE execution_dispatches SET phase='terminal',outcome_json=?,updated_at=? WHERE request_key=?").bind(serde_json::json!({"result":result,"error":error}).to_string()).bind(now_iso()).bind(key).execute(&mut *tx).await.map_err(|e| db_error("commit sealed task terminal", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| db_error("commit native task output", e))
+    }
+    pub async fn task_public_result(
+        &self,
+        key: &str,
+        session: &str,
+    ) -> Result<(String, u64), String> {
+        let row = sqlx::query("SELECT o.session_id,o.result_json,o.result_hash,d.phase,d.outcome_json FROM task_terminal_outputs o JOIN execution_dispatches d ON d.request_key=o.request_key WHERE o.request_key=?").bind(key).fetch_one(&self.pool).await.map_err(|e| db_error("read sealed native task output", e))?;
+        let encoded: String = row.get("result_json");
+        let value: Value = serde_json::from_str(&encoded).map_err(|e| e.to_string())?;
+        let outcome: Value = serde_json::from_str(&row.get::<String, _>("outcome_json"))
+            .map_err(|e| e.to_string())?;
+        if row.get::<String, _>("phase") != "terminal"
+            || !outcome["error"].is_null()
+            || outcome["result"].is_null()
+            || !value["error"].is_null()
+            || value["result"] != outcome["result"]
+        {
+            return Err("native task has no committed successful terminal output".into());
+        }
+        if row.get::<String, _>("session_id") != session
+            || value["sessionId"] != session
+            || value["requestKey"] != key
+            || super::execution::digest(encoded.as_bytes()) != row.get::<String, _>("result_hash")
+        {
+            return Err("sealed native task output failed integrity".into());
+        }
+        let output = value["output"]
+            .as_str()
+            .ok_or("native task failed without a successful public output")?;
+        let elapsed = value["nativeExecutionMs"]
+            .as_u64()
+            .ok_or("native task clock is absent")?;
+        Ok((output.to_owned(), elapsed))
+    }
+
+    pub async fn mark_unsettled_dispatch_uncertain(
+        &self,
+        key: &str,
+        error: &Value,
+    ) -> Result<(), String> {
+        sqlx::query("UPDATE execution_dispatches SET phase='uncertain',outcome_json=?,updated_at=? WHERE request_key=? AND phase IN ('reserved','running')")
+            .bind(serde_json::json!({"result":null,"error":error}).to_string()).bind(now_iso()).bind(key).execute(&self.pool).await.map_err(|e| db_error("retain unknown native task settlement", e))?;
         Ok(())
     }
 
@@ -781,14 +962,16 @@ impl SessionStore {
         limit: i64,
     ) -> Result<Vec<SessionRecord>, String> {
         let rows = sqlx::query(
-            "SELECT * FROM sessions WHERE hidden = 0 ORDER BY updated_at DESC, created_at DESC LIMIT ? OFFSET ?",
+            "SELECT s.*, o.policy_json AS execution_policy_json, o.owner_purpose AS execution_owner_purpose FROM sessions s LEFT JOIN session_execution_owners o ON o.session_id = s.id WHERE s.hidden = 0 ORDER BY s.updated_at DESC, s.created_at DESC LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await
         .map_err(|error| db_error("failed to list sessions", error))?;
-        Ok(rows.iter().map(Self::row_to_session).collect())
+        // List hydration must carry the same dedicated-table owner as a direct
+        // read before restored sessions can reach ordinary chat consumers.
+        rows.iter().map(Self::row_to_owned_session).collect()
     }
 
     /// Name a session. An empty `title` clears the name rather than storing a
@@ -1816,6 +1999,186 @@ fn recorded_before(created_at: &str, cutoff: i64) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn listed_owners_survive_restart_and_ignore_copied_snapshot_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ownership.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        let forged = json!({"_meta":{"executionOwner":{"kind":"task","id":"task:copied"},"other":"preserved"}});
+        for (id, purpose) in [
+            ("research", "benchmark"),
+            ("child", "task"),
+            ("hidden", "task"),
+        ] {
+            let mut session = record(id);
+            session.snapshot = Some(forged.clone());
+            session.hidden = id == "hidden";
+            let owner = OwnedSessionRequest {
+                owner_id: format!("{purpose}:{id}"),
+                provider_id: "claude-acp".into(),
+                account_id: "invented-account".into(),
+                model_id: "invented-model".into(),
+                reasoning_effort: Some("high".into()),
+                fast_mode: Some(false),
+                cwd: session.cwd.clone(),
+                title: "Invented owned session".into(),
+                profile: super::super::execution::ExecutionProfile::NativeTextV1,
+            };
+            store
+                .insert_owned_session_for_purpose(&session, &owner, "invented-policy", purpose)
+                .await
+                .unwrap();
+        }
+        let mut ordinary = record("ordinary");
+        ordinary.snapshot = Some(forged);
+        store.insert_session(&ordinary).await.unwrap();
+        store.pool.close().await;
+
+        let restarted = SessionStore::open(&path).await.unwrap();
+        let listed = restarted.list_sessions(0, 50).await.unwrap();
+        assert_eq!(listed.len(), 3);
+        assert!(listed.iter().all(|session| session.id != "hidden"));
+        for session in listed {
+            let direct = restarted.get_session(&session.id).await.unwrap().unwrap();
+            assert_eq!(
+                session.snapshot, direct.snapshot,
+                "list/get ownership differs for {}",
+                session.id
+            );
+            let snapshot = session.snapshot.unwrap();
+            assert_eq!(snapshot["_meta"]["other"], "preserved");
+            match session.id.as_str() {
+                "research" => assert_eq!(
+                    snapshot["_meta"]["executionOwner"],
+                    json!({"kind":"benchmark","id":"benchmark:research"})
+                ),
+                "child" => assert_eq!(
+                    snapshot["_meta"]["executionOwner"],
+                    json!({"kind":"task","id":"task:child"})
+                ),
+                "ordinary" => assert!(snapshot.pointer("/_meta/executionOwner").is_none()),
+                _ => panic!("Unexpected listed session"),
+            }
+        }
+        assert_eq!(
+            restarted
+                .get_session("hidden")
+                .await
+                .unwrap()
+                .unwrap()
+                .snapshot
+                .unwrap()["_meta"]["executionOwner"],
+            json!({"kind":"task","id":"task:hidden"})
+        );
+        assert_eq!(restarted.list_sessions(1, 1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn task_terminal_failure_is_immutable_and_public_hash_corruption_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("task.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        for (session, key) in [
+            ("failed-task", "failed-key"),
+            ("successful-task", "successful-key"),
+        ] {
+            let owner = OwnedSessionRequest {
+                owner_id: format!("task:{session}"),
+                provider_id: "claude-acp".into(),
+                account_id: "invented-account".into(),
+                model_id: "invented-model".into(),
+                reasoning_effort: None,
+                fast_mode: None,
+                cwd: "C:/invented".into(),
+                title: "Invented task".into(),
+                profile: super::super::execution::ExecutionProfile::NativeTextV1,
+            };
+            store
+                .insert_owned_session_for_purpose(&record(session), &owner, "policy", "task")
+                .await
+                .unwrap();
+            store
+                .reserve_dispatch(
+                    &ExecutionDispatch {
+                        request_key: key.into(),
+                        session_id: session.into(),
+                        run_id: format!("run:{key}"),
+                        user_message_id: format!("user:{key}"),
+                        phase: "running".into(),
+                        event_cursor: 0,
+                        result: None,
+                        error: None,
+                    },
+                    "prompt",
+                )
+                .await
+                .unwrap();
+        }
+        let failure = json!({"kind":"artifact_limit"});
+        let success = json!({"stopReason":"end_turn"});
+        store
+            .settle_task_dispatch("failed-key", "failed-task", None, Some(&failure), None, 17)
+            .await
+            .unwrap();
+        assert!(store
+            .settle_task_dispatch(
+                "failed-key",
+                "failed-task",
+                Some(&success),
+                None,
+                Some("later answer"),
+                18
+            )
+            .await
+            .is_err());
+        let restarted = SessionStore::open(&path).await.unwrap();
+        assert_eq!(
+            restarted
+                .execution_dispatch("failed-key")
+                .await
+                .unwrap()
+                .unwrap()
+                .error,
+            Some(failure)
+        );
+        assert!(restarted
+            .task_public_result("failed-key", "failed-task")
+            .await
+            .is_err());
+        store
+            .settle_task_dispatch(
+                "successful-key",
+                "successful-task",
+                Some(&success),
+                None,
+                Some("first answer"),
+                17,
+            )
+            .await
+            .unwrap();
+        store
+            .mark_unsettled_dispatch_uncertain(
+                "successful-key",
+                &json!({"kind":"dispatch_uncertain"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .task_public_result("successful-key", "successful-task")
+                .await
+                .unwrap()
+                .0,
+            "first answer"
+        );
+        sqlx::query("UPDATE task_terminal_outputs SET result_hash='corrupted' WHERE request_key='successful-key'").execute(&store.pool).await.unwrap();
+        assert!(store
+            .task_public_result("successful-key", "successful-task")
+            .await
+            .unwrap_err()
+            .contains("integrity"));
+    }
 
     #[tokio::test]
     async fn owned_session_and_dispatch_survive_restart_without_duplicate_admission() {

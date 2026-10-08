@@ -151,7 +151,7 @@ fn hash(value: &impl Serialize) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
-fn artifact_hash(decision: &Decision) -> Result<String> {
+pub(super) fn artifact_hash(decision: &Decision) -> Result<String> {
     let mut body = decision.clone();
     body.artifact_hash.clear();
     hash(&body)
@@ -192,6 +192,198 @@ fn validate(request: &Request) -> Result<()> {
 }
 
 impl Store {
+    /// Owned task attribution uses the verified native session and policy proof.
+    /// Ordinary ACP attribution keeps its existing unknown-runtime semantics.
+    pub async fn observe_native_host_outcome(
+        &self,
+        host: &crate::services::agent_host::store::SessionStore,
+        request_key: &str,
+        session_id: String,
+        run_id: String,
+        outcome: String,
+        receipt: Option<ExecutorReceipt>,
+    ) -> Result<Record> {
+        let task_owner = host
+            .owned_session_purpose(&session_id)
+            .await
+            .map_err(|message| error("host_evidence", &message))?
+            .as_deref()
+            == Some("task");
+        if !task_owner && !request_key.starts_with("owned-task:") {
+            return self
+                .observe_host_outcome(request_key, session_id, run_id, outcome, receipt)
+                .await;
+        }
+        let configuration = self
+            .native_task_outcome_configuration(
+                host,
+                request_key,
+                &session_id,
+                &run_id,
+                &outcome,
+                receipt.as_ref(),
+            )
+            .await?;
+        self.record_host_outcome(
+            request_key,
+            session_id,
+            run_id,
+            outcome,
+            receipt,
+            Some(configuration),
+        )
+        .await
+    }
+
+    async fn native_task_outcome_configuration(
+        &self,
+        host: &crate::services::agent_host::store::SessionStore,
+        key: &str,
+        session_id: &str,
+        run_id: &str,
+        outcome: &str,
+        receipt: Option<&ExecutorReceipt>,
+    ) -> Result<Option<Configuration>> {
+        use crate::services::agent_host::execution::ExecutionProfile;
+        if host
+            .owned_session_purpose(session_id)
+            .await
+            .map_err(|message| error("host_evidence", &message))?
+            .as_deref()
+            != Some("task")
+        {
+            return Err(error(
+                "observation_conflict",
+                "The owned task key has no matching native owner",
+            ));
+        }
+        let (owner, policy_hash) = host
+            .execution_owner(session_id)
+            .await
+            .map_err(|message| error("host_evidence", &message))?
+            .ok_or_else(|| error("host_evidence", "Native task owner is missing"))?;
+        let id = owner
+            .owner_id
+            .strip_prefix("task:")
+            .ok_or_else(|| error("host_evidence", "Native task owner identity is invalid"))?;
+        let binding = self.task_binding(id).await?;
+        let session = self
+            .task_session(&binding)
+            .await?
+            .ok_or_else(|| error("host_evidence", "Verified native task session is missing"))?;
+        let profile = match owner.profile {
+            ExecutionProfile::NativeTextV1 => "native_text",
+            ExecutionProfile::ProtectedRepositoryV1 => "protected_repository",
+        };
+        let observed = &session.observed;
+        let current = host
+            .get_session(session_id)
+            .await
+            .map_err(|message| error("host_evidence", &message))?
+            .ok_or_else(|| error("host_evidence", "Native task session disappeared"))?;
+        if key != binding.request.request_key
+            || run_id != key
+            || session.owned.session_id != session_id
+            || session.owned.policy_hash != policy_hash
+            || policy_hash.is_empty()
+            || profile != binding.task.execution_profile
+            || profile != observed.execution_profile
+            || owner.provider_id != observed.provider_id
+            || Some(&owner.account_id) != observed.account_id.as_ref()
+            || owner.model_id != observed.model_id
+            || owner.reasoning_effort != observed.effort
+            || owner.fast_mode != observed.fast_mode
+            || current.harness != observed.provider_id
+            || current.account_id != observed.account_id
+            || current.cwd != owner.cwd
+            || current.model_id.as_ref() != Some(&observed.model_id)
+            || current.reasoning_effort != observed.effort
+            || current.fast_mode != observed.fast_mode
+            || session.owned.selection.model_id.as_ref() != Some(&observed.model_id)
+            || session.owned.selection.reasoning_effort != observed.effort
+            || session.owned.selection.fast_mode != observed.fast_mode
+            || observed
+                .inventory_revision
+                .as_ref()
+                .is_none_or(|revision| revision.is_empty())
+        {
+            return Err(error(
+                "observation_conflict",
+                "Native task binding, session, policy or acknowledgement differs",
+            ));
+        }
+        let dispatch = host
+            .execution_dispatch(key)
+            .await
+            .map_err(|message| error("host_evidence", &message))?
+            .ok_or_else(|| error("host_evidence", "Native task dispatch is missing"))?;
+        let native_outcome = if dispatch.phase == "uncertain" {
+            "failed"
+        } else if dispatch.phase != "terminal" {
+            return Err(error(
+                "host_evidence",
+                "Native task outcome is not committed",
+            ));
+        } else if let Some(failure) = &dispatch.error {
+            if failure["kind"] == "cancelled" {
+                "cancelled"
+            } else {
+                "failed"
+            }
+        } else {
+            "completed"
+        };
+        if dispatch.session_id != session_id || outcome != native_outcome {
+            return Err(error(
+                "observation_conflict",
+                "Reported task outcome differs from the native dispatch",
+            ));
+        }
+        let Some(receipt) = receipt else {
+            return Ok(None);
+        };
+        if receipt.start.link.decision_key != key
+            || receipt.start.link.logical_run_id != key
+            || receipt.start.session_id != session_id
+            || receipt.start.host_run_id != dispatch.run_id
+            || receipt.start.message_id != dispatch.user_message_id
+            || receipt.start.provider_id != observed.provider_id
+            || receipt.start.account_id != observed.account_id
+        {
+            return Err(error(
+                "observation_conflict",
+                "Native task provider receipt belongs to another execution",
+            ));
+        }
+        let Some(finish) = &receipt.finish else {
+            return Ok(None);
+        };
+        if dispatch.phase == "uncertain" {
+            return Ok(None);
+        }
+        if finish.selection.model_id.as_ref() != Some(&observed.model_id)
+            || finish.selection.effort != observed.effort
+            || finish.selection.fast != observed.fast_mode
+        {
+            return Err(error(
+                "observation_conflict",
+                "Terminal provider acknowledgement differs from the verified native task",
+            ));
+        }
+        Ok(Some(Configuration {
+            id: format!("host:{}", receipt.start.host_run_id),
+            provider_id: receipt.start.provider_id.clone(),
+            account_id: receipt.start.account_id.clone(),
+            model_id: finish.selection.model_id.clone().unwrap_or_default(),
+            model_name: finish.selection.model_name.clone(),
+            effort: finish.selection.effort.clone(),
+            fast_mode: finish.selection.fast,
+            billing_mode: observed.billing_mode.clone(),
+            execution_profile: profile.into(),
+            inventory_revision: observed.inventory_revision.clone(),
+        }))
+    }
+
     /// Only the bounded workflow runner uses predictions for research turns.
     /// The public chat/wave entry points still require production promotion.
     pub(super) async fn prepare_workflow_research_decision(
@@ -297,7 +489,7 @@ impl Store {
         self.persist_executor_decision(decision).await
     }
 
-    async fn persist_executor_decision(&self, decision: Decision) -> Result<Decision> {
+    pub(super) async fn persist_executor_decision(&self, decision: Decision) -> Result<Decision> {
         sqlx::query("INSERT OR IGNORE INTO executor_decisions(request_key,input_hash,created_at,decision_json) VALUES(?,?,?,?)")
             .bind(&decision.request.request_key).bind(&decision.input_hash).bind(decision.created_at)
             .bind(serde_json::to_string(&decision)?).execute(&self.pool).await?;
@@ -350,6 +542,21 @@ impl Store {
     }
 
     /// Append observed execution. Mismatches stay visible and are not relabelled.
+    pub async fn observe_application_executor(
+        &self,
+        request_key: &str,
+        observation: Observation,
+    ) -> Result<Record> {
+        if request_key.starts_with("owned-task:") {
+            return Err(error(
+                "invalid_task_authority",
+                "Owned task observations require verified native receipt and policy evidence",
+            ));
+        }
+        self.observe_executor(request_key, observation).await
+    }
+
+    /// Internal native producers may append their verified observations.
     pub async fn observe_executor(
         &self,
         request_key: &str,
@@ -501,6 +708,19 @@ impl Store {
         outcome: String,
         receipt: Option<ExecutorReceipt>,
     ) -> Result<Record> {
+        self.record_host_outcome(request_key, session_id, run_id, outcome, receipt, None)
+            .await
+    }
+
+    async fn record_host_outcome(
+        &self,
+        request_key: &str,
+        session_id: String,
+        run_id: String,
+        outcome: String,
+        receipt: Option<ExecutorReceipt>,
+        owned_configuration: Option<Option<Configuration>>,
+    ) -> Result<Record> {
         if let Some(receipt) = &receipt {
             if receipt.start.link.decision_key != request_key
                 || receipt.start.session_id != session_id
@@ -512,27 +732,34 @@ impl Store {
                 ));
             }
         }
-        let configuration = receipt.as_ref().and_then(|receipt| {
-            receipt.finish.as_ref().and_then(|finish| {
-                finish
-                    .selection
-                    .model_id
-                    .as_ref()
-                    .map(|model_id| Configuration {
-                        id: format!("host:{}", receipt.start.host_run_id),
-                        provider_id: receipt.start.provider_id.clone(),
-                        account_id: receipt.start.account_id.clone(),
-                        model_id: model_id.clone(),
-                        model_name: finish.selection.model_name.clone(),
-                        effort: finish.selection.effort.clone(),
-                        fast_mode: finish.selection.fast,
-                        billing_mode: "unknown".into(),
-                        execution_profile: "interactive_acp".into(),
-                        inventory_revision: None,
-                    })
+        let owned_proof = owned_configuration.is_some();
+        let configuration = if let Some(configuration) = owned_configuration {
+            configuration
+        } else {
+            receipt.as_ref().and_then(|receipt| {
+                receipt.finish.as_ref().and_then(|finish| {
+                    finish
+                        .selection
+                        .model_id
+                        .as_ref()
+                        .map(|model_id| Configuration {
+                            id: format!("host:{}", receipt.start.host_run_id),
+                            provider_id: receipt.start.provider_id.clone(),
+                            account_id: receipt.start.account_id.clone(),
+                            model_id: model_id.clone(),
+                            model_name: finish.selection.model_name.clone(),
+                            effort: finish.selection.effort.clone(),
+                            fast_mode: finish.selection.fast,
+                            billing_mode: "unknown".into(),
+                            execution_profile: "interactive_acp".into(),
+                            inventory_revision: None,
+                        })
+                })
             })
-        });
+        };
         let reason = match &receipt {
+            _ if owned_proof && configuration.is_some() => "Provider terminal model/settings joined to the verified native task session, profile, runtime and billing proof. Completion is not a quality verdict.",
+            _ if owned_proof => "Owned task terminal configuration is unconfirmed; inspect the native receipt and do not retry automatically.",
             Some(receipt) if receipt.finish.is_some() => "Provider-reported terminal configuration; full transition history is in the host receipt. Run completion is not a quality verdict.",
             Some(_) => "Provider dispatch was claimed but terminal acknowledgement is missing; do not retry automatically.",
             None => "No provider dispatch receipt was found; executor configuration remains unknown.",

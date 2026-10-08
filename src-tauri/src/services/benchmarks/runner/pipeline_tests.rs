@@ -7,6 +7,8 @@ use crate::services::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "promotion_pipeline_tests.rs"]
+mod promotion_pipeline_tests;
 #[path = "workflow_campaign_tests.rs"]
 mod workflow_campaign_tests;
 #[path = "workflow_policy_tests.rs"]
@@ -18,6 +20,11 @@ struct OfflineWorkers {
     unavailable: std::sync::Mutex<Vec<String>>,
     cancel_after: AtomicU64,
     refuse_next: std::sync::Mutex<Option<String>>,
+    owned_dispatches: std::sync::Mutex<std::collections::BTreeMap<String, ExecutionDispatch>>,
+    owned_calls: AtomicU64,
+    prepare_calls: AtomicU64,
+    changed_runtime: std::sync::atomic::AtomicBool,
+    wrong_ack: std::sync::atomic::AtomicBool,
 }
 
 fn configurations() -> Vec<Configuration> {
@@ -39,6 +46,99 @@ fn configurations() -> Vec<Configuration> {
 }
 
 impl ExecutionBackend for OfflineWorkers {
+    fn accounts<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+        Box::pin(async { Ok(vec!["invented-owned-account".into()]) })
+    }
+    fn prepare_owned_task<'a>(
+        &'a self,
+        _: &'a Store,
+        binding: &'a super::super::task_execution::Binding,
+        chosen: &'a Configuration,
+    ) -> BoxFuture<'a, Result<super::super::task_execution::Session>> {
+        Box::pin(async move {
+            self.prepare_calls.fetch_add(1, Ordering::SeqCst);
+            let mut observed = chosen.clone();
+            if self.wrong_ack.load(Ordering::SeqCst) {
+                observed.model_id = "unacknowledged".into();
+            }
+            Ok(super::super::task_execution::Session {
+                owned: crate::services::agent_host::execution::OwnedSession {
+                    session_id: format!("invented-session:{}", binding.id),
+                    owner_id: format!("task:{}", binding.id),
+                    policy_hash: "invented-policy".into(),
+                    selection: crate::services::agent_host::execution::ObservedSelection {
+                        model_id: Some(observed.model_id.clone()),
+                        reasoning_effort: observed.effort.clone(),
+                        fast_mode: observed.fast_mode,
+                    },
+                    substitutions: vec![],
+                },
+                observed,
+                context_hash: binding.context_hash.clone(),
+            })
+        })
+    }
+    fn dispatch_owned_task<'a>(
+        &'a self,
+        _: &'a Store,
+        binding: &'a super::super::task_execution::Binding,
+        session: &'a super::super::task_execution::Session,
+        _admission: tokio::sync::OwnedMutexGuard<()>,
+    ) -> BoxFuture<'a, Result<ExecutionDispatch>> {
+        Box::pin(async move {
+            let mut records = self.owned_dispatches.lock().unwrap();
+            let result = records.entry(binding.id.clone()).or_insert_with(|| {
+                self.owned_calls.fetch_add(1, Ordering::SeqCst);
+                ExecutionDispatch {
+                    request_key: binding.request.request_key.clone(),
+                    session_id: session.owned.session_id.clone(),
+                    run_id: format!("invented-run:{}", binding.id),
+                    user_message_id: format!("invented-user:{}", binding.id),
+                    phase: "terminal".into(),
+                    event_cursor: 1,
+                    result: Some(json!({"output":"ok"})),
+                    error: None,
+                }
+            });
+            Ok(result.clone())
+        })
+    }
+    fn owned_task_status<'a>(
+        &'a self,
+        binding: &'a super::super::task_execution::Binding,
+        _: &'a super::super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<Option<ExecutionDispatch>>> {
+        Box::pin(async move {
+            Ok(self
+                .owned_dispatches
+                .lock()
+                .unwrap()
+                .get(&binding.id)
+                .cloned())
+        })
+    }
+    fn owned_task_output<'a>(
+        &'a self,
+        binding: &'a super::super::task_execution::Binding,
+        _: &'a super::super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<super::super::task_execution::NativeOutput>> {
+        Box::pin(async move {
+            let records = self.owned_dispatches.lock().unwrap();
+            if !records
+                .get(&binding.id)
+                .is_some_and(|record| record.phase == "terminal" && record.error.is_none())
+            {
+                return Err(BenchmarkError::new(
+                    "dispatch_uncertain",
+                    "Invented predecessor is not committed",
+                ));
+            }
+            Ok(super::super::task_execution::NativeOutput {
+                text: super::super::workflow::committed_report("ok"),
+                elapsed_ms: 8,
+            })
+        })
+    }
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
     }
@@ -46,23 +146,33 @@ impl ExecutionBackend for OfflineWorkers {
     fn inventory<'a>(
         &'a self,
         _: &'a str,
-        _: Option<&'a str>,
+        account: Option<&'a str>,
         _: bool,
     ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
         Box::pin(async move {
             Ok(configurations()
                 .into_iter()
-                .map(|configuration| InventoryModel {
-                    name: configuration.model_id.clone(),
-                    available: !self
-                        .unavailable
-                        .lock()
-                        .unwrap()
-                        .contains(&configuration.model_id),
-                    configuration,
-                    efforts: vec!["high".into()],
-                    supports_fast_mode: true,
-                    reason: None,
+                .map(|mut configuration| {
+                    configuration.account_id = account.map(str::to_owned);
+                    if account.is_some() {
+                        configuration.effort = None;
+                        configuration.fast_mode = None;
+                    }
+                    if self.changed_runtime.load(Ordering::SeqCst) {
+                        configuration.inventory_revision = Some("invented-changed-runtime".into());
+                    }
+                    InventoryModel {
+                        name: configuration.model_id.clone(),
+                        available: !self
+                            .unavailable
+                            .lock()
+                            .unwrap()
+                            .contains(&configuration.model_id),
+                        configuration,
+                        efforts: vec!["high".into()],
+                        supports_fast_mode: true,
+                        reason: None,
+                    }
                 })
                 .collect())
         })
@@ -89,10 +199,11 @@ impl ExecutionBackend for OfflineWorkers {
             let suitable = version.manifest.prompt.contains("parser")
                 == (attempt.configuration.model_id == "parser");
             let feedback_valid = version.manifest.entry_state.as_ref().is_none_or(|entry| {
-                !entry
-                    .previous_reports
-                    .iter()
-                    .any(|report| report == "wrong")
+                !entry.previous_reports.iter().any(|report| {
+                    report == "wrong"
+                        || serde_json::from_str::<Value>(report)
+                            .is_ok_and(|value| value["output"] == "wrong")
+                })
             });
             attempt.output = Some(if suitable && feedback_valid && attempt.repetition != 2 {
                 "ok".into()
@@ -102,6 +213,7 @@ impl ExecutionBackend for OfflineWorkers {
             attempt.observed = Some(attempt.configuration.clone());
             attempt.outcome = Some("completed".into());
             attempt.duration_ms = Some(10);
+            attempt.native_execution_ms = Some(8);
             attempt.finished_at = Some(now());
             attempt.usage.cost = Some(0.01);
             attempt.usage.schema = "offline-pipeline-v1".into();

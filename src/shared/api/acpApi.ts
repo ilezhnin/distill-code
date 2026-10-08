@@ -32,6 +32,7 @@ import {
 import { isRecord } from "@/shared/lib/isRecord";
 import {
   observeExecutionOwner,
+  taskBindingId,
   type ExecutionOwner,
 } from "@/features/chat/lib/executionOwnership";
 
@@ -152,7 +153,14 @@ export async function getSessionInfo(
 ): Promise<AcpSessionInfo> {
   const client = await getClient();
   const result = await client.host.sessionInfo({ sessionId });
-  return mapSessionInfo(result.session as unknown as SessionInfo);
+  const session = mapSessionInfo(result.session as unknown as SessionInfo);
+  if (session.executionOwner?.kind === "task") {
+    const { reconcileOwnedTaskSession } = await import(
+      "@/features/chat/lib/ownedTaskDispatch"
+    );
+    await reconcileOwnedTaskSession(session.sessionId);
+  }
+  return session;
 }
 
 export async function listSessionsPage({
@@ -171,8 +179,23 @@ export async function listSessionsPage({
   }
 
   const response = await client.listSessions(params);
+  const sessions = response.sessions.map(mapSessionInfo);
+  const owned = sessions.filter(
+    (session) => session.executionOwner?.kind === "task",
+  );
+  if (owned.length) {
+    // Listing remains responsive; this existing metadata trigger reads owned rows sequentially.
+    void import("@/features/chat/lib/ownedTaskDispatch")
+      .then(async ({ reconcileOwnedTaskSession }) => {
+        for (const session of owned)
+          await reconcileOwnedTaskSession(session.sessionId);
+      })
+      .catch((error) =>
+        console.warn("Owned task list reconciliation is unresolved", error),
+      );
+  }
   return {
-    sessions: response.sessions.map(mapSessionInfo),
+    sessions,
     nextCursor: response.nextCursor?.trim() || null,
   };
 }
@@ -423,6 +446,14 @@ export async function updateSessionProject(
 }
 
 export async function archiveSession(sessionId: string): Promise<void> {
+  const bindingId = taskBindingId(sessionId);
+  if (bindingId) {
+    const { ownedTaskExecution } = await import(
+      "@/features/benchmarks/lib/ownedTaskExecution"
+    );
+    await ownedTaskExecution.cancel(bindingId, true);
+    return;
+  }
   const client = await getClient();
   await client.host.sessionArchive({ sessionId });
 }
@@ -433,6 +464,14 @@ export async function deleteSession(sessionId: string): Promise<void> {
 }
 
 export async function unarchiveSession(sessionId: string): Promise<void> {
+  const bindingId = taskBindingId(sessionId);
+  if (bindingId) {
+    const { ownedTaskExecution } = await import(
+      "@/features/benchmarks/lib/ownedTaskExecution"
+    );
+    await ownedTaskExecution.reopen(bindingId);
+    return;
+  }
   const client = await getClient();
   await client.host.sessionUnarchive({ sessionId });
 }

@@ -35,6 +35,9 @@ import {
   type SessionRole,
 } from "./types";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import type { PreparedOwnedTask } from "@/features/benchmarks/lib/ownedTaskExecution";
+import { attachPreparedOwnedTask } from "@/features/chat/lib/ownedTaskDispatch";
+import { dispatchPrompt } from "@/features/chat/lib/sendCore";
 
 export async function spawnConductorChildSession(args: {
   parentSessionId: string;
@@ -67,6 +70,7 @@ export async function spawnConductorChildSession(args: {
   runSettings?: SessionRunSettings;
   /** Local decision attribution, consumed by the host before provider dispatch. */
   executorDecisionKey?: string;
+  ownedTask?: PreparedOwnedTask;
   /** The root request this child's work belongs to (P49). */
   taskId?: string;
 }): Promise<{ sessionId: string; runId: string }> {
@@ -188,16 +192,18 @@ export async function spawnConductorChildSession(args: {
   // very first turn runs at the effort and fast mode the step named rather
   // than the harness default.
   const runSettings = normalizeSessionRunSettings(args.runSettings);
-  const child = await sessionStore.createSession({
-    title: displayName,
-    projectId: parent.projectId ?? undefined,
-    executionTarget,
-    ...(runSettings ? { runSettings } : {}),
-    workingDir,
-    workspaceAttachments: parent.workspaceAttachments,
-    deferProviderSetup: false,
-    personaId: args.personaId,
-  });
+  const child = args.ownedTask
+    ? await attachPreparedOwnedTask(args.ownedTask)
+    : await sessionStore.createSession({
+        title: displayName,
+        projectId: parent.projectId ?? undefined,
+        executionTarget,
+        ...(runSettings ? { runSettings } : {}),
+        workingDir,
+        workspaceAttachments: parent.workspaceAttachments,
+        deferProviderSetup: false,
+        personaId: args.personaId,
+      });
 
   sessionStore.patchSession(child.id, {
     title: displayName,
@@ -207,7 +213,7 @@ export async function spawnConductorChildSession(args: {
   // The safety net, before the first prompt is queued below: a bridge that
   // did not take a value at creation gets it from the reconciler, or the
   // child shows why it runs without it.
-  if (runSettings) {
+  if (runSettings && !args.ownedTask) {
     await seedChildRunSettings(child.id, runSettings);
   }
   void updateSessionTitle(child.id, displayName).catch(() => {
@@ -217,7 +223,14 @@ export async function spawnConductorChildSession(args: {
     });
   });
 
-  const runId = crypto.randomUUID();
+  const runId =
+    args.ownedTask?.binding.request.requestKey ?? crypto.randomUUID();
+  const actualRunSettings = args.ownedTask
+    ? {
+        effort: args.ownedTask.session.observed.effort ?? undefined,
+        fast: args.ownedTask.session.observed.fastMode ?? undefined,
+      }
+    : runSettings;
   const conductor =
     useConductorGraphStore.getState().getNode(args.parentSessionId) ??
     (parent.clientSessionId
@@ -233,11 +246,17 @@ export async function spawnConductorChildSession(args: {
     parentSessionId: args.parentSessionId,
     rootConductorId,
     runId,
-    harnessId: executionTarget.harnessId,
-    modelProviderId: executionTarget.modelProviderId,
-    modelId: executionTarget.modelId,
-    ...(runSettings?.effort ? { effort: runSettings.effort } : {}),
-    ...(runSettings?.fast !== undefined ? { fast: runSettings.fast } : {}),
+    harnessId:
+      args.ownedTask?.session.observed.providerId ?? executionTarget.harnessId,
+    modelProviderId: args.ownedTask
+      ? undefined
+      : executionTarget.modelProviderId,
+    modelId:
+      args.ownedTask?.session.observed.modelId ?? executionTarget.modelId,
+    ...(actualRunSettings?.effort ? { effort: actualRunSettings.effort } : {}),
+    ...(actualRunSettings?.fast !== undefined
+      ? { fast: actualRunSettings.fast }
+      : {}),
     displayName,
     personaId: args.personaId,
     roleId: args.roleId,
@@ -252,6 +271,34 @@ export async function spawnConductorChildSession(args: {
       ? { stepIndex: args.stepIndex }
       : {}),
   });
+
+  if (args.ownedTask) {
+    // The native binding already commits role, entry and actual worker settings.
+    // Both consumers pass through sendCore and its durable processing boundary.
+    const owned = args.ownedTask;
+    let committed!: () => void;
+    let refuse!: (reason: unknown) => void;
+    let processingAcknowledged = false;
+    const admitted = new Promise<void>((resolve, reject) => {
+      committed = resolve;
+      refuse = reject;
+    });
+    void dispatchPrompt(child.id, owned.binding.task.prompt, {
+      ownedTaskBindingId: owned.binding.id,
+      executorRequestKey: owned.binding.request.requestKey,
+      onPromptDispatched: () => {
+        processingAcknowledged = true;
+        committed();
+      },
+    }).catch((error) => {
+      // Once admitted, only the native receipt/report reconciliation may
+      // settle this child. A cancelled native result or a transient read
+      // failure must not overwrite its authoritative terminal status.
+      if (!processingAcknowledged) refuse(error);
+    });
+    await admitted;
+    return { sessionId: child.id, runId };
+  }
 
   const baseChildPrompt =
     args.prompt?.trim() || wrapOrchestratorTaskPrompt(task);

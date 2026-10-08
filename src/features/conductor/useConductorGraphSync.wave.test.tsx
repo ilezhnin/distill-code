@@ -18,6 +18,9 @@ vi.mock("@/features/chat/stores/chatSessionOperations", () => ({
 }));
 
 // The lifecycle test owns child dispatch; the native decision store is isolated.
+vi.mock("@/features/benchmarks/lib/ownedTaskExecution", () => ({
+  ownedTaskExecution: { getMode: vi.fn(async () => null) },
+}));
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
   executorSelection: {
     get: vi.fn(async () => null),

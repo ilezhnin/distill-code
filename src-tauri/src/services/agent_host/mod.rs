@@ -5,6 +5,8 @@
 
 pub mod bridge;
 pub mod execution;
+#[cfg(feature = "app-test-driver")]
+pub(crate) mod execution_fixture;
 pub mod executor_receipts;
 mod ext;
 pub mod harness;

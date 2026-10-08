@@ -66,6 +66,364 @@ fn started(decision: &Decision) -> Observation {
     }
 }
 
+/// Invented persistence fixtures test provenance joins only. They are not
+/// qualification, promotion, runtime-probe or model-performance evidence.
+async fn native_journal_fixture(
+    root: &std::path::Path,
+    profile: &str,
+) -> (
+    Store,
+    crate::services::agent_host::store::SessionStore,
+    ExecutorReceipt,
+    Configuration,
+) {
+    use crate::services::agent_host::{
+        execution::{
+            ExecutionDispatch, ExecutionProfile, ObservedSelection, OwnedSession,
+            OwnedSessionRequest,
+        },
+        executor_receipts::{ExecutorLink, ReceiptFinish, ReceiptStart, ReportedSelection},
+        store::{SessionRecord, SessionStore},
+    };
+    use crate::services::benchmarks::task_execution::{Binding, Request as TaskRequest, Session};
+    let store = Store::open(&root.join("bench")).await.unwrap();
+    let host = SessionStore::open(&root.join("host.db")).await.unwrap();
+    let configuration = Configuration {
+        id: "invented-worker".into(),
+        provider_id: "claude-acp".into(),
+        account_id: Some("invented-account".into()),
+        model_id: "invented-model".into(),
+        effort: Some("high".into()),
+        fast_mode: Some(false),
+        billing_mode: "subscription".into(),
+        execution_profile: profile.into(),
+        inventory_revision: Some("invented-verified-native-runtime".into()),
+        model_name: None,
+    };
+    let mut input = request();
+    input.request_key = format!("owned-task:journal-{profile}");
+    input.prediction.task.execution_profile = profile.into();
+    input.prediction.candidates = vec![RoutingCandidate {
+        configuration: configuration.clone(),
+        available: true,
+        reason: None,
+    }];
+    input.prior_keys = vec![routing::candidate_key(&configuration)];
+    let decision = store.prepare_executor_decision(input).await.unwrap();
+    let id = format!("journal-{profile}");
+    let task_request = TaskRequest {
+        request_key: decision.request.request_key.clone(),
+        surface: "chat".into(),
+        context_id: "invented-native-context".into(),
+        promotion_id: "invented-fixture".into(),
+        acknowledged_certificate_hash: "invented-certificate".into(),
+        prompt: decision.request.prediction.task.prompt.clone(),
+        hard_candidate_key: None,
+        repository: None,
+        entry: None,
+        wave_mode: None,
+    };
+    let task = decision.request.prediction.task.clone();
+    let mut binding = Binding {
+        id: id.clone(),
+        created_at: 1,
+        context_hash: hash(&(&task, &task_request.repository)).unwrap(),
+        request: task_request,
+        certificate_hash: "invented-certificate".into(),
+        task,
+        decision,
+        artifact_hash: String::new(),
+    };
+    binding.artifact_hash = hash(&binding).unwrap();
+    sqlx::query("INSERT INTO task_context_bindings(id,request_key,request_hash,binding_json,binding_hash) VALUES(?,?,?,?,?)").bind(&id).bind(&binding.request.request_key).bind(hash(&binding.request).unwrap()).bind(serde_json::to_string(&binding).unwrap()).bind(&binding.artifact_hash).execute(&store.pool).await.unwrap();
+    let owner = OwnedSessionRequest {
+        owner_id: format!("task:{id}"),
+        provider_id: configuration.provider_id.clone(),
+        account_id: configuration.account_id.clone().unwrap(),
+        model_id: configuration.model_id.clone(),
+        reasoning_effort: configuration.effort.clone(),
+        fast_mode: configuration.fast_mode,
+        cwd: "C:/invented-native".into(),
+        title: "Invented native task".into(),
+        profile: if profile == "native_text" {
+            ExecutionProfile::NativeTextV1
+        } else {
+            ExecutionProfile::ProtectedRepositoryV1
+        },
+    };
+    let record = SessionRecord {
+        id: "native-session".into(),
+        harness: configuration.provider_id.clone(),
+        account_id: configuration.account_id.clone(),
+        bridge_session_id: Some("invented-bridge-session".into()),
+        cwd: owner.cwd.clone(),
+        title: Some(owner.title.clone()),
+        user_set_name: false,
+        project_id: None,
+        persona_id: None,
+        model_id: Some(configuration.model_id.clone()),
+        reasoning_effort: configuration.effort.clone(),
+        fast_mode: configuration.fast_mode,
+        legacy_model_id: None,
+        hidden: false,
+        created_at: "2026-01-01T00:00:00Z".into(),
+        updated_at: "2026-01-01T00:00:00Z".into(),
+        last_message_at: None,
+        archived_at: None,
+        message_count: 0,
+        last_snippet: None,
+        snapshot: None,
+    };
+    host.insert_owned_session_for_purpose(&record, &owner, "invented-native-policy-hash", "task")
+        .await
+        .unwrap();
+    let session = Session {
+        owned: OwnedSession {
+            session_id: record.id.clone(),
+            owner_id: owner.owner_id.clone(),
+            policy_hash: "invented-native-policy-hash".into(),
+            selection: ObservedSelection {
+                model_id: record.model_id.clone(),
+                reasoning_effort: record.reasoning_effort.clone(),
+                fast_mode: record.fast_mode,
+            },
+            substitutions: vec![],
+        },
+        observed: configuration.clone(),
+        context_hash: binding.context_hash.clone(),
+    };
+    sqlx::query(
+        "INSERT INTO task_owned_sessions(binding_id,session_json,session_hash) VALUES(?,?,?)",
+    )
+    .bind(&id)
+    .bind(serde_json::to_string(&session).unwrap())
+    .bind(hash(&session).unwrap())
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let start = ReceiptStart {
+        link: ExecutorLink {
+            decision_key: binding.request.request_key.clone(),
+            logical_run_id: binding.request.request_key.clone(),
+        },
+        session_id: record.id.clone(),
+        host_run_id: "native-run".into(),
+        message_id: "native-user".into(),
+        bridge_generation: 1,
+        provider_id: configuration.provider_id.clone(),
+        account_id: configuration.account_id.clone(),
+        started_at: "2026-01-01T00:00:00Z".into(),
+        selection: ReportedSelection {
+            model_id: record.model_id.clone(),
+            model_name: None,
+            effort: record.reasoning_effort.clone(),
+            fast: record.fast_mode,
+        },
+    };
+    host.reserve_dispatch(
+        &ExecutionDispatch {
+            request_key: start.link.decision_key.clone(),
+            session_id: record.id.clone(),
+            run_id: start.host_run_id.clone(),
+            user_message_id: start.message_id.clone(),
+            phase: "reserved".into(),
+            event_cursor: 0,
+            result: None,
+            error: None,
+        },
+        "invented-prompt",
+    )
+    .await
+    .unwrap();
+    host.claim_executor_receipt(&start).await.unwrap();
+    host.finish_executor_receipt(
+        &start,
+        &ReceiptFinish {
+            finished_at: "2026-01-01T00:00:01Z".into(),
+            status: "completed".into(),
+            selection: start.selection.clone(),
+            changes: vec![],
+            changes_truncated: false,
+        },
+    )
+    .await
+    .unwrap();
+    host.settle_task_dispatch(
+        &start.link.decision_key,
+        &record.id,
+        Some(&serde_json::json!({"stopReason":"end_turn"})),
+        None,
+        Some("invented public output"),
+        1000,
+    )
+    .await
+    .unwrap();
+    let receipt = host
+        .executor_receipt(&start.link.decision_key)
+        .await
+        .unwrap()
+        .unwrap();
+    (store, host, receipt, configuration)
+}
+
+#[tokio::test]
+async fn owned_terminal_journal_uses_native_profile_runtime_and_billing_and_deduplicates() {
+    for profile in ["native_text", "protected_repository"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, host, receipt, expected) = native_journal_fixture(dir.path(), profile).await;
+        assert!(store
+            .observe_application_executor(
+                &receipt.start.link.decision_key,
+                Observation {
+                    phase: "terminal".into(),
+                    session_id: Some(receipt.start.session_id.clone()),
+                    run_id: Some(receipt.start.link.logical_run_id.clone()),
+                    configuration: Some(expected.clone()),
+                    outcome: Some("completed".into()),
+                    reason: None
+                }
+            )
+            .await
+            .is_err());
+        let record = store
+            .observe_native_host_outcome(
+                &host,
+                &receipt.start.link.decision_key,
+                receipt.start.session_id.clone(),
+                receipt.start.link.logical_run_id.clone(),
+                "completed".into(),
+                Some(receipt.clone()),
+            )
+            .await
+            .unwrap();
+        let actual = record.observations[0]
+            .observation
+            .configuration
+            .as_ref()
+            .unwrap();
+        assert_eq!(actual.execution_profile, profile);
+        assert_eq!(actual.inventory_revision, expected.inventory_revision);
+        assert_eq!(actual.billing_mode, expected.billing_mode);
+        assert_eq!(actual.model_id, expected.model_id);
+        assert_eq!(actual.account_id, expected.account_id);
+        assert_eq!(actual.effort, expected.effort);
+        assert_eq!(actual.fast_mode, expected.fast_mode);
+        assert_eq!(record.observations[0].matches_selected, Some(true));
+        assert_eq!(
+            store
+                .observe_native_host_outcome(
+                    &host,
+                    &receipt.start.link.decision_key,
+                    receipt.start.session_id.clone(),
+                    receipt.start.link.logical_run_id.clone(),
+                    "completed".into(),
+                    Some(receipt.clone())
+                )
+                .await
+                .unwrap()
+                .observations
+                .len(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn owned_terminal_journal_refuses_acknowledgement_policy_and_outcome_mismatches() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, host, receipt, _) = native_journal_fixture(dir.path(), "native_text").await;
+    for field in ["model", "effort", "fast", "account", "session", "run"] {
+        let mut wrong = receipt.clone();
+        match field {
+            "model" => {
+                wrong.finish.as_mut().unwrap().selection.model_id = Some("other-model".into())
+            }
+            "effort" => wrong.finish.as_mut().unwrap().selection.effort = None,
+            "fast" => wrong.finish.as_mut().unwrap().selection.fast = Some(true),
+            "account" => wrong.start.account_id = Some("other-account".into()),
+            "session" => wrong.start.session_id = "other-session".into(),
+            "run" => wrong.start.host_run_id = "other-run".into(),
+            _ => unreachable!(),
+        }
+        assert!(store
+            .observe_native_host_outcome(
+                &host,
+                &receipt.start.link.decision_key,
+                receipt.start.session_id.clone(),
+                receipt.start.link.logical_run_id.clone(),
+                "completed".into(),
+                Some(wrong)
+            )
+            .await
+            .is_err());
+    }
+    assert!(store
+        .observe_native_host_outcome(
+            &host,
+            &receipt.start.link.decision_key,
+            receipt.start.session_id.clone(),
+            receipt.start.link.logical_run_id.clone(),
+            "cancelled".into(),
+            Some(receipt.clone())
+        )
+        .await
+        .is_err());
+    let id = "journal-native_text";
+    let binding = store.task_binding(id).await.unwrap();
+    let session = store.task_session(&binding).await.unwrap().unwrap();
+    for field in ["policy", "runtime", "billing"] {
+        let mut changed = session.clone();
+        match field {
+            "policy" => changed.owned.policy_hash = "other-native-policy".into(),
+            "runtime" => changed.observed.inventory_revision = Some("other-runtime".into()),
+            "billing" => changed.observed.billing_mode = "unknown".into(),
+            _ => unreachable!(),
+        }
+        sqlx::query(
+            "UPDATE task_owned_sessions SET session_json=?,session_hash=? WHERE binding_id=?",
+        )
+        .bind(serde_json::to_string(&changed).unwrap())
+        .bind(hash(&changed).unwrap())
+        .bind(id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .observe_native_host_outcome(
+                &host,
+                &receipt.start.link.decision_key,
+                receipt.start.session_id.clone(),
+                receipt.start.link.logical_run_id.clone(),
+                "completed".into(),
+                Some(receipt.clone())
+            )
+            .await
+            .is_err());
+    }
+    sqlx::query("UPDATE task_owned_sessions SET session_hash='corrupted'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert!(store
+        .observe_native_host_outcome(
+            &host,
+            &receipt.start.link.decision_key,
+            receipt.start.session_id.clone(),
+            receipt.start.link.logical_run_id.clone(),
+            "completed".into(),
+            Some(receipt.clone())
+        )
+        .await
+        .is_err());
+    assert!(store
+        .executor_decision(&receipt.start.link.decision_key)
+        .await
+        .unwrap()
+        .unwrap()
+        .observations
+        .is_empty());
+}
+
 #[test]
 fn application_ids_resolve_to_native_keys_and_invalid_references_are_rejected() {
     let canonical = request();
@@ -481,7 +839,8 @@ async fn host_receipt_reconciles_the_actual_executor_across_store_restart() {
     drop(host);
     let host = SessionStore::open(&host_path).await.unwrap();
     let record = store
-        .observe_host_outcome(
+        .observe_native_host_outcome(
+            &host,
             key,
             start.session_id.clone(),
             start.link.logical_run_id.clone(),
@@ -498,6 +857,8 @@ async fn host_receipt_reconciles_the_actual_executor_across_store_restart() {
     assert_eq!(actual.effort.as_deref(), Some("high"));
     assert_eq!(actual.fast_mode, None);
     assert_eq!(actual.inventory_revision, None);
+    assert_eq!(actual.execution_profile, "interactive_acp");
+    assert_eq!(actual.billing_mode, "unknown");
     assert_eq!(observed.matches_selected, Some(false));
     assert_eq!(
         record.host_execution.unwrap().start.host_run_id,

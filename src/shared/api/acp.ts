@@ -1,5 +1,7 @@
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import * as directAcp from "./acpApi";
+import { taskBindingId } from "@/features/chat/lib/executionOwnership";
+import { ownedTaskExecution } from "@/features/benchmarks/lib/ownedTaskExecution";
 import type {
   AcpForkSessionOptions,
   AcpSessionInfo,
@@ -604,6 +606,23 @@ export async function acpDuplicateSession(
 
 /** Cancel an in-progress ACP session so the backend stops streaming. */
 export async function acpCancelSession(sessionId: string): Promise<boolean> {
+  const bindingId = taskBindingId(sessionId);
+  if (bindingId) {
+    await ownedTaskExecution.cancel(bindingId);
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const status = await ownedTaskExecution.status(bindingId);
+      if (!status || status.phase === "terminal") return true;
+      if (status.phase === "uncertain")
+        throw new Error(
+          "Owned task cancellation is unknown; inspect the native receipt",
+        );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(
+      "Owned task cancellation was not confirmed; inspect before retrying",
+    );
+  }
   await directAcp.cancelSession(sessionId);
   return true;
 }

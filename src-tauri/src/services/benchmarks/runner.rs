@@ -77,6 +77,89 @@ impl JudgeStop {
 }
 
 pub trait ExecutionBackend: Send + Sync {
+    fn validate_owned_task_context<'a>(
+        &'a self,
+        _binding: &'a super::task_execution::Binding,
+        _session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn reopen_owned_task<'a>(
+        &'a self,
+        _binding: &'a super::task_execution::Binding,
+        _session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend cannot reopen an owned transcript",
+            ))
+        })
+    }
+    fn owned_task_output<'a>(
+        &'a self,
+        _binding: &'a super::task_execution::Binding,
+        _session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<super::task_execution::NativeOutput>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend cannot attest native predecessor outputs",
+            ))
+        })
+    }
+    fn prepare_owned_task<'a>(
+        &'a self,
+        _store: &'a Store,
+        _binding: &'a super::task_execution::Binding,
+        _chosen: &'a Configuration,
+    ) -> BoxFuture<'a, Result<super::task_execution::Session>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend has no application owned adapter",
+            ))
+        })
+    }
+    fn dispatch_owned_task<'a>(
+        &'a self,
+        _store: &'a Store,
+        _binding: &'a super::task_execution::Binding,
+        _session: &'a super::task_execution::Session,
+        _admission: tokio::sync::OwnedMutexGuard<()>,
+    ) -> BoxFuture<'a, Result<ExecutionDispatch>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend has no application owned dispatch",
+            ))
+        })
+    }
+    fn owned_task_status<'a>(
+        &'a self,
+        _binding: &'a super::task_execution::Binding,
+        _session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<Option<ExecutionDispatch>>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend has no application owned status",
+            ))
+        })
+    }
+    fn cancel_owned_task<'a>(
+        &'a self,
+        _binding: &'a super::task_execution::Binding,
+        _session: &'a super::task_execution::Session,
+        _close: bool,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend has no application owned cancellation",
+            ))
+        })
+    }
     fn unsupported(&self, configuration: &Configuration, draft: &BenchmarkDraft) -> Option<String>;
     fn readiness<'a>(&'a self, _configuration: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
@@ -1607,6 +1690,372 @@ impl NativeBackend {
 }
 
 impl ExecutionBackend for NativeBackend {
+    fn validate_owned_task_context<'a>(
+        &'a self,
+        binding: &'a super::task_execution::Binding,
+        session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if binding.task.execution_profile == "protected_repository" {
+                let bytes = sandbox::patch(
+                    &repository_execution::attempt_id(&session.owned.owner_id),
+                    1,
+                )
+                .await
+                .map_err(|_| {
+                    BenchmarkError::new(
+                        "selection_changed",
+                        "The isolated native repository changed after setup",
+                    )
+                })?;
+                if !bytes.is_empty() {
+                    return Err(BenchmarkError::new(
+                        "selection_changed",
+                        "The native repository is no longer the acknowledged initial copy",
+                    ));
+                }
+            } else {
+                let host = self
+                    .app
+                    .state::<AgentHost>()
+                    .get_or_start(&self.app)
+                    .await
+                    .map_err(host_error)?;
+                let record = host
+                    .session_record(&session.owned.session_id)
+                    .await
+                    .map_err(|error| host_error(error.to_string()))?;
+                if tokio::fs::read_dir(&record.cwd)
+                    .await?
+                    .next_entry()
+                    .await?
+                    .is_some()
+                {
+                    return Err(BenchmarkError::new(
+                        "selection_changed",
+                        "The native text context changed after setup",
+                    ));
+                }
+            }
+            Ok(())
+        })
+    }
+    fn reopen_owned_task<'a>(
+        &'a self,
+        binding: &'a super::task_execution::Binding,
+        session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            host.reopen_task_owned_session(&session.owned.session_id, &binding.request.request_key)
+                .await
+                .map_err(host_error)
+        })
+    }
+    fn owned_task_output<'a>(
+        &'a self,
+        binding: &'a super::task_execution::Binding,
+        session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<super::task_execution::NativeOutput>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            read_owned_task_output(
+                &host.store,
+                &binding.request.request_key,
+                &session.owned.session_id,
+            )
+            .await
+        })
+    }
+    fn prepare_owned_task<'a>(
+        &'a self,
+        store: &'a Store,
+        binding: &'a super::task_execution::Binding,
+        chosen: &'a Configuration,
+    ) -> BoxFuture<'a, Result<super::task_execution::Session>> {
+        Box::pin(async move {
+            self.readiness(chosen).await?;
+            let account = chosen.account_id.as_deref().ok_or_else(|| {
+                BenchmarkError::new(
+                    "capability_missing",
+                    "Choose a native account for this owned task",
+                )
+            })?;
+            let rows = self
+                .inventory(&chosen.provider_id, Some(account), false)
+                .await?;
+            if !rows
+                .iter()
+                .any(|row| super::task_execution::inventory_acknowledges(row, chosen))
+            {
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "Native account, runtime or worker changed before owned setup",
+                ));
+            }
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            let owner = format!("task:{}", binding.id);
+            let repository = binding.task.execution_profile == "protected_repository";
+            let cwd = if repository {
+                let source = binding.request.repository.as_ref().ok_or_else(|| {
+                    BenchmarkError::new("validation", "An explicit repository snapshot is required")
+                })?;
+                let archive = super::repository::archive(source).await?;
+                let marker_dir = store.root.join("task-executions").join(&binding.id);
+                tokio::fs::create_dir_all(&marker_dir).await?;
+                let marker = marker_dir.join("copy-preparation.json");
+                if host
+                    .store
+                    .owned_session_id(&owner)
+                    .await
+                    .map_err(host_error)?
+                    .is_none()
+                {
+                    let copy_id = repository_execution::attempt_id(&owner);
+                    // A previous setup without a native owner/dispatch cannot
+                    // have submitted work. Clean only this isolated task ID,
+                    // never a live owner's repository, then make a fresh copy.
+                    if marker.is_file() {
+                        sandbox::clean(&copy_id).await?;
+                    }
+                    tokio::fs::write(&marker,serde_json::to_vec(&json!({"bindingId":binding.id,"contextHash":binding.context_hash,"phase":"copying"}))?).await?;
+                    sandbox::copy(&copy_id, &archive).await?;
+                }
+                "/workspace".into()
+            } else {
+                let cwd = store
+                    .root
+                    .join("task-executions")
+                    .join(&binding.id)
+                    .join("workspace");
+                tokio::fs::create_dir_all(&cwd).await?;
+                cwd.to_string_lossy().into_owned()
+            };
+            let owned = host
+                .create_task_owned_session(
+                    OwnedSessionRequest {
+                        owner_id: owner,
+                        provider_id: chosen.provider_id.clone(),
+                        account_id: account.into(),
+                        model_id: chosen.model_id.clone(),
+                        reasoning_effort: chosen.effort.clone(),
+                        fast_mode: chosen.fast_mode,
+                        cwd,
+                        title: format!(
+                            "Owned task: {}",
+                            binding.task.prompt.chars().take(60).collect::<String>()
+                        ),
+                        profile: if repository {
+                            ExecutionProfile::ProtectedRepositoryV1
+                        } else {
+                            ExecutionProfile::NativeTextV1
+                        },
+                    },
+                    u64::from(binding.task.limits.timeout_seconds) * 1000,
+                )
+                .await
+                .map_err(host_error)?;
+            let mut observed = chosen.clone();
+            observed.model_id = owned.selection.model_id.clone().unwrap_or_default();
+            observed.effort = owned.selection.reasoning_effort.clone();
+            observed.fast_mode = owned.selection.fast_mode;
+            let rows = self
+                .inventory(&chosen.provider_id, Some(account), false)
+                .await?;
+            let actual = rows
+                .into_iter()
+                .find(|row| {
+                    row.configuration.model_id == observed.model_id
+                        && row.configuration.execution_profile == chosen.execution_profile
+                })
+                .ok_or_else(|| {
+                    BenchmarkError::new(
+                        "selection_changed",
+                        "Acknowledged worker disappeared from native inventory",
+                    )
+                })?;
+            observed.inventory_revision = actual.configuration.inventory_revision;
+            let record = host
+                .session_record(&owned.session_id)
+                .await
+                .map_err(|error| host_error(error.to_string()))?;
+            observed.account_id = record.account_id;
+            observed.provider_id = record.harness;
+            if observed != *chosen || !owned.substitutions.is_empty() {
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "Provider did not acknowledge the exact owned task model and settings",
+                ));
+            }
+            Ok(super::task_execution::Session {
+                owned,
+                observed,
+                context_hash: binding.context_hash.clone(),
+            })
+        })
+    }
+    fn dispatch_owned_task<'a>(
+        &'a self,
+        _store: &'a Store,
+        binding: &'a super::task_execution::Binding,
+        session: &'a super::task_execution::Session,
+        admission: tokio::sync::OwnedMutexGuard<()>,
+    ) -> BoxFuture<'a, Result<ExecutionDispatch>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            let record = host
+                .session_record(&session.owned.session_id)
+                .await
+                .map_err(|error| host_error(error.to_string()))?;
+            if record.archived_at.is_some() {
+                return Err(BenchmarkError::new(
+                    "cancelled",
+                    "Owned task was closed before dispatch",
+                ));
+            }
+            if binding.task.execution_profile == "native_text"
+                && tokio::fs::read_dir(&record.cwd)
+                    .await?
+                    .next_entry()
+                    .await?
+                    .is_some()
+            {
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "Owned text workspace is no longer empty",
+                ));
+            }
+            let rows = self
+                .inventory(
+                    &session.observed.provider_id,
+                    session.observed.account_id.as_deref(),
+                    false,
+                )
+                .await?;
+            if !rows
+                .iter()
+                .any(|row| super::task_execution::inventory_acknowledges(row, &session.observed))
+            {
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "Native runtime changed at owned dispatch",
+                ));
+            }
+            host.dispatch_task_owned_turn(
+                OwnedTurnRequest {
+                    session_id: session.owned.session_id.clone(),
+                    request_key: binding.request.request_key.clone(),
+                    prompt: public_task_prompt(&binding.task)?,
+                    policy_hash: session.owned.policy_hash.clone(),
+                    timeout_ms: u64::from(
+                        binding
+                            .task
+                            .entry
+                            .as_ref()
+                            .map_or(binding.task.limits.timeout_seconds, |entry| {
+                                entry.remaining_budget_seconds
+                            }),
+                    ) * 1000,
+                    images: vec![],
+                },
+                crate::services::agent_host::executor_receipts::ExecutorLink {
+                    decision_key: binding.request.request_key.clone(),
+                    logical_run_id: binding.request.request_key.clone(),
+                },
+                admission,
+                binding.task.limits.max_artifact_bytes,
+            )
+            .await
+            .map_err(host_error)
+        })
+    }
+    fn owned_task_status<'a>(
+        &'a self,
+        binding: &'a super::task_execution::Binding,
+        session: &'a super::task_execution::Session,
+    ) -> BoxFuture<'a, Result<Option<ExecutionDispatch>>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            let status = host
+                .execution_status(&binding.request.request_key)
+                .await
+                .map_err(host_error)?;
+            if status
+                .as_ref()
+                .is_some_and(|row| row.session_id != session.owned.session_id)
+            {
+                return Err(BenchmarkError::new(
+                    "invalid_task_authority",
+                    "Task key belongs to another native session",
+                ));
+            }
+            Ok(status)
+        })
+    }
+    fn cancel_owned_task<'a>(
+        &'a self,
+        binding: &'a super::task_execution::Binding,
+        session: &'a super::task_execution::Session,
+        close: bool,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            if close {
+                host.close_task_owned_session(
+                    &session.owned.session_id,
+                    &binding.request.request_key,
+                )
+                .await
+                .map_err(host_error)
+            } else if host
+                .execution_status(&binding.request.request_key)
+                .await
+                .map_err(host_error)?
+                .is_some()
+            {
+                host.cancel_owned_turn(&binding.request.request_key)
+                    .await
+                    .map_err(host_error)
+            } else {
+                host.close_task_owned_session(
+                    &session.owned.session_id,
+                    &binding.request.request_key,
+                )
+                .await
+                .map_err(host_error)
+            }
+        })
+    }
     fn judge<'a>(
         &'a self,
         store: &'a Store,
@@ -2289,6 +2738,12 @@ impl ExecutionBackend for NativeBackend {
             }
             attempt.output = Some(std::mem::take(&mut capture.output));
             attempt.duration_ms = Some(started.elapsed().as_millis() as u64);
+            attempt.native_execution_ms = Some(
+                host.store
+                    .execution_elapsed_ms(&key)
+                    .await
+                    .map_err(host_error)?,
+            );
             attempt.finished_at = Some(now());
             attempt.phase = "collecting".into();
             if let Some(id) = cleanup.0.as_deref() {
@@ -2359,6 +2814,11 @@ impl ExecutionBackend for NativeBackend {
             }
             attempt.session_id = Some(status.session_id.clone());
             attempt.host_run_id = Some(status.run_id.clone());
+            attempt.native_execution_ms = host
+                .store
+                .execution_elapsed_ms(&status.request_key)
+                .await
+                .ok();
             attempt.event_cursor = 0;
             attempt.usage = TokenUsage::default();
             attempt.resolved_model = None;
@@ -2472,6 +2932,139 @@ const RECOVERED_ANSWER_CAP_REASON: &str = "The recovered answer exceeds the publ
 /// model that answered written on the attempt. Only the answer counts
 /// against the published artifact cap; the record has a ceiling of its own
 /// (see [`super::evidence::EvidenceLog`]) and never ends the turn.
+/// Read the committed native history without reopening a workspace or event stream.
+async fn read_owned_task_output(
+    store: &crate::services::agent_host::store::SessionStore,
+    key: &str,
+    session: &str,
+) -> Result<super::task_execution::NativeOutput> {
+    let status = store
+        .execution_dispatch(key)
+        .await
+        .map_err(host_error)?
+        .ok_or_else(|| {
+            BenchmarkError::new("evidence_missing", "Native predecessor has no dispatch")
+        })?;
+    if status.session_id != session || status.phase != "terminal" {
+        return Err(BenchmarkError::new(
+            "dispatch_uncertain",
+            "A predecessor has not reached a committed native terminal result",
+        ));
+    }
+    if status.error.is_some() {
+        return Err(BenchmarkError::new(
+            "evidence_missing",
+            "Native task did not complete successfully",
+        ));
+    }
+    let (output, elapsed_ms) = store
+        .task_public_result(key, session)
+        .await
+        .map_err(host_error)?;
+    Ok(super::task_execution::NativeOutput {
+        text: super::workflow::committed_report(&output),
+        elapsed_ms,
+    })
+}
+
+/// Inspect only native public events with the same output/policy caps as collection.
+pub(crate) async fn owned_task_public_output(
+    host: &Arc<crate::services::agent_host::router::Inner>,
+    session: &str,
+    cap: u64,
+    terminal: bool,
+) -> std::result::Result<Option<String>, Value> {
+    let owner = match host.store.execution_owner(session).await {
+        Ok(Some((owner, _))) => owner,
+        _ => {
+            return Err(
+                json!({"kind":"dispatch_uncertain","message":"Native task owner is unavailable"}),
+            )
+        }
+    };
+    let repository = owner.profile == ExecutionProfile::ProtectedRepositoryV1;
+    let mut attempt = super::pending_attempt(
+        "application",
+        "public-policy",
+        &Configuration {
+            id: "policy".into(),
+            provider_id: "policy".into(),
+            account_id: None,
+            model_id: "policy".into(),
+            model_name: None,
+            effort: None,
+            fast_mode: None,
+            billing_mode: "unknown".into(),
+            execution_profile: "native_text".into(),
+            inventory_revision: None,
+        },
+        0,
+    );
+    let mut capture = TurnCapture::new(cap);
+    let mut cursor = 0;
+    loop {
+        let page = match host.read_owned_events(session, cursor, 200).await {
+            Ok(page) => page,
+            Err(error) => return Err(json!({"kind":"dispatch_uncertain","message":error})),
+        };
+        for event in page.events {
+            if let Err(error) = capture.read(event.payload, &mut attempt) {
+                return Err(json!({"kind":"dispatch_uncertain","message":error.message}));
+            }
+        }
+        cursor = page.cursor;
+        if !page.has_more {
+            break;
+        }
+    }
+    if repository && terminal {
+        if let Err(error) = host.stop_owned_sandbox(session).await {
+            return Err(json!({"kind":"dispatch_uncertain","message":error}));
+        }
+        if let Err(error) = collect_repository(
+            &mut attempt,
+            &repository_execution::attempt_id(&owner.owner_id),
+            cap,
+        )
+        .await
+        {
+            return Err(json!({"kind":"dispatch_uncertain","message":error.message}));
+        }
+        if attempt.outcome.as_deref() == Some("budget_reached") {
+            return Err(
+                json!({"kind":"artifact_limit","message":"Native repository patch exceeds its artifact cap"}),
+            );
+        }
+    }
+    if !repository && capture.cap_answer() {
+        return Err(
+            json!({"kind":"artifact_limit","message":"Owned task exceeded its published output cap"}),
+        );
+    }
+    if let Some(message) = capture.violation {
+        return Err(json!({"kind":"execution_violation","message":message}));
+    }
+    Ok(terminal.then(|| {
+        if repository {
+            attempt.output.unwrap_or_default()
+        } else {
+            capture.output
+        }
+    }))
+}
+pub(crate) async fn monitor_owned_task(
+    host: &Arc<crate::services::agent_host::router::Inner>,
+    session: &str,
+    cap: u64,
+) -> Value {
+    loop {
+        if let Err(failure) = owned_task_public_output(host, session, cap, false).await {
+            return failure;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 struct TurnCapture {
     cap: usize,
     output: String,
@@ -2775,9 +3368,12 @@ impl RuntimeIdentity {
     /// The revision of a configuration on `model_id`.
     fn revision(&self, inventory: &Value, model_id: &str) -> String {
         match self {
-            Self::Shared(revision) => revision.clone(),
+            Self::Shared(revision) => {
+                fixtures::hash(format!("committed-entry-v2\0{revision}").as_bytes())
+            }
             Self::PerModel(runtime) => {
                 let mut hash = runtime.clone();
+                hash.update(b"committed-entry-v2\0");
                 match model_row_identity(inventory, model_id) {
                     Some(row) => {
                         hash.update(b"model\0");
@@ -2801,6 +3397,22 @@ async fn runtime_identity(
     provider: NativeProvider,
     native_cli: Option<std::path::PathBuf>,
 ) -> Result<RuntimeIdentity> {
+    #[cfg(feature = "app-test-driver")]
+    if provider == NativeProvider::Claude {
+        let entrypoint = inventory_entrypoint(inventory)?;
+        if let Some(fixture) = crate::services::agent_host::execution_fixture::verified(&entrypoint)
+            .map_err(host_error)?
+        {
+            let revision = fixtures::hash(
+                format!(
+                    "{fixture}\0{NATIVE_TEXT_POLICY_REVISION}\0{NATIVE_TEXT_ADAPTER}\0{}",
+                    serde_json::to_string(&model_identity(inventory))?
+                )
+                .as_bytes(),
+            );
+            return Ok(RuntimeIdentity::Shared(revision));
+        }
+    }
     Ok(match provider {
         NativeProvider::Claude => {
             RuntimeIdentity::Shared(claude_inventory_fingerprint(inventory).await?)
@@ -3412,13 +4024,18 @@ fn weighted_share(shares: &serde_json::Map<String, Value>, criteria: &[RubricCri
 }
 
 fn prompt_with_fixtures(draft: &BenchmarkDraft) -> Result<String> {
+    public_task_prompt(&super::learned::PublicTask::from(draft))
+}
+/// Collection and application deployment use byte-identical role, entry and
+/// fixture composition. Neither adapter accepts a second renderer system prompt.
+pub(super) fn public_task_prompt(draft: &super::learned::PublicTask) -> Result<String> {
     let mut prompt = String::new();
     if !draft.role_prompt.is_empty() {
         prompt.push_str("Authored role context:\n");
         prompt.push_str(&draft.role_prompt);
         prompt.push_str("\n\n");
     }
-    if let Some(entry) = &draft.entry_state {
+    if let Some(entry) = &draft.entry {
         prompt.push_str("Frozen continuation context:\n");
         prompt.push_str(&entry.conversation_prefix);
         for report in &entry.previous_reports {
@@ -4510,6 +5127,164 @@ mod pipeline_tests;
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn native_task_history_and_wave_prefixes_use_sealed_bytes_after_workspace_changes() {
+        use crate::services::agent_host::store::{SessionRecord, SessionStore};
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("host.db");
+        let store = SessionStore::open(&database).await.unwrap();
+        let owner = OwnedSessionRequest {
+            owner_id: "task:invented-repository".into(),
+            provider_id: "claude-acp".into(),
+            account_id: "invented-account".into(),
+            model_id: "invented-model".into(),
+            reasoning_effort: Some("high".into()),
+            fast_mode: Some(false),
+            cwd: dir.path().to_string_lossy().into_owned(),
+            title: "Invented repository task".into(),
+            profile: ExecutionProfile::ProtectedRepositoryV1,
+        };
+        let record = SessionRecord {
+            id: "native-task".into(),
+            harness: owner.provider_id.clone(),
+            account_id: Some(owner.account_id.clone()),
+            bridge_session_id: None,
+            cwd: owner.cwd.clone(),
+            title: Some(owner.title.clone()),
+            user_set_name: false,
+            project_id: None,
+            persona_id: None,
+            model_id: Some(owner.model_id.clone()),
+            reasoning_effort: owner.reasoning_effort.clone(),
+            fast_mode: owner.fast_mode,
+            legacy_model_id: None,
+            hidden: false,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            last_message_at: None,
+            archived_at: None,
+            message_count: 0,
+            last_snippet: None,
+            snapshot: None,
+        };
+        store
+            .insert_owned_session_for_purpose(&record, &owner, "policy", "task")
+            .await
+            .unwrap();
+        let dispatch = ExecutionDispatch {
+            request_key: "owned-task:invented-repository".into(),
+            session_id: record.id.clone(),
+            run_id: "native-run".into(),
+            user_message_id: "native-user".into(),
+            phase: "reserved".into(),
+            event_cursor: 0,
+            result: None,
+            error: None,
+        };
+        store
+            .reserve_dispatch(&dispatch, "invented prompt")
+            .await
+            .unwrap();
+        assert!(
+            super::read_owned_task_output(&store, &dispatch.request_key, &record.id)
+                .await
+                .is_err()
+        );
+        let patch = dir.path().join("stopped-patch.diff");
+        tokio::fs::write(
+            &patch,
+            "diff --git a/invented.txt b/invented.txt\n+first bounded output\n",
+        )
+        .await
+        .unwrap();
+        let output = tokio::fs::read_to_string(&patch).await.unwrap();
+        let result = json!({"stopReason":"end_turn","nativeExecutionMs":1201});
+        store
+            .settle_task_dispatch(
+                &dispatch.request_key,
+                &record.id,
+                Some(&result),
+                None,
+                Some(&output),
+                1201,
+            )
+            .await
+            .unwrap();
+        let first = super::read_owned_task_output(&store, &dispatch.request_key, &record.id)
+            .await
+            .unwrap();
+        tokio::fs::write(&patch, "+changed workspace output\n")
+            .await
+            .unwrap();
+        // A later wave prefix rereads all earlier IDs. It receives the same
+        // report and clock even after the stopped copy changes or disappears.
+        let second_prefix =
+            super::read_owned_task_output(&store, &dispatch.request_key, &record.id)
+                .await
+                .unwrap();
+        tokio::fs::remove_file(&patch).await.unwrap();
+        let third_prefix = super::read_owned_task_output(&store, &dispatch.request_key, &record.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            first.text,
+            super::super::workflow::committed_report(&output)
+        );
+        assert_eq!(second_prefix.text, first.text);
+        assert_eq!(third_prefix.text, first.text);
+        assert_eq!(third_prefix.elapsed_ms, 1201);
+        assert!(store
+            .settle_task_dispatch(
+                &dispatch.request_key,
+                &record.id,
+                Some(&result),
+                None,
+                Some("changed"),
+                1201
+            )
+            .await
+            .is_err());
+        let restarted = SessionStore::open(&database).await.unwrap();
+        assert_eq!(
+            super::read_owned_task_output(&restarted, &dispatch.request_key, &record.id)
+                .await
+                .unwrap()
+                .text,
+            first.text
+        );
+        // A sealed artifact does not authorize an uncertain dispatch. The
+        // production reader also checks status in its own metadata join.
+        store
+            .settle_dispatch(
+                &dispatch.request_key,
+                "uncertain",
+                None,
+                Some(&json!({"kind":"dispatch_uncertain"})),
+            )
+            .await
+            .unwrap();
+        assert!(
+            super::read_owned_task_output(&store, &dispatch.request_key, &record.id)
+                .await
+                .is_err()
+        );
+        assert!(store
+            .task_public_result(&dispatch.request_key, &record.id)
+            .await
+            .is_err());
+        assert!(store
+            .settle_task_dispatch(
+                &dispatch.request_key,
+                &record.id,
+                Some(&result),
+                None,
+                Some(&output),
+                1201
+            )
+            .await
+            .is_err());
+    }
+
     #[test]
     fn repository_pins_track_the_model_and_sandbox_but_not_unrelated_rows() {
         let inventory =
@@ -5794,6 +6569,7 @@ mod tests {
             evaluations: vec![],
             event_cursor: 0,
             workflow_steps: vec![],
+            native_execution_ms: None,
             resolved_model: None,
         };
         let version = |id: &str| BenchmarkVersion {
@@ -6697,7 +7473,7 @@ mod tests {
     /// Today's formula, inline: a configuration pinned before provider
     /// profiles existed must keep matching its runtime.
     #[tokio::test]
-    async fn claude_inventory_fingerprint_is_unchanged() {
+    async fn claude_inventory_fingerprint_binds_committed_entry_recipe() {
         let directory = tempfile::tempdir().unwrap();
         let entrypoint = directory.path().join("index.js");
         tokio::fs::write(&entrypoint, "launcher entrypoint")
@@ -6710,7 +7486,9 @@ mod tests {
         hash.update(b"distill-native-text-policy-v2");
         hash.update(NATIVE_TEXT_ADAPTER.as_bytes());
         hash.update(serde_json::to_vec(&json!(["opus", "sonnet"])).unwrap());
-        let expected = hex::encode(hash.finalize());
+        let legacy = hex::encode(hash.finalize());
+        let expected = fixtures::hash(format!("committed-entry-v2\0{legacy}").as_bytes());
+        assert_ne!(expected, legacy);
         // One revision for every row, as Claude configurations were pinned.
         for model in ["sonnet", "opus", "unlisted"] {
             assert_eq!(
@@ -6795,7 +7573,9 @@ mod tests {
     }
     /// What a Codex configuration's revision is made of, in order: the
     /// pinned files as installed, codex-acp's own lock entry, the policy and
-    /// adapter, and the configuration's own model with its name.
+    /// adapter, the committed native clock/public-report entry recipe, and
+    /// the configuration's own model with its name. Old evidence retains its
+    /// old revision and cannot acquire the new entry semantics by relabeling.
     #[tokio::test]
     async fn codex_revision_is_its_own_pins_lock_entry_policy_and_model() {
         let directory = tempfile::tempdir().unwrap();
@@ -6820,14 +7600,17 @@ mod tests {
         hash.update(codex.policy_revision().as_bytes());
         hash.update(codex.policy_bytes());
         hash.update(codex.adapter().unwrap().as_bytes());
+        let mut legacy = hash.clone();
+        legacy.update(b"model\0");
+        legacy.update("gpt-6-sol\u{1f}GPT-6-Sol".as_bytes());
+        hash.update(b"committed-entry-v2\0");
         hash.update(b"model\0");
         hash.update("gpt-6-sol\u{1f}GPT-6-Sol".as_bytes());
-        assert_eq!(
-            inventory_fingerprint(&inventory, codex, Some(native), "gpt-6-sol")
-                .await
-                .unwrap(),
-            hex::encode(hash.finalize())
-        );
+        let revision = inventory_fingerprint(&inventory, codex, Some(native), "gpt-6-sol")
+            .await
+            .unwrap();
+        assert_eq!(revision, hex::encode(hash.finalize()));
+        assert_ne!(revision, hex::encode(legacy.finalize()));
     }
     #[test]
     fn codex_inventory_drops_ultra() {

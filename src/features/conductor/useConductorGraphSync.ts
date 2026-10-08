@@ -23,7 +23,11 @@ import type { Message } from "@/shared/types/messages";
 import type { RunStatus, SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
 import { runWaveEngineTick } from "./waveRunner";
-import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
+import {
+  isBenchmarkSession,
+  taskBindingId,
+} from "@/features/chat/lib/executionOwnership";
+import { ownedTaskExecution } from "@/features/benchmarks/lib/ownedTaskExecution";
 
 /** Sessions seen executing at least once. Bounded — see BoundedSet. */
 const seenRunningBySession = new BoundedSet(5_000);
@@ -58,7 +62,11 @@ function reconcileStaleStatusesOnce(): void {
 
   const graph = useConductorGraphStore.getState();
   const staleSessionIds = reconcileStaleGraphStatuses(
-    Object.values(graph.nodesById),
+    Object.values(graph.nodesById).filter(
+      (node) =>
+        !isBenchmarkSession(node.sessionId) &&
+        !(node.managedBy === "wave" && node.runId?.startsWith("owned-task:")),
+    ),
     {
       sessionStateById: chat.sessionStateById,
       hasQueuedFirstSend: (sessionId) =>
@@ -199,6 +207,93 @@ function deriveOrchestratorStatus(
  */
 let syncing = false;
 let syncRequestedWhileRunning = false;
+const ownedSyncInFlight = new Set<string>();
+const ownedTerminalSynced = new BoundedSet(5_000);
+function syncOwnedWaveChild(node: SessionNode): void {
+  const bindingId = taskBindingId(node.sessionId);
+  if (
+    !bindingId ||
+    node.role !== "worker" ||
+    node.managedBy !== "wave" ||
+    !node.waveId ||
+    !node.parentSessionId ||
+    !node.runId
+  )
+    return;
+  const key = `${bindingId}:${node.runId}`;
+  const runId = node.runId;
+  if (ownedSyncInFlight.has(key) || ownedTerminalSynced.has(key)) return;
+  ownedSyncInFlight.add(key);
+  void (async () => {
+    const prepared = await ownedTaskExecution.get(bindingId);
+    if (
+      prepared.session.owned.sessionId !== node.sessionId ||
+      prepared.session.owned.ownerId !== `task:${bindingId}` ||
+      prepared.binding.request.requestKey !== node.runId ||
+      prepared.binding.request.surface !== "wave" ||
+      prepared.binding.request.contextId !==
+        `${node.parentSessionId}:wave:${node.waveId}` ||
+      prepared.binding.request.waveMode?.contextId !== node.parentSessionId
+    )
+      throw new Error(
+        "The registered wave child differs from its native task binding",
+      );
+    const receipt = await ownedTaskExecution.status(bindingId);
+    if (!receipt) return;
+    if (
+      receipt.sessionId !== node.sessionId ||
+      receipt.requestKey !== node.runId
+    )
+      throw new Error("Native wave task receipt identity changed");
+    const graph = useConductorGraphStore.getState();
+    if (graph.getNode(node.sessionId)?.runId !== runId) return;
+    if (receipt.phase === "reserved" || receipt.phase === "running") {
+      if (graph.getNode(node.sessionId)?.status !== "running")
+        graph.patchNode(node.sessionId, { status: "running" });
+      return;
+    }
+    const status =
+      receipt.phase === "uncertain"
+        ? "failed"
+        : receipt.error
+          ? receipt.error.kind === "cancelled"
+            ? "cancelled"
+            : "failed"
+          : "completed";
+    let output =
+      receipt.error?.message ??
+      "Native task execution is unknown; inspect its receipt before retrying.";
+    if (status === "completed") {
+      const result = await ownedTaskExecution.publicResult(bindingId);
+      const value: unknown = JSON.parse(result.text);
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("output" in value) ||
+        typeof value.output !== "string"
+      )
+        throw new Error("Native task has no public terminal output");
+      output = value.output;
+    }
+    if (
+      useConductorGraphStore.getState().getNode(node.sessionId)?.runId !== runId
+    )
+      return;
+    ownedTerminalSynced.add(key);
+    graph.attachReport(parseStructuredReport(runId, status, output));
+    graph.patchNode(node.sessionId, { status });
+    runWaveEngineTick();
+  })()
+    .catch((error: unknown) => {
+      useChatStore
+        .getState()
+        .setError(
+          node.sessionId,
+          `Native wave result is unresolved: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    })
+    .finally(() => ownedSyncInFlight.delete(key));
+}
 
 function syncChildStatuses(): void {
   if (syncing) {
@@ -223,7 +318,10 @@ function runSyncPass(): void {
   const chat = useChatStore.getState();
   const workersByParent = indexWorkersByParent(graph.nodesById);
   for (const node of Object.values(graph.nodesById)) {
-    if (isBenchmarkSession(node.sessionId)) continue;
+    if (isBenchmarkSession(node.sessionId)) {
+      syncOwnedWaveChild(node);
+      continue;
+    }
     if (node.role !== "orchestrator" && node.role !== "worker") continue;
     const hasWorkers =
       node.role === "orchestrator" &&
@@ -407,6 +505,18 @@ export function useConductorGraphSync(): void {
     syncChildStatuses();
     void hydrateMissingSessions();
 
+    // A restored task has no local send promise to poll it. Its final ACP
+    // event may precede the atomic native terminal/output commit. Reconcile
+    // only registered task-owned wave children until that commit is readable,
+    // including after transient IPC failures and triggers lost to in-flight reads.
+    const ownedStatusTimer = setInterval(() => {
+      for (const node of Object.values(
+        useConductorGraphStore.getState().nodesById,
+      )) {
+        syncOwnedWaveChild(node);
+      }
+    }, 1_000);
+
     const onStateChanged = () => {
       reconcileStaleStatusesOnce();
       syncChildStatuses();
@@ -451,6 +561,7 @@ export function useConductorGraphSync(): void {
     });
 
     return () => {
+      clearInterval(ownedStatusTimer);
       unsubGraphNodes();
       unsubGraphReports();
       unsubMessages();

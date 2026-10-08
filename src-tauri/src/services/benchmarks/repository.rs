@@ -13,14 +13,14 @@
 
 use super::{fixtures, types::*};
 use crate::services::benchmark_sandbox as sandbox;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 /// The snapshot a repository case starts from.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     /// A local git repository that holds the commit.

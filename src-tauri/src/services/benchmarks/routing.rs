@@ -758,6 +758,7 @@ mod tests {
                         }],
                         event_cursor: 1,
                         workflow_steps: vec![],
+                        native_execution_ms: None,
                         resolved_model: None,
                     });
                 }

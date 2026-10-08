@@ -37,11 +37,17 @@ export interface ExecutorDecision {
   policyVersion: string;
   chosen: Configuration | null;
   chosenKey: string | null;
-  source: "pin" | "prior" | "none" | "research_learned" | "research_aggregate";
+  source:
+    | "pin"
+    | "prior"
+    | "none"
+    | "research_learned"
+    | "research_aggregate"
+    | "learned";
   reason: string;
   learnedStatus: string;
   researchPrediction: SelectorPrediction | null;
-  learnedDispatchAllowed: false;
+  learnedDispatchAllowed: boolean;
 }
 
 export interface ExecutorObservation {

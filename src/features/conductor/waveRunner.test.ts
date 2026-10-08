@@ -28,7 +28,9 @@ const executorSelection = vi.hoisted(() => ({
         record: boolean,
       ) => Promise<ExecutorDecision>
     >(),
-  observe: vi.fn(async (_key: string, _observation: unknown) => undefined),
+  observe: vi.fn<(key: string, observation: unknown) => Promise<void>>(
+    async (_key: string, _observation: unknown) => undefined,
+  ),
   syncOutcome: vi.fn(
     async (_key: string, _session: string, _run: string, _outcome: string) =>
       undefined,
@@ -70,11 +72,17 @@ beforeEach(() => {
   executorSelection.select
     .mockReset()
     .mockImplementation(async (request) => decisionFor(request));
-  executorSelection.observe.mockClear();
-  executorSelection.syncOutcome.mockClear();
+  executorSelection.observe.mockReset().mockResolvedValue(undefined);
+  executorSelection.syncOutcome.mockReset().mockResolvedValue(undefined);
 });
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
   executorSelection,
+}));
+vi.mock("@/features/benchmarks/lib/ownedTaskExecution", () => ({
+  ownedTaskExecution: {
+    getMode: vi.fn(async () => null),
+    cancel: vi.fn(async () => undefined),
+  },
 }));
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
@@ -565,6 +573,134 @@ describe("waveRunner", () => {
     runWaveEngineTick();
     expect(executorSelection.syncOutcome).toHaveBeenCalledTimes(1);
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("late spawn bookkeeping cannot stop a child whose wave already reached its digest", async () => {
+    selectionPlan();
+    stopOrchestratorSession.mockClear();
+    let finishBookkeeping!: () => void;
+    executorSelection.observe.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishBookkeeping = resolve;
+        }),
+    );
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(executorSelection.observe).toHaveBeenCalled(),
+    );
+    const graph = useConductorGraphStore.getState();
+    graph.patchNode("child-0", { status: "completed" });
+    graph.attachReport({
+      runId: "run-1",
+      status: "completed",
+      summary: "Completed before bookkeeping",
+      decisions: ["No artifacts changed"],
+      artifacts: [],
+      risks: [],
+      needsOperator: false,
+      nextSuggestedTask: null,
+    });
+    runWaveEngineTick();
+    expect(getWaveEngineState().waves[0]?.phase).toBe("dispatchingDigest");
+    const decision = decisionFor(executorSelection.select.mock.calls[0][0]);
+    executorSelection.get.mockResolvedValue({
+      decision,
+      observations: [],
+      hostExecution: null,
+    });
+    finishBookkeeping();
+    await vi.waitFor(() =>
+      expect(executorSelection.syncOutcome).toHaveBeenCalled(),
+    );
+    expect(stopOrchestratorSession).not.toHaveBeenCalled();
+    expect(graph.getNode("child-0")?.status).toBe("completed");
+    expect(getWaveEngineState().waves[0]?.steps[0]).toMatchObject({
+      phase: "spawned",
+      sessionId: "child-0",
+      runId: "run-1",
+    });
+  });
+
+  it("late spawn bookkeeping preserves a failed step and its verification while its wave is running", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    let finishBookkeeping!: () => void;
+    executorSelection.observe.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishBookkeeping = resolve;
+        }),
+    );
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(executorSelection.observe).toHaveBeenCalled(),
+    );
+    useConductorGraphStore
+      .getState()
+      .patchNode("child-0", { status: "completed" });
+    // A verified report can be committed by graph/engine synchronization before
+    // the spawn caller's slow attribution IPC returns.
+    const current = getWaveEngineState();
+    setWaveEngineState({
+      ...current,
+      waves: current.waves.map((wave) => ({
+        ...wave,
+        steps: wave.steps.map((step) =>
+          step.stepIndex === 0
+            ? {
+                ...step,
+                phase: "failed" as const,
+                sessionId: "child-0",
+                runId: "run-1",
+                reportVerified: true,
+              }
+            : step,
+        ),
+      })),
+    });
+    const decision = decisionFor(executorSelection.select.mock.calls[0][0]);
+    executorSelection.get.mockResolvedValue({
+      decision,
+      observations: [],
+      hostExecution: null,
+    });
+    finishBookkeeping();
+    await vi.waitFor(() =>
+      expect(executorSelection.syncOutcome).toHaveBeenCalled(),
+    );
+    expect(getWaveEngineState().waves[0]?.phase).toBe("running");
+    expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed");
+    expect(getWaveEngineState().waves[0]?.steps[0]?.reportVerified).toBe(true);
+  });
+
+  it("reports a structured native outcome conflict without a false browser storage warning", async () => {
+    selectionPlan();
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
+    );
+    const decision = decisionFor(executorSelection.select.mock.calls[0][0]);
+    executorSelection.get.mockResolvedValue({
+      decision,
+      observations: [],
+      hostExecution: null,
+    });
+    executorSelection.syncOutcome.mockRejectedValueOnce({
+      code: "observation_conflict",
+      message: "Reported outcome differs from native execution",
+    });
+    useConductorGraphStore
+      .getState()
+      .patchNode("child-0", { status: "completed" });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(noticeTexts().join("\n")).toContain(
+        "Reported outcome differs from native execution",
+      ),
+    );
+    expect(noticeTexts().join("\n")).not.toContain("browser");
+    expect(noticeTexts().join("\n")).not.toContain("storage quota");
   });
 
   it("stays off for the session when a folder document could not be read", async () => {

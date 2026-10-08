@@ -80,7 +80,7 @@ fn observation(
     json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
         "excluded":authored.then_some("authored_by_candidate"),
         "outcome":attempt.and_then(|a|super::analysis::outcome_as_of(a.outcome.as_deref(),a.finished_at,&a.evaluations,cutoff)),
-        "phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),
+        "phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),"nativeExecutionMs":attempt.and_then(|a|a.native_execution_ms),"workerOverheadMs":attempt.and_then(|a|a.duration_ms.zip(a.native_execution_ms).map(|(wall,native)|wall.saturating_sub(native))),
         "usage":attempt.map(|a|&a.usage),"resolvedModel":attempt.and_then(|a|a.resolved_model.as_ref()),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
         "observedConfiguration":attempt.and_then(|a|a.observed.as_ref()).map(|c|public_configuration(c,salt)),
         "workflowSteps":attempt.map(|a|&a.workflow_steps),

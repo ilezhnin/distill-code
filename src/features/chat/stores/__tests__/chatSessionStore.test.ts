@@ -7,8 +7,22 @@ import {
   CHAT_WORKSPACE_METADATA_STORAGE_KEY,
   type PersistedChatWorkspaceMetadata,
 } from "../workspaceAttachmentPersistence";
-import { type ChatSession, useChatSessionStore } from "../chatSessionStore";
+import {
+  type ChatSession,
+  getVisibleSessions,
+  useChatSessionStore,
+} from "../chatSessionStore";
 import { useChatStore } from "../chatStore";
+import {
+  isProtectedExecutionSession,
+  isBenchmarkExecutionSession,
+} from "../../lib/executionOwnership";
+import {
+  isNestedExecutorSession,
+  nestedExecutorSessionIdSet,
+} from "@/features/conductor/sessionVisibility";
+import type { SessionNode } from "@/features/conductor/types";
+import { filterSessionsByScope } from "@/features/sessions/lib/sessionListFilters";
 
 const mocks = vi.hoisted(() => ({
   acpCreateSession: vi.fn(),
@@ -131,6 +145,167 @@ describe("chatSessionStore", () => {
     mocks.archiveSession.mockResolvedValue(undefined);
     mocks.checkAllProviderStatus.mockResolvedValue([]);
     mocks.unarchiveSession.mockResolvedValue(undefined);
+  });
+
+  describe("visible application tasks", () => {
+    it("shows started application tasks alongside ordinary chats while research and blank rows remain hidden", () => {
+      const sessions = [
+        makeSession({
+          id: "fictional-task",
+          messageCount: 2,
+          executionOwner: { kind: "task", id: "task:fictional-binding" },
+        }),
+        makeSession({
+          id: "fictional-benchmark",
+          messageCount: 2,
+          executionOwner: {
+            kind: "benchmark",
+            id: "benchmark:fictional-binding",
+          },
+        }),
+        makeSession({ id: "fictional-ordinary", messageCount: 1 }),
+        makeSession({ id: "fictional-empty" }),
+        makeSession({
+          id: "fictional-empty-task",
+          executionOwner: { kind: "task", id: "task:fictional-empty-binding" },
+        }),
+        makeSession({ id: "fictional-local-turn" }),
+        makeSession({
+          id: "fictional-saved-draft",
+          targetAgentDraftSaved: true,
+        }),
+      ];
+      expect(
+        getVisibleSessions(sessions, {
+          "fictional-local-turn": 1,
+          "fictional-benchmark": 1,
+        }).map((session) => session.id),
+      ).toEqual([
+        "fictional-task",
+        "fictional-ordinary",
+        "fictional-local-turn",
+        "fictional-saved-draft",
+      ]);
+    });
+
+    it("keeps a cold-hydrated native application task visible and protected without a local transcript", async () => {
+      mocks.acpListSessionsPage.mockResolvedValue(
+        mockPage([
+          makeAcpSession({
+            sessionId: "fictional-cold-task",
+            messageCount: 2,
+            executionOwner: { kind: "task", id: "task:fictional-cold-binding" },
+          }),
+          makeAcpSession({
+            sessionId: "fictional-cold-benchmark",
+            messageCount: 2,
+            executionOwner: {
+              kind: "benchmark",
+              id: "benchmark:fictional-cold-binding",
+            },
+          }),
+          makeAcpSession({
+            sessionId: "fictional-cold-empty",
+            messageCount: 0,
+          }),
+        ]),
+      );
+      await useChatSessionStore.getState().loadSessions();
+      const store = useChatSessionStore.getState();
+      expect(store.hasHydratedSessions).toBe(true);
+      expect(
+        getVisibleSessions(store.sessions, {}).map((session) => session.id),
+      ).toEqual(["fictional-cold-task"]);
+      expect(store.getSession("fictional-cold-task")?.executionOwner).toEqual({
+        kind: "task",
+        id: "task:fictional-cold-binding",
+      });
+      expect(isProtectedExecutionSession("fictional-cold-task")).toBe(true);
+      expect(isBenchmarkExecutionSession("fictional-cold-task")).toBe(false);
+      expect(isProtectedExecutionSession("fictional-cold-benchmark")).toBe(
+        true,
+      );
+      expect(isProtectedExecutionSession("fictional-cold-empty")).toBe(false);
+    });
+
+    it("preserves active and archived scope filtering for visible application tasks", () => {
+      const sessions = [
+        makeSession({
+          id: "fictional-active-task",
+          messageCount: 2,
+          executionOwner: { kind: "task", id: "task:fictional-active-binding" },
+        }),
+        makeSession({
+          id: "fictional-archived-task",
+          messageCount: 2,
+          archivedAt: "2026-04-01T00:00:00Z",
+          executionOwner: {
+            kind: "task",
+            id: "task:fictional-archived-binding",
+          },
+        }),
+        makeSession({
+          id: "fictional-archived-benchmark",
+          messageCount: 2,
+          archivedAt: "2026-04-01T00:00:00Z",
+          executionOwner: {
+            kind: "benchmark",
+            id: "benchmark:fictional-archived-binding",
+          },
+        }),
+      ];
+      const visible = getVisibleSessions(sessions, {});
+      expect(
+        filterSessionsByScope(visible, "active").map((session) => session.id),
+      ).toEqual(["fictional-active-task"]);
+      expect(
+        filterSessionsByScope(visible, "archived").map((session) => session.id),
+      ).toEqual(["fictional-archived-task"]);
+    });
+
+    it("keeps application-owned wave children hidden by the existing nested executor filter including draft aliases", () => {
+      const nodes: Record<string, SessionNode> = {
+        "fictional-child-draft": {
+          sessionId: "fictional-child-draft",
+          projectId: "fictional-project",
+          role: "worker",
+          managedBy: "wave",
+          parentSessionId: "fictional-conductor",
+          rootConductorId: "fictional-conductor",
+          runId: "fictional-wave-key",
+          harnessId: "fixture-provider",
+          displayName: "Fictional worker",
+          status: "completed",
+        },
+      };
+      const sessions = [
+        makeSession({
+          id: "fictional-standalone-task",
+          messageCount: 2,
+          executionOwner: {
+            kind: "task",
+            id: "task:fictional-standalone-binding",
+          },
+        }),
+        makeSession({
+          id: "fictional-native-child",
+          clientSessionId: "fictional-child-draft",
+          messageCount: 2,
+          executionOwner: { kind: "task", id: "task:fictional-child-binding" },
+        }),
+        makeSession({ id: "fictional-conductor", messageCount: 1 }),
+      ];
+      const started = getVisibleSessions(sessions, {});
+      expect(started.map((session) => session.id)).toContain(
+        "fictional-native-child",
+      );
+      const nested = nestedExecutorSessionIdSet(nodes);
+      expect(
+        started
+          .filter((session) => !isNestedExecutorSession(session, nested))
+          .map((session) => session.id),
+      ).toEqual(["fictional-standalone-task", "fictional-conductor"]);
+    });
   });
 
   describe("archiveSession", () => {

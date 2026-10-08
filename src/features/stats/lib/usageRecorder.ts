@@ -1,5 +1,5 @@
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
-import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
+import { isBenchmarkExecutionSession } from "@/features/chat/lib/executionOwnership";
 import type { TokenState } from "@/shared/types/chat";
 import { recordSessionTokens, syncUsageSessions } from "./usageLedger";
 import {
@@ -47,7 +47,11 @@ export function syncChatSessionsIntoUsageLedger(
 ): void {
   syncUsageSessions(
     sessions
-      .filter((session) => !session.executionOwner)
+      .filter(
+        (session) =>
+          session.executionOwner?.kind !== "benchmark" &&
+          !isBenchmarkExecutionSession(session.id),
+      )
       .map(sourceFromSession),
   );
 }
@@ -56,7 +60,7 @@ export function recordAcpSessionUsage(
   sessionId: string,
   snapshot: UsageTokenSnapshot,
 ): void {
-  if (isBenchmarkSession(sessionId)) return;
+  if (isBenchmarkExecutionSession(sessionId)) return;
   const session = useChatSessionStore
     .getState()
     .sessions.find((candidate) => candidate.id === sessionId);

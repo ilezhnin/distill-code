@@ -20,6 +20,8 @@ import { ChatSearchBar } from "./ChatSearchBar";
 import { WorkspaceSetupChoice } from "./WorkspaceSetupChoice";
 import { summarizeProjectWorkspaceStartup } from "@/features/projects/lib/projectChatWorkspaces";
 import { ChatInput } from "./ChatInput";
+import { OwnedTaskLauncher } from "./OwnedTaskLauncher";
+import { Button } from "@/shared/ui/button";
 import { LoadingDistill } from "./LoadingDistill";
 import { ChatLoadingSkeleton } from "./ChatLoadingSkeleton";
 import { ConversationEmptyAvatar } from "./ConversationEmptyAvatar";
@@ -1060,8 +1062,25 @@ export function ChatView({
       : undefined,
   );
   const composerFooter = effectiveSession?.executionOwner ? (
-    <div className="p-4 text-sm text-muted-foreground" role="status">
-      {t("benchmarks:readOnlyTranscript")}
+    <div
+      className="pointer-events-auto p-4 text-sm text-muted-foreground"
+      role="status"
+    >
+      {effectiveSession.executionOwner.kind === "task" ? (
+        <>
+          <p>{t("ownedTask.transcript")}</p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void controller.stopStreaming()}
+          >
+            {t("ownedTask.stop")}
+          </Button>
+        </>
+      ) : (
+        t("benchmarks:readOnlyTranscript")
+      )}
     </div>
   ) : (
     <div className="px-[var(--spacing-app-panel-gutter-inline)] pb-[var(--spacing-app-panel-gutter-inline)]">
@@ -1237,6 +1256,12 @@ export function ChatView({
             isCompactingContext: controller.isCompactingContext,
             supportsCompactionControls: controller.supportsCompactionControls,
           }}
+        />
+        <OwnedTaskLauncher
+          draft={controller.draftValue}
+          sessionId={effectiveSession?.id}
+          isConductor={isConductorChat}
+          onStarted={onSelectSession}
         />
       </div>
     </div>

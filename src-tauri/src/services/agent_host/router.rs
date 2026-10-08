@@ -73,6 +73,7 @@ fn owned_prompt_params(
     blocks: Vec<Value>,
     owner_id: &str,
     provider: Option<NativeProvider>,
+    purpose: &str,
 ) -> Value {
     let mut meta = provider
         .and_then(NativeProvider::prompt_meta)
@@ -80,7 +81,7 @@ fn owned_prompt_params(
         .unwrap_or_default();
     meta.insert(
         "executionOwner".into(),
-        json!({"kind":"benchmark","id":owner_id}),
+        json!({"kind":purpose,"id":owner_id}),
     );
     json!({"sessionId":session_id,"prompt":blocks,"_meta":meta})
 }
@@ -2589,7 +2590,14 @@ impl Inner {
                         .ok()
                         .flatten()
                         .map(|(owner, _)| owner.owner_id);
-                    let event = json!({"sessionId":session_id,"update":{"sessionUpdate":"notice","_meta":{"executionOwner":{"kind":"benchmark","id":owner},"executionViolation":format!("Unexpected native client request: {method}")}}});
+                    let purpose = self
+                        .store
+                        .owned_session_purpose(&session_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "benchmark".into());
+                    let event = json!({"sessionId":session_id,"update":{"sessionUpdate":"notice","_meta":{"executionOwner":{"kind":purpose,"id":owner},"executionViolation":format!("Unexpected native client request: {method}")}}});
                     if let Err(error) = self.store.append_events(&session_id, &[event]).await {
                         log::error!(
                             "[agent-host] cannot retain execution policy violation: {error}"
@@ -5499,6 +5507,17 @@ impl Inner {
         ids: TurnIds,
         steer: bool,
     ) -> Result<Value, Value> {
+        self.start_turn_with_admission(params, ids, steer, None)
+            .await
+    }
+
+    async fn start_turn_with_admission(
+        self: &Arc<Self>,
+        params: Value,
+        ids: TurnIds,
+        steer: bool,
+        task_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let mut record = self.session_record(&session_id).await?;
@@ -5510,6 +5529,17 @@ impl Inner {
         let lock = self.attach_lock(&session_id).await;
         let admission = lock.lock().await;
         let current = self.session_record(&session_id).await?;
+        if task_admission.is_some() {
+            let (owner, _) = self
+                .store
+                .execution_owner(&session_id)
+                .await
+                .map_err(protocol::internal)?
+                .ok_or_else(|| invalid_params("Task session lost native ownership"))?;
+            self.require_owned_selection(&owner, &current)
+                .await
+                .map_err(protocol::internal)?;
+        }
         if current.archived_at.is_some() {
             return Err(invalid_params(
                 "Unarchive the session before sending a prompt",
@@ -5537,6 +5567,15 @@ impl Inner {
             .unwrap_or_else(|| Value::Array(vec![]));
         let meta = params.get("_meta").cloned().unwrap_or_else(|| json!({}));
         let executor_link = ExecutorLink::take(&mut meta.clone()).map_err(invalid_params)?;
+        if executor_link
+            .as_ref()
+            .is_some_and(|link| link.decision_key.starts_with("owned-task:"))
+            && task_admission.is_none()
+        {
+            return Err(invalid_params(
+                "Task-bound executor keys require the native owned dispatch authority",
+            ));
+        }
         // A chat that came here from another agent owes this one the
         // conversation so far. Built before the turn is claimed: reading the
         // log means waiting for the event loop to catch up, and whatever a
@@ -5629,7 +5668,14 @@ impl Inner {
             None => prompt,
         };
         let mut result = self
-            .run_prompt(&bridge, &session_id, &bridge_session_id, sent, meta)
+            .run_prompt_with_admission(
+                &bridge,
+                &session_id,
+                &bridge_session_id,
+                sent,
+                meta,
+                task_admission,
+            )
             .await;
         if let Err(error) = &mut result {
             let dispatch_started = self
@@ -5778,9 +5824,71 @@ impl Inner {
         session_id: &str,
         bridge_session_id: &str,
         prompt: Value,
+        meta: Value,
+    ) -> Result<Value, Value> {
+        self.run_prompt_with_admission(bridge, session_id, bridge_session_id, prompt, meta, None)
+            .await
+    }
+
+    async fn run_prompt_with_admission(
+        &self,
+        bridge: &Bridge,
+        session_id: &str,
+        bridge_session_id: &str,
+        prompt: Value,
         mut meta: Value,
+        task_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
     ) -> Result<Value, Value> {
         let link = ExecutorLink::take(&mut meta).map_err(invalid_params)?;
+        if link
+            .as_ref()
+            .is_some_and(|link| link.decision_key.starts_with("owned-task:"))
+            && task_admission.is_none()
+        {
+            return Err(invalid_params(
+                "Task-bound executor keys require the native owned dispatch authority",
+            ));
+        }
+        if task_admission.is_some() {
+            let (owner, _) = self
+                .store
+                .execution_owner(session_id)
+                .await
+                .map_err(protocol::internal)?
+                .ok_or_else(|| invalid_params("Native task owner disappeared"))?;
+            let binding_id = owner
+                .owner_id
+                .strip_prefix("task:")
+                .ok_or_else(|| invalid_params("Native task owner is invalid"))?;
+            let link = link
+                .as_ref()
+                .ok_or_else(|| invalid_params("Native task processing has no bound key"))?;
+            if link.logical_run_id != link.decision_key {
+                return Err(invalid_params(
+                    "Native task logical receipt identity changed",
+                ));
+            }
+            let service = self
+                .app
+                .state::<crate::services::benchmarks::BenchmarkState>()
+                .get(&self.app)
+                .await
+                .map_err(|error| protocol::internal(error.message))?;
+            service
+                .validate_final_owned_task(binding_id, session_id, &link.decision_key)
+                .await
+                .map_err(|error| protocol::internal(error.message))?;
+            if self
+                .store
+                .execution_cancel_requested(&link.decision_key)
+                .await
+                .map_err(protocol::internal)?
+            {
+                return Err(protocol::internal(
+                    "cancelled: task was cancelled before processing",
+                ));
+            }
+        }
         let mut request = json!({ "sessionId": bridge_session_id, "prompt": prompt });
         if meta.as_object().is_some_and(|meta| !meta.is_empty()) {
             request["_meta"] = meta;
@@ -5820,7 +5928,14 @@ impl Inner {
                 return Err(invalid_params("This executor decision already claimed a provider dispatch; inspect its recorded run before retrying"));
             }
         }
-        let raw_result = bridge.prompt(request, run_id.clone()).await;
+        let raw_result = match task_admission {
+            Some(admission) => {
+                bridge
+                    .prompt_with_admission(request, run_id.clone(), Some(admission))
+                    .await
+            }
+            None => bridge.prompt(request, run_id.clone()).await,
+        };
         if let Some((owner, _)) = self
             .store
             .execution_owner(session_id)
@@ -5833,7 +5948,13 @@ impl Inner {
                 }
                 Err(error) => json!({"error":error}),
             };
-            self.store.append_events(session_id,&[json!({"sessionId":session_id,"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"executionOwner":{"kind":"benchmark","id":owner.owner_id},"benchmarkRawResult":raw}}})]).await.map_err(protocol::internal)?;
+            let purpose = self
+                .store
+                .owned_session_purpose(session_id)
+                .await
+                .map_err(protocol::internal)?
+                .unwrap_or_else(|| "benchmark".into());
+            self.store.append_events(session_id,&[json!({"sessionId":session_id,"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"executionOwner":{"kind":purpose,"id":owner.owner_id},"benchmarkRawResult":raw}}})]).await.map_err(protocol::internal)?;
         }
         let result = Self::prompt_response(raw_result);
         // The bridge writes every update of the turn before it answers the
@@ -6001,6 +6122,30 @@ impl Inner {
         request: OwnedSessionRequest,
         turn_limit_ms: u64,
     ) -> Result<OwnedSession, String> {
+        self.create_owned_session_for_purpose(request, turn_limit_ms, "benchmark")
+            .await
+    }
+
+    /// Application tasks explicitly opt into the same verified owned runtime.
+    /// They remain protected from ordinary ACP mutations and sends.
+    pub async fn create_task_owned_session(
+        self: &Arc<Self>,
+        request: OwnedSessionRequest,
+        turn_limit_ms: u64,
+    ) -> Result<OwnedSession, String> {
+        if !request.owner_id.starts_with("task:") {
+            return Err("validation: invalid task owner".into());
+        }
+        self.create_owned_session_for_purpose(request, turn_limit_ms, "task")
+            .await
+    }
+
+    async fn create_owned_session_for_purpose(
+        self: &Arc<Self>,
+        request: OwnedSessionRequest,
+        turn_limit_ms: u64,
+        purpose: &str,
+    ) -> Result<OwnedSession, String> {
         let provider = execution::validate_request(&request)?;
         // Fail closed: a profile the policy probe has not passed on what this
         // build ships never starts.
@@ -6023,6 +6168,9 @@ impl Inner {
         let _guard = lock.lock().await;
         let existing_id = self.store.owned_session_id(&request.owner_id).await?;
         if let Some(id) = existing_id.as_ref() {
+            if self.store.owned_session_purpose(id).await?.as_deref() != Some(purpose) {
+                return Err("validation: owner purpose changed".into());
+            }
             let (_, existing_hash) = self
                 .store
                 .execution_owner(id)
@@ -6139,7 +6287,7 @@ impl Inner {
             && request
                 .fast_mode
                 .is_none_or(|fast| acknowledged.fast == Some(fast));
-        snapshot["_meta"]["executionOwner"] = json!({"kind":"benchmark","id":request.owner_id});
+        snapshot["_meta"]["executionOwner"] = json!({"kind":purpose,"id":request.owner_id});
         let session_id = existing_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -6158,7 +6306,7 @@ impl Inner {
             reasoning_effort: acknowledged.effort.clone(),
             fast_mode: acknowledged.fast,
             legacy_model_id: None,
-            hidden: true,
+            hidden: purpose == "benchmark",
             created_at: now.clone(),
             updated_at: now,
             last_message_at: None,
@@ -6174,9 +6322,13 @@ impl Inner {
             self.store_bridge_selection(&record.id, &snapshot, &acknowledged)
                 .await;
             Ok(())
-        } else {
+        } else if purpose == "benchmark" {
             self.store
                 .insert_owned_session(&record, &request, &policy_hash)
+                .await
+        } else {
+            self.store
+                .insert_owned_session_for_purpose(&record, &request, &policy_hash, purpose)
                 .await
         };
         if let Err(error) = stored {
@@ -6246,6 +6398,42 @@ impl Inner {
     pub async fn dispatch_owned_turn(
         self: &Arc<Self>,
         request: OwnedTurnRequest,
+    ) -> Result<ExecutionDispatch, String> {
+        self.dispatch_owned_turn_with_link(request, None, None, None)
+            .await
+    }
+
+    pub async fn dispatch_task_owned_turn(
+        self: &Arc<Self>,
+        request: OwnedTurnRequest,
+        link: ExecutorLink,
+        admission: tokio::sync::OwnedMutexGuard<()>,
+        max_artifact_bytes: u64,
+    ) -> Result<ExecutionDispatch, String> {
+        if self
+            .store
+            .owned_session_purpose(&request.session_id)
+            .await?
+            .as_deref()
+            != Some("task")
+        {
+            return Err("validation: session is not an application task owner".into());
+        }
+        self.dispatch_owned_turn_with_link(
+            request,
+            Some(link),
+            Some(admission),
+            Some(max_artifact_bytes),
+        )
+        .await
+    }
+
+    async fn dispatch_owned_turn_with_link(
+        self: &Arc<Self>,
+        request: OwnedTurnRequest,
+        link: Option<ExecutorLink>,
+        task_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+        task_answer_cap: Option<u64>,
     ) -> Result<ExecutionDispatch, String> {
         if request.request_key.trim().is_empty()
             || request.request_key.len() > 256
@@ -6334,9 +6522,24 @@ impl Inner {
                 return;
             }
             let blocks = owned_prompt_blocks(&request.prompt, &request.images);
-            let prompt =
-                owned_prompt_params(&request.session_id, blocks, &owner.owner_id, provider);
-            let task = host.start_turn(prompt, ids, false);
+            let purpose = host
+                .store
+                .owned_session_purpose(&request.session_id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "benchmark".into());
+            let mut prompt = owned_prompt_params(
+                &request.session_id,
+                blocks,
+                &owner.owner_id,
+                provider,
+                &purpose,
+            );
+            if let Some(link) = link {
+                prompt["_meta"]["executorSelection"] = json!(link);
+            }
+            let task = host.start_turn_with_admission(prompt, ids, false, task_admission);
             tokio::pin!(task);
             let mut timed_out = false;
             let cancellation = async {
@@ -6353,8 +6556,35 @@ impl Inner {
                 }
             };
             let mut cancelled = false;
+            let mut policy_failure = None;
+            let policy_monitor = async {
+                match task_answer_cap {
+                    Some(cap) => {
+                        crate::services::benchmarks::runner::monitor_owned_task(
+                            &host,
+                            &request.session_id,
+                            cap,
+                        )
+                        .await
+                    }
+                    None => std::future::pending().await,
+                }
+            };
             let outcome = tokio::select! {
                 result=&mut task => result,
+                failure=policy_monitor=>{
+                    policy_failure=Some(failure);
+                    let _=host.cancel_owned_turn(&request.request_key).await;
+                    match tokio::time::timeout(std::time::Duration::from_secs(15),&mut task).await {
+                        Ok(result)=>result,
+                        Err(_)=>{
+                            let error=json!({"kind":"dispatch_uncertain","message":"Policy cancellation was not acknowledged; inspect the account"});
+                            let _=host.store.settle_dispatch(&request.request_key,"uncertain",None,Some(&error)).await;
+                            let _=task.await;
+                            return;
+                        }
+                    }
+                }
                 _=cancellation=>{
                     cancelled=true;
                     let _=host.cancel_owned_turn(&request.request_key).await;
@@ -6383,6 +6613,7 @@ impl Inner {
                     }
                 }
             };
+            let native_elapsed_ms = host.store.execution_clock_now(&request.request_key).await;
             let mut result = outcome.as_ref().ok().cloned();
             let mut error = outcome.err();
             if result
@@ -6400,6 +6631,27 @@ impl Inner {
                     json!({"kind":"budget_timeout","message":"The declared task duration expired"}),
                 );
                 result = None;
+            }
+            if let Some(failure) = policy_failure {
+                error = Some(failure);
+                result = None;
+            }
+            let mut public_output = None;
+            if let Some(cap) = task_answer_cap {
+                match crate::services::benchmarks::runner::owned_task_public_output(
+                    &host,
+                    &request.session_id,
+                    cap,
+                    true,
+                )
+                .await
+                {
+                    Ok(output) => public_output = output,
+                    Err(failure) => {
+                        error = Some(failure);
+                        result = None;
+                    }
+                }
             }
             match host.session_record(&request.session_id).await {
                 Ok(record) => {
@@ -6419,17 +6671,65 @@ impl Inner {
                     result = None;
                 }
             }
-            if let Err(error) = host
-                .store
-                .settle_dispatch(
-                    &request.request_key,
-                    "terminal",
-                    result.as_ref(),
-                    error.as_ref(),
-                )
-                .await
-            {
+            match &native_elapsed_ms {
+                Ok(elapsed) => {
+                    if let Some(value) = result.as_mut().and_then(Value::as_object_mut) {
+                        value.insert("nativeExecutionMs".into(), json!(elapsed));
+                    }
+                    if let Some(value) = error.as_mut().and_then(Value::as_object_mut) {
+                        value.insert("nativeExecutionMs".into(), json!(elapsed));
+                    }
+                }
+                Err(reason) => {
+                    error = Some(json!({"kind":"dispatch_uncertain","message":reason}));
+                    result = None;
+                }
+            }
+            let settled = if task_answer_cap.is_some() {
+                match native_elapsed_ms {
+                    Ok(elapsed) => {
+                        host.store
+                            .settle_task_dispatch(
+                                &request.request_key,
+                                &request.session_id,
+                                result.as_ref(),
+                                error.as_ref(),
+                                public_output.as_deref(),
+                                elapsed,
+                            )
+                            .await
+                    }
+                    Err(_) => {
+                        host.store
+                            .settle_dispatch(
+                                &request.request_key,
+                                "uncertain",
+                                None,
+                                error.as_ref(),
+                            )
+                            .await
+                    }
+                }
+            } else {
+                host.store
+                    .settle_dispatch(
+                        &request.request_key,
+                        "terminal",
+                        result.as_ref(),
+                        error.as_ref(),
+                    )
+                    .await
+            };
+            if let Err(error) = settled {
                 log::error!("[agent-host] owned terminal evidence not committed: {error}");
+                let failure = json!({"kind":"dispatch_uncertain","message":format!("Native terminal evidence was not committed: {error}")});
+                if let Err(reason) = host
+                    .store
+                    .mark_unsettled_dispatch_uncertain(&request.request_key, &failure)
+                    .await
+                {
+                    log::error!("[agent-host] owned unknown evidence not committed: {reason}");
+                }
             }
         });
         Ok(dispatch)
@@ -6465,6 +6765,48 @@ impl Inner {
 
     pub async fn execution_status(&self, key: &str) -> Result<Option<ExecutionDispatch>, String> {
         self.store.execution_dispatch(key).await
+    }
+    pub async fn close_task_owned_session(&self, session: &str, key: &str) -> Result<(), String> {
+        if self.store.owned_session_purpose(session).await?.as_deref() != Some("task") {
+            return Err(
+                "validation: only application task sessions may use this close path".into(),
+            );
+        }
+        if let Some(dispatch) = self.execution_status(key).await? {
+            if dispatch.session_id != session {
+                return Err("validation: dispatch belongs to another session".into());
+            }
+            self.cancel_owned_turn(key).await?;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                let state = self
+                    .execution_status(key)
+                    .await?
+                    .ok_or("dispatch_uncertain: task receipt disappeared during close")?;
+                if state.phase == "terminal" {
+                    break;
+                }
+                if state.phase == "uncertain" || tokio::time::Instant::now() >= deadline {
+                    return Err("dispatch_uncertain: task cancellation was not confirmed; inspect before closing".into());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        self.store.set_archived(session, true).await
+    }
+    pub async fn reopen_task_owned_session(&self, session: &str, key: &str) -> Result<(), String> {
+        if self.store.owned_session_purpose(session).await?.as_deref() != Some("task") {
+            return Err("validation: only an application task transcript can reopen here".into());
+        }
+        if self
+            .execution_status(key)
+            .await?
+            .is_some_and(|row| row.session_id != session)
+        {
+            return Err("validation: task key belongs to another session".into());
+        }
+        // Reopening exposes the immutable transcript; it grants no new turn.
+        self.store.set_archived(session, false).await
     }
     pub async fn read_owned_events(
         &self,
@@ -6513,7 +6855,12 @@ impl Inner {
             .filter(|(_, runtime)| {
                 // Benchmark turns are not the user's work; they run side by side.
                 runtime.harness == provider
-                    && runtime.execution_profile.is_none()
+                    && (runtime.execution_profile.is_none()
+                        || runtime
+                            .snapshot
+                            .pointer("/_meta/executionOwner/kind")
+                            .and_then(Value::as_str)
+                            == Some("task"))
                     && activity_scope_matches(
                         &account_route_key(&runtime.harness, runtime.account_id.as_deref()),
                         provider,
@@ -7472,7 +7819,13 @@ mod tests {
     #[test]
     fn owned_grok_prompts_go_verbatim() {
         let blocks = owned_prompt_blocks("task", &[]);
-        let grok = owned_prompt_params("s", blocks.clone(), "o", Some(NativeProvider::Grok));
+        let grok = owned_prompt_params(
+            "s",
+            blocks.clone(),
+            "o",
+            Some(NativeProvider::Grok),
+            "benchmark",
+        );
         assert_eq!(
             grok["_meta"],
             json!({"verbatim": true, "executionOwner": {"kind": "benchmark", "id": "o"}})
@@ -7486,7 +7839,7 @@ mod tests {
             None,
         ] {
             assert_eq!(
-                serde_json::to_string(&owned_prompt_params("s", blocks.clone(), "o", provider))
+                serde_json::to_string(&owned_prompt_params("s", blocks.clone(), "o", provider, "benchmark"))
                     .unwrap(),
                 serde_json::to_string(&json!({"sessionId":"s","prompt":blocks,"_meta":{"executionOwner":{"kind":"benchmark","id":"o"}}}))
                     .unwrap(),

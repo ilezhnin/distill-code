@@ -2,7 +2,7 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 
 /** Persisted by the host before an owned session can produce output. */
 export interface ExecutionOwner {
-  kind: "benchmark";
+  kind: "benchmark" | "task";
   id: string;
 }
 
@@ -17,7 +17,11 @@ export function observeExecutionOwner(
     observedOwners.set(sessionId, owner);
     const store = useChatSessionStore.getState();
     const session = store.getSession(sessionId);
-    if (session && session.executionOwner?.id !== owner.id) {
+    if (
+      session &&
+      (session.executionOwner?.id !== owner.id ||
+        session.executionOwner.kind !== owner.kind)
+    ) {
       store.patchSession(sessionId, { executionOwner: owner });
     }
   }
@@ -27,8 +31,10 @@ export function observeExecutionOwner(
 export function parseExecutionOwner(value: unknown): ExecutionOwner | null {
   if (!value || typeof value !== "object") return null;
   const owner = value as Record<string, unknown>;
-  return owner.kind === "benchmark" && typeof owner.id === "string" && owner.id
-    ? { kind: "benchmark", id: owner.id }
+  return (owner.kind === "benchmark" || owner.kind === "task") &&
+    typeof owner.id === "string" &&
+    owner.id
+    ? { kind: owner.kind, id: owner.id }
     : null;
 }
 
@@ -38,7 +44,25 @@ export function isBenchmarkSession(
   return Boolean(
     sessionId &&
       (observedOwners.has(sessionId) ||
-        useChatSessionStore.getState().getSession(sessionId)?.executionOwner
-          ?.kind === "benchmark"),
+        useChatSessionStore.getState().getSession(sessionId)?.executionOwner),
   );
+}
+
+/** Both owned profiles exclude ordinary memory and autonomous wave scanners. */
+export const isProtectedExecutionSession = isBenchmarkSession;
+/** Research rows have a separate benchmark ledger; application tasks do not. */
+export function isBenchmarkExecutionSession(sessionId: string): boolean {
+  const owner =
+    observedOwners.get(sessionId) ??
+    useChatSessionStore.getState().getSession(sessionId)?.executionOwner;
+  return owner?.kind === "benchmark";
+}
+
+export function taskBindingId(sessionId: string): string | null {
+  const owner =
+    observedOwners.get(sessionId) ??
+    useChatSessionStore.getState().getSession(sessionId)?.executionOwner;
+  return owner?.kind === "task" && owner.id.startsWith("task:")
+    ? owner.id.slice(5)
+    : null;
 }

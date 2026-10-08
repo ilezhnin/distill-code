@@ -9,6 +9,14 @@
 
 import { i18n } from "@/shared/i18n";
 
+export function waveExecutorReconciliationFailureText(reason: string): string {
+  return i18n.t("chat:conductor.wave.executorReconciliationFailed", { reason });
+}
+
+export function waveChildStopFailureText(reason: string): string {
+  return i18n.t("chat:conductor.wave.childStopFailed", { reason });
+}
+
 import type { WaveRejectionReason } from "./waveEngine";
 import {
   MAX_WAVE_REVISIONS,

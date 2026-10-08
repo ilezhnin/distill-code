@@ -6,6 +6,11 @@ import { isPersonaHandoffText } from "@/shared/api/acpPersonaHandoff";
 import { completeReplayAssistantMessage } from "./acpReplayAssistant";
 import { flushBufferedStreamingUpdatesForSession } from "./liveStreamingUpdates";
 import { isRecord } from "@/shared/lib/isRecord";
+import {
+  observeExecutionOwner,
+  taskBindingId,
+} from "../lib/executionOwnership";
+import { reconcileOwnedTaskSession } from "../lib/ownedTaskDispatch";
 
 type SessionInfoUpdate = SessionUpdate & {
   sessionUpdate: "session_info_update";
@@ -26,20 +31,23 @@ export function handleSessionInfoUpdate(
     : isRecord(info.meta)
       ? info.meta
       : {};
+  observeExecutionOwner(sessionId, meta.executionOwner);
+  const ownedTask = taskBindingId(sessionId) !== null;
   if ("activeRunId" in meta) {
     const activeRunId =
       typeof meta.activeRunId === "string" ? meta.activeRunId : null;
     const chatStore = useChatStore.getState();
-    if (activeRunId === null) {
+    if (activeRunId === null && !ownedTask) {
       flushBufferedStreamingUpdatesForSession(sessionId, {
         flushSubtitle: true,
       });
       completeReplayAssistantMessage(sessionId);
       chatStore.settleActiveRun(sessionId);
-    } else {
+    } else if (activeRunId !== null) {
       chatStore.setActiveRunId(sessionId, activeRunId);
     }
   }
+  if (ownedTask) void reconcileOwnedTaskSession(sessionId);
 
   const session = sessionStore.getSession(sessionId);
   if (!session) {

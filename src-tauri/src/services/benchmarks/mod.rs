@@ -11,12 +11,15 @@ pub mod generated;
 mod judge_checks;
 pub mod learned;
 pub mod model_catalog;
+pub mod promotion;
+pub mod qualification;
 pub mod repository;
 pub mod routing;
 pub mod runner;
 pub mod seeds;
 pub mod selector;
 pub mod store;
+pub mod task_execution;
 pub mod types;
 pub mod worker;
 pub mod workflow;
@@ -31,6 +34,17 @@ use tokio::sync::{Mutex, Notify, OnceCell};
 use types::*;
 
 const MATRIX_ORDER_ALGORITHM: &str = "sha256-cell-order-v1";
+pub(crate) fn execution_backend_kind(app: &tauri::AppHandle) -> &'static str {
+    #[cfg(feature = "app-test-driver")]
+    if super::agent_host::execution_fixture::active() {
+        return "isolated_native_fixture";
+    }
+    if app.try_state::<super::e2e_mode::E2eMode>().is_some() {
+        "isolated_stub"
+    } else {
+        "production_native"
+    }
+}
 /// The one measurement profile a case is published and run with: tokens,
 /// time and list-price cost per attempt. The quota and capacity batches that
 /// sampled an account around a run are retired.
@@ -115,6 +129,7 @@ fn pending_attempt(
         evaluations: Vec::new(),
         event_cursor: 0,
         workflow_steps: Vec::new(),
+        native_execution_ms: None,
         resolved_model: None,
     }
 }
@@ -183,7 +198,7 @@ impl BenchmarkState {
                 store.recover().await?;
                 let _ = worker::configure(app);
                 let backend: Arc<dyn runner::ExecutionBackend> =
-                    if app.try_state::<super::e2e_mode::E2eMode>().is_some() {
+                    if execution_backend_kind(app) == "isolated_stub" {
                         Arc::new(runner::FakeBackend::default())
                     } else {
                         Arc::new(runner::NativeBackend::new(app.clone()))

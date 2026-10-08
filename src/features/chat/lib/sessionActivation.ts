@@ -5,6 +5,8 @@ import {
   replaceMessagesFromSessionReplay,
 } from "@/features/chat/lib/sessionReplayReplacement";
 import { completeReplayAssistantMessage } from "@/features/chat/acp/acpReplayAssistant";
+import { reconcileOwnedTaskSession } from "./ownedTaskDispatch";
+import { taskBindingId } from "./executionOwnership";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   type ChatSessionPatch,
@@ -354,6 +356,7 @@ export async function loadSessionMessages(
   try {
     const loaded = await load;
     if (loaded) {
+      await reconcileOwnedTaskSession(sessionId);
       useChatStore.getState().markQueuedMessagesReady(sessionId);
     }
     return loaded;
@@ -554,7 +557,7 @@ async function performSessionMessagesLoad(
         : rendererKnowsOfARun
           ? undefined
           : latestSessionBeforeReplay?.activeRunId;
-    if (knownActiveRunId === null) {
+    if (knownActiveRunId === null && !taskBindingId(sessionId)) {
       completeReplayAssistantMessage(sessionId);
       // Nothing is running, so a call the transcript leaves open belongs to a
       // turn that was cut short — most often by the app going away under it.

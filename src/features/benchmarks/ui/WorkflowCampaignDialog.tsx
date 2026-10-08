@@ -18,8 +18,10 @@ import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import type { BenchmarkVersion } from "../types";
 import { BenchmarkAlert, Field, SelectField } from "./BenchmarkPrimitives";
 import { WorkflowCampaignForm } from "./WorkflowCampaignForm";
+import { WorkflowPromotionPanel } from "./WorkflowPromotionPanel";
 
 const campaignKey = ["benchmarks", "workflow-campaigns"];
+type PendingOwner = "reservation" | "governance" | "control";
 
 export function WorkflowCampaignDialog({
   versions,
@@ -36,7 +38,29 @@ export function WorkflowCampaignDialog({
   const client = useQueryClient();
   const [fitId, setFitId] = useState("none");
   const [selected, setSelected] = useState("none");
-  const [reservationPending, setReservationPending] = useState(false);
+  const [pendingOwners, setPendingOwners] = useState({
+    reservation: false,
+    governance: false,
+    control: false,
+  });
+  const pendingRef = useRef(pendingOwners);
+  const pending = Object.values(pendingOwners).some(Boolean);
+  const changePending = (owner: PendingOwner, active: boolean): boolean => {
+    if (
+      active &&
+      Object.entries(pendingRef.current).some(
+        ([key, value]) => key !== owner && value,
+      )
+    )
+      return false;
+    const next = { ...pendingRef.current, [owner]: active };
+    pendingRef.current = next;
+    setPendingOwners(next);
+    return true;
+  };
+  const close = () => {
+    if (!Object.values(pendingRef.current).some(Boolean)) onClose();
+  };
   const fits = useQuery({
     queryKey: ["benchmarks", "learned-fits"],
     queryFn: benchmarkApi.listSelectorFits,
@@ -61,10 +85,10 @@ export function WorkflowCampaignDialog({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !reservationPending) onClose();
+        if (!open) close();
       }}
     >
-      <DialogContent size="xl" showCloseButton={!reservationPending}>
+      <DialogContent size="xl" showCloseButton={!pending}>
         <DialogHeader>
           <DialogTitle>{t("campaign.title")}</DialogTitle>
           <DialogDescription>{t("campaign.description")}</DialogDescription>
@@ -82,7 +106,11 @@ export function WorkflowCampaignDialog({
               <SelectField
                 id={id}
                 value={selected}
-                onChange={setSelected}
+                onChange={(value) => {
+                  if (!Object.values(pendingRef.current).some(Boolean))
+                    setSelected(value);
+                }}
+                disabled={pending}
                 options={[
                   {
                     value: "none",
@@ -103,9 +131,17 @@ export function WorkflowCampaignDialog({
               key={campaign.plan.id}
               campaign={campaign}
               versions={versions}
-              evidenceDisabled={reservationPending}
+              evidenceDisabled={pending}
+              promotionDisabled={
+                pendingOwners.reservation || pendingOwners.control
+              }
+              onPendingChange={(active) => changePending("governance", active)}
+              onControlPendingChange={(active) =>
+                changePending("control", active)
+              }
               onEvidence={(id) => {
-                if (!reservationPending) onEvidence(id);
+                if (!Object.values(pendingRef.current).some(Boolean))
+                  onEvidence(id);
               }}
             />
           ) : (
@@ -123,8 +159,11 @@ export function WorkflowCampaignDialog({
                   <SelectField
                     id={id}
                     value={fitId}
-                    onChange={setFitId}
-                    disabled={reservationPending}
+                    onChange={(value) => {
+                      if (!Object.values(pendingRef.current).some(Boolean))
+                        setFitId(value);
+                    }}
+                    disabled={pending}
                     options={[
                       { value: "none", label: t("learning.chooseFit") },
                       ...(fits.data ?? []).map((fit) => ({
@@ -145,7 +184,10 @@ export function WorkflowCampaignDialog({
                   key={artifact.data.model.id}
                   artifact={artifact.data}
                   versions={currentVersions}
-                  onReservationPendingChange={setReservationPending}
+                  disabled={pendingOwners.governance || pendingOwners.control}
+                  onReservationPendingChange={(active) =>
+                    changePending("reservation", active)
+                  }
                   onFrozen={(saved) => {
                     client.setQueryData<WorkflowCampaign[]>(
                       campaignKey,
@@ -156,7 +198,11 @@ export function WorkflowCampaignDialog({
                         ),
                       ],
                     );
-                    setSelected(saved.plan.id);
+                    if (
+                      !pendingRef.current.governance &&
+                      !pendingRef.current.control
+                    )
+                      setSelected(saved.plan.id);
                   }}
                 />
               ) : null}
@@ -167,8 +213,8 @@ export function WorkflowCampaignDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={reservationPending}
-            onClick={onClose}
+            disabled={pending}
+            onClick={close}
           >
             {t("actions.close")}
           </Button>
@@ -182,11 +228,17 @@ function CampaignResult({
   campaign,
   versions,
   evidenceDisabled,
+  promotionDisabled,
+  onPendingChange,
+  onControlPendingChange,
   onEvidence,
 }: {
   campaign: WorkflowCampaign;
   versions: BenchmarkVersion[];
   evidenceDisabled: boolean;
+  promotionDisabled: boolean;
+  onPendingChange: (pending: boolean) => boolean | undefined;
+  onControlPendingChange: (pending: boolean) => boolean;
   onEvidence: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
@@ -201,7 +253,8 @@ function CampaignResult({
     retry: false,
   });
   const control = async (action: "start" | "pause" | "resume" | "cancel") => {
-    if (inFlight.current) return;
+    if (inFlight.current || evidenceDisabled || !onControlPendingChange(true))
+      return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
@@ -217,6 +270,7 @@ function CampaignResult({
       setError(benchmarkErrorMessage(failure));
     } finally {
       await client.invalidateQueries({ queryKey: campaignKey });
+      onControlPendingChange(false);
       inFlight.current = false;
       setBusy(false);
     }
@@ -283,7 +337,7 @@ function CampaignResult({
             {campaign.state === "reserved" ? (
               <Button
                 type="button"
-                disabled={busy}
+                disabled={busy || evidenceDisabled}
                 onClick={() => void control("start")}
               >
                 {t("campaign.start")}
@@ -293,7 +347,7 @@ function CampaignResult({
               <Button
                 type="button"
                 variant="outline"
-                disabled={busy}
+                disabled={busy || evidenceDisabled}
                 onClick={() => void control("pause")}
               >
                 {t("campaign.pause")}
@@ -302,7 +356,7 @@ function CampaignResult({
             {campaign.state === "paused" ? (
               <Button
                 type="button"
-                disabled={busy}
+                disabled={busy || evidenceDisabled}
                 onClick={() => void control("resume")}
               >
                 {t("campaign.resume")}
@@ -311,7 +365,7 @@ function CampaignResult({
             <Button
               type="button"
               variant="outline"
-              disabled={busy}
+              disabled={busy || evidenceDisabled}
               onClick={() => void control("cancel")}
             >
               {t("campaign.cancel")}
@@ -468,6 +522,12 @@ function CampaignResult({
           )}
         </pre>
       </details>
+      <WorkflowPromotionPanel
+        campaign={campaign}
+        versions={versions}
+        disabled={promotionDisabled}
+        onPendingChange={onPendingChange}
+      />
     </section>
   );
 }

@@ -17,6 +17,8 @@
  */
 
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
+import { benchmarkErrorMessage } from "@/features/benchmarks/api/benchmarks";
+import { ownedTaskExecution } from "@/features/benchmarks/lib/ownedTaskExecution";
 import { sameSessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import { sameSessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import {
@@ -89,6 +91,8 @@ import {
   waveStepLegacyModelEffortNoticeText,
   waveStepRunSettingsNoticeText,
   waveBudgetStopNotice,
+  waveExecutorReconciliationFailureText,
+  waveChildStopFailureText,
 } from "./waveNotices";
 import { BoundedSet } from "./boundedSet";
 import {
@@ -609,6 +613,15 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
 function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   const key = spawnKey(wave.waveId, request.stepIndex);
   inFlightSpawns.add(key);
+  const stopUnadoptedChild = (sessionId: string) => {
+    void stopOrchestratorSession(sessionId).catch((error: unknown) => {
+      appendConductorNotice(
+        wave.conductorSessionId,
+        waveChildStopFailureText(benchmarkErrorMessage(error)),
+        false,
+      );
+    });
+  };
   // 4a: an explicit step model wins over the role's ranking — the plan said
   // exactly where this step runs; the ranking is the default for steps that
   // did not. The ranking is not even consulted, so its fallback/near-limit
@@ -620,6 +633,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   void (async () => {
     let timedOut = false;
     let preparedKey: string | undefined;
+    let ownedBindingId: string | undefined;
     let childStarted = false;
     let closedBeforeStart = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -764,12 +778,23 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       let selectionExpired = false;
       void selection
         .then((late) => {
-          if (selectionExpired)
+          if (selectionExpired) {
+            if (late.owned)
+              void ownedTaskExecution
+                .cancel(late.owned.binding.id, true)
+                .catch((failure: unknown) => {
+                  appendConductorNotice(
+                    wave.conductorSessionId,
+                    `Native task cleanup is unresolved: ${failure instanceof Error ? failure.message : String(failure)}`,
+                    false,
+                  );
+                });
             return closeUnstartedWaveExecutor(
               late.requestKey,
               "failed",
               "Executor selection exceeded the dispatch deadline",
             );
+          }
         })
         .catch(() => {
           /* The main await reports the selection failure. */
@@ -788,6 +813,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       clearTimeout(timer);
       timer = undefined;
       preparedKey = prepared.requestKey;
+      ownedBindingId = prepared.owned?.binding.id;
       if (prepared.error) throw new Error(prepared.error);
       // Selection crosses an async storage boundary. A stopped wave must not
       // create a child just because its decision finished later.
@@ -805,6 +831,8 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           "Wave stopped before dispatch",
         );
         closedBeforeStart = true;
+        if (ownedBindingId)
+          await ownedTaskExecution.cancel(ownedBindingId, true);
         return;
       }
       if (
@@ -852,6 +880,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       );
       if (
         noticeModel &&
+        !prepared.owned &&
         (selectionChanged ||
           selectedRanking?.fallback ||
           selectedRanking?.nearLimit)
@@ -875,7 +904,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         settingsModel,
         selectedRunSettings ?? {},
       );
-      if (noticeModel) {
+      if (noticeModel && !prepared.owned) {
         const effort = selectedRunSettings?.effort;
         if (effort && !dispatchedSettings.effortApplied) {
           appendConductorNotice(
@@ -907,6 +936,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       }
       const spawnPromise = spawnConductorChildSession({
         executorDecisionKey: preparedKey,
+        ownedTask: prepared.owned,
         parentSessionId: wave.conductorSessionId,
         role: "worker",
         managedBy: "wave",
@@ -946,7 +976,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       // not run as an orphan worker: stop it instead of adopting it.
       spawnPromise
         .then(({ sessionId }) => {
-          if (timedOut) void stopOrchestratorSession(sessionId);
+          if (timedOut) stopUnadoptedChild(sessionId);
         })
         .catch(() => {
           // The main await below reports this rejection; nothing to do here.
@@ -965,39 +995,28 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         }),
       ]);
       childStarted = true;
-      await executorSelection
-        .observe(preparedKey, {
-          phase: "started",
-          sessionId,
-          runId,
-          configuration: null,
-          outcome: null,
-          reason:
-            "Session created; the provider has not reported an executor configuration yet",
-        })
-        .catch((error: unknown) => {
-          // The child already exists. Keep managing it even if journal storage
-          // fails; treating this as a spawn failure would orphan real work.
-          appendConductorNotice(
-            wave.conductorSessionId,
-            persistFailureNoticeText({
-              failures: 1,
-              reason: error instanceof Error ? error.message : String(error),
-            }),
-            false,
-          );
-        });
-      // Adopt the child only into a wave that is still running. A wave the
-      // operator stopped (5b) — or one that was pruned — must not gain a
-      // worker after the fact: the child was spawned with a real prompt and
-      // would do real work that nothing manages, reports to, or stops. Same
-      // reasoning as the timeout race above, one failure mode over.
+      // Graph synchronization can adopt and finish a fast child before this
+      // caller receives its processing ACK. Preserve that exact step instead
+      // of recreating its bookkeeping or cancelling completed work.
       let adopted = false;
       updateWaveEngineState((state) => {
         const current = state.waves.find(
           (candidate) => candidate.waveId === wave.waveId,
         );
-        if (!current || current.phase !== "running") return state;
+        const step = current?.steps.find(
+          (candidate) => candidate.stepIndex === request.stepIndex,
+        );
+        if (!current || !step) return state;
+        if (
+          step.phase === "spawned" &&
+          step.sessionId === sessionId &&
+          step.runId === runId
+        ) {
+          adopted = true;
+          return state;
+        }
+        if (current.phase !== "running" || step.phase !== "spawning")
+          return state;
         adopted = true;
         return withWave(
           state,
@@ -1008,9 +1027,41 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           }),
         );
       });
-      if (!adopted) void stopOrchestratorSession(sessionId);
+      if (!adopted) stopUnadoptedChild(sessionId);
+      if (!prepared.owned)
+        await executorSelection
+          .observe(preparedKey, {
+            phase: "started",
+            sessionId,
+            runId,
+            configuration: null,
+            outcome: null,
+            reason:
+              "Session created; the provider has not reported an executor configuration yet",
+          })
+          .catch((error: unknown) => {
+            // The child already exists. Keep managing it even if journal storage
+            // fails; treating this as a spawn failure would orphan real work.
+            appendConductorNotice(
+              wave.conductorSessionId,
+              waveExecutorReconciliationFailureText(
+                benchmarkErrorMessage(error),
+              ),
+              false,
+            );
+          });
     } catch (error) {
       if (preparedKey && !childStarted && !closedBeforeStart) {
+        if (ownedBindingId)
+          await ownedTaskExecution
+            .cancel(ownedBindingId, true)
+            .catch((failure: unknown) => {
+              appendConductorNotice(
+                wave.conductorSessionId,
+                `Native task cleanup is unresolved: ${failure instanceof Error ? failure.message : String(failure)}`,
+                false,
+              );
+            });
         await closeUnstartedWaveExecutor(
           preparedKey,
           "failed",
@@ -1394,10 +1445,7 @@ export function runWaveEngineTick(): void {
       if (node.parentSessionId)
         appendConductorNotice(
           node.parentSessionId,
-          persistFailureNoticeText({
-            failures: 1,
-            reason: error instanceof Error ? error.message : String(error),
-          }),
+          waveExecutorReconciliationFailureText(benchmarkErrorMessage(error)),
           false,
         );
     },

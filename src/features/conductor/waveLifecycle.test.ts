@@ -9,6 +9,11 @@ import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode, StructuredReport } from "./types";
 import { waveDigestMarker } from "./waveDigest";
 
+// These lifecycle fixtures use ordinary waves without an opted-in native task mode.
+vi.mock("@/features/benchmarks/lib/ownedTaskExecution", () => ({
+  ownedTaskExecution: { getMode: vi.fn(async () => null) },
+}));
+
 // The lifecycle test owns child dispatch; the native decision store is isolated.
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
   executorSelection: {

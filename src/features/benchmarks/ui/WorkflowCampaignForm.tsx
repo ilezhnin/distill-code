@@ -23,11 +23,13 @@ export function WorkflowCampaignForm({
   versions,
   onFrozen,
   onReservationPendingChange,
+  disabled = false,
 }: {
   artifact: SelectorFitArtifact;
   versions: BenchmarkVersion[];
   onFrozen: (campaign: WorkflowCampaign) => void;
-  onReservationPendingChange?: (pending: boolean) => void;
+  onReservationPendingChange?: (pending: boolean) => boolean | undefined;
+  disabled?: boolean;
 }) {
   const { t } = useTranslation("benchmarks");
   const prefix = useId();
@@ -88,7 +90,7 @@ export function WorkflowCampaignForm({
     1,
     ...chosen.map((v) => v.manifest.limits.timeoutSeconds),
   );
-  const locked = busy || pending !== null;
+  const locked = disabled || busy || pending !== null;
   const valid =
     chosen.length >= 8 &&
     chosen.length <= 256 &&
@@ -110,7 +112,13 @@ export function WorkflowCampaignForm({
     minQuality >= 0 &&
     minQuality <= 1;
   const freeze = async () => {
-    if (inFlight.current || (!pending && !valid)) return;
+    if (
+      disabled ||
+      inFlight.current ||
+      (!pending && !valid) ||
+      onReservationPendingChange?.(true) === false
+    )
+      return;
     inFlight.current = true;
     const request = pending ?? {
       requestKey: crypto.randomUUID(),
@@ -133,7 +141,6 @@ export function WorkflowCampaignForm({
       maxExecutions: executions,
     };
     setPending(request);
-    onReservationPendingChange?.(true);
     setBusy(true);
     setError(null);
     setRejected(false);
@@ -317,7 +324,7 @@ export function WorkflowCampaignForm({
       <div className="flex gap-2">
         <Button
           type="button"
-          disabled={busy || (!pending && !valid)}
+          disabled={disabled || busy || (!pending && !valid)}
           onClick={() => void freeze()}
         >
           {t(pending ? "learning.holdout.retry" : "campaign.freeze")}
@@ -326,6 +333,7 @@ export function WorkflowCampaignForm({
           <Button
             type="button"
             variant="outline"
+            disabled={disabled}
             onClick={() => {
               setPending(null);
               onReservationPendingChange?.(false);

@@ -4,6 +4,12 @@ import {
   type ApplicationExecutorOption,
 } from "@/features/benchmarks/lib/applicationExecutor";
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
+import {
+  ownedTaskExecution,
+  type PreparedOwnedTask,
+} from "@/features/benchmarks/lib/ownedTaskExecution";
+import { benchmarkGovernanceApi } from "@/features/benchmarks/api/benchmarkGovernance";
+import { taskBindingId } from "@/features/chat/lib/executionOwnership";
 import type { WaveSpawnRequest, WaveState } from "./waveEngine";
 import type { SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
@@ -31,6 +37,90 @@ export async function prepareWaveExecutor(
     ranked?: boolean;
   },
 ) {
+  const mode = await ownedTaskExecution.getMode(wave.conductorSessionId);
+  if (mode?.request.promotionId) {
+    const promotion = (await benchmarkGovernanceApi.listPromotions()).find(
+      (row) => row.certificate.id === mode.request.promotionId,
+    );
+    if (
+      !promotion ||
+      promotion.certificate.artifactHash !==
+        mode.request.acknowledgedCertificateHash
+    )
+      throw new Error("The acknowledged native wave certificate changed");
+    if (
+      request.step.role !== promotion.certificate.contract.roleId ||
+      request.step.budget ||
+      wave.revisionCount ||
+      wave.carriedReports?.length
+    )
+      throw new Error(
+        "This bounded wave contract needs its exact certified role and native root budget; per-step budget and carried revision context need a compatible native contract",
+      );
+    let hardCandidateKey: string | null = null;
+    if (
+      request.step.model ||
+      request.step.effort ||
+      request.step.fast !== undefined
+    ) {
+      const choices = await ownedTaskExecution.choices(
+        mode.request.promotionId,
+      );
+      const compatible = choices.filter(
+        ({ configuration }) =>
+          (!request.step.model ||
+            (configuration.providerId === baseline.target?.harnessId &&
+              configuration.modelId === baseline.target.modelId)) &&
+          (!request.step.effort ||
+            configuration.effort === request.step.effort) &&
+          (request.step.fast === undefined ||
+            configuration.fastMode === request.step.fast),
+      );
+      if (compatible.length !== 1 || !compatible[0].available)
+        throw new Error(
+          "The explicit wave model/settings do not identify one available compatible native worker",
+        );
+      hardCandidateKey = compatible[0].candidateKey;
+    }
+    const predecessors = wave.steps
+      .slice(0, request.stepIndex)
+      .map((step) => (step.sessionId ? taskBindingId(step.sessionId) : null));
+    if (predecessors.some((id) => !id))
+      throw new Error(
+        "The bounded wave needs committed native predecessors before another step",
+      );
+    const previousBindingIds = predecessors.filter((id): id is string =>
+      Boolean(id),
+    );
+    const owned = await ownedTaskExecution.prepare({
+      requestKey: waveExecutorKey(wave.waveId, request.stepIndex),
+      surface: "wave",
+      contextId: `${wave.conductorSessionId}:wave:${wave.waveId}`,
+      promotionId: mode.request.promotionId,
+      acknowledgedCertificateHash: mode.request.acknowledgedCertificateHash,
+      prompt: request.step.subtask,
+      hardCandidateKey,
+      repository: mode.request.repository,
+      entry: previousBindingIds.length
+        ? {
+            rootBindingId: previousBindingIds[0],
+            previousBindingIds,
+            includePreviousOutput: request.step.access === "all",
+          }
+        : null,
+      waveMode: {
+        contextId: wave.conductorSessionId,
+        artifactHash: mode.artifactHash,
+      },
+    });
+    return {
+      requestKey: owned.binding.request.requestKey,
+      decision: owned.binding.decision,
+      selected: undefined,
+      error: undefined,
+      owned: owned as PreparedOwnedTask | undefined,
+    };
+  }
   const inherited =
     baseline.target ?? conductorExecutionTarget(wave.conductorSessionId);
   const options: ApplicationExecutorOption[] = inherited
@@ -124,7 +214,12 @@ export async function prepareWaveExecutor(
       error: `No executor selected: ${decision.reason}`,
     };
   }
-  return { requestKey, selected, decision };
+  return {
+    requestKey,
+    selected,
+    decision,
+    owned: undefined as PreparedOwnedTask | undefined,
+  };
 }
 
 const recordedOutcomes = new BoundedSet(1000);
@@ -151,7 +246,9 @@ export function syncWaveExecutorOutcomes(
       outcome !== "cancelled"
     )
       continue;
-    const key = waveExecutorKey(node.waveId, node.stepIndex);
+    const key = node.runId.startsWith("owned-task:")
+      ? node.runId
+      : waveExecutorKey(node.waveId, node.stepIndex);
     const runId = node.runId;
     if (
       recordedOutcomes.has(key) ||
@@ -170,7 +267,48 @@ export function syncWaveExecutorOutcomes(
         recordedOutcomes.add(key);
         return;
       }
-      await executorSelection.syncOutcome(key, node.sessionId, runId, outcome);
+      let nativeOutcome = outcome;
+      if (key.startsWith("owned-task:")) {
+        const bindingId = taskBindingId(node.sessionId);
+        if (!bindingId)
+          throw new Error("Owned wave task has no native ownership binding");
+        const status = await ownedTaskExecution.status(bindingId);
+        if (
+          !status ||
+          status.phase === "reserved" ||
+          status.phase === "running"
+        )
+          return;
+        if (status.sessionId !== node.sessionId || status.requestKey !== key)
+          throw new Error("Native wave attribution receipt identity changed");
+        if (status.phase !== "terminal")
+          throw new Error(
+            "Native wave outcome is uncertain; no terminal attribution is available",
+          );
+        nativeOutcome = status.error
+          ? status.error.kind === "cancelled"
+            ? "cancelled"
+            : "failed"
+          : "completed";
+        const receipt = record.hostExecution;
+        if (
+          record.decision.request.requestKey !== key ||
+          receipt?.start.sessionId !== node.sessionId ||
+          receipt.start.link.decisionKey !== key ||
+          receipt.start.link.logicalRunId !== runId ||
+          receipt.start.hostRunId !== status.runId ||
+          receipt.finish?.status !== nativeOutcome
+        )
+          throw new Error(
+            "Native wave outcome differs from its processing receipt",
+          );
+      }
+      await executorSelection.syncOutcome(
+        key,
+        node.sessionId,
+        runId,
+        nativeOutcome,
+      );
       recordedOutcomes.add(key);
       failedOutcomes.delete(key);
     })()
@@ -222,6 +360,9 @@ export async function closeUnstartedWaveExecutor(
   outcome: "cancelled" | "blocked" | "failed",
   reason: string,
 ) {
+  // Owned setup/cleanup is recorded by its native lifecycle. A renderer
+  // cannot manufacture a terminal receipt for a task that never processed.
+  if (requestKey.startsWith("owned-task:")) return;
   await executorSelection.observe(requestKey, {
     phase: "terminal",
     sessionId: null,

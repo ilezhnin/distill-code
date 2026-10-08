@@ -95,7 +95,7 @@ import { isRecord } from "@/shared/lib/isRecord";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 import {
   observeExecutionOwner,
-  isBenchmarkSession,
+  isBenchmarkExecutionSession,
 } from "@/features/chat/lib/executionOwnership";
 import { handleSessionEvent } from "./acpSessionEvents";
 import {
@@ -1196,7 +1196,7 @@ function recordUsageNotification(
     turnsDelta: 1,
   });
   if (elapsedMs && elapsedMs > 0) {
-    if (!isBenchmarkSession(sessionId))
+    if (!isBenchmarkExecutionSession(sessionId))
       addSessionWorkedMs(sessionId, elapsedMs);
   }
 }

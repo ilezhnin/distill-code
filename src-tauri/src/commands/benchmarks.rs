@@ -8,6 +8,213 @@ async fn service(app: &AppHandle) -> Result<std::sync::Arc<benchmarks::Benchmark
     app.state::<BenchmarkState>().get(app).await
 }
 #[tauri::command]
+pub async fn benchmark_owned_task_choices(
+    app: AppHandle,
+    promotion_id: String,
+) -> Result<Vec<benchmarks::task_execution::Choice>> {
+    service(&app).await?.owned_task_choices(&promotion_id).await
+}
+#[tauri::command]
+pub async fn benchmark_owned_task_public_result(
+    app: AppHandle,
+    binding_id: String,
+) -> Result<benchmarks::task_execution::NativeOutput> {
+    service(&app)
+        .await?
+        .owned_task_public_result(&binding_id)
+        .await
+}
+#[tauri::command]
+pub fn benchmark_execution_backend_metadata(app: AppHandle) -> serde_json::Value {
+    let fixture = {
+        #[cfg(feature = "app-test-driver")]
+        {
+            crate::services::agent_host::execution_fixture::metadata()
+        }
+        #[cfg(not(feature = "app-test-driver"))]
+        {
+            serde_json::Value::Null
+        }
+    };
+    serde_json::json!({"backendKind":benchmarks::execution_backend_kind(&app),"fixture":fixture})
+}
+#[tauri::command]
+pub async fn benchmark_get_owned_task_mode(
+    app: AppHandle,
+    context_id: String,
+) -> Result<Option<benchmarks::task_execution::Mode>> {
+    service(&app)
+        .await?
+        .store
+        .owned_task_mode(&context_id)
+        .await
+}
+#[tauri::command]
+pub async fn benchmark_set_owned_task_mode(
+    app: AppHandle,
+    request: benchmarks::task_execution::ModeRequest,
+) -> Result<Option<benchmarks::task_execution::Mode>> {
+    let host = app
+        .state::<crate::services::agent_host::AgentHost>()
+        .get_or_start(&app)
+        .await
+        .map_err(|e| BenchmarkError::new("infrastructure_failure", e))?;
+    host.session_record(&request.context_id)
+        .await
+        .map_err(|e| BenchmarkError::new("validation", e.to_string()))?;
+    if host
+        .store
+        .execution_owner(&request.context_id)
+        .await
+        .map_err(|e| BenchmarkError::new("infrastructure_failure", e))?
+        .is_some()
+    {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Owned execution cannot authorize autonomous waves",
+        ));
+    }
+    service(&app)
+        .await?
+        .store
+        .set_owned_task_mode(request)
+        .await
+}
+#[tauri::command]
+pub async fn benchmark_prepare_owned_task(
+    app: AppHandle,
+    request: benchmarks::task_execution::Request,
+) -> Result<benchmarks::task_execution::Prepared> {
+    service(&app).await?.prepare_owned_task(request).await
+}
+#[tauri::command]
+pub async fn benchmark_dispatch_owned_task(
+    app: AppHandle,
+    binding_id: String,
+) -> Result<crate::services::agent_host::execution::ExecutionDispatch> {
+    service(&app).await?.dispatch_owned_task(&binding_id).await
+}
+#[tauri::command]
+pub async fn benchmark_owned_task_status(
+    app: AppHandle,
+    binding_id: String,
+) -> Result<Option<crate::services::agent_host::execution::ExecutionDispatch>> {
+    service(&app).await?.owned_task_status(&binding_id).await
+}
+#[tauri::command]
+pub async fn benchmark_reopen_owned_task(app: AppHandle, binding_id: String) -> Result<()> {
+    service(&app).await?.reopen_owned_task(&binding_id).await
+}
+#[tauri::command]
+pub async fn benchmark_cancel_owned_task(
+    app: AppHandle,
+    binding_id: String,
+    close: bool,
+) -> Result<()> {
+    service(&app)
+        .await?
+        .cancel_owned_task(&binding_id, close)
+        .await
+}
+#[tauri::command]
+pub async fn benchmark_get_owned_task(
+    app: AppHandle,
+    binding_id: String,
+) -> Result<benchmarks::task_execution::Prepared> {
+    let s = service(&app).await?;
+    let binding = s.store.task_binding(&binding_id).await?;
+    let session = s
+        .store
+        .task_session(&binding)
+        .await?
+        .ok_or_else(|| BenchmarkError::new("not_found", "Owned task session is missing"))?;
+    Ok(benchmarks::task_execution::Prepared { binding, session })
+}
+#[tauri::command]
+pub async fn benchmark_qualify_version(
+    app: AppHandle,
+    request: benchmarks::qualification::Request,
+) -> Result<benchmarks::qualification::Record> {
+    service(&app).await?.qualify_version(request).await
+}
+#[tauri::command]
+pub async fn benchmark_get_qualification(
+    app: AppHandle,
+    id: String,
+) -> Result<benchmarks::qualification::Record> {
+    service(&app).await?.store.qualification(&id).await
+}
+#[tauri::command]
+pub async fn benchmark_qualification_bindings(
+    app: AppHandle,
+    version_id: String,
+) -> Result<Vec<benchmarks::qualification::Binding>> {
+    service(&app)
+        .await?
+        .store
+        .qualification_bindings(&version_id)
+        .await
+}
+#[tauri::command]
+pub async fn benchmark_revoke_qualification(
+    app: AppHandle,
+    id: String,
+    reason: String,
+) -> Result<()> {
+    let s = service(&app).await?;
+    s.store.revoke_qualification(&id, &reason).await?;
+    s.changed().await;
+    Ok(())
+}
+#[tauri::command]
+pub async fn benchmark_register_promotion_rule(
+    app: AppHandle,
+    request: benchmarks::promotion::Registration,
+) -> Result<benchmarks::promotion::RegisteredRule> {
+    let s = service(&app).await?;
+    let value = s.store.register_promotion_rule(request).await?;
+    s.changed().await;
+    Ok(value)
+}
+#[tauri::command]
+pub async fn benchmark_get_promotion_rule(
+    app: AppHandle,
+    campaign_id: String,
+) -> Result<Option<benchmarks::promotion::RegisteredRule>> {
+    service(&app)
+        .await?
+        .store
+        .promotion_rule(&campaign_id)
+        .await
+}
+#[tauri::command]
+pub async fn benchmark_promote_selector(
+    app: AppHandle,
+    campaign_id: String,
+) -> Result<benchmarks::promotion::State> {
+    let s = service(&app).await?;
+    let value = s.store.promote_selector(&campaign_id).await?;
+    s.changed().await;
+    Ok(value)
+}
+#[tauri::command]
+pub async fn benchmark_list_promotions(
+    app: AppHandle,
+) -> Result<Vec<benchmarks::promotion::State>> {
+    service(&app).await?.store.promotions().await
+}
+#[tauri::command]
+pub async fn benchmark_revoke_promotion(
+    app: AppHandle,
+    id: String,
+    reason: String,
+) -> Result<benchmarks::promotion::State> {
+    let s = service(&app).await?;
+    let value = s.store.revoke_promotion(&id, &reason).await?;
+    s.changed().await;
+    Ok(value)
+}
+#[tauri::command]
 pub async fn benchmark_list_definitions(app: AppHandle) -> Result<Vec<BenchmarkDefinition>> {
     service(&app).await?.store.definitions().await
 }
@@ -424,6 +631,12 @@ pub async fn benchmark_select_executor(
     request: benchmarks::executor::ApplicationRequest,
     record: bool,
 ) -> Result<benchmarks::executor::Decision> {
+    if request.request_key.starts_with("owned-task:") {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Owned task keys require native context binding",
+        ));
+    }
     let store = &service(&app).await?.store;
     let request = request.try_into()?;
     if record {
@@ -438,6 +651,12 @@ pub async fn benchmark_preview_executor_decision(
     app: AppHandle,
     request: benchmarks::executor::Request,
 ) -> Result<benchmarks::executor::Decision> {
+    if request.request_key.starts_with("owned-task:") {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Owned task keys require native context binding",
+        ));
+    }
     service(&app)
         .await?
         .store
@@ -450,6 +669,12 @@ pub async fn benchmark_prepare_executor_decision(
     app: AppHandle,
     request: benchmarks::executor::Request,
 ) -> Result<benchmarks::executor::Decision> {
+    if request.request_key.starts_with("owned-task:") {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Owned task keys require native context binding",
+        ));
+    }
     service(&app)
         .await?
         .store
@@ -498,10 +723,22 @@ pub async fn benchmark_sync_executor_outcome(
     outcome: String,
 ) -> Result<benchmarks::executor::Record> {
     let receipt = executor_host_receipt(&app, &request_key).await?;
+    let host = app
+        .state::<crate::services::agent_host::AgentHost>()
+        .get_or_start(&app)
+        .await
+        .map_err(|message| BenchmarkError::new("host_unavailable", message))?;
     service(&app)
         .await?
         .store
-        .observe_host_outcome(&request_key, session_id, run_id, outcome, receipt)
+        .observe_native_host_outcome(
+            &host.store,
+            &request_key,
+            session_id,
+            run_id,
+            outcome,
+            receipt,
+        )
         .await
 }
 
@@ -514,7 +751,7 @@ pub async fn benchmark_observe_executor(
     service(&app)
         .await?
         .store
-        .observe_executor(&request_key, observation)
+        .observe_application_executor(&request_key, observation)
         .await
 }
 

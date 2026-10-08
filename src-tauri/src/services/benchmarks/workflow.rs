@@ -318,11 +318,18 @@ async fn prepare_step(
     index: usize,
     remaining: u32,
     previous: Option<&str>,
+    native_reports: Option<Vec<String>>,
 ) -> Result<SavedStep> {
     let store = &service.store;
     let workflow = version.manifest.workflow.as_ref().unwrap();
     let spec = &workflow.steps[index];
-    let entry = step_entry(root, &version.manifest, index, remaining, previous)?;
+    let mut entry = step_entry(root, &version.manifest, index, remaining, previous)?;
+    if spec.include_previous_output {
+        if let Some(reports) = native_reports {
+            entry.previous_reports = reports;
+            entry.content_hash = super::routing::entry_hash(&entry);
+        }
+    }
     let prompt = format!(
         "{}\n\nWorkflow step {} of {} ({}):\n{}",
         version.manifest.prompt,
@@ -362,6 +369,7 @@ async fn prepare_step(
     child.started_at = None;
     child.finished_at = None;
     child.duration_ms = None;
+    child.native_execution_ms = None;
     child.output = None;
     child.evidence_hash = None;
     child.usage = TokenUsage::default();
@@ -500,6 +508,15 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
                 .and_then(|value| total.checked_add(value))
         })
     };
+    root.native_execution_ms = if executed.is_empty() {
+        None
+    } else {
+        executed.iter().try_fold(0u64, |sum, step| {
+            step.attempt
+                .native_execution_ms
+                .and_then(|ms| sum.checked_add(ms))
+        })
+    };
     // A root-pinned workflow names its most recent worker. Research policies
     // clear that single-worker attribution below and retain the step records.
     root.resolved_model = executed
@@ -614,6 +631,16 @@ fn prefix_violation(steps: &[SavedStep], budget_ms: u64) -> Option<(&'static str
 }
 
 /// Execute only never-dispatched steps; the native backend owns each turn's acceptance boundary.
+pub(super) fn remaining_seconds(cap: u32, elapsed_ms: u64) -> Option<u32> {
+    let remaining = (u64::from(cap) * 1000).saturating_sub(elapsed_ms);
+    (remaining > 0).then(|| remaining.div_ceil(1000) as u32)
+}
+
+pub(super) fn committed_report(output: &str) -> String {
+    serde_json::to_string(&json!({"outcome":"completed","output":output}))
+        .expect("public string report")
+}
+
 pub async fn execute(
     service: &BenchmarkService,
     mut root: Attempt,
@@ -684,18 +711,58 @@ pub async fn execute(
                 ));
             }
         }
+        let native_elapsed = steps
+            .iter()
+            .filter(|step| step.attempt.phase == "terminal")
+            .try_fold(0u64, |sum, step| {
+                step.attempt
+                    .native_execution_ms
+                    .and_then(|ms| sum.checked_add(ms))
+            });
         let remaining_ms = budget_ms
             .saturating_sub(consumed.unwrap_or(budget_ms))
             .saturating_sub(start.elapsed().as_millis() as u64);
-        let remaining = remaining_ms.div_ceil(1000) as u32;
-        if remaining_ms == 0 {
+        let remaining = if let Some(elapsed) = native_elapsed {
+            remaining_seconds(timeout, elapsed).unwrap_or(0)
+        } else {
+            remaining_ms.div_ceil(1000) as u32
+        };
+        if remaining == 0 {
             root.outcome = Some("budget_timeout".into());
             root.reason = Some("Workflow exhausted its shared duration budget".into());
             break;
         }
         if steps.len() == index {
-            let previous = steps.last().and_then(|s| s.attempt.output.as_deref());
-            steps.push(prepare_step(service, &root, &version, index, remaining, previous).await?);
+            let native_report = if native_elapsed.is_some() {
+                steps
+                    .last()
+                    .and_then(|s| s.attempt.output.as_deref())
+                    .map(committed_report)
+            } else {
+                None
+            };
+            let previous = native_report
+                .as_deref()
+                .or_else(|| steps.last().and_then(|s| s.attempt.output.as_deref()));
+            let native_reports = native_elapsed.map(|_| {
+                steps
+                    .iter()
+                    .filter_map(|step| step.attempt.output.as_deref())
+                    .map(committed_report)
+                    .collect()
+            });
+            steps.push(
+                prepare_step(
+                    service,
+                    &root,
+                    &version,
+                    index,
+                    remaining,
+                    previous,
+                    native_reports,
+                )
+                .await?,
+            );
             aggregate(&mut root, &steps);
             service.store.save_attempt(&root).await?;
         }
@@ -791,10 +858,11 @@ pub async fn execute(
             root.reason = Some(reason.into());
             break;
         }
-        if consumed
-            .unwrap_or(budget_ms)
-            .saturating_add(start.elapsed().as_millis() as u64)
-            > budget_ms
+        if native_elapsed.is_none()
+            && consumed
+                .unwrap_or(budget_ms)
+                .saturating_add(start.elapsed().as_millis() as u64)
+                > budget_ms
         {
             root.outcome = Some("budget_timeout".into());
             root.reason = Some("Workflow exceeded its shared duration budget".into());
@@ -964,7 +1032,7 @@ mod tests {
     #[tokio::test]
     async fn step_decision_precedes_execution_and_survives_retries_unchanged() {
         let (_directory, service, backend, root, version) = setup().await;
-        let prepared = prepare_step(&service, &root, &version, 0, 17, None)
+        let prepared = prepare_step(&service, &root, &version, 0, 17, None, None)
             .await
             .unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
@@ -1063,7 +1131,7 @@ mod tests {
     #[tokio::test]
     async fn step_export_preserves_causal_inputs_without_root_rewards_or_private_fields() {
         let (_directory, service, _, root, version) = setup().await;
-        let prepared = prepare_step(&service, &root, &version, 0, 23, None)
+        let prepared = prepare_step(&service, &root, &version, 0, 23, None, None)
             .await
             .unwrap();
         let (manifest, rows) = exported_steps(&service, false).await;
@@ -1123,7 +1191,7 @@ mod tests {
     #[tokio::test]
     async fn changed_step_input_is_refused_before_dispatch_and_export() {
         let (_directory, service, backend, root, version) = setup().await;
-        let prepared = prepare_step(&service, &root, &version, 0, 30, None)
+        let prepared = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
         sqlx::query(
@@ -1326,7 +1394,7 @@ mod tests {
     #[tokio::test]
     async fn workflow_recovery_waits_for_resume_and_never_repeats_completed_prefix() {
         let (_directory, service, backend, root, version) = setup().await;
-        let mut first = prepare_step(&service, &root, &version, 0, 30, None)
+        let mut first = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
         first.attempt.phase = "preparing".into();
@@ -1369,7 +1437,7 @@ mod tests {
     #[tokio::test]
     async fn uncertain_workflow_step_is_never_automatically_resent() {
         let (_directory, service, backend, root, version) = setup().await;
-        let mut first = prepare_step(&service, &root, &version, 0, 30, None)
+        let mut first = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
         first.attempt.phase = "dispatching".into();
@@ -1390,12 +1458,20 @@ mod tests {
     #[tokio::test]
     async fn workflow_recovery_checks_selection_and_budget_before_final_evaluation() {
         let (_directory, service, backend, root, version) = setup().await;
-        let mut first = prepare_step(&service, &root, &version, 0, 30, None)
+        let mut first = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
-        let mut second = prepare_step(&service, &root, &version, 1, 29, Some("public report"))
-            .await
-            .unwrap();
+        let mut second = prepare_step(
+            &service,
+            &root,
+            &version,
+            1,
+            29,
+            Some("public report"),
+            None,
+        )
+        .await
+        .unwrap();
         for saved in [&mut first, &mut second] {
             saved.attempt.phase = "terminal".into();
             saved.attempt.outcome = Some("completed".into());

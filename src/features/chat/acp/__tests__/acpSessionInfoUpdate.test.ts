@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -7,8 +7,14 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { clearReplayAssistantTracking } from "../acpReplayAssistant";
 import { handleSessionNotification } from "../acpNotificationHandler";
 
+const reconcile = vi.hoisted(() => vi.fn(async (_sessionId: string) => false));
+vi.mock("@/features/chat/lib/ownedTaskDispatch", () => ({
+  reconcileOwnedTaskSession: reconcile,
+}));
+
 describe("ACP session info updates", () => {
   beforeEach(() => {
+    reconcile.mockClear();
     clearReplayAssistantTracking();
     clearReplayBuffer("goose-session-replay-run");
     useChatStore.setState({
@@ -117,6 +123,50 @@ describe("ACP session info updates", () => {
       isRunCancellationPending: false,
       streamingMessageId: null,
       pendingInterventionBoundary: null,
+    });
+  });
+
+  it("hydrates native task ownership and waits for verified terminal reconciliation before completing an open reply", async () => {
+    const id = "native-owned-terminal-notification";
+    useChatSessionStore.getState().addSession({
+      id,
+      title: "Fictional task",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      messageCount: 2,
+      userSetName: true,
+    });
+    const store = useChatStore.getState();
+    store.addMessage(id, {
+      id: "native-reply",
+      role: "assistant",
+      created: 1,
+      content: [{ type: "text", text: "Unsettled native reply" }],
+      metadata: { completionStatus: "inProgress" },
+    });
+    store.setActiveRunId(id, "native-run");
+    store.setRunCancellationPending(id, true);
+    await handleSessionNotification({
+      sessionId: id,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          executionOwner: { kind: "task", id: "task:fictional-binding" },
+          activeRunId: null,
+        },
+      },
+    } as never);
+    expect(reconcile).toHaveBeenCalledWith(id);
+    expect(
+      useChatSessionStore.getState().getSession(id)?.executionOwner,
+    ).toEqual({ kind: "task", id: "task:fictional-binding" });
+    expect(
+      useChatStore.getState().messagesBySession[id][0].metadata
+        ?.completionStatus,
+    ).toBe("inProgress");
+    expect(useChatStore.getState().getSessionRuntime(id)).toMatchObject({
+      activeRunId: "native-run",
+      isRunCancellationPending: true,
     });
   });
 });

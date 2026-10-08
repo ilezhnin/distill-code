@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
   newSession: vi.fn(),
   setSessionConfigOption: vi.fn(),
   extMethod: vi.fn(),
+  reconcile: vi.fn(),
+}));
+vi.mock("@/features/chat/lib/ownedTaskDispatch", () => ({
+  reconcileOwnedTaskSession: mocks.reconcile,
 }));
 
 function createConfigOptionsResponse() {
@@ -185,6 +189,100 @@ describe("listSessionsPage", () => {
     expect(page.sessions[0]).toHaveProperty("activeRunId", "run-1");
     expect(page.sessions[1]).toHaveProperty("activeRunId", null);
     expect(page.sessions[2]).not.toHaveProperty("activeRunId");
+  });
+});
+
+describe("native owned metadata recovery", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.reconcile.mockResolvedValue(true);
+  });
+  it("keeps listing responsive and processes only native task owners sequentially", async () => {
+    let release!: (value: boolean) => void;
+    mocks.reconcile.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const sessions = [
+      { sessionId: "ordinary-owned-task-name", _meta: {} },
+      {
+        sessionId: "native-benchmark-row",
+        _meta: {
+          executionOwner: { kind: "benchmark", id: "benchmark:fixture" },
+        },
+      },
+      {
+        sessionId: "native-task-a",
+        _meta: { executionOwner: { kind: "task", id: "task:fixture-a" } },
+      },
+      {
+        sessionId: "native-task-b",
+        _meta: { executionOwner: { kind: "task", id: "task:fixture-b" } },
+      },
+    ];
+    mocks.getClient.mockResolvedValue({
+      listSessions: vi.fn(async () => ({ sessions, nextCursor: null })),
+    });
+    const { listSessionsPage } = await import("../acpApi");
+    const page = await listSessionsPage();
+    expect(page.sessions.map((row) => row.sessionId)).toEqual(
+      sessions.map((row) => row.sessionId),
+    );
+    await vi.waitFor(() =>
+      expect(mocks.reconcile).toHaveBeenCalledWith("native-task-a"),
+    );
+    expect(mocks.reconcile).toHaveBeenCalledOnce();
+    release(true);
+    await vi.waitFor(() =>
+      expect(mocks.reconcile).toHaveBeenCalledWith("native-task-b"),
+    );
+    expect(mocks.reconcile.mock.calls.map(([id]) => id)).toEqual([
+      "native-task-a",
+      "native-task-b",
+    ]);
+    expect(page.sessions[2].executionOwner).toEqual({
+      kind: "task",
+      id: "task:fixture-a",
+    });
+  });
+  it("retains canonical ownership when recovery cannot yet settle and skips ordinary and benchmark get results", async () => {
+    const rows = [
+      {
+        sessionId: "get-native-task",
+        _meta: {
+          executionOwner: { kind: "task", id: "task:fixture-get" },
+          activeRunId: null,
+        },
+      },
+      { sessionId: "get-ordinary", _meta: {} },
+      {
+        sessionId: "get-native-benchmark",
+        _meta: {
+          executionOwner: { kind: "benchmark", id: "benchmark:fixture-get" },
+        },
+      },
+    ];
+    mocks.getClient.mockResolvedValue({
+      host: {
+        sessionInfo: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+          session: rows.find((row) => row.sessionId === sessionId),
+        })),
+      },
+    });
+    mocks.reconcile.mockResolvedValue(false);
+    const { getSessionInfo } = await import("../acpApi");
+    const owned = await getSessionInfo("get-native-task");
+    expect(owned.executionOwner).toEqual({
+      kind: "task",
+      id: "task:fixture-get",
+    });
+    await getSessionInfo("get-ordinary");
+    await getSessionInfo("get-native-benchmark");
+    expect(mocks.reconcile.mock.calls.map(([id]) => id)).toEqual([
+      "get-native-task",
+    ]);
   });
 });
 

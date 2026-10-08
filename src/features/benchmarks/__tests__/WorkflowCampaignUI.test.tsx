@@ -1,6 +1,7 @@
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -11,6 +12,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
 import { benchmarkApi } from "../api/benchmarks";
+import { benchmarkGovernanceApi } from "../api/benchmarkGovernance";
+import type { PromotionRegistration } from "../lib/benchmarkGovernance";
 import type { SelectorFitArtifact } from "../lib/benchmarkLearning";
 import type {
   WorkflowCampaign,
@@ -37,6 +40,13 @@ vi.mock("../api/benchmarks", () => ({
 }));
 vi.mock("@/features/providers/api/providerAccounts", () => ({
   listProviderAccounts: vi.fn(),
+}));
+vi.mock("../api/benchmarkGovernance", () => ({
+  benchmarkGovernanceApi: {
+    getPromotionRule: vi.fn(async () => null),
+    listPromotions: vi.fn(async () => []),
+    registerPromotionRule: vi.fn(),
+  },
 }));
 
 const workers = [
@@ -200,17 +210,282 @@ beforeEach(() => {
     automaticSwitching: {},
   });
 });
+
+it("preserves campaign A's unresolved rule while a prefilled campaign B cannot reserve or switch the dialog", async () => {
+  const user = userEvent.setup();
+  const campaignB = {
+    ...campaign,
+    plan: { ...campaign.plan, id: "comparison-b" },
+  };
+  let saved = [campaign];
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockImplementation(
+    async () => saved,
+  );
+  vi.mocked(benchmarkApi.freezeWorkflowCampaign).mockImplementation(
+    async () => {
+      saved = [campaignB, campaign];
+      return campaignB;
+    },
+  );
+  vi.mocked(benchmarkApi.controlWorkflowCampaign).mockImplementation(
+    async (id) => {
+      const running = { ...campaignB, state: "running" as const };
+      saved = [running, campaign];
+      expect(id).toBe(campaignB.plan.id);
+      return running;
+    },
+  );
+  showCampaign();
+  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await prefillComparison(user);
+  const freeze = screen.getByRole("button", { name: "Save comparison plan" });
+  expect(freeze).toBeEnabled();
+  await user.click(
+    await screen.findByText("Preregister deployment rule before starting", {
+      selector: "summary",
+    }),
+  );
+  for (const [label, value] of [
+    ["Approving operator", "Fixture operator"],
+    ["Family-wise error budget (0–0.05, exclusive zero)", "0.01"],
+    ["Minimum group utility gain (0–1, exclusive one)", "0.1"],
+    ["Minimum observed quality (0–1)", "0.8"],
+    [
+      "Exact qualification record IDs",
+      "first-qualification second-qualification",
+    ],
+  ])
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  vi.mocked(benchmarkGovernanceApi.registerPromotionRule).mockRejectedValue({
+    message: "Rule reply unavailable",
+  });
+  vi.mocked(benchmarkGovernanceApi.getPromotionRule).mockRejectedValue({
+    message: "Rule lookup unavailable",
+  });
+  await user.click(
+    screen.getByRole("button", { name: "Approve and freeze deployment rule" }),
+  );
+  await screen.findByText("Rule lookup unavailable");
+  expect(freeze).toBeDisabled();
+  expect(
+    screen.getByRole("combobox", { name: "Persona comparator" }),
+  ).toBeDisabled();
+  const start = screen.getByRole("button", { name: "Start comparison" });
+  expect(start).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+  expect(
+    screen.getByRole("combobox", { name: "Saved comparison" }),
+  ).toBeDisabled();
+  await user.click(start);
+  await user.click(freeze);
+  expect(benchmarkApi.freezeWorkflowCampaign).not.toHaveBeenCalled();
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("Approving operator")).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: "Retry the same rule registration" }),
+  ).toBeEnabled();
+  vi.mocked(benchmarkGovernanceApi.getPromotionRule).mockResolvedValue(null);
+  await user.click(
+    screen.getByRole("button", { name: "Retry the same rule registration" }),
+  );
+  await waitFor(() => expect(start).toBeEnabled());
+  expect(
+    vi.mocked(benchmarkGovernanceApi.registerPromotionRule).mock.calls[0][0],
+  ).toEqual(
+    vi.mocked(benchmarkGovernanceApi.registerPromotionRule).mock.calls[1][0],
+  );
+  expect(freeze).toBeEnabled();
+  expect(
+    screen.getByText(/Starting now makes this a research-only comparison/),
+  ).toBeVisible();
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+  await user.click(freeze);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("combobox", { name: "Saved comparison" }),
+    ).toHaveTextContent("comparis · Ready to start"),
+  );
+  for (const close of screen.getAllByRole("button", { name: "Close" }))
+    expect(close).toBeEnabled();
+  expect(
+    screen.getByText(/Starting now makes this a research-only comparison/),
+  ).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Start comparison" }));
+  expect(
+    await screen.findByRole("button", { name: "Pause after current workflow" }),
+  ).toBeEnabled();
+  expect(benchmarkApi.controlWorkflowCampaign).toHaveBeenCalledWith(
+    "comparison-b",
+    "start",
+  );
+  expect(benchmarkGovernanceApi.registerPromotionRule).toHaveBeenCalledTimes(2);
+});
+
+it("prevents governance operations and campaign switches while a sibling comparison reservation is unresolved", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([campaign]);
+  showCampaign();
+  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await user.click(
+    await screen.findByText("Preregister deployment rule before starting", {
+      selector: "summary",
+    }),
+  );
+  for (const [label, value] of [
+    ["Approving operator", "Fixture operator"],
+    ["Family-wise error budget (0–0.05, exclusive zero)", "0.01"],
+    ["Minimum group utility gain (0–1, exclusive one)", "0.1"],
+    ["Minimum observed quality (0–1)", "0.8"],
+    [
+      "Exact qualification record IDs",
+      "first-qualification second-qualification",
+    ],
+  ])
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  await prefillComparison(user);
+  vi.mocked(benchmarkApi.freezeWorkflowCampaign).mockRejectedValue({
+    message: "Reservation reply unavailable",
+  });
+  await user.click(
+    screen.getByRole("button", { name: "Save comparison plan" }),
+  );
+  await screen.findByText("Reservation reply unavailable");
+  const register = screen.getByRole("button", {
+    name: "Approve and freeze deployment rule",
+  });
+  expect(register).toBeDisabled();
+  expect(screen.getByLabelText("Approving operator")).toBeDisabled();
+  expect(
+    screen.getByRole("combobox", { name: "Saved comparison" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+  await user.click(register);
+  expect(benchmarkGovernanceApi.registerPromotionRule).not.toHaveBeenCalled();
+  expect(
+    screen.getByRole("button", { name: "Retry the same reservation" }),
+  ).toBeEnabled();
+});
+
+it("unlocks the dialog when a background native query recovers the exact frozen registration", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([campaign]);
+  wrap(
+    <WorkflowCampaignDialog
+      versions={versions}
+      currentVersions={versions}
+      onClose={vi.fn()}
+      onEvidence={vi.fn()}
+    />,
+    client,
+  );
+  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await user.click(
+    await screen.findByText("Preregister deployment rule before starting", {
+      selector: "summary",
+    }),
+  );
+  for (const [label, value] of [
+    ["Approving operator", "Fixture operator"],
+    ["Family-wise error budget (0–0.05, exclusive zero)", "0.01"],
+    ["Minimum group utility gain (0–1, exclusive one)", "0.1"],
+    ["Minimum observed quality (0–1)", "0.8"],
+    [
+      "Exact qualification record IDs",
+      "second-qualification first-qualification",
+    ],
+  ])
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  vi.mocked(benchmarkGovernanceApi.registerPromotionRule).mockRejectedValue({
+    message: "Rule reply unavailable",
+  });
+  vi.mocked(benchmarkGovernanceApi.getPromotionRule).mockRejectedValue({
+    message: "Rule lookup unavailable",
+  });
+  await user.click(
+    screen.getByRole("button", { name: "Approve and freeze deployment rule" }),
+  );
+  await screen.findByText("Rule lookup unavailable");
+  expect(
+    screen.getByRole("button", { name: "Start comparison" }),
+  ).toBeDisabled();
+  const frozen: PromotionRegistration = vi.mocked(
+    benchmarkGovernanceApi.registerPromotionRule,
+  ).mock.calls[0][0];
+  vi.mocked(benchmarkGovernanceApi.getPromotionRule).mockResolvedValue({
+    request: {
+      ...frozen,
+      qualificationIds: [...frozen.qualificationIds].sort(),
+    },
+    createdAt: 3,
+    planHash: campaign.planHash,
+    qualificationHashes: ["first", "second"],
+    artifactHash: "rule-hash",
+  });
+  await act(async () => {
+    await client.refetchQueries({
+      queryKey: ["benchmarks", "promotion-rule", "campaign"],
+    });
+  });
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Start comparison" }),
+    ).toBeEnabled(),
+  );
+  for (const close of screen.getAllByRole("button", { name: "Close" }))
+    expect(close).toBeEnabled();
+  expect(
+    screen.getByRole("combobox", { name: "Saved comparison" }),
+  ).toBeEnabled();
+  expect(screen.getByRole("combobox", { name: "Saved fits" })).toBeEnabled();
+  expect(
+    screen.getByText("Deployment rule registered before execution"),
+  ).toBeVisible();
+  expect(benchmarkGovernanceApi.registerPromotionRule).toHaveBeenCalledTimes(1);
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+});
+
+it("keeps sibling reservations disabled until an in-flight campaign control is reconciled", async () => {
+  const user = userEvent.setup();
+  let saved = campaign;
+  let settle!: (value: WorkflowCampaign) => void;
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockImplementation(async () => [
+    saved,
+  ]);
+  vi.mocked(benchmarkApi.controlWorkflowCampaign).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+  );
+  showCampaign();
+  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await prefillComparison(user);
+  const freeze = screen.getByRole("button", { name: "Save comparison plan" });
+  await user.click(screen.getByRole("button", { name: "Start comparison" }));
+  expect(freeze).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+  await user.click(freeze);
+  expect(benchmarkApi.freezeWorkflowCampaign).not.toHaveBeenCalled();
+  await act(async () => {
+    saved = { ...campaign, state: "running" };
+    settle(saved);
+  });
+  expect(
+    await screen.findByRole("button", { name: "Pause after current workflow" }),
+  ).toBeEnabled();
+  expect(freeze).toBeEnabled();
+});
 afterEach(cleanup);
 
-function wrap(content: React.ReactNode) {
+function wrap(
+  content: React.ReactNode,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      }
-    >
-      {content}
-    </QueryClientProvider>,
+    <QueryClientProvider client={client}>{content}</QueryClientProvider>,
   );
 }
 async function choose(
@@ -220,6 +495,17 @@ async function choose(
 ) {
   await user.click(screen.getByRole("combobox", { name }));
   await user.click(await screen.findByRole("option", { name: option }));
+}
+async function prefillComparison(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByText("New comparison", { selector: "summary" }));
+  await choose(user, "Saved fits", / · fit$/);
+  for (const version of versions)
+    await user.click(
+      screen.getByRole("checkbox", { name: version.manifest.name }),
+    );
+  await choose(user, "claude-acp / model-1 / high · Account", "Test account");
+  await choose(user, "codex-acp / model-2 / high · Account", "CLI sign-in");
+  await choose(user, "Persona comparator", "claude-acp / model-1 / high");
 }
 function showCampaign(onEvidence = vi.fn()) {
   wrap(

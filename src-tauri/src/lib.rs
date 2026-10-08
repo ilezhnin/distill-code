@@ -51,6 +51,9 @@ pub fn run() {
     if let Some(mode) = &e2e_mode {
         mode.enforce_process_env()
             .unwrap_or_else(|error| panic!("failed to initialize isolated E2E mode: {error}"));
+        #[cfg(feature = "app-test-driver")]
+        services::agent_host::execution_fixture::initialize(mode)
+            .unwrap_or_else(|error| panic!("invalid invented native fixture: {error}"));
     }
 
     // Before the first plugin: every one of them — the log, the window state,
@@ -299,6 +302,26 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::benchmarks::benchmark_list_definitions,
+            commands::benchmarks::benchmark_get_owned_task_mode,
+            commands::benchmarks::benchmark_execution_backend_metadata,
+            commands::benchmarks::benchmark_owned_task_choices,
+            commands::benchmarks::benchmark_owned_task_public_result,
+            commands::benchmarks::benchmark_set_owned_task_mode,
+            commands::benchmarks::benchmark_prepare_owned_task,
+            commands::benchmarks::benchmark_dispatch_owned_task,
+            commands::benchmarks::benchmark_owned_task_status,
+            commands::benchmarks::benchmark_cancel_owned_task,
+            commands::benchmarks::benchmark_reopen_owned_task,
+            commands::benchmarks::benchmark_get_owned_task,
+            commands::benchmarks::benchmark_qualify_version,
+            commands::benchmarks::benchmark_get_qualification,
+            commands::benchmarks::benchmark_qualification_bindings,
+            commands::benchmarks::benchmark_revoke_qualification,
+            commands::benchmarks::benchmark_register_promotion_rule,
+            commands::benchmarks::benchmark_get_promotion_rule,
+            commands::benchmarks::benchmark_promote_selector,
+            commands::benchmarks::benchmark_list_promotions,
+            commands::benchmarks::benchmark_revoke_promotion,
             commands::benchmarks::benchmark_save_draft,
             commands::benchmarks::benchmark_validate_draft,
             commands::benchmarks::benchmark_publish_version,
