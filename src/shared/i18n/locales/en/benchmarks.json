@@ -699,5 +699,43 @@
     "hours_other": "{{count}} h",
     "days_one": "{{count}} day",
     "days_other": "{{count}} days"
+  },
+  "campaign": {
+    "title": "Compare strategies",
+    "description": "Compare the learned selector, training aggregate, persona preference and each fixed worker on complete workflows.",
+    "saved": "Saved comparison",
+    "choose": "Choose a comparison",
+    "empty": "Select a saved comparison to see its progress and results, or create one below.",
+    "new": "New comparison",
+    "noFits": "First fit a selector from saved training results in Learned selector.",
+    "requirements": "Use at least 8 unused held-out workflows from 4 independent groups. All fitted workers participate. Native validation checks scope, runtime and prior exposure.",
+    "noCases": "No eligible held-out workflows for this fit.",
+    "cliAccount": "CLI sign-in",
+    "chooseAccount": "Choose an account",
+    "noAccounts": "No enabled account or CLI sign-in is available for this worker.",
+    "minQuality": "Minimum predicted quality (0–1)",
+    "budget": "{{policies}} strategies · {{trajectories}} workflows · up to {{executions}} model calls · {{timeout}} s per workflow",
+    "freezeNotice": "Saving validates the plan and reserves these task families for this comparison without generating answers. Starting is a separate action; worker availability is checked during execution.",
+    "freeze": "Save comparison plan",
+    "result": "Comparison results",
+    "states": {
+      "reserved": "Ready to start",
+      "running": "Running",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "completed": "Finished"
+    },
+    "progress": "{{done}} / {{total}} workflows recorded",
+    "planSummary": "{{cases}} cases · {{policies}} strategies · {{repetitions}} repetitions · up to {{executions}} model calls",
+    "startNotice": "Start and resume execute model calls using the saved accounts and consume their quota. Pause lets the current workflow finish. Cancellation is final; reserved cases remain reserved.",
+    "start": "Start comparison",
+    "pause": "Pause after current workflow",
+    "resume": "Resume comparison",
+    "cancel": "Cancel comparison",
+    "research": "Research results only. These results do not enable automatic model selection in chats or waves.",
+    "reportLimitations": "Report limitations",
+    "attempts": "Workflow attempts and evidence",
+    "attempt": "Repeat {{repetition}} · quality {{quality}}",
+    "plan": "Saved plan and report"
   }
 }

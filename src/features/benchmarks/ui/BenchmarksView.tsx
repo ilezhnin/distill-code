@@ -49,6 +49,7 @@ import { DesignBenchView } from "./DesignBenchView";
 import { BenchmarkAlert, BenchmarkEmpty } from "./BenchmarkPrimitives";
 import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
 import { BenchmarkLearningDialog } from "./BenchmarkLearningDialog";
+import { WorkflowCampaignDialog } from "./WorkflowCampaignDialog";
 import { BenchmarkModelRunDialog } from "./BenchmarkModelRunDialog";
 import { BenchmarkReleasesDialog } from "./BenchmarkReleasesDialog";
 import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
@@ -75,6 +76,7 @@ type DialogKind =
   | "schedules"
   | "routing"
   | "learning"
+  | "campaigns"
   | "catalog";
 
 export function BenchmarksView({
@@ -105,6 +107,17 @@ export function BenchmarksView({
   const pendingNavigation = useBenchmarkViewStore((state) => state.pending);
   const versions = useMemo(
     () => definitions.data?.flatMap((definition) => definition.versions) ?? [],
+    [definitions.data],
+  );
+  const currentVersions = useMemo(
+    () =>
+      (definitions.data ?? [])
+        .filter((definition) => !definition.archived)
+        .flatMap((definition) =>
+          [...definition.versions]
+            .sort((a, b) => b.publishedAt - a.publishedAt)
+            .slice(0, 1),
+        ),
     [definitions.data],
   );
   // Ranks, places and the model filter need every row; the board pages its
@@ -151,6 +164,7 @@ export function BenchmarksView({
   const menuItems: { kind: DialogKind; label: string; icon: ReactNode }[] = [
     { kind: "runs", label: t("toolbar.runs"), icon: <IconHistory /> },
     { kind: "learning", label: t("learning.title"), icon: <IconRoute /> },
+    { kind: "campaigns", label: t("campaign.title"), icon: <IconRoute /> },
     { kind: "import", label: t("toolbar.import"), icon: <IconFileImport /> },
     { kind: "export", label: t("toolbar.export"), icon: <IconFileExport /> },
     { kind: "releases", label: t("toolbar.releases"), icon: <IconTag /> },
@@ -383,14 +397,19 @@ export function BenchmarksView({
       ) : null}
       {dialog === "learning" ? (
         <BenchmarkLearningDialog
-          versions={(definitions.data ?? [])
-            .filter((definition) => !definition.archived)
-            .flatMap((definition) =>
-              [...definition.versions]
-                .sort((a, b) => b.publishedAt - a.publishedAt)
-                .slice(0, 1),
-            )}
+          versions={currentVersions}
           onClose={() => setDialog(null)}
+        />
+      ) : null}
+      {dialog === "campaigns" ? (
+        <WorkflowCampaignDialog
+          versions={versions}
+          currentVersions={currentVersions}
+          onClose={() => setDialog(null)}
+          onEvidence={(id) => {
+            setDialog(null);
+            openEvidence(id);
+          }}
         />
       ) : null}
       <ConfirmDialog

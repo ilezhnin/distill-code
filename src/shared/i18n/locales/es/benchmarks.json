@@ -699,5 +699,43 @@
     "hours_other": "{{count}} h",
     "days_one": "{{count}} día",
     "days_other": "{{count}} días"
+  },
+  "campaign": {
+    "title": "Comparar estrategias",
+    "description": "Compara el selector aprendido, el agregado de entrenamiento, la preferencia de persona y cada ejecutor fijo en flujos completos.",
+    "saved": "Comparación guardada",
+    "choose": "Elige una comparación",
+    "empty": "Selecciona una comparación guardada para ver su progreso y resultados, o crea una abajo.",
+    "new": "Nueva comparación",
+    "noFits": "Primero entrena un selector con los resultados guardados en Selector aprendido.",
+    "requirements": "Usa al menos 8 flujos de evaluación inéditos de 4 grupos independientes. Participan todos los ejecutores entrenados. La validación nativa comprueba el alcance, el entorno y la exposición previa.",
+    "noCases": "No hay flujos de evaluación aptos para este ajuste.",
+    "cliAccount": "Sesión de CLI",
+    "chooseAccount": "Elige una cuenta",
+    "noAccounts": "No hay ninguna cuenta activa ni sesión de CLI para este ejecutor.",
+    "minQuality": "Calidad predicha mínima (0–1)",
+    "budget": "{{policies}} estrategias · {{trajectories}} flujos · hasta {{executions}} llamadas al modelo · {{timeout}} s por flujo",
+    "freezeNotice": "Guardar valida el plan y reserva estas familias de tareas para esta comparación sin generar respuestas. El inicio es una acción aparte; la disponibilidad de los ejecutores se comprueba durante la ejecución.",
+    "freeze": "Guardar plan de comparación",
+    "result": "Resultados de comparación",
+    "states": {
+      "reserved": "Listo para iniciar",
+      "running": "En ejecución",
+      "paused": "En pausa",
+      "cancelled": "Cancelado",
+      "completed": "Finalizado"
+    },
+    "progress": "{{done}} / {{total}} flujos registrados",
+    "planSummary": "{{cases}} casos · {{policies}} estrategias · {{repetitions}} repeticiones · hasta {{executions}} llamadas al modelo",
+    "startNotice": "Iniciar y reanudar ejecutan llamadas al modelo con las cuentas guardadas y consumen su cuota. La pausa deja terminar el flujo actual. La cancelación es definitiva; los casos siguen reservados.",
+    "start": "Iniciar comparación",
+    "pause": "Pausar tras el flujo actual",
+    "resume": "Reanudar comparación",
+    "cancel": "Cancelar comparación",
+    "research": "Solo resultados de investigación. No habilitan la selección automática de modelos en chats ni oleadas.",
+    "reportLimitations": "Limitaciones del informe",
+    "attempts": "Intentos y pruebas de los flujos",
+    "attempt": "Repetición {{repetition}} · calidad {{quality}}",
+    "plan": "Plan e informe guardados"
   }
 }
