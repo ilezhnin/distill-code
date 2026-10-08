@@ -63,6 +63,9 @@ export function ChatExecutorHint({
           })}
         </p>
       ) : null}
+      {hint.decision?.learnedStatus === "ordinary_context_uncovered" ? (
+        <p>{t("executorHint.ordinaryContext")}</p>
+      ) : null}
     </div>
   );
 }

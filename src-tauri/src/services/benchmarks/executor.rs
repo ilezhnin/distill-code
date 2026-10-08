@@ -12,6 +12,9 @@ use std::collections::BTreeSet;
 mod tests;
 
 const POLICY_VERSION: &str = "executor-selection-v1";
+/// Learned status of an ordinary chat or wave send: its unrestricted session
+/// context is outside every qualified execution contract.
+pub const ORDINARY_CONTEXT_UNCOVERED: &str = "ordinary_context_uncovered";
 
 /// Application callers identify inventory rows; canonical evidence keys stay native.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -449,6 +452,14 @@ impl Store {
         // Selection and prediction are deliberately separate. Neither a fitted
         // model nor a good-looking research report is a promotion certificate.
         let (research_prediction, learned_status) = match &request.model_id {
+            // Ordinary chat and wave sends run with the session's own
+            // unrestricted tools, history and environment. No qualified
+            // contract covers that context, so the record says why learned
+            // selection does not apply. Owned task bindings replace this
+            // status with their native discovery outcome.
+            None if matches!(request.surface.as_str(), "chat" | "wave") => {
+                (None, ORDINARY_CONTEXT_UNCOVERED.to_owned())
+            }
             None => (None, "not_requested".to_owned()),
             Some(id) => match self.selector_model(id).await {
                 Ok(model) => {

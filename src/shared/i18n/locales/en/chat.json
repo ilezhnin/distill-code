@@ -917,7 +917,8 @@
     "prior": "Suggested from preferences: {{model}}",
     "fast": "fast",
     "standard": "standard speed",
-    "basis": "{{workClass}} · Based on draft and role. No approved Bench evidence used."
+    "basis": "{{workClass}} · Based on draft and role. No approved Bench evidence used.",
+    "ordinaryContext": "Learned routing applies only to bounded tasks with a native contract. This chat's tools and history are not covered, so it keeps your preferences."
   },
   "ownedTask": {
     "open": "New bounded task",

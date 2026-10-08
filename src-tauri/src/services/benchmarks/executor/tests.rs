@@ -525,6 +525,33 @@ async fn both_surfaces_share_the_policy_and_research_never_overrides_the_prior()
 }
 
 #[tokio::test]
+async fn ordinary_sends_record_why_learned_selection_does_not_apply() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    for surface in ["chat", "wave"] {
+        let mut input = request();
+        input.surface = surface.into();
+        input.request_key = format!("ordinary-{surface}");
+        let preview = store
+            .preview_executor_decision(input.clone())
+            .await
+            .unwrap();
+        assert_eq!(preview.learned_status, ORDINARY_CONTEXT_UNCOVERED);
+        let decision = store.prepare_executor_decision(input).await.unwrap();
+        assert_eq!(decision.learned_status, ORDINARY_CONTEXT_UNCOVERED);
+        assert_eq!(decision.source, "prior");
+        assert!(!decision.learned_dispatch_allowed);
+        // The persisted record carries the same status and verifies.
+        let saved = store
+            .executor_decision(&format!("ordinary-{surface}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.decision.learned_status, ORDINARY_CONTEXT_UNCOVERED);
+    }
+}
+
+#[tokio::test]
 async fn explicit_pins_and_unavailability_do_not_silently_substitute() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).await.unwrap();

@@ -917,7 +917,8 @@
     "prior": "Sugerido según las preferencias: {{model}}",
     "fast": "rápido",
     "standard": "velocidad normal",
-    "basis": "{{workClass}} · Basado en el borrador y el rol. Sin evidencia aprobada de Bench."
+    "basis": "{{workClass}} · Basado en el borrador y el rol. Sin evidencia aprobada de Bench.",
+    "ordinaryContext": "La selección aprendida solo se aplica a tareas acotadas con un contrato nativo. Las herramientas y el historial de este chat no están cubiertos, así que conserva tus preferencias."
   },
   "ownedTask": {
     "open": "Nueva tarea limitada",
