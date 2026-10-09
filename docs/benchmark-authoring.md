@@ -29,9 +29,12 @@ as an unseen holdout merely because its latest file was deleted.
 The staged-file hook rejects private artifact directories and private artifact
 references in documentation. It is an accidental-disclosure check, not a semantic
 audit of arbitrary text. During history remediation, set the local Git option
-`distill.privateBenchmarkHistoryPending` to `true`: the pre-push hook then refuses
-publication. Clear that option only after the authorized history review. Hooks
-are local safeguards and can be bypassed; they cannot retract remote copies.
+`distill.privateBenchmarkHistoryPending` to `true`: while older local tags and
+branches still carry removed history, the pre-push hook then publishes only a
+fast-forward of an existing branch whose new commits all grow from its published
+tip, and refuses tags, new or deleted refs and merged-in older history. Clear
+that option only after the authorized history review. Hooks are local
+safeguards and can be bypassed; they cannot retract remote copies.
 
 Remote inference sends selected task inputs to the selected provider. Local
 storage, sandbox isolation and exclusion from Git do not establish a provider's
