@@ -182,44 +182,82 @@ impl SavedStep {
             return Ok(());
         };
         let snapshot = &record.snapshot;
-        if snapshot.schema_version != 1
-            || record.content_hash != record.hash()?
-            || record.root_attempt_id != root_id
-            || record.step_index != self.index
-            || record.native_context != self.native_context
-            || record.root_decision_id.is_empty()
-            || snapshot.run_id != self.attempt.run_id
-            || snapshot.version_id != self.attempt.version_id
-            || snapshot.public_prompt != self.prompt
-            || snapshot.entry_state.as_ref() != Some(&self.entry)
-            || self.entry.root_task_id != root_id
-            || self.entry.step_id != self.id
-            || self.entry.parent_step_id != self.parent_id
-            || self.entry.content_hash != super::routing::entry_hash(&self.entry)
-            || snapshot.selection_provenance
-                != if record.executor.is_some() {
-                    "workflow_research_policy_v1"
-                } else {
-                    "workflow_root_pin_v1"
-                }
-            || record.executor.as_ref().is_some_and(|d| {
-                d.request.surface != "benchmark"
-                    || d.request.request_key != format!("workflow:{root_id}:{}", self.index)
-                    || d.chosen.as_ref() != Some(&self.attempt.configuration)
-                    || d.request.prediction.task.prompt != self.prompt
-                    || d.created_at > snapshot.created_at
-            })
-            || snapshot.request.configurations != [self.attempt.configuration.clone()]
-            || snapshot.constraints.hard_candidate_key.as_deref()
-                != Some(super::routing::candidate_key(&self.attempt.configuration).as_str())
-            || self
-                .attempt
-                .started_at
-                .is_some_and(|at| snapshot.created_at > at)
-        {
+        let configuration = &self.attempt.configuration;
+        // Every check names itself, so a refusal says what changed.
+        let checks = [
+            ("schema", snapshot.schema_version == 1),
+            ("content hash", record.content_hash == record.hash()?),
+            ("root", record.root_attempt_id == root_id),
+            ("step index", record.step_index == self.index),
+            (
+                "native context",
+                record.native_context == self.native_context,
+            ),
+            ("root decision", !record.root_decision_id.is_empty()),
+            ("run", snapshot.run_id == self.attempt.run_id),
+            ("version", snapshot.version_id == self.attempt.version_id),
+            ("prompt", snapshot.public_prompt == self.prompt),
+            ("entry", snapshot.entry_state.as_ref() == Some(&self.entry)),
+            (
+                "entry identity",
+                self.entry.root_task_id == root_id
+                    && self.entry.step_id == self.id
+                    && self.entry.parent_step_id == self.parent_id,
+            ),
+            (
+                "entry hash",
+                self.entry.content_hash == super::routing::entry_hash(&self.entry),
+            ),
+            (
+                "selection provenance",
+                snapshot.selection_provenance
+                    == if record.executor.is_some() {
+                        "workflow_research_policy_v1"
+                    } else {
+                        "workflow_root_pin_v1"
+                    },
+            ),
+            (
+                "executor decision",
+                record.executor.as_ref().is_none_or(|d| {
+                    d.request.surface == "benchmark"
+                        && d.request.request_key == format!("workflow:{root_id}:{}", self.index)
+                        && d.chosen.as_ref() == Some(configuration)
+                        && d.request.prediction.task.prompt == self.prompt
+                }),
+            ),
+            (
+                "executor decision time",
+                record
+                    .executor
+                    .as_ref()
+                    .is_none_or(|d| d.created_at <= snapshot.created_at),
+            ),
+            (
+                "configuration",
+                snapshot.request.configurations == [configuration.clone()]
+                    && snapshot.constraints.hard_candidate_key.as_deref()
+                        == Some(super::routing::candidate_key(configuration).as_str()),
+            ),
+            (
+                "start time",
+                self.attempt
+                    .started_at
+                    .is_none_or(|at| snapshot.created_at <= at),
+            ),
+        ];
+        let changed: Vec<_> = checks
+            .iter()
+            .filter(|(_, holds)| !holds)
+            .map(|(name, _)| *name)
+            .collect();
+        if !changed.is_empty() {
             return Err(BenchmarkError::new(
                 "evidence_mismatch",
-                "Workflow input or selection no longer matches its committed pre-dispatch decision",
+                format!(
+                    "Workflow input or selection no longer matches its committed pre-dispatch decision ({})",
+                    changed.join(", ")
+                ),
             ));
         }
         Ok(())
