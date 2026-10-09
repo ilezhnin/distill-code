@@ -558,7 +558,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         .unwrap();
     // A hang guard only: the offline matrix settles in seconds alone but
     // shares the machine with the whole parallel test suite.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             service.tick().await.unwrap();
             let current = service.store.run(&run.id).await.unwrap();
@@ -612,7 +612,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         .unwrap();
     // A hang guard only: the offline matrix settles in seconds alone but
     // shares the machine with the whole parallel test suite.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             service.tick().await.unwrap();
             let current = service
@@ -931,7 +931,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
         .unwrap();
     // A hang guard only: the offline matrix settles in seconds alone but
     // shares the machine with the whole parallel test suite.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             service.tick().await.unwrap();
             let current = service
@@ -1070,7 +1070,7 @@ async fn native_class(
         .unwrap();
     // A hang guard only: the offline matrix settles in seconds alone but
     // shares the machine with the whole parallel test suite.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             service.tick().await.unwrap();
             let current = service.store.run(&run.id).await.unwrap();
@@ -1211,7 +1211,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
         .unwrap();
     // A hang guard only: the offline matrix settles in seconds alone but
     // shares the machine with the whole parallel test suite.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             service.tick().await.unwrap();
             let current = service

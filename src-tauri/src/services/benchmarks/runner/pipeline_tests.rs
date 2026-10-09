@@ -31,6 +31,10 @@ struct OfflineWorkers {
     no_cost: std::sync::atomic::AtomicBool,
 }
 
+/// A bound against a hang only. Whole campaigns of 120 trajectories share a
+/// slow CI runner with the rest of the suite and may take minutes there.
+const HANG_GUARD: Duration = Duration::from_secs(900);
+
 /// The root wall budget of tests on the native clock. It runs on real time,
 /// so it must outlast a loaded CI runner; no such test measures expiry.
 const WALL_BUDGET_SECONDS: u32 = 600;
@@ -479,7 +483,7 @@ async fn measure(service: &Arc<BenchmarkService>, versions: &[BenchmarkVersion],
     assert_eq!(service.start_run(request).await.unwrap().id, run.id);
     // A hang guard only: the offline matrix settles in seconds alone but
     // shares the machine with the whole parallel test suite.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             service.tick().await.unwrap();
             let run = service.store.run(&run.id).await.unwrap();
