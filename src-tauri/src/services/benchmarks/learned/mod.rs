@@ -388,3 +388,62 @@ pub fn predict(model: &LearnedModel, request: &PredictionRequest) -> Result<Pred
     }
     Ok(result)
 }
+
+/// Inference for an ordinary chat or wave task of a certified work class.
+/// Its role, tools and context are outside any frozen scope, so only the class
+/// must match; the choice is among the trained candidates that are available
+/// on their trained runtime, and untrained ones are left to the caller's
+/// fallback order instead of refusing the whole selection.
+pub fn predict_for_class(model: &LearnedModel, request: &PredictionRequest) -> Result<Prediction> {
+    validate_model(model)?;
+    let x = validate_public_request(request)?;
+    let mut result = Prediction {
+        model_id: model.id.clone(),
+        chosen: None,
+        chosen_key: None,
+        reason: String::new(),
+        dispatch_allowed: false,
+        scores: Vec::new(),
+    };
+    if model.work_class_id != request.task.work_class_id {
+        result.reason = "untrained_work_class".into();
+        return Ok(result);
+    }
+    for candidate in request.candidates.iter().filter(|c| c.available) {
+        let key = routing::candidate_key(&candidate.configuration);
+        let Some(trained) = model.candidates.iter().find(|c| {
+            c.candidate_key == key
+                && c.configuration.inventory_revision == candidate.configuration.inventory_revision
+        }) else {
+            continue;
+        };
+        result.scores.push(PredictionScore {
+            candidate_key: key,
+            configuration: candidate.configuration.clone(),
+            quality: features::dot(&x, &trained.quality_coefficients).clamp(0.0, 1.0),
+            utility: features::dot(&x, &trained.utility_coefficients).clamp(0.0, 1.0),
+        });
+    }
+    result.scores.sort_by(|a, b| {
+        b.utility
+            .total_cmp(&a.utility)
+            .then(a.candidate_key.cmp(&b.candidate_key))
+    });
+    if let Some(best) = result
+        .scores
+        .iter()
+        .find(|s| s.quality >= request.min_quality)
+    {
+        result.chosen = Some(best.configuration.clone());
+        result.chosen_key = Some(best.candidate_key.clone());
+        result.reason = "certified_class_prediction".into();
+    } else {
+        result.reason = if result.scores.is_empty() {
+            "no_trained_available_candidate"
+        } else {
+            "below_quality_floor"
+        }
+        .into();
+    }
+    Ok(result)
+}

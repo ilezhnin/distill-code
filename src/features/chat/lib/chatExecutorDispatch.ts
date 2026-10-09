@@ -33,7 +33,8 @@ export async function selectInitialChatExecutor(input: {
     pinned: false,
   });
   if (!decision?.chosen) return input.fallback;
-  if (decision.source !== "prior" && decision.source !== "pin")
+  // A certified class selector may choose; research predictions never do.
+  if (!["prior", "pin", "learned"].includes(decision.source))
     throw new Error("Research executor choices cannot establish a chat target");
   const selected = options.find(
     (option) =>
@@ -69,6 +70,7 @@ export async function prepareChatExecutorDispatch(input: {
   systemPrompt?: string;
   assistantPrompt?: string;
   personaId?: string;
+  workClassId?: string;
   attachments?: ChatAttachmentDraft[];
 }) {
   const session = useChatSessionStore.getState().getSession(input.sessionId);
@@ -94,7 +96,7 @@ export async function prepareChatExecutorDispatch(input: {
     useChatStore.getState().messagesBySession[input.sessionId] ?? [];
   const task = applicationExecutorTask({
     prompt: [input.assistantPrompt, input.prompt].filter(Boolean).join("\n\n"),
-    workClassId: "general",
+    workClassId: input.workClassId ?? "general",
     roleId: input.personaId ?? null,
     // The actual execution context, never the foreground active agent's role.
     rolePrompt: input.systemPrompt ?? "",

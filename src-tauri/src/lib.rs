@@ -322,6 +322,7 @@ pub fn run() {
             commands::benchmarks::benchmark_revoke_qualification,
             commands::benchmarks::benchmark_register_promotion_rule,
             commands::benchmarks::benchmark_campaign_deployment,
+            commands::benchmarks::benchmark_class_policies,
             commands::benchmarks::benchmark_get_promotion_rule,
             commands::benchmarks::benchmark_promote_selector,
             commands::benchmarks::benchmark_list_promotions,

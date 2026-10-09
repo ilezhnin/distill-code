@@ -1,5 +1,6 @@
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
+import { chatWorkClass } from "./chatExecutorSuggestion";
 import { dispatchOwnedTaskInChat } from "./ownedTaskDispatch";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
@@ -402,6 +403,9 @@ export async function dispatchPrompt(
         systemPrompt: effectiveSystemPrompt,
         assistantPrompt,
         personaId: persona?.id,
+        workClassId: chatWorkClass(
+          persona ? useAgentStore.getState().getPersonaById(persona.id) : null,
+        ),
         attachments,
       });
       throwIfAborted(signal);

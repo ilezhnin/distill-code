@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CampaignDeployment,
+  ClassPolicy,
   PromotionRegistration,
   PromotionState,
   QualificationBinding,
@@ -24,6 +25,7 @@ export const benchmarkGovernanceApi = {
     invoke<RegisteredPromotionRule>("benchmark_register_promotion_rule", {
       request,
     }),
+  classPolicies: () => invoke<ClassPolicy[]>("benchmark_class_policies"),
   campaignDeployment: (campaignId: string) =>
     invoke<CampaignDeployment>("benchmark_campaign_deployment", {
       campaignId,

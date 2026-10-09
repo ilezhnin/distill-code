@@ -258,6 +258,36 @@ impl Certificate {
                 .map(|step| step.model_id.as_str()),
         }
     }
+    /// The fitted model this certificate stands behind for a work class.
+    pub fn model_for_class(&self, work_class: &str) -> Option<&str> {
+        match &self.trajectory {
+            None => (self.contract.work_class_id == work_class).then_some(self.model_id.as_str()),
+            Some(trajectory) => trajectory
+                .steps
+                .iter()
+                .find(|step| step.contract.work_class_id == work_class)
+                .map(|step| step.model_id.as_str()),
+        }
+    }
+}
+
+/// What a work class can show about learned selection: the certificate that
+/// drives it, or how far its evidence still is from one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassPolicy {
+    pub work_class_id: String,
+    pub certificate_id: Option<String>,
+    pub certified_at: Option<i64>,
+    pub campaign_id: Option<String>,
+    pub model_id: Option<String>,
+    /// Current published versions with a valid qualification record.
+    pub qualified_training: usize,
+    pub qualified_held_out: usize,
+    /// Qualified held-out versions that are whole workflows.
+    pub held_out_workflows: usize,
+    pub fits: usize,
+    pub campaigns: usize,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1145,6 +1175,139 @@ impl Store {
             .bind(now()).bind(reason).bind(id).execute(&self.pool).await?;
         self.promotion(id).await
     }
+    /// The newest active certificate covering a work class, with the fitted
+    /// model it certifies for that class. Ordinary chats, agents and waves of
+    /// the class choose through it; their manual order stays the fallback.
+    pub async fn class_certificate(
+        &self,
+        work_class: &str,
+    ) -> Result<Option<(Certificate, String)>> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM selector_promotions WHERE revoked_at IS NULL ORDER BY created_at DESC,id LIMIT 256",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for id in ids {
+            let state = self.promotion(&id).await?;
+            let Some(model_id) = state
+                .certificate
+                .model_for_class(work_class)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            match self.require_active_promotion(&id).await {
+                Ok(certificate) => return Ok(Some((certificate, model_id))),
+                Err(error) if error.code == "invalid_promotion" => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Learned selection state of every work class, for the places that show
+    /// which model a class prefers.
+    pub async fn class_policies(&self) -> Result<Vec<ClassPolicy>> {
+        let mut policies: Vec<ClassPolicy> = super::routing::WORK_CLASSES
+            .iter()
+            .map(|class| ClassPolicy {
+                work_class_id: (*class).to_owned(),
+                certificate_id: None,
+                certified_at: None,
+                campaign_id: None,
+                model_id: None,
+                qualified_training: 0,
+                qualified_held_out: 0,
+                held_out_workflows: 0,
+                fits: 0,
+                campaigns: 0,
+            })
+            .collect();
+        // Policies follow WORK_CLASSES order, so a class finds its row there.
+        let index = |class: &str| {
+            super::routing::WORK_CLASSES
+                .iter()
+                .position(|known| *known == class)
+        };
+        let mut counts = vec![(0usize, 0usize, 0usize); policies.len()];
+        for definition in self.all_definitions().await? {
+            let Some(version) = definition.versions.first() else {
+                continue;
+            };
+            let Some(slot) = index(&version.manifest.work_class_id) else {
+                continue;
+            };
+            if definition.archived {
+                continue;
+            }
+            let qualified = self
+                .qualification_bindings(&version.id)
+                .await?
+                .iter()
+                .any(|binding| {
+                    binding.revoked_at.is_none()
+                        && binding.status == "controls_verified_review_attested"
+                        && binding.content_hash == version.content_hash
+                });
+            if !qualified {
+                continue;
+            }
+            match version.manifest.split.as_str() {
+                "train" => counts[slot].0 += 1,
+                "held_out" => {
+                    counts[slot].1 += 1;
+                    if version.manifest.workflow.is_some() {
+                        counts[slot].2 += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let fits = self.selector_fits().await?;
+        let fit_class: std::collections::BTreeMap<_, _> = fits
+            .iter()
+            .map(|fit| (fit.id.clone(), fit.work_class_id.clone()))
+            .collect();
+        for fit in &fits {
+            if let Some(slot) = index(&fit.work_class_id) {
+                policies[slot].fits += 1;
+            }
+        }
+        for campaign in self.workflow_campaigns().await? {
+            let request = &campaign.plan.request;
+            let classes: BTreeSet<String> = if request.class_model_ids.is_empty() {
+                fit_class
+                    .get(&request.model_id)
+                    .cloned()
+                    .into_iter()
+                    .collect()
+            } else {
+                request.class_model_ids.keys().cloned().collect()
+            };
+            for class in classes {
+                if let Some(slot) = index(&class) {
+                    policies[slot].campaigns += 1;
+                }
+            }
+        }
+        for (slot, policy) in policies.iter_mut().enumerate() {
+            (
+                policy.qualified_training,
+                policy.qualified_held_out,
+                policy.held_out_workflows,
+            ) = counts[slot];
+            if let Some((certificate, model_id)) =
+                self.class_certificate(&policy.work_class_id).await?
+            {
+                policy.certificate_id = Some(certificate.id);
+                policy.certified_at = Some(certificate.created_at);
+                policy.campaign_id = Some(certificate.campaign_id);
+                policy.model_id = Some(model_id);
+            }
+        }
+        Ok(policies)
+    }
+
     pub async fn promotions(&self) -> Result<Vec<State>> {
         let ids: Vec<String> = sqlx::query_scalar(
             "SELECT id FROM selector_promotions ORDER BY created_at DESC,id LIMIT 256",

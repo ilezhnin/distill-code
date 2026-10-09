@@ -18,6 +18,16 @@ export function ChatExecutorHint({
   const hint = useChatExecutorHint(open, read);
   if (!hint || (!hint.failed && !hint.decision)) return null;
   const chosen = hint.decision?.chosen;
+  const status = hint.decision?.learnedStatus ?? "";
+  // Why the class's learned selector did or did not choose this task.
+  const learnedNote =
+    status === "no_class_certificate"
+      ? t("executorHint.noCertificate")
+      : status.startsWith("class_policy_abstained:")
+        ? t("executorHint.abstained", {
+            reason: status.slice("class_policy_abstained:".length),
+          })
+        : null;
   const description = hint.failed
     ? t("executorHint.failed")
     : !chosen
@@ -29,7 +39,9 @@ export function ChatExecutorHint({
       : t(
           hint.decision?.source === "pin"
             ? "executorHint.pinned"
-            : "executorHint.prior",
+            : hint.decision?.source === "learned"
+              ? "executorHint.learned"
+              : "executorHint.prior",
           {
             model: [
               chosen.modelName ?? chosen.modelId,
@@ -63,9 +75,7 @@ export function ChatExecutorHint({
           })}
         </p>
       ) : null}
-      {hint.decision?.learnedStatus === "ordinary_context_uncovered" ? (
-        <p>{t("executorHint.ordinaryContext")}</p>
-      ) : null}
+      {learnedNote ? <p>{learnedNote}</p> : null}
     </div>
   );
 }

@@ -804,5 +804,10 @@
     "revoke": "Revocar promoción",
     "trajectoryScope": "La regla cubre esta trayectoria exacta de {{count}} pasos con un presupuesto raíz de {{seconds}} s, porque sus pasos no comparten un mismo contrato o cada clase de paso tiene su propio modelo. Cada paso se comprueba con el modelo ajustado para su propia clase.",
     "trajectoryCertificate": "Este certificado cubre solo su trayectoria exacta de {{count}} pasos. Cada paso usa el modelo ajustado para su propia clase; una tarea suelta o una secuencia de pasos distinta conserva su preferencia previa."
+  },
+  "learnedClass": {
+    "active": "La selección aprendida está activa: el selector certificado el {{date}} elige el modelo de cada tarea. Este orden solo se usa cuando no elige.",
+    "inactive": "La selección aprendida aún no está activa, así que elige este orden. Evidencia cualificada: {{training}}/8 casos de entrenamiento y {{heldOut}}/8 reservados ({{workflows}} flujos), {{fits}} modelos ajustados, {{campaigns}} comparaciones.",
+    "unavailable": "No se pudo leer el estado de la selección aprendida."
   }
 }

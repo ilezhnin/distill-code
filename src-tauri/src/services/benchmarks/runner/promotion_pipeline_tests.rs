@@ -214,6 +214,71 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
             .artifact_hash,
         state.certificate.artifact_hash
     );
+    // An ordinary chat of the certified class chooses through its certificate,
+    // whatever its role or tools; another class keeps the caller's order.
+    let ordinary = |class: &str, key: &str| {
+        let mut task = learned::PublicTask::from(&training[0].manifest);
+        task.work_class_id = class.into();
+        task.role_id = Some("invented-ordinary-agent".into());
+        task.role_prompt = "An ordinary agent with its own tools.".into();
+        let candidates: Vec<RoutingCandidate> = configurations()
+            .into_iter()
+            .map(|configuration| RoutingCandidate {
+                configuration,
+                available: true,
+                reason: None,
+            })
+            .collect();
+        let painter = candidates
+            .iter()
+            .find(|row| row.configuration.model_id == "painter")
+            .map(|row| crate::services::benchmarks::routing::candidate_key(&row.configuration))
+            .unwrap();
+        crate::services::benchmarks::executor::Request {
+            request_key: key.into(),
+            surface: "chat".into(),
+            context_id: "invented-ordinary-chat".into(),
+            prediction: learned::PredictionRequest {
+                task,
+                target_family: "application:invented-ordinary".into(),
+                target_group: "application:invented-ordinary".into(),
+                candidates,
+                hard_candidate_key: None,
+                min_quality: 0.0,
+            },
+            prior_keys: vec![painter],
+            model_id: None,
+        }
+    };
+    let learned_chat = service
+        .store
+        .prepare_ordinary_executor_decision(ordinary("debug", "ordinary-certified"))
+        .await
+        .unwrap();
+    assert_eq!(learned_chat.source, "learned", "{learned_chat:#?}");
+    assert!(learned_chat.learned_dispatch_allowed);
+    assert_eq!(learned_chat.chosen.as_ref().unwrap().model_id, "parser");
+    let other_class = service
+        .store
+        .prepare_ordinary_executor_decision(ordinary("writing", "ordinary-uncertified"))
+        .await
+        .unwrap();
+    assert_eq!(other_class.source, "prior");
+    assert_eq!(other_class.learned_status, "no_class_certificate");
+    assert_eq!(other_class.chosen.as_ref().unwrap().model_id, "painter");
+    let policies = service.store.class_policies().await.unwrap();
+    let debug = policies
+        .iter()
+        .find(|policy| policy.work_class_id == "debug")
+        .unwrap();
+    assert_eq!(
+        debug.certificate_id.as_deref(),
+        Some(state.certificate.id.as_str())
+    );
+    assert_eq!(
+        (debug.qualified_training, debug.fits, debug.campaigns),
+        (8, 1, 1)
+    );
     use crate::services::benchmarks::task_execution::{
         ModeReference, ModeRequest, Request as TaskRequest, WaveEntry,
     };
@@ -409,6 +474,14 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
         .require_active_promotion(&state.certificate.id)
         .await
         .is_err());
+    // A revoked certificate stops choosing for ordinary chats at once.
+    let after_revoke = service
+        .store
+        .preview_ordinary_executor_decision(ordinary("debug", "ordinary-after-revoke"))
+        .await
+        .unwrap();
+    assert_eq!(after_revoke.source, "prior");
+    assert_eq!(after_revoke.learned_status, "no_class_certificate");
     assert!(service
         .store
         .promote_selector(&frozen.plan.id)

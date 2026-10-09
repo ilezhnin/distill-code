@@ -804,5 +804,10 @@
     "revoke": "Revoke promotion",
     "trajectoryScope": "The rule covers this exact {{count}}-step trajectory with a {{seconds}} s root budget, because its steps do not all share one contract or each step class has its own model. Each step is checked against the model fitted for its own class.",
     "trajectoryCertificate": "This certificate covers only its exact {{count}}-step trajectory. Each step uses the model fitted for its own class; a single task or a different step sequence keeps its prior."
+  },
+  "learnedClass": {
+    "active": "Learned selection is active: the selector certified on {{date}} chooses the model for each task. This order is used only when it does not choose.",
+    "inactive": "Learned selection is not active yet, so this order chooses. Qualified evidence: {{training}}/8 training and {{heldOut}}/8 held-out cases ({{workflows}} workflows), {{fits}} fitted models, {{campaigns}} comparisons.",
+    "unavailable": "Learned selection status could not be read."
   }
 }

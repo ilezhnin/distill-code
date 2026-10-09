@@ -5,6 +5,7 @@ import {
   type ExecutorDecision,
   type ExecutorHostReceipt,
 } from "@/features/benchmarks/lib/executorSelection";
+import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { useChatStore } from "../stores/chatStore";
 import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
@@ -192,6 +193,30 @@ it("prepares the actual accepted prompt before dispatch and forwards a durable n
       }),
     }),
   );
+});
+
+it("records the agent's work class so a certified class selector can answer", async () => {
+  useAgentStore.setState({
+    personas: [
+      {
+        id: "example-debugger",
+        displayName: "Example debugger",
+        systemPrompt: "Find the cause.",
+        modelRanking: "debug",
+        isBuiltin: false,
+        writable: true,
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+      },
+    ],
+  });
+  await dispatchPrompt("example-chat", "Why does the example fail?", {
+    executorRequestKey: "chat:class-example",
+    persona: { id: "example-debugger" },
+  });
+  expect(
+    vi.mocked(executorSelection.select).mock.calls[0][0].task.workClassId,
+  ).toBe("debug");
 });
 
 it("does not commit or call ACP when preparation fails, and reuses the accepted identity", async () => {

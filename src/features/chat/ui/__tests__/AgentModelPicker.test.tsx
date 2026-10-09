@@ -120,9 +120,7 @@ describe("AgentModelPicker", () => {
     expect(
       await screen.findByText(/Suggested from preferences: Example Beta/),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/No approved Bench evidence used/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Based on draft and role/)).toBeInTheDocument();
     expect(onModelChange).not.toHaveBeenCalled();
     expect(onAgentChange).not.toHaveBeenCalled();
   });

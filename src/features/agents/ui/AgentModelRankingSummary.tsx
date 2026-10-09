@@ -13,13 +13,16 @@
 
 import { useTranslation } from "react-i18next";
 
+import { LearnedClassStatus } from "@/features/benchmarks/ui/LearnedClassStatus";
 import type { Persona } from "@/shared/types/agents";
 
 import { parseAgentRankingSource } from "../lib/agentModelRanking";
 import {
   MODEL_PREFERENCE_CLASSES,
+  applyClassOverride,
   modelPreferenceClassForPersona,
 } from "../lib/modelRanking";
+import { useRoutingPolicyStore } from "../stores/routingPolicyStore";
 
 interface RankingRow {
   label: string;
@@ -49,6 +52,11 @@ export function AgentModelRankingSummary({
     ? undefined
     : modelPreferenceClassForPersona(persona);
   const legacyModel = persona.model?.trim() || undefined;
+  const classId = source?.kind === "class" ? source.classId : roleClassId;
+  // The order in force: the operator's Routing override, else the built-in.
+  const classOverride = useRoutingPolicyStore((state) =>
+    classId ? state.policy.classOverrides[classId] : undefined,
+  );
 
   let rows: RankingRow[] = [];
   let note: string | null = null;
@@ -58,15 +66,17 @@ export function AgentModelRankingSummary({
       effort: entry.effort,
       fast: entry.fastMode,
     }));
-  } else if (source?.kind === "class" || roleClassId) {
-    const classId = source?.kind === "class" ? source.classId : roleClassId;
-    if (classId) {
-      rows = MODEL_PREFERENCE_CLASSES[classId].ranking.map((candidate) => ({
-        label: candidate.label,
-        effort: candidate.effort,
-      }));
-    }
-    note = t("ranking.viewFromRole");
+  } else if (classId) {
+    rows = applyClassOverride(
+      MODEL_PREFERENCE_CLASSES[classId].ranking,
+      classOverride,
+    ).map((candidate) => ({
+      label: candidate.label,
+      effort: candidate.effort,
+    }));
+    note = t(
+      classOverride ? "ranking.viewFromRouting" : "ranking.viewFromRole",
+    );
   } else if (legacyModel) {
     // No ranking anywhere, but a legacy single model exists: it IS the
     // preference, so it renders as the list's only row rather than the page
@@ -87,7 +97,7 @@ export function AgentModelRankingSummary({
   // to that model when nothing ranked is usable — say so instead of letting
   // the old pair silently vanish from the page.
   const fallbackNote =
-    note === t("ranking.viewFromRole") && legacyModel
+    classId && !source && legacyModel
       ? t("ranking.viewLegacyFallback", { model: legacyModel })
       : null;
 
@@ -138,6 +148,12 @@ export function AgentModelRankingSummary({
         >
           {note}
         </p>
+      ) : null}
+      {classId ? (
+        <LearnedClassStatus
+          classId={classId}
+          className="text-[11px] leading-4 text-surface-agent-profile-fg-muted"
+        />
       ) : null}
       {fallbackNote ? (
         <p

@@ -15,6 +15,7 @@ import {
   type ModelPreferenceClassId,
 } from "@/features/agents/lib/modelRanking";
 import { isDefaultRoutingPolicy } from "@/features/agents/lib/routingPolicy";
+import { LearnedClassStatus } from "@/features/benchmarks/ui/LearnedClassStatus";
 import {
   retryRoutingPolicyHydration,
   useRoutingPolicyStore,
@@ -213,7 +214,12 @@ function ClassRankingRow({
       label={t(`routing.classes.${classId}`)}
       data-testid="routing-class-row"
       data-class-id={classId}
-      description={overridden ? t("routing.classOverridden") : undefined}
+      description={
+        <>
+          <LearnedClassStatus classId={classId} />
+          {overridden ? <span>{t("routing.classOverridden")}</span> : null}
+        </>
+      }
       action={
         <div className="flex min-w-0 flex-col gap-1">
           {labels.map((label, index) => (

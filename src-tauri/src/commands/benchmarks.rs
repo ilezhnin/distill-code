@@ -213,6 +213,15 @@ pub async fn benchmark_register_promotion_rule(
     s.changed().await;
     Ok(value)
 }
+/// Learned selection state of every work class: its certificate, or how far
+/// its qualified evidence still is from one.
+#[tauri::command]
+pub async fn benchmark_class_policies(
+    app: AppHandle,
+) -> Result<Vec<benchmarks::promotion::ClassPolicy>> {
+    service(&app).await?.store.class_policies().await
+}
+
 /// The exact contract or step-by-step trajectory a campaign evaluated, for
 /// the operator to acknowledge in its rule.
 #[tauri::command]
@@ -689,10 +698,11 @@ pub async fn benchmark_select_executor(
     }
     let store = &service(&app).await?.store;
     let request = request.try_into()?;
+    // Ordinary chat and wave sends choose through their class's certificate.
     if record {
-        store.prepare_executor_decision(request).await
+        store.prepare_ordinary_executor_decision(request).await
     } else {
-        store.preview_executor_decision(request).await
+        store.preview_ordinary_executor_decision(request).await
     }
 }
 
@@ -710,7 +720,7 @@ pub async fn benchmark_preview_executor_decision(
     service(&app)
         .await?
         .store
-        .preview_executor_decision(request)
+        .preview_ordinary_executor_decision(request)
         .await
 }
 
@@ -728,7 +738,7 @@ pub async fn benchmark_prepare_executor_decision(
     service(&app)
         .await?
         .store
-        .prepare_executor_decision(request)
+        .prepare_ordinary_executor_decision(request)
         .await
 }
 

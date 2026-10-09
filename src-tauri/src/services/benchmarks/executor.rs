@@ -12,9 +12,14 @@ use std::collections::BTreeSet;
 mod tests;
 
 const POLICY_VERSION: &str = "executor-selection-v1";
-/// Learned status of an ordinary chat or wave send: its unrestricted session
-/// context is outside every qualified execution contract.
+/// Learned status of a chat or wave decision made without the class policy:
+/// its unrestricted session context is outside every qualified contract.
 pub const ORDINARY_CONTEXT_UNCOVERED: &str = "ordinary_context_uncovered";
+/// Learned statuses of an ordinary chat or wave decision under the class policy.
+pub const CERTIFIED_CLASS_POLICY: &str = "certified_class_policy";
+pub const NO_CLASS_CERTIFICATE: &str = "no_class_certificate";
+pub const CLASS_POLICY_ABSTAINED: &str = "class_policy_abstained";
+pub const EXPLICIT_PIN: &str = "explicit_pin";
 
 /// Application callers identify inventory rows; canonical evidence keys stay native.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,7 +495,61 @@ impl Store {
         Ok(decision)
     }
 
+    /// Ordinary chat and wave selection. Under an active certificate for the
+    /// task's work class, the certified class model chooses among its trained,
+    /// available candidates. An explicit pin, a class without a certificate or
+    /// an abstention keeps the caller's own order.
+    pub async fn preview_ordinary_executor_decision(&self, request: Request) -> Result<Decision> {
+        let mut decision = self.preview_executor_decision(request).await?;
+        if !matches!(decision.request.surface.as_str(), "chat" | "wave")
+            || decision.request.model_id.is_some()
+        {
+            return Ok(decision);
+        }
+        if decision.request.prediction.hard_candidate_key.is_some() {
+            decision.learned_status = EXPLICIT_PIN.into();
+        } else {
+            let class = decision.request.prediction.task.work_class_id.clone();
+            match self.class_certificate(&class).await? {
+                None => decision.learned_status = NO_CLASS_CERTIFICATE.into(),
+                Some((certificate, model_id)) => {
+                    let model = self.selector_model(&model_id).await?;
+                    let mut prediction = decision.request.prediction.clone();
+                    prediction.min_quality = prediction
+                        .min_quality
+                        .max(certificate.min_prediction_quality);
+                    let result = learned::predict_for_class(&model, &prediction)?;
+                    if let Some(chosen) = result.chosen.clone() {
+                        decision.chosen_key = result.chosen_key.clone();
+                        decision.chosen = Some(chosen);
+                        decision.source = "learned".into();
+                        decision.reason = format!("certificate:{}", certificate.id);
+                        decision.learned_dispatch_allowed = true;
+                        decision.learned_status = CERTIFIED_CLASS_POLICY.into();
+                    } else {
+                        decision.learned_status =
+                            format!("{CLASS_POLICY_ABSTAINED}:{}", result.reason);
+                    }
+                    decision.research_prediction = Some(result);
+                }
+            }
+        }
+        decision.artifact_hash = artifact_hash(&decision)?;
+        Ok(decision)
+    }
+
+    /// [`Self::preview_ordinary_executor_decision`], committed once per key.
+    pub async fn prepare_ordinary_executor_decision(&self, request: Request) -> Result<Decision> {
+        validate(&request)?;
+        if let Some(record) = self.executor_decision(&request.request_key).await? {
+            return same_request(record.decision, &request);
+        }
+        let decision = self.preview_ordinary_executor_decision(request).await?;
+        self.persist_executor_decision(decision).await
+    }
+
     /// Commit before any external session effect. Repeated keys never reselect.
+    #[cfg(test)]
     pub async fn prepare_executor_decision(&self, request: Request) -> Result<Decision> {
         validate(&request)?;
         if let Some(record) = self.executor_decision(&request.request_key).await? {

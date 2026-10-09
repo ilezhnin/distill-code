@@ -155,3 +155,17 @@ export function rolesWavesCannotName(
     (id) => !isWorkerLayerRole(id),
   );
 }
+
+/** Learned selection state of a work class, from its certificate or evidence. */
+export interface ClassPolicy {
+  workClassId: string;
+  certificateId: string | null;
+  certifiedAt: number | null;
+  campaignId: string | null;
+  modelId: string | null;
+  qualifiedTraining: number;
+  qualifiedHeldOut: number;
+  heldOutWorkflows: number;
+  fits: number;
+  campaigns: number;
+}

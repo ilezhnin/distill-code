@@ -121,8 +121,8 @@ selection decisions and actual per-step attempts. The root retains summed worker
 usage and durations; its start/end timestamps separately bound whole-trajectory
 wall time. A mixed-worker result has no single observed executor and does not
 enter individual-worker leaderboards, training exports or ordinary selection
-evidence. These research runs do not authorize learned routing in chat or waves,
-and are not a preregistered comparative promotion campaign by themselves.
+evidence. These research runs are not a preregistered comparative promotion
+campaign by themselves and do not authorize learned routing.
 
 ## Analysis, exports and selection
 
@@ -184,6 +184,21 @@ step even when later steps never run. A single task, a step that departs from
 the plan, or a lineage longer than the certified sequence keeps its prior or
 explicit pin. Without a trajectory certificate, a certificate of one contract
 covers each step until the role or class changes.
+
+## Class selection in ordinary chats and waves
+
+Once a work class has an active certificate, the newest one chooses for every
+ordinary chat and wave of that class: its class model scores the available
+candidates that it was trained on, under the same inventory, and the best one
+above the certificate's quality floor runs. This applies whatever the agent's
+role, prompt or tools, so it reaches beyond the exact contract the campaign
+evaluated. An explicit model pin or a bound session target stays binding. When
+the class has no certificate, or its model abstains (no trained candidate is
+available, or none reaches the floor), the preference order from Routing chooses
+and the decision records why. Revoking the certificate returns the class to that
+order at once. `benchmark_class_policies` reports each class's certificate, or
+the qualified training and held-out cases, fits and campaigns it still lacks;
+Routing, the agent page and the chat hint show the same state.
 
 ## Verification and maintenance
 

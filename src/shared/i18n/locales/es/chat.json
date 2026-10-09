@@ -917,8 +917,10 @@
     "prior": "Sugerido según las preferencias: {{model}}",
     "fast": "rápido",
     "standard": "velocidad normal",
-    "basis": "{{workClass}} · Basado en el borrador y el rol. Sin evidencia aprobada de Bench.",
-    "ordinaryContext": "La selección aprendida solo se aplica a tareas acotadas con un contrato nativo. Las herramientas y el historial de este chat no están cubiertos, así que conserva tus preferencias."
+    "basis": "{{workClass}} · Basado en el borrador y el rol.",
+    "learned": "Elegido para esta tarea por el selector aprendido de la clase: {{model}}",
+    "noCertificate": "La selección aprendida aún no está activa para esta clase, así que eligen tus preferencias. Ajustes → Proveedores de IA → Enrutamiento muestra lo que aún necesita.",
+    "abstained": "El selector aprendido de la clase no eligió ({{reason}}), así que se aplican tus preferencias."
   },
   "ownedTask": {
     "open": "Nueva tarea limitada",

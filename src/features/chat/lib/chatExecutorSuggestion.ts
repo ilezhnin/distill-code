@@ -27,6 +27,17 @@ export type ChatExecutorSuggestionSource = (
   inventory?: ChatExecutorInventory,
 ) => Promise<ExecutorDecision | null>;
 
+/** The work class a chat of this agent belongs to; `general` without one. */
+export function chatWorkClass(
+  persona?: Pick<Persona, "modelRanking" | "displayName"> | null,
+): string {
+  const source = parseAgentRankingSource(persona?.modelRanking);
+  return source?.kind === "class"
+    ? source.classId
+    : ((persona ? modelPreferenceClassForPersona(persona) : undefined) ??
+        "general");
+}
+
 /** Advisory only: no session writes, queue mutations or provider discovery. */
 export async function previewChatExecutor(input: {
   contextId: string;
@@ -81,13 +92,7 @@ export async function previewChatExecutor(input: {
       reason: available ? null : "inventory_unconfirmed",
     });
   }
-  const source = parseAgentRankingSource(input.persona?.modelRanking);
-  const workClassId =
-    source?.kind === "class"
-      ? source.classId
-      : ((input.persona
-          ? modelPreferenceClassForPersona(input.persona)
-          : undefined) ?? "general");
+  const workClassId = chatWorkClass(input.persona);
   const pin =
     input.pinned && input.current
       ? (applicationExecutorConfiguration(input.current)?.id ?? null)

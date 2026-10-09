@@ -26,25 +26,42 @@ function decision(learnedStatus: string): ExecutorDecision {
   } as unknown as ExecutorDecision;
 }
 
-it("says why an ordinary chat keeps its preferences instead of learned routing", async () => {
+it("says why a class without a certificate keeps the preferences", async () => {
   render(
     <ChatExecutorHint
       open
-      read={async () => decision("ordinary_context_uncovered")}
+      read={async () => decision("no_class_certificate")}
     />,
   );
   expect(
-    await screen.findByText(/Learned routing applies only to bounded tasks/),
+    await screen.findByText(/Learned selection is not active for this class/),
   ).toBeVisible();
   expect(screen.getByText(/Suggested from preferences/)).toBeVisible();
 });
 
-it("adds no ordinary-context note to other decisions", async () => {
+it("names the learned choice and an abstention", async () => {
   render(
-    <ChatExecutorHint open read={async () => decision("not_requested")} />,
+    <ChatExecutorHint
+      open
+      read={async () => ({
+        ...decision("certified_class_policy"),
+        source: "learned",
+      })}
+    />,
   );
-  expect(await screen.findByText(/Suggested from preferences/)).toBeVisible();
   expect(
-    screen.queryByText(/Learned routing applies only to bounded tasks/),
-  ).toBeNull();
+    await screen.findByText(
+      /Chosen for this task by the class's learned selector/,
+    ),
+  ).toBeVisible();
+  cleanup();
+  render(
+    <ChatExecutorHint
+      open
+      read={async () => decision("class_policy_abstained:below_quality_floor")}
+    />,
+  );
+  expect(
+    await screen.findByText(/did not choose \(below_quality_floor\)/),
+  ).toBeVisible();
 });

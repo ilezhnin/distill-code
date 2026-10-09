@@ -236,7 +236,8 @@
     "viewFromRole": "Del rol de este agente: orden integrado.",
     "viewSingleModel": "Modelo único guardado: aún sin ranking configurado.",
     "viewLegacyFallback": "Recurre a su modelo único guardado ({{model}}) cuando ninguno de estos se puede usar.",
-    "viewNone": "Sin ranking: usa el modelo por defecto de la aplicación."
+    "viewNone": "Sin ranking: usa el modelo por defecto de la aplicación.",
+    "viewFromRouting": "Del rol de este agente: tu orden en Enrutamiento."
   },
   "acl": {
     "sectionLabel": "Permisos",

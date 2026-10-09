@@ -917,8 +917,10 @@
     "prior": "Suggested from preferences: {{model}}",
     "fast": "fast",
     "standard": "standard speed",
-    "basis": "{{workClass}} · Based on draft and role. No approved Bench evidence used.",
-    "ordinaryContext": "Learned routing applies only to bounded tasks with a native contract. This chat's tools and history are not covered, so it keeps your preferences."
+    "basis": "{{workClass}} · Based on draft and role.",
+    "learned": "Chosen for this task by the class's learned selector: {{model}}",
+    "noCertificate": "Learned selection is not active for this class yet, so your preferences choose. Settings → AI providers → Routing shows what it still needs.",
+    "abstained": "The class's learned selector did not choose ({{reason}}), so your preferences apply."
   },
   "ownedTask": {
     "open": "New bounded task",
