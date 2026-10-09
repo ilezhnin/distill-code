@@ -532,8 +532,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         let mut draft = version.manifest;
         draft.role_id = Some("invented-role".into());
         draft.role_prompt = "Work carefully.".into();
-        draft.environment["nativeBudgetRecipe"] =
-            json!(super::super::super::artifact_context::CLOCK_RECIPE);
+        on_wall_clock(&mut draft);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         training.push(
             service
@@ -549,7 +548,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
             version_ids: training.iter().map(|version| version.id.clone()).collect(),
             configurations: native_v2_configurations(),
             repetitions: 3,
-            timeout_seconds: 10,
+            timeout_seconds: WALL_BUDGET_SECONDS,
             max_executions: 48,
             preview: false,
             parallelism: Some(4),
@@ -596,7 +595,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
             persona_prior_ids: vec!["painter".into(), "parser".into()],
             min_quality: 0.0,
             repetitions: 3,
-            timeout_seconds: 10,
+            timeout_seconds: WALL_BUDGET_SECONDS,
             max_executions: 240,
             class_model_ids: Default::default(),
         })
@@ -622,7 +621,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
                 .await
                 .unwrap();
             if current.state != "running" {
-                assert_eq!(current.state, "completed");
+                assert_eq!(current.state, "completed", "{:?}", current.state_reason);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -664,7 +663,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         "requestKey":key,"surface":"chat","contextId":mode.request.context_id,
         "mode":{"contextId":mode.request.context_id,"artifactHash":mode.artifact_hash},
         "roleSourceId":mode.consent.roles[0].source_id,"workClassId":"debug", "prompt":training[0].manifest.prompt,
-        "hardCandidateKey":null,"entry":null,"stepBudgetSeconds":10})).unwrap()
+        "hardCandidateKey":null,"entry":null,"stepBudgetSeconds":WALL_BUDGET_SECONDS})).unwrap()
     };
     let prepared = service
         .prepare_owned_task_intent(request("v2-positive"))
@@ -751,8 +750,8 @@ async fn qualified_class(
         draft.task_family = format!("{class}-train-{index}");
         draft.environment = json!({
             "splitGroup": format!("{class}-train-group-{}", index / 2),
-            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
         });
+        on_wall_clock(&mut draft);
         draft.prompt = draft.prompt.replace("Repair", verb);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         versions.push(
@@ -796,7 +795,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
             role_prompt: role.1.into(),
             work_class_id: class.into(),
             purpose: purpose.into(),
-            step_budget_seconds: 10,
+            step_budget_seconds: WALL_BUDGET_SECONDS,
         })
     };
     let template = service
@@ -851,7 +850,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
             persona_prior_ids: vec!["painter".into(), "parser".into()],
             min_quality: 0.0,
             repetitions: 3,
-            timeout_seconds: 10,
+            timeout_seconds: WALL_BUDGET_SECONDS,
             max_executions: 240,
             class_model_ids: [
                 ("debug".to_owned(), implement_fit.model.id.clone()),
@@ -868,7 +867,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
         .await
         .unwrap();
     let trajectory = deployment.trajectory.clone().unwrap();
-    assert_eq!(trajectory.root_budget_seconds, 10);
+    assert_eq!(trajectory.root_budget_seconds, WALL_BUDGET_SECONDS);
     assert_eq!(
         trajectory
             .steps
@@ -906,7 +905,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
     let mut reordered = trajectory.clone();
     reordered.steps.reverse();
     let mut rebudgeted = trajectory.clone();
-    rebudgeted.root_budget_seconds = 20;
+    rebudgeted.root_budget_seconds = WALL_BUDGET_SECONDS + 1;
     for wrong in [None, Some(reordered), Some(rebudgeted)] {
         assert!(service
             .store
@@ -941,7 +940,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
                 .await
                 .unwrap();
             if current.state != "running" {
-                assert_eq!(current.state, "completed");
+                assert_eq!(current.state, "completed", "{:?}", current.state_reason);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1043,8 +1042,8 @@ async fn native_class(
         draft.task_family = format!("{class}-native-train-{index}");
         draft.environment = json!({
             "splitGroup": format!("{class}-native-group-{}", index / 2),
-            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
         });
+        on_wall_clock(&mut draft);
         draft.prompt = draft.prompt.replace("Repair", verb);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         training.push(
@@ -1061,7 +1060,7 @@ async fn native_class(
             version_ids: training.iter().map(|version| version.id.clone()).collect(),
             configurations: native_v2_configurations(),
             repetitions: 3,
-            timeout_seconds: 10,
+            timeout_seconds: WALL_BUDGET_SECONDS,
             max_executions: 48,
             preview: false,
             parallelism: Some(4),
@@ -1123,7 +1122,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
             role_prompt: role.1.into(),
             work_class_id: class.into(),
             purpose: purpose.into(),
-            step_budget_seconds: 10,
+            step_budget_seconds: WALL_BUDGET_SECONDS,
         })
     };
     let mut held = Vec::new();
@@ -1173,7 +1172,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
             persona_prior_ids: vec!["painter".into(), "parser".into()],
             min_quality: 0.0,
             repetitions: 3,
-            timeout_seconds: 10,
+            timeout_seconds: WALL_BUDGET_SECONDS,
             max_executions: 240,
             class_model_ids: [
                 ("debug".to_owned(), implement_fit.model.id.clone()),
@@ -1221,7 +1220,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
                 .await
                 .unwrap();
             if current.state != "running" {
-                assert_eq!(current.state, "completed");
+                assert_eq!(current.state, "completed", "{:?}", current.state_reason);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1264,7 +1263,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
     };
     let planned = |role: usize| {
         json!({"roleSourceId": mode.consent.roles[role].source_id,
-            "workClassId": mode.consent.roles[role].work_class_id, "stepBudgetSeconds": 10})
+            "workClassId": mode.consent.roles[role].work_class_id, "stepBudgetSeconds": WALL_BUDGET_SECONDS})
     };
     let plan = vec![planned(0), planned(1)];
     let step = |key: &str,
@@ -1281,7 +1280,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
             "prompt": prompt, "hardCandidateKey": null,
             "entry": previous.first().map(|root| json!({"rootBindingId": root,
                 "previousBindingIds": previous, "includePreviousOutput": true})),
-            "stepBudgetSeconds": 10, "plannedTrajectory": plan}))
+            "stepBudgetSeconds": WALL_BUDGET_SECONDS, "plannedTrajectory": plan}))
         .unwrap()
     };
     let implement = "Repair parser tokenizer grammar syntax";
@@ -1442,7 +1441,7 @@ async fn single_certificate_covers_planned_waves(
     };
     let planned = |role: usize| {
         json!({"roleSourceId": wave.consent.roles[role].source_id,
-            "workClassId": wave.consent.roles[role].work_class_id, "stepBudgetSeconds": 10})
+            "workClassId": wave.consent.roles[role].work_class_id, "stepBudgetSeconds": WALL_BUDGET_SECONDS})
     };
     let step = |key: &str,
                 context: &str,
@@ -1457,7 +1456,7 @@ async fn single_certificate_covers_planned_waves(
             "prompt": training[0].manifest.prompt, "hardCandidateKey": null,
             "entry": previous.first().map(|root| json!({"rootBindingId": root,
                 "previousBindingIds": previous, "includePreviousOutput": true})),
-            "stepBudgetSeconds": 10, "plannedTrajectory": plan}))
+            "stepBudgetSeconds": WALL_BUDGET_SECONDS, "plannedTrajectory": plan}))
         .unwrap()
     };
     for (name, plan) in [

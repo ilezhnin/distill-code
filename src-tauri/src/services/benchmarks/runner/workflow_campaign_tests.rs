@@ -228,8 +228,8 @@ async fn class_training(
         draft.task_family = format!("{class}-train-{index}");
         draft.environment = json!({
             "splitGroup": format!("{class}-train-group-{}", index / 2),
-            "nativeBudgetRecipe": super::super::super::artifact_context::CLOCK_RECIPE,
         });
+        on_wall_clock(&mut draft);
         draft.prompt = draft.prompt.replace("Repair", verb);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         versions.push(
@@ -270,7 +270,7 @@ async fn a_mixed_role_campaign_uses_each_step_class_model_over_whole_trajectorie
             role_prompt: role.1.into(),
             work_class_id: class.into(),
             purpose: purpose.into(),
-            step_budget_seconds: 10,
+            step_budget_seconds: WALL_BUDGET_SECONDS,
         })
     };
     let mut roots = Vec::new();
@@ -311,6 +311,7 @@ async fn a_mixed_role_campaign_uses_each_step_class_model_over_whole_trajectorie
         );
     }
     let mut request = request(&implement_fit, &roots, "mixed-comparison");
+    request.timeout_seconds = WALL_BUDGET_SECONDS;
     // A single-class campaign cannot evaluate a trajectory outside its scope.
     assert!(service
         .freeze_workflow_campaign(request.clone())

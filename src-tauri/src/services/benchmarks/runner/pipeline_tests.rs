@@ -31,6 +31,19 @@ struct OfflineWorkers {
     no_cost: std::sync::atomic::AtomicBool,
 }
 
+/// The root wall budget of tests on the native clock. It runs on real time,
+/// so it must outlast a loaded CI runner; no such test measures expiry.
+const WALL_BUDGET_SECONDS: u32 = 600;
+
+/// Puts a published-entry draft on the native wall clock with that budget.
+fn on_wall_clock(draft: &mut BenchmarkDraft) {
+    draft.environment["nativeBudgetRecipe"] = json!(super::super::artifact_context::CLOCK_RECIPE);
+    draft.limits.timeout_seconds = WALL_BUDGET_SECONDS;
+    if let Some(entry) = draft.entry_state.as_mut() {
+        entry.remaining_budget_seconds = WALL_BUDGET_SECONDS;
+    }
+}
+
 fn configurations() -> Vec<Configuration> {
     ["parser", "painter"]
         .into_iter()
@@ -455,7 +468,8 @@ async fn measure(service: &Arc<BenchmarkService>, versions: &[BenchmarkVersion],
         version_ids: versions.iter().map(|v| v.id.clone()).collect(),
         configurations: configurations(),
         repetitions: 3,
-        timeout_seconds: 10,
+        // The case's own limit: tests on the native clock get a long one.
+        timeout_seconds: versions[0].manifest.limits.timeout_seconds,
         max_executions: versions.len() as u32 * 6,
         preview: false,
         parallelism: Some(4),
