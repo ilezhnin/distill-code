@@ -50,8 +50,8 @@ async fn qualify(service: &BenchmarkService, versions: &[BenchmarkVersion]) -> V
     ids
 }
 async fn fit(service: &BenchmarkService, training: &[BenchmarkVersion]) -> learned::FitArtifact {
-    let fit = learned::fit(
-        &service.query_data().await.unwrap(),
+    let fit = fit_or_explain(
+        service,
         learned::FitRequest {
             work_class_id: "debug".into(),
             version_ids: training.iter().map(|v| v.id.clone()).collect(),
@@ -60,7 +60,7 @@ async fn fit(service: &BenchmarkService, training: &[BenchmarkVersion]) -> learn
             weights: RoleWeights::default(),
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&fit).await.unwrap();
     fit
 }
@@ -572,8 +572,8 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
     })
     .await
     .unwrap();
-    let fit = learned::fit(
-        &service.query_data().await.unwrap(),
+    let fit = fit_or_explain(
+        &service,
         learned::FitRequest {
             work_class_id: "debug".into(),
             version_ids: training.iter().map(|version| version.id.clone()).collect(),
@@ -582,7 +582,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
             weights: RoleWeights::default(),
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&fit).await.unwrap();
     let held = roots(&service, &training).await;
     qualifications.extend(qualify(&service, &held).await);
@@ -763,8 +763,8 @@ async fn qualified_class(
     }
     let ids = qualify(service, &versions).await;
     measure(service, &versions, &format!("{class}-qualified-training")).await;
-    let fit = learned::fit(
-        &service.query_data().await.unwrap(),
+    let fit = fit_or_explain(
+        service,
         learned::FitRequest {
             work_class_id: class.into(),
             version_ids: versions.iter().map(|v| v.id.clone()).collect(),
@@ -773,7 +773,7 @@ async fn qualified_class(
             weights: RoleWeights::default(),
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&fit).await.unwrap();
     (ids, fit)
 }
@@ -1083,8 +1083,8 @@ async fn native_class(
     })
     .await
     .unwrap();
-    let fit = learned::fit(
-        &service.query_data().await.unwrap(),
+    let fit = fit_or_explain(
+        service,
         learned::FitRequest {
             work_class_id: class.into(),
             version_ids: training.iter().map(|version| version.id.clone()).collect(),
@@ -1093,7 +1093,7 @@ async fn native_class(
             weights: RoleWeights::default(),
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&fit).await.unwrap();
     (source, training, qualifications, fit)
 }

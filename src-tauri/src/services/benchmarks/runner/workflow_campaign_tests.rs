@@ -6,8 +6,8 @@ async fn training(
 ) -> (Vec<BenchmarkVersion>, learned::FitArtifact) {
     let versions = publish_with_entry(service, "train", 8, true).await;
     measure(service, &versions, "campaign-training").await;
-    let fit = learned::fit(
-        &service.query_data().await.unwrap(),
+    let fit = fit_or_explain(
+        service,
         learned::FitRequest {
             work_class_id: "debug".into(),
             version_ids: versions.iter().map(|v| v.id.clone()).collect(),
@@ -16,7 +16,7 @@ async fn training(
             weights: RoleWeights::default(),
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&fit).await.unwrap();
     (versions, fit)
 }
@@ -240,8 +240,8 @@ async fn class_training(
         );
     }
     measure(service, &versions, &format!("{class}-training")).await;
-    let fit = learned::fit(
-        &service.query_data().await.unwrap(),
+    let fit = fit_or_explain(
+        service,
         learned::FitRequest {
             work_class_id: class.into(),
             version_ids: versions.iter().map(|v| v.id.clone()).collect(),
@@ -250,7 +250,7 @@ async fn class_training(
             weights: RoleWeights::default(),
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&fit).await.unwrap();
     (versions, fit)
 }
@@ -663,8 +663,8 @@ async fn a_cost_weighted_fit_without_recorded_costs_refuses_before_any_execution
         error.message
     );
     // The same measurements with cost left out of the weights are comparable.
-    let unweighted = learned::fit(
-        &service.query_data().await.unwrap(),
+    let unweighted = fit_or_explain(
+        &service,
         learned::FitRequest {
             work_class_id: "debug".into(),
             version_ids: train.iter().map(|v| v.id.clone()).collect(),
@@ -677,7 +677,7 @@ async fn a_cost_weighted_fit_without_recorded_costs_refuses_before_any_execution
             },
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&unweighted).await.unwrap();
     service
         .freeze_workflow_campaign(request(&unweighted, &roots, "unpriced-unweighted"))

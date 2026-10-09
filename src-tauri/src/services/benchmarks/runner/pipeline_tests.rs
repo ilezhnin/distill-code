@@ -31,6 +31,53 @@ struct OfflineWorkers {
     no_cost: std::sync::atomic::AtomicBool,
 }
 
+/// Fits from the service's data. A refusal names every attempt of each cell
+/// that is not exactly its scored repetitions, so a CI failure shows why.
+async fn fit_or_explain(
+    service: &BenchmarkService,
+    request: learned::FitRequest,
+) -> learned::FitArtifact {
+    let versions = request.version_ids.clone();
+    match learned::fit(&service.query_data().await.unwrap(), request) {
+        Ok(fit) => fit,
+        Err(error) => {
+            let mut cells: std::collections::BTreeMap<(String, String), Vec<String>> =
+                Default::default();
+            for run in service.store.all_runs().await.unwrap() {
+                for a in run
+                    .attempts
+                    .iter()
+                    .filter(|a| versions.contains(&a.version_id))
+                {
+                    cells
+                        .entry((a.version_id.clone(), a.configuration.model_id.clone()))
+                        .or_default()
+                        .push(format!(
+                            "run {} rep {} {} {:?} {:?} finished {:?} score {:?}",
+                            run.request.request_key,
+                            a.repetition,
+                            a.phase,
+                            a.outcome,
+                            a.reason,
+                            a.finished_at,
+                            super::super::analysis::score(a)
+                        ));
+                }
+            }
+            let odd: Vec<_> = cells
+                .into_iter()
+                .filter(|(_, attempts)| {
+                    attempts.len() != 3 || attempts.iter().any(|line| line.ends_with("None"))
+                })
+                .map(|((version, model), attempts)| {
+                    format!("{version} {model}:\n  {}", attempts.join("\n  "))
+                })
+                .collect();
+            panic!("{error:?}\n{}", odd.join("\n"));
+        }
+    }
+}
+
 /// A bound against a hang only. Whole campaigns of 120 trajectories share a
 /// slow CI runner with the rest of the suite and may take minutes there.
 const HANG_GUARD: Duration = Duration::from_secs(900);
@@ -518,7 +565,7 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
         weights: RoleWeights::default(),
     };
     // This is the same query/fit/save path as the application command.
-    let artifact = learned::fit(&service.query_data().await.unwrap(), query).unwrap();
+    let artifact = fit_or_explain(&service, query).await;
     assert_eq!(artifact.model.common_cases, 8);
     service.store.save_selector_fit(&artifact).await.unwrap();
     let plan = service

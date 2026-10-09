@@ -8,8 +8,8 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
     let service = open(directory.path(), backend.clone()).await;
     let training = publish_with_entry(&service, "train", 8, true).await;
     measure(&service, &training, "policy-training").await;
-    let artifact = learned::fit(
-        &service.query_data().await.unwrap(),
+    let artifact = fit_or_explain(
+        &service,
         learned::FitRequest {
             work_class_id: "debug".into(),
             version_ids: training.iter().map(|v| v.id.clone()).collect(),
@@ -18,7 +18,7 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
             weights: RoleWeights::default(),
         },
     )
-    .unwrap();
+    .await;
     service.store.save_selector_fit(&artifact).await.unwrap();
     let mut draft = training[0].manifest.clone();
     draft.task_family = "new-workflow-family".into();
