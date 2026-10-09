@@ -539,9 +539,12 @@ async fn prepare_step(
     if spec.include_previous_output {
         if let Some(reports) = native_reports {
             entry.previous_reports = reports;
-            entry.content_hash = super::routing::entry_hash(&entry);
         }
     }
+    // The hash covers the entry as committed. The budget measured just above
+    // can be a second below the one `step_entry` hashed when a second passed
+    // in between, so it is always computed again here.
+    entry.content_hash = super::routing::entry_hash(&entry);
     let prompt = format!(
         "{}\n\nWorkflow step {} of {} ({}):\n{}",
         version.manifest.prompt,
