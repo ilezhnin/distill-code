@@ -1,16 +1,22 @@
-"""Run inside distill-bench: python3 < artifact-selftest.py."""
+"""Run inside distill-bench; --helper PATH checks a helper before installation."""
+import argparse
 import base64
 import importlib.machinery
 import json
 import os
 from pathlib import Path
 import socket
+import sys
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
-reader = importlib.machinery.SourceFileLoader('bench_judge', '/usr/local/sbin/bench-judge').load_module()
+arguments = argparse.ArgumentParser(add_help=False)
+arguments.add_argument('--helper', default='/usr/local/sbin/bench-judge')
+options, remaining = arguments.parse_known_args()
+sys.argv = [sys.argv[0], *remaining]
+reader = importlib.machinery.SourceFileLoader('bench_judge', options.helper).load_module()
 
 
 class ArtifactBoundary(unittest.TestCase):
@@ -24,6 +30,95 @@ class ArtifactBoundary(unittest.TestCase):
     def read(self, path):
         return reader.read_artifact(self.root, {'path': path})
 
+    def metadata(self, path):
+        return reader.read_artifact(self.root, {'path': path, 'op': 'stat'})['metadata']
+
+    def listing(self, path):
+        return [base64.b64decode(name, validate=True) for name in
+                reader.read_artifact(self.root, {'path': path, 'op': 'list'})['entries']]
+
+    def test_listing_names_are_exact_and_links_not_traversed(self):
+        nested = self.directory / 'folder'; nested.mkdir()
+        (nested / 'z').write_text('ordinary')
+        os.symlink(b'/not-present', os.fsencode(nested) + b'/\xff')
+        (nested / 'a').symlink_to(self.base, target_is_directory=True)
+        self.assertEqual(self.listing('folder'), [b'a', b'z', b'\xff'])
+        with self.assertRaises(OSError):
+            self.listing('folder/a')
+        with self.assertRaises(OSError):
+            self.listing('folder/a/private')
+
+    def test_listing_limit_is_enforced(self):
+        nested = self.directory / 'folder'; nested.mkdir()
+        for number in range(reader.LIST_ENTRY_LIMIT + 1):
+            (nested / str(number)).touch()
+        with self.assertRaises(ValueError):
+            self.listing('folder')
+
+    def test_changed_listing_is_refused(self):
+        nested = self.directory / 'folder'; nested.mkdir()
+        initial = nested.stat()
+        actual = os.fstat; count = 0
+        def changed(descriptor):
+            nonlocal count
+            count += 1
+            if count == 2:
+                (nested / 'new').touch()
+                # Some filesystems coalesce same-tick directory timestamps.
+                os.utime(nested, ns=(initial.st_atime_ns, initial.st_mtime_ns + 1_000_000_000))
+            return actual(descriptor)
+        with patch.object(reader.os, 'fstat', changed), self.assertRaises(ValueError):
+            self.listing('folder')
+
+    def test_metadata_modes_and_directory(self):
+        file = self.directory / 'file'; file.chmod(0o751)
+        self.assertEqual(self.metadata('file'),
+                         {'kind': 'file', 'mode': 0o751, 'size': 12, 'links': 1})
+        nested = self.directory / 'folder'; nested.mkdir(); nested.chmod(0o700)
+        info = self.metadata('folder')
+        self.assertEqual((info['kind'], info['mode']), ('directory', 0o700))
+
+    def test_metadata_reads_link_text_without_following(self):
+        target = os.fsencode(self.base / 'private')
+        os.symlink(target, os.fsencode(self.directory / 'link'))
+        info = self.metadata('link')
+        self.assertEqual(info['kind'], 'symlink')
+        self.assertEqual(base64.b64decode(info['targetBase64']), target)
+        self.assertNotIn('data', info)
+        with self.assertRaises(OSError):
+            self.read('link')
+        (self.directory / 'parent').symlink_to(self.base, target_is_directory=True)
+        with self.assertRaises(OSError):
+            self.metadata('parent/private')
+
+    def test_metadata_preserves_non_utf8_link_text(self):
+        os.symlink(b'not-utf8-\xff', os.fsencode(self.directory / 'link'))
+        self.assertEqual(base64.b64decode(self.metadata('link')['targetBase64']),
+                         b'not-utf8-\xff')
+
+    def test_metadata_special_and_hardlinked_entries_never_read(self):
+        os.mkfifo(self.directory / 'fifo')
+        self.assertEqual(self.metadata('fifo')['kind'], 'other')
+        os.link(self.base / 'private', self.directory / 'linked')
+        self.assertEqual(self.metadata('linked')['links'], 2)
+        with self.assertRaises(ValueError):
+            self.read('linked')
+
+    def test_metadata_replacement_is_not_followed(self):
+        link = self.directory / 'link'; link.symlink_to('original')
+        actual = os.readlink
+        def replaced(path, **kwargs):
+            link.unlink(); link.symlink_to(self.base / 'private')
+            return actual(path, **kwargs)
+        with patch.object(reader.os, 'readlink', replaced), self.assertRaises(ValueError):
+            self.metadata('link')
+
+    def test_metadata_link_size_bound(self):
+        (self.directory / 'link').symlink_to('small')
+        with patch.object(reader.os, 'readlink', return_value=b'x' * (reader.LINK_LIMIT + 1)):
+            with self.assertRaises(ValueError):
+                self.metadata('link')
+
     def test_regular_private_modes_and_unicode(self):
         nested = self.directory / 'λ space'; nested.mkdir(mode=0o700)
         file = nested / '雪'; file.write_bytes(b'\0\xff'); file.chmod(0o600)
@@ -33,6 +128,10 @@ class ArtifactBoundary(unittest.TestCase):
         for path in ['../private', '/etc/passwd', 'file/../../private', './file', 'a//file', 'a/..', '', 'a\0']:
             with self.subTest(path=path), self.assertRaises(ValueError):
                 self.read(path)
+            with self.subTest(metadata=path), self.assertRaises(ValueError):
+                self.metadata(path)
+            with self.subTest(listing=path), self.assertRaises(ValueError):
+                self.listing(path)
 
     def test_final_symlink(self):
         (self.directory / 'link').symlink_to(self.base / 'private')
@@ -64,6 +163,7 @@ class ArtifactBoundary(unittest.TestCase):
         self.directory.rename(self.base / 'old')
         self.directory.symlink_to(self.base)
         self.assertEqual(base64.b64decode(self.read('file')['data']), b'actual bytes')
+        self.assertEqual(self.metadata('file')['size'], 12)
         with self.assertRaises(FileNotFoundError):
             self.read('private')
 
@@ -79,7 +179,9 @@ class ArtifactBoundary(unittest.TestCase):
             self.read('file')
 
     def test_schema(self):
-        for request in [None, [], {'path': 'file', 'command': 'ignored'}, {'path': 1}]:
+        for request in [None, [], {'path': 'file', 'command': 'ignored'}, {'path': 1},
+                        {'path': 'file', 'op': 'read'}, {'path': 'file', 'op': True},
+                        {'path': 'file', 'op': 'stat', 'extra': 1}]:
             with self.subTest(request=request), self.assertRaises(ValueError):
                 reader.read_artifact(self.root, request)
 

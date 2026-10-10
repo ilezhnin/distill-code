@@ -17,16 +17,75 @@ import sys
 import threading
 
 ARTIFACT_LIMIT = 8 * 1024 * 1024
+LINK_LIMIT = 4096
+LIST_ENTRY_LIMIT = 1024
+LIST_NAME_BYTES_LIMIT = 256 * 1024
+
+
+def artifact_listing(directory, name):
+    """List bounded child names from one pinned directory, without traversing them."""
+    descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                         dir_fd=directory)
+    try:
+        before = os.fstat(descriptor)
+        names = []
+        total = 0
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                raw = os.fsencode(entry.name)
+                names.append(raw)
+                total += len(raw)
+                if len(names) > LIST_ENTRY_LIMIT or total > LIST_NAME_BYTES_LIMIT:
+                    raise ValueError('Directory listing exceeds the limit')
+        after = os.fstat(descriptor)
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_mode,
+                                 info.st_nlink, info.st_size,
+                                 info.st_mtime_ns, info.st_ctime_ns)
+        if identity(before) != identity(after):
+            raise ValueError('Directory changed while listing')
+        return {'entries': [base64.b64encode(raw).decode('ascii') for raw in sorted(names)]}
+    finally:
+        os.close(descriptor)
+
+
+def artifact_metadata(directory, name):
+    """Inspect the final entry itself, including a link, without opening its target."""
+    descriptor = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=directory)
+    try:
+        before = os.fstat(descriptor)
+        kind = ('file' if stat.S_ISREG(before.st_mode) else
+                'directory' if stat.S_ISDIR(before.st_mode) else
+                'symlink' if stat.S_ISLNK(before.st_mode) else 'other')
+        metadata = {'kind': kind, 'mode': stat.S_IMODE(before.st_mode),
+                    'size': before.st_size, 'links': before.st_nlink}
+        if kind == 'symlink':
+            # Linux O_PATH + an empty readlinkat path pins the link inode even
+            # if the candidate concurrently renames or replaces its pathname.
+            target = os.readlink(b'', dir_fd=descriptor)
+            if len(target) > LINK_LIMIT:
+                raise ValueError('Link target exceeds the byte limit')
+            metadata['targetBase64'] = base64.b64encode(target).decode('ascii')
+        after = os.fstat(descriptor)
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_mode,
+                                 info.st_nlink, info.st_size,
+                                 info.st_mtime_ns, info.st_ctime_ns)
+        if identity(before) != identity(after):
+            raise ValueError('Artifact changed while inspecting')
+        return {'metadata': metadata}
+    finally:
+        os.close(descriptor)
 
 
 def read_artifact(root, request):
-    """Read one regular file beneath a pinned probe directory, never links.
+    """Read a regular file, or inspect one entry, beneath a pinned probe directory.
 
     The checker alone owns this channel. Candidate RPC replies are not file
     evidence. Descriptor-relative traversal prevents renamed parents or links
     from redirecting the privileged reader to other attempts or host data.
     """
-    if not isinstance(request, dict) or set(request) != {'path'}:
+    if not isinstance(request, dict) or not (
+            set(request) == {'path'} or
+            set(request) == {'path', 'op'} and request['op'] in ('stat', 'list')):
         raise ValueError('Expected an artifact path')
     path = request['path']
     if not isinstance(path, str) or not 1 <= len(path) <= 4096 or '\0' in path:
@@ -41,6 +100,10 @@ def read_artifact(root, request):
                             dir_fd=directory)
             os.close(directory)
             directory = child
+        if request.get('op') == 'stat':
+            return artifact_metadata(directory, parts[-1])
+        if request.get('op') == 'list':
+            return artifact_listing(directory, parts[-1])
         descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                              dir_fd=directory)
         with os.fdopen(descriptor, 'rb') as file:
