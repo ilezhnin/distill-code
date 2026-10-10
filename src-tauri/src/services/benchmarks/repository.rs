@@ -470,6 +470,12 @@ pub struct HiddenCheck {
     /// DISTILL_BENCH_ARTIFACT_FD is a check-only JSON-lines channel: send
     /// {"path":"relative/file"}; receive base64 {"data":"..."} or an error.
     /// It reads actual probe files without following links, up to 8 MiB each.
+    /// {"path":"relative/file","op":"range","offset":0,"length":1024}
+    /// reads exactly that byte range and returns data plus the full file size.
+    /// Offset is an integer from 0 to 2^63-1; length is an integer from 0 to
+    /// 8 MiB. The range must lie within the file; zero length at EOF is valid.
+    /// Range reads allow larger files, retaining the same regular-file and link
+    /// checks. The check must ensure quiescence before a multi-call reconstruction.
     /// {"path":"relative/entry","op":"stat"} instead returns metadata with
     /// kind, mode, size, links and (for symlinks) targetBase64, without following
     /// the final link. Each response pins one entry, not a multi-call snapshot.
@@ -1661,6 +1667,8 @@ assert json.loads(channel.readline(1024)) == 46
 artifacts=socket.socket(fileno=int(os.environ['DISTILL_BENCH_ARTIFACT_FD'])).makefile('rwb')
 artifacts.write(b'{"path":"actual.txt"}\n');artifacts.flush()
 assert base64.b64decode(json.loads(artifacts.readline(1024))['data']) == b'46'
+artifacts.write(b'{"path":"actual.txt","op":"range","offset":1,"length":1}\n');artifacts.flush()
+assert json.loads(artifacts.readline(1024)) == {'data':'Ng==','size':2}
 artifacts.write(b'{"path":"actual.txt","op":"stat"}\n');artifacts.flush()
 assert json.loads(artifacts.readline(1024))['metadata'] == {'kind':'file','mode':384,'size':2,'links':1}
 artifacts.write(b'{"path":"unresolved-link","op":"stat"}\n');artifacts.flush()

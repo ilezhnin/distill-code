@@ -85,8 +85,15 @@ def read_artifact(root, request):
     """
     if not isinstance(request, dict) or not (
             set(request) == {'path'} or
-            set(request) == {'path', 'op'} and request['op'] in ('stat', 'list')):
+            set(request) == {'path', 'op'} and request['op'] in ('stat', 'list') or
+            set(request) == {'path', 'op', 'offset', 'length'} and request['op'] == 'range'):
         raise ValueError('Expected an artifact path')
+    ranged = request.get('op') == 'range'
+    if ranged and (type(request['offset']) is not int or
+                   not 0 <= request['offset'] <= (1 << 63) - 1 or
+                   type(request['length']) is not int or
+                   not 0 <= request['length'] <= ARTIFACT_LIMIT):
+        raise ValueError('Invalid artifact range')
     path = request['path']
     if not isinstance(path, str) or not 1 <= len(path) <= 4096 or '\0' in path:
         raise ValueError('Invalid artifact path')
@@ -110,14 +117,24 @@ def read_artifact(root, request):
             before = os.fstat(file.fileno())
             if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                 raise ValueError('Artifact is not an independent regular file')
-            if before.st_size > ARTIFACT_LIMIT:
+            if not ranged and before.st_size > ARTIFACT_LIMIT:
                 raise ValueError('Artifact exceeds the byte limit')
-            data = file.read(ARTIFACT_LIMIT + 1)
+            offset = request['offset'] if ranged else 0
+            length = request['length'] if ranged else before.st_size
+            if offset + length > before.st_size:
+                raise ValueError('Artifact range exceeds the file')
+            file.seek(offset)
+            data = file.read(length)
             after = os.fstat(file.fileno())
-            identity = lambda info: (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-            if len(data) != before.st_size or identity(before) != identity(after):
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_mode,
+                                     info.st_nlink, info.st_size,
+                                     info.st_mtime_ns, info.st_ctime_ns)
+            if len(data) != length or identity(before) != identity(after):
                 raise ValueError('Artifact changed while reading')
-            return {'data': base64.b64encode(data).decode('ascii')}
+            response = {'data': base64.b64encode(data).decode('ascii')}
+            if ranged:
+                response['size'] = before.st_size
+            return response
     finally:
         os.close(directory)
 

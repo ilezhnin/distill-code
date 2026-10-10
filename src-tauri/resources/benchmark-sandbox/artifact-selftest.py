@@ -30,6 +30,10 @@ class ArtifactBoundary(unittest.TestCase):
     def read(self, path):
         return reader.read_artifact(self.root, {'path': path})
 
+    def read_range(self, path, offset, length):
+        return reader.read_artifact(self.root,
+                                    {'path': path, 'op': 'range', 'offset': offset, 'length': length})
+
     def metadata(self, path):
         return reader.read_artifact(self.root, {'path': path, 'op': 'stat'})['metadata']
 
@@ -159,6 +163,49 @@ class ArtifactBoundary(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.read('large')
 
+    def test_range_reads_large_files_and_exact_endpoints(self):
+        size = reader.ARTIFACT_LIMIT + 17
+        with (self.directory / 'large').open('wb') as file:
+            file.truncate(size)
+            file.seek(reader.ARTIFACT_LIMIT - 2)
+            file.write(b'cross-boundary')
+        result = self.read_range('large', reader.ARTIFACT_LIMIT - 2, 14)
+        self.assertEqual(result['size'], size)
+        self.assertEqual(base64.b64decode(result['data']), b'cross-boundary')
+        result = self.read_range('large', 0, reader.ARTIFACT_LIMIT)
+        self.assertEqual(len(base64.b64decode(result['data'])), reader.ARTIFACT_LIMIT)
+        self.assertEqual(self.read_range('large', size, 0), {'data': '', 'size': size})
+        (self.directory / 'empty').touch()
+        self.assertEqual(self.read_range('empty', 0, 0), {'data': '', 'size': 0})
+
+    def test_range_bounds_and_integer_types(self):
+        for offset, length in [(-1, 1), (0, -1), (True, 1), (0, False),
+                               (1.0, 1), (0, '1'), (None, 0),
+                               (0, reader.ARTIFACT_LIMIT + 1), (1 << 63, 0),
+                               (13, 0), (12, 1), (11, 2)]:
+            with self.subTest(offset=offset, length=length), self.assertRaises(ValueError):
+                self.read_range('file', offset, length)
+
+    def test_range_retains_confinement_and_regular_file_checks(self):
+        (self.directory / 'link').symlink_to(self.base / 'private')
+        (self.directory / 'parent').symlink_to(self.base, target_is_directory=True)
+        os.link(self.base / 'private', self.directory / 'hardlink')
+        os.mkfifo(self.directory / 'fifo')
+        for path in ['../private', '/etc/passwd', 'link', 'parent/private', 'hardlink', 'fifo']:
+            with self.subTest(path=path), self.assertRaises((ValueError, OSError)):
+                self.read_range(path, 0, 1)
+
+    def test_changed_range_is_refused(self):
+        actual = os.fstat; count = 0
+        def changed(descriptor):
+            nonlocal count
+            count += 1
+            if count == 2:
+                (self.directory / 'file').write_bytes(b'changed after read')
+            return actual(descriptor)
+        with patch.object(reader.os, 'fstat', changed), self.assertRaises(ValueError):
+            self.read_range('file', 0, 3)
+
     def test_pinned_root_survives_replacement(self):
         self.directory.rename(self.base / 'old')
         self.directory.symlink_to(self.base)
@@ -181,7 +228,10 @@ class ArtifactBoundary(unittest.TestCase):
     def test_schema(self):
         for request in [None, [], {'path': 'file', 'command': 'ignored'}, {'path': 1},
                         {'path': 'file', 'op': 'read'}, {'path': 'file', 'op': True},
-                        {'path': 'file', 'op': 'stat', 'extra': 1}]:
+                        {'path': 'file', 'op': 'stat', 'extra': 1},
+                        {'path': 'file', 'op': 'range', 'offset': 0},
+                        {'path': 'file', 'op': 'range', 'offset': 0, 'length': 1, 'extra': 0},
+                        {'path': 'file', 'offset': 0, 'length': 1}]:
             with self.subTest(request=request), self.assertRaises(ValueError):
                 reader.read_artifact(self.root, request)
 
