@@ -1,4 +1,5 @@
 import { Button } from "@/shared/ui/button";
+import { reportRendererError } from "@/app/lib/rendererDiagnostics";
 import {
   Tooltip,
   TooltipContent,
@@ -17,8 +18,9 @@ import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { toast } from "sonner";
-import type { ComponentProps, MouseEvent } from "react";
+import type { ComponentProps, ErrorInfo, MouseEvent, ReactNode } from "react";
 import {
+  Component,
   createContext,
   memo,
   useCallback,
@@ -507,98 +509,142 @@ const linkSafetyConfig: ComponentProps<typeof Streamdown>["linkSafety"] = {
   enabled: false,
 };
 
-export const MessageResponse = memo(
-  ({
-    children,
-    className,
-    codeRenderers,
-    imageRenderer,
+class MessageResponseErrorBoundary extends Component<
+  { children: ReactNode; text?: string; className?: string },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    reportRendererError("message_response_error_boundary", error, {
+      componentStack: info.componentStack ?? "",
+    });
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+
+    // A rejected lazy Markdown plugin stays rejected for this page's lifetime.
+    // Keep the message readable, including later streaming updates, without
+    // repeatedly mounting that plugin or taking down the chat and its composer.
+    return (
+      <div
+        className={cn(
+          "size-full whitespace-pre-wrap [overflow-wrap:anywhere]",
+          this.props.className,
+        )}
+      >
+        {this.props.text}
+      </div>
+    );
+  }
+}
+
+const MessageResponseContent = ({
+  children,
+  className,
+  codeRenderers,
+  imageRenderer,
+  isAnimating,
+  mode,
+  onAnimationEnd,
+  onAnimationStart,
+  ...props
+}: MessageResponseProps) => {
+  const { t } = useTranslation("common");
+  const { openExternalUrl, linkSafetyModal } = useLinkSafetyGate();
+  const streamdownComponents = useMemo(
+    () => buildStreamdownComponents(imageRenderer),
+    [imageRenderer],
+  );
+  const streamdownRootRef = useRef<HTMLDivElement>(null);
+  const streamdownLayoutPending = useVirtualLayoutPendingForStreamdown({
+    contentKey: children,
     isAnimating,
     mode,
     onAnimationEnd,
     onAnimationStart,
-    ...props
-  }: MessageResponseProps) => {
-    const { t } = useTranslation("common");
-    const { openExternalUrl, linkSafetyModal } = useLinkSafetyGate();
-    const streamdownComponents = useMemo(
-      () => buildStreamdownComponents(imageRenderer),
-      [imageRenderer],
-    );
-    const streamdownRootRef = useRef<HTMLDivElement>(null);
-    const streamdownLayoutPending = useVirtualLayoutPendingForStreamdown({
-      contentKey: children,
-      isAnimating,
-      mode,
-      onAnimationEnd,
-      onAnimationStart,
-    });
-    useStreamdownTableScrollbarSizing(streamdownRootRef, children);
+  });
+  useStreamdownTableScrollbarSizing(streamdownRootRef, children);
 
-    const handleClickCapture = useCallback(
-      (event: MouseEvent<HTMLDivElement>) => {
-        const format = detectStreamdownMermaidDownloadFormat(event.target);
-        if (!format) {
-          return;
-        }
+  const handleClickCapture = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      const format = detectStreamdownMermaidDownloadFormat(event.target);
+      if (!format) {
+        return;
+      }
 
-        const filename = `diagram.${format}`;
-        const options = window.__TAURI_INTERNALS__
-          ? {
-              action: {
-                label: t("components.mermaid.openDownloads"),
-                onClick: () => {
-                  void openDownloadsFolder().catch((error) => {
-                    console.error("Failed to open Downloads folder:", error);
-                    toast.error(t("components.mermaid.openDownloadsError"));
-                  });
-                },
+      const filename = `diagram.${format}`;
+      const options = window.__TAURI_INTERNALS__
+        ? {
+            action: {
+              label: t("components.mermaid.openDownloads"),
+              onClick: () => {
+                void openDownloadsFolder().catch((error) => {
+                  console.error("Failed to open Downloads folder:", error);
+                  toast.error(t("components.mermaid.openDownloadsError"));
+                });
               },
-            }
-          : {};
+            },
+          }
+        : {};
 
-        toast.message(
-          t("components.mermaid.downloadStarted", { filename }),
-          options,
-        );
-      },
-      [t],
-    );
+      toast.message(
+        t("components.mermaid.downloadStarted", { filename }),
+        options,
+      );
+    },
+    [t],
+  );
 
-    return (
-      <LinkSafetyContext.Provider value={openExternalUrl}>
-        <div
-          className="contents"
-          onClickCapture={handleClickCapture}
-          ref={streamdownRootRef}
-          {...streamdownLayoutPending.layoutPendingAttributes}
+  return (
+    <LinkSafetyContext.Provider value={openExternalUrl}>
+      <div
+        className="contents"
+        onClickCapture={handleClickCapture}
+        ref={streamdownRootRef}
+        {...streamdownLayoutPending.layoutPendingAttributes}
+      >
+        <Streamdown
+          className={cn(
+            "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+            className,
+          )}
+          components={streamdownComponents}
+          isAnimating={isAnimating}
+          linkSafety={linkSafetyConfig}
+          mode={mode}
+          onAnimationEnd={streamdownLayoutPending.onAnimationEnd}
+          onAnimationStart={streamdownLayoutPending.onAnimationStart}
+          rehypePlugins={distillRehypePlugins}
+          plugins={
+            codeRenderers
+              ? { ...streamdownPlugins, renderers: codeRenderers }
+              : streamdownPlugins
+          }
+          {...props}
         >
-          <Streamdown
-            className={cn(
-              "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-              className,
-            )}
-            components={streamdownComponents}
-            isAnimating={isAnimating}
-            linkSafety={linkSafetyConfig}
-            mode={mode}
-            onAnimationEnd={streamdownLayoutPending.onAnimationEnd}
-            onAnimationStart={streamdownLayoutPending.onAnimationStart}
-            rehypePlugins={distillRehypePlugins}
-            plugins={
-              codeRenderers
-                ? { ...streamdownPlugins, renderers: codeRenderers }
-                : streamdownPlugins
-            }
-            {...props}
-          >
-            {children}
-          </Streamdown>
-        </div>
-        {linkSafetyModal}
-      </LinkSafetyContext.Provider>
-    );
-  },
+          {children}
+        </Streamdown>
+      </div>
+      {linkSafetyModal}
+    </LinkSafetyContext.Provider>
+  );
+};
+
+export const MessageResponse = memo(
+  (props: MessageResponseProps) => (
+    <MessageResponseErrorBoundary
+      text={props.children}
+      className={props.className}
+    >
+      <MessageResponseContent {...props} />
+    </MessageResponseErrorBoundary>
+  ),
   // The link-safety gate's internal state is intentionally outside this
   // comparator — React always re-renders when local state changes regardless
   // of memo. If that state is ever lifted to a prop, update this comparator.
