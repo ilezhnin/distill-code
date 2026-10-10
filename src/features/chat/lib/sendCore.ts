@@ -384,7 +384,10 @@ export async function dispatchPrompt(
     const sessionAtSend = useChatSessionStore.getState().getSession(sessionId);
     const promptWithUltracode =
       sessionAtSend?.ultracodeArmed &&
-      supportsUltracode(sessionAtSend.reasoningEffort)
+      supportsUltracode(
+        sessionAtSend.executionTarget?.harnessId,
+        sessionAtSend.reasoningEffort,
+      )
         ? appendUltracodeKeyword(promptWithPaths)
         : promptWithPaths;
     const acpPrompt =

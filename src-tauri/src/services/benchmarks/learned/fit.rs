@@ -132,6 +132,27 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
                 )));
             }
             let observed = status == "observed";
+            if observed && version.manifest.environment.get("judgePanel").is_some() {
+                let outcomes = cell["outcomes"]
+                    .as_array()
+                    .filter(|rows| !rows.is_empty())
+                    .ok_or_else(|| coverage("Frozen rubric outcomes are absent"))?;
+                for outcome in outcomes {
+                    let attempt = data
+                        .attempts
+                        .iter()
+                        .find(|attempt| {
+                            Some(attempt.id.as_str()) == outcome["attemptId"].as_str()
+                                && attempt.version_id == version.id
+                        })
+                        .ok_or_else(|| coverage("Frozen rubric attempt is absent"))?;
+                    super::super::judge_panel::validate_evidence(
+                        &version.manifest,
+                        attempt,
+                        request.cutoff_at,
+                    )?;
+                }
+            }
             let reward = observed.then(|| cell["reward"].as_f64()).flatten();
             if observed && reward.is_none_or(|r| !r.is_finite() || !(0.0..=1.0).contains(&r)) {
                 return Err(invalid(

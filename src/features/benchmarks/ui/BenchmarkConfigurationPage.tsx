@@ -7,11 +7,9 @@ import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Spinner } from "@/shared/ui/spinner";
-import { toggleVariants } from "@/shared/ui/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
-  historyKey,
   modelNameKey,
   useConfigurationHistory,
   useModelCatalog,
@@ -24,9 +22,9 @@ import {
   rankRows,
   rowKey,
 } from "../lib/benchmarkBoards";
-import { rowActivity, rowOpenRun } from "../lib/benchmarkActivity";
+import { reportModels, modelKey, modelActivity } from "../lib/benchmarkModels";
+import { rowOpenRun } from "../lib/benchmarkActivity";
 import { catchUpCases } from "../lib/benchmarkCatchUp";
-import { explicitEffort } from "../lib/benchmarkEffort";
 import { historyMeasurements } from "../lib/benchmarkHistory";
 import {
   boardDescription,
@@ -47,12 +45,17 @@ import type {
 } from "../types";
 import { benchmarkKeys, useBenchmarkReleases } from "../hooks/useBenchmarks";
 import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
-import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
+import {
+  TaskGrid,
+  TaskSummary,
+  taskCells,
+  poolTaskOrder,
+} from "./BenchmarkTaskGrid";
 import { listByIds } from "./BenchmarkTestStatus";
 import {
   BoardIcon,
-  ScoreBar,
   ShareMarks,
+  RatingValue,
   SectionHeading,
   StateBadge,
 } from "./BenchmarkPrimitives";
@@ -67,16 +70,11 @@ interface BoardStanding {
   points: number | null;
   rank: number | null;
   of: number;
-  share: number | null;
 }
 
-/** Runtime revisions share a leaderboard identity. */
+/** Every test result belongs to the model, regardless of execution settings. */
 function rowOf(report: LeaderboardReport, key: string): LeaderboardRow | null {
-  return (
-    report.rows
-      .filter((row) => historyKey(row.configuration) === key)
-      .sort((a, b) => b.scored - a.scored)[0] ?? null
-  );
+  return reportModels(report).find((model) => model.key === key)?.row ?? null;
 }
 
 /** A history point's identity; older snapshots carry only their run. */
@@ -126,25 +124,12 @@ export function BenchmarkConfigurationPage({
   const { formatDate } = useLocaleFormatting();
   const names = useModelNames();
   const catalog = useModelCatalog();
-  const key = historyKey(row.configuration);
-  const history = useConfigurationHistory(row.configuration);
-  const [preferRecorded, setRecorded] = useState(false);
-  const recalculatedPoints = useMemo(
-    () => historyMeasurements(history.snapshots, key, false),
+  const key = modelKey(row.configuration);
+  const history = useConfigurationHistory(row.configuration, true);
+  const measurements = useMemo(
+    () => historyMeasurements(history.snapshots, key, false, true),
     [history.snapshots, key],
   );
-  const recordedPoints = useMemo(
-    () => historyMeasurements(history.snapshots, key, true),
-    [history.snapshots, key],
-  );
-  // Only a mode with measurements is offered; an empty one never blanks the chart.
-  const modes = [false, true].filter(
-    (mode) => (mode ? recordedPoints : recalculatedPoints).length > 0,
-  );
-  const recorded = modes.includes(preferRecorded)
-    ? preferRecorded
-    : (modes[0] ?? preferRecorded);
-  const measurements = recorded ? recordedPoints : recalculatedPoints;
   const [selection, setSelection] = useState<{
     id: string;
     runId: string;
@@ -172,46 +157,45 @@ export function BenchmarkConfigurationPage({
   const shownRow = selected?.row ?? rowOf(report, key) ?? row;
   // A point is dated by its observation, not by later evidence it borrows.
   const shownAt = selected ? selected.snapshot.createdAt : shownRow.measuredAt;
-  // The cases a shown point borrows from later cells: measured, but not then.
-  const shownBackfilled =
-    selected && !recorded
-      ? (selected.snapshot.backfilledVersionIds?.length ?? 0)
-      : 0;
-  // A dated point lists the verdicts that stood at its date.
   // The attempts that measured something: a cell kept only for its spend,
   // such as a call the provider refused, is no result to list.
   const results = shownRow.resultAttemptIds ?? shownRow.attemptIds;
-  const attemptQuery: ResultQuery =
-    recorded && selected
-      ? { attemptIds: results, asOf: selected.snapshot.createdAt }
-      : { attemptIds: results };
+  const attemptQuery: ResultQuery = { attemptIds: results };
   // Every standing attempt as blocks, one per pool case in board order: a
   // case measured once shows that one repetition, a case never run is a gap.
   const standing = shownRow.attemptIds;
   const summaries = useQuery({
     queryKey: [...benchmarkKeys, "cells", attemptQuery, standing],
-    // A dated point lists the verdicts that stood at its date.
+    // Current verdicts match the chart's recalculation of the same evidence.
     queryFn: () => listByIds(standing, attemptQuery.asOf ?? null),
     enabled: standing.length > 0,
   });
   const cells = useMemo(() => {
     const pool = new Set(shownReport.cohort?.versionIds ?? []);
-    const classOrder = new Map(
-      (shownReport.cohort?.workClasses ?? []).map((id, index) => [id, index]),
+    // Use the service's eligible cases, just like the counters and ratings.
+    // Author-excluded cases are not unmeasured tasks for this model.
+    const eligible = new Set([
+      ...shownRow.scoredVersionIds,
+      ...shownRow.missingVersionIds,
+      ...(shownRow.unsupportedVersionIds ?? []),
+    ]);
+    const order = poolTaskOrder(versions, shownReport.cohort).filter(
+      (version) => pool.has(version.id) && eligible.has(version.id),
     );
-    const order = versions
-      .filter((version) => pool.has(version.id))
-      .sort(
-        (a, b) =>
-          (classOrder.get(a.manifest.workClassId) ?? 99) -
-            (classOrder.get(b.manifest.workClassId) ?? 99) ||
-          a.manifest.name.localeCompare(b.manifest.name),
-      )
-      .map((version) => ({ id: version.id, name: version.manifest.name }));
     return taskCells(order, summaries.data ?? [], null);
-  }, [shownReport.cohort, versions, summaries.data]);
+  }, [
+    shownReport.cohort,
+    shownRow.scoredVersionIds,
+    shownRow.missingVersionIds,
+    shownRow.unsupportedVersionIds,
+    versions,
+    summaries.data,
+  ]);
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
-  const activity = useMemo(() => rowActivity(row, runs), [row, runs]);
+  const activity = useMemo(
+    () => modelActivity({ key, row, configurations: [] }, runs),
+    [key, row, runs],
+  );
   // The run the dialog starts from: the one measuring the model now, else
   // its newest run whose window is still open.
   const open = useMemo(() => rowOpenRun(row, runs, Date.now()), [row, runs]);
@@ -220,13 +204,16 @@ export function BenchmarkConfigurationPage({
   // The run measuring this model now, else one that plans its gaps.
   const openRunId = activity.runId ?? queuedRunId;
   const statusHint = t(
-    `configuration.statusHint.${selected && !recorded ? "retrospective" : shownRow.status}`,
+    `configuration.statusHint.${selected ? "retrospective" : shownRow.status}`,
     { defaultValue: "" },
   );
   const standings: BoardStanding[] = useMemo(() => {
     const boards = boardsFor(shownReport.cohort);
     return boards.map((board) => {
-      const ranked = rankRows(shownReport.rows, board);
+      const rows = reportModels(shownReport).map((model) =>
+        model.key === modelKey(shownRow.configuration) ? shownRow : model.row,
+      );
+      const ranked = rankRows(rows, board);
       const entry = ranked.find(
         (result) => rowKey(result.row) === rowKey(shownRow),
       );
@@ -238,16 +225,11 @@ export function BenchmarkConfigurationPage({
         points: entry?.points ?? null,
         rank: entry?.rank ?? null,
         of: ranked.filter((result) => result.rank != null).length,
-        share: entry?.share ?? null,
       };
     });
   }, [shownReport, shownRow, t]);
   const overall = standings.find((board) => board.id === "overall");
   const axes = standings.filter((board) => board.id !== "overall");
-  const place = (board: BoardStanding | undefined) =>
-    board?.rank == null
-      ? t("configuration.notRanked")
-      : t("configuration.rank", { rank: board.rank, of: board.of });
   const modelName =
     shownRow.configuration.modelName ??
     names.get(modelNameKey(shownRow.configuration));
@@ -272,46 +254,15 @@ export function BenchmarkConfigurationPage({
         : t("unknown"),
     ],
     [t("fields.provider"), shownRow.configuration.providerId],
-    // A model without an effort control has none; the CLI's "default" is
-    // no level and never printed as one.
-    [
-      t("fields.effort"),
-      explicitEffort(shownRow.configuration.effort) ??
-        (shownRow.configuration.effort ? t("unknown") : t("run.noEffort")),
-    ],
-    [
-      t("fields.fastMode"),
-      shownRow.configuration.fastMode == null
-        ? t("unknown")
-        : shownRow.configuration.fastMode
-          ? t("enabled")
-          : t("disabled"),
-    ],
-    [
-      t("configuration.runtime"),
-      shownRow.configuration.inventoryRevision
-        ? shortId(shownRow.configuration.inventoryRevision)
-        : t("unknown"),
-    ],
     [
       t("configuration.context"),
       formatContext(fact?.contextTokens) ?? t("unknown"),
     ],
-    [
-      t("configuration.cases"),
-      `${shownRow.scored - shownBackfilled} / ${shownRow.planned}`,
-    ],
+    [t("configuration.cases"), `${shownRow.scored} / ${shownRow.planned}`],
     // Attempts out of every case's three: the unit the grid counts in.
     [
       t("configuration.attempts"),
       `${results.length} / ${shownRow.planned * REQUIRED_REPETITIONS}`,
-    ],
-    // The conditions the standing run flew under.
-    [
-      t("configuration.parallelism"),
-      shownRow.parallelism == null
-        ? t("unknown")
-        : String(shownRow.parallelism),
     ],
     [
       t("configuration.measured"),
@@ -371,7 +322,11 @@ export function BenchmarkConfigurationPage({
                 {t("configuration.ratingLabel")}
               </dt>
               <dd className="font-display text-2xl tabular-nums">
-                {overall?.points ?? "–"}
+                <RatingValue
+                  points={overall?.points ?? null}
+                  row={shownRow}
+                  board={{ workClass: null }}
+                />
               </dd>
               {overall?.points != null ? (
                 <ShareMarks
@@ -415,7 +370,6 @@ export function BenchmarkConfigurationPage({
                         activity.running > 0
                           ? "activity.running"
                           : "activity.left",
-                        { open: activity.open },
                       )
                     : t("configuration.queuedShort")}
                 </Button>
@@ -427,52 +381,16 @@ export function BenchmarkConfigurationPage({
           ) : null}
         </div>
       </header>
-      {modes.length > 0 ? (
+      {measurements.length > 0 ? (
         <section aria-label={t("history.title")}>
           <PointsHistoryChart
             releases={releaseMarks}
-            toolbar={
-              <div className="flex items-center gap-0.5">
-                {modes.map((mode) => (
-                  <Tooltip
-                    key={String(mode)}
-                    delayDuration={TOOLTIP_DELAY.held}
-                  >
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        aria-pressed={recorded === mode}
-                        data-state={recorded === mode ? "on" : "off"}
-                        className={cn(
-                          toggleVariants({ size: "sm" }),
-                          "h-7 px-2.5 text-xs",
-                        )}
-                        onClick={() => {
-                          setRecorded(mode);
-                          setSelection(null);
-                        }}
-                      >
-                        {t(mode ? "history.recorded" : "history.recalculated")}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-72">
-                      {t(
-                        mode
-                          ? "history.recordedDescription"
-                          : "history.recalculatedDescription",
-                      )}
-                    </TooltipContent>
-                  </Tooltip>
-                ))}
-              </div>
-            }
             points={measurements.map((entry) => {
               // A point counts only the cases finished by its date; the
               // cases its recalculation borrows from later cells are named
               // apart, never as measured then.
-              const backfilled = recorded
-                ? 0
-                : (entry.snapshot.backfilledVersionIds?.length ?? 0);
+              const backfilled =
+                entry.snapshot.backfilledVersionIds?.length ?? 0;
               return {
                 id: pointId(entry.snapshot),
                 at: entry.snapshot.createdAt,
@@ -481,9 +399,7 @@ export function BenchmarkConfigurationPage({
                 scored: entry.row.scored - backfilled,
                 planned: entry.row.planned,
                 backfilled,
-                revised: recorded
-                  ? 0
-                  : (entry.snapshot.revisedVersionIds?.length ?? 0),
+                revised: entry.snapshot.revisedVersionIds?.length ?? 0,
               };
             })}
             selectedId={selected ? pointId(selected.snapshot) : null}
@@ -496,7 +412,7 @@ export function BenchmarkConfigurationPage({
           {t("configuration.current")}
         </Button>
       ) : null}
-      {shownRow.status !== "comparable" ? (
+      {!["comparable", "preliminary", "untested"].includes(shownRow.status) ? (
         <div className="flex flex-wrap items-center gap-2">
           {statusHint ? (
             <Tooltip delayDuration={TOOLTIP_DELAY.held}>
@@ -526,44 +442,28 @@ export function BenchmarkConfigurationPage({
             {axes.map((board) => (
               <li key={board.id} className="py-3">
                 <div className="flex items-center gap-4">
-                  <div className="flex w-52 shrink-0 items-center gap-2">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
                     <BoardIcon
                       board={board}
                       className="size-4 shrink-0 text-muted-foreground"
                     />
-                    <div className="min-w-0">
-                      <div className="font-medium leading-tight">
-                        {board.label}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {place(board)}
-                      </div>
+                    <div className="min-w-0 font-medium leading-tight">
+                      {board.label}
                     </div>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    {board.share != null ? (
-                      <>
-                        <ScoreBar
-                          share={board.share}
-                          leading={board.rank === 1}
-                          label={`${board.label}: ${board.points ?? "–"}`}
-                        />
-                        <ShareMarks
-                          className="mt-1.5"
-                          shares={boardShares(shownRow, board)}
-                        />
-                      </>
-                    ) : null}
+                  <div className="shrink-0">
+                    <ShareMarks shares={boardShares(shownRow, board)} />
                   </div>
-                  <span
+                  <RatingValue
+                    points={board.points}
+                    row={shownRow}
+                    board={board}
                     className={cn(
                       "w-14 shrink-0 text-right font-display text-lg font-semibold tabular-nums",
                       board.rank === 1 && "text-chart-1",
                       board.points == null && "text-muted-foreground",
                     )}
-                  >
-                    {board.points ?? "–"}
-                  </span>
+                  />
                 </div>
               </li>
             ))}

@@ -147,7 +147,7 @@ fn fresh_status(id: &str) -> ProviderAccountStatus {
 
 #[tokio::test]
 async fn usage_cooldown_blocks_cli_refresh_until_the_deadline_even_when_forced() {
-    let state = ProviderAccountStatusState::default();
+    let state = AccountStatusCache::default();
     let target = account("a");
     let mut paused = fresh_status("a");
     paused.state = AccountState::Error;
@@ -179,7 +179,7 @@ async fn usage_cooldown_blocks_cli_refresh_until_the_deadline_even_when_forced()
 
 #[tokio::test]
 async fn expired_authorization_releases_the_usage_pause() {
-    let state = ProviderAccountStatusState::default();
+    let state = AccountStatusCache::default();
     let target = account("a");
     let mut paused = fresh_status("a");
     paused.state = AccountState::Error;
@@ -207,7 +207,7 @@ async fn expired_authorization_releases_the_usage_pause() {
 
 #[tokio::test]
 async fn an_account_change_forgets_its_status_and_usage_pause() {
-    let state = ProviderAccountStatusState::default();
+    let state = AccountStatusCache::default();
     let id = "account-change-forgets";
     let _ = claude_resets::record_usage_result(
         id,
@@ -239,7 +239,7 @@ fn failed_usage_keeps_the_new_identity_and_previous_quota() {
 
 #[tokio::test]
 async fn a_slow_account_does_not_block_another_accounts_refresh() {
-    let state = Arc::new(ProviderAccountStatusState::default());
+    let state = Arc::new(AccountStatusCache::default());
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let slow_state = state.clone();
@@ -268,7 +268,7 @@ async fn a_slow_account_does_not_block_another_accounts_refresh() {
 
 #[tokio::test]
 async fn concurrent_forced_refreshes_share_the_same_account_request() {
-    let state = Arc::new(ProviderAccountStatusState::default());
+    let state = Arc::new(AccountStatusCache::default());
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let first_state = state.clone();
@@ -295,7 +295,7 @@ async fn concurrent_forced_refreshes_share_the_same_account_request() {
 
 #[tokio::test]
 async fn a_quota_observation_wins_even_when_refresh_started_in_the_same_millisecond() {
-    let state = ProviderAccountStatusState::default();
+    let state = AccountStatusCache::default();
     let target = account("a");
     let slot = state.refresh_slot(&target.id).await;
     let ready = fresh_status("a");
@@ -315,7 +315,7 @@ async fn a_quota_observation_wins_even_when_refresh_started_in_the_same_millisec
 
 #[tokio::test]
 async fn a_turn_finishing_during_refresh_requires_a_newer_sample() {
-    let state = ProviderAccountStatusState::default();
+    let state = AccountStatusCache::default();
     let target = account("a");
     let slot = state.refresh_slot(&target.id).await;
     let result = state
@@ -360,6 +360,47 @@ fn routing_only_probes_enabled_eligible_accounts_of_the_same_provider() {
     candidate.auth_method = AuthMethod::OAuth;
     assert!(fallback_candidate(&candidate, &current, false));
     assert!(!fallback_candidate(&candidate, &current, true));
+}
+
+#[test]
+fn zai_keys_use_subscription_routing_and_keep_exhaustion_on_failed_refresh() {
+    let mut current = account("current");
+    current.provider_id = "zai-acp".into();
+    current.auth_method = AuthMethod::ApiKey;
+    let mut spare = current.clone();
+    spare.id = "spare".into();
+    assert!(!api_billed(&current, None));
+    assert!(fallback_candidate(&spare, &current, false));
+    assert!(!fallback_candidate(&spare, &current, true));
+    let mut blocked = status("current", 100.0, 5000);
+    blocked.provider_id = "zai-acp".into();
+    let mut ready = status("spare", 20.0, 5000);
+    ready.provider_id = "zai-acp".into();
+    assert_eq!(
+        choose_account(
+            &[current.clone(), spare],
+            &[blocked.clone(), ready],
+            "current",
+            true,
+            None,
+            2000
+        )
+        .unwrap(),
+        AccountSelection::Ready {
+            account_id: "spare".into()
+        }
+    );
+    let mut failed = ProviderAccountStatus::empty("current", "zai-acp", 3000);
+    failed.state = AccountState::Error;
+    failed.error = Some("Z.ai usage unavailable".into());
+    let merged = merge_refresh(Some(&blocked), failed);
+    assert_eq!(merged.state, AccountState::Limited);
+    assert_eq!(merged.limits, blocked.limits);
+    assert!(merged.stale);
+    assert!(matches!(
+        choose_account(&[current], &[merged], "current", false, None, 3500).unwrap(),
+        AccountSelection::Wait { .. }
+    ));
 }
 
 #[test]
@@ -655,4 +696,142 @@ fn reset_outcomes_keep_idempotent_success_distinct() {
     let result: ResetResult = serde_json::from_value(json!({"outcome":"alreadyRedeemed"})).unwrap();
     assert_eq!(result.outcome, ResetOutcome::AlreadyRedeemed);
     assert!(serde_json::from_value::<ResetResult>(json!({"outcome":"unknown"})).is_err());
+}
+
+#[tokio::test]
+async fn authorization_quota_and_invalidation_stay_in_the_executing_runtime() {
+    for (blocked, executing) in [
+        (AccountRuntime::Native, AccountRuntime::Repository),
+        (AccountRuntime::Repository, AccountRuntime::Native),
+    ] {
+        let state = ProviderAccountStatusState::default();
+        let target = account("same-account");
+        let mut signed_out = fresh_status(&target.id);
+        signed_out.state = AccountState::NeedsAuth;
+        state
+            .runtime(blocked)
+            .refresh(&target, false, async { signed_out.clone() })
+            .await;
+        let ready = state
+            .runtime(executing)
+            .refresh(&target, false, async { fresh_status(&target.id) })
+            .await;
+        assert!(matches!(
+            choose_account(
+                std::slice::from_ref(&target),
+                &[ready],
+                &target.id,
+                false,
+                None,
+                now_ms()
+            ),
+            Ok(AccountSelection::Ready { .. })
+        ));
+        assert!(choose_account(
+            std::slice::from_ref(&target),
+            std::slice::from_ref(&signed_out),
+            &target.id,
+            false,
+            None,
+            now_ms()
+        )
+        .is_err());
+
+        state.runtime(executing).record_limited(&target).await;
+        assert_eq!(
+            state.runtime(blocked).cache.lock().await[&target.id],
+            signed_out
+        );
+        state.runtime(blocked).invalidate(&target.id).await;
+        let limited = state
+            .runtime(executing)
+            .refresh(&target, false, async {
+                panic!("fresh rejection must block dispatch without polling")
+            })
+            .await;
+        assert!(matches!(
+            choose_account(
+                std::slice::from_ref(&target),
+                &[limited],
+                &target.id,
+                false,
+                None,
+                now_ms()
+            ),
+            Ok(AccountSelection::Wait { .. })
+        ));
+
+        // Failed telemetry cannot undo a known quota rejection in this runtime.
+        state.runtime(executing).invalidate(&target.id).await;
+        let failed = state
+            .runtime(executing)
+            .refresh(&target, false, async {
+                let mut status = fresh_status(&target.id);
+                status.state = AccountState::Error;
+                status
+            })
+            .await;
+        assert!(matches!(
+            choose_account(
+                std::slice::from_ref(&target),
+                &[failed],
+                &target.id,
+                false,
+                None,
+                now_ms()
+            ),
+            Ok(AccountSelection::Wait { .. })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn a_native_refresh_does_not_hold_the_repository_gate_for_the_same_account() {
+    let state = ProviderAccountStatusState::default();
+    let slot = state.native.refresh_slot("a").await;
+    let _guard = slot.gate.lock().await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        state
+            .repository
+            .refresh(&account("a"), false, async { fresh_status("a") }),
+    )
+    .await;
+    assert_eq!(result.unwrap().state, AccountState::Ready);
+}
+
+#[test]
+fn repository_claude_usage_recognizes_auth_and_model_specific_quota() {
+    let mut target = account("sandbox-account");
+    target.provider_id = "claude-acp".into();
+    let usage = json!({"subscription_type":"pro","rate_limits_available":true,"rate_limits":{"limits":[{"kind":"session","percent":12},{"kind":"weekly_all","percent":42},{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Sonnet"}}}]}});
+    let status =
+        claude::repository_status(&target, &json!({"subscriptionType":"claude_pro"}), &usage);
+    assert_eq!(status.subscription.as_deref(), Some("Claude Pro"));
+    assert!(matches!(
+        choose_account(
+            std::slice::from_ref(&target),
+            std::slice::from_ref(&status),
+            &target.id,
+            false,
+            Some("haiku"),
+            now_ms()
+        ),
+        Ok(AccountSelection::Ready { .. })
+    ));
+    assert!(matches!(
+        choose_account(
+            std::slice::from_ref(&target),
+            &[status],
+            &target.id,
+            false,
+            Some("sonnet"),
+            now_ms()
+        ),
+        Ok(AccountSelection::Wait { .. })
+    ));
+    assert_eq!(
+        claude::repository_status(&target, &Value::Null, &usage).state,
+        AccountState::NeedsAuth
+    );
 }

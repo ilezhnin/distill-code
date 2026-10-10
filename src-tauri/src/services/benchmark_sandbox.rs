@@ -562,7 +562,11 @@ pub(crate) async fn kill(mode: &str, id: &str) -> io::Result<()> {
 /// The helper is its own Windows process and finishes the cgroup kill after
 /// the app exits. Explicit cancellation awaits `kill` instead.
 pub(crate) fn kill_detached(id: &str) {
-    if valid_id(id).is_err() {
+    kill_mode_detached("session", id);
+}
+
+pub(crate) fn kill_mode_detached(mode: &str, id: &str) {
+    if !["session", "check", "login"].contains(&mode) || valid_id(id).is_err() {
         return;
     }
     let mut command = std::process::Command::new("wsl.exe");
@@ -574,7 +578,7 @@ pub(crate) fn kill_detached(id: &str) {
             "root",
             "--exec",
             "/usr/local/sbin/bench-kill",
-            "session",
+            mode,
             id,
         ])
         .stdin(Stdio::null())

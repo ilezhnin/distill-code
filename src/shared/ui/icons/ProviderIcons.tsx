@@ -435,6 +435,17 @@ export function KimiIcon({ className = "" }: { className?: string }) {
 }
 
 const PROVIDER_ICON_MAP: Record<string, (className: string) => ReactNode> = {
+  "zai-acp": (className) => (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 4h16v3L9 17h11v3H4v-3L15 7H4V4Z" fill="currentColor" />
+    </svg>
+  ),
   "kimi-acp": (className) => <KimiIcon className={className} />,
   "kimi-code": (className) => <KimiIcon className={className} />,
   kimi: (className) => <KimiIcon className={className} />,

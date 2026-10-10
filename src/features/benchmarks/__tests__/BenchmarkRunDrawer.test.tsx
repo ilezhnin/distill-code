@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import type { Attempt, BenchmarkDefinition, BenchmarkRun } from "../types";
 import { BenchmarkRunDrawer } from "../ui/BenchmarkRunDrawer";
-import { compactElapsed } from "../ui/BenchmarkTaskGrid";
+import { compactElapsed, type TaskReference } from "../ui/BenchmarkTaskGrid";
 import { attempt, configuration, definition, run } from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
@@ -43,6 +43,7 @@ function attempts(): Attempt[] {
       versionId: "version-a",
       startedAt: 10_000,
       finishedAt: 22_000,
+      durationMs: 11_000,
     }),
     at({
       id: "a-2",
@@ -65,7 +66,7 @@ function attempts(): Attempt[] {
   ];
 }
 
-function show(subject: BenchmarkRun) {
+function show(subject: BenchmarkRun, taskOrder?: TaskReference[]) {
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(subject);
   render(
     <QueryClientProvider
@@ -74,6 +75,7 @@ function show(subject: BenchmarkRun) {
       }
     >
       <BenchmarkRunDrawer
+        taskOrder={taskOrder}
         runId={subject.id}
         onClose={vi.fn()}
         onEvidence={vi.fn()}
@@ -134,30 +136,31 @@ it("lists one model's run by test, in its order, timing the test running now", a
       .getAllByRole("button", { name: /^Task \d+: / })
       .map((item) => item.getAttribute("aria-label")),
   ).toEqual(["Task 1: Alpha", "Task 2: Bravo", "Task 3: Charlie"]);
-  // Dots per repetition the measurement needs: Alpha's one pass and two
-  // never started, Bravo's one working, Charlie's three waiting. The frame
-  // reads the whole case the same way.
+  // A run shows only the attempts it actually allocated.
   const dots = (name: string) =>
     [...block(name).querySelectorAll("[data-dot]")].map((dot) =>
       dot.getAttribute("data-dot"),
     );
-  expect(dots("Alpha")).toEqual(["passed", "queued", "queued"]);
-  expect(dots("Bravo")).toEqual(["running", "queued", "queued"]);
-  expect(dots("Charlie")).toEqual(["queued", "queued", "queued"]);
-  // One pass of three is not a solved case yet: its frame stays grey.
-  expect(block("Alpha").className).toMatch(/border-muted-foreground/);
+  expect(dots("Alpha")).toEqual(["passed"]);
+  expect(dots("Bravo")).toEqual(["running"]);
+  expect(dots("Charlie")).toEqual(["queued"]);
+  // This run allocated one attempt of Alpha, and it passed.
+  expect(block("Alpha").className).toMatch(/border-success/);
   expect(block("Bravo").className).toMatch(/border-info/);
   expect(block("Charlie").className).toMatch(/border-muted-foreground/);
-  expect(row("Alpha").getByText("12 s")).toBeInTheDocument();
+  expect(row("Alpha").getByText("11 s")).toBeInTheDocument();
   // A minute and more reads as m:ss, so a block never wraps its clock.
   expect(compactElapsed(86_000)).toBe("1:26");
   expect(compactElapsed(3_725_000)).toBe("1:02:05");
   expect(block("Bravo")).toHaveAttribute("aria-current", "step");
   // A queued test is a block already, its evidence empty until it runs.
   expect(block("Charlie")).toBeEnabled();
-  // The counts a run leads with, in attempts: three tests need nine.
-  expect(screen.getByText("In progress").nextSibling).toHaveTextContent("1/ 9");
-  expect(screen.getByText("Passed").nextSibling).toHaveTextContent("1/ 9");
+  // Every summary count refers to the same three actual attempts.
+  expect(screen.getByText("In progress").nextSibling).toHaveTextContent(/^1$/);
+  expect(screen.getByText("Passed").nextSibling).toHaveTextContent(/^1$/);
+  expect(screen.getByText("Not started").nextSibling).toHaveTextContent(/^1$/);
+  expect(screen.getByText("Failed").nextSibling).toHaveTextContent(/^0$/);
+  expect(screen.queryByText("Finished")).not.toBeInTheDocument();
   // One model's run names it once, in the title, not on every block.
   expect(screen.queryByText(/claude-acp/)).not.toBeInTheDocument();
   expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
@@ -318,4 +321,74 @@ it("shows a run the usage limit stopped as stopped, for the operator", async () 
     stopped,
   );
   expect(screen.getByText("Needs attention")).toBeInTheDocument();
+});
+
+it("keeps the pool task number and uses measured time and priced cost in a filtered run", async () => {
+  const rows = await benchmarkApi.listAttempts({});
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(
+    rows.map((row) => ({ ...row, cost: 0.04 })),
+  );
+  show(
+    {
+      ...run,
+      attempts: [
+        at({
+          id: "a-1",
+          versionId: "version-a",
+          startedAt: 10_000,
+          finishedAt: 22_000,
+          durationMs: 11_000,
+          usage: { ...attempt.usage, cost: null },
+        }),
+      ],
+    },
+    [{ id: "version-a", name: "Alpha", number: 23 }],
+  );
+  expect(await found("Alpha")).toHaveAttribute("aria-label", "Task 23: Alpha");
+  expect(row("Alpha").getByText("11 s")).toBeInTheDocument();
+  expect(await row("Alpha").findByText("$0.04")).toBeInTheDocument();
+});
+
+it("partitions the actual attempts without counting failed ones a second time", async () => {
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+  show({
+    ...run,
+    state: "running",
+    attempts: [
+      at({
+        id: "failed",
+        versionId: "version-a",
+        repetition: 0,
+        phase: "terminal",
+        outcome: "fail",
+      }),
+      at({
+        id: "working",
+        versionId: "version-a",
+        repetition: 1,
+        phase: "running",
+        outcome: null,
+        finishedAt: null,
+      }),
+      at({
+        id: "queued",
+        versionId: "version-a",
+        repetition: 2,
+        phase: "pending",
+        outcome: null,
+        finishedAt: null,
+      }),
+    ],
+  });
+  await found("Alpha");
+  for (const [label, value] of [
+    ["Not started", "1"],
+    ["In progress", "1"],
+    ["Passed", "0"],
+    ["Failed", "1"],
+  ]) {
+    expect(screen.getByText(label).nextSibling?.textContent).toBe(value);
+  }
+  expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
+  expect(screen.queryByText("Finished")).not.toBeInTheDocument();
 });

@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ProviderCreditBalance } from "@/features/status/lib/rateLimitTypes";
 
-export const MANAGED_ACCOUNT_PROVIDERS = ["codex-acp", "claude-acp"] as const;
+export const MANAGED_ACCOUNT_PROVIDERS = [
+  "codex-acp",
+  "claude-acp",
+  "zai-acp",
+] as const;
 
 export interface ProviderAccount {
   id: string;

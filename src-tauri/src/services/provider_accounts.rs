@@ -88,6 +88,14 @@ pub const MANAGED_AUTH_ENV_KEYS: &[&str] = &[
     "CODEX_CONFIG",
     "CODEX_APP_SERVER_LOGIN_ISSUER",
     "CODEX_APP_SERVER_DEV_OPEN_APP_URL",
+    "ZAI_API_KEY",
+    "ZAI_CODING_PLAN_API_KEY",
+    "DISTILL_ZAI_API_KEY",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_CONFIG_CONTENT",
+    "OPENCODE_AUTH_JSON",
+    "OPENCODE_PERMISSION",
 ];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,7 +149,7 @@ fn now_ms() -> u64 {
 }
 
 pub fn supports_managed_accounts(provider_id: &str) -> bool {
-    matches!(provider_id, "codex-acp" | "claude-acp")
+    matches!(provider_id, "codex-acp" | "claude-acp" | "zai-acp")
 }
 
 /// Providers whose own CLI keeps the sign-in (Grok, Kimi). Distill names that
@@ -301,7 +309,7 @@ fn read_store(root: &Path) -> Result<ProviderAccountsSnapshot, String> {
         account.enabled = true;
         account.auto_switch = true;
     }
-    for provider in ["codex-acp", "claude-acp"] {
+    for provider in ["codex-acp", "claude-acp", "zai-acp"] {
         if let Some(first) = snapshot
             .accounts
             .iter()
@@ -498,6 +506,13 @@ fn scoped_env_at(
             .any(|removed| env_key::matches(key, removed))
     });
     let home = prepare_home(root, account)?;
+    if account.provider_id == "zai-acp" {
+        if account.auth_method != AuthMethod::ApiKey {
+            return Err("Z.ai Coding Plan requires a Z.ai API key".into());
+        }
+        let key = read_api_key(root, account)?;
+        return Ok(super::zai::scoped_env(&home, base, key));
+    }
     let home_key = if account.provider_id == "codex-acp" {
         "CODEX_HOME"
     } else {
@@ -648,6 +663,9 @@ fn add_account_at(
     api_key: Option<String>,
 ) -> Result<ProviderAccount, String> {
     validate_provider(&provider_id)?;
+    if provider_id == "zai-acp" && auth_method != AuthMethod::ApiKey {
+        return Err("Z.ai Coding Plan requires a Z.ai API key".into());
+    }
     if auth_method == AuthMethod::OAuth && api_key.is_some() {
         return Err("OAuth accounts do not accept an API key".into());
     }
@@ -997,6 +1015,61 @@ fn unprotect_secret(bytes: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zai_rejects_browser_auth_before_creating_an_account() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(add_account_at(
+            root.path(),
+            "zai-acp".into(),
+            "GLM".into(),
+            AuthMethod::OAuth,
+            None
+        )
+        .is_err());
+        assert!(read_store(root.path()).unwrap().accounts.is_empty());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn zai_key_is_encrypted_isolated_and_can_be_signed_out() {
+        let root = tempfile::tempdir().unwrap();
+        let account = add_account_at(
+            root.path(),
+            "zai-acp".into(),
+            "GLM".into(),
+            AuthMethod::ApiKey,
+            Some("test-zai-key".into()),
+        )
+        .unwrap();
+        let secret = fs::read(secret_path(root.path(), &account).unwrap()).unwrap();
+        assert!(!secret
+            .windows(b"test-zai-key".len())
+            .any(|bytes| bytes == b"test-zai-key"));
+        let env: HashMap<_, _> = scoped_env_at(
+            root.path(),
+            &account,
+            vec![
+                ("ANTHROPIC_API_KEY".into(), "other-account".into()),
+                ("ZAI_API_KEY".into(), "other-zai-account".into()),
+                ("OPENCODE_CONFIG".into(), "external.json".into()),
+            ],
+        )
+        .unwrap()
+        .into_iter()
+        .collect();
+        assert_eq!(env["DISTILL_ZAI_API_KEY"], "test-zai-key");
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!env.contains_key("ZAI_API_KEY"));
+        assert!(!env.contains_key("OPENCODE_CONFIG"));
+        assert_eq!(
+            read_store(root.path()).unwrap().defaults["zai-acp"],
+            account.id
+        );
+        clear_api_credentials_at(root.path(), &account).unwrap();
+        assert!(scoped_env_at(root.path(), &account, vec![]).is_err());
+        assert_eq!(read_store(root.path()).unwrap().accounts[0].id, account.id);
+    }
 
     #[test]
     fn repeated_subscription_add_resumes_the_same_pending_account() {

@@ -126,6 +126,59 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
+describe("dispatchPrompt Ultracode provider boundary", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      queuedMessageBySession: {},
+    });
+    mocks.acpSendMessage.mockResolvedValue(undefined);
+  });
+
+  it.each([
+    "zai-acp",
+    "kimi-acp",
+    "codex-acp",
+    "claude-acp",
+    undefined,
+  ])("uses the session harness %s before appending a synthetic keyword", async (harnessId) => {
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "effort-session",
+          title: "Example",
+          executionTarget: harnessId ? { harnessId } : undefined,
+          createdAt: "now",
+          updatedAt: "now",
+          messageCount: 0,
+          ultracodeArmed: true,
+          reasoningEffort: {
+            configId: "effort",
+            currentValue: "max",
+            options: [
+              { id: "low", name: "Low" },
+              { id: "max", name: "Max" },
+            ],
+          },
+        },
+      ],
+    });
+    await dispatchPrompt("effort-session", "Explain this function", {
+      // The pending assistant label is not the session's execution target.
+      providerId: harnessId === "claude-acp" ? "zai-acp" : "claude-acp",
+    });
+    expect(mocks.acpSendMessage).toHaveBeenCalledWith(
+      "effort-session",
+      harnessId === "claude-acp"
+        ? "Explain this function\n\nultracode"
+        : "Explain this function",
+      expect.any(Object),
+    );
+  });
+});
+
 describe("dispatchPrompt pre-commit rejection", () => {
   beforeEach(() => {
     vi.clearAllMocks();

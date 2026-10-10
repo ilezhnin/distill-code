@@ -24,3 +24,4 @@ pub(crate) mod root_migration;
 pub mod shell_env;
 pub(crate) mod upstream_names;
 pub(crate) mod windows_names;
+pub(crate) mod zai;

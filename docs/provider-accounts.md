@@ -20,12 +20,11 @@ then shows Sign in on the same profile. Busy accounts reject credential changes.
 Signing back into an API account requires a new key. Account cards do not offer
 editing or removal, and the reported identity is shown only once.
 
-Set a provider default for new chats, or use the account selector in an existing
-chat. Existing chats without an account ask the user to choose a connected
-account before continuing. Concurrent chats can
-use different accounts. A switch preserves the Distill transcript and selected
-model; native CLI session state does not move between accounts. Switching a busy
-chat is rejected until its current turn ends.
+Manage accounts only in Settings > Providers: select a provider default for new
+chats and configure automatic switching there. Chat composers have no account
+selector or account-management dialog. Concurrent chats can use different
+accounts. An automatic switch preserves the Distill transcript and selected
+model; native CLI session state does not move between accounts.
 
 ## Limits and automatic switching
 
@@ -90,7 +89,7 @@ Settings reuses the existing native usage poller for Grok and Kimi and the
 account monitor for Claude and Codex. One refresh action updates both, with one
 last-checked timestamp beside it. No provider section starts another poller.
 
-Account cards, the account picker, and status details share the same usage
+Account cards and status details share the same usage
 projection and quota row component. Reported durations identify the five-hour,
 weekly, and monthly windows; provider field names are not display labels.
 Only reported windows appear. The status bar selects the provider's default
@@ -136,6 +135,14 @@ Host sessions persist `account_id` in SQLite. Processes, event routing, model
 inventories and native session IDs are scoped to the provider and account.
 Inherited credentials from a different account are removed for managed entries.
 Updating credentials or removing an account is blocked while it runs a turn.
+
+Repository benchmarks use the selected account's authorization and quota inside
+the dedicated WSL sandbox. Windows and WSL snapshots have separate caches and
+refresh gates for the same account ID. A Windows sign-in failure cannot reject
+an authenticated WSL session; a WSL quota rejection cannot overwrite the Windows
+status panel. Owned sessions retain their frozen account. Sandbox status reads
+use native CLI control requests without prompts or quota redemption, and their
+Linux processes are stopped on completion, timeout or cancellation.
 
 Benchmarks run Codex on the same account home, and Codex loads that home into
 every thread. A Codex account is benchmarked only while its home holds no

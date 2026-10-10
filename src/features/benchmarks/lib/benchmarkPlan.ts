@@ -1,10 +1,28 @@
 // What a run plan owes, counted the way `preview_run` counts it before the
 // service admits the plan.
-import type { BenchmarkVersion, Configuration } from "../types";
+import type { BenchmarkDraft, BenchmarkVersion, Configuration } from "../types";
 import { authoredByCandidate } from "./benchmarkEligibility";
 
 /** Judge calls reserved per judged case (runner::MAX_JUDGES). */
 export const JUDGE_CALLS = 3;
+
+/** Exact frozen seats, or the maximum discovery reservation for legacy cases. */
+export function judgeCalls(draft: BenchmarkDraft): number {
+  if (draft.evaluator.kind !== "rubric") return 0;
+  const environment = draft.environment;
+  const panel =
+    environment &&
+    typeof environment === "object" &&
+    "judgePanel" in environment
+      ? environment.judgePanel
+      : undefined;
+  if (panel && typeof panel === "object" && "judges" in panel) {
+    const judges = panel.judges;
+    if (Array.isArray(judges) && judges.length >= 2 && judges.length <= 3)
+      return judges.length;
+  }
+  return JUDGE_CALLS;
+}
 
 /**
  * Repetitions a measurement needs before a case counts, and a case counts
@@ -48,7 +66,7 @@ export function plannedTurns(
         ? total
         : total +
           (version.manifest.workflow?.steps.length ?? 1) +
-          (version.manifest.evaluator.kind === "rubric" ? JUDGE_CALLS : 0),
+          judgeCalls(version.manifest),
     0,
   );
 }

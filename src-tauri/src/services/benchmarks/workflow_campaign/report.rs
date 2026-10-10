@@ -12,6 +12,16 @@ pub(super) fn protocol(weights: RoleWeights) -> ReportProtocol {
     value
 }
 
+pub(super) fn protocol_for_cases(weights: RoleWeights, cases: &[Case]) -> ReportProtocol {
+    let mut value = protocol(weights);
+    if cases.iter().any(|case| case.judging.is_some()) {
+        value.recipe = "workflow-first-trajectory-frozen-panel-v2".into();
+        value.score_selection =
+            "first_terminal_snapshot_published_evaluator_and_frozen_panel".into();
+    }
+    value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
@@ -26,6 +36,71 @@ pub struct Report {
     pub groups: usize,
     pub dispatch_allowed: bool,
     pub limitations: Vec<String>,
+    /// Judging is measurement overhead, separate from executor utility.
+    /// Omitted for old objective reports to preserve their artifact hashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub judging: Vec<JudgingOverhead>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JudgingOverhead {
+    pub attempt_id: String,
+    pub reserved_calls: u32,
+    pub dispatched_calls: u32,
+    pub duration_ms: Option<f64>,
+    pub cost: Option<f64>,
+    pub evaluation_ids: Vec<String>,
+}
+
+fn judging_overhead(root: &Attempt, frozen: &FrozenJudging, as_of: i64) -> JudgingOverhead {
+    let calls: Vec<_> = root
+        .evaluations
+        .iter()
+        .filter(|e| {
+            e.created_at <= as_of
+                && matches!(e.provenance.as_str(), "judge" | "judge_failure")
+                && e.details.as_ref().is_some_and(|d| {
+                    d["requestKey"].as_str().is_some_and(|key| !key.is_empty())
+                        && d["dispatched"] != false
+                })
+        })
+        .collect();
+    let sum = |values: Vec<Option<f64>>| -> Option<f64> {
+        values
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .map(|v| v.iter().sum())
+    };
+    JudgingOverhead {
+        attempt_id: root.id.clone(),
+        reserved_calls: frozen.calls,
+        dispatched_calls: calls.len() as u32,
+        duration_ms: sum(calls
+            .iter()
+            .map(|e| {
+                e.details
+                    .as_ref()?
+                    .get("durationMs")?
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+            })
+            .collect()),
+        cost: sum(calls
+            .iter()
+            .map(|e| {
+                (e.details.as_ref()?["usageComplete"] == true)
+                    .then_some(
+                        e.usage
+                            .as_ref()?
+                            .cost
+                            .filter(|v| v.is_finite() && *v >= 0.0),
+                    )
+                    .flatten()
+            })
+            .collect()),
+        evaluation_ids: calls.iter().map(|e| e.id.clone()).collect(),
+    }
 }
 fn incomplete(message: &str) -> BenchmarkError {
     BenchmarkError::new("incomplete_workflow_evidence", message)
@@ -80,7 +155,7 @@ impl Store {
         }
         if fit.model.snapshot_hash != plan.model_snapshot_hash
             || class_changed
-            || hash(&protocol(fit.model.weights))? != hash(&plan.evaluation)?
+            || hash(&protocol_for_cases(fit.model.weights, &plan.cases))? != hash(&plan.evaluation)?
         {
             return Err(invalid(
                 "Workflow report protocol or fitted snapshot changed",
@@ -90,6 +165,7 @@ impl Store {
         let mut trace_hashes = Vec::new();
         let mut first_runs = BTreeMap::new();
         let mut fallback_cases = BTreeSet::new();
+        let mut judging = Vec::new();
         for (index, cell) in plan.cells.iter().enumerate() {
             let request = plan.run_request(index)?;
             let row = sqlx::query("SELECT request_hash,result_json,result_hash FROM workflow_campaign_cells WHERE request_key=?").bind(&request.request_key).fetch_one(&self.pool).await?;
@@ -108,10 +184,26 @@ impl Store {
                 || trace.root.configuration != request.configurations[0]
                 || hash(&version.manifest)? != case.manifest_hash
                 || version.content_hash != case.content_hash
+                || FrozenJudging::for_draft(&version.manifest)? != case.judging
             {
                 return Err(invalid("Frozen workflow trajectory integrity check failed"));
             }
             let mut repeat = first_score(&trace.root, &case.evaluator_revision, plan.created_at)?;
+            let mut contributors = vec![&trace.root.configuration];
+            contributors.extend(trace.root.observed.as_ref());
+            for step in &trace.steps {
+                contributors.push(&step.attempt.configuration);
+                contributors.extend(step.attempt.observed.as_ref());
+            }
+            crate::services::benchmarks::judge_panel::frozen(&version.manifest, &contributors)?;
+            crate::services::benchmarks::judge_panel::validate_evidence(
+                &version.manifest,
+                &trace.root,
+                repeat.scored_at,
+            )?;
+            if let Some(frozen) = &case.judging {
+                judging.push(judging_overhead(&trace.root, frozen, repeat.scored_at));
+            }
             if plan.policies[cell.policy_index].mode == "learned"
                 && trace.steps.iter().any(|s| {
                     s.executor_decision
@@ -244,8 +336,11 @@ impl Store {
             .collect();
         policies.extend(keys.iter().map(|k| format!("fixed:{k}")));
         let mut report = Report { campaign_id:plan.id.clone(),plan_hash:saved.plan_hash,artifact_hash:String::new(),created_at:now(),protocol:plan.evaluation.clone(),trace_hashes,
-            policies:summarize_policies(&cases,&plan.evaluation,&policies,&keys,"persona"),groups:cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),cases,dispatch_allowed:false,
+            policies:summarize_policies(&cases,&plan.evaluation,&policies,&keys,"persona"),groups:cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),cases,dispatch_allowed:false,judging,
             limitations:vec!["Declared groups still require independent semantic and grader qualification".into(),"Equal-group paired percentile intervals are exploratory, conditional on recorded repetitions, and unadjusted for multiple comparisons".into(),"Best fixed is reselected within every resample; oracle is the hindsight best registered whole-trajectory policy per case, not a deployable step oracle".into(),"Wall time includes orchestration and interruptions; cost is provider-reported generation cost, with absent resources left unknown".into(),"This research report grants no production promotion or deployment-scope authority".into()] };
+        if !report.judging.is_empty() {
+            report.limitations.push("Frozen final-panel calls, recorded judge durations and reported judge costs are measurement overhead, excluded from executor utility; missing judge resources remain unknown".into());
+        }
         report.artifact_hash = hash(&report)?;
         sqlx::query("INSERT OR IGNORE INTO workflow_campaign_reports(campaign_id,report_json,report_hash) VALUES(?,?,?)").bind(id).bind(serde_json::to_string(&report)?).bind(&report.artifact_hash).execute(&self.pool).await?;
         // Concurrent readers return the same stored artifact, including timestamp.
@@ -256,5 +351,30 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         Ok(serde_json::from_str(&body)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn objective_serialization_and_protocol_remain_unchanged() {
+        let case = serde_json::json!({"versionId":"invented","contentHash":"content",
+            "manifestHash":"manifest","family":"family","group":"group",
+            "evaluatorRevision":"revision","steps":2});
+        let decoded: Case = serde_json::from_value(case.clone()).unwrap();
+        assert!(decoded.judging.is_none());
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), case);
+        let protocol = protocol(RoleWeights::default());
+        assert_eq!(
+            hash(&protocol).unwrap(),
+            hash(&protocol_for_cases(RoleWeights::default(), &[decoded])).unwrap()
+        );
+        let body = serde_json::json!({"campaignId":"campaign","planHash":"plan","artifactHash":"artifact",
+            "createdAt":1,"protocol":protocol,"traceHashes":[],"cases":[],"policies":[],
+            "groups":0,"dispatchAllowed":false,"limitations":[]});
+        let decoded: Report = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), body);
     }
 }

@@ -79,6 +79,18 @@ async fn read_usage(
         .ok_or("Install the Claude provider to read account status")?;
     let home = provider_accounts::account_home(app, account)?;
     let mut command = Command::new(binary);
+    command.env_clear().envs(&env);
+    // Keep the probe outside project settings while preserving account auth.
+    if home.is_dir() {
+        command.current_dir(&home);
+    }
+    read_usage_command(command, refresh_oauth).await
+}
+
+pub(super) async fn read_usage_command(
+    mut command: Command,
+    refresh_oauth: bool,
+) -> Result<(Value, Value, Option<String>), String> {
     command
         .args([
             "--print",
@@ -100,17 +112,10 @@ async fn read_usage(
             "",
             "--no-chrome",
         ])
-        .env_clear()
-        .envs(&env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    // Keep the probe outside project settings while preserving the selected
-    // account's user auth configuration (including API-key precedence).
-    if home.is_dir() {
-        command.current_dir(&home);
-    }
     process::apply_no_window_async(&mut command);
     let mut child = command
         .spawn()
@@ -147,6 +152,26 @@ async fn read_usage(
     let _ = child.kill().await;
     let _ = child.wait().await;
     result
+}
+
+pub(super) fn repository_status(
+    account: &ProviderAccount,
+    identity: &Value,
+    usage: &Value,
+) -> ProviderAccountStatus {
+    let mut status = ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms());
+    status.subscription = plan_label(identity, &Value::Null);
+    if is_api_billed(identity, usage) {
+        status.subscription = Some("API".into());
+        status.state = AccountState::Ready;
+        return status;
+    }
+    if identity.is_null() {
+        status.state = AccountState::NeedsAuth;
+        return status;
+    }
+    // The CLI wraps the HTTP usage document in rate_limits.
+    usage_status(status, usage.get("rate_limits").unwrap_or(usage), now_ms())
 }
 
 /// What a status read needs from the account's files, its native CLI and the

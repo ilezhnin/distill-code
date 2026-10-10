@@ -83,6 +83,7 @@ pub enum BridgeEvent {
 struct PendingRequest {
     reply: oneshot::Sender<Result<Value, Value>>,
     turn: Option<(String, String)>,
+    config_context: Option<(String, Option<String>)>,
 }
 
 type Pending = Mutex<HashMap<u64, PendingRequest>>;
@@ -130,6 +131,7 @@ pub struct Bridge {
     /// it: what the model inventory probed through this bridge was read from.
     executable: Value,
     agent_capabilities: RwLock<Value>,
+    zai: Option<Arc<Mutex<super::zai::ConfigAdapter>>>,
     writer: mpsc::UnboundedSender<String>,
     pending: Arc<Pending>,
     next_id: AtomicU64,
@@ -185,11 +187,15 @@ fn fingerprint_of(harness_id: &str, executable: &Path) -> Value {
         .and_then(|metadata| metadata.modified().ok())
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|since| since.as_secs());
-    json!({
+    let mut fingerprint = json!({
         "path": target.to_string_lossy(),
         "len": metadata.as_ref().map(std::fs::Metadata::len),
         "modified": modified,
-    })
+    });
+    if harness_id == "zai-acp" {
+        fingerprint["configAdapter"] = json!(super::zai::ADAPTER_REVISION);
+    }
+    fingerprint
 }
 
 /// The `node <entrypoint>` pair a managed bridge's Windows `.cmd` launcher
@@ -549,6 +555,8 @@ impl Bridge {
         let pending: Arc<Pending> = Arc::new(Mutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let zai = (spec.id == "zai-acp")
+            .then(|| Arc::new(Mutex::new(super::zai::ConfigAdapter::default())));
 
         // Writer: serialize every outbound line onto stdin.
         tokio::spawn(async move {
@@ -580,6 +588,7 @@ impl Bridge {
             let harness = route_key.to_string();
             let pending = Arc::clone(&pending);
             let alive = Arc::clone(&alive);
+            let zai = zai.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout);
                 let mut buf = Vec::new();
@@ -588,12 +597,19 @@ impl Bridge {
                         continue;
                     }
                     match protocol::parse(&line) {
-                        Some(Message::Response { id, result }) => {
+                        Some(Message::Response { id, mut result }) => {
                             let sender = id
                                 .as_u64()
                                 .and_then(|key| pending.lock().ok()?.remove(&key));
                             match sender {
                                 Some(request) => {
+                                    if let (Some(adapter), Some((method, session)), Ok(answer)) =
+                                        (&zai, &request.config_context, &mut result)
+                                    {
+                                        if let Ok(mut adapter) = adapter.lock() {
+                                            adapter.response(method, session.as_deref(), answer);
+                                        }
+                                    }
                                     let _ = request.reply.send(result);
                                 }
                                 // Every id the host issues is a number, so a
@@ -621,7 +637,12 @@ impl Bridge {
                                 params,
                             });
                         }
-                        Some(Message::Notification { method, params }) => {
+                        Some(Message::Notification { method, mut params }) => {
+                            if let Some(adapter) = &zai {
+                                if let Ok(mut adapter) = adapter.lock() {
+                                    adapter.notification(&method, &mut params);
+                                }
+                            }
                             let _ = events.send(BridgeEvent::Notification {
                                 harness: harness.clone(),
                                 generation,
@@ -653,6 +674,7 @@ impl Bridge {
             generation,
             executable: executable_fingerprint,
             agent_capabilities: RwLock::new(Value::Null),
+            zai,
             writer: writer_tx,
             pending,
             next_id: AtomicU64::new(1),
@@ -810,7 +832,45 @@ impl Bridge {
         params: Value,
         deadline: Option<Duration>,
     ) -> Result<Value, Value> {
-        self.request_owned(method, params, deadline, None).await
+        let Some(adapter) = &self.zai else {
+            return self.request_owned(method, params, deadline, None).await;
+        };
+        let session = protocol::session_id(&params);
+        let fast_write = method == "session/set_config_option" && params["configId"] == "fast";
+        let (params, effort) = {
+            let adapter = adapter
+                .lock()
+                .map_err(|_| protocol::internal("Z.ai configuration unavailable"))?;
+            let effort = fast_write
+                .then(|| session.as_deref().and_then(|id| adapter.effort_to_keep(id)))
+                .flatten();
+            (adapter.request(method, params)?, effort)
+        };
+        let mut answer = self.request_owned(method, params, deadline, None).await?;
+        if let (Some(session), Some((config_id, effort))) = (session, effort) {
+            let needs_restore = answer["configOptions"].as_array().is_some_and(|options| {
+                options.iter().any(|option| {
+                    option["id"] == config_id
+                        && option["currentValue"] != effort
+                        && option["options"].as_array().is_some_and(|choices| {
+                            choices.iter().any(|choice| choice["value"] == effort)
+                        })
+                })
+            });
+            if needs_restore {
+                answer = self
+                    .request_owned(
+                        "session/set_config_option",
+                        json!({
+                            "sessionId": session, "configId": config_id, "value": effort
+                        }),
+                        deadline,
+                        None,
+                    )
+                    .await?;
+            }
+        }
+        Ok(answer)
     }
 
     /// Capture turn ownership at stdout receipt, before notifications can
@@ -868,7 +928,11 @@ impl Bridge {
         self.touch();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        if !self.register_owned(id, tx, turn) {
+        let config_context = self
+            .zai
+            .as_ref()
+            .map(|_| (method.to_string(), protocol::session_id(&params)));
+        if !self.register_owned(id, tx, turn, config_context) {
             return Err(protocol::internal(format!(
                 "{} bridge is not running",
                 self.harness
@@ -926,7 +990,7 @@ impl Bridge {
     /// end up registered behind the drain with nothing left to answer it.
     #[cfg(test)]
     fn register_pending(&self, id: u64, tx: oneshot::Sender<Result<Value, Value>>) -> bool {
-        self.register_owned(id, tx, None)
+        self.register_owned(id, tx, None, None)
     }
 
     fn register_owned(
@@ -934,6 +998,7 @@ impl Bridge {
         id: u64,
         tx: oneshot::Sender<Result<Value, Value>>,
         turn: Option<(String, String)>,
+        config_context: Option<(String, Option<String>)>,
     ) -> bool {
         let Ok(mut pending) = self.pending.lock() else {
             return false;
@@ -941,7 +1006,14 @@ impl Bridge {
         if !self.alive.load(Ordering::SeqCst) {
             return false;
         }
-        pending.insert(id, PendingRequest { reply: tx, turn });
+        pending.insert(
+            id,
+            PendingRequest {
+                reply: tx,
+                turn,
+                config_context,
+            },
+        );
         true
     }
 
@@ -1066,6 +1138,7 @@ pub(super) mod tests {
             generation: NEXT_GENERATION.fetch_add(1, Ordering::SeqCst),
             executable: Value::Null,
             agent_capabilities: RwLock::new(Value::Null),
+            zai: None,
             writer,
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
@@ -1092,14 +1165,14 @@ pub(super) mod tests {
         let (bridge, _written) = silent_bridge();
         let params = json!({"sessionId":"s"});
         let (tx, _rx) = oneshot::channel();
-        assert!(bridge.register_owned(1, tx, Some(("s".into(), "first".into()))));
+        assert!(bridge.register_owned(1, tx, Some(("s".into(), "first".into())), None));
         let queued = received_run(&bridge.pending, &params);
         assert_eq!(queued.as_deref(), Some("first"));
         assert!(received_run(&bridge.pending, &json!({"sessionId":"other"})).is_none());
         bridge.forget(1);
         assert!(received_run(&bridge.pending, &params).is_none());
         let (tx, _rx) = oneshot::channel();
-        assert!(bridge.register_owned(2, tx, Some(("s".into(), "second".into()))));
+        assert!(bridge.register_owned(2, tx, Some(("s".into(), "second".into())), None));
         assert_eq!(
             received_run(&bridge.pending, &params).as_deref(),
             Some("second")
@@ -1572,6 +1645,7 @@ pub(super) mod tests {
             generation: NEXT_GENERATION.fetch_add(1, Ordering::SeqCst),
             executable: Value::Null,
             agent_capabilities: RwLock::new(Value::Null),
+            zai: None,
             writer: mpsc::unbounded_channel().0,
             pending: Arc::clone(&pending),
             next_id: AtomicU64::new(1),

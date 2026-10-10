@@ -305,6 +305,35 @@ pub(super) fn evaluator_only(previous: &BenchmarkDraft, next: &BenchmarkDraft) -
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn malformed_javascript_checks_cannot_reach_reference_execution() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let mut draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|draft| draft.evaluator.kind == "javascript")
+            .unwrap();
+        draft.evaluator.expected = serde_json::json!({
+            "functionName":"copy",
+            "immutableArgs":[1],
+            "argsCases":[{"args":[{"value":1}],"expected":{"value":1}}]
+        })
+        .to_string();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let error = store
+            .publish(&definition.id, definition.draft_revision)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert!(error.message.contains("immutableArgs"));
+        assert!(store
+            .definition(&definition.id)
+            .await
+            .unwrap()
+            .versions
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn unverified_provenance_stays_editable_but_cannot_be_published() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).await.unwrap();

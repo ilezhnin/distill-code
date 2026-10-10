@@ -9,6 +9,7 @@ async fn qualify(service: &BenchmarkService, versions: &[BenchmarkVersion]) -> V
     for version in versions {
         let record = service
             .qualify_version(qualification::Request {
+                rubric: None,
                 request_key: format!("controls:{}", version.id),
                 version_id: version.id.clone(),
                 content_hash: version.content_hash.clone(),

@@ -66,10 +66,11 @@ export type TestStatus =
   | { kind: "unscored"; outcome: string | null; durationMs: number | null };
 
 /** One repetition's state, as a dot: grey never started, blue works, green passed, red failed. */
-export type DotState = "queued" | "running" | "passed" | "failed";
+export type DotState = "queued" | "running" | "passed" | "failed" | "stopped";
 
 const DOT_TONE: Record<DotState, string> = {
   queued: "bg-muted-foreground/40",
+  stopped: "border border-muted-foreground/60",
   running: "bg-info animate-pulse",
   passed: "bg-success",
   failed: "bg-destructive",

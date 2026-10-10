@@ -25,6 +25,14 @@ async fn roots(
     training: &[BenchmarkVersion],
     prefix: &str,
 ) -> Vec<BenchmarkVersion> {
+    roots_with_panel(service, training, prefix, false).await
+}
+async fn roots_with_panel(
+    service: &BenchmarkService,
+    training: &[BenchmarkVersion],
+    prefix: &str,
+    rubric: bool,
+) -> Vec<BenchmarkVersion> {
     let mut roots = Vec::new();
     for index in 0..8 {
         let mut draft = training[0].manifest.clone();
@@ -51,6 +59,16 @@ async fn roots(
                 },
             ],
         });
+        if rubric {
+            draft.evaluator.kind = "rubric".into();
+            draft.evaluator.rubric = "Assess the invented final answer.".into();
+            draft.evaluator.expected.clear();
+            draft.environment["judgeInput"] = json!("text");
+            draft.environment["rubricCriteria"] = json!([{"id":"meaning","weight":1}]);
+            draft.environment["judgePanel"] = json!({
+                "recipe": "frozen-native-panel-v1", "judges": invented_panel()
+            });
+        }
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         roots.push(
             service
@@ -60,6 +78,180 @@ async fn roots(
         );
     }
     roots
+}
+
+fn invented_panel() -> Vec<Configuration> {
+    ["invented-judge-a", "invented-judge-b"]
+        .into_iter()
+        .map(|model| Configuration {
+            id: model.into(),
+            model_id: model.into(),
+            provider_id: "claude-acp".into(),
+            account_id: Some("invented-judge-account".into()),
+            effort: Some("high".into()),
+            fast_mode: Some(false),
+            billing_mode: "subscription".into(),
+            execution_profile: "native_text".into(),
+            inventory_revision: Some("invented-judges-v1".into()),
+            model_name: None,
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct InventedPanelWorkers {
+    workers: OfflineWorkers,
+    panels: AtomicU64,
+}
+impl ExecutionBackend for InventedPanelWorkers {
+    fn unsupported(&self, c: &Configuration, d: &BenchmarkDraft) -> Option<String> {
+        self.workers.unsupported(c, d)
+    }
+    fn inventory<'a>(
+        &'a self,
+        provider: &'a str,
+        account: Option<&'a str>,
+        force: bool,
+    ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
+        self.workers.inventory(provider, account, force)
+    }
+    fn execute<'a>(
+        &'a self,
+        store: &'a Store,
+        a: Attempt,
+        version: BenchmarkVersion,
+        timeout: u32,
+        cancel: watch::Receiver<bool>,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        if version.manifest.evaluator.kind == "rubric" {
+            assert!(version.manifest.workflow.is_none());
+            assert!(version.manifest.evaluator.rubric.is_empty());
+            assert!(version.manifest.environment.get("judgePanel").is_none());
+        }
+        self.workers.execute(store, a, version, timeout, cancel)
+    }
+    fn judge<'a>(
+        &'a self,
+        store: &'a Store,
+        mut a: Attempt,
+        version: &'a BenchmarkVersion,
+        _: JudgeStop,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move {
+            let contributors = super::super::super::workflow::judge_candidates(store, &a).await?;
+            let candidates = contributors.iter().collect::<Vec<_>>();
+            let panel =
+                super::super::super::judge_panel::frozen(&version.manifest, &candidates)?.unwrap();
+            let trace = super::super::super::workflow::saved_steps(store, &a.id).await?;
+            assert_eq!(trace.len(), 2);
+            assert!(trace.iter().all(|step| step.attempt.evaluations.is_empty()));
+            assert_eq!(a.output, trace[1].attempt.output);
+            self.panels.fetch_add(1, Ordering::SeqCst);
+            let score = if a.output.as_deref() == Some("ok") {
+                0.9
+            } else {
+                0.1
+            };
+            let batch = format!("invented-panel:{}", a.id);
+            let marker = Evaluation {
+                id: format!("{batch}:marker"),
+                evaluator_revision: version.manifest.evaluator.revision.clone(),
+                verdict: "rendered".into(),
+                score: None,
+                reason: "Invented offline panel".into(),
+                created_at: now(),
+                provenance: "render".into(),
+                artifacts: vec![],
+                judge: None,
+                usage: None,
+                details: Some(
+                    json!({"judgeBatchId":batch,"expectedJudges":panel.len(),"protocol":judge_protocol(&version.manifest,&panel)}),
+                ),
+            };
+            a.evaluations.push(marker.clone());
+            for (seat, judge) in panel.into_iter().enumerate() {
+                let mut vote = marker.clone();
+                vote.id = format!("{batch}:{seat}");
+                vote.verdict = "judged".into();
+                vote.provenance = "judge".into();
+                vote.score = Some(score);
+                vote.judge = Some(judge);
+                vote.usage = Some(TokenUsage::default());
+                vote.details = Some(
+                    json!({"judgeBatchId":batch,"sessionId":format!("{}:session",vote.id),
+                    "requestKey":format!("{}:turn",vote.id),"usageComplete":true,"durationMs":5}),
+                );
+                a.evaluations.push(vote);
+            }
+            a.outcome = Some("judged".into());
+            Ok(a)
+        })
+    }
+}
+
+#[tokio::test]
+async fn frozen_rubric_campaign_reserves_and_scores_one_final_panel_per_trajectory() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(InventedPanelWorkers::default());
+    let service = Arc::new(BenchmarkService {
+        store: Store::open(dir.path()).await.unwrap(),
+        backend: backend.clone(),
+        wake: Default::default(),
+        active: Default::default(),
+        app: None,
+    });
+    let (train, fit) = training(&service).await;
+    let roots = roots_with_panel(&service, &train, "rubric-comparison", true).await;
+    let mut request = request(&fit, &roots, "rubric-whole-comparison");
+    assert!(service
+        .freeze_workflow_campaign(request.clone())
+        .await
+        .unwrap_err()
+        .message
+        .contains("execution budget"));
+    assert!(service.store.workflow_campaigns().await.unwrap().is_empty());
+    assert_eq!(backend.panels.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.workers.calls.load(Ordering::SeqCst), 48);
+    request.max_executions = 480;
+    let frozen = service.freeze_workflow_campaign(request).await.unwrap();
+    assert_eq!(frozen.plan.run_request(0).unwrap().max_executions, 4);
+    assert_eq!(frozen.plan.cases[0].judging.as_ref().unwrap().calls, 2);
+    assert_eq!(
+        frozen.plan.evaluation.recipe,
+        "workflow-first-trajectory-frozen-panel-v2"
+    );
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let complete = finish(&service, &frozen.plan.id).await;
+    assert_eq!(complete.state, "completed", "{:?}", complete.state_reason);
+    assert_eq!(backend.workers.calls.load(Ordering::SeqCst), 288);
+    assert_eq!(backend.panels.load(Ordering::SeqCst), 120);
+    let report = service
+        .store
+        .workflow_campaign_report(&frozen.plan.id)
+        .await
+        .unwrap();
+    assert_eq!(report.judging.len(), 120);
+    assert!(report.judging.iter().all(|j| j.reserved_calls == 2
+        && j.dispatched_calls == 2
+        && j.duration_ms == Some(10.0)
+        && j.cost.is_none()));
+    assert!(report
+        .cases
+        .iter()
+        .flat_map(|c| &c.cells)
+        .all(|c| c.mean_cost == Some(0.02)));
+    assert_eq!(
+        service
+            .store
+            .workflow_campaign_report(&frozen.plan.id)
+            .await
+            .unwrap()
+            .artifact_hash,
+        report.artifact_hash
+    );
 }
 fn request(fit: &learned::FitArtifact, roots: &[BenchmarkVersion], key: &str) -> Request {
     Request {

@@ -37,7 +37,6 @@ import type {
   ChatInputReasoningEffort,
 } from "../types";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
-import { ProviderAccountPicker } from "@/features/providers/ui/ProviderAccountPicker";
 import { useAccountModels } from "@/features/providers/hooks/useAccountModels";
 import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
 import { useChatSessionStore } from "../stores/chatSessionStore";
@@ -62,7 +61,6 @@ type OpenToolbarMenu =
   | "model"
   | "effort"
   | "project"
-  | "account"
   | "context";
 
 interface ChatInputToolbarProps {
@@ -219,9 +217,10 @@ export function ChatInputToolbar({
   const effectiveReasoning = useMemo(
     () =>
       resolveEffectiveReasoningEffort({
+        harnessId: agentModelPicker.selectedProvider,
         sessionReasoningEffort: reasoningEffort,
       }),
-    [reasoningEffort],
+    [agentModelPicker.selectedProvider, reasoningEffort],
   );
   const selectedModel = pickerModels.find((model) =>
     modelMatchesSelection(
@@ -375,17 +374,6 @@ export function ChatInputToolbar({
               providerColumnMode={providerColumnMode}
             />
           )}
-
-        {agentModelPickerEnabled ? (
-          <ProviderAccountPicker
-            providerId={selectedProvider}
-            sessionId={agentModelPicker.accountSessionId}
-            disabled={disabled || isStreaming}
-            compact={isCompact}
-            open={openMenu === "account"}
-            onOpenChange={handleMenuOpenChange("account")}
-          />
-        ) : null}
 
         {agentModelPickerEnabled ? (
           <ReasoningEffortPill

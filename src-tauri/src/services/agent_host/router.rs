@@ -4270,6 +4270,7 @@ impl Inner {
         W: FnMut(OptionRole, Value) -> WFut,
         WFut: std::future::Future<Output = Result<Value, Value>>,
     {
+        let wanted = Self::unfold_speed_selection(harness_id, snapshot, wanted);
         let mut substitutions = Vec::new();
         if let Some(model_id) = wanted.model.as_deref() {
             // A model the harness runs only in a session opened on it is
@@ -4441,6 +4442,21 @@ impl Inner {
         substitutions
     }
 
+    fn unfold_speed_selection(harness_id: &str, snapshot: &Value, wanted: &Selection) -> Selection {
+        let mut wanted = wanted.clone();
+        if harness_id == "zai-acp" {
+            if let Some(model) = wanted.model.as_deref() {
+                if let Some(base) = super::zai::highspeed_base(model).filter(|base| {
+                    !Self::lists_model(snapshot, model) && Self::lists_model(snapshot, base)
+                }) {
+                    wanted.model = Some(base.to_string());
+                    wanted.fast.get_or_insert(true);
+                }
+            }
+        }
+        wanted
+    }
+
     /// What a bridge did differently from what was asked of it, read off one
     /// answer rather than a sequence: an entry per selection whose read-back
     /// value is not the requested one, with `applied: null` where the model
@@ -4584,7 +4600,10 @@ impl Inner {
                         effort: record.reasoning_effort.clone(),
                         fast: record.fast_mode,
                     };
-                    written = Some(Self::substitutions_for(&wanted, &acknowledged));
+                    written = Some(Self::substitutions_for(
+                        &Self::unfold_speed_selection(&record.harness, &snapshot, &wanted),
+                        &acknowledged,
+                    ));
                 }
             }
             _ => {
@@ -5334,7 +5353,10 @@ impl Inner {
                 .ok_or_else(|| invalid_params("sessionId required"))?;
             let record = self.session_record(&session_id).await?;
             if !crate::services::provider_account_status::record_quota_error(
-                &self.app, account_id, error,
+                &self.app,
+                account_id,
+                self.dispatch_account_runtime(&session_id).await?,
+                error,
             )
             .await
             {
@@ -5416,6 +5438,39 @@ impl Inner {
             .unwrap_or(false))
     }
 
+    async fn dispatch_account_runtime(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::services::provider_account_status::AccountRuntime, Value> {
+        use crate::services::provider_account_status::AccountRuntime;
+        if self
+            .store
+            .execution_owner(session_id)
+            .await
+            .map_err(protocol::internal)?
+            .is_none()
+        {
+            return Ok(AccountRuntime::Native);
+        }
+        let sessions = self.sessions.lock().await;
+        let runtime = sessions.get(session_id).ok_or_else(|| {
+            protocol::internal(
+                "dispatch_uncertain: owned session runtime is unavailable; no automatic reopen",
+            )
+        })?;
+        Ok(
+            if runtime
+                .execution_profile
+                .as_deref()
+                .is_some_and(repository_execution::is_route)
+            {
+                AccountRuntime::Repository
+            } else {
+                AccountRuntime::Native
+            },
+        )
+    }
+
     async fn route_account_for_dispatch(
         self: &Arc<Self>,
         record: &SessionRecord,
@@ -5433,10 +5488,21 @@ impl Inner {
             .await
             .map_err(protocol::internal)?
             .is_some();
+        let runtime = self.dispatch_account_runtime(&record.id).await?;
         let automatic = !owned && self.automatic_account_switching(&record.harness)?;
         let mut unavailable = std::collections::HashSet::new();
         loop {
-            let selection = if unavailable.is_empty() {
+            let selection = if runtime
+                == crate::services::provider_account_status::AccountRuntime::Repository
+            {
+                crate::services::provider_account_status::select_repository_account(
+                    &self.app,
+                    &record.harness,
+                    account_id,
+                    record.model_id.as_deref(),
+                )
+                .await
+            } else if unavailable.is_empty() {
                 crate::services::provider_account_status::select_account(
                     &self.app,
                     &record.harness,
@@ -5551,6 +5617,7 @@ impl Inner {
             self.route_account_for_dispatch(&record).await?;
             record = self.session_record(&session_id).await?;
         }
+        let account_runtime = self.dispatch_account_runtime(&session_id).await?;
         let (bridge, _) = self.attach_session(&record).await?;
         let lock = self.attach_lock(&session_id).await;
         let admission = lock.lock().await;
@@ -5723,7 +5790,10 @@ impl Inner {
             error["data"] = Value::Object(data);
             if let Some(account_id) = &record.account_id {
                 crate::services::provider_account_status::record_quota_error(
-                    &self.app, account_id, error,
+                    &self.app,
+                    account_id,
+                    account_runtime,
+                    error,
                 )
                 .await;
             }
@@ -5828,7 +5898,12 @@ impl Inner {
         }
         if result.is_ok() {
             if let Some(account_id) = &record.account_id {
-                crate::services::provider_account_status::invalidate(&self.app, account_id).await;
+                crate::services::provider_account_status::invalidate_in_runtime(
+                    &self.app,
+                    account_id,
+                    account_runtime,
+                )
+                .await;
             }
         }
         result
@@ -7809,6 +7884,36 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn legacy_zai_highspeed_selection_becomes_base_model_and_fast_intent() {
+        let mut snapshot = json!({"configOptions":[
+            {"id":"model","category":"model","type":"select","currentValue":"zai-coding-plan/glm-5.3","options":[{"value":"zai-coding-plan/glm-5.3"}]},
+            {"id":"fast","category":"model_config","type":"select","currentValue":"off","options":[{"value":"off"},{"value":"on"}]}
+        ]});
+        let mut answer = snapshot.clone();
+        answer["configOptions"][1]["currentValue"] = json!("on");
+        let wanted = Selection {
+            model: Some("zai-coding-plan/glm-5.3-highspeed".into()),
+            ..Default::default()
+        };
+        let substitutions =
+            Inner::apply_selection("zai-acp", &mut snapshot, &wanted, false, |role, request| {
+                assert_eq!(role, OptionRole::Fast);
+                assert_eq!(request["value"], "on");
+                std::future::ready(Ok(answer.clone()))
+            })
+            .await;
+        assert!(substitutions.is_empty());
+        assert_eq!(
+            Inner::current_model(&snapshot).as_deref(),
+            Some("zai-coding-plan/glm-5.3")
+        );
+        assert_eq!(
+            Inner::selection_from(&snapshot["configOptions"]).fast,
+            Some(true)
+        );
+    }
 
     #[test]
     fn receipt_selection_uses_bridge_acknowledgement_not_display_intent() {

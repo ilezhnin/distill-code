@@ -1,3 +1,4 @@
+import { poolTaskOrder } from "./BenchmarkTaskGrid";
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -43,6 +44,7 @@ import {
 } from "./BenchmarkManagementDialogs";
 import { Button } from "@/shared/ui/button";
 import { rowKey } from "../lib/benchmarkBoards";
+import { reportModels } from "../lib/benchmarkModels";
 import { BenchmarkActivity } from "./BenchmarkActivity";
 import { BenchmarkConfigurationPage } from "./BenchmarkConfigurationPage";
 import { DesignBenchView } from "./DesignBenchView";
@@ -129,8 +131,12 @@ export function BenchmarksView({
   const leaderboard = useQuery({
     queryKey: [...benchmarkKeys, "leaderboard", leaderboardQuery],
     queryFn: () => benchmarkApi.getLeaderboard(leaderboardQuery),
-    enabled: location.section === "leaderboard",
+    enabled: location.section === "leaderboard" || Boolean(location.runId),
   });
+  const taskOrder = useMemo(
+    () => poolTaskOrder(versions, leaderboard.data?.cohort),
+    [versions, leaderboard.data?.cohort],
+  );
   const designs = useQuery({
     queryKey: [...benchmarkKeys, "designs", null],
     queryFn: () => benchmarkApi.listDesigns({ runId: null, versionIds: null }),
@@ -138,11 +144,19 @@ export function BenchmarksView({
   });
   const guarded = (action: () => void) =>
     useBenchmarkViewStore.getState().guardNavigation(action);
-  const openedRow = location.configurationId
-    ? (leaderboard.data?.rows.find(
+  const models = useMemo(
+    () => reportModels(leaderboard.data),
+    [leaderboard.data],
+  );
+  // Old configuration URLs still open the same evidence inside its model.
+  const openedModel = models.find(
+    (model) =>
+      model.key === location.configurationId ||
+      model.configurations.some(
         (row) => rowKey(row) === location.configurationId,
-      ) ?? null)
-    : null;
+      ),
+  );
+  const openedRow = openedModel?.row ?? null;
   const openEvidence = (attemptId: string) =>
     onNavigate({ ...location, attemptId });
   const openRun = (id: string) => {
@@ -250,24 +264,26 @@ export function BenchmarksView({
           />
         ) : null}
         {location.section === "leaderboard" && location.configurationId ? (
-          openedRow && leaderboard.data ? (
-            <BenchmarkConfigurationPage
-              key={location.configurationId}
-              row={openedRow}
-              report={leaderboard.data}
-              runs={runs.data ?? []}
-              versions={versions}
-              onEvidence={openEvidence}
-              onRun={(runId) =>
-                guarded(() =>
-                  setModelRun({
-                    row: openedRow,
-                    runId,
-                  }),
-                )
-              }
-              onOpenRun={openRun}
-            />
+          openedRow && openedModel && leaderboard.data ? (
+            <div className="space-y-6">
+              <BenchmarkConfigurationPage
+                key={openedModel.key}
+                row={openedRow}
+                report={leaderboard.data}
+                runs={runs.data ?? []}
+                versions={versions}
+                onEvidence={openEvidence}
+                onRun={(runId) =>
+                  guarded(() =>
+                    setModelRun({
+                      row: openedRow,
+                      runId,
+                    }),
+                  )
+                }
+                onOpenRun={openRun}
+              />
+            </div>
           ) : leaderboard.isPending ? (
             <BenchmarkEmpty title={t("loading")} compact />
           ) : (
@@ -333,6 +349,7 @@ export function BenchmarksView({
       ) : null}
       {location.runId && !location.attemptId ? (
         <BenchmarkRunDrawer
+          taskOrder={taskOrder}
           runId={location.runId}
           onClose={() => onNavigate({ ...location, runId: undefined })}
           onEvidence={openEvidence}

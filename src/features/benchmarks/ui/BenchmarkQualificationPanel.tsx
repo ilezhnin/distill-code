@@ -27,6 +27,8 @@ export function BenchmarkQualificationPanel({
   });
   const [requirements, setRequirements] = useState("[]");
   const [controls, setControls] = useState("[]");
+  const [minimumAcceptedScore, setMinimumAcceptedScore] = useState(0.8);
+  const [maximumRejectedScore, setMaximumRejectedScore] = useState(0.2);
   const [submitted, setSubmitted] = useState<QualificationRequest | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -48,11 +50,34 @@ export function BenchmarkQualificationPanel({
     refetchInterval: (query) =>
       query.state.data?.status === "reserved" ? 2000 : false,
   });
+  const rubric = version.manifest.evaluator.kind === "rubric";
+  const environment = version.manifest.environment;
+  const panel =
+    environment &&
+    typeof environment === "object" &&
+    "judgePanel" in environment
+      ? environment.judgePanel
+      : null;
+  const judges =
+    panel &&
+    typeof panel === "object" &&
+    "judges" in panel &&
+    Array.isArray(panel.judges)
+      ? panel.judges.length
+      : 0;
   const eligible =
     ["train", "held_out"].includes(version.manifest.split) &&
-    ["exact", "json", "javascript", "browser", "repository"].includes(
+    ["exact", "json", "javascript", "browser", "repository", "rubric"].includes(
       version.manifest.evaluator.kind,
-    );
+    ) &&
+    (!rubric || (judges >= 2 && judges <= 3));
+  let maxJudgeCalls = 0;
+  try {
+    const parsed: unknown = JSON.parse(controls);
+    if (Array.isArray(parsed)) maxJudgeCalls = parsed.length * judges;
+  } catch {
+    /* Native validation reports malformed controls on submission. */
+  }
   const qualify = async () => {
     if (inFlight.current) return;
     let request = submitted;
@@ -79,6 +104,15 @@ export function BenchmarkQualificationPanel({
           ...reviews,
           requirements: parsedRequirements,
           controls: parsedControls,
+          ...(rubric
+            ? {
+                rubric: {
+                  minimumAcceptedScore,
+                  maximumRejectedScore,
+                  maxJudgeCalls,
+                },
+              }
+            : {}),
         };
       } catch (failure) {
         setError(benchmarkErrorMessage(failure));
@@ -309,6 +343,47 @@ export function BenchmarkQualificationPanel({
                   />
                 )}
               </Field>
+              {rubric ? (
+                <>
+                  <Field label={t("qualification.minimumAcceptedScore")}>
+                    {(id) => (
+                      <Input
+                        id={id}
+                        type="number"
+                        min={0.5}
+                        max={1}
+                        step={0.05}
+                        value={minimumAcceptedScore}
+                        disabled={busy || Boolean(submitted)}
+                        onChange={(event) =>
+                          setMinimumAcceptedScore(Number(event.target.value))
+                        }
+                      />
+                    )}
+                  </Field>
+                  <Field label={t("qualification.maximumRejectedScore")}>
+                    {(id) => (
+                      <Input
+                        id={id}
+                        type="number"
+                        min={0}
+                        max={0.49}
+                        step={0.05}
+                        value={maximumRejectedScore}
+                        disabled={busy || Boolean(submitted)}
+                        onChange={(event) =>
+                          setMaximumRejectedScore(Number(event.target.value))
+                        }
+                      />
+                    )}
+                  </Field>
+                  <p className="text-xs">
+                    {t("qualification.judgeCallBudget", {
+                      count: maxJudgeCalls,
+                    })}
+                  </p>
+                </>
+              ) : null}
               {submitted ? (
                 <p className="text-xs">{t("qualification.immutableRetry")}</p>
               ) : null}
@@ -329,6 +404,11 @@ export function BenchmarkQualificationPanel({
                 type="button"
                 disabled={
                   busy ||
+                  (rubric &&
+                    (judges < 2 ||
+                      judges > 3 ||
+                      maxJudgeCalls < 8 ||
+                      maxJudgeCalls > 384)) ||
                   (!submitted &&
                     (!reviewer.trim() ||
                       Object.values(reviews).some((review) => !review.trim())))

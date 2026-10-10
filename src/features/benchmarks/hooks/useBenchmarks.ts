@@ -181,13 +181,16 @@ export interface HistorySnapshot {
 }
 
 /** Dated evidence and current-pool recalculations share one candidate query. */
-export function useConfigurationHistory(configuration: Configuration): {
+export function useConfigurationHistory(
+  configuration: Configuration,
+  model = false,
+): {
   snapshots: HistorySnapshot[];
   loading: boolean;
 } {
   const result = useQuery({
-    queryKey: [...benchmarkKeys, "history", historyKey(configuration)],
-    queryFn: () => benchmarkApi.getHistory(configuration),
+    queryKey: [...benchmarkKeys, "history", historyKey(configuration), model],
+    queryFn: () => benchmarkApi.getHistory(configuration, model),
     staleTime: 60_000,
   });
   return { snapshots: result.data ?? [], loading: result.isPending };

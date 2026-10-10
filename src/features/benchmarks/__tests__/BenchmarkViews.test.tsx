@@ -19,6 +19,7 @@ import { BenchmarksView } from "../ui/BenchmarksView";
 import { LeaderboardView } from "../ui/LeaderboardView";
 import { BenchmarkConfigurationPage } from "../ui/BenchmarkConfigurationPage";
 import { rowKey } from "../lib/benchmarkBoards";
+import { modelKey } from "../lib/benchmarkModels";
 import { BenchmarkRoutingDialog } from "../ui/BenchmarkRoutingDialog";
 import {
   BenchmarkExportDialog,
@@ -428,6 +429,105 @@ describe("benchmark authoring and saved evidence", () => {
     ).not.toBeInTheDocument();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
+  it("shows one model across configurations in both leaderboard views", async () => {
+    const measured = leaderboardRow({ scored: 8, complete: 8, points: 640 });
+    const variants = [
+      measured,
+      ...["protected_repository", "isolated_ui"].map((executionProfile) =>
+        leaderboardRow({
+          configuration: {
+            ...configuration,
+            executionProfile,
+            effort: "max",
+            fastMode: true,
+          },
+          scored: 0,
+          complete: 0,
+          points: null,
+        }),
+      ),
+    ];
+    const open = vi.fn();
+    wrap(
+      <LeaderboardView
+        {...scopeProps}
+        report={{ cohort, rows: variants }}
+        onOpen={open}
+      />,
+    );
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    const row = screen.getByRole("row", { name: /model-1/ });
+    expect(row).toHaveTextContent("640");
+    expect(row).not.toHaveTextContent("runtime");
+    expect(within(row).queryByText("high")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: "Table" }));
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    await userEvent.click(screen.getByRole("button", { name: "Open model-1" }));
+    expect(open).toHaveBeenCalledWith(modelKey(configuration));
+  });
+
+  it("shows the model's combined results without asking for an execution configuration", async () => {
+    const text = leaderboardRow({ scored: 8, complete: 8 });
+    const repository = leaderboardRow({
+      configuration: {
+        ...configuration,
+        id: "repository",
+        executionProfile: "protected_repository",
+      },
+      scored: 0,
+      complete: 0,
+      points: null,
+      attemptIds: ["repository-attempt"],
+      resultAttemptIds: [],
+    });
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort,
+      rows: [repository, text],
+      models: [
+        {
+          key: modelKey(configuration),
+          providerId: configuration.providerId,
+          modelId: configuration.modelId,
+          configurationKeys: [rowKey(text), rowKey(repository)],
+          row: {
+            ...text,
+            points: 550,
+            attemptIds: ["text-attempt", "repository-attempt"],
+          },
+        },
+      ],
+    });
+    wrap(
+      <BenchmarksView
+        location={{
+          section: "leaderboard",
+          configurationId: modelKey(configuration),
+        }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    await screen.findByRole("heading", { name: "model-1" });
+    expect(
+      screen.queryByRole("combobox", { name: "Run configuration" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Clean text, no tools")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Protected code artifact"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Runtime revision")).not.toBeInTheDocument();
+    expect(screen.getAllByText("550").length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attemptIds: ["text-attempt", "repository-attempt"],
+        }),
+      ),
+    );
+    expect(screen.getAllByRole("heading", { name: "model-1" })).toHaveLength(1);
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+
   it("shows an unfinished configuration without a rank and opens its page", async () => {
     const inspect = vi.fn();
     const open = vi.fn();
@@ -462,7 +562,7 @@ describe("benchmark authoring and saved evidence", () => {
     await userEvent.click(
       within(row).getByRole("button", { name: "Open model-1" }),
     );
-    expect(open).toHaveBeenCalledWith(rowKey(unfinished));
+    expect(open).toHaveBeenCalledWith(modelKey(unfinished.configuration));
     cleanup();
     const catchUp = vi.fn();
     wrap(
@@ -479,8 +579,8 @@ describe("benchmark authoring and saved evidence", () => {
     expect(
       screen.getByRole("heading", { name: "model-1" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Preliminary")).toBeInTheDocument();
-    // The service's English reason is not page text; the badge explains on hold.
+    expect(screen.queryByText("Preliminary")).not.toBeInTheDocument();
+    // Routine measurement status and the service's reason stay off the page.
     expect(screen.queryByText("No valid evidence")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(catchUp).toHaveBeenCalledWith(null);
@@ -530,6 +630,58 @@ describe("benchmark authoring and saved evidence", () => {
       }),
     );
   });
+  it("keeps model task totals aligned with eligible current versions", async () => {
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
+    const versions = [
+      ["version-1", "A measured task"],
+      ["author-task", "B author-excluded task"],
+      ["unmeasured-task", "C unmeasured task"],
+      ["unsupported-task", "D unsupported task"],
+      ["old-version", "E historical version"],
+    ].map(([id, name]) => ({
+      ...definition.versions[0],
+      id,
+      manifest: { ...draft, name },
+    }));
+    const row = leaderboardRow({
+      planned: 3,
+      scoredVersionIds: ["version-1"],
+      missingVersionIds: ["unmeasured-task"],
+      unsupportedVersionIds: ["unsupported-task"],
+    });
+    wrap(
+      <BenchmarkConfigurationPage
+        row={row}
+        report={{
+          cohort: {
+            ...cohort,
+            versionIds: versions.slice(0, 4).map((version) => version.id),
+          },
+          rows: [row],
+        }}
+        runs={[]}
+        versions={versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText("Tests · 3 cases · 9 attempts"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Tests", { selector: "dt" }).nextElementSibling,
+    ).toHaveTextContent("1 / 3");
+    expect(
+      screen.getByRole("button", { name: "Task 1: A measured task" }),
+    ).toBeInTheDocument();
+    // Keep the shared pool numbers used by run dialogs after filtering.
+    expect(screen.getByText("Task 3")).toBeInTheDocument();
+    expect(screen.getByText("Task 4")).toBeInTheDocument();
+    expect(screen.queryByText("Task 2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Task 5")).not.toBeInTheDocument();
+  });
   it("names the model an alias resolved to on its page, not on every attempt", async () => {
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
@@ -570,6 +722,95 @@ describe("benchmark authoring and saved evidence", () => {
     // A row recorded before attempts kept the model names none.
     wrap(page({ ...sonnet, resolvedModels: undefined }));
     expect(spec("Resolved model")).toHaveTextContent("Not reported");
+  });
+  it("shows compact metrics without score bars and explains coverage on hover", async () => {
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    const row = leaderboardRow({
+      passed: 1,
+      scored: 2,
+      planned: 7,
+      status: "preliminary",
+      axes: [
+        {
+          id: "security",
+          passed: 1,
+          scored: 2,
+          planned: 5,
+          quality: 1,
+          points: 990,
+        },
+        {
+          id: "architecture",
+          passed: 0,
+          scored: 0,
+          planned: 2,
+          quality: null,
+          points: null,
+        },
+      ],
+    });
+    wrap(
+      <BenchmarkConfigurationPage
+        row={row}
+        report={{
+          cohort: { ...cohort, workClasses: ["security", "architecture"] },
+          rows: [row],
+        }}
+        runs={[]}
+        versions={[]}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+    const security = within(
+      screen
+        .getByText("Security", { exact: true })
+        .closest("li") as HTMLElement,
+    );
+    expect(security.getByText("2/5")).toBeInTheDocument();
+    expect(screen.getByText("2/7")).toBeInTheDocument();
+    expect(
+      screen.getByText("Tests", { selector: "dt" }).nextElementSibling,
+    ).toHaveTextContent("2 / 7");
+    expect(screen.queryByText(/Passed: 1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not tested: 3/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Preliminary")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not ranked")).not.toBeInTheDocument();
+    expect(security.queryByText("1/1")).not.toBeInTheDocument();
+    expect(security.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(security.getByText("990")).toBeInTheDocument();
+    const architecture = within(
+      screen
+        .getByText("Architecture", { exact: true })
+        .closest("li") as HTMLElement,
+    );
+    expect(architecture.getByText("0/2")).toBeInTheDocument();
+    expect(screen.queryByText(/not tested: 2/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Untested")).not.toBeInTheDocument();
+    await userEvent.hover(security.getByText("2/5"));
+    expect(
+      await screen.findByRole("tooltip", {}, { timeout: 4_000 }),
+    ).toHaveTextContent(
+      "Tested 2 of 5. Passed: 1; not passed: 1; not tested: 3.",
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "Only current test versions count; revised tests need a new run.",
+    );
+    await userEvent.unhover(security.getByText("2/5"));
+    await userEvent.hover(security.getByText("990"));
+    expect(
+      await screen.findByRole("tooltip", {}, { timeout: 4_000 }),
+    ).toHaveTextContent(
+      "990 / 1000, based on 2 of 5 current tests. 3 unmeasured tests are not included.",
+    );
+    await userEvent.unhover(security.getByText("990"));
+    await userEvent.hover(screen.getByText("1000"));
+    expect(
+      await screen.findByRole("tooltip", {}, { timeout: 4_000 }),
+    ).toHaveTextContent(
+      "1000 / 1000, based on 2 of 7 current tests. 5 unmeasured tests are not included. Average of the measured category scores.",
+    );
   });
   it("opens the run dialog, following a run that measures the model now", async () => {
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
@@ -851,7 +1092,7 @@ describe("benchmark authoring and saved evidence", () => {
     ).toEqual([
       "1",
       // The vendor icon carries its own title text.
-      "ClaudebetahighAnthropic",
+      "ClaudebetaAnthropic",
       "500",
       "1000",
       "–",
@@ -1393,7 +1634,7 @@ describe("benchmark authoring and saved evidence", () => {
 describe("configuration history", () => {
   afterEach(cleanup);
 
-  it("charts points per measurement and shows the page as it stood at an older one", async () => {
+  it("uses one current-pool history while keeping each measurement on its original date", async () => {
     const older = {
       ...runSummary,
       id: "run-0",
@@ -1429,14 +1670,14 @@ describe("configuration history", () => {
               quality: 0.75,
               status: "preliminary",
               reason:
-                "1/1 current cases; 1 first measured later, 0 reviewed later; recalculated using today's evidence",
-              // The backfilled case finished months after the point.
+                "1/1 current cases; 1 reviewed later; recalculated using today's evidence",
+              // Later review metadata must not move the observation date.
               measuredAt: Date.UTC(2026, 5, 20, 12),
             },
           ],
         },
-        backfilledVersionIds: ["later-case"],
-        revisedVersionIds: [],
+        backfilledVersionIds: [],
+        revisedVersionIds: ["version-1"],
       },
       {
         id: "latest",
@@ -1463,11 +1704,18 @@ describe("configuration history", () => {
     const measured = () =>
       screen.getByText("Measured").nextElementSibling?.textContent;
     expect(rating()).toBe("900");
-    // The older point borrowed its only case from a later cell, so it
-    // counts none as measured then; its rating is still the recalculation.
     const oldPoint = await screen.findByRole("button", {
-      name: /: 750 points · 0\/1 cases$/,
+      name: /: 750 points · 1\/1 cases$/,
     });
+    expect(
+      screen.queryByRole("button", { name: /: 600 points/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Current pool" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "As recorded" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /: 900 points · 1\/1 cases$/ }),
     ).toHaveAttribute("aria-pressed", "false");
@@ -1485,7 +1733,7 @@ describe("configuration history", () => {
     expect(rating()).toBe("750");
     expect(oldPoint).toHaveAttribute("aria-pressed", "true");
     expect(measured()).toMatch(/Jan 10, 2026/);
-    expect(screen.getByText("Preliminary")).toBeInTheDocument();
+    expect(screen.queryByText("Preliminary")).not.toBeInTheDocument();
     expect(
       screen.queryByText(/recalculated using today's evidence/),
     ).not.toBeInTheDocument();
@@ -1498,29 +1746,16 @@ describe("configuration history", () => {
     // Run measures today's model, whichever point is shown.
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(catchUp).toHaveBeenCalledWith(null);
-    expect(benchmarkApi.getHistory).toHaveBeenCalledWith(configuration);
+    expect(benchmarkApi.getHistory).toHaveBeenCalledWith(configuration, true);
     await userEvent.click(
       screen.getByRole("button", { name: "Show current results" }),
     );
     expect(rating()).toBe("900");
-    await userEvent.click(screen.getByRole("button", { name: "As recorded" }));
-    await userEvent.click(screen.getByRole("button", { name: /: 600 points/ }));
-    expect(rating()).toBe("600");
-    expect(measured()).toMatch(/Jan 10, 2026/);
-    // A dated point lists the verdicts that stood at its date.
-    await waitFor(() =>
-      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
-        attemptIds: ["attempt-0"],
-        asOf: pointAt,
-        limit: 100,
-      }),
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Current pool" }));
-    expect(rating()).toBe("900");
   });
 
-  it("offers only a mode that has measurements", async () => {
+  it("omits obsolete observations instead of falling back to a different scoring method", async () => {
     const dated = leaderboardRow({ points: 600, attemptIds: ["attempt-0"] });
+    const current = leaderboardRow({ points: 900 });
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
       {
         id: "only-recorded",
@@ -1533,9 +1768,15 @@ describe("configuration history", () => {
           rows: [{ ...dated, points: null, quality: null }],
         },
       },
+      {
+        id: "current-pool",
+        runId: runSummary.id,
+        createdAt: 2_000,
+        report: { cohort, rows: [current] },
+        recalculatedReport: { cohort, rows: [current] },
+      },
     ]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
-    const current = leaderboardRow({ points: 900 });
     wrap(
       <BenchmarkConfigurationPage
         row={current}
@@ -1548,12 +1789,14 @@ describe("configuration history", () => {
       />,
     );
     expect(
-      await screen.findByRole("button", { name: /: 600 points/ }),
+      await screen.findByRole("button", { name: /: 900 points/ }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "As recorded" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(
+      screen.queryByRole("button", { name: /: 600 points/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "As recorded" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Current pool" }),
     ).not.toBeInTheDocument();

@@ -1,8 +1,23 @@
+import { z } from "zod";
+import { isRecord } from "@/shared/lib/isRecord";
 import type {
   BenchmarkDraft,
   Configuration,
   RoutingEvidenceQuery,
 } from "../types";
+
+// Mirrors the native public repository artifact, never its private lineage.
+const repositoryArtifactSchema = z
+  .object({
+    recipe: z.string(),
+    rootTree: z.string(),
+    beforeTree: z.string(),
+    afterTree: z.string(),
+    patch: z.string(),
+    patchHash: z.string(),
+    archiveHash: z.string(),
+  })
+  .strict();
 
 export type PublicSelectorTask = Pick<
   BenchmarkDraft,
@@ -21,10 +36,17 @@ export type PublicSelectorTask = Pick<
     previousReports: string[];
     remainingBudgetSeconds: number;
   } | null;
+  budgetRecipe?: string;
+  repositoryRecipe?: string;
+  repositoryArtifact?: z.infer<typeof repositoryArtifactSchema>;
 };
 
 /** Explicit projection; never spread a manifest into the inference request. */
 export function publicSelectorTask(draft: BenchmarkDraft): PublicSelectorTask {
+  const environment = isRecord(draft.environment) ? draft.environment : {};
+  const input = environment.repositoryArtifactInput;
+  const before = isRecord(input) && isRecord(input.before) ? input.before : {};
+  const artifact = repositoryArtifactSchema.safeParse(before);
   return {
     workClassId: draft.workClassId,
     prompt: draft.prompt,
@@ -42,6 +64,13 @@ export function publicSelectorTask(draft: BenchmarkDraft): PublicSelectorTask {
           remainingBudgetSeconds: draft.entryState.remainingBudgetSeconds,
         }
       : null,
+    ...(typeof environment.nativeBudgetRecipe === "string"
+      ? { budgetRecipe: environment.nativeBudgetRecipe }
+      : {}),
+    ...(typeof before.recipe === "string"
+      ? { repositoryRecipe: before.recipe }
+      : {}),
+    ...(artifact.success ? { repositoryArtifact: artifact.data } : {}),
   };
 }
 

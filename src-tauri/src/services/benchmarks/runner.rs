@@ -25,6 +25,7 @@ pub(crate) mod native_receipt;
 pub(crate) const MIN_JUDGES: usize = 2;
 /// Most judges on one panel; plan admission reserves this many calls.
 pub(crate) const MAX_JUDGES: usize = 3;
+pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 180;
 const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
 const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
 /// A rendering whose panel a pause or busy judges held back: its generation
@@ -45,12 +46,14 @@ fn judging_deferred(attempt: &Attempt) -> bool {
 pub struct JudgeStop {
     cancel: watch::Receiver<bool>,
     run_id: Option<String>,
+    qualification_id: Option<String>,
 }
 impl JudgeStop {
     pub fn run(run_id: &str, cancel: watch::Receiver<bool>) -> Self {
         Self {
             cancel,
             run_id: Some(run_id.to_string()),
+            qualification_id: None,
         }
     }
     /// An operator's own request outside any running plan.
@@ -58,7 +61,21 @@ impl JudgeStop {
         Self {
             cancel: watch::channel(false).1,
             run_id: None,
+            qualification_id: None,
         }
+    }
+    fn qualification(id: &str) -> Self {
+        Self {
+            qualification_id: Some(id.into()),
+            ..Self::manual()
+        }
+    }
+    async fn turn_cancelled(&self, store: &Store) -> Result<bool> {
+        Ok(self.cancelled()
+            || match &self.qualification_id {
+                Some(id) => store.qualification_stopped(id).await?,
+                None => false,
+            })
     }
     fn cancelled(&self) -> bool {
         *self.cancel.borrow()
@@ -68,7 +85,7 @@ impl JudgeStop {
         self.run_id.is_some()
     }
     pub async fn halted(&self, store: &Store) -> Result<bool> {
-        if self.cancelled() {
+        if self.turn_cancelled(store).await? {
             return Ok(true);
         }
         Ok(match &self.run_id {
@@ -201,6 +218,20 @@ pub trait ExecutionBackend: Send + Sync {
         _stop: JudgeStop,
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move { Ok(attempt) })
+    }
+    fn judge_control<'a>(
+        &'a self,
+        _store: &'a Store,
+        _record: &'a mut super::qualification::Record,
+        _version: &'a BenchmarkVersion,
+        _index: usize,
+    ) -> BoxFuture<'a, Result<Evaluation>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend cannot calibrate a rubric panel",
+            ))
+        })
     }
     /// Settles judge turns a restart cut off. Without host records their usage
     /// stays unknown; the reply never counts as a vote.
@@ -478,7 +509,7 @@ pub(crate) fn select_judges(
 
 /// Whether a provider's models may judge renderings (see
 /// [`NativeProvider::judges_images`]).
-fn judge_provider_allowed(provider_id: &str) -> bool {
+pub(super) fn judge_provider_allowed(provider_id: &str) -> bool {
     NativeProvider::for_harness(provider_id).is_some_and(NativeProvider::judges_images)
 }
 
@@ -495,7 +526,7 @@ fn account_refusal(provider: &str) -> &'static str {
 /// Why a configuration cannot run under any verified native profile: an
 /// unknown provider, no account (worded for what the provider signs in
 /// with), or an effort its profile refuses.
-fn profile_refusal(c: &Configuration) -> Option<String> {
+pub(super) fn profile_refusal(c: &Configuration) -> Option<String> {
     let Some(provider) = NativeProvider::for_harness(&c.provider_id) else {
         return Some("This provider/account has no verified native text execution policy".into());
     };
@@ -718,17 +749,19 @@ fn in_flight(evaluation: &Evaluation) -> bool {
         .is_some_and(|d| d["inFlight"] == true)
 }
 
-/// Settles a judge placeholder a restart cut off. Recovered usage is kept; the
-/// reply never counts because its batch was interrupted.
+/// Settles a judge receipt an interruption cut off. Complete recovery replaces
+/// partial usage; failed recovery preserves it. The reply never becomes a vote.
 fn settle_interrupted_judge(evaluation: &mut Evaluation, usage: Option<TokenUsage>) {
     let complete = usage.is_some();
     evaluation.reason = if complete {
         "Judge turn interrupted by a restart; usage recovered from the host"
     } else {
-        "Judge turn interrupted by a restart; its usage is unknown"
+        "Judge turn interrupted by a restart; complete usage is unknown"
     }
     .into();
-    evaluation.usage = usage;
+    if let Some(usage) = usage {
+        evaluation.usage = Some(usage);
+    }
     if let Some(details) = evaluation.details.as_mut().and_then(Value::as_object_mut) {
         details.insert("inFlight".into(), json!(false));
         details.insert("usageComplete".into(), json!(complete));
@@ -1251,7 +1284,40 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
 }
 
 /// The native panel: each judge's evaluation is saved on the attempt as it lands.
-struct NativePanel<'a> {
+enum JudgeEvidence<'a> {
+    Attempt,
+    Qualification {
+        record: &'a mut super::qualification::Record,
+        index: usize,
+    },
+}
+impl JudgeEvidence<'_> {
+    fn directory(&self, store: &Store, attempt: &Attempt) -> std::path::PathBuf {
+        match self {
+            Self::Attempt => store
+                .root
+                .join("runs")
+                .join(&attempt.run_id)
+                .join(&attempt.id),
+            Self::Qualification { record, index } => store
+                .root
+                .join("qualifications")
+                .join(&record.id)
+                .join(format!("control-{index}")),
+        }
+    }
+    async fn save(&mut self, store: &Store, attempt: &Attempt) -> Result<()> {
+        match self {
+            Self::Attempt => store.save_attempt(attempt).await,
+            Self::Qualification { record, index } => {
+                record.controls[*index].judge_evaluations = attempt.evaluations.clone();
+                store.save_qualification_progress(record).await
+            }
+        }
+    }
+}
+
+struct NativePanel<'a, 'r> {
     backend: &'a NativeBackend,
     store: &'a Store,
     attempt: &'a mut Attempt,
@@ -1262,9 +1328,10 @@ struct NativePanel<'a> {
     response: Option<&'a str>,
     criteria: &'a [RubricCriterion],
     stop: &'a JudgeStop,
+    evidence: &'a mut JudgeEvidence<'r>,
 }
 
-impl PanelJudges for NativePanel<'_> {
+impl PanelJudges for NativePanel<'_, '_> {
     fn halted(&mut self) -> BoxFuture<'_, Result<bool>> {
         Box::pin(self.stop.halted(self.store))
     }
@@ -1288,6 +1355,7 @@ impl PanelJudges for NativePanel<'_> {
                     self.response,
                     self.criteria,
                     self.stop,
+                    self.evidence,
                 )
                 .await
             {
@@ -1310,7 +1378,7 @@ impl PanelJudges for NativePanel<'_> {
                 Some(slot) => *slot = evaluation,
                 None => self.attempt.evaluations.push(evaluation),
             }
-            self.store.save_attempt(self.attempt).await?;
+            self.evidence.save(self.store, self.attempt).await?;
             Ok(vote)
         })
     }
@@ -1645,9 +1713,15 @@ impl NativeBackend {
     /// The panel for one rendering from every enabled account's available models.
     async fn judge_panel(
         &self,
+        store: &Store,
         attempt: &Attempt,
         draft: &BenchmarkDraft,
     ) -> Result<Vec<Configuration>> {
+        let contributing = super::workflow::judge_candidates(store, attempt).await?;
+        let candidates: Vec<_> = contributing.iter().collect();
+        if let Some(panel) = super::judge_panel::frozen(draft, &candidates)? {
+            return Ok(panel);
+        }
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
         let host = self
@@ -1692,8 +1766,6 @@ impl NativeBackend {
                     .map(|model| model.configuration),
             );
         }
-        let mut candidates = vec![&attempt.configuration];
-        candidates.extend(attempt.observed.as_ref());
         Ok(select_judges(&candidates, draft, offered))
     }
 
@@ -1738,6 +1810,7 @@ impl NativeBackend {
         response: Option<&str>,
         criteria: &[RubricCriterion],
         stop: &JudgeStop,
+        evidence: &mut JudgeEvidence<'_>,
     ) -> Result<Evaluation> {
         let host = self
             .app
@@ -1764,14 +1837,45 @@ impl NativeBackend {
                 "Judge account became busy",
             ));
         }
-        let cwd = store
-            .root
-            .join("runs")
-            .join(&attempt.run_id)
-            .join(&attempt.id)
+        if version.manifest.environment.get("judgePanel").is_some() {
+            let contributing = super::workflow::judge_candidates(store, attempt).await?;
+            let candidates: Vec<_> = contributing.iter().collect();
+            let panel =
+                super::judge_panel::frozen(&version.manifest, &candidates)?.ok_or_else(|| {
+                    BenchmarkError::new("invalid_judge_panel", "Frozen panel is absent")
+                })?;
+            let snapshot =
+                crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
+            let enabled = snapshot.accounts.iter().any(|row| {
+                row.id == account && row.provider_id == judge.provider_id && row.enabled
+            });
+            if !panel.contains(judge) || !enabled || native_refusal(judge).is_some() {
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "Frozen judge is no longer eligible",
+                ));
+            }
+            if crate::services::provider_account_status::usage_spent(&self.app, &account).await {
+                return Err(BenchmarkError::new(
+                    "quota_exhausted",
+                    "Frozen judge account has no remaining usage",
+                ));
+            }
+            let offered = self
+                .inventory(&judge.provider_id, Some(&account), true)
+                .await?;
+            if !offered
+                .iter()
+                .any(|row| super::judge_panel::offered(judge, row))
+            {
+                return Err(BenchmarkError::new("selection_changed", "Frozen judge settings, billing or runtime changed; no replacement was selected"));
+            }
+        }
+        let cwd = evidence
+            .directory(store, attempt)
             .join(format!("judge-{batch}-{index}"));
         tokio::fs::create_dir_all(&cwd).await?;
-        let timeout = Duration::from_secs(180);
+        let timeout = Duration::from_secs(u64::from(JUDGE_TIMEOUT_SECONDS));
         // A Grok judge's sign-in is renewed as a candidate's is. One the
         // Grok CLI renews only later defers the batch like a busy account,
         // rather than costing it this judge's seat; a refusal abstains.
@@ -1807,7 +1911,11 @@ impl NativeBackend {
         acknowledged.model_id = session.selection.model_id.clone().unwrap_or_default();
         acknowledged.effort = session.selection.reasoning_effort.clone();
         acknowledged.fast_mode = session.selection.fast_mode;
-        if !session.substitutions.is_empty() || !matches_selection(judge, &acknowledged) {
+        let frozen_panel = version.manifest.environment.get("judgePanel").is_some();
+        if !session.substitutions.is_empty()
+            || !matches_selection(judge, &acknowledged)
+            || (frozen_panel && judge.effort != acknowledged.effort)
+        {
             let mut abstention = judge_abstention(
                 version,
                 judge,
@@ -1827,9 +1935,21 @@ impl NativeBackend {
         );
         let placeholder_id = placeholder.id.clone();
         attempt.evaluations.push(placeholder);
-        if let Err(error) = store.save_attempt(attempt).await {
+        if let Err(error) = evidence.save(store, attempt).await {
             attempt.evaluations.pop();
             return Err(error);
+        }
+        if stop.qualification_id.is_some() && stop.turn_cancelled(store).await? {
+            let mut stopped = judge_abstention(
+                version,
+                judge,
+                batch,
+                "Calibration stopped before dispatch".into(),
+            );
+            stopped.id = placeholder_id;
+            stopped.details = Some(json!({"judgeBatchId":batch,"sessionId":session.session_id,
+                "requestKey":key,"inFlight":false,"usageComplete":true,"dispatched":false}));
+            return Ok(stopped);
         }
         let dispatch = host
             .dispatch_owned_turn(OwnedTurnRequest {
@@ -1848,10 +1968,16 @@ impl NativeBackend {
         let mut failure = dispatch.err();
         let mut turn_failure = None;
         while failure.is_none() {
-            if stop.cancelled() {
-                let _ = host.cancel_owned_turn(&key).await;
-                failure = Some("Judging cancelled".to_string());
-                break;
+            match stop.turn_cancelled(store).await {
+                Ok(true) => {
+                    failure = Some("Judging cancelled".into());
+                    break;
+                }
+                Err(error) => {
+                    failure = Some(error.message);
+                    break;
+                }
+                Ok(false) => {}
             }
             if started.elapsed() > timeout + Duration::from_secs(15) {
                 let _ = host.cancel_owned_turn(&key).await;
@@ -1887,6 +2013,15 @@ impl NativeBackend {
                 {
                     // A flagged or substituted turn abstains; its spend still counts.
                     turn_failure = judge_turn_failure(judge, &status);
+                    if frozen_panel
+                        && status.result.as_ref().and_then(|result| {
+                            result
+                                .pointer("/observedSelection/reasoningEffort")
+                                .and_then(Value::as_str)
+                        }) != judge.effort.as_deref()
+                    {
+                        turn_failure = Some("Frozen judge effort changed during the turn".into());
+                    }
                     break;
                 }
                 None => {
@@ -1933,6 +2068,7 @@ impl NativeBackend {
             artifacts: Vec::new(),
             details: Some(
                 json!({"judgeBatchId": batch, "sessionId": session.session_id, "usageComplete": usage_complete,
+                "requestKey":key, "inFlight":!usage_complete,
                 "durationMs": started.elapsed().as_millis() as u64,
                 "criteria": parsed.as_ref().map(|sheet| &sheet.shares),
                 "criticalCheckPolicy": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|_| judge_checks::POLICY)),
@@ -1945,7 +2081,245 @@ impl NativeBackend {
     }
 }
 
+impl NativeBackend {
+    async fn judge_response(
+        &self,
+        store: &Store,
+        mut attempt: Attempt,
+        version: &BenchmarkVersion,
+        stop: JudgeStop,
+        mut evidence: JudgeEvidence<'_>,
+    ) -> Result<Attempt> {
+        let criteria = rubric_criteria(&version.manifest);
+        if criteria.is_empty() {
+            return Ok(attempt);
+        }
+        let output = attempt.output.as_deref().unwrap_or_default();
+        // Missing or out-of-contract answers are settled by evaluate().
+        let Some(document) = judge_document(&version.manifest, output) else {
+            return Ok(attempt);
+        };
+        let textual = text_judged(&version.manifest);
+        let (width, height) = judge_viewport(&version.manifest);
+        let renderer = judge_renderer(&version.manifest);
+        // Nothing is written until the panel can settle the rendering, so a
+        // batch that cannot finish never replaces a settled score.
+        if stop.halted(store).await? {
+            attempt.reason = Some(JUDGING_STOPPED.into());
+            return Ok(attempt);
+        }
+        let prompt = judge_prompt(&version.manifest, &criteria);
+        // A batch its run's stop cut short is finished by the judges it has
+        // not asked yet, so the plan's reservation still covers it.
+        let open = match stop
+            .continues_batches()
+            .then(|| open_batch(&attempt.evaluations))
+            .flatten()
+        {
+            Some(open) => tokio::fs::read(&open.rendering)
+                .await
+                .ok()
+                .map(|png| (open, png)),
+            None => None,
+        };
+        let (batch, judges, expected, votes, png) = match open {
+            Some((open, png)) => {
+                let judges: Vec<(usize, Configuration)> = open
+                    .panel
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, judge)| !open.asked.contains(judge))
+                    .collect();
+                let waiting: Vec<Configuration> =
+                    judges.iter().map(|(_, judge)| judge.clone()).collect();
+                if !self.judges_idle(&waiting).await? {
+                    attempt.reason = Some(JUDGES_BUSY.into());
+                    return Ok(attempt);
+                }
+                (open.id, judges, open.expected, open.asked.len(), png)
+            }
+            None => {
+                let panel = self.judge_panel(store, &attempt, &version.manifest).await?;
+                if let Some(issue) = panel_issue(&panel) {
+                    attempt.reason = Some(issue);
+                    return Ok(attempt);
+                }
+                if !self.judges_idle(&panel).await? {
+                    attempt.reason = Some(JUDGES_BUSY.into());
+                    return Ok(attempt);
+                }
+                let png = if textual {
+                    document.as_bytes().to_vec()
+                } else {
+                    match super::worker::render(&document, width, height).await {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            attempt.reason = Some(format!("Rendering failed: {}", error.message));
+                            return Ok(attempt);
+                        }
+                    }
+                };
+                let directory = evidence.directory(store, &attempt);
+                tokio::fs::create_dir_all(&directory).await?;
+                let batch = uuid::Uuid::new_v4().to_string();
+                let expected = panel.len();
+                let protocol = judge_protocol(&version.manifest, &panel);
+                let protocol_hash = judge_protocol_hash(&panel, &prompt, &renderer);
+                let extension = if textual { "txt" } else { "png" };
+                let path = directory.join(format!("rendering-{batch}.{extension}"));
+                tokio::fs::write(&path, &png).await?;
+                let settled = super::analysis::score(&attempt).is_some();
+                attempt.evaluations.push(Evaluation {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    evaluator_revision: version.manifest.evaluator.revision.clone(),
+                    verdict: "rendered".into(),
+                    score: None,
+                    reason: if textual {
+                        "Text preserved for the judge panel"
+                    } else {
+                        "Rendered for the judge panel"
+                    }
+                    .into(),
+                    created_at: now(),
+                    provenance: "render".into(),
+                    artifacts: vec![Artifact {
+                        kind: if textual { "text" } else { "screenshot" }.into(),
+                        path: path.to_string_lossy().into_owned(),
+                        hash: hex::encode(Sha256::digest(&png)),
+                        label: if textual { "Response" } else { "Rendering" }.into(),
+                    }],
+                    details: Some(json!({"judgeBatchId": batch, "expectedJudges": expected,
+                        "protocolHash": protocol_hash, "protocol": protocol})),
+                    judge: None,
+                    usage: None,
+                });
+                if !settled {
+                    attempt.outcome = Some("pending_review".into());
+                }
+                evidence.save(store, &attempt).await?;
+                (
+                    batch,
+                    panel.into_iter().enumerate().collect(),
+                    expected,
+                    0,
+                    png,
+                )
+            }
+        };
+        let image = (!textual).then(|| OwnedTurnImage {
+            data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png),
+            mime_type: "image/png".into(),
+        });
+        // The response belongs to the evidence, not the scoring protocol:
+        // including it in the protocol hash would split every comparison.
+        let response =
+            if textual {
+                Some(String::from_utf8(png).map_err(|_| {
+                    BenchmarkError::new("validation", "Saved judge text is not UTF-8")
+                })?)
+            } else {
+                None
+            };
+        let dispatch_prompt = response.as_deref().map_or_else(
+            || prompt.clone(),
+            |response| text_judge_prompt(&prompt, response),
+        );
+        let (end, votes) = ask_panel(
+            &judges,
+            expected,
+            votes,
+            &mut NativePanel {
+                backend: self,
+                store,
+                attempt: &mut attempt,
+                version,
+                batch: &batch,
+                prompt: &dispatch_prompt,
+                image: image.as_ref(),
+                response: response.as_deref(),
+                criteria: &criteria,
+                stop: &stop,
+                evidence: &mut evidence,
+            },
+        )
+        .await?;
+        if votes >= expected {
+            attempt.outcome = Some("judged".into());
+        }
+        attempt.reason = panel_reason(end, votes, expected, stop.cancelled()).map(str::to_owned);
+        Ok(attempt)
+    }
+}
+
+pub(super) fn qualification_carrier(
+    record: &super::qualification::Record,
+    version: &BenchmarkVersion,
+    index: usize,
+) -> Attempt {
+    let configuration = Configuration {
+        id: "qualification-control".into(),
+        provider_id: "qualification".into(),
+        account_id: None,
+        model_id: "qualification-control".into(),
+        effort: None,
+        fast_mode: None,
+        billing_mode: "unknown".into(),
+        execution_profile: "native_text".into(),
+        inventory_revision: None,
+        model_name: None,
+    };
+    let mut carrier = super::pending_attempt(&record.id, &version.id, &configuration, 0);
+    carrier.output = Some(record.request.controls[index].output.clone());
+    carrier.outcome = Some("pending_review".into());
+    carrier.phase = "terminal".into();
+    carrier
+}
+
 impl ExecutionBackend for NativeBackend {
+    fn judge_control<'a>(
+        &'a self,
+        store: &'a Store,
+        record: &'a mut super::qualification::Record,
+        version: &'a BenchmarkVersion,
+        index: usize,
+    ) -> BoxFuture<'a, Result<Evaluation>> {
+        Box::pin(async move {
+            // This carrier is persisted only through qualification evidence.
+            let carrier = qualification_carrier(record, version, index);
+            let stop = JudgeStop::qualification(&record.id);
+            let judged = self
+                .judge_response(
+                    store,
+                    carrier,
+                    version,
+                    stop,
+                    JudgeEvidence::Qualification { record, index },
+                )
+                .await?;
+            let score = super::analysis::score(&judged).ok_or_else(|| {
+                BenchmarkError::new(
+                    "rubric_calibration_incomplete",
+                    judged
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "The frozen judge panel did not settle".into()),
+                )
+            })?;
+            Ok(Evaluation {
+                id: uuid::Uuid::new_v4().to_string(),
+                evaluator_revision: version.manifest.evaluator.revision.clone(),
+                verdict: "judged".into(),
+                score: Some(score),
+                reason: "Frozen control panel completed".into(),
+                created_at: now(),
+                provenance: "judge_calibration".into(),
+                artifacts: Vec::new(),
+                details: None,
+                judge: None,
+                usage: None,
+            })
+        })
+    }
     fn validate_owned_task_context<'a>(
         &'a self,
         binding: &'a super::task_execution::Binding,
@@ -2391,178 +2765,11 @@ impl ExecutionBackend for NativeBackend {
     fn judge<'a>(
         &'a self,
         store: &'a Store,
-        mut attempt: Attempt,
+        attempt: Attempt,
         version: &'a BenchmarkVersion,
         stop: JudgeStop,
     ) -> BoxFuture<'a, Result<Attempt>> {
-        Box::pin(async move {
-            let criteria = rubric_criteria(&version.manifest);
-            if criteria.is_empty() {
-                return Ok(attempt);
-            }
-            let output = attempt.output.as_deref().unwrap_or_default();
-            // Missing or out-of-contract answers are settled by evaluate().
-            let Some(document) = judge_document(&version.manifest, output) else {
-                return Ok(attempt);
-            };
-            let textual = text_judged(&version.manifest);
-            let (width, height) = judge_viewport(&version.manifest);
-            let renderer = judge_renderer(&version.manifest);
-            // Nothing is written until the panel can settle the rendering, so a
-            // batch that cannot finish never replaces a settled score.
-            if stop.halted(store).await? {
-                attempt.reason = Some(JUDGING_STOPPED.into());
-                return Ok(attempt);
-            }
-            let prompt = judge_prompt(&version.manifest, &criteria);
-            // A batch its run's stop cut short is finished by the judges it has
-            // not asked yet, so the plan's reservation still covers it.
-            let open = match stop
-                .continues_batches()
-                .then(|| open_batch(&attempt.evaluations))
-                .flatten()
-            {
-                Some(open) => tokio::fs::read(&open.rendering)
-                    .await
-                    .ok()
-                    .map(|png| (open, png)),
-                None => None,
-            };
-            let (batch, judges, expected, votes, png) = match open {
-                Some((open, png)) => {
-                    let judges: Vec<(usize, Configuration)> = open
-                        .panel
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(_, judge)| !open.asked.contains(judge))
-                        .collect();
-                    let waiting: Vec<Configuration> =
-                        judges.iter().map(|(_, judge)| judge.clone()).collect();
-                    if !self.judges_idle(&waiting).await? {
-                        attempt.reason = Some(JUDGES_BUSY.into());
-                        return Ok(attempt);
-                    }
-                    (open.id, judges, open.expected, open.asked.len(), png)
-                }
-                None => {
-                    let panel = self.judge_panel(&attempt, &version.manifest).await?;
-                    if let Some(issue) = panel_issue(&panel) {
-                        attempt.reason = Some(issue);
-                        return Ok(attempt);
-                    }
-                    if !self.judges_idle(&panel).await? {
-                        attempt.reason = Some(JUDGES_BUSY.into());
-                        return Ok(attempt);
-                    }
-                    let png = if textual {
-                        document.as_bytes().to_vec()
-                    } else {
-                        match super::worker::render(&document, width, height).await {
-                            Ok(bytes) => bytes,
-                            Err(error) => {
-                                attempt.reason =
-                                    Some(format!("Rendering failed: {}", error.message));
-                                return Ok(attempt);
-                            }
-                        }
-                    };
-                    let directory = store
-                        .root
-                        .join("runs")
-                        .join(&attempt.run_id)
-                        .join(&attempt.id);
-                    tokio::fs::create_dir_all(&directory).await?;
-                    let batch = uuid::Uuid::new_v4().to_string();
-                    let expected = panel.len();
-                    let mut protocol = json!({"panel": panel, "prompt": prompt,
-                        "renderer": renderer, "samplesPerJudge": 1, "expectedJudges": expected});
-                    if judge_checks::enabled(&version.manifest) {
-                        protocol["criticalCheckPolicy"] = json!(judge_checks::POLICY);
-                    }
-                    let protocol_hash = judge_protocol_hash(&panel, &prompt, &renderer);
-                    let extension = if textual { "txt" } else { "png" };
-                    let path = directory.join(format!("rendering-{batch}.{extension}"));
-                    tokio::fs::write(&path, &png).await?;
-                    let settled = super::analysis::score(&attempt).is_some();
-                    attempt.evaluations.push(Evaluation {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        evaluator_revision: version.manifest.evaluator.revision.clone(),
-                        verdict: "rendered".into(),
-                        score: None,
-                        reason: if textual {
-                            "Text preserved for the judge panel"
-                        } else {
-                            "Rendered for the judge panel"
-                        }
-                        .into(),
-                        created_at: now(),
-                        provenance: "render".into(),
-                        artifacts: vec![Artifact {
-                            kind: if textual { "text" } else { "screenshot" }.into(),
-                            path: path.to_string_lossy().into_owned(),
-                            hash: hex::encode(Sha256::digest(&png)),
-                            label: if textual { "Response" } else { "Rendering" }.into(),
-                        }],
-                        details: Some(json!({"judgeBatchId": batch, "expectedJudges": expected,
-                            "protocolHash": protocol_hash, "protocol": protocol})),
-                        judge: None,
-                        usage: None,
-                    });
-                    if !settled {
-                        attempt.outcome = Some("pending_review".into());
-                    }
-                    store.save_attempt(&attempt).await?;
-                    (
-                        batch,
-                        panel.into_iter().enumerate().collect(),
-                        expected,
-                        0,
-                        png,
-                    )
-                }
-            };
-            let image = (!textual).then(|| OwnedTurnImage {
-                data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png),
-                mime_type: "image/png".into(),
-            });
-            // The response belongs to the evidence, not the scoring protocol:
-            // including it in the protocol hash would split every comparison.
-            let response = if textual {
-                Some(String::from_utf8(png).map_err(|_| {
-                    BenchmarkError::new("validation", "Saved judge text is not UTF-8")
-                })?)
-            } else {
-                None
-            };
-            let dispatch_prompt = response.as_deref().map_or_else(
-                || prompt.clone(),
-                |response| text_judge_prompt(&prompt, response),
-            );
-            let (end, votes) = ask_panel(
-                &judges,
-                expected,
-                votes,
-                &mut NativePanel {
-                    backend: self,
-                    store,
-                    attempt: &mut attempt,
-                    version,
-                    batch: &batch,
-                    prompt: &dispatch_prompt,
-                    image: image.as_ref(),
-                    response: response.as_deref(),
-                    criteria: &criteria,
-                    stop: &stop,
-                },
-            )
-            .await?;
-            if votes >= expected {
-                attempt.outcome = Some("judged".into());
-            }
-            attempt.reason =
-                panel_reason(end, votes, expected, stop.cancelled()).map(str::to_owned);
-            Ok(attempt)
-        })
+        Box::pin(self.judge_response(store, attempt, version, stop, JudgeEvidence::Attempt))
     }
     fn reconcile_judges<'a>(
         &'a self,
@@ -2613,6 +2820,9 @@ impl ExecutionBackend for NativeBackend {
         })
     }
     fn unsupported(&self, c: &Configuration, d: &BenchmarkDraft) -> Option<String> {
+        if let Err(error) = super::judge_panel::frozen(d, &[c]) {
+            return Some(error.message);
+        }
         if super::repository::is_repository_case(d) {
             return profile_refusal(c)
                 .or_else(|| {
@@ -4380,6 +4590,9 @@ fn judge_renderer(draft: &BenchmarkDraft) -> String {
 
 pub(crate) fn validate_judge_input(draft: &BenchmarkDraft) -> Vec<String> {
     let mut issues = judge_checks::validate(draft);
+    if let Err(error) = super::judge_panel::frozen(draft, &[]) {
+        issues.push(error.message);
+    }
     if let Some(mode) = draft.environment.get("judgeInput") {
         if draft.evaluator.kind != "rubric" || !matches!(mode.as_str(), Some("text" | "visual")) {
             issues.push("Judge input requires a rubric and either text or visual".into());
@@ -4465,6 +4678,32 @@ pub(crate) fn judge_protocol_hash(panel: &[Configuration], prompt: &str, rendere
     hex::encode(Sha256::digest(identity.to_string().as_bytes()))
 }
 
+pub(super) fn judge_protocol(draft: &BenchmarkDraft, panel: &[Configuration]) -> Value {
+    let prompt = judge_prompt(draft, &rubric_criteria(draft));
+    let renderer = judge_renderer(draft);
+    let mut protocol = json!({"panel": panel, "prompt":prompt, "renderer":renderer,
+        "samplesPerJudge":1, "expectedJudges":panel.len()});
+    if judge_checks::enabled(draft) {
+        protocol["criticalCheckPolicy"] = json!(judge_checks::POLICY);
+    }
+    if draft.environment.get("judgePanel").is_some() {
+        protocol["panelRecipe"] = json!(super::judge_panel::RECIPE);
+        protocol["panelBinding"] = json!(super::judge_panel::binding(panel, &prompt, &renderer));
+    }
+    protocol
+}
+
+pub(super) fn frozen_judge_binding(draft: &BenchmarkDraft) -> Result<String> {
+    let panel = super::judge_panel::frozen(draft, &[])?.ok_or_else(|| {
+        BenchmarkError::new("invalid_judge_panel", "Calibration requires a frozen panel")
+    })?;
+    Ok(super::judge_panel::binding(
+        &panel,
+        &judge_prompt(draft, &rubric_criteria(draft)),
+        &judge_renderer(draft),
+    ))
+}
+
 /// A standalone document that shows a drawing or a page, or nothing when the
 /// output is neither.
 pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<String> {
@@ -4546,6 +4785,22 @@ fn judge_score_sheet(
     response: Option<&str>,
     criteria: &[RubricCriterion],
 ) -> Option<JudgeScoreSheet> {
+    if draft.environment.get("judgePanel").is_some() {
+        // Frozen calibration admits the declared score sheet, not an extracted
+        // fragment or an out-of-range score silently clamped into a pass.
+        let sheet: Value = serde_json::from_str(reply).ok()?;
+        let scores = sheet.get("scores")?.as_object()?;
+        if scores.len() != criteria.len()
+            || criteria.iter().any(|criterion| {
+                scores
+                    .get(&criterion.id)
+                    .and_then(Value::as_f64)
+                    .is_none_or(|score| !score.is_finite() || !(0.0..=10.0).contains(&score))
+            })
+        {
+            return None;
+        }
+    }
     let (shares, notes) = parse_judge_reply(reply, criteria)?;
     let critical = if judge_checks::enabled(draft) {
         Some(judge_checks::parse(
@@ -4653,6 +4908,12 @@ pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation
 
 impl BenchmarkService {
     pub async fn run_loop(self: Arc<Self>) {
+        if let Err(error) = self.reconcile_qualification_judges().await {
+            log::warn!(
+                "[benchmarks] qualification reconciliation failed: {}",
+                error.message
+            );
+        }
         if let Err(error) = self.reconcile_judges().await {
             log::warn!(
                 "[benchmarks] judge reconciliation failed: {}",
@@ -5962,6 +6223,51 @@ mod tests {
         );
     }
     #[test]
+    fn frozen_panels_refuse_malformed_and_out_of_range_score_sheets() {
+        let mut draft = creative();
+        draft.environment["judgePanel"] = json!({"recipe": super::super::judge_panel::RECIPE});
+        let criteria = vec![RubricCriterion {
+            id: "quality".into(),
+            label: "Quality".into(),
+            weight: 1.0,
+        }];
+        for reply in [
+            "{\"scores\":{\"quality\":11}}",
+            "{\"scores\":{\"quality\":-1}}",
+            "{\"scores\":{\"quality\":\"8\"}}",
+            "{\"scores\":{\"quality\":8,\"undeclared\":10}}",
+            "Here: {\"scores\":{\"quality\":8}}",
+            "{\"scores\":{}}",
+        ] {
+            assert!(
+                judge_score_sheet(&draft, reply, None, &criteria).is_none(),
+                "{reply}"
+            );
+        }
+        for score in [0, 8, 10] {
+            let reply = json!({"scores":{"quality":score},"notes":"Invented rating"}).to_string();
+            assert_eq!(
+                judge_score_sheet(&draft, &reply, None, &criteria)
+                    .unwrap()
+                    .score,
+                Some(f64::from(score) / 10.0)
+            );
+        }
+        draft
+            .environment
+            .as_object_mut()
+            .unwrap()
+            .remove("judgePanel");
+        assert!(judge_score_sheet(
+            &draft,
+            "Here: {\"scores\":{\"quality\":11}}",
+            None,
+            &criteria
+        )
+        .is_some());
+    }
+
+    #[test]
     fn judge_replies_become_weighted_shares_and_unfenced_markup_renders() {
         let criteria = vec![
             super::RubricCriterion {
@@ -6353,7 +6659,7 @@ mod tests {
         assert!(judge_turn_failure(&judge, &status(Some(json!({})), None)).is_some());
     }
     #[test]
-    fn interrupted_judge_usage_is_kept_only_when_recovered() {
+    fn interrupted_judge_usage_retains_partial_evidence_when_recovery_fails() {
         let mut evaluation = Evaluation {
             id: "judge".into(),
             evaluator_revision: "1".into(),
@@ -6380,9 +6686,16 @@ mod tests {
         );
         assert_eq!(recovered.details.as_ref().unwrap()["usageComplete"], true);
         assert_eq!(recovered.usage.as_ref().unwrap().cost, Some(0.02));
+        evaluation.usage = Some(TokenUsage {
+            output: Some(12),
+            ..Default::default()
+        });
         settle_interrupted_judge(&mut evaluation, None);
         assert!(!in_flight(&evaluation));
         assert_eq!(evaluation.details.as_ref().unwrap()["usageComplete"], false);
+        assert_eq!(evaluation.details.as_ref().unwrap()["requestKey"], "k");
+        assert_eq!(evaluation.usage.as_ref().unwrap().output, Some(12));
+        assert_eq!(evaluation.usage.as_ref().unwrap().cost, None);
         assert!(evaluation.score.is_none());
     }
     use super::*;

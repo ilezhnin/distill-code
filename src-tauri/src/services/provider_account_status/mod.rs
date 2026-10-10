@@ -4,7 +4,9 @@
 mod claude;
 mod claude_resets;
 mod codex;
+mod repository;
 mod types;
+mod zai;
 
 pub use types::*;
 
@@ -43,9 +45,30 @@ async fn read_response_line(
 
 #[derive(Default)]
 pub struct ProviderAccountStatusState {
+    native: AccountStatusCache,
+    repository: AccountStatusCache,
+    reset_lock: Mutex<()>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AccountRuntime {
+    Native,
+    Repository,
+}
+
+impl ProviderAccountStatusState {
+    fn runtime(&self, runtime: AccountRuntime) -> &AccountStatusCache {
+        match runtime {
+            AccountRuntime::Native => &self.native,
+            AccountRuntime::Repository => &self.repository,
+        }
+    }
+}
+
+#[derive(Default)]
+struct AccountStatusCache {
     cache: Mutex<HashMap<String, ProviderAccountStatus>>,
     refreshes: Mutex<HashMap<String, Arc<AccountRefresh>>>,
-    reset_lock: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -55,7 +78,7 @@ struct AccountRefresh {
     observations: AtomicU64,
 }
 
-impl ProviderAccountStatusState {
+impl AccountStatusCache {
     async fn refresh_slot(&self, account_id: &str) -> Arc<AccountRefresh> {
         self.refreshes
             .lock()
@@ -110,6 +133,27 @@ impl ProviderAccountStatusState {
         status
     }
 
+    async fn invalidate(&self, account_id: &str) {
+        let slot = self.refresh_slot(account_id).await;
+        if let Some(status) = self.cache.lock().await.get_mut(account_id) {
+            status.last_attempt_at = 0;
+            slot.observations.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    async fn record_limited(&self, account: &ProviderAccount) {
+        let slot = self.refresh_slot(&account.id).await;
+        let mut cache = self.cache.lock().await;
+        let status = cache.entry(account.id.clone()).or_insert_with(|| {
+            ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms())
+        });
+        status.state = AccountState::Limited;
+        status.last_attempt_at = now_ms();
+        status.last_updated_at = now_ms();
+        status.error = Some("The provider reported an exhausted usage allowance".into());
+        slot.observations.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// A telemetry cooldown must not conceal expired or removed authorization.
     async fn release_cooldown_for_expired_authorization(&self, account_id: &str, expired: bool) {
         if !expired {
@@ -160,12 +204,16 @@ pub(super) fn timestamp(value: &Value) -> Option<i64> {
 }
 
 pub async fn invalidate(app: &AppHandle, account_id: &str) {
+    invalidate_in_runtime(app, account_id, AccountRuntime::Native).await;
+}
+
+pub(crate) async fn invalidate_in_runtime(
+    app: &AppHandle,
+    account_id: &str,
+    runtime: AccountRuntime,
+) {
     if let Some(state) = app.try_state::<ProviderAccountStatusState>() {
-        let slot = state.refresh_slot(account_id).await;
-        if let Some(status) = state.cache.lock().await.get_mut(account_id) {
-            status.last_attempt_at = 0;
-            slot.observations.fetch_add(1, Ordering::SeqCst);
-        }
+        state.runtime(runtime).invalidate(account_id).await;
     }
 }
 
@@ -173,17 +221,23 @@ pub async fn invalidate(app: &AppHandle, account_id: &str) {
 /// Wait for the old telemetry process to exit before its credentials move.
 pub async fn prepare_account_change(app: &AppHandle, account_id: &str) {
     if let Some(state) = app.try_state::<ProviderAccountStatusState>() {
-        state.forget_account(account_id).await;
+        state.native.forget_account(account_id).await;
+        state.repository.forget_account(account_id).await;
     }
 }
 
 pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
     if let Some(state) = app.try_state::<ProviderAccountStatusState>() {
-        let slot = state.refresh_slot(&account.id).await;
+        let slot = state.native.refresh_slot(&account.id).await;
         let _guard = slot.gate.lock().await;
         let mut status = ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms());
         status.state = AccountState::NeedsAuth;
-        state.cache.lock().await.insert(account.id.clone(), status);
+        state
+            .native
+            .cache
+            .lock()
+            .await
+            .insert(account.id.clone(), status);
         slot.observations.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -192,7 +246,7 @@ pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
 /// now; false while nothing is known. Reads the cache only.
 pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str) -> bool {
     let state = app.state::<ProviderAccountStatusState>();
-    let cache = state.cache.lock().await;
+    let cache = state.native.cache.lock().await;
     cache
         .get(account_id)
         .is_some_and(|status| exhausted(status, None, now_ms()).0)
@@ -218,6 +272,7 @@ async fn refresh_account(
 ) -> ProviderAccountStatus {
     let state = app.state::<ProviderAccountStatusState>();
     state
+        .native
         .release_cooldown_for_expired_authorization(
             &account.id,
             account.provider_id == "claude-acp"
@@ -226,6 +281,7 @@ async fn refresh_account(
         )
         .await;
     state
+        .native
         .refresh(account, force, async {
             // A queued refresh must observe changes made while its account
             // gate was held, including account removal or disabling.
@@ -246,7 +302,7 @@ async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSn
     let accounts = provider_accounts::snapshot(app)?.accounts;
     let state = app.state::<ProviderAccountStatusState>();
     let now = now_ms();
-    let mut cache = state.cache.lock().await;
+    let mut cache = state.native.cache.lock().await;
     cache.retain(|id, _| accounts.iter().any(|account| &account.id == id));
     let snapshot = ProviderAccountStatusSnapshot {
         accounts: accounts
@@ -306,7 +362,9 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
     if provider_accounts::is_cli_login_account(&account.provider_id, &account.id) {
         return empty;
     }
-    if account.auth_method == provider_accounts::AuthMethod::ApiKey {
+    if account.auth_method == provider_accounts::AuthMethod::ApiKey
+        && account.provider_id != "zai-acp"
+    {
         empty.subscription = Some("API".into());
         empty.state = match provider_accounts::account_has_credentials(app, account) {
             Ok(true) => AccountState::Ready,
@@ -318,6 +376,7 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
     let result = match account.provider_id.as_str() {
         "codex-acp" => codex::fetch(app, account).await,
         "claude-acp" => claude::fetch(app, account).await,
+        "zai-acp" => zai::fetch(app, account).await,
         _ => Ok(empty.clone()),
     };
     let started = empty.last_attempt_at;
@@ -365,7 +424,7 @@ pub async fn select_account_excluding(
     let current = provider_accounts::resolve_account(app, provider_id, current_account_id)?;
     {
         let state = app.state::<ProviderAccountStatusState>();
-        let cache = state.cache.lock().await;
+        let cache = state.native.cache.lock().await;
         if cache
             .get(&current.id)
             .is_some_and(|status| current_status_ready(status, model_id, now_ms()))
@@ -403,7 +462,7 @@ pub async fn select_account_excluding(
     // not delay a switch to another account whose allowance is known.
     {
         let state = app.state::<ProviderAccountStatusState>();
-        let cache = state.cache.lock().await;
+        let cache = state.native.cache.lock().await;
         for candidate in &candidates {
             if let Some(status) = cache.get(&candidate.id).filter(|status| {
                 !refresh_needed(status, candidate, now_ms())
@@ -456,7 +515,37 @@ pub async fn select_account_excluding(
     )
 }
 
+/// Owned repository sessions keep their frozen account and use its WSL status.
+/// Never publish this sample as the Windows account's authorization state.
+pub(crate) async fn select_repository_account(
+    app: &AppHandle,
+    provider_id: &str,
+    account_id: &str,
+    model_id: Option<&str>,
+) -> Result<AccountSelection, String> {
+    let account = provider_accounts::resolve_account(app, provider_id, Some(account_id))?;
+    let state = app.state::<ProviderAccountStatusState>();
+    let status = state
+        .repository
+        .refresh(&account, false, async {
+            match provider_accounts::account(app, account_id) {
+                Ok(current) => repository::fetch(&current).await,
+                Err(_) => {
+                    let mut status =
+                        ProviderAccountStatus::empty(account_id, provider_id, now_ms());
+                    status.state = AccountState::Disabled;
+                    status
+                }
+            }
+        })
+        .await;
+    choose_account(&[account], &[status], account_id, false, model_id, now_ms())
+}
+
 fn api_billed(account: &ProviderAccount, status: Option<&ProviderAccountStatus>) -> bool {
+    if account.provider_id == "zai-acp" {
+        return false;
+    }
     account.auth_method == provider_accounts::AuthMethod::ApiKey
         || status.is_some_and(|status| status.subscription.as_deref() == Some("API"))
 }
@@ -470,10 +559,7 @@ fn fallback_candidate(
         && account.enabled
         && account.auto_switch
         && account.provider_id == current.provider_id
-        && match account.auth_method {
-            provider_accounts::AuthMethod::ApiKey => current_api,
-            provider_accounts::AuthMethod::OAuth => !current_api,
-        }
+        && api_billed(account, None) == current_api
 }
 
 fn current_status_ready(status: &ProviderAccountStatus, model_id: Option<&str>, now: i64) -> bool {
@@ -686,7 +772,12 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
     })
 }
 
-pub async fn record_quota_error(app: &AppHandle, account_id: &str, error: &Value) -> bool {
+pub(crate) async fn record_quota_error(
+    app: &AppHandle,
+    account_id: &str,
+    runtime: AccountRuntime,
+    error: &Value,
+) -> bool {
     if !is_quota_error(error) {
         return false;
     }
@@ -694,18 +785,10 @@ pub async fn record_quota_error(app: &AppHandle, account_id: &str, error: &Value
         return false;
     };
     let state = app.state::<ProviderAccountStatusState>();
-    let slot = state.refresh_slot(account_id).await;
-    let mut cache = state.cache.lock().await;
-    let status = cache.entry(account_id.into()).or_insert_with(|| {
-        ProviderAccountStatus::empty(account_id, &account.provider_id, now_ms())
-    });
-    status.state = AccountState::Limited;
-    status.last_attempt_at = now_ms();
-    status.last_updated_at = now_ms();
-    status.error = Some("The provider reported an exhausted usage allowance".into());
-    slot.observations.fetch_add(1, Ordering::SeqCst);
-    drop(cache);
-    let _ = emit_cached_snapshot(app).await;
+    state.runtime(runtime).record_limited(&account).await;
+    if runtime == AccountRuntime::Native {
+        let _ = emit_cached_snapshot(app).await;
+    }
     true
 }
 
@@ -731,7 +814,7 @@ pub async fn consume_reset(
     }
     let state = app.state::<ProviderAccountStatusState>();
     let _guard = state.reset_lock.lock().await;
-    let slot = state.refresh_slot(account_id).await;
+    let slot = state.native.refresh_slot(account_id).await;
     let refresh_guard = slot.gate.lock().await;
     let result = match account.provider_id.as_str() {
         "claude-acp" => claude::consume(app, &account, idempotency_key, credit_id).await?,

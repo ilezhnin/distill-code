@@ -102,10 +102,16 @@ async fn with_client(
     if home.is_dir() {
         command.current_dir(home);
     }
+    command.env_clear().envs(&env);
+    read_usage_command(command, consume).await
+}
+
+pub(super) async fn read_usage_command(
+    mut command: Command,
+    consume: Option<Value>,
+) -> Result<(Value, Value), String> {
     command
         .arg("app-server")
-        .env_clear()
-        .envs(&env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

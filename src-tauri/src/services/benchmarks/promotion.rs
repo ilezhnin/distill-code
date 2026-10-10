@@ -847,6 +847,7 @@ impl Store {
                 .find(|b| &b.id == id)
                 .ok_or_else(|| invalid("Qualification binding disappeared"))?;
             let version = self.version(&binding.version_id).await?;
+            qualification::validate_protocol(&record, &version)?;
             // Training versions qualify before their first native admission,
             // the earliest one when class fits share a version; held-out
             // cases qualify before the campaign was reserved.

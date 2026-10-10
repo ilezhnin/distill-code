@@ -879,10 +879,15 @@ pub async fn benchmark_selector_harness(
 pub async fn benchmark_get_history(
     app: AppHandle,
     configuration: Configuration,
+    model: Option<bool>,
 ) -> Result<Vec<HistorySnapshot>> {
     let s = service(&app).await?;
     analyze(s.query_data().await?, move |data| {
-        benchmarks::analysis::history(data, &configuration)
+        if model.unwrap_or(false) {
+            benchmarks::analysis::model_history(data, &configuration)
+        } else {
+            benchmarks::analysis::history(data, &configuration)
+        }
     })
     .await
 }

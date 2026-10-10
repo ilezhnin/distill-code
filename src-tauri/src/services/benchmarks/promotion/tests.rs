@@ -60,6 +60,7 @@ async fn fixture(root: &std::path::Path) -> (BenchmarkService, qualification::Re
         .await
         .unwrap();
     let request = qualification::Request {
+        rubric: None,
         request_key: "panel-one".into(),
         version_id: version.id,
         content_hash: version.content_hash,

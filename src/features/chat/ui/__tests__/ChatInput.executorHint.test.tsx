@@ -15,9 +15,6 @@ const accountModels = vi.hoisted(() => ({
 vi.mock("@/features/providers/hooks/useAccountModels", () => ({
   useAccountModels: () => accountModels,
 }));
-vi.mock("@/features/providers/ui/ProviderAccountPicker", () => ({
-  ProviderAccountPicker: () => null,
-}));
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
   useAgentProviderStatus: () => ({
     readyAgentIds: new Set(["codex-acp"]),

@@ -627,6 +627,8 @@
     "authMethod": "Connection type",
     "apiKey": "API key",
     "apiBillingHint": "API usage is billed separately. Automatic switching stays within the same provider and billing type.",
+    "zaiDescription": "Connect your GLM Coding Plan with a key from the Z.ai API console. Signing in to chat.z.ai alone does not connect a Coding Plan.",
+    "zaiBillingHint": "Uses your GLM Coding Plan subscription endpoint. No automatic fallback to pay-as-you-go API billing. Your key is encrypted on this device.",
     "saving": "Saving…",
     "save": "Save",
     "addAndSignIn": "Add and sign in",

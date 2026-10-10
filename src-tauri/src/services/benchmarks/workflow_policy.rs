@@ -132,6 +132,10 @@ impl WorkflowPolicy {
         let keys: BTreeSet<_> = self.candidates.iter().map(routing::candidate_key).collect();
         let ids: BTreeSet<_> = self.candidates.iter().map(|c| &c.id).collect();
         let prior: BTreeSet<_> = self.prior_ids.iter().collect();
+        let candidates: Vec<_> = self.candidates.iter().collect();
+        for version in versions {
+            super::judge_panel::frozen(&version.manifest, &candidates)?;
+        }
         if models.values().any(|model| {
             model
                 .candidates
@@ -184,7 +188,7 @@ impl WorkflowPolicy {
                     })
             })
         {
-            return Err(invalid("Workflow research requires a stored fit, its exact candidate runtimes, complete preference order, objective workflow roots and one serial policy column"));
+            return Err(invalid("Workflow research requires a stored fit, its exact candidate runtimes, complete preference order, bounded workflow roots and one serial policy column"));
         }
         Ok(())
     }

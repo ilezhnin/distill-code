@@ -12,8 +12,8 @@ import {
  * Stands in for a bridge config id on the effort menu a composer shows before
  * its session exists. It is display-only: a pre-session choice is recorded as
  * intent and reaches the bridge in `session/new`, never as a config write, so
- * nothing ever sends this id. It is deliberately not "effort", which is what
- * gates Ultracode — that stop needs a live Claude session to arm.
+ * nothing ever sends this id. It is deliberately not Claude's live "effort"
+ * option: Ultracode needs a live Claude session to arm.
  */
 export const PRE_SESSION_EFFORT_CONFIG_ID = "pre-session-effort";
 

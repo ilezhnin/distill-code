@@ -91,7 +91,25 @@ fn judge_panel(evaluations: &[&Evaluation]) -> Panel {
                 == Some(super::judge_checks::POLICY)
         });
         let mut critical_failed = false;
-        let mut votes: Vec<f64> = evaluations[start..end]
+        let bound;
+        let answers = if evaluations[start].details.as_ref().is_some_and(|details| {
+            details
+                .pointer("/protocol/panelRecipe")
+                .and_then(serde_json::Value::as_str)
+                == Some(super::judge_panel::RECIPE)
+        }) {
+            let Some(answers) = super::judge_panel::bound_evaluations(
+                evaluations[start],
+                &evaluations[start + 1..end],
+            ) else {
+                continue;
+            };
+            bound = answers;
+            bound.as_slice()
+        } else {
+            &evaluations[start..end]
+        };
+        let mut votes: Vec<f64> = answers
             .iter()
             .filter(|e| e.provenance == "judge")
             .filter_map(|e| {
@@ -337,6 +355,18 @@ pub(super) fn leaderboard_key(configuration: &Configuration) -> String {
         serde_json::to_string(&identity)
     }
     .unwrap_or_default()
+}
+
+/// Model identity never includes account, settings, execution profile or runtime.
+fn model_key(configuration: &Configuration) -> String {
+    let mut identity = vec![
+        serde_json::json!(configuration.provider_id),
+        serde_json::json!(configuration.model_id),
+    ];
+    if on_moving_alias(configuration) {
+        identity.push(serde_json::json!(configuration.model_name));
+    }
+    serde_json::to_string(&identity).unwrap_or_default()
 }
 
 /// Whether a configuration is on a model id its vendor moves between models.
@@ -1071,6 +1101,100 @@ fn leaderboard_from_attempts(
     source: &[&Attempt],
     pool: Vec<&BenchmarkVersion>,
 ) -> LeaderboardReport {
+    let mut report = measurement_report(data, query, source, pool.clone(), false);
+    let models = measurement_report(data, query, source, pool, true);
+    report.models = models
+        .rows
+        .into_iter()
+        .map(|mut row| {
+            let key = model_key(&row.configuration);
+            // Preserve a measured launch default for the existing run dialog.
+            // It supplies no scores and is never a separate model identity.
+            if let Some(default) = report
+                .rows
+                .iter()
+                .filter(|entry| model_key(&entry.configuration) == key)
+                .max_by(|a, b| {
+                    a.complete
+                        .cmp(&b.complete)
+                        .then(a.scored.cmp(&b.scored))
+                        .then(a.measured_at.cmp(&b.measured_at))
+                        .then_with(|| {
+                            leaderboard_key(&b.configuration)
+                                .cmp(&leaderboard_key(&a.configuration))
+                        })
+                })
+            {
+                row.configuration = default.configuration.clone();
+            }
+            LeaderboardModel {
+                configuration_keys: report
+                    .rows
+                    .iter()
+                    .filter(|entry| model_key(&entry.configuration) == key)
+                    .map(|entry| leaderboard_key(&entry.configuration))
+                    .collect(),
+                key,
+                provider_id: row.configuration.provider_id.clone(),
+                model_id: row.configuration.model_id.clone(),
+                row,
+            }
+        })
+        .collect();
+    report
+}
+
+/// Model scores count a test once. Its newest scored run/configuration supplies
+/// the entire cell; settings never split a model or pool its repetitions.
+fn model_cell_attempts<'a>(
+    by_run: &BTreeMap<&str, Vec<&'a Attempt>>,
+    runs: &BTreeMap<&str, &BenchmarkRun>,
+    as_of: Option<i64>,
+) -> Vec<&'a Attempt> {
+    let mut cells: BTreeMap<(&str, &str, &str, String), Vec<&Attempt>> = BTreeMap::new();
+    for (&run, attempts) in by_run {
+        for &attempt in attempts {
+            cells
+                .entry((
+                    &attempt.version_id,
+                    run,
+                    &attempt.configuration.id,
+                    configuration_key(&execution_configuration(attempt)),
+                ))
+                .or_default()
+                .push(attempt);
+        }
+    }
+    let mut selected: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
+    let order = |cell: &[&Attempt]| {
+        let first = cell[0];
+        (
+            cell.iter().any(|a| score_as_of(a, as_of).is_some()),
+            cell.iter().any(|a| a.started_at.is_some()),
+            runs[first.run_id.as_str()].created_at,
+            first.run_id.clone(),
+            cell.iter().filter_map(|a| a.started_at).max(),
+            first.configuration.id.clone(),
+        )
+    };
+    for ((version, _, _, _), cell) in cells {
+        if selected
+            .get(version)
+            .is_none_or(|current| order(&cell) > order(current))
+        {
+            selected.insert(version, cell);
+        }
+    }
+    selected.into_values().flatten().collect()
+}
+
+fn measurement_report(
+    data: &QueryData,
+    query: &ResultQuery,
+    source: &[&Attempt],
+    pool: Vec<&BenchmarkVersion>,
+    by_model: bool,
+) -> LeaderboardReport {
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
     let runs: BTreeMap<&str, &BenchmarkRun> = data
         .runs
@@ -1125,7 +1249,11 @@ fn leaderboard_from_attempts(
         }
         let configuration = ledger_configuration(attempt, &acknowledged);
         let entry = cells
-            .entry(leaderboard_key(&configuration))
+            .entry(if by_model {
+                model_key(&configuration)
+            } else {
+                leaderboard_key(&configuration)
+            })
             .or_insert_with(|| (configuration.into_owned(), BTreeMap::new()));
         entry
             .1
@@ -1155,12 +1283,15 @@ fn leaderboard_from_attempts(
             // cells, its gaps its own. A run still queued leaves the standing
             // one in place until its first cell starts.
             let standing = by_run
-                .into_iter()
+                .iter()
                 .filter(|(_, list)| list.iter().any(|a| a.started_at.is_some()))
-                .max_by_key(|(id, _)| (runs[id].created_at, *id));
-            let standing_request = standing.as_ref().map(|(id, _)| &runs[id].request);
-            let mut attempts: Vec<&Attempt> =
-                standing.map(|(_, list)| list).unwrap_or_default();
+                .max_by_key(|(id, _)| (runs[**id].created_at, **id));
+            let standing_request = standing.as_ref().map(|(id, _)| &runs[**id].request);
+            let mut attempts: Vec<&Attempt> = if by_model {
+                model_cell_attempts(&by_run, &runs, query.as_of)
+            } else {
+                standing.map(|(_, list)| list.clone()).unwrap_or_default()
+            };
             // Keep the newest concrete configuration for the next run;
             // each attempt retains its original runtime and account evidence.
             if let Some(latest) = attempts
@@ -1316,7 +1447,8 @@ fn leaderboard_from_attempts(
                 }
                 .into(),
                 reason: format!(
-                    "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; the newest run stands whole, and every repetition must pass{}{}",
+                    "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; {}; every repetition must pass{}{}",
+                    if by_model { "each test uses its newest scored cell across the model's runs" } else { "the newest run stands whole" },
                     if excluded > 0 {
                         format!("; {excluded} cases authored by this candidate excluded")
                     } else {
@@ -1395,12 +1527,16 @@ fn leaderboard_from_attempts(
                     .total_cmp(&a.quality.unwrap_or(-1.0))
             })
     });
-    let rows = rows
+    let rows: Vec<_> = rows
         .into_iter()
         .skip(query.offset.unwrap_or(0) as usize)
         .take(query.limit.unwrap_or(100).min(500) as usize)
         .collect();
-    LeaderboardReport { cohort, rows }
+    LeaderboardReport {
+        cohort,
+        rows,
+        models: Vec::new(),
+    }
 }
 
 /// The automated evaluation that defines an attempt's scoring protocol: the
@@ -1468,12 +1604,13 @@ fn recalculated_history_report(
     current: &BTreeSet<&str>,
     run_id: &str,
     at: i64,
+    by_model: bool,
 ) -> (LeaderboardReport, Vec<String>, Vec<String>) {
     let selected: Vec<&Attempt> = own
         .iter()
         .copied()
         .filter(|a| {
-            a.run_id == run_id
+            (by_model || a.run_id == run_id)
                 && current.contains(a.version_id.as_str())
                 && !is_superseded(a)
                 && a.finished_at.is_some_and(|end| end <= at)
@@ -1494,6 +1631,7 @@ fn recalculated_history_report(
         LeaderboardReport {
             cohort: None,
             rows: Vec::new(),
+            models: Vec::new(),
         }
     } else {
         leaderboard_from_attempts(
@@ -1510,6 +1648,9 @@ fn recalculated_history_report(
             "{}/{} current cases finished by then; {} reviewed later; recalculated using today's evidence",
             row.scored, row.planned, revised.len()
         );
+    }
+    for model in &mut report.models {
+        model.row.status = "preliminary".into();
     }
     (report, backfilled, revised)
 }
@@ -1574,7 +1715,20 @@ fn settled_at(attempt: &Attempt) -> Option<i64> {
 /// is observed when its last counted cell settled, so a window that closed a
 /// day later never re-dates what was measured.
 pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySnapshot> {
-    let key = leaderboard_key(configuration);
+    history_for(data, configuration, false)
+}
+
+pub fn model_history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySnapshot> {
+    history_for(data, configuration, true)
+}
+
+fn history_for(
+    data: &QueryData,
+    configuration: &Configuration,
+    by_model: bool,
+) -> Vec<HistorySnapshot> {
+    let identity = if by_model { model_key } else { leaderboard_key };
+    let key = identity(configuration);
     let ranked: BTreeSet<&str> = data
         .versions
         .iter()
@@ -1594,7 +1748,7 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
         .filter(|a| {
             runs.contains_key(a.run_id.as_str())
                 && ranked.contains(a.version_id.as_str())
-                && leaderboard_key(&ledger_configuration(a, &acknowledged)) == key
+                && identity(&ledger_configuration(a, &acknowledged)) == key
         })
         .collect();
     // Today's pool: what every point is recalculated on.
@@ -1607,16 +1761,18 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
             cells.entry(a.run_id.as_str()).or_default().push(a);
         }
     }
-    // An empty sealed sitting must not borrow an earlier row and re-date it.
+    // A run without a scored result must never borrow an older model score
+    // and re-date it, even when a pool change makes that score look different.
     cells.retain(|run_id, attempts| {
-        runs[run_id].baked_at.is_none()
-            || current_pool.iter().any(|version| {
-                attempts
-                    .iter()
-                    .filter(|a| a.version_id == version.id && score(a).is_some())
-                    .count() as u32
-                    >= required_repetitions(data, version)
-            })
+        attempts.iter().any(|a| score(a).is_some())
+            && (runs[run_id].baked_at.is_none()
+                || current_pool.iter().any(|version| {
+                    attempts
+                        .iter()
+                        .filter(|a| a.version_id == version.id && score(a).is_some())
+                        .count() as u32
+                        >= required_repetitions(data, version)
+                }))
     });
     // A finished run is observed at its end; any other run, cancelled
     // included, when the last of its started cells settled, so a later
@@ -1650,21 +1806,29 @@ pub fn history(data: &QueryData, configuration: &Configuration) -> Vec<HistorySn
             },
         );
         let (recalculated_report, backfilled_version_ids, revised_version_ids) =
-            recalculated_history_report(data, &own, &current, run_id, at);
+            recalculated_history_report(data, &own, &current, run_id, at, by_model);
         let row = |report: &LeaderboardReport| {
-            report
-                .rows
-                .iter()
-                .find(|r| leaderboard_key(&r.configuration) == key)
-                .map(|row| {
-                    serde_json::to_string(&(
-                        row.points,
-                        &row.attempt_ids,
-                        &row.comparison_key,
-                        row.cost,
-                    ))
-                    .unwrap_or_default()
-                })
+            let row = if by_model {
+                report
+                    .models
+                    .iter()
+                    .find(|model| model.key == key)
+                    .map(|model| &model.row)
+            } else {
+                report
+                    .rows
+                    .iter()
+                    .find(|row| leaderboard_key(&row.configuration) == key)
+            };
+            row.map(|row| {
+                serde_json::to_string(&(
+                    row.points,
+                    &row.attempt_ids,
+                    &row.comparison_key,
+                    row.cost,
+                ))
+                .unwrap_or_default()
+            })
         };
         // A run that left the board as it stood, a cancel before any cell
         // ran, adds no point of its own.
@@ -2175,6 +2339,67 @@ pub(super) mod tests {
         // A panel score short of a pass fails an objective case.
         assert_eq!(judged.points, Some(833));
         assert_eq!(at(10).points, Some(1000));
+    }
+
+    #[test]
+    fn model_scores_each_test_once_across_configurations_and_runs() {
+        let mut data = dataset();
+        data.attempts
+            .retain(|a| a.run_id == "before" || a.version_id == "v0");
+        for a in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
+            a.configuration.id = "repository".into();
+            a.configuration.execution_profile = "protected_repository".into();
+            a.configuration.effort = Some("max".into());
+            a.configuration.fast_mode = Some(true);
+            a.configuration.billing_mode = "api".into();
+            a.configuration.account_id = Some("another-account".into());
+            a.configuration.inventory_revision = Some("another-runtime".into());
+            a.observed = Some(a.configuration.clone());
+            a.started_at = Some(5);
+            a.finished_at = Some(6);
+        }
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 2);
+        assert_eq!(report.models.len(), 1);
+        let row = &report.models[0].row;
+        assert_eq!((row.scored, row.passed), (6, 5));
+        assert_eq!(row.result_attempt_ids.len(), 6);
+        assert!(row.result_attempt_ids.contains(&"after-v0".into()));
+        assert!(!row.result_attempt_ids.contains(&"before-v0".into()));
+        assert_eq!(report.models[0].configuration_keys.len(), 2);
+        let history = model_history(&data, &row.configuration);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].report.models[0].row.passed, 6);
+        assert_eq!(history[1].report.models[0].row.passed, 5);
+        assert_eq!(history[1].recalculated_report.models[0].row.scored, 6);
+        // An infrastructure failure carries evidence but cannot erase a score.
+        data.attempts
+            .iter_mut()
+            .filter(|a| a.run_id == "after")
+            .for_each(|a| a.outcome = Some("infrastructure_failure".into()));
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.models[0].row.passed, 6);
+        assert_eq!(report.models[0].row.result_attempt_ids.len(), 6);
+    }
+
+    #[test]
+    fn model_cells_never_combine_repetitions_from_different_settings() {
+        let mut data = dataset();
+        data.required_repetitions = 3;
+        data.attempts.retain(|a| a.run_id == "before");
+        let mut second = data.attempts[0].clone();
+        second.id = "second-setting".into();
+        second.configuration.effort = Some("max".into());
+        second.observed = Some(second.configuration.clone());
+        data.attempts.push(second.clone());
+        second.id = "third-setting".into();
+        second.configuration.fast_mode = Some(true);
+        second.observed = Some(second.configuration.clone());
+        data.attempts.push(second);
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.models.len(), 1);
+        assert_eq!(report.models[0].row.complete, 0);
+        assert_eq!(report.models[0].row.result_attempt_ids.len(), 6);
     }
 
     #[test]

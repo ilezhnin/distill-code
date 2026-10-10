@@ -476,7 +476,16 @@ export interface LeaderboardCohort {
 }
 export interface LeaderboardReport {
   cohort: LeaderboardCohort | null;
+  /** Per-configuration evidence, not separate model identities. */
   rows: LeaderboardRow[];
+  /** Native model identities; older backends and historical reports omit these. */
+  models?: {
+    key: string;
+    providerId: string;
+    modelId: string;
+    configurationKeys: string[];
+    row: LeaderboardRow;
+  }[];
 }
 /** One policy's mean reward over a selector harness's held-out cases. */
 export interface SelectorPolicyResult {

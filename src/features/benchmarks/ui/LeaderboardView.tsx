@@ -25,12 +25,11 @@ import {
 import {
   boardsFor,
   rankRows,
-  rowKey,
   type Board,
   type BoardId,
   type RankedRow,
 } from "../lib/benchmarkBoards";
-import { rowActivity, rowAttention } from "../lib/benchmarkActivity";
+import { reportModels, modelActivity, modelKey } from "../lib/benchmarkModels";
 import {
   boardDescription,
   boardTitle,
@@ -44,7 +43,6 @@ import {
 } from "../lib/modelCatalog";
 import type {
   CatalogEntry,
-  Configuration,
   LeaderboardReport,
   LeaderboardRow,
   RunSummary,
@@ -57,6 +55,7 @@ import {
   BoardIcon,
   AttentionMark,
   ModelIdentity,
+  RatingValue,
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { ModelFilter } from "./ModelFilter";
@@ -79,16 +78,6 @@ interface Props {
 
 const MotionRow = motion.create(TableRow);
 
-/** Rows that differ only by runtime revision need the revision to tell them apart. */
-function twinKey(configuration: Configuration): string {
-  return [
-    configuration.providerId,
-    configuration.modelId,
-    configuration.effort ?? "",
-    String(configuration.fastMode),
-  ].join("/");
-}
-
 export function LeaderboardView({
   report,
   runs = [],
@@ -108,7 +97,14 @@ export function LeaderboardView({
   const [chosen, setChosen] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<"chart" | "table">("chart");
   const [boardId, setBoardId] = useState<BoardId>("overall");
-  const rows = useMemo(() => report?.rows ?? [], [report]);
+  const models = useMemo(() => reportModels(report), [report]);
+  const rows = useMemo(() => models.map((model) => model.row), [models]);
+  const modelOf = (row: LeaderboardRow) =>
+    models.find((model) => model.key === modelKey(row.configuration)) ?? {
+      key: modelKey(row.configuration),
+      row,
+      configurations: [row],
+    };
   const cohort = report?.cohort;
   const boards = useMemo(() => boardsFor(cohort), [cohort]);
   const board = boards.find((entry) => entry.id === boardId) ?? boards[0];
@@ -117,7 +113,7 @@ export function LeaderboardView({
     () =>
       new Map(
         rows.map((row) => [
-          rowKey(row),
+          modelKey(row.configuration),
           resolveCatalogEntry(
             catalog,
             row.configuration,
@@ -130,7 +126,7 @@ export function LeaderboardView({
     [rows, catalog, names, cohort],
   );
   const factOf = (row: LeaderboardRow): CatalogEntry | null =>
-    facts.get(rowKey(row)) ?? null;
+    facts.get(modelKey(row.configuration)) ?? null;
   const nameOf = (row: LeaderboardRow) =>
     factOf(row)?.displayName ??
     modelDisplayName(
@@ -141,7 +137,9 @@ export function LeaderboardView({
     factOf(row)?.vendor ?? providerVendor(row.configuration.providerId);
   const visible = useMemo(
     () =>
-      chosen.size === 0 ? rows : rows.filter((row) => chosen.has(rowKey(row))),
+      chosen.size === 0
+        ? rows
+        : rows.filter((row) => chosen.has(modelKey(row.configuration))),
     [rows, chosen],
   );
   const ranked = useMemo(() => rankRows(visible, board), [visible, board]);
@@ -170,7 +168,10 @@ export function LeaderboardView({
             {
               of: results.filter((result) => result.rank != null).length,
               rows: new Map(
-                results.map((result) => [rowKey(result.row), result]),
+                results.map((result) => [
+                  modelKey(result.row.configuration),
+                  result,
+                ]),
               ),
             },
           ] as const;
@@ -178,14 +179,6 @@ export function LeaderboardView({
       ),
     [boards, visible],
   );
-  const twins = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const entry of shown) {
-      const key = twinKey(entry.row.configuration);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return counts;
-  }, [shown]);
   const transition = reduceMotion
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 420, damping: 38 };
@@ -207,8 +200,8 @@ export function LeaderboardView({
     </TableCell>
   );
   const modelCell = (entry: RankedRow) => {
-    const activity = rowActivity(entry.row, runs);
-    const attention = rowAttention(entry.row, runs);
+    const activity = modelActivity(modelOf(entry.row), runs);
+    const attention = activity.attention;
     return (
       <TableCell className={cn("min-w-72", pinned("left-10"))}>
         <ModelIdentity
@@ -216,7 +209,7 @@ export function LeaderboardView({
           name={nameOf(entry.row)}
           vendor={vendorOf(entry.row)}
           wrap={false}
-          showRuntime={(twins.get(twinKey(entry.row.configuration)) ?? 0) > 1}
+          showSettings={false}
           mark={
             attention.length > 0 ? (
               <AttentionMark
@@ -237,9 +230,7 @@ export function LeaderboardView({
               {activity.running > 0 ? (
                 <Spinner decorative className="size-3 text-chart-1" />
               ) : null}
-              {t(activity.running > 0 ? "activity.running" : "activity.left", {
-                open: activity.open,
-              })}
+              {t(activity.running > 0 ? "activity.running" : "activity.left")}
             </div>
           ) : null}
         </ModelIdentity>
@@ -269,7 +260,7 @@ export function LeaderboardView({
         aria-label={t("leaderboard.open", { model: nameOf(entry.row) })}
         onClick={(event) => {
           event.stopPropagation();
-          onOpen(rowKey(entry.row));
+          onOpen(modelKey(entry.row.configuration));
         }}
       >
         <IconChevronRight />
@@ -278,11 +269,11 @@ export function LeaderboardView({
   );
   const row = (entry: RankedRow, cells: ReactNode) => (
     <MotionRow
-      key={rowKey(entry.row)}
+      key={modelKey(entry.row.configuration)}
       layout="position"
       transition={transition}
       className="cursor-pointer"
-      onClick={() => onOpen(rowKey(entry.row))}
+      onClick={() => onOpen(modelKey(entry.row.configuration))}
     >
       {rankCell(entry)}
       {modelCell(entry)}
@@ -301,7 +292,7 @@ export function LeaderboardView({
           <>
             <ModelFilter
               options={rows.map((entry) => ({
-                key: rowKey(entry),
+                key: modelKey(entry.configuration),
                 name: nameOf(entry),
                 vendor: vendorOf(entry),
                 terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
@@ -389,15 +380,16 @@ export function LeaderboardView({
                 entry,
                 <>
                   <TableCell className="text-right">
-                    <div
+                    <RatingValue
+                      points={entry.points}
+                      row={entry.row}
+                      board={board}
                       className={cn(
                         "font-display text-lg font-semibold tabular-nums",
                         entry.rank === 1 && "text-chart-1",
                         entry.points == null && "text-muted-foreground",
                       )}
-                    >
-                      {entry.points ?? "–"}
-                    </div>
+                    />
                   </TableCell>
                   <TableCell>
                     <AxisBars
@@ -409,7 +401,9 @@ export function LeaderboardView({
                           id: axis.id,
                           label: boardLabel(axis),
                           points:
-                            standings.get(axis.id)?.rows.get(rowKey(entry.row))
+                            standings
+                              .get(axis.id)
+                              ?.rows.get(modelKey(entry.row.configuration))
                               ?.points ?? null,
                         }))}
                     />
@@ -461,8 +455,10 @@ export function LeaderboardView({
                 entry,
                 boards.map((axis) => {
                   const points =
-                    standings.get(axis.id)?.rows.get(rowKey(entry.row))
-                      ?.points ?? null;
+                    standings
+                      .get(axis.id)
+                      ?.rows.get(modelKey(entry.row.configuration))?.points ??
+                    null;
                   return (
                     <TableCell
                       key={axis.id}
@@ -475,7 +471,11 @@ export function LeaderboardView({
                         points == null && "text-muted-foreground",
                       )}
                     >
-                      {points ?? "–"}
+                      <RatingValue
+                        points={points}
+                        row={entry.row}
+                        board={axis}
+                      />
                     </TableCell>
                   );
                 }),

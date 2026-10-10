@@ -134,7 +134,7 @@
     "active": "Active tests",
     "includeArchived": "Including archived",
     "search": "Search tests",
-    "searchModels": "Search configurations",
+    "searchModels": "Search models",
     "table": "Table",
     "chart": "Chart",
     "runLabel": "{{date}} · {{id}}",
@@ -373,8 +373,8 @@
     "progress": "{{settled}} / {{total}}",
     "more": "+{{count}}",
     "sidebar": "{{settled}} of {{total}} attempts settled",
-    "left": "{{open}} left",
-    "running": "Running, {{open}} left"
+    "left": "Waiting",
+    "running": "Running"
   },
   "evidence": {
     "repetitions": "Repetitions",
@@ -407,7 +407,8 @@
     "title": "Tests · {{cases}} cases · {{attempts}} attempts",
     "task": "Task {{number}}",
     "inProgress": "In progress",
-    "finished": "Finished",
+    "queued": "Not started",
+    "stopped": "Stopped",
     "passed": "Passed",
     "solved": "Solved",
     "attention": "Failed"
@@ -421,11 +422,18 @@
       "class": "{{label}} cases, points out of 1000: a case counts when every repetition passed, weighted by how fast and how cheaply it was solved against the best measurement of that case. Higher is better."
     },
     "shares": {
-      "reliability": "Cases solved on every repetition, of the cases measured.",
+      "coverage": "Tested {{scored}} of {{total}}. Passed: {{passed}}; not passed: {{notPassed}}; not tested: {{untested}}. A test passes when every repetition passes. Only current test versions count; revised tests need a new run.",
+      "speedValue": "Speed {{value}}",
+      "costValue": "Cost {{value}}",
       "speed": "Mean share of the fastest solution over the solved cases: 100% at the record, 50% at twice its time.",
       "cost": "Mean share of the cheapest solution over the solved cases: 100% at the record, 50% at twice its spend."
     },
     "allAxes": "All boards",
+    "ratingBasis": "{{points}} / 1000, based on {{scored}} of {{total}} current tests. {{untested}} unmeasured tests are not included.",
+    "ratingCalculation": {
+      "class": "Average test result, weighted by speed and cost.",
+      "overall": "Average of the measured category scores."
+    },
     "score": "Score",
     "measuredPartial": "{{scored}} / {{planned}} measured, {{complete}} complete",
     "measured": "{{scored}} / {{planned}} measured",
@@ -635,12 +643,12 @@
     "apiModelId": "API model ID",
     "runtime": "Runtime revision",
     "context": "Context window",
-    "cases": "Cases measured",
-    "attempts": "Attempts scored",
+    "cases": "Tests",
+    "attempts": "Attempts",
     "parallelism": "Attempts at once",
     "measured": "Measured",
-    "spend": "Mean cost per task",
-    "outputTokens": "Median output tokens",
+    "spend": "Mean cost",
+    "outputTokens": "Median output",
     "pricing": "Pricing",
     "perMillion": "USD per million tokens",
     "input": "Input",
@@ -767,8 +775,11 @@
     "unrecorded": "No first result recorded",
     "record": "Exact review, controls and first evidence",
     "revoke": "Revoke qualification",
+    "minimumAcceptedScore": "Minimum accepted control score",
+    "maximumRejectedScore": "Maximum rejected control score",
+    "judgeCallBudget": "Up to {{count}} judge calls.",
     "revoked": "Qualification revoked",
-    "unsupported": "This version is outside the objective train/held-out qualification contract. Semantic and visual panel qualification remains unavailable.",
+    "unsupported": "Qualification requires a published train/held-out version with a supported evaluator. Rubrics also require frozen judge seats.",
     "states": {
       "reserved": "First qualification reserved; controls incomplete",
       "failed": "First qualification failed",

@@ -134,7 +134,7 @@
     "active": "Pruebas activas",
     "includeArchived": "Incluyendo archivadas",
     "search": "Buscar pruebas",
-    "searchModels": "Buscar configuraciones",
+    "searchModels": "Buscar modelos",
     "table": "Tabla",
     "chart": "Gráfico",
     "runLabel": "{{date}} · {{id}}",
@@ -373,8 +373,8 @@
     "progress": "{{settled}} / {{total}}",
     "more": "+{{count}}",
     "sidebar": "{{settled}} de {{total}} intentos resueltos",
-    "left": "Quedan {{open}}",
-    "running": "En curso, quedan {{open}}"
+    "left": "En espera",
+    "running": "En curso"
   },
   "evidence": {
     "repetitions": "Repeticiones",
@@ -407,7 +407,8 @@
     "title": "Pruebas · {{cases}} casos · {{attempts}} intentos",
     "task": "Tarea {{number}}",
     "inProgress": "En curso",
-    "finished": "Terminadas",
+    "queued": "Sin iniciar",
+    "stopped": "Detenidos",
     "passed": "Superados",
     "solved": "Resueltas",
     "attention": "Fallidas"
@@ -421,11 +422,18 @@
       "class": "Casos de {{label}}, en puntos sobre 1000: un caso cuenta cuando todas sus repeticiones pasaron, ponderado por la rapidez y el coste con que se resolvió frente a la mejor medición de ese caso. Más alto es mejor."
     },
     "shares": {
-      "reliability": "Casos resueltos en todas las repeticiones, de los casos medidos.",
+      "coverage": "Evaluadas {{scored}} de {{total}}. Superadas: {{passed}}; no superadas: {{notPassed}}; sin evaluar: {{untested}}. Una prueba se supera cuando se superan todas sus repeticiones. Solo cuentan las versiones actuales; las pruebas revisadas necesitan otra ejecución.",
+      "speedValue": "Velocidad {{value}}",
+      "costValue": "Coste {{value}}",
       "speed": "Cuota media de la solución más rápida sobre los casos resueltos: 100% en el récord, 50% al doble de su tiempo.",
       "cost": "Cuota media de la solución más barata sobre los casos resueltos: 100% en el récord, 50% al doble de su gasto."
     },
     "allAxes": "Todos los tableros",
+    "ratingBasis": "{{points}} / 1000, según {{scored}} de {{total}} pruebas actuales. Las {{untested}} pruebas sin evaluar no se incluyen.",
+    "ratingCalculation": {
+      "class": "Resultado medio de las pruebas, ponderado por velocidad y coste.",
+      "overall": "Media de las puntuaciones de las categorías evaluadas."
+    },
     "score": "Puntuación",
     "measuredPartial": "{{scored}} / {{planned}} medidas, {{complete}} completas",
     "measured": "{{scored}} / {{planned}} medidas",
@@ -635,12 +643,12 @@
     "apiModelId": "ID de modelo de la API",
     "runtime": "Revisión del runtime",
     "context": "Ventana de contexto",
-    "cases": "Casos medidos",
-    "attempts": "Intentos puntuados",
+    "cases": "Pruebas",
+    "attempts": "Intentos",
     "parallelism": "Intentos a la vez",
     "measured": "Medido",
-    "spend": "Costo medio por tarea",
-    "outputTokens": "Mediana de tokens de salida",
+    "spend": "Costo medio",
+    "outputTokens": "Mediana de salida",
     "pricing": "Precios",
     "perMillion": "USD por millón de tokens",
     "input": "Entrada",
@@ -767,8 +775,11 @@
     "unrecorded": "Sin primer resultado registrado",
     "record": "Revisión, controles y primeras evidencias exactas",
     "revoke": "Revocar cualificación",
+    "minimumAcceptedScore": "Puntuación mínima de los controles aceptados",
+    "maximumRejectedScore": "Puntuación máxima de los controles rechazados",
+    "judgeCallBudget": "Hasta {{count}} llamadas a jueces.",
     "revoked": "Cualificación revocada",
-    "unsupported": "Esta versión está fuera del contrato de cualificación objetiva train/held-out. La cualificación de paneles semánticos y visuales sigue sin estar disponible.",
+    "unsupported": "La cualificación requiere una versión publicada train/held-out con un evaluador compatible. Las rúbricas también requieren jueces congelados.",
     "states": {
       "reserved": "Primera cualificación reservada; controles incompletos",
       "failed": "Primera cualificación fallida",

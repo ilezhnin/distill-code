@@ -186,7 +186,27 @@ function readPersistedModels(): Map<string, CachedProviderModels> {
             // is forced precisely so that round trip always happens.
             entry.schemaVersion === MODEL_CACHE_SCHEMA_VERSION,
         )
-        .map((entry) => [entry.providerId, entry]),
+        .map((entry) => [
+          entry.providerId,
+          entry.providerId === "zai-acp"
+            ? {
+                ...entry,
+                models: entry.models.map((model) => {
+                  const label = harnessModelLabel({
+                    id: model.id,
+                    name: model.displayName ?? model.name,
+                    description: null,
+                  });
+                  return {
+                    ...model,
+                    name: label,
+                    displayName: label,
+                    providerName: formatProviderLabel(entry.providerId),
+                  };
+                }),
+              }
+            : entry,
+        ]),
     );
   } catch {
     return new Map();

@@ -244,8 +244,11 @@ export const benchmarkApi = {
     invoke<SelectorHarnessReport>("benchmark_selector_harness", { query }),
   /** Discrimination and flakiness of every pool case over the standing cells. */
   getCaseStats: () => invoke<CaseStats[]>("benchmark_get_case_stats"),
-  getHistory: (configuration: Configuration) =>
-    invoke<HistorySnapshot[]>("benchmark_get_history", { configuration }),
+  getHistory: (configuration: Configuration, model = false) =>
+    invoke<HistorySnapshot[]>("benchmark_get_history", {
+      configuration,
+      model,
+    }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>
     invoke<RoutingEvidence>("benchmark_get_routing_evidence", { query }),
   getUsageLedger: () =>

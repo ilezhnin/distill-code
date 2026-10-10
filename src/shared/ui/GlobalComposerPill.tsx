@@ -789,9 +789,10 @@ export function GlobalComposerPill({
   const effectiveReasoning = useMemo(
     () =>
       resolveEffectiveReasoningEffort({
+        harnessId: selectedAgentId,
         sessionReasoningEffort: activeReasoningEffort,
       }),
-    [activeReasoningEffort],
+    [activeReasoningEffort, selectedAgentId],
   );
 
   const {

@@ -39,6 +39,7 @@ export interface WorkflowCampaign {
       group: string;
       evaluatorRevision: string;
       steps: number;
+      judging?: { calls: number; timeoutSeconds: number; panelBinding: string };
     }[];
     policies: WorkflowPolicy[];
     cells: { caseIndex: number; policyIndex: number; repetition: number }[];
@@ -88,4 +89,12 @@ export interface WorkflowCampaignReport {
   groups: number;
   dispatchAllowed: false;
   limitations: string[];
+  judging?: {
+    attemptId: string;
+    reservedCalls: number;
+    dispatchedCalls: number;
+    durationMs: number | null;
+    cost: number | null;
+    evaluationIds: string[];
+  }[];
 }

@@ -24,6 +24,13 @@ const caseOf = (
 });
 
 describe("planned turns", () => {
+  it("reserves exact frozen seats once for the complete workflow", () => {
+    const task = caseOf("rubric", undefined, 2);
+    task.manifest.environment = {
+      judgePanel: { recipe: "frozen-native-panel-v1", judges: [{}, {}] },
+    };
+    expect(plannedTurns([task], configuration)).toBe(4);
+  });
   it("counts every step and a judged case's panel, nothing for a case the candidate wrote", () => {
     expect(
       plannedTurns(

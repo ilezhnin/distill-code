@@ -59,7 +59,8 @@ import {
   stateTone,
 } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
-import type { Configuration, RunSummary } from "../types";
+import type { Configuration, LeaderboardRow, RunSummary } from "../types";
+import { boardShares, type Board } from "../lib/benchmarkBoards";
 
 export interface Option {
   value: string;
@@ -434,9 +435,45 @@ const BOARD_ICONS: Record<string, typeof IconTrophy> = {
   general: IconMessage,
 };
 
+/** Every rating explains the measured sample without adding visible labels. */
+export function RatingValue({
+  points,
+  row,
+  board,
+  className,
+}: {
+  points: number | null;
+  row: LeaderboardRow;
+  board: Pick<Board, "workClass">;
+  className?: string;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const shares = boardShares(row, board);
+  const value = <span className={className}>{points ?? "–"}</span>;
+  if (points == null) return value;
+  return (
+    <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+      <TooltipTrigger asChild>{value}</TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-72">
+        {t("leaderboard.ratingBasis", {
+          points,
+          scored: shares.scored,
+          total: shares.planned,
+          untested: shares.planned - shares.scored,
+        })}{" "}
+        {t(
+          board.workClass
+            ? "leaderboard.ratingCalculation.class"
+            : "leaderboard.ratingCalculation.overall",
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /**
- * What a board's points are made of, in the board's own units: solved cases of
- * the measured ones, then the mean speed and cost shares of those solved.
+ * Coverage uses the eligible pool, so one measured test cannot look complete.
+ * Speed and cost describe solved tests relative to their best measurements.
  * Each mark explains itself on a held hover.
  */
 export function ShareMarks({
@@ -446,12 +483,14 @@ export function ShareMarks({
   shares: {
     passed: number;
     scored: number;
+    planned: number;
     speed: number | null;
     cost: number | null;
   };
   className?: string;
 }) {
   const { t } = useTranslation("benchmarks");
+  if (shares.planned === 0) return null;
   const percent = (share: number | null) =>
     share == null ? "–" : `${Math.round(share * 100)}%`;
   const marks: {
@@ -461,44 +500,52 @@ export function ShareMarks({
     hint: string;
   }[] = [
     {
-      id: "reliability",
+      id: "coverage",
       icon: IconShieldCheck,
-      value: `${shares.passed}/${shares.scored}`,
-      hint: t("shares.reliability"),
+      value: `${shares.scored}/${shares.planned}`,
+      hint: t("leaderboard.shares.coverage", {
+        scored: shares.scored,
+        total: shares.planned,
+        passed: shares.passed,
+        notPassed: shares.scored - shares.passed,
+        untested: shares.planned - shares.scored,
+      }),
     },
     {
       id: "speed",
       icon: IconBolt,
       value: percent(shares.speed),
-      hint: t("shares.speed"),
+      hint: `${t("leaderboard.shares.speedValue", { value: percent(shares.speed) })}. ${t("leaderboard.shares.speed")}`,
     },
     {
       id: "cost",
       icon: IconCoin,
       value: percent(shares.cost),
-      hint: t("shares.cost"),
+      hint: `${t("leaderboard.shares.costValue", { value: percent(shares.cost) })}. ${t("leaderboard.shares.cost")}`,
     },
   ];
+  const renderMark = (mark: (typeof marks)[number]) => (
+    <Tooltip key={mark.id} delayDuration={TOOLTIP_DELAY.held}>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default items-center gap-1">
+          <mark.icon className="size-3.5" aria-hidden />
+          <span>{mark.value}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-64">
+        {mark.hint}
+      </TooltipContent>
+    </Tooltip>
+  );
   return (
     <div
       className={cn(
-        "flex items-center gap-3 text-xs tabular-nums text-muted-foreground",
+        "flex flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground",
         className,
       )}
     >
-      {marks.map((mark) => (
-        <Tooltip key={mark.id} delayDuration={TOOLTIP_DELAY.held}>
-          <TooltipTrigger asChild>
-            <span className="inline-flex cursor-default items-center gap-1">
-              <mark.icon className="size-3.5" aria-hidden />
-              <span>{mark.value}</span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-64">
-            {mark.hint}
-          </TooltipContent>
-        </Tooltip>
-      ))}
+      {renderMark(marks[0])}
+      {shares.scored > 0 ? marks.slice(1).map(renderMark) : null}
     </div>
   );
 }
@@ -597,6 +644,7 @@ export function ModelIdentity({
   name,
   vendor,
   showRuntime = false,
+  showSettings = true,
   wrap = true,
   mark,
   children,
@@ -605,6 +653,8 @@ export function ModelIdentity({
   name: string;
   vendor: string;
   showRuntime?: boolean;
+  /** Settings belong to the model details, not the grouped leaderboard. */
+  showSettings?: boolean;
   /** Tables can keep the name and configuration together and scroll instead. */
   wrap?: boolean;
   /** A warning beside the name, such as a run of this model that stopped. */
@@ -627,8 +677,10 @@ export function ModelIdentity({
         >
           <span className="font-medium">{name}</span>
           {mark}
-          {effort ? <Badge variant="outline">{effort}</Badge> : null}
-          {configuration.fastMode ? (
+          {showSettings && effort ? (
+            <Badge variant="outline">{effort}</Badge>
+          ) : null}
+          {showSettings && configuration.fastMode ? (
             <Badge variant="outline">{t("fastMode")}</Badge>
           ) : null}
           {showRuntime && configuration.inventoryRevision ? (

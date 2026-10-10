@@ -43,6 +43,7 @@ export interface BoardShares {
   /** Cases solved on every repetition, of the cases measured. */
   passed: number;
   scored: number;
+  planned: number;
   /** Mean share of the record speed and cost over the solved cases, 0 to 1. */
   speed: number | null;
   cost: number | null;
@@ -54,16 +55,18 @@ export function boardShares(
 ): BoardShares {
   const source: Pick<
     LeaderboardAxis,
-    "passed" | "scored" | "speedShare" | "costShare"
+    "passed" | "scored" | "planned" | "speedShare" | "costShare"
   > = board.workClass
     ? (row.axes.find((axis) => axis.id === board.workClass) ?? {
         passed: 0,
         scored: 0,
+        planned: 0,
       })
     : row;
   return {
     passed: source.passed,
     scored: source.scored,
+    planned: source.planned,
     speed: source.speedShare ?? null,
     cost: source.costShare ?? null,
   };
@@ -103,7 +106,7 @@ export function onMovingAlias(
 }
 
 /**
- * Matches the service's leaderboard identity, independent of runtime probes.
+ * Matches the service's configuration measurement key, independent of runtime probes.
  * The runner marks an attempt that made auxiliary calls with an `_auxiliary`
  * profile; that is attempt evidence, not another candidate. A moving alias
  * adds its display name; no other key carries one.

@@ -87,11 +87,17 @@ describe("benchmark copy", () => {
         "class",
       ]);
       expect(leaderboard.boardDescriptions.class).toContain("{{label}}");
-      expect(Object.keys(leaderboard.shares)).toEqual([
-        "reliability",
-        "speed",
-        "cost",
-      ]);
+      for (const count of [
+        "scored",
+        "total",
+        "passed",
+        "notPassed",
+        "untested",
+      ]) {
+        expect(leaderboard.shares.coverage).toContain(`{{${count}}}`);
+      }
+      expect(leaderboard.shares.speedValue).toContain("{{value}}");
+      expect(leaderboard.shares.costValue).toContain("{{value}}");
     }
   });
 });

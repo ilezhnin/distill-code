@@ -1,6 +1,8 @@
 import type { ChatSessionReasoningEffortConfig } from "../stores/chatSessionStore";
 
 export interface EffectiveReasoningEffortInput {
+  /** The harness owning this config; option ids are not provider identities. */
+  harnessId: string | undefined;
   /** Session-advertised reasoning config and its ACP change channel. */
   sessionReasoningEffort?: {
     config?: ChatSessionReasoningEffortConfig;
@@ -37,11 +39,8 @@ export function resolveEffectiveReasoningEffort(
 ): EffectiveReasoningEffort {
   const sessionConfig = input.sessionReasoningEffort?.config;
   const ultracode = input.sessionReasoningEffort?.ultracode;
-  // The configId gate inside supportsUltracode is what keeps Ultracode
-  // Claude-only: codex also offers xhigh and max, but under its own
-  // `reasoning_effort` id, which the host forwards unrenamed.
   const ultracodeCapable =
-    ultracode != null && supportsUltracode(sessionConfig);
+    ultracode != null && supportsUltracode(input.harnessId, sessionConfig);
   const config =
     ultracodeCapable && sessionConfig
       ? {
@@ -57,6 +56,7 @@ export function resolveEffectiveReasoningEffort(
       : sessionConfig;
 
   const onSelect = (value: string) => {
+    if (!config?.options.some((option) => option.id === value)) return;
     if (ultracodeCapable && sessionConfig) {
       if (value === ULTRACODE_OPTION_ID) {
         // Ultracode rides on the model's top real effort; the per-send
@@ -106,13 +106,15 @@ export function isTopTierEffortId(id: string | undefined | null): boolean {
 }
 
 /**
- * Only the Claude Code bridge's own effort option qualifies: its config id is
- * "effort" and ultracode requires a model that can run the top effort tiers.
+ * Only the Claude Code harness qualifies. Other harnesses, including Z.ai's
+ * OpenCode bridge, also use "effort" with a "max" option.
  */
 export function supportsUltracode(
+  harnessId: string | undefined,
   config: ChatSessionReasoningEffortConfig | undefined,
 ): config is ChatSessionReasoningEffortConfig {
   return (
+    harnessId === "claude-acp" &&
     config?.configId === "effort" &&
     config.options.some(
       (option) => option.id === "max" || option.id === "xhigh",

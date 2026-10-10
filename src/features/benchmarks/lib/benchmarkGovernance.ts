@@ -26,6 +26,11 @@ export interface QualificationRequest {
   exposureReview: string;
   requirements: QualificationRequirement[];
   controls: QualificationControl[];
+  rubric?: {
+    minimumAcceptedScore: number;
+    maximumRejectedScore: number;
+    maxJudgeCalls: number;
+  };
 }
 export interface QualificationBinding {
   id: string;
@@ -49,6 +54,7 @@ export interface QualificationRecord {
     outputHash: string;
     evaluation: Evaluation | null;
     error: string | null;
+    judgeEvaluations?: Evaluation[];
   }[];
   status: string;
   finishedAt: number | null;

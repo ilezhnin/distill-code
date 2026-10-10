@@ -266,7 +266,11 @@ fn collect(data: &QueryData, plan: &HoldoutPlan) -> Result<Vec<ReportCase>> {
             }
             let repeats: Vec<_> = attempts
                 .iter()
-                .map(|a| first_score(a, &frozen.evaluator_revision, plan.created_at))
+                .map(|a| {
+                    let repeat = first_score(a, &frozen.evaluator_revision, plan.created_at)?;
+                    super::super::judge_panel::validate_evidence(&v.manifest, a, repeat.scored_at)?;
+                    Ok(repeat)
+                })
                 .collect::<Result<_>>()?;
             cells.push(ReportCell {
                 candidate_key: key,

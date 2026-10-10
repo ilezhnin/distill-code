@@ -99,8 +99,14 @@ pub fn validate(e: &Evaluator) -> Vec<String> {
         // publication (`repository::validate`, `Store::publish`).
         "repository" => {}
         "javascript" | "browser" => {
-            if serde_json::from_str::<serde_json::Value>(&e.expected).is_err() {
-                issues.push("Protected evaluator specification must be valid JSON".into());
+            match serde_json::from_str::<serde_json::Value>(&e.expected) {
+                Ok(spec) if e.kind == "javascript" => {
+                    issues.extend(validate_javascript_spec(&spec));
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    issues.push("Protected evaluator specification must be valid JSON".into());
+                }
             }
             if e.known_good.is_empty() || e.known_bad.is_empty() {
                 issues.push("Protected evaluator reference outputs are required".into());
@@ -110,9 +116,109 @@ pub fn validate(e: &Evaluator) -> Vec<String> {
     }
     issues
 }
+
+/// Reject authoring errors before publication launches a candidate artifact.
+/// The protected worker still checks this boundary independently at execution.
+fn validate_javascript_spec(spec: &serde_json::Value) -> Vec<String> {
+    let mut issues = Vec::new();
+    let valid_name = spec["functionName"].as_str().is_some_and(|name| {
+        let mut bytes = name.bytes();
+        bytes
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_' || first == b'$')
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$')
+    });
+    if !valid_name {
+        issues.push("JavaScript checks require a valid functionName".into());
+    }
+    let Some(cases) = spec["argsCases"]
+        .as_array()
+        .filter(|cases| (1..=100).contains(&cases.len()))
+    else {
+        issues.push("JavaScript checks require 1-100 argsCases".into());
+        return issues;
+    };
+    for (index, case) in cases.iter().enumerate() {
+        if !case["args"].is_array() || case.get("expected").is_none() {
+            issues.push(format!(
+                "JavaScript case {} requires an args array and an expected value",
+                index + 1
+            ));
+        }
+    }
+    if let Some(indices) = spec.get("immutableArgs").filter(|value| !value.is_null()) {
+        match indices.as_array() {
+            Some(indices) => {
+                for index in indices {
+                    if index
+                        .as_f64()
+                        .filter(|index| *index >= 0.0 && index.fract() == 0.0)
+                        .is_none_or(|index| {
+                            cases.iter().any(|case| {
+                                case["args"]
+                                    .as_array()
+                                    .is_none_or(|args| index >= args.len() as f64)
+                            })
+                        })
+                    {
+                        issues.push("immutableArgs must contain nonnegative integer indices present in every case's args".into());
+                        break;
+                    }
+                }
+            }
+            None => issues.push("immutableArgs must be an array of argument indices".into()),
+        }
+    }
+    issues
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn javascript_authoring_checks_reject_invalid_protected_contracts() {
+        let good = json!({"functionName":"copy", "immutableArgs":[0], "argsCases":[{"args":[{"value":1}], "expected":{"value":1}}]});
+        let evaluator = |spec: serde_json::Value| Evaluator {
+            kind: "javascript".into(),
+            expected: spec.to_string(),
+            rubric: String::new(),
+            revision: "1".into(),
+            known_good: "function copy(value) { return {...value}; }".into(),
+            known_bad: "function copy(value) { return null; }".into(),
+        };
+        assert!(validate(&evaluator(good.clone())).is_empty());
+        for (key, value) in [
+            ("functionName", json!("copy();")),
+            ("functionName", json!("1copy")),
+            ("argsCases", json!([])),
+            (
+                "argsCases",
+                json!(vec![json!({"args":[],"expected":null}); 101]),
+            ),
+            ("argsCases", json!([{"args":[1]}])),
+            ("argsCases", json!([{"args":null,"expected":null}])),
+            ("immutableArgs", json!("0")),
+            ("immutableArgs", json!([-1])),
+            ("immutableArgs", json!([0.5])),
+            ("immutableArgs", json!([1])),
+        ] {
+            let mut invalid = good.clone();
+            invalid[key] = value;
+            assert!(!validate(&evaluator(invalid)).is_empty(), "{key}");
+        }
+        // Optional immutability, null outputs and argument-free functions are valid.
+        assert!(validate(&evaluator(
+            json!({"functionName":"$nothing", "argsCases":[{"args":[], "expected":null}]})
+        ))
+        .is_empty());
+        assert!(validate(&evaluator(json!({"functionName":"copy", "immutableArgs":[0.0], "argsCases":[{"args":[1], "expected":1}]}))).is_empty());
+        for invalid in [json!(null), json!(false), json!([]), json!("checks")] {
+            assert!(!validate(&evaluator(invalid)).is_empty());
+        }
+        // An index must exist in every case, not just in the first one.
+        assert!(!validate(&evaluator(json!({"functionName":"copy", "immutableArgs":[0], "argsCases":[{"args":[1],"expected":1},{"args":[],"expected":null}]}))).is_empty());
+    }
     #[test]
     fn a_single_fence_around_the_answer_is_not_a_wrong_answer() {
         assert_eq!(

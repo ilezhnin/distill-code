@@ -20,5 +20,6 @@ pub mod router;
 mod session_title;
 pub mod sources;
 pub mod store;
+mod zai;
 
 pub use router::AgentHost;

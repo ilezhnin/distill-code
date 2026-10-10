@@ -34,7 +34,12 @@ import {
   BenchmarkEmpty,
   StateBadge,
 } from "./BenchmarkPrimitives";
-import { TaskGrid, TaskSummary, taskCells } from "./BenchmarkTaskGrid";
+import {
+  TaskGrid,
+  TaskSummary,
+  taskCells,
+  type TaskReference,
+} from "./BenchmarkTaskGrid";
 import { FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
 
 /**
@@ -42,10 +47,12 @@ import { FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
  * with its state and clock, and pause, resume and cancel.
  */
 export function BenchmarkRunDrawer({
+  taskOrder = [],
   runId,
   onClose,
   onEvidence,
 }: {
+  taskOrder?: TaskReference[];
   runId: string;
   onClose: () => void;
   onEvidence: (id: string) => void;
@@ -123,7 +130,7 @@ export function BenchmarkRunDrawer({
   const effort = single ? explicitEffort(single.effort) : null;
   // One grid per configuration, its cases in the run's dispatch order.
   const grids = useMemo(() => {
-    const order: { id: string; name: string }[] = [];
+    const order: { id: string; name: string; number?: number }[] = [];
     const seen = new Set<string>();
     for (const attempt of attempts) {
       if (seen.has(attempt.versionId)) continue;
@@ -131,6 +138,7 @@ export function BenchmarkRunDrawer({
       order.push({
         id: attempt.versionId,
         name: names.get(attempt.versionId) ?? shortId(attempt.versionId),
+        number: taskOrder.find((task) => task.id === attempt.versionId)?.number,
       });
     }
     return configurations.map((configuration) => ({
@@ -142,13 +150,24 @@ export function BenchmarkRunDrawer({
           .filter((attempt) => attempt.configuration.id === configuration.id)
           .map((attempt) => ({
             ...attempt,
-            cost: attempt.usage.cost,
+            cost:
+              summaries.data?.find((entry) => entry.id === attempt.id)?.cost ??
+              attempt.usage.cost,
             score: scores.get(attempt.id) ?? null,
           })),
         run?.state ?? null,
+        0, // A run counts only its actual attempts, never placeholder repetitions.
       ),
     }));
-  }, [attempts, configurations, names, scores, run?.state]);
+  }, [
+    attempts,
+    configurations,
+    names,
+    scores,
+    run?.state,
+    taskOrder,
+    summaries.data,
+  ]);
   // Keep the configuration that works now in view as a matrix run moves on.
   const rows = useRef(new Map<string, HTMLDivElement>());
   const runningKey = grids.find((grid) =>

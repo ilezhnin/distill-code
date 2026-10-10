@@ -154,12 +154,14 @@ describe("leaderboard boards", () => {
     expect(boardShares(rows[0], overall)).toEqual({
       passed: 1,
       scored: 1,
+      planned: 1,
       speed: 0.2,
       cost: 0.1,
     });
     expect(boardShares(rows[0], coding)).toEqual({
       passed: 1,
       scored: 2,
+      planned: 2,
       speed: 0.6,
       cost: null,
     });
@@ -167,6 +169,7 @@ describe("leaderboard boards", () => {
     expect(boardShares(rows[2], coding)).toEqual({
       passed: 0,
       scored: 0,
+      planned: 0,
       speed: null,
       cost: null,
     });

@@ -266,6 +266,41 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("account surfaces", () => {
+  it("connects a Z.ai Coding Plan by key without offering browser OAuth or API billing", async () => {
+    mocks.add.mockResolvedValue({ id: "zai-account" });
+    render(<ProviderAccountsPanel providerIds={["zai-acp"]} />);
+    const group = screen.getByRole("region", { name: "Z.ai" });
+    fireEvent.click(
+      within(group).getByRole("button", { name: /add account/i }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog).getByText(
+        /Uses your GLM Coding Plan subscription endpoint/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText(/API usage is billed separately/),
+    ).not.toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("Account name"), {
+      target: { value: "My GLM plan" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("API key"), {
+      target: { value: "test-zai-key" },
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /connect|add account/i }),
+    );
+    await waitFor(() =>
+      expect(mocks.add).toHaveBeenCalledWith({
+        providerId: "zai-acp",
+        label: "My GLM plan",
+        authMethod: "api_key",
+        apiKey: "test-zai-key",
+      }),
+    );
+    expect(mocks.authenticate).not.toHaveBeenCalled();
+  });
   it("keeps one panel refresh during a usage cooldown without requiring sign-in", () => {
     useProviderAccountsStore.setState({
       statuses: {
@@ -360,7 +395,7 @@ describe("account surfaces", () => {
       }));
     });
     render(<ProviderAccountsPanel />);
-    expect(screen.getAllByRole("switch")).toHaveLength(2);
+    expect(screen.getAllByRole("switch")).toHaveLength(3);
     for (const card of screen.getAllByRole("article")) {
       expect(within(card).queryByRole("switch")).not.toBeInTheDocument();
     }

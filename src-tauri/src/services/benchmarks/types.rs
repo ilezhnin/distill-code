@@ -655,7 +655,20 @@ pub struct LeaderboardCohort {
 #[serde(rename_all = "camelCase")]
 pub struct LeaderboardReport {
     pub cohort: Option<LeaderboardCohort>,
+    /// Per-configuration measurements, also used by routing and history.
     pub rows: Vec<LeaderboardRow>,
+    /// One model identity scored across its tests, independently of run settings.
+    #[serde(default)]
+    pub models: Vec<LeaderboardModel>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardModel {
+    pub key: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub configuration_keys: Vec<String>,
+    pub row: LeaderboardRow,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -75,12 +75,67 @@ checks must exercise declared interactions, keyboard behavior and viewport state
 Visual judgments and functional correctness remain separately inspectable.
 Use invented examples in infrastructure tests rather than private task content.
 
+JavaScript checks require a callable `functionName` and 1-100 `argsCases`, each
+with an `args` array and an explicit `expected` value. When the public contract
+forbids input changes, set `immutableArgs` to the argument indices to preserve.
+The worker checks those values independently of the returned result. Draft
+validation rejects malformed cases and indices missing from any case before
+publication starts reference execution.
+
 Repository tasks use immutable public snapshots and an isolated workspace.
 Protected evaluator code and expected observations remain outside the candidate's
 view. Where submitted code must run, the trusted checker and candidate process
 communicate through the supported isolated probe boundary. Candidate stdout or
 exit status alone must not forge the trusted verdict. Verify resource limits,
 cancellation and cleanup as part of evaluator qualification.
+
+Rubric tasks can freeze their judge seats in `environment.judgePanel`, with
+`recipe: "frozen-native-panel-v1"` and a `judges` array of two or three complete
+configurations. Each seat pins its account, model, effort, fast mode, billing
+mode, native text profile and inventory revision. The rubric needs 1-32 distinct
+criteria with finite positive weights. Authors and candidates cannot
+occupy a seat. A null effort is allowed only when the model offers no effort
+selection; it never means a moving default. The runner checks current
+availability and the pinned runtime
+before each judge call; it never substitutes another judge for a frozen seat.
+Text panels accept verified native text providers; visual panels additionally
+require image support. Complete votes must come from distinct registered seats
+and sessions in the same batch. This binding is separate from the historical
+display protocol hash. Frozen judges must return a JSON score sheet covering
+exactly the declared criteria, each between 0 and 10; malformed or out-of-range
+scores abstain. Freezing seats alone does not qualify a rubric.
+
+Rubric qualification also registers `rubric.minimumAcceptedScore`,
+`rubric.maximumRejectedScore` and `rubric.maxJudgeCalls`. The budget must cover
+every control/seat pair and cannot exceed 384 calls. The native service reserves
+the immutable first request and runs the same rendering, prompt, judge execution
+and scoring path used for candidate answers. It returns the reserved record
+while calibration continues; the qualification details poll progress. Every
+judge must meet the registered score band on every control. At least two accepted
+and two rejected controls must actually reach the panel; format rejection alone
+cannot establish semantic calibration. Failed or incomplete panels stay failed.
+
+Control evidence, session identities, partial usage and rendering artifacts live
+in qualification storage and never create model attempts, training observations
+or leaderboard entries. Revocation stops further judge calls and cancels an
+active calibration turn. Restart seals incomplete first qualifications as failed
+without replaying them; unknown usage remains unknown. These controls establish
+agreement on the reviewed examples, not independence, empirical task difficulty,
+universal grader reliability or permission to deploy a selector. Research fits
+and promotion registration verify that rubric labels and qualification controls
+use the current published panel, scoring prompt and renderer. Human overrides
+cannot inherit that calibration.
+
+Bounded rubric workflows require a frozen panel. Intermediate steps execute
+without the final rubric or judge calls; the panel scores only the root's final
+answer. Judge exclusions cover every contributing requested and acknowledged
+worker, and research policies exclude every available worker before reservation.
+The execution budget reserves all steps plus the exact number of final judges.
+Each judge has a separately frozen 180-second turn limit. The root execution
+clock ends before judging, so executor utility remains based on generation time
+and generation cost. Reports record judge calls, durations and costs separately,
+retaining unknown costs. Objective campaigns retain their existing protocol and
+serialized hashes; rubric campaigns use a distinct frozen-panel report recipe.
 
 Rubric evaluation records the exact judge identity, protocol and evidence. A
 judge that accepts a consequentially wrong control is not qualified by wording
@@ -98,6 +153,27 @@ Freeze the candidate provider, concrete model, native effort, runtime, repetitio
 and limits before starting a run. Author exclusions remain binding. Missing
 measurements, infrastructure failures and unsupported configurations are explicit
 states, not automatic failures or free execution. Preserve every planned outcome.
+
+The leaderboard lists each provider/model identity once. Accounts, execution
+profiles, effort, fast mode, billing and runtime revisions belong to its run
+evidence and never create another model. A moving vendor alias retains the
+reported model generation. The model page shows one score and history across
+all its tests. Each test contributes its newest scored cell, retaining one
+run's configuration and repetitions together. Repeated tests count once,
+infrastructure errors do not erase measured results, and scores are never
+selected for being higher. Execution conditions remain in individual evidence.
+Coverage labels count measured tests against the full eligible pool; hover
+details separate passed, not passed and untested cases. Scores with incomplete
+coverage are preliminary; untested cases are not failed cases. Speed and cost
+percentages compare solved cases with their best measurements and are not test
+pass rates.
+
+The model chart uses one history recalculated against the current pool, with
+each observation anchored to its original measurement date. Runs without scored
+results add no observation and cannot extend the chart's time range. Original
+dated reports remain in the evidence API; the model page does not switch between
+scoring methods or fall back to a different method when no current-pool result
+exists.
 
 The runner commits decision inputs before dispatch. Workflow steps retain their
 declared entry state and preceding reports. Retry or recovery must not recreate

@@ -403,6 +403,29 @@ fn an_unscored_newer_run_stands_with_its_gaps() {
 }
 
 #[test]
+fn unscored_runs_cannot_redate_model_history_after_a_pool_change() {
+    for state in ["needs_attention", "cancelled", "completed"] {
+        let mut data = before_only();
+        let configuration = data.runs[0].request.configurations[0].clone();
+        let original_at = model_history(&data, &configuration)[0].created_at;
+        // Replacing one test changes the inherited model row even though
+        // the later run produced no new measurement.
+        let mut replacement = data.versions[0].clone();
+        replacement.id = "replacement-test".into();
+        replacement.published_at = 5;
+        data.versions.push(replacement);
+        settled_retest(&mut data, state, &["infrastructure_failure"]);
+
+        let points = model_history(&data, &configuration);
+        assert_eq!(points.len(), 1, "{state}");
+        assert_eq!(points[0].run_id, "before", "{state}");
+        assert_eq!(points[0].created_at, original_at, "{state}");
+        assert_eq!(points[0].report.models[0].row.scored, 6);
+        assert_eq!(points[0].recalculated_report.models[0].row.scored, 5);
+    }
+}
+
+#[test]
 fn sealed_unmeasured_runs_leave_no_row_or_history_point() {
     let mut data = before_only();
     settled_retest(&mut data, "completed", &["unsupported"]);

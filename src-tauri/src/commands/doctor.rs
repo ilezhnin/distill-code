@@ -172,6 +172,23 @@ const LOCAL_COMMAND_CHECKS: &[LocalCommandCheck] = &[];
 
 const LOCAL_PATH_CHECKS: &[LocalPathCheck] = &[LocalPathCheck {
     meta: LocalCheckMeta {
+        id: "ai-agent-zai",
+        label: "Z.ai Coding Plan",
+        category: AGENTS_CATEGORY,
+        category_label: AGENTS_CATEGORY_LABEL,
+        fix: Some(LocalDoctorFix {
+            fix_type: FixType::Command,
+            command: "npm install -g opencode-ai@1.18.35",
+        }),
+        fix_url: Some("https://docs.z.ai/devpack/tool/opencode"),
+        debug_output: None,
+    },
+    binary_name: "opencode",
+    pass_message: "OpenCode is available; connect a Z.ai Coding Plan account in Providers",
+    fail_message: "Install OpenCode to use Z.ai Coding Plan",
+    auth: None,
+}, LocalPathCheck {
+    meta: LocalCheckMeta {
         id: "ai-agent-grok",
         label: "Grok",
         category: AGENTS_CATEGORY,
@@ -1005,7 +1022,7 @@ async fn windows_override_system_checks(env_vars: &[(String, String)]) -> Vec<do
 pub(crate) fn apply_managed_account_checks(app: &AppHandle, checks: &mut [doctor::DoctorCheck]) {
     use crate::services::provider_accounts;
     let accounts = provider_accounts::snapshot(app);
-    for provider in ["codex-acp", "claude-acp"] {
+    for provider in ["codex-acp", "claude-acp", "zai-acp"] {
         let id = crate::commands::agent_setup::crate_check_id(provider);
         let Some(check) = checks.iter_mut().find(|check| check.id == id) else {
             continue;
@@ -1111,12 +1128,12 @@ async fn run_doctor_impl(
         }
         report.checks
     };
-    apply_managed_account_checks(app, &mut checks);
-    let mut checks: Vec<DoctorCheck> = checks.into_iter().map(DoctorCheck::from).collect();
     if doctor_internal_tooling_checks_enabled(runtime_config) {
         let local_checks = run_local_checks(registry, &doctor_env_vars.into_iter().collect()).await;
-        checks.extend(local_checks);
+        checks.extend(local_checks.into_iter().map(doctor::DoctorCheck::from));
     }
+    apply_managed_account_checks(app, &mut checks);
+    let mut checks: Vec<DoctorCheck> = checks.into_iter().map(DoctorCheck::from).collect();
     if let Some(check) = run_node_runtime_check(
         managed_runtime.node_root.clone(),
         managed_runtime.npm_prefix_bin_dir.clone(),

@@ -589,7 +589,9 @@ function AccountConnectionDialog({
   const { t } = useTranslation("settings");
   const [label, setLabel] = useState(account?.label ?? "");
   const [method, setMethod] = useState<"oauth" | "api_key">(
-    account?.authMethod === "api_key" ? "api_key" : "oauth",
+    providerId === "zai-acp" || account?.authMethod === "api_key"
+      ? "api_key"
+      : "oauth",
   );
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -638,7 +640,13 @@ function AccountConnectionDialog({
               provider: providerLabel(providerId),
             })}
           </DialogTitle>
-          <DialogDescription>{t("accounts.addDescription")}</DialogDescription>
+          <DialogDescription>
+            {t(
+              providerId === "zai-acp"
+                ? "accounts.zaiDescription"
+                : "accounts.addDescription",
+            )}
+          </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
           {!account ? (
@@ -671,9 +679,11 @@ function AccountConnectionDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="oauth">
-                    {t("accounts.methods.oauth")}
-                  </SelectItem>
+                  {providerId !== "zai-acp" ? (
+                    <SelectItem value="oauth">
+                      {t("accounts.methods.oauth")}
+                    </SelectItem>
+                  ) : null}
                   <SelectItem value="api_key">
                     {t("accounts.methods.api_key")}
                   </SelectItem>
@@ -694,7 +704,11 @@ function AccountConnectionDialog({
                 onChange={(event) => setApiKey(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                {t("accounts.apiBillingHint")}
+                {t(
+                  providerId === "zai-acp"
+                    ? "accounts.zaiBillingHint"
+                    : "accounts.apiBillingHint",
+                )}
               </p>
             </div>
           ) : null}

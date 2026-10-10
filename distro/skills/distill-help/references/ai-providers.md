@@ -1,5 +1,14 @@
 # AI Providers
 
+## Z.ai Coding Plan
+
+In Settings > Providers, install Z.ai Coding Plan, add an account, and enter a
+key from `https://z.ai/manage-apikey/apikey-list`. This requires an active GLM
+Coding Plan; signing in to chat.z.ai alone is not enough. Distill runs OpenCode
+over ACP with the subscription endpoint and loads its GLM model list. It does
+not fall back to the separately billed general API. Keys are encrypted locally,
+accounts have separate storage, and quota limits remain unknown when unavailable.
+
 ## Kimi Code
 
 In Settings > AI providers, install Kimi Code and choose Sign in. Distill runs

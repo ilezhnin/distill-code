@@ -27,6 +27,9 @@ function capitalize(token: string): string {
 }
 
 export function humanizeRawModelId(id: string): string {
+  if (id.startsWith("zai-coding-plan/glm-")) {
+    return id.slice("zai-coding-plan/".length).replace(/^glm/, "GLM");
+  }
   const stripped = id.startsWith("goose-") ? id.slice("goose-".length) : id;
 
   // Claude models read the way Claude Code names them ("Fable 5.1"), without
@@ -86,5 +89,9 @@ export function harnessModelLabel(
     return `${capitalize(described[1])} ${described[2]}`;
   }
   const named = model.name?.trim();
+  if (model.id.startsWith("zai-coding-plan/") && named) {
+    const label = named.replace(/^Z\.AI Coding Plan\//i, "").trim();
+    return label && label !== model.id ? label : humanizeRawModelId(model.id);
+  }
   return named && named !== model.id ? named : humanizeRawModelId(model.id);
 }

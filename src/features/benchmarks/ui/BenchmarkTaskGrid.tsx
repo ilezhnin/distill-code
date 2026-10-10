@@ -8,7 +8,11 @@ import { cn } from "@/shared/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { formatUsd } from "../lib/benchmarkLabels";
-import type { AttemptSummary } from "../types";
+import type {
+  AttemptSummary,
+  BenchmarkVersion,
+  LeaderboardCohort,
+} from "../types";
 import {
   type DotState,
   passed,
@@ -19,6 +23,37 @@ import {
   WORKING,
 } from "./BenchmarkTestStatus";
 import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
+
+export interface TaskReference {
+  id: string;
+  name: string;
+  number: number;
+}
+
+/** The pool supplies the same task numbers to model pages and individual runs. */
+export function poolTaskOrder(
+  versions: BenchmarkVersion[],
+  cohort: LeaderboardCohort | null | undefined,
+): TaskReference[] {
+  const pool = new Set(cohort?.versionIds ?? []);
+  const classes = new Map(
+    (cohort?.workClasses ?? []).map((id, index) => [id, index]),
+  );
+  return [...versions]
+    .sort(
+      (a, b) =>
+        Number(pool.has(b.id)) - Number(pool.has(a.id)) ||
+        (classes.get(a.manifest.workClassId) ?? 99) -
+          (classes.get(b.manifest.workClassId) ?? 99) ||
+        a.manifest.name.localeCompare(b.manifest.name) ||
+        a.id.localeCompare(b.id),
+    )
+    .map((version, index) => ({
+      id: version.id,
+      name: version.manifest.name,
+      number: index + 1,
+    }));
+}
 
 export interface TaskCell {
   versionId: string;
@@ -88,9 +123,10 @@ function median(values: number[]): number | null {
  * mean, unknown when any repetition's spend is.
  */
 export function taskCells(
-  order: { id: string; name: string }[],
+  order: { id: string; name: string; number?: number }[],
   attempts: CellAttempt[],
   runState: string | null,
+  minimumRepetitions = REQUIRED_REPETITIONS,
 ): TaskCell[] {
   const byCase = new Map<string, CellAttempt[]>();
   for (const attempt of attempts) {
@@ -118,27 +154,22 @@ export function taskCells(
         return "running";
       // Before its score arrives a settled attempt reads by its outcome; one
       // that never started, or was cancelled, never did.
-      if (a.phase !== "terminal" || a.outcome == null) return "queued";
+      if (a.phase !== "terminal") return "queued";
+      if (a.outcome == null || a.outcome === "cancelled") return "stopped";
       if (a.outcome === "pass") return "passed";
-      return a.outcome === "cancelled" ? "queued" : "failed";
+      return "failed";
     });
-    while (dots.length < REQUIRED_REPETITIONS) dots.push("queued");
+    while (dots.length < minimumRepetitions) dots.push("queued");
     const status =
       list.length === 0 ? null : testStatus(list, scores, runState);
     return {
       versionId: version.id,
-      number: index + 1,
+      number: version.number ?? index + 1,
       name: version.name,
       status,
-      // The clock the running block showed: from its start to its finish.
+      // Both full attempts and summaries carry the same measured execution time.
       durationMs: median(
-        list.flatMap((a) =>
-          a.startedAt != null && a.finishedAt != null
-            ? [a.finishedAt - a.startedAt]
-            : a.durationMs == null
-              ? []
-              : [a.durationMs],
-        ),
+        list.flatMap((a) => (a.durationMs == null ? [] : [a.durationMs])),
       ),
       cost:
         costs.length > 0 && costs.every((cost) => cost != null)
@@ -152,11 +183,7 @@ export function taskCells(
   });
 }
 
-/**
- * How far a measurement got, in attempts: every case needs three, so the
- * tiles count dots out of cases times three. Cases are counted elsewhere,
- * out of the pool; the two units never share a tile.
- */
+/** Disjoint attempt states; the run header already shows the completed total. */
 export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   const { t } = useTranslation("benchmarks");
   const dots = cells.flatMap((cell) => cell.dots);
@@ -164,11 +191,12 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   const passed = count("passed");
   const failed = count("failed");
   const items: [string, number][] = [
+    ["grid.queued", count("queued")],
     ["grid.inProgress", count("running")],
-    ["grid.finished", passed + failed],
     ["grid.passed", passed],
     ["grid.attention", failed],
   ];
+  if (count("stopped") > 0) items.push(["grid.stopped", count("stopped")]);
   return (
     <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {items.map(([key, value]) => (
@@ -184,9 +212,6 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
             )}
           >
             {value}
-            <span className="ml-1 text-xs text-muted-foreground">
-              / {dots.length}
-            </span>
           </dd>
         </div>
       ))}

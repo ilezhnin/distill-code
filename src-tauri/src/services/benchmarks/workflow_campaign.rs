@@ -55,6 +55,34 @@ pub struct Case {
     pub group: String,
     pub evaluator_revision: String,
     pub steps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judging: Option<FrozenJudging>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenJudging {
+    pub calls: u32,
+    pub timeout_seconds: u32,
+    pub panel_binding: String,
+}
+impl FrozenJudging {
+    fn for_draft(draft: &BenchmarkDraft) -> Result<Option<Self>> {
+        super::judge_panel::frozen(draft, &[])?
+            .map(|panel| {
+                Ok(Self {
+                    calls: panel.len() as u32,
+                    timeout_seconds: super::runner::JUDGE_TIMEOUT_SECONDS,
+                    panel_binding: super::runner::frozen_judge_binding(draft)?,
+                })
+            })
+            .transpose()
+    }
+}
+impl Case {
+    fn executions(&self) -> u32 {
+        self.steps
+            .saturating_add(self.judging.as_ref().map_or(0, |j| j.calls))
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,7 +159,7 @@ impl Plan {
             policy: self.policies[cell.policy_index].clone(),
             repetitions: 1,
             timeout_seconds: self.request.timeout_seconds,
-            max_executions: self.cases[cell.case_index].steps,
+            max_executions: self.cases[cell.case_index].executions(),
         }
         .try_into()
     }
@@ -267,7 +295,7 @@ impl BenchmarkService {
             let workflow = draft
                 .workflow
                 .as_ref()
-                .ok_or_else(|| invalid("Campaign requires objective workflows"))?;
+                .ok_or_else(|| invalid("Campaign requires bounded workflows"))?;
             // A single-class campaign keeps its root-scope rule. A mixed one
             // checks every step against the model fitted for that step class,
             // and all cases share one class sequence: a certificate later
@@ -322,6 +350,7 @@ impl BenchmarkService {
                 group: group(draft).into(),
                 evaluator_revision: draft.evaluator.revision.clone(),
                 steps: workflow.steps.len() as u32,
+                judging: FrozenJudging::for_draft(draft)?,
             });
             versions.push((*version).clone());
         }
@@ -368,7 +397,7 @@ impl BenchmarkService {
             fixed.fixed_candidate_id = Some(candidate.id.clone());
             policies.push(fixed);
         }
-        let total: u64 = cases.iter().map(|c| u64::from(c.steps)).sum::<u64>()
+        let total: u64 = cases.iter().map(|c| u64::from(c.executions())).sum::<u64>()
             * policies.len() as u64
             * u64::from(request.repetitions);
         if total > u64::from(request.max_executions) {
@@ -376,6 +405,7 @@ impl BenchmarkService {
                 "Campaign execution budget does not cover all policies and repetitions",
             ));
         }
+        let evaluation = report::protocol_for_cases(fit.model.weights, &cases);
         let mut plan = Plan {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: now(),
@@ -386,7 +416,7 @@ impl BenchmarkService {
             cells: vec![],
             order_algorithm: "sha256-campaign-cell-v1".into(),
             aggregate_recipe: "fitted-common-cases-equal-group-mean-utility-v1".into(),
-            evaluation: report::protocol(fit.model.weights),
+            evaluation,
             class_snapshot_hashes: if mixed {
                 fits.iter()
                     .map(|(class, class_fit)| {

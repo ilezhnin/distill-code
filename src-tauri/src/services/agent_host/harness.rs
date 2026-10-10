@@ -273,6 +273,22 @@ pub const HARNESSES: &[HarnessSpec] = &[
         session_model_meta: None,
     },
     HarnessSpec {
+        id: "zai-acp",
+        label: "Z.ai Coding Plan",
+        description: "GLM Coding Plan through OpenCode's native ACP interface.",
+        command: "opencode",
+        args: &["acp"],
+        env_remove: &[],
+        modes: &[
+            ("auto", "distill-auto"),
+            ("approve", "build"),
+            ("smartApprove", "distill-edit"),
+            ("chat", "plan"),
+        ],
+        models: &[],
+        session_model_meta: None,
+    },
+    HarnessSpec {
         id: "copilot-acp",
         label: "GitHub Copilot",
         description: "GitHub Copilot CLI in ACP mode.",
@@ -379,23 +395,42 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
             }
         }
     }
+    // These native menus are oldest-first (Kimi also uses stable aliases for
+    // older generations). Keep current models first and order the older page
+    // newest-first, without changing the other harnesses' curated order.
+    if matches!(harness_id, "zai-acp" | "kimi-acp") {
+        rows.sort_by(|(_, left), (_, right)| {
+            model_generation(harness_id, right)
+                .cmp(&model_generation(harness_id, left))
+                .then_with(|| left["name"].as_str().cmp(&right["name"].as_str()))
+        });
+        for (index, (_, row)) in rows.iter_mut().enumerate() {
+            row["order"] = json!(index);
+        }
+    }
     rows.into_iter().map(|(_, row)| row).collect()
 }
 
-/// Codex and Grok publish versioned model IDs but no current/older grouping.
+/// These harnesses publish versioned models but no current/older grouping.
 /// Compare only known lineages within this inventory. Unknown IDs stay main,
 /// and speed variants of one generation stay together in the bridge's order.
 fn model_generation(harness_id: &str, row: &Value) -> Option<(u32, u32)> {
+    if harness_id == "kimi-acp" {
+        // `kimi-for-coding` and `kimi-for-coding-highspeed` currently name
+        // different generations. Read the advertised K label, not the alias.
+        return parse_model_version(row["name"].as_str()?.strip_prefix('K')?);
+    }
     let prefix = match harness_id {
         "codex-acp" => "gpt-",
         "grok-acp" => "grok-",
+        "zai-acp" => "zai-coding-plan/glm-",
         _ => return None,
     };
-    let version = row["id"]
-        .as_str()?
-        .strip_prefix(prefix)?
-        .split('-')
-        .next()?;
+    parse_model_version(row["id"].as_str()?.strip_prefix(prefix)?)
+}
+
+fn parse_model_version(value: &str) -> Option<(u32, u32)> {
+    let version = value.split(['-', ' ']).next()?;
     let (major, minor) = version.split_once('.').unwrap_or((version, "0"));
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
@@ -781,6 +816,55 @@ mod tests {
         assert_eq!(newcomer["group"], "main");
         assert_eq!(newcomer["order"], 1005);
         assert_eq!(models.len(), 11);
+    }
+
+    #[test]
+    fn zai_and_kimi_show_newest_models_before_the_older_page() {
+        for (provider, rows, expected) in [
+            (
+                "zai-acp",
+                vec![
+                    ("zai-coding-plan/glm-4.7", "GLM-4.7"),
+                    ("zai-coding-plan/glm-5.2", "GLM-5.2"),
+                    ("zai-coding-plan/glm-5.3-flash", "GLM-5.3-Flash"),
+                    ("zai-coding-plan/glm-5.3", "GLM-5.3"),
+                ],
+                vec![
+                    ("GLM-5.3", "main"),
+                    ("GLM-5.3-Flash", "main"),
+                    ("GLM-5.2", "more"),
+                    ("GLM-4.7", "more"),
+                ],
+            ),
+            (
+                "kimi-acp",
+                vec![
+                    ("kimi-code/kimi-for-coding", "K2.8 Preview"),
+                    ("kimi-code/kimi-for-coding-highspeed", "K2.7 Code Highspeed"),
+                    ("kimi-code/k3-256k", "K3-256k"),
+                    ("kimi-code/k3", "K3"),
+                ],
+                vec![
+                    ("K3", "main"),
+                    ("K3-256k", "main"),
+                    ("K2.8 Preview", "more"),
+                    ("K2.7 Code Highspeed", "more"),
+                ],
+            ),
+        ] {
+            let models = merge_inventory(
+                provider,
+                rows.into_iter()
+                    .map(|(id, name)| probed(id, name, &["high", "max"], false))
+                    .collect(),
+            );
+            for (index, (model, (name, group))) in models.iter().zip(expected).enumerate() {
+                assert_eq!(model["name"], name);
+                assert_eq!(model["group"], group);
+                assert_eq!(model["order"], index);
+                assert_eq!(model["efforts"].as_array().unwrap().len(), 2);
+            }
+        }
     }
 
     #[test]

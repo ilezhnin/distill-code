@@ -65,6 +65,7 @@ const status: ProviderAccountStatus = {
 it.each([
   "codex-acp",
   "claude-acp",
+  "zai-acp",
 ])("uses identical quota rows in %s settings and status details", (providerId) => {
   const selected = { ...account, providerId };
   const selectedStatus = { ...status, providerId };

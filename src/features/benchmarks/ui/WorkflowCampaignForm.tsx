@@ -10,6 +10,7 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { rolesWavesCannotName } from "../lib/benchmarkGovernance";
 import { shortId, workClassLabel } from "../lib/benchmarkLabels";
+import { judgeCalls } from "../lib/benchmarkPlan";
 import {
   selectorTaskGroup,
   type SelectorFitArtifact,
@@ -128,7 +129,8 @@ export function WorkflowCampaignForm({
   const policies = candidates.length + 3;
   const executions =
     chosen.reduce(
-      (sum, v) => sum + (v.manifest.workflow?.steps.length ?? 0),
+      (sum, v) =>
+        sum + (v.manifest.workflow?.steps.length ?? 0) + judgeCalls(v.manifest),
       0,
     ) *
     policies *
@@ -221,7 +223,7 @@ export function WorkflowCampaignForm({
               [
                 "Campaign requires distinct held-out cases, a request key and bounded repetitions, time and executions",
                 "Campaign version is not in the current pool",
-                "Campaign requires objective workflows",
+                "Campaign requires bounded workflows",
                 "The fit weights speed or cost that its training measurements did not record; the comparison could not score them. Refit with those weights at zero, or measure with them recorded",
                 "Campaign needs unused held-out workflow families in the fitted scope and all required repetitions/budgets",
                 "Campaign requires four independent declared groups",

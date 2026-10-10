@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+mod tests;
+
 fn invalid(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("invalid_qualification", message)
 }
@@ -36,6 +39,13 @@ pub struct Requirement {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RubricCalibration {
+    pub minimum_accepted_score: f64,
+    pub maximum_rejected_score: f64,
+    pub max_judge_calls: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
     pub request_key: String,
     pub version_id: String,
@@ -49,6 +59,9 @@ pub struct Request {
     pub exposure_review: String,
     pub requirements: Vec<Requirement>,
     pub controls: Vec<Control>,
+    /// Explicit remote-call budget and outcome bands, frozen before calibration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubric: Option<RubricCalibration>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +84,9 @@ pub struct ControlResult {
     pub output_hash: String,
     pub evaluation: Option<Evaluation>,
     pub error: Option<String>,
+    /// Calibration evidence never enters candidate attempts or model boards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub judge_evaluations: Vec<Evaluation>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +103,16 @@ pub struct Record {
 }
 
 fn validate(request: &Request) -> Result<()> {
+    if let Some(rubric) = &request.rubric {
+        if !rubric.minimum_accepted_score.is_finite()
+            || !rubric.maximum_rejected_score.is_finite()
+            || !(0.5..=1.0).contains(&rubric.minimum_accepted_score)
+            || !(0.0..0.5).contains(&rubric.maximum_rejected_score)
+            || rubric.max_judge_calls > 384
+        {
+            return Err(invalid("Rubric controls require accepted scores in [0.5,1], rejected scores in [0,0.5), and at most 384 judge calls"));
+        }
+    }
     for (text, maximum) in [
         (&request.request_key, 128),
         (&request.version_id, 128),
@@ -186,24 +212,93 @@ fn validate(request: &Request) -> Result<()> {
 }
 
 impl BenchmarkService {
+    /// Reconcile spend after restart without turning an interrupted vote into
+    /// calibration evidence or changing the failed first outcome.
+    pub(super) async fn reconcile_qualification_judges(&self) -> Result<()> {
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM selector_qualifications WHERE phase='terminal' AND status='failed'",
+        )
+        .fetch_all(&self.store.pool)
+        .await?;
+        for id in ids {
+            let mut record = self.store.qualification(&id).await?;
+            if record.request.rubric.is_none() {
+                continue;
+            }
+            let old_hash = hash(&record)?;
+            let version = self.store.version(&record.request.version_id).await?;
+            for index in 0..record.controls.len() {
+                if !record.controls[index]
+                    .judge_evaluations
+                    .iter()
+                    .any(|evaluation| {
+                        evaluation
+                            .details
+                            .as_ref()
+                            .is_some_and(|details| details["inFlight"] == true)
+                    })
+                {
+                    continue;
+                }
+                let mut carrier = runner::qualification_carrier(&record, &version, index);
+                carrier.evaluations = record.controls[index].judge_evaluations.clone();
+                let reconciled = self.backend.reconcile_judges(&self.store, carrier).await?;
+                record.controls[index].judge_evaluations = reconciled.evaluations;
+            }
+            if hash(&record)? != old_hash {
+                let mut tx = self.store.pool.begin().await?;
+                let updated = sqlx::query("UPDATE selector_qualifications SET record_json=?,record_hash=? WHERE id=? AND phase='terminal' AND status='failed' AND record_hash=?")
+                    .bind(serde_json::to_string(&record)?).bind(hash(&record)?).bind(&record.id).bind(old_hash)
+                    .execute(&mut *tx).await?.rows_affected();
+                if updated != 1 {
+                    return Err(invalid(
+                        "Qualification evidence changed during reconciliation",
+                    ));
+                }
+                event(&mut tx, &record.id, "qualification_judges_reconciled").await?;
+                tx.commit().await?;
+                self.changed().await;
+            }
+        }
+        Ok(())
+    }
     /// Reserve before any execution. A interrupted or failed first panel is
     /// retained; another request cannot replace that version's qualification.
     pub async fn qualify_version(&self, request: Request) -> Result<Record> {
         validate(&request)?;
         let version = self.store.version(&request.version_id).await?;
+        let rubric = version.manifest.evaluator.kind == "rubric";
+        if rubric {
+            let panel = super::judge_panel::frozen(&version.manifest, &[])?
+                .ok_or_else(|| invalid("Rubric qualification requires frozen judge seats"))?;
+            if request.rubric.as_ref().is_none_or(|registered| {
+                (registered.max_judge_calls as usize) < panel.len() * request.controls.len()
+            }) {
+                return Err(invalid("Register score bands and a call budget covering every frozen judge/control pair"));
+            }
+            let issues = super::catalog::validate(&version.manifest).issues;
+            if !issues.is_empty() {
+                return Err(invalid(format!(
+                    "Rubric version is invalid: {}",
+                    issues.join("; ")
+                )));
+            }
+        } else if request.rubric.is_some() {
+            return Err(invalid("Objective controls do not use a judge-call budget"));
+        }
         if request.content_hash != version.content_hash
             || request.evaluator_revision != version.manifest.evaluator.revision
             || !matches!(version.manifest.split.as_str(), "train" | "held_out")
             || !matches!(
                 version.manifest.evaluator.kind.as_str(),
-                "exact" | "json" | "javascript" | "browser" | "repository"
+                "exact" | "json" | "javascript" | "browser" | "repository" | "rubric"
             )
         {
             return Err(invalid(
-                "Controls must bind an exact published rating version and objective evaluator",
+                "Controls must bind an exact published rating version and supported evaluator",
             ));
         }
-        let mut record = Record {
+        let record = Record {
             id: uuid::Uuid::new_v4().to_string(), created_at: now(),
             manifest_hash: hash(&version.manifest)?, request,
             controls: Vec::new(), status: "reserved".into(),
@@ -245,44 +340,214 @@ impl BenchmarkService {
         event(&mut tx, &record.id, "qualification_reserved").await?;
         tx.commit().await?;
         self.changed().await;
-        for control in &record.request.controls {
-            match runner::evaluate(&version.manifest, &control.output).await {
-                Ok(evaluation) => {
-                    let agrees = evaluation.verdict == control.expected
-                        && evaluation.evaluator_revision == record.request.evaluator_revision
-                        && evaluation.score
-                            == Some(if control.expected == "pass" { 1.0 } else { 0.0 });
-                    record.controls.push(ControlResult {
-                        control_id: control.id.clone(),
-                        output_hash: fixtures::hash(control.output.as_bytes()),
-                        evaluation: Some(evaluation),
-                        error: None,
-                    });
-                    if !agrees {
-                        record.failure = Some(format!(
-                            "Control {} disagrees with its registered expectation",
-                            control.id
-                        ));
+        if rubric {
+            let store = self.store.clone();
+            let backend = self.backend.clone();
+            let app = self.app.clone();
+            let pending_id = record.id.clone();
+            let failed_id = pending_id.clone();
+            tokio::spawn(async move {
+                if let Err(error) =
+                    run_controls(&store, backend.as_ref(), &version, record, app.as_ref()).await
+                {
+                    // Keep the last committed placeholder and any partial spend;
+                    // no second request may replay an ambiguous judge call.
+                    if let Ok(mut failed) = store.qualification(&failed_id).await {
+                        if failed.status == "reserved" {
+                            failed.failure = Some(format!("{}: {}", error.code, error.message));
+                            let _ = store.finish_qualification(&mut failed).await;
+                        }
                     }
+                    log::warn!("[benchmarks] rubric calibration stopped: {}", error.code);
+                    super::notify_changed(&store, app.as_ref()).await;
                 }
-                Err(error) => {
+            });
+            return self.store.qualification(&pending_id).await;
+        }
+        // Keep the rendering/evaluation future off the caller's stack. This
+        // service is also awaited from larger qualification/promotion flows.
+        Box::pin(run_controls(
+            &self.store,
+            self.backend.as_ref(),
+            &version,
+            record,
+            self.app.as_ref(),
+        ))
+        .await
+    }
+}
+
+fn in_band(rubric: &RubricCalibration, expected: &str, score: Option<f64>) -> bool {
+    score.is_some_and(|score| {
+        score.is_finite()
+            && (0.0..=1.0).contains(&score)
+            && if expected == "pass" {
+                score >= rubric.minimum_accepted_score
+            } else {
+                score <= rubric.maximum_rejected_score
+            }
+    })
+}
+
+pub(super) fn validate_protocol(record: &Record, version: &BenchmarkVersion) -> Result<()> {
+    if version.manifest.evaluator.kind != "rubric" {
+        return Ok(());
+    }
+    if record.request.rubric.is_none()
+        || record.controls.len() != record.request.controls.len()
+        || record.controls.len() < 4
+    {
+        return Err(invalid("Rubric calibration has incomplete native controls"));
+    }
+    for index in 0..record.controls.len() {
+        if !control_agrees(record, version, index)? {
+            return Err(invalid(
+                "Rubric calibration no longer matches the native scoring protocol",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn control_agrees(record: &Record, version: &BenchmarkVersion, index: usize) -> Result<bool> {
+    let result = &record.controls[index];
+    let expected = &record.request.controls[index].expected;
+    let Some(evaluation) = &result.evaluation else {
+        return Ok(false);
+    };
+    if evaluation.evaluator_revision != record.request.evaluator_revision {
+        return Ok(false);
+    }
+    let Some(rubric) = &record.request.rubric else {
+        return Ok(evaluation.verdict == *expected
+            && evaluation.score == Some(if expected == "pass" { 1.0 } else { 0.0 }));
+    };
+    if !in_band(rubric, expected, evaluation.score) {
+        return Ok(false);
+    }
+    if evaluation.verdict == "fail" && evaluation.provenance == "objective" {
+        return Ok(expected == "fail" && evaluation.score == Some(0.0));
+    }
+    let Some(marker) = result
+        .judge_evaluations
+        .first()
+        .filter(|e| e.provenance == "render")
+    else {
+        return Ok(false);
+    };
+    if marker
+        .details
+        .as_ref()
+        .and_then(|details| details.pointer("/protocol/panelBinding"))
+        .and_then(serde_json::Value::as_str)
+        != Some(runner::frozen_judge_binding(&version.manifest)?.as_str())
+    {
+        return Ok(false);
+    }
+    let answers: Vec<_> = result.judge_evaluations[1..].iter().collect();
+    let Some(votes) = super::judge_panel::bound_evaluations(marker, &answers) else {
+        return Ok(false);
+    };
+    // Every seat must agree: a good median cannot qualify a judge that rewards
+    // consequentially wrong controls or rejects a valid alternative.
+    Ok(evaluation.verdict == "judged"
+        && votes
+            .iter()
+            .all(|vote| in_band(rubric, expected, vote.score)))
+}
+
+async fn run_controls(
+    store: &Store,
+    backend: &dyn runner::ExecutionBackend,
+    version: &BenchmarkVersion,
+    mut record: Record,
+    app: Option<&tauri::AppHandle>,
+) -> Result<Record> {
+    for index in 0..record.request.controls.len() {
+        if store.qualification_stopped(&record.id).await? {
+            record.failure = Some("Qualification was revoked before completion".into());
+            break;
+        }
+        let control = &record.request.controls[index];
+        record.controls.push(ControlResult {
+            control_id: control.id.clone(),
+            output_hash: fixtures::hash(control.output.as_bytes()),
+            evaluation: None,
+            error: None,
+            judge_evaluations: Vec::new(),
+        });
+        store.save_qualification_progress(&record).await?;
+        let evaluated = runner::evaluate(&version.manifest, &control.output).await;
+        let evaluated = match evaluated {
+            Ok(evaluation)
+                if record.request.rubric.is_some() && evaluation.verdict == "pending_review" =>
+            {
+                backend
+                    .judge_control(store, &mut record, version, index)
+                    .await
+            }
+            other => other,
+        };
+        match evaluated {
+            Ok(evaluation) => {
+                record.controls[index].evaluation = Some(evaluation);
+                if !control_agrees(&record, version, index)? {
                     record.failure = Some(format!(
-                        "Control {} did not complete: {}",
-                        control.id, error.message
+                        "Control {} disagrees with its registered expectation",
+                        record.controls[index].control_id
                     ));
-                    record.controls.push(ControlResult {
-                        control_id: control.id.clone(),
-                        output_hash: fixtures::hash(control.output.as_bytes()),
-                        evaluation: None,
-                        error: Some(format!("{}: {}", error.code, error.message)),
-                    });
                 }
             }
-            self.store.save_qualification_progress(&record).await?;
-            if record.failure.is_some() {
-                break;
+            Err(error) => {
+                record.failure = Some(format!(
+                    "Control {} did not complete: {}",
+                    record.controls[index].control_id, error.message
+                ));
+                record.controls[index].error = Some(format!("{}: {}", error.code, error.message));
             }
         }
+        store.save_qualification_progress(&record).await?;
+        super::notify_changed(store, app).await;
+        if record.failure.is_some() {
+            break;
+        }
+    }
+    if record.failure.is_none() && record.request.rubric.is_some() {
+        for expected in ["pass", "fail"] {
+            let panels = record
+                .request
+                .controls
+                .iter()
+                .zip(&record.controls)
+                .filter(|(control, result)| {
+                    control.expected == expected
+                        && result
+                            .evaluation
+                            .as_ref()
+                            .is_some_and(|e| e.verdict == "judged")
+                })
+                .count();
+            if panels < 2 {
+                record.failure = Some("Rubric calibration needs at least two accepted and two rejected controls actually assessed by every judge; formatting checks alone do not qualify semantics".into());
+            }
+        }
+    }
+    if store.qualification_stopped(&record.id).await? {
+        record.failure = Some("Qualification was revoked before completion".into());
+    }
+    store.finish_qualification(&mut record).await?;
+    super::notify_changed(store, app).await;
+    store.qualification(&record.id).await
+}
+
+impl Store {
+    pub(super) async fn qualification_stopped(&self, id: &str) -> Result<bool> {
+        let active = sqlx::query_scalar::<_, bool>(
+            "SELECT phase='reserved' AND revoked_at IS NULL FROM selector_qualifications WHERE id=?")
+            .bind(id).fetch_optional(&self.pool).await?;
+        Ok(active != Some(true))
+    }
+    pub(super) async fn finish_qualification(&self, record: &mut Record) -> Result<()> {
         record.status = if record.failure.is_none() {
             "controls_verified_review_attested"
         } else {
@@ -290,21 +555,31 @@ impl BenchmarkService {
         }
         .into();
         record.finished_at = Some(now());
-        let mut tx = self.store.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let updated = sqlx::query("UPDATE selector_qualifications SET phase='terminal',status=?,record_json=?,record_hash=? WHERE id=? AND phase='reserved'")
-            .bind(&record.status).bind(serde_json::to_string(&record)?).bind(hash(&record)?).bind(&record.id)
+            .bind(&record.status).bind(serde_json::to_string(record)?).bind(hash(record)?).bind(&record.id)
             .execute(&mut *tx).await?.rows_affected();
         if updated != 1 {
             return Err(invalid("Qualification first result is already settled"));
         }
         event(&mut tx, &record.id, "qualification_settled").await?;
         tx.commit().await?;
-        self.changed().await;
-        self.store.qualification(&record.id).await
+        Ok(())
     }
-}
-impl Store {
-    async fn save_qualification_progress(&self, record: &Record) -> Result<()> {
+    pub(super) async fn recover_qualifications(&self) -> Result<()> {
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM selector_qualifications WHERE phase='reserved'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for id in ids {
+            let mut record = self.qualification(&id).await?;
+            record.failure = Some("Application restarted before the first qualification settled; partial judge evidence and unknown usage are preserved without replay".into());
+            self.finish_qualification(&mut record).await?;
+        }
+        Ok(())
+    }
+    pub(super) async fn save_qualification_progress(&self, record: &Record) -> Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let changed=sqlx::query("UPDATE selector_qualifications SET record_json=?,record_hash=? WHERE id=? AND phase='reserved'")
             .bind(serde_json::to_string(record)?).bind(hash(record)?).bind(&record.id).execute(&mut *tx).await?.rows_affected();

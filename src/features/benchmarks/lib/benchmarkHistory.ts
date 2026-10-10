@@ -1,11 +1,13 @@
 import type { HistorySnapshot } from "../hooks/useBenchmarks";
 import { configurationKey } from "./benchmarkBoards";
+import { reportModels } from "./benchmarkModels";
 
 /** Select the recalculated series or the immutable dated evidence. */
 export function historyMeasurements(
   snapshots: HistorySnapshot[],
   key: string,
   recorded = false,
+  model = false,
 ) {
   let previous: string | null = null;
   let gap = 0;
@@ -13,9 +15,9 @@ export function historyMeasurements(
     const report = recorded
       ? snapshot.report
       : (snapshot.recalculatedReport ?? snapshot.report);
-    const row = report.rows.find(
-      (r) => configurationKey(r.configuration) === key,
-    );
+    const row = model
+      ? reportModels(report).find((entry) => entry.key === key)?.row
+      : report.rows.find((r) => configurationKey(r.configuration) === key);
     if (!row || row.points == null) {
       gap += 1;
       previous = null;

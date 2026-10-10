@@ -627,6 +627,8 @@
     "authMethod": "Tipo de conexión",
     "apiKey": "Clave API",
     "apiBillingHint": "El uso de API se factura por separado. El cambio automático se limita al mismo proveedor y tipo de facturación.",
+    "zaiDescription": "Conecta GLM Coding Plan con una clave de la consola API de Z.ai. Iniciar sesión en chat.z.ai no conecta un Coding Plan.",
+    "zaiBillingHint": "Usa el endpoint de tu suscripción GLM Coding Plan, sin cambiar automáticamente a la API de pago por uso. La clave se cifra en este dispositivo.",
     "saving": "Guardando…",
     "save": "Guardar",
     "addAndSignIn": "Añadir e iniciar sesión",

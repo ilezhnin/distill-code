@@ -811,6 +811,7 @@ impl Store {
     }
     pub async fn recover(&self) -> Result<()> {
         self.park_workflow_campaigns().await?;
+        self.recover_qualifications().await?;
         // Never retry an attempt that may have crossed the host acceptance boundary.
         // A rendering awaiting its panel has a sealed generation; its run asks the
         // panel after resume, and reconciliation settles any judge turn cut off.

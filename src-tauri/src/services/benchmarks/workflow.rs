@@ -25,8 +25,9 @@ pub fn validate(draft: &BenchmarkDraft) -> Vec<String> {
     if !matches!(
         draft.evaluator.kind.as_str(),
         "exact" | "json" | "javascript" | "browser" | "repository"
-    ) {
-        issues.push("A workflow requires a final objective evaluator".into());
+    ) && !matches!(super::judge_panel::frozen(draft, &[]), Ok(Some(_)))
+    {
+        issues.push("A workflow requires an objective evaluator or a frozen rubric panel".into());
     }
     let mut ids = HashSet::new();
     for (index, step) in workflow.steps.iter().enumerate() {
@@ -110,6 +111,27 @@ pub(super) struct SavedStep {
     pub attempt: Attempt,
     pub decision: Option<StepDecision>,
     pub native_context: Option<NativeStepContext>,
+}
+
+/// A final judge must be independent of every worker that contributed to the
+/// answer, including earlier steps and acknowledged provider substitutions.
+pub(super) async fn judge_candidates(store: &Store, root: &Attempt) -> Result<Vec<Configuration>> {
+    let mut candidates = vec![root.configuration.clone()];
+    candidates.extend(root.observed.clone());
+    if !root.workflow_steps.is_empty() {
+        let steps = saved_steps(store, &root.id).await?;
+        if steps.len() != root.workflow_steps.len() {
+            return Err(BenchmarkError::new(
+                "evidence_missing",
+                "Workflow judge exclusions lack step evidence",
+            ));
+        }
+        for step in steps {
+            candidates.push(step.attempt.configuration);
+            candidates.extend(step.attempt.observed);
+        }
+    }
+    Ok(candidates)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -678,6 +700,26 @@ fn step_version(version: &BenchmarkVersion, saved: &SavedStep) -> BenchmarkVersi
     result.manifest.workflow = None;
     result.manifest.prompt = saved.prompt.clone();
     result.manifest.entry_state = Some(saved.entry.clone());
+    if version.manifest.evaluator.kind == "rubric" {
+        // These are execution-only children. The published root alone owns
+        // the final rubric, its control panel and output-format constraints.
+        result.manifest.evaluator.rubric.clear();
+        result.manifest.evaluator.expected.clear();
+        result.manifest.evaluator.known_good.clear();
+        result.manifest.evaluator.known_bad.clear();
+        if let Some(environment) = result.manifest.environment.as_object_mut() {
+            for key in [
+                "judgePanel",
+                "rubricCriteria",
+                "judgeInput",
+                "judgeViewport",
+                "textLimits",
+                "criticalChecks",
+            ] {
+                environment.remove(key);
+            }
+        }
+    }
     if let Some(scope) = version
         .manifest
         .workflow

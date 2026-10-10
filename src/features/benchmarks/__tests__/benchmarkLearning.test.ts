@@ -61,4 +61,77 @@ describe("learned selector boundary", () => {
     });
     expect(Object.keys(request)).not.toContain("snapshot");
   });
+  it("preserves the native budget scope when previewing a saved task", async () => {
+    const request = {
+      task: publicSelectorTask({
+        ...draft,
+        environment: {
+          nativeBudgetRecipe: "native-root-wall-budget-v1",
+          nativeRootBudget: { rootId: "SECRET-LEASE" },
+        },
+      }),
+      targetFamily: "new-family",
+      targetGroup: "new-group",
+      candidates: [],
+      hardCandidateKey: null,
+      minQuality: 0.5,
+    };
+    await benchmarkApi.predictSelector("saved-fit", request);
+    expect(invoke).toHaveBeenLastCalledWith("benchmark_predict_selector", {
+      id: "saved-fit",
+      request: expect.objectContaining({
+        task: expect.objectContaining({
+          budgetRecipe: "native-root-wall-budget-v1",
+        }),
+      }),
+    });
+    expect(JSON.stringify(request.task)).not.toContain("SECRET");
+  });
+  it("includes the public cumulative patch without repository paths or lineage", () => {
+    const before = {
+      recipe: "repository-cumulative-v1",
+      rootTree: "a".repeat(40),
+      beforeTree: "a".repeat(40),
+      afterTree: "b".repeat(40),
+      patch: "diff --git a/example.txt b/example.txt\n+public change\n",
+      patchHash: "c".repeat(64),
+      archiveHash: "d".repeat(64),
+    };
+    const task = publicSelectorTask({
+      ...draft,
+      environment: {
+        repository: { path: "SECRET-PATH" },
+        repositoryArtifactInput: {
+          before,
+          lineage: [{ private: "SECRET-LINEAGE" }],
+          evaluation: "SECRET-ANSWER",
+        },
+      },
+    });
+    expect(task.repositoryRecipe).toBe("repository-cumulative-v1");
+    expect(task.repositoryArtifact).toEqual(before);
+    expect(JSON.stringify(task)).not.toContain("SECRET");
+    expect(
+      publicSelectorTask({
+        ...draft,
+        environment: {
+          repositoryArtifactInput: {
+            before: { ...before, unexpected: "SECRET-EXTRA" },
+          },
+        },
+      }).repositoryArtifact,
+    ).toBeUndefined();
+  });
+  it("keeps legacy tasks unchanged when optional context is absent or invalid", () => {
+    for (const environment of [
+      null,
+      [],
+      { nativeBudgetRecipe: 10, repositoryArtifactInput: { before: null } },
+    ]) {
+      const task = publicSelectorTask({ ...draft, environment });
+      expect(task.budgetRecipe).toBeUndefined();
+      expect(task.repositoryRecipe).toBeUndefined();
+      expect(task.repositoryArtifact).toBeUndefined();
+    }
+  });
 });

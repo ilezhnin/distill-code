@@ -10,7 +10,11 @@ import type {
 } from "./rateLimitTypes";
 
 export function isManagedUsage(provider: string): boolean {
-  return provider === "claude-acp" || provider === "codex-acp";
+  return (
+    provider === "claude-acp" ||
+    provider === "codex-acp" ||
+    provider === "zai-acp"
+  );
 }
 
 /** Shared by account cards, the account picker and the status bar. */

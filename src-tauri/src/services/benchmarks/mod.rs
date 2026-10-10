@@ -10,6 +10,7 @@ pub mod export;
 pub mod fixtures;
 pub mod generated;
 mod judge_checks;
+mod judge_panel;
 pub mod learned;
 pub mod model_catalog;
 pub mod promotion;
@@ -75,12 +76,17 @@ fn evaluation_lock(attempt_id: &str) -> Arc<Mutex<()>> {
 }
 
 pub(super) fn execution_count(draft: &BenchmarkDraft) -> usize {
-    draft.workflow.as_ref().map_or(1, |w| w.steps.len())
-        + if draft.evaluator.kind == "rubric" {
-            runner::MAX_JUDGES
-        } else {
-            0
-        }
+    draft.workflow.as_ref().map_or(1, |w| w.steps.len()) + judge_execution_count(draft)
+}
+
+pub(super) fn judge_execution_count(draft: &BenchmarkDraft) -> usize {
+    if draft.evaluator.kind != "rubric" {
+        return 0;
+    }
+    judge_panel::frozen(draft, &[])
+        .ok()
+        .flatten()
+        .map_or(runner::MAX_JUDGES, |panel| panel.len())
 }
 
 /// A plan owes a cell unless its candidate helped write the case.
@@ -244,25 +250,30 @@ pub struct BenchmarkService {
     #[cfg_attr(test, allow(dead_code))]
     app: Option<tauri::AppHandle>,
 }
+pub(super) async fn notify_changed(
+    #[cfg_attr(test, allow(unused_variables))] store: &Store,
+    #[cfg_attr(test, allow(unused_variables))] app: Option<&tauri::AppHandle>,
+) {
+    // Unit tests verify committed events. App-driver tests exercise the
+    // desktop notification adapter in a real Tauri application.
+    #[cfg(not(test))]
+    if let Some(app) = app {
+        if let Ok(sequence) =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(sequence),0) FROM benchmark_events")
+                .fetch_one(&store.pool)
+                .await
+        {
+            let _ = tauri::Emitter::emit(
+                app,
+                "benchmark-changed",
+                serde_json::json!({"sequence":sequence}),
+            );
+        }
+    }
+}
 impl BenchmarkService {
     pub async fn changed(&self) {
-        // Unit tests verify committed events. App-driver tests exercise the
-        // desktop notification adapter in a real Tauri application.
-        #[cfg(not(test))]
-        if let Some(app) = &self.app {
-            if let Ok(sequence) = sqlx::query_scalar::<_, i64>(
-                "SELECT COALESCE(MAX(sequence),0) FROM benchmark_events",
-            )
-            .fetch_one(&self.store.pool)
-            .await
-            {
-                let _ = tauri::Emitter::emit(
-                    app,
-                    "benchmark-changed",
-                    serde_json::json!({"sequence":sequence}),
-                );
-            }
-        }
+        notify_changed(&self.store, self.app.as_ref()).await;
     }
     pub async fn query_data(&self) -> Result<QueryData> {
         let definitions = self.store.all_definitions().await?;

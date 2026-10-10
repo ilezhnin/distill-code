@@ -655,6 +655,45 @@ it("shows read-only account failures and does not enable freezing", async () => 
   expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
 });
 
+it("includes one frozen final panel in each trajectory's displayed and saved budget", async () => {
+  const user = userEvent.setup();
+  const judged = versions.map((version) => ({
+    ...version,
+    manifest: {
+      ...version.manifest,
+      evaluator: { ...version.manifest.evaluator, kind: "rubric" },
+      environment: {
+        ...(version.manifest.environment as Record<string, unknown>),
+        judgePanel: { recipe: "frozen-native-panel-v1", judges: [{}, {}] },
+      },
+    },
+  }));
+  vi.mocked(benchmarkApi.freezeWorkflowCampaign).mockResolvedValue(campaign);
+  wrap(
+    <WorkflowCampaignForm
+      artifact={artifact}
+      versions={judged}
+      onFrozen={vi.fn()}
+    />,
+  );
+  for (const version of judged)
+    await user.click(
+      await screen.findByRole("checkbox", { name: version.manifest.name }),
+    );
+  await choose(user, "claude-acp / model-1 / high · Account", "Test account");
+  await choose(user, "codex-acp / model-2 / high · Account", "CLI sign-in");
+  await choose(user, "Persona comparator", "claude-acp / model-1 / high");
+  expect(
+    screen.getByText(/5 strategies · 120 workflows · up to 480 model calls/),
+  ).toBeVisible();
+  await user.click(
+    screen.getByRole("button", { name: "Save comparison plan" }),
+  );
+  expect(benchmarkApi.freezeWorkflowCampaign).toHaveBeenCalledWith(
+    expect.objectContaining({ maxExecutions: 480 }),
+  );
+});
+
 it("executes only explicit start, pause, resume and cancel actions and surfaces a failed start", async () => {
   const user = userEvent.setup();
   let saved = campaign;

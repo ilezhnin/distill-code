@@ -320,6 +320,45 @@ it("requires attributable reviews and sends the exact published contract only on
   );
 });
 
+it("registers rubric score bands and displays the exact maximum judge calls before dispatch", async () => {
+  const rubricVersion = {
+    ...version,
+    manifest: {
+      ...version.manifest,
+      evaluator: { ...version.manifest.evaluator, kind: "rubric" },
+      environment: {
+        judgePanel: { recipe: "frozen-native-panel-v1", judges: [{}, {}, {}] },
+      },
+    },
+  };
+  show(<BenchmarkQualificationPanel version={rubricVersion} />);
+  const user = await fillQualification();
+  expect(screen.getByText(/Up to 12 judge calls/)).toBeInTheDocument();
+  expect(api.qualifyVersion).not.toHaveBeenCalled();
+  fill("Minimum accepted control score", "0.85");
+  fill("Maximum rejected control score", "0.15");
+  vi.mocked(api.qualifyVersion).mockResolvedValue({
+    ...record,
+    status: "reserved",
+    finishedAt: null,
+  });
+  await user.click(
+    screen.getByRole("button", { name: "Reserve and evaluate first controls" }),
+  );
+  await waitFor(() => expect(api.qualifyVersion).toHaveBeenCalledOnce());
+  expect(api.qualifyVersion).toHaveBeenCalledWith(
+    expect.objectContaining({
+      rubric: {
+        minimumAcceptedScore: 0.85,
+        maximumRejectedScore: 0.15,
+        maxJudgeCalls: 12,
+      },
+      versionId: version.id,
+      controls,
+    }),
+  );
+});
+
 it("retains the first panel identity after an unreadable reply and prohibits editing when native lookup fails", async () => {
   show(<BenchmarkQualificationPanel version={version} />);
   const user = await fillQualification();
