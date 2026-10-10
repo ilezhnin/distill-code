@@ -54,7 +54,7 @@ pre-push:
       # Plain sh like no-ai-attribution: a GUI client's trimmed PATH, or a
       # local override that skips the heavy checks, must not skip this one.
       # It reads the refs being pushed from Git on stdin.
-      run: sh scripts/hooks/private-history-guard.sh
+      run: sh scripts/hooks/private-history-guard.sh "{2}"
       use_stdin: true
     fmt-check:
       run: just fmt-check

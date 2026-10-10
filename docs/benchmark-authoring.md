@@ -30,11 +30,24 @@ The staged-file hook rejects private artifact directories and private artifact
 references in documentation. It is an accidental-disclosure check, not a semantic
 audit of arbitrary text. During history remediation, set the local Git option
 `distill.privateBenchmarkHistoryPending` to `true`: while older local tags and
-branches still carry removed history, the pre-push hook then publishes only a
-fast-forward of an existing branch whose new commits all grow from its published
-tip, and refuses tags, new or deleted refs and merged-in older history. Clear
-that option only after the authorized history review. Hooks are local
-safeguards and can be bypassed; they cannot retract remote copies.
+branches still carry removed history, the pre-push hook refuses tags, deletions,
+history rewrites and unreviewed ancestry. By default, outgoing commits must all
+descend from the destination branch's published tip.
+
+After reviewing a clean, already published base, store its full commit ID in the
+local Git option `distill.privateBenchmarkReviewedBase`. This permits merges of
+branches created from that base or later, without requiring each branch to start
+from the latest remote tip. Every outgoing commit must descend from the reviewed
+base, including commits merged from other branches. A shared ancestor alone is
+not a review; do not automatically move the base backwards to make a push pass.
+Existing branches must still fast-forward and contain that base on the server.
+New branches require the base to be verified against live branch refs at the
+actual push destination; missing local history or an unavailable destination
+refuses publication. Remote-tracking refs alone do not establish publication.
+Content review of staged files and outgoing commits remains required.
+
+Clear the pending option only after the authorized history review. Hooks are
+local safeguards and can be bypassed; they cannot retract remote copies.
 
 Remote inference sends selected task inputs to the selected provider. Local
 storage, sandbox isolation and exclusion from Git do not establish a provider's
