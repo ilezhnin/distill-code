@@ -696,6 +696,7 @@ mod tests {
                     native_execution_ms: None,
                     resolved_model: None,
                     repository_result: None,
+                    collection_context: None,
                 });
             }
         }

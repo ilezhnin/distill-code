@@ -1,7 +1,8 @@
-import type { Configuration, WorkflowPolicy } from "../types";
+import type { Configuration, RunRequest, WorkflowPolicy } from "../types";
 import type { SelectorHoldoutReport } from "./benchmarkLearning";
 
 export interface WorkflowCampaignRequest {
+  executionLimits?: RunRequest["executionLimits"];
   requestKey: string;
   modelId: string;
   versionIds: string[];

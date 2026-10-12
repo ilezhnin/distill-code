@@ -139,6 +139,7 @@ fn pending_attempt(
         native_execution_ms: None,
         resolved_model: None,
         repository_result: None,
+        collection_context: None,
     }
 }
 
@@ -544,6 +545,7 @@ impl BenchmarkService {
             return Ok(existing);
         }
         let preview = self.preview_run(&request).await?;
+        request.require_dispatch_admission(now())?;
         if !preview.valid {
             return Err(BenchmarkError::new(
                 "capability_missing",
@@ -686,6 +688,12 @@ impl BenchmarkService {
                     ));
                 }
                 let unfinished = self.restart_unfinished_cells(&run).await?;
+                if !unfinished && !run.request.automatic_retry() {
+                    return Err(BenchmarkError::new(
+                        "retry_forbidden",
+                        "This run forbids replacement attempts; its existing receipts remain final",
+                    ));
+                }
                 if !unfinished && matches!(run.state.as_str(), "completed" | "cancelled") {
                     return Err(BenchmarkError::new(
                         "validation",
@@ -758,6 +766,12 @@ impl BenchmarkService {
     }
     pub async fn extend_run(&self, id: &str, version_ids: &[String]) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
+        if !run.request.automatic_retry() {
+            return Err(BenchmarkError::new(
+                "retry_forbidden",
+                "A run without retries has a fixed attempt plan; create a separate run to add cases",
+            ));
+        }
         if run.request.workflow_policy.is_some() {
             return Err(BenchmarkError::new(
                 "validation",
@@ -838,6 +852,18 @@ impl BenchmarkService {
     /// in one sitting rather than topped up across days. Pending repetitions
     /// stay queued. Returns whether anything is left to run.
     async fn restart_unfinished_cells(&self, run: &BenchmarkRun) -> Result<bool> {
+        run.request.require_dispatch_admission(now())?;
+        if !run.request.automatic_retry() {
+            // Resume may finish original, never-started slots. It must not
+            // supersede receipts or enlarge the admitted execution plan.
+            return Ok(run.attempts.iter().any(|attempt| {
+                attempt.phase == "pending"
+                    && attempt.started_at.is_none()
+                    && attempt.session_id.is_none()
+                    && attempt.host_run_id.is_none()
+                    && attempt.workflow_steps.is_empty()
+            }));
+        }
         let planned = run.request.repetitions.max(1);
         let mut unfinished = false;
         for (_, attempts) in analysis::run_cells(run) {

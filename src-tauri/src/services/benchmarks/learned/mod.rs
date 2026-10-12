@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-const RECIPE: &str = "family-weighted-ridge-v1";
+const LEGACY_RECIPE: &str = "family-weighted-ridge-v1";
+const RECIPE: &str = "family-weighted-softmax-kl-v1";
+const SELECTION_TEMPERATURE: f64 = 0.25;
 const FEATURE_VERSION: &str = "public-task-hash-v1";
 const DIMENSIONS: usize = 128;
 const ITERATIONS: usize = 400;
@@ -82,6 +84,12 @@ impl From<&BenchmarkDraft> for PublicTask {
                 .get(super::artifact_context::INPUT_KEY)
                 .and_then(|input| input.pointer("/before/recipe"))
                 .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    draft
+                        .environment
+                        .get("nativeRepositoryRecipe")
+                        .and_then(serde_json::Value::as_str)
+                })
                 .map(str::to_owned),
             repository_artifact: draft
                 .environment
@@ -111,6 +119,9 @@ pub struct CandidateModel {
     pub cases: usize,
     pub quality_coefficients: Vec<f64>,
     pub utility_coefficients: Vec<f64>,
+    /// Joint selection logits; absent in the original independent ridge recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_coefficients: Option<Vec<f64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +233,9 @@ pub struct PredictionScore {
     /// Regression estimates, not calibrated success probabilities.
     pub quality: f64,
     pub utility: f64,
+    /// Relative selection mass among the scored candidates, not success probability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,7 +264,7 @@ fn model_hash(model: &LearnedModel) -> Result<String> {
 }
 
 fn validate_model(model: &LearnedModel) -> Result<()> {
-    if model.recipe != RECIPE
+    if !matches!(model.recipe.as_str(), RECIPE | LEGACY_RECIPE)
         || model.feature_version != FEATURE_VERSION
         || model.candidate_key_algorithm != routing::CANDIDATE_KEY_ALGORITHM
         || model.id != model_hash(model)?
@@ -271,6 +285,13 @@ fn validate_model(model: &LearnedModel) -> Result<()> {
                 ]
                 .iter()
                 .any(|head| head.len() != DIMENSIONS || head.iter().any(|v| !v.is_finite()))
+                || match (&candidate.selection_coefficients, model.recipe.as_str()) {
+                    (Some(head), RECIPE) => {
+                        head.len() != DIMENSIONS || head.iter().any(|v| !v.is_finite())
+                    }
+                    (None, LEGACY_RECIPE) => false,
+                    _ => true,
+                }
         })
     {
         return Err(BenchmarkError::new(
@@ -278,6 +299,54 @@ fn validate_model(model: &LearnedModel) -> Result<()> {
             "Unsupported or damaged learned selector model",
         ));
     }
+    Ok(())
+}
+
+fn softmax(logits: &[f64]) -> Result<Vec<f64>> {
+    if logits.iter().any(|value| !value.is_finite()) {
+        return Err(BenchmarkError::new(
+            "invalid_model",
+            "Non-finite selection logits",
+        ));
+    }
+    let maximum = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mut probabilities: Vec<_> = logits.iter().map(|value| (value - maximum).exp()).collect();
+    let total: f64 = probabilities.iter().sum();
+    for probability in &mut probabilities {
+        *probability /= total;
+    }
+    Ok(probabilities)
+}
+
+fn rank_scores(model: &LearnedModel, x: &[f64], scores: &mut [PredictionScore]) -> Result<()> {
+    if model.recipe == RECIPE {
+        let logits: Vec<_> = scores
+            .iter()
+            .map(|score| {
+                let candidate = model
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.candidate_key == score.candidate_key)
+                    .expect("scored candidate is trained");
+                features::dot(
+                    x,
+                    candidate
+                        .selection_coefficients
+                        .as_ref()
+                        .expect("validated joint head"),
+                )
+            })
+            .collect();
+        for (score, probability) in scores.iter_mut().zip(softmax(&logits)?) {
+            score.selection_probability = Some(probability);
+        }
+    }
+    scores.sort_by(|a, b| {
+        b.selection_probability
+            .unwrap_or(b.utility)
+            .total_cmp(&a.selection_probability.unwrap_or(a.utility))
+            .then(a.candidate_key.cmp(&b.candidate_key))
+    });
     Ok(())
 }
 
@@ -354,13 +423,10 @@ pub fn predict(model: &LearnedModel, request: &PredictionRequest) -> Result<Pred
             configuration: candidate.configuration.clone(),
             quality: features::dot(&x, &trained.quality_coefficients).clamp(0.0, 1.0),
             utility: features::dot(&x, &trained.utility_coefficients).clamp(0.0, 1.0),
+            selection_probability: None,
         });
     }
-    result.scores.sort_by(|a, b| {
-        b.utility
-            .total_cmp(&a.utility)
-            .then(a.candidate_key.cmp(&b.candidate_key))
-    });
+    rank_scores(model, &x, &mut result.scores)?;
     if let Some(best) = result
         .scores
         .iter()
@@ -422,13 +488,10 @@ pub fn predict_for_class(model: &LearnedModel, request: &PredictionRequest) -> R
             configuration: candidate.configuration.clone(),
             quality: features::dot(&x, &trained.quality_coefficients).clamp(0.0, 1.0),
             utility: features::dot(&x, &trained.utility_coefficients).clamp(0.0, 1.0),
+            selection_probability: None,
         });
     }
-    result.scores.sort_by(|a, b| {
-        b.utility
-            .total_cmp(&a.utility)
-            .then(a.candidate_key.cmp(&b.candidate_key))
-    });
+    rank_scores(model, &x, &mut result.scores)?;
     if let Some(best) = result
         .scores
         .iter()

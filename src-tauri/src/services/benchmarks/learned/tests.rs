@@ -93,6 +93,7 @@ fn learns_task_conditioned_choices_with_soft_repeated_targets() {
     let data = data();
     let artifact = fit(&data, request(&data)).unwrap();
     assert_eq!(artifact.model.common_cases, 16);
+    assert_eq!(artifact.model.recipe, RECIPE);
     for example in &artifact.snapshot.examples {
         assert!(example.targets.iter().any(|t| t.reward == Some(2.0 / 3.0)));
         assert!(example.targets.iter().any(|t| t.reward == Some(0.0)));
@@ -101,10 +102,525 @@ fn learns_task_conditioned_choices_with_soft_repeated_targets() {
     // the recommendation, proving this is not the aggregate selector in disguise.
     for (index, expected) in [(0, "parser"), (1, "painter")] {
         let result = predict(&artifact.model, &prediction(&data, index)).unwrap();
+        let probabilities: Vec<_> = result
+            .scores
+            .iter()
+            .map(|score| score.selection_probability.unwrap())
+            .collect();
+        assert!((probabilities.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(probabilities
+            .iter()
+            .all(|p| p.is_finite() && *p > 0.0 && *p < 1.0));
         assert_eq!(result.chosen.unwrap().model_id, expected);
         assert!(!result.dispatch_allowed);
         assert_eq!(result.reason, "research_prediction");
     }
+}
+
+#[test]
+fn repository_collection_recipe_matches_prepared_workflow_scope() {
+    use super::super::{artifact_context, fixtures, repository, workflow_campaign};
+
+    let mut data = data();
+    for version in &mut data.versions {
+        let draft = &mut version.manifest;
+        draft.execution_profile = "protected_repository".into();
+        draft.evaluator.kind = "repository".into();
+        draft.permissions.tools = vec!["filesystem".into(), "terminal".into()];
+        draft.permissions.network = true;
+        draft.environment["nativeBudgetRecipe"] = artifact_context::CLOCK_RECIPE.into();
+        draft.environment["nativeRepositoryRecipe"] = repository::ARTIFACT_RECIPE.into();
+        draft.entry_state = Some(EntryState {
+            schema_version: 1,
+            root_task_id: "invented-root".into(),
+            step_id: "implement".into(),
+            parent_step_id: None,
+            fixture_snapshot_hash: String::new(),
+            conversation_prefix: String::new(),
+            previous_reports: vec![],
+            remaining_budget_seconds: draft.limits.timeout_seconds,
+            content_hash: String::new(),
+        });
+        routing::normalize_draft(draft);
+        assert!(routing::validate_draft(draft).is_empty());
+    }
+    for configuration in &mut data.runs[0].request.configurations {
+        configuration.execution_profile = "protected_repository".into();
+    }
+    for attempt in &mut data.attempts {
+        attempt.configuration.execution_profile = "protected_repository".into();
+        attempt.observed.as_mut().unwrap().execution_profile = "protected_repository".into();
+    }
+    let artifact = fit(&data, request(&data)).unwrap();
+    let original = &data.versions[0].manifest;
+    let public = PublicTask::from(original);
+    assert_eq!(
+        public.repository_recipe.as_deref(),
+        Some(repository::ARTIFACT_RECIPE)
+    );
+    assert!(public.repository_artifact.is_none());
+
+    let mut workflow = original.clone();
+    workflow.entry_state = None;
+    workflow.workflow = Some(WorkflowSpec {
+        schema_version: 1,
+        driver_revision: "invented-repository-workflow-v1".into(),
+        steps: vec![
+            WorkflowStep {
+                id: "implement".into(),
+                prompt: "Implement the repair".into(),
+                include_previous_output: false,
+                scope: None,
+            },
+            WorkflowStep {
+                id: "verify".into(),
+                prompt: "Verify and repair the result".into(),
+                include_previous_output: true,
+                scope: None,
+            },
+        ],
+    });
+    let frozen =
+        workflow_campaign::step_task(&workflow, 0, original.limits.timeout_seconds).unwrap();
+    assert_eq!(
+        features::scope_hash(&public).unwrap(),
+        features::scope_hash(&frozen).unwrap()
+    );
+    // This fixture tests public projection only. Native artifact ownership and
+    // persistence are covered by the collection-context integration tests.
+    workflow.environment[artifact_context::INPUT_KEY] = serde_json::json!({
+        "before": { "recipe": repository::ARTIFACT_RECIPE, "rootTree": "a".repeat(40),
+            "beforeTree": "a".repeat(40), "afterTree": "a".repeat(40), "patch": "",
+            "patchHash": fixtures::hash(b""), "archiveHash": "b".repeat(64) },
+        "lineage": [], "accessAll": false
+    });
+    let prepared =
+        workflow_campaign::step_task(&workflow, 0, original.limits.timeout_seconds).unwrap();
+    assert!(prepared.repository_artifact.is_some());
+    assert_eq!(
+        features::scope_hash(&frozen).unwrap(),
+        features::scope_hash(&prepared).unwrap()
+    );
+    assert_eq!(
+        super::super::promotion::Contract::from_task(&public),
+        super::super::promotion::Contract::from_task(&prepared)
+    );
+    let mut query = prediction(&data, 0);
+    query.task = prepared;
+    query.min_quality = 0.0;
+    let result = predict(&artifact.model, &query).unwrap();
+    assert_eq!(result.reason, "research_prediction");
+    assert!(result.chosen.is_some());
+
+    let mut legacy = original.clone();
+    legacy
+        .environment
+        .as_object_mut()
+        .unwrap()
+        .remove("nativeRepositoryRecipe");
+    assert!(PublicTask::from(&legacy).repository_recipe.is_none());
+    assert_ne!(
+        features::scope_hash(&PublicTask::from(&legacy)).unwrap(),
+        features::scope_hash(&public).unwrap()
+    );
+    for change in 0..6 {
+        let mut invalid = original.clone();
+        match change {
+            0 => invalid.environment["nativeRepositoryRecipe"] = "unknown".into(),
+            1 => invalid.execution_profile = "native_text".into(),
+            2 => {
+                invalid
+                    .environment
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("nativeBudgetRecipe");
+            }
+            3 => invalid.entry_state = None,
+            4 => invalid.evaluator.kind = "exact".into(),
+            _ => {
+                invalid.environment[artifact_context::INPUT_KEY] =
+                    serde_json::json!({"before":{"recipe":"different"}})
+            }
+        }
+        assert!(
+            !routing::validate_draft(&invalid).is_empty(),
+            "change {change}"
+        );
+    }
+}
+
+#[test]
+fn joint_targets_use_temperature_and_the_configured_resource_objective() {
+    let data = data();
+    let artifact = fit(&data, request(&data)).unwrap();
+    let configurations = &artifact.snapshot.request.configurations;
+    let mut targets = artifact.snapshot.examples[0].targets.clone();
+    for target in &mut targets {
+        target.reward = Some(1.0);
+        target.mean_duration_ms = Some(10.0);
+        target.mean_cost = Some(if target.candidate_key == configurations[0].id {
+            1.0
+        } else {
+            2.0
+        });
+    }
+    fit::utilities(
+        &mut targets,
+        RoleWeights {
+            quality: 0.5,
+            speed: 0.0,
+            cost: 0.5,
+        },
+    );
+    let distribution = fit::selection_distribution(&targets, configurations).unwrap();
+    let expected = 1.0 / (1.0 + (-0.25 / SELECTION_TEMPERATURE).exp());
+    assert!((distribution[0].1 - expected).abs() < 1e-12);
+    assert!((distribution[0].1 + distribution[1].1 - 1.0).abs() < 1e-12);
+    assert!(distribution[0].1 > distribution[1].1);
+    fit::utilities(
+        &mut targets,
+        RoleWeights {
+            quality: 1.0,
+            speed: 0.0,
+            cost: 0.0,
+        },
+    );
+    assert_eq!(
+        fit::selection_distribution(&targets, configurations).unwrap(),
+        vec![(0, 0.5), (1, 0.5)]
+    );
+    assert_eq!(softmax(&[1000.0, 1000.0]).unwrap(), vec![0.5, 0.5]);
+    assert!(softmax(&[f64::INFINITY]).is_err());
+}
+
+#[test]
+fn joint_training_recovers_the_analytic_constant_soft_target_distribution() {
+    let data = data();
+    let mut snapshot = fit(&data, request(&data)).unwrap().snapshot;
+    let first = snapshot.request.configurations[0].id.clone();
+    for example in &mut snapshot.examples {
+        for target in &mut example.targets {
+            target.utility = Some(if target.candidate_key == first {
+                0.25
+            } else {
+                0.5
+            });
+        }
+    }
+    let mut bias = vec![0.0; DIMENSIONS];
+    bias[0] = 1.0;
+    let vectors = vec![bias; snapshot.examples.len()];
+    let heads = fit::train_selection(&snapshot, &vectors).unwrap();
+    let actual = softmax(&heads.iter().map(|head| head[0]).collect::<Vec<_>>()).unwrap();
+    let expected = [1.0 / (1.0 + 1.0_f64.exp()), 1.0 / (1.0 + (-1.0_f64).exp())];
+    let divergence: f64 = expected
+        .iter()
+        .zip(&actual)
+        .map(|(target, policy)| target * (target / policy).ln())
+        .sum();
+    assert!(
+        divergence.abs() < 1e-12,
+        "KL={divergence}, probabilities={actual:?}"
+    );
+    for (target, policy) in expected.iter().zip(actual) {
+        assert!((target - policy).abs() < 1e-8);
+    }
+}
+
+#[test]
+fn joint_training_masks_unobserved_candidates_and_weights_related_groups_equally() {
+    let data = data();
+    let artifact = fit(&data, request(&data)).unwrap();
+    let mut snapshot = artifact.snapshot;
+    let mut masked = snapshot.request.configurations[0].clone();
+    masked.model_id = "unmeasured-worker".into();
+    masked.id = routing::candidate_key(&masked);
+    snapshot.request.configurations.push(masked.clone());
+    for (index, example) in snapshot.examples.iter_mut().enumerate() {
+        let mut target = example.targets[0].clone();
+        target.candidate_key = masked.id.clone();
+        target.status = if index % 2 == 0 {
+            "not_planned"
+        } else {
+            "authored_by_candidate"
+        }
+        .into();
+        target.reward = None;
+        target.utility = None;
+        example.targets.push(target);
+    }
+    let vectors = |snapshot: &TrainingSnapshot| {
+        snapshot
+            .examples
+            .iter()
+            .map(|example| features::extract(&example.task).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let heads = fit::train_selection(&snapshot, &vectors(&snapshot)).unwrap();
+    assert!(heads[2].iter().all(|coefficient| *coefficient == 0.0));
+    for (head, original) in heads.iter().zip(&artifact.model.candidates) {
+        assert_eq!(head, original.selection_coefficients.as_ref().unwrap());
+    }
+    // Even a stale numeric value attached to a mask cannot become a label or
+    // enter the training softmax denominator.
+    for example in &mut snapshot.examples {
+        example.targets[2].utility = Some(1.0);
+        example.targets[2].reward = Some(1.0);
+        assert_eq!(
+            fit::selection_distribution(&example.targets, &snapshot.request.configurations)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    assert_eq!(
+        heads,
+        fit::train_selection(&snapshot, &vectors(&snapshot)).unwrap()
+    );
+    let first_group = snapshot.examples[0].split_group.clone();
+    let duplicates: Vec<_> = snapshot
+        .examples
+        .iter()
+        .filter(|example| example.split_group == first_group)
+        .cloned()
+        .collect();
+    snapshot.examples.extend(duplicates.clone());
+    snapshot.examples.extend(duplicates);
+    let duplicated = fit::train_selection(&snapshot, &vectors(&snapshot)).unwrap();
+    for (left, right) in heads.iter().flatten().zip(duplicated.iter().flatten()) {
+        assert!((left - right).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn joint_selection_ranks_policy_logits_but_keeps_the_quality_floor() {
+    let data = data();
+    let mut model = fit(&data, request(&data)).unwrap().model;
+    for candidate in &mut model.candidates {
+        let parser = candidate.configuration.model_id == "parser";
+        candidate.quality_coefficients = vec![0.0; DIMENSIONS];
+        candidate.quality_coefficients[0] = 1.0;
+        candidate.utility_coefficients = vec![0.0; DIMENSIONS];
+        candidate.utility_coefficients[0] = if parser { 1.0 } else { 0.0 };
+        candidate.selection_coefficients = Some(vec![0.0; DIMENSIONS]);
+        candidate.selection_coefficients.as_mut().unwrap()[0] = if parser { -1.0 } else { 1.0 };
+    }
+    model.id = model_hash(&model).unwrap();
+    let query = prediction(&data, 0);
+    let joint = predict(&model, &query).unwrap();
+    assert_eq!(joint.chosen.unwrap().model_id, "painter");
+    assert!(joint.scores[0].selection_probability.unwrap() > 0.8);
+    assert_eq!(
+        predict_for_class(&model, &query)
+            .unwrap()
+            .chosen
+            .unwrap()
+            .model_id,
+        "painter"
+    );
+    let painter = model
+        .candidates
+        .iter_mut()
+        .find(|candidate| candidate.configuration.model_id == "painter")
+        .unwrap();
+    painter.quality_coefficients[0] = 0.2;
+    model.id = model_hash(&model).unwrap();
+    assert_eq!(
+        predict(&model, &query).unwrap().chosen.unwrap().model_id,
+        "parser"
+    );
+    assert_eq!(
+        predict_for_class(&model, &query)
+            .unwrap()
+            .chosen
+            .unwrap()
+            .model_id,
+        "parser"
+    );
+}
+
+#[test]
+fn provider_model_and_reasoning_settings_are_distinct_joint_choices() {
+    let mut data = data();
+    let template = data.attempts[0].clone();
+    let configurations: Vec<_> = (0..4)
+        .map(|index| {
+            let mut configuration = template.configuration.clone();
+            configuration.provider_id = if index == 2 {
+                "provider-b"
+            } else {
+                "provider-a"
+            }
+            .into();
+            configuration.model_id = if index == 3 { "worker-b" } else { "worker-a" }.into();
+            configuration.effort = Some(if index == 1 { "high" } else { "low" }.into());
+            configuration.id = routing::candidate_key(&configuration);
+            configuration
+        })
+        .collect();
+    assert_eq!(
+        configurations
+            .iter()
+            .map(|configuration| &configuration.id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        4
+    );
+    data.runs[0].request.configurations = configurations.clone();
+    data.attempts.clear();
+    for (index, version) in data.versions.iter_mut().enumerate() {
+        version.manifest.prompt = [
+            "tokenizer grammar syntax",
+            "canvas colors pixels",
+            "network sockets packets",
+            "storage tables indexes",
+        ][index % 4]
+            .into();
+        for (candidate_index, configuration) in configurations.iter().enumerate() {
+            for repetition in 0..3 {
+                let mut attempt = template.clone();
+                attempt.id = format!("{}-{candidate_index}-{repetition}", version.id);
+                attempt.version_id = version.id.clone();
+                attempt.configuration = configuration.clone();
+                attempt.observed = Some(configuration.clone());
+                attempt.repetition = repetition;
+                attempt.outcome = Some(
+                    if candidate_index == index % 4 {
+                        "pass"
+                    } else {
+                        "fail"
+                    }
+                    .into(),
+                );
+                data.attempts.push(attempt);
+            }
+        }
+    }
+    let artifact = fit(&data, request(&data)).unwrap();
+    for (index, expected) in configurations.iter().enumerate() {
+        let mut query = prediction(&data, index);
+        query.min_quality = 0.0;
+        assert_eq!(
+            predict(&artifact.model, &query).unwrap().chosen_key,
+            Some(routing::candidate_key(expected))
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_ridge_bytes_hashes_predictions_and_persistence_remain_unchanged() {
+    // These are the original wire fields, independently of the new optional
+    // head. Their serialized order is part of the old content-addressed ID.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyCandidate<'a> {
+        candidate_key: &'a str,
+        configuration: &'a Configuration,
+        cases: usize,
+        quality_coefficients: &'a [f64],
+        utility_coefficients: &'a [f64],
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyModel<'a> {
+        id: &'a str,
+        recipe: &'a str,
+        feature_version: &'a str,
+        candidate_key_algorithm: &'a str,
+        work_class_id: &'a str,
+        cutoff_at: i64,
+        weights: &'a RoleWeights,
+        snapshot_hash: &'a str,
+        training_cases: usize,
+        common_cases: usize,
+        training_families: &'a [String],
+        training_groups: &'a [String],
+        scope_hashes: &'a [String],
+        candidates: Vec<LegacyCandidate<'a>>,
+    }
+    let data = data();
+    let current = fit(&data, request(&data)).unwrap();
+    let mut legacy = current.clone();
+    legacy.model.recipe = LEGACY_RECIPE.into();
+    legacy.model.id.clear();
+    for candidate in &mut legacy.model.candidates {
+        candidate.selection_coefficients = None;
+        candidate.quality_coefficients = vec![0.0; DIMENSIONS];
+        candidate.quality_coefficients[0] = 1.0;
+        candidate.utility_coefficients = vec![0.0; DIMENSIONS];
+        candidate.utility_coefficients[0] = if candidate.configuration.model_id == "painter" {
+            1.0
+        } else {
+            0.0
+        };
+    }
+    let model = &legacy.model;
+    let original_wire = LegacyModel {
+        id: "",
+        recipe: LEGACY_RECIPE,
+        feature_version: &model.feature_version,
+        candidate_key_algorithm: &model.candidate_key_algorithm,
+        work_class_id: &model.work_class_id,
+        cutoff_at: model.cutoff_at,
+        weights: &model.weights,
+        snapshot_hash: &model.snapshot_hash,
+        training_cases: model.training_cases,
+        common_cases: model.common_cases,
+        training_families: &model.training_families,
+        training_groups: &model.training_groups,
+        scope_hashes: &model.scope_hashes,
+        candidates: model
+            .candidates
+            .iter()
+            .map(|candidate| LegacyCandidate {
+                candidate_key: &candidate.candidate_key,
+                configuration: &candidate.configuration,
+                cases: candidate.cases,
+                quality_coefficients: &candidate.quality_coefficients,
+                utility_coefficients: &candidate.utility_coefficients,
+            })
+            .collect(),
+    };
+    assert_eq!(
+        serde_json::to_vec(&original_wire).unwrap(),
+        serde_json::to_vec(model).unwrap()
+    );
+    let original_id = hash(&original_wire).unwrap();
+    assert_eq!(original_id, model_hash(model).unwrap());
+    legacy.model.id = original_id.clone();
+    assert_ne!(original_id, current.model.id);
+    let bytes = serde_json::to_vec(&legacy.model).unwrap();
+    let decoded: LearnedModel = serde_json::from_slice(&bytes).unwrap();
+    validate_model(&decoded).unwrap();
+    assert_eq!(bytes, serde_json::to_vec(&decoded).unwrap());
+    let selected = predict(&decoded, &prediction(&data, 0)).unwrap();
+    assert_eq!(selected.chosen.unwrap().model_id, "painter");
+    assert!(selected
+        .scores
+        .iter()
+        .all(|score| score.selection_probability.is_none()));
+    assert!(!selected.dispatch_allowed);
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    store.save_selector_fit(&legacy).await.unwrap();
+    store.save_selector_fit(&current).await.unwrap();
+    assert_eq!(store.selector_fits().await.unwrap().len(), 2);
+    assert_eq!(
+        store.selector_model(&original_id).await.unwrap().recipe,
+        LEGACY_RECIPE
+    );
+    assert_eq!(
+        store
+            .selector_model(&current.model.id)
+            .await
+            .unwrap()
+            .recipe,
+        RECIPE
+    );
+    let mut malformed = decoded;
+    malformed.candidates[0].selection_coefficients = Some(vec![0.0; DIMENSIONS]);
+    malformed.id = model_hash(&malformed).unwrap();
+    assert!(validate_model(&malformed).is_err());
 }
 
 #[test]

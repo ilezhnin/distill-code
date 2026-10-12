@@ -1072,6 +1072,7 @@ mod tests {
                 max_executions: 6,
                 preview: false,
                 parallelism: None,
+                execution_limits: None,
                 workflow_policy: None,
             })
             .await

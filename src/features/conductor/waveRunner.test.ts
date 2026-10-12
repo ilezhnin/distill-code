@@ -249,6 +249,7 @@ describe("waveRunner", () => {
     options: {
       secondSettings?: SessionRunSettings | null;
       unsupportedSettings?: boolean;
+      advertisedEfforts?: boolean;
     } = {},
   ): void {
     const secondSettings =
@@ -293,6 +294,15 @@ describe("waveRunner", () => {
           id: "example-one",
           name: "One",
           displayName: "One",
+          ...(options.advertisedEfforts
+            ? {
+                supportsFast: true,
+                efforts: [
+                  { id: "low", name: "Low" },
+                  { id: "high", name: "High" },
+                ],
+              }
+            : {}),
           ...(options.unsupportedSettings
             ? { efforts: [{ id: "high", name: "High" }], supportsFast: false }
             : {}),
@@ -301,6 +311,15 @@ describe("waveRunner", () => {
           id: "example-two",
           name: "Two",
           displayName: "Two",
+          ...(options.advertisedEfforts
+            ? {
+                supportsFast: true,
+                efforts: [
+                  { id: "low", name: "Low" },
+                  { id: "high", name: "High" },
+                ],
+              }
+            : {}),
           ...(options.unsupportedSettings
             ? { efforts: [{ id: "low", name: "Low" }], supportsFast: false }
             : {}),
@@ -339,7 +358,7 @@ describe("waveRunner", () => {
       expect(spawnConductorChildSession).not.toHaveBeenCalled();
       expect(noticeTexts()).toEqual([]);
       expect(
-        request.candidates.map((row) => row.configuration.modelId),
+        request.candidates.slice(0, 2).map((row) => row.configuration.modelId),
       ).toEqual(["example-one", "example-two"]);
       expect(request.task).toMatchObject({
         rolePrompt: "Inspect the sample project.",
@@ -386,6 +405,42 @@ describe("waveRunner", () => {
         configuration: null,
       }),
     );
+  });
+
+  it("launches a certified advertised effort choice with unchanged interactive provenance", async () => {
+    selectionPlan(false, { advertisedEfforts: true });
+    executorSelection.select.mockImplementationOnce(async (request) => {
+      const chosen = request.candidates.find(
+        (row) =>
+          row.configuration.modelId === "example-two" &&
+          row.configuration.effort === "low" &&
+          row.configuration.fastMode === false,
+      );
+      if (!chosen) throw new Error("Advertised effort candidate is missing");
+      expect(chosen?.available).toBe(true);
+      expect(chosen?.configuration).toMatchObject({
+        providerId: "codex-acp",
+        inventoryRevision: null,
+        billingMode: "unknown",
+        executionProfile: "interactive_acp",
+      });
+      expect(request.priorIds).not.toContain(chosen?.configuration.id);
+      return {
+        ...decisionFor(request),
+        chosen: chosen.configuration,
+        source: "learned",
+        learnedStatus: "certified_class_policy",
+        learnedDispatchAllowed: true,
+      };
+    });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledOnce(),
+    );
+    expect(spawnConductorChildSession.mock.calls[0][0]).toMatchObject({
+      executionTarget: { harnessId: "codex-acp", modelId: "example-two" },
+      runSettings: { effort: "low", fast: false },
+    });
   });
 
   it("keeps a selected model's unspecified settings instead of borrowing the baseline effort", async () => {

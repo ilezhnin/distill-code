@@ -6,6 +6,7 @@ import {
 } from "@/features/agents/lib/rankedPersonaTarget";
 import {
   applicationExecutorConfiguration,
+  applicationExecutorEffortOptions,
   applicationExecutorTask,
   type ApplicationExecutorOption,
 } from "@/features/benchmarks/lib/applicationExecutor";
@@ -62,6 +63,16 @@ export async function previewChatExecutor(input: {
     input.pinned && input.current
       ? [input.current, ...ranked]
       : [...ranked, ...(input.current ? [input.current] : [])];
+  const candidatesWithEffort = input.pinned
+    ? options
+    : applicationExecutorEffortOptions(options, (target) =>
+        modelsForHarness(target.harnessId).find(
+          (model) => model.id === target.modelId,
+        ),
+      );
+  const priorIds = new Set(
+    options.map((option) => applicationExecutorConfiguration(option)?.id),
+  );
   const rows = new Map<
     string,
     {
@@ -72,7 +83,7 @@ export async function previewChatExecutor(input: {
       reason: string | null;
     }
   >();
-  for (const option of options) {
+  for (const option of candidatesWithEffort) {
     const configuration = applicationExecutorConfiguration(option);
     if (!configuration || rows.has(configuration.id)) continue;
     if (rows.size === 32) break;
@@ -112,7 +123,9 @@ export async function previewChatExecutor(input: {
       targetFamily: `chat:${input.contextId}`,
       targetGroup: `chat:${input.contextId}`,
       candidates,
-      priorIds: candidates.map((row) => row.configuration.id),
+      priorIds: candidates
+        .map((row) => row.configuration.id)
+        .filter((id) => priorIds.has(id)),
       hardCandidateId: pin,
       modelId: null,
       minQuality: 0,

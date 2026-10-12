@@ -136,6 +136,27 @@ pub fn normalize_draft(d: &mut BenchmarkDraft) {
 }
 pub fn validate_draft(d: &BenchmarkDraft) -> Vec<String> {
     let mut issues = Vec::new();
+    if let Some(recipe) = d.environment.get("nativeRepositoryRecipe") {
+        if recipe.as_str() != Some(super::repository::ARTIFACT_RECIPE)
+            || d.execution_profile != "protected_repository"
+            || d.evaluator.kind != "repository"
+            || d.environment
+                .get("nativeBudgetRecipe")
+                .and_then(serde_json::Value::as_str)
+                != Some(super::artifact_context::CLOCK_RECIPE)
+            || (d.workflow.is_none() && d.entry_state.is_none())
+            || d.environment
+                .get(super::artifact_context::INPUT_KEY)
+                .is_some_and(|input| {
+                    input
+                        .pointer("/before/recipe")
+                        .and_then(serde_json::Value::as_str)
+                        != recipe.as_str()
+                })
+        {
+            issues.push("Native repository collection requires the cumulative repository recipe, protected repository profile, native root budget and an explicit entry or workflow".into());
+        }
+    }
     if !WORK_CLASSES.contains(&d.work_class_id.as_str()) {
         issues.push("Unknown Distill work class".into());
     }
@@ -675,6 +696,7 @@ mod tests {
             max_executions: 20,
             preview: false,
             parallelism: None,
+            execution_limits: None,
             workflow_policy: None,
         }
     }
@@ -763,6 +785,7 @@ mod tests {
                         native_execution_ms: None,
                         resolved_model: None,
                         repository_result: None,
+                        collection_context: None,
                     });
                 }
             }

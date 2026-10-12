@@ -4,6 +4,7 @@ import {
 } from "@/features/agents/lib/rankedPersonaTarget";
 import {
   applicationExecutorConfiguration,
+  applicationExecutorEffortOptions,
   applicationExecutorTask,
   type ApplicationExecutorOption,
 } from "@/features/benchmarks/lib/applicationExecutor";
@@ -22,10 +23,16 @@ export async function selectInitialChatExecutor(input: {
   context: RankedPersonaTargetContext;
   fallback?: ApplicationExecutorOption;
 }): Promise<ApplicationExecutorOption | undefined> {
-  const options = [
-    ...rankedPersonaExecutionTargets(input.persona, input.context),
-    ...(input.fallback ? [input.fallback] : []),
-  ];
+  const options = applicationExecutorEffortOptions(
+    [
+      ...rankedPersonaExecutionTargets(input.persona, input.context),
+      ...(input.fallback ? [input.fallback] : []),
+    ],
+    (target) =>
+      input.context
+        .getModelsForHarness(target.harnessId)
+        .find((model) => model.id === target.modelId),
+  );
   if (!input.prompt.trim()) return input.fallback;
   const decision = await previewChatExecutor({
     ...input,

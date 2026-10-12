@@ -1,5 +1,6 @@
 import {
   applicationExecutorConfiguration,
+  applicationExecutorEffortOptions,
   applicationExecutorTask,
   type ApplicationExecutorOption,
 } from "@/features/benchmarks/lib/applicationExecutor";
@@ -325,7 +326,14 @@ export async function prepareWaveExecutor(
       option: ApplicationExecutorOption;
     }
   >();
-  for (const option of options) {
+  const candidatesWithEffort =
+    request.step.model || request.step.effort
+      ? options
+      : applicationExecutorEffortOptions(options, advertisedModelForTarget);
+  const priorIds = new Set(
+    options.map((option) => applicationExecutorConfiguration(option)?.id),
+  );
+  for (const option of candidatesWithEffort) {
     const configuration = applicationExecutorConfiguration(option);
     if (!configuration || rows.has(configuration.id)) continue;
     // The native boundary considers at most 32 distinct candidates. Keep the
@@ -362,7 +370,9 @@ export async function prepareWaveExecutor(
       targetFamily: wave.rootRequestId,
       targetGroup: wave.rootRequestId,
       candidates,
-      priorIds: candidates.map((row) => row.configuration.id),
+      priorIds: candidates
+        .map((row) => row.configuration.id)
+        .filter((id) => priorIds.has(id)),
       hardCandidateId: request.step.model
         ? (candidates[0]?.configuration.id ?? null)
         : null,
@@ -513,20 +523,23 @@ export function waveExecutorAvailable(
     return Boolean(advertisedModelForTarget(option.target));
   if (!requireRanking) return isAdvertisedModel(option.target);
   const id = applicationExecutorConfiguration(option)?.id;
-  return resolveWaveStepTargets(
+  const preferred = resolveWaveStepTargets(
     request.step.role,
     request.step.modelClass,
-  ).some((ranked) => {
-    const runSettings = planWaveStepRunSettings({
+  ).map((ranked) => ({
+    target: ranked.target,
+    runSettings: planWaveStepRunSettings({
       step: request.step,
       ranked,
       model: advertisedModelForTarget(ranked.target),
-    }).runSettings;
-    return (
-      applicationExecutorConfiguration({ target: ranked.target, runSettings })
-        ?.id === id
-    );
-  });
+    }).runSettings,
+  }));
+  const available = request.step.effort
+    ? preferred
+    : applicationExecutorEffortOptions(preferred, advertisedModelForTarget);
+  return available.some(
+    (candidate) => applicationExecutorConfiguration(candidate)?.id === id,
+  );
 }
 
 /** A failure before session creation must not masquerade as an observed model. */

@@ -8,7 +8,10 @@ import {
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { useChatStore } from "../stores/chatStore";
-import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
+import {
+  prepareChatExecutorDispatch,
+  selectInitialChatExecutor,
+} from "./chatExecutorDispatch";
 import { dispatchPrompt } from "./sendCore";
 
 const mocks = vi.hoisted(() => ({ send: vi.fn() }));
@@ -133,6 +136,63 @@ beforeEach(() => {
   mocks.send.mockImplementation(async (_id, _text, options) => {
     options.onPromptDispatching();
     options.onPromptDispatched?.();
+  });
+});
+
+it("resolves a certified advertised effort choice into the initial chat target", async () => {
+  vi.mocked(executorSelection.select).mockImplementationOnce(
+    async (request) => {
+      const candidate = request.candidates.find(
+        (row) =>
+          row.configuration.effort === "low" &&
+          row.configuration.fastMode === false,
+      );
+      if (!candidate) throw new Error("Advertised low effort is missing");
+      expect(request.priorIds).not.toContain(candidate.configuration.id);
+      return {
+        ...decision(request),
+        chosen: candidate.configuration,
+        source: "learned",
+      };
+    },
+  );
+  const selected = await selectInitialChatExecutor({
+    contextId: "new-example-chat",
+    prompt: "Inspect the example parser.",
+    persona: {
+      id: "example-agent",
+      displayName: "Example",
+      systemPrompt: "Inspect source.",
+      isBuiltin: false,
+      writable: true,
+      modelRanking: JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            platform: "codex-acp",
+            modelId: "example-model",
+            label: "Example",
+            effort: "high",
+          },
+        ],
+      }),
+    },
+    context: {
+      providers: [{ id: "codex-acp" }],
+      rateLimits: [],
+      getModelsForHarness: () => [
+        {
+          id: "example-model",
+          providerId: "codex-acp",
+          efforts: [{ id: "high" }, { id: "low" }],
+          supportsFast: true,
+        },
+      ],
+    },
+  });
+  expect(selected).toMatchObject({
+    target: { harnessId: "codex-acp", modelId: "example-model" },
+    runSettings: { effort: "low", fast: false },
   });
 });
 

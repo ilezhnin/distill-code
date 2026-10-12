@@ -128,6 +128,7 @@ export interface WorkflowPolicy {
 }
 
 export interface WorkflowPolicyRunRequest {
+  executionLimits?: RunRequest["executionLimits"];
   requestKey: string;
   versionIds: string[];
   policy: WorkflowPolicy;
@@ -152,6 +153,11 @@ export interface WorkflowTrace {
 }
 
 export interface RunRequest {
+  executionLimits?: {
+    retryPolicy?: "none" | "automatic";
+    /** Latest runner admission time; accepted turns retain their time budget. */
+    dispatchNotAfterMs?: number;
+  };
   workflowPolicy?: WorkflowPolicy;
   requestKey: string;
   versionIds: string[];

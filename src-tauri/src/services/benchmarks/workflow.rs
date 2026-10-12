@@ -383,7 +383,7 @@ pub(super) async fn effective_version_for_attempt(
     .await?;
     let version = store.version(&attempt.version_id).await?;
     let Some(root) = root else {
-        return Ok(version);
+        return super::runner::collection_context::recover(store, attempt, version).await;
     };
     let step = saved_steps(store, &root)
         .await?
@@ -1140,6 +1140,8 @@ pub async fn execute(
         saved.attempt.started_at = Some(now());
         service.store.save_attempt(&saved.attempt).await?;
         let effective_version = step_version(&version, saved);
+        let request = service.store.run(&root.run_id).await?.request;
+        request.require_dispatch_admission(now())?;
         let result = if root.configuration.execution_profile == "workflow_policy" {
             service
                 .execute_workflow_policy_step(
@@ -1166,6 +1168,17 @@ pub async fn execute(
             Ok(mut completed) => {
                 completed.phase = "terminal".into();
                 saved.attempt = completed;
+            }
+            Err(error) if !request.automatic_retry() => {
+                saved.attempt = service.store.attempt(&saved.attempt.id).await?;
+                saved.attempt.phase = "terminal".into();
+                saved.attempt.outcome = Some(error.code.clone());
+                saved.attempt.reason = Some(error.message.clone());
+                saved.attempt.finished_at = Some(now());
+                service.store.save_attempt(&saved.attempt).await?;
+                aggregate(&mut root, &steps);
+                service.store.save_attempt(&root).await?;
+                return Err(error);
             }
             Err(error)
                 if root.configuration.execution_profile == "workflow_policy"
@@ -1390,6 +1403,7 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            execution_limits: None,
             workflow_policy: None,
         };
         let run = service.start_run(request).await.unwrap();

@@ -1303,9 +1303,8 @@ fn measurement_report(
             // Catch-up pins this configuration, so it carries the runnable profile.
             configuration.execution_profile =
                 ledger_profile(&configuration.execution_profile).to_owned();
-            let parallelism = standing_request.map(|request| {
-                super::runner::attempts_at_once(request, &configuration.provider_id)
-            });
+            let parallelism = standing_request
+                .map(|request| super::runner::attempts_at_once(request, &configuration));
             let eligible: Vec<&BenchmarkVersion> = pool
                 .iter()
                 .copied()
@@ -2009,6 +2008,7 @@ pub(super) mod tests {
             max_executions: 6,
             preview: false,
             parallelism: None,
+            execution_limits: None,
             workflow_policy: None,
         };
         let attempts = |run: &str, outcome: &str| {
@@ -2039,6 +2039,7 @@ pub(super) mod tests {
                     native_execution_ms: None,
                     resolved_model: None,
                     repository_result: None,
+                    collection_context: None,
                 })
                 .collect::<Vec<_>>()
         };

@@ -49,7 +49,8 @@ installer, see the [Windows setup guide](docs/windows-onboarding.md).
 ## Documentation
 
 - [Provider accounts](docs/provider-accounts.md)
-- [Benchmarks and model selection](docs/benchmark-authoring.md)
+- [Operating benchmarks and learned routing](docs/benchmark-operations.md)
+- [Benchmark authoring and evaluator contracts](docs/benchmark-authoring.md)
 - [Local data and storage](docs/distill-root-layout.md)
 - [Development guide](AGENTS.md)
 

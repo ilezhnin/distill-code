@@ -48,7 +48,7 @@ impl TryFrom<ApplicationRequest> for Request {
             .map(|row| {
                 (
                     row.configuration.id.clone(),
-                    routing::candidate_key(&row.configuration),
+                    application_candidate_key(&row.configuration),
                 )
             })
             .collect();
@@ -165,12 +165,26 @@ pub(super) fn artifact_hash(decision: &Decision) -> Result<String> {
     hash(&body)
 }
 
+/// Application intent distinguishes an unspecified speed from explicit normal
+/// mode. Benchmark evidence keys and all noninteractive identities stay intact.
+fn application_candidate_key(configuration: &Configuration) -> String {
+    let key = routing::candidate_key(configuration);
+    if configuration.execution_profile == "interactive_acp" && configuration.fast_mode.is_none() {
+        format!(
+            "{:x}",
+            Sha256::digest(format!("interactive-unspecified-fast-v1:{key}").as_bytes())
+        )
+    } else {
+        key
+    }
+}
+
 fn validate(request: &Request) -> Result<()> {
     let prediction = &request.prediction;
     let candidates = &prediction.candidates;
     let keys: BTreeSet<_> = candidates
         .iter()
-        .map(|candidate| routing::candidate_key(&candidate.configuration))
+        .map(|candidate| application_candidate_key(&candidate.configuration))
         .collect();
     if request.request_key.trim().is_empty()
         || request.request_key.len() > 256
@@ -194,8 +208,131 @@ fn validate(request: &Request) -> Result<()> {
     {
         return Err(error("validation", "Invalid executor decision inputs"));
     }
-    // Apply the same public-feature bounds even when no fit is available.
-    learned::validate_public_request(prediction)?;
+    // Application intent uniqueness was checked above; the benchmark validator
+    // deliberately shares a key for omitted speed and explicit normal mode.
+    // Reuse its feature/floor bounds without asserting those intents are equal.
+    if matches!(request.surface.as_str(), "chat" | "wave") && request.model_id.is_none() {
+        let mut public_features = prediction.clone();
+        public_features.candidates.clear();
+        learned::validate_public_request(&public_features)?;
+    } else {
+        learned::validate_public_request(prediction)?;
+    }
+    Ok(())
+}
+
+/// A class recommendation transfers a runnable choice, not its benchmark runtime.
+/// Unknown interactive provenance stays unknown in the decision and its receipts.
+fn class_evidence_matches(runnable: &Configuration, trained: &Configuration) -> bool {
+    if runnable.provider_id != trained.provider_id
+        || runnable.model_id != trained.model_id
+        || runnable.effort != trained.effort
+        || runnable.fast_mode != trained.fast_mode
+        || trained
+            .inventory_revision
+            .as_deref()
+            .is_none_or(str::is_empty)
+        || runnable
+            .inventory_revision
+            .as_ref()
+            .is_some_and(|revision| Some(revision) != trained.inventory_revision.as_ref())
+    {
+        return false;
+    }
+    let moving_alias =
+        crate::services::agent_host::execution::NativeProvider::for_harness(&runnable.provider_id)
+            .is_some_and(|provider| {
+                provider
+                    .moving_aliases()
+                    .contains(&runnable.model_id.as_str())
+            });
+    if moving_alias
+        && (runnable.model_name.as_deref().is_none_or(str::is_empty)
+            || runnable.model_name != trained.model_name)
+    {
+        return false;
+    }
+    if runnable.execution_profile == "interactive_acp" {
+        runnable.billing_mode == "unknown" || runnable.billing_mode == trained.billing_mode
+    } else {
+        routing::candidate_key(runnable) == routing::candidate_key(trained)
+            && runnable.inventory_revision == trained.inventory_revision
+    }
+}
+
+/// Called only after verifying the class certificate. The research prediction
+/// retains the exact evidence keys/configurations; `chosen` is an unchanged
+/// application row, so no native profile, billing or revision is fabricated.
+fn apply_class_model(
+    decision: &mut Decision,
+    model: &learned::LearnedModel,
+    certificate_id: &str,
+    min_quality: f64,
+) -> Result<()> {
+    if decision.request.prediction.hard_candidate_key.is_some() {
+        decision.learned_status = EXPLICIT_PIN.into();
+        return Ok(());
+    }
+    let mut prediction = decision.request.prediction.clone();
+    prediction.min_quality = prediction.min_quality.max(min_quality);
+    let mut runnable_by_evidence = std::collections::BTreeMap::new();
+    let matches: Vec<_> = prediction
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.available)
+        .filter_map(|candidate| {
+            let mut matches = model.candidates.iter().filter(|trained| {
+                class_evidence_matches(&candidate.configuration, &trained.configuration)
+            });
+            let trained = matches.next()?;
+            // Different certified billing/profile contexts are not interchangeable.
+            if matches.next().is_some() {
+                return None;
+            }
+            Some((
+                trained.candidate_key.clone(),
+                trained.configuration.clone(),
+                candidate.configuration.clone(),
+            ))
+        })
+        .collect();
+    let mut evidence_counts = std::collections::BTreeMap::new();
+    for (key, _, _) in &matches {
+        *evidence_counts.entry(key.clone()).or_insert(0usize) += 1;
+    }
+    prediction.candidates = matches
+        .into_iter()
+        .filter_map(|(key, trained, runnable)| {
+            // Two runnable contexts claiming one evidence row are also ambiguous;
+            // exclude both instead of failing the whole decision on duplicate keys.
+            if evidence_counts[&key] != 1 {
+                return None;
+            }
+            runnable_by_evidence.insert(key, runnable);
+            Some(RoutingCandidate {
+                configuration: trained,
+                available: true,
+                reason: Some("certified_evidence_for_ordinary_executor_choice".into()),
+            })
+        })
+        .collect();
+    let result = learned::predict_for_class(model, &prediction)?;
+    if let Some(chosen) = result
+        .chosen_key
+        .as_ref()
+        .and_then(|key| runnable_by_evidence.get(key))
+    {
+        decision.chosen_key = Some(application_candidate_key(chosen));
+        decision.chosen = Some(chosen.clone());
+        decision.source = "learned".into();
+        decision.reason =
+            format!("certificate:{certificate_id};class_recommendation_not_runtime_attestation");
+        decision.learned_dispatch_allowed = true;
+        decision.learned_status = CERTIFIED_CLASS_POLICY.into();
+    } else {
+        decision.learned_status = format!("{CLASS_POLICY_ABSTAINED}:{}", result.reason);
+    }
+    decision.research_prediction = Some(result);
     Ok(())
 }
 
@@ -436,7 +573,7 @@ impl Store {
         let prediction = &request.prediction;
         let available = |key: &str| {
             prediction.candidates.iter().find(|candidate| {
-                candidate.available && routing::candidate_key(&candidate.configuration) == key
+                candidate.available && application_candidate_key(&candidate.configuration) == key
             })
         };
         let (chosen, source, reason) = if let Some(pin) = &prediction.hard_candidate_key {
@@ -483,7 +620,7 @@ impl Store {
             artifact_hash: String::new(),
             created_at: now(),
             policy_version: POLICY_VERSION.into(),
-            chosen_key: chosen.as_ref().map(routing::candidate_key),
+            chosen_key: chosen.as_ref().map(application_candidate_key),
             chosen,
             source: source.into(),
             reason: reason.into(),
@@ -514,23 +651,12 @@ impl Store {
                 None => decision.learned_status = NO_CLASS_CERTIFICATE.into(),
                 Some((certificate, model_id)) => {
                     let model = self.selector_model(&model_id).await?;
-                    let mut prediction = decision.request.prediction.clone();
-                    prediction.min_quality = prediction
-                        .min_quality
-                        .max(certificate.min_prediction_quality);
-                    let result = learned::predict_for_class(&model, &prediction)?;
-                    if let Some(chosen) = result.chosen.clone() {
-                        decision.chosen_key = result.chosen_key.clone();
-                        decision.chosen = Some(chosen);
-                        decision.source = "learned".into();
-                        decision.reason = format!("certificate:{}", certificate.id);
-                        decision.learned_dispatch_allowed = true;
-                        decision.learned_status = CERTIFIED_CLASS_POLICY.into();
-                    } else {
-                        decision.learned_status =
-                            format!("{CLASS_POLICY_ABSTAINED}:{}", result.reason);
-                    }
-                    decision.research_prediction = Some(result);
+                    apply_class_model(
+                        &mut decision,
+                        &model,
+                        &certificate.id,
+                        certificate.min_prediction_quality,
+                    )?;
                 }
             }
         }
@@ -540,10 +666,12 @@ impl Store {
 
     /// [`Self::preview_ordinary_executor_decision`], committed once per key.
     pub async fn prepare_ordinary_executor_decision(&self, request: Request) -> Result<Decision> {
-        validate(&request)?;
         if let Some(record) = self.executor_decision(&request.request_key).await? {
+            // An unchanged persisted request keeps its original identity rules.
+            // Verify its immutable body before applying today's rules to new work.
             return same_request(record.decision, &request);
         }
+        validate(&request)?;
         let decision = self.preview_ordinary_executor_decision(request).await?;
         self.persist_executor_decision(decision).await
     }

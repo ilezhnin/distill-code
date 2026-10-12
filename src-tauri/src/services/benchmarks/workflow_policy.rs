@@ -301,6 +301,8 @@ impl WorkflowPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowRunRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_limits: Option<RunExecutionLimits>,
     pub request_key: String,
     pub version_ids: Vec<String>,
     pub policy: WorkflowPolicy,
@@ -314,6 +316,7 @@ impl TryFrom<WorkflowRunRequest> for RunRequest {
     fn try_from(value: WorkflowRunRequest) -> Result<Self> {
         Ok(Self {
             configurations: vec![value.policy.configuration()?],
+            execution_limits: value.execution_limits,
             workflow_policy: Some(value.policy),
             request_key: value.request_key,
             version_ids: value.version_ids,

@@ -55,6 +55,333 @@ async fn fitted(store: &Store) -> learned::FitArtifact {
     artifact
 }
 
+/// The renderer supplies executable intent, not a benchmark runtime claim.
+fn ordinary_application_request(surface: &str) -> Request {
+    let mut input = request();
+    input.surface = surface.into();
+    input.prediction.task.execution_profile = "interactive_acp".into();
+    input.prediction.task.entry = None;
+    input.prediction.min_quality = 0.0;
+    for row in &mut input.prediction.candidates {
+        let c = &mut row.configuration;
+        c.account_id = None;
+        c.billing_mode = "unknown".into();
+        c.execution_profile = "interactive_acp".into();
+        c.inventory_revision = None;
+        c.id = serde_json::json!([
+            c.provider_id,
+            c.provider_id,
+            c.model_id,
+            c.effort,
+            c.fast_mode.unwrap_or(false)
+        ])
+        .to_string();
+    }
+    input.prior_keys = input
+        .prediction
+        .candidates
+        .iter()
+        .rev()
+        .map(|row| routing::candidate_key(&row.configuration))
+        .collect();
+    input
+}
+
+#[tokio::test]
+async fn certified_class_maps_renderer_choices_without_attesting_their_runtime() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let fit = fitted(&store).await;
+    for surface in ["chat", "wave"] {
+        let input = ordinary_application_request(surface);
+        // Regression: these real renderer-shaped rows cannot be exact runtime matches.
+        assert!(learned::predict_for_class(&fit.model, &input.prediction)
+            .unwrap()
+            .chosen
+            .is_none());
+        let original = input.prediction.candidates[0].configuration.clone();
+        let mut decision = store.preview_executor_decision(input).await.unwrap();
+        assert_eq!(decision.chosen.as_ref().unwrap().model_id, "painter");
+        apply_class_model(
+            &mut decision,
+            &fit.model,
+            "verified-example-certificate",
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(decision.source, "learned");
+        assert_eq!(decision.chosen.as_ref().unwrap(), &original);
+        assert_eq!(decision.chosen_key, Some(routing::candidate_key(&original)));
+        assert!(decision.learned_dispatch_allowed);
+        let evidence = decision.research_prediction.unwrap().chosen.unwrap();
+        assert_eq!(evidence.model_id, original.model_id);
+        assert_eq!(evidence.effort, original.effort);
+        assert_eq!(evidence.execution_profile, "native_text");
+        assert_eq!(evidence.inventory_revision.as_deref(), Some("runtime-hash"));
+        assert_eq!(original.execution_profile, "interactive_acp");
+        assert_eq!(original.billing_mode, "unknown");
+        assert!(original.inventory_revision.is_none());
+    }
+}
+
+#[tokio::test]
+async fn ordinary_class_mapping_respects_pins_availability_effort_and_known_runtime() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let fit = fitted(&store).await;
+    for condition in [
+        "runtime",
+        "effort",
+        "speed",
+        "provider",
+        "unavailable",
+        "pin",
+    ] {
+        let mut input = ordinary_application_request("wave");
+        for row in &mut input.prediction.candidates {
+            match condition {
+                "runtime" => row.configuration.inventory_revision = Some("other-runtime".into()),
+                "effort" => row.configuration.effort = Some("ultra".into()),
+                "speed" => row.configuration.fast_mode = None,
+                "provider" => row.configuration.provider_id = "another-provider".into(),
+                "unavailable" => row.available = false,
+                _ => {}
+            }
+        }
+        input.prior_keys = input
+            .prediction
+            .candidates
+            .iter()
+            .rev()
+            .map(|row| application_candidate_key(&row.configuration))
+            .collect();
+        if condition == "pin" {
+            input.prediction.hard_candidate_key = Some(input.prior_keys[0].clone());
+        }
+        let mut decision = store.preview_executor_decision(input).await.unwrap();
+        let prior = decision.chosen.clone();
+        apply_class_model(
+            &mut decision,
+            &fit.model,
+            "verified-example-certificate",
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(decision.chosen, prior, "{condition}");
+        assert!(!decision.learned_dispatch_allowed, "{condition}");
+        if condition == "pin" {
+            assert_eq!(decision.source, "pin");
+            assert_eq!(decision.learned_status, EXPLICIT_PIN);
+        } else {
+            assert_eq!(
+                decision.learned_status,
+                "class_policy_abstained:no_trained_available_candidate"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_unspecified_speed_and_explicit_normal_have_distinct_dispatch_intents() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let fit = fitted(&store).await;
+    let original = ordinary_application_request("wave");
+    let normal = original.prediction.candidates[0].clone();
+    let mut unspecified = normal.clone();
+    unspecified.configuration.id = "renderer-unspecified-speed".into();
+    unspecified.configuration.fast_mode = None;
+    for pin in [
+        None,
+        Some(unspecified.configuration.id.clone()),
+        Some(normal.configuration.id.clone()),
+    ] {
+        let input = Request::try_from(ApplicationRequest {
+            request_key: "ordinary-speed-choices".into(),
+            surface: "wave".into(),
+            context_id: "example-wave".into(),
+            task: original.prediction.task.clone(),
+            target_family: "unseen-family".into(),
+            target_group: "unseen-group".into(),
+            candidates: vec![unspecified.clone(), normal.clone()],
+            prior_ids: vec![unspecified.configuration.id.clone()],
+            hard_candidate_id: pin.clone(),
+            model_id: None,
+            min_quality: 0.0,
+        })
+        .unwrap();
+        assert_ne!(
+            application_candidate_key(&unspecified.configuration),
+            application_candidate_key(&normal.configuration)
+        );
+        // The benchmark identity algorithm is unchanged.
+        assert_eq!(
+            routing::candidate_key(&unspecified.configuration),
+            routing::candidate_key(&normal.configuration)
+        );
+        let mut decision = store.preview_executor_decision(input).await.unwrap();
+        apply_class_model(
+            &mut decision,
+            &fit.model,
+            "verified-example-certificate",
+            0.0,
+        )
+        .unwrap();
+        let chosen = decision.chosen.as_ref().unwrap();
+        if pin.as_deref() == Some(unspecified.configuration.id.as_str()) {
+            assert_eq!(chosen.fast_mode, None);
+            assert_eq!(chosen.id, unspecified.configuration.id);
+        } else {
+            assert_eq!(chosen.fast_mode, Some(false));
+            assert_eq!(chosen.id, normal.configuration.id);
+        }
+        assert_eq!(
+            decision.source,
+            if pin.is_some() { "pin" } else { "learned" }
+        );
+    }
+}
+
+#[tokio::test]
+async fn duplicate_runnable_contexts_abstain_without_poisoning_other_choices() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let fit = fitted(&store).await;
+    let mut input = ordinary_application_request("wave");
+    let mut native = fit
+        .model
+        .candidates
+        .iter()
+        .find(|candidate| candidate.configuration.model_id == "parser")
+        .unwrap()
+        .configuration
+        .clone();
+    native.id = "native-parser-context".into();
+    input.prediction.candidates.push(RoutingCandidate {
+        configuration: native,
+        available: true,
+        reason: None,
+    });
+    let mut decision = store.preview_executor_decision(input).await.unwrap();
+    apply_class_model(
+        &mut decision,
+        &fit.model,
+        "verified-example-certificate",
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(decision.chosen.as_ref().unwrap().model_id, "painter");
+    let evidence = decision.research_prediction.unwrap();
+    assert_eq!(evidence.scores.len(), 1);
+    assert_eq!(evidence.scores[0].configuration.model_id, "painter");
+}
+
+#[tokio::test]
+async fn unchanged_legacy_ordinary_intent_reprepares_without_reselection_or_migration() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let mut current = ordinary_application_request("chat");
+    for candidate in &mut current.prediction.candidates {
+        candidate.configuration.fast_mode = None;
+    }
+    current.prior_keys = current
+        .prediction
+        .candidates
+        .iter()
+        .rev()
+        .map(|candidate| application_candidate_key(&candidate.configuration))
+        .collect();
+    let mut legacy = store.preview_executor_decision(current).await.unwrap();
+    // Before explicit normal-mode alternatives, omitted fast used the ordinary
+    // benchmark key. Preserve that exact old request and its content hashes.
+    legacy.request.prior_keys = legacy
+        .request
+        .prediction
+        .candidates
+        .iter()
+        .rev()
+        .map(|candidate| routing::candidate_key(&candidate.configuration))
+        .collect();
+    legacy.chosen_key = legacy.chosen.as_ref().map(routing::candidate_key);
+    legacy.input_hash = hash(&legacy.request).unwrap();
+    legacy.artifact_hash = artifact_hash(&legacy).unwrap();
+    assert!(validate(&legacy.request).is_err());
+    store
+        .persist_executor_decision(legacy.clone())
+        .await
+        .unwrap();
+
+    let prepared = store
+        .prepare_ordinary_executor_decision(legacy.request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&prepared).unwrap(),
+        serde_json::to_value(&legacy).unwrap()
+    );
+    let saved = store
+        .executor_decision(&legacy.request.request_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.decision.artifact_hash, legacy.artifact_hash);
+    assert!(saved.observations.is_empty());
+    assert!(saved.host_execution.is_none());
+
+    let mut changed = legacy.request.clone();
+    changed.prediction.task.prompt.push_str(" Changed task.");
+    assert_eq!(
+        store
+            .prepare_ordinary_executor_decision(changed)
+            .await
+            .unwrap_err()
+            .code,
+        "decision_conflict"
+    );
+    let mut fresh = legacy.request;
+    fresh.request_key = "new-request-with-old-key-rules".into();
+    assert_eq!(
+        store
+            .prepare_ordinary_executor_decision(fresh)
+            .await
+            .unwrap_err()
+            .code,
+        "validation"
+    );
+}
+
+#[tokio::test]
+async fn ordinary_class_mapping_abstains_on_ambiguous_evidence_contexts() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let mut model = fitted(&store).await.model;
+    let alternatives: Vec<_> = model
+        .candidates
+        .iter()
+        .cloned()
+        .map(|mut candidate| {
+            candidate.configuration.billing_mode = "api".into();
+            candidate.candidate_key = routing::candidate_key(&candidate.configuration);
+            candidate
+        })
+        .collect();
+    model.candidates.extend(alternatives);
+    model.id.clear();
+    model.id = hash(&model).unwrap();
+    let mut decision = store
+        .preview_executor_decision(ordinary_application_request("chat"))
+        .await
+        .unwrap();
+    let prior = decision.chosen.clone();
+    apply_class_model(&mut decision, &model, "verified-example-certificate", 0.0).unwrap();
+    assert_eq!(decision.chosen, prior);
+    assert_eq!(
+        decision.learned_status,
+        "class_policy_abstained:no_trained_available_candidate"
+    );
+    assert!(decision.research_prediction.unwrap().scores.is_empty());
+}
+
 fn started(decision: &Decision) -> Observation {
     Observation {
         phase: "started".into(),

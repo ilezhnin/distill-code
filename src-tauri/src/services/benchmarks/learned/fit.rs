@@ -299,14 +299,96 @@ fn regress(samples: &[(Vec<f64>, f64, f64)]) -> Vec<f64> {
     coefficients
 }
 
+/// Soft targets use softmax(measured utility / temperature); the selection
+/// head minimizes KL(target || policy). Utility includes the configured
+/// quality, speed and cost objectives over public hashed task features.
+pub(super) fn selection_distribution(
+    targets: &[TrainingTarget],
+    configurations: &[Configuration],
+) -> Result<Vec<(usize, f64)>> {
+    let mut observed = Vec::new();
+    for (index, configuration) in configurations.iter().enumerate() {
+        let Some(target) = targets
+            .iter()
+            .find(|target| target.candidate_key == configuration.id && target.status == "observed")
+        else {
+            continue;
+        };
+        let utility = target
+            .utility
+            .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+            .ok_or_else(|| invalid("An observed selection target needs a finite utility"))?;
+        observed.push((index, utility / SELECTION_TEMPERATURE));
+    }
+    if observed.len() < 2 {
+        return Err(coverage(
+            "A joint selection target needs two observed candidates",
+        ));
+    }
+    let logits: Vec<_> = observed.iter().map(|(_, value)| *value).collect();
+    Ok(observed
+        .into_iter()
+        .zip(softmax(&logits)?)
+        .map(|((index, _), probability)| (index, probability))
+        .collect())
+}
+
+pub(super) fn train_selection(
+    snapshot: &TrainingSnapshot,
+    vectors: &[Vec<f64>],
+) -> Result<Vec<Vec<f64>>> {
+    let mut groups = BTreeMap::new();
+    for example in &snapshot.examples {
+        *groups.entry(&example.split_group).or_insert(0usize) += 1;
+    }
+    let targets = snapshot
+        .examples
+        .iter()
+        .map(|example| selection_distribution(&example.targets, &snapshot.request.configurations))
+        .collect::<Result<Vec<_>>>()?;
+    let mut heads = vec![vec![0.0; DIMENSIONS]; snapshot.request.configurations.len()];
+    for _ in 0..ITERATIONS {
+        let mut gradients = vec![vec![0.0; DIMENSIONS]; heads.len()];
+        for ((example, x), target) in snapshot.examples.iter().zip(vectors).zip(&targets) {
+            // Each related group has equal total weight. Unobserved candidates
+            // enter neither the target nor the policy's training denominator.
+            let weight = 1.0 / (groups[&example.split_group] * groups.len()) as f64;
+            let logits: Vec<_> = target
+                .iter()
+                .map(|(index, _)| features::dot(x, &heads[*index]))
+                .collect();
+            for ((index, target), probability) in target.iter().zip(softmax(&logits)?) {
+                let error = weight * (probability - target);
+                for (gradient, feature) in gradients[*index].iter_mut().zip(x) {
+                    *gradient += error * feature;
+                }
+            }
+        }
+        for (head, gradient) in heads.iter_mut().zip(gradients) {
+            for (index, (coefficient, gradient)) in head.iter_mut().zip(gradient).enumerate() {
+                let penalty = if index == 0 {
+                    0.0
+                } else {
+                    REGULARIZATION * *coefficient
+                };
+                *coefficient -= LEARNING_RATE * (gradient + penalty);
+            }
+        }
+    }
+    Ok(heads)
+}
+
 pub(super) fn refit(snapshot: &TrainingSnapshot, common_cases: usize) -> Result<LearnedModel> {
     let examples = &snapshot.examples;
     let vectors: Vec<_> = examples
         .iter()
         .map(|e| features::extract(&e.task))
         .collect::<Result<_>>()?;
+    let selection_heads = train_selection(snapshot, &vectors)?;
     let mut candidates = Vec::new();
-    for configuration in &snapshot.request.configurations {
+    for (configuration, selection_head) in
+        snapshot.request.configurations.iter().zip(selection_heads)
+    {
         let mut groups = BTreeMap::new();
         for e in examples {
             if e.targets
@@ -341,6 +423,7 @@ pub(super) fn refit(snapshot: &TrainingSnapshot, common_cases: usize) -> Result<
             cases: quality.len(),
             quality_coefficients: regress(&quality),
             utility_coefficients: regress(&samples(true)),
+            selection_coefficients: Some(selection_head),
         });
     }
     let unique = |values: Vec<String>| {

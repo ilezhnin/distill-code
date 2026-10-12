@@ -124,6 +124,7 @@ export interface SelectorFitArtifact {
       cases: number;
       qualityCoefficients: number[];
       utilityCoefficients: number[];
+      selectionCoefficients?: number[];
     }[];
   };
   snapshot: {
@@ -166,6 +167,7 @@ export interface SelectorPrediction {
     configuration: Configuration;
     quality: number;
     utility: number;
+    selectionProbability?: number;
   }[];
 }
 

@@ -524,6 +524,7 @@ async fn measure(service: &Arc<BenchmarkService>, versions: &[BenchmarkVersion],
         max_executions: versions.len() as u32 * 6,
         preview: false,
         parallelism: Some(4),
+        execution_limits: None,
         workflow_policy: None,
     };
     let run = service.start_run(request.clone()).await.unwrap();

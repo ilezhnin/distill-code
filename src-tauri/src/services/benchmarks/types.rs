@@ -221,6 +221,8 @@ pub struct Configuration {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_limits: Option<RunExecutionLimits>,
     /// Experimental whole-workflow policy; never an individual model score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_policy: Option<super::workflow_policy::WorkflowPolicy>,
@@ -237,6 +239,43 @@ pub struct RunRequest {
     /// admitted before it was recorded ran one at a time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<u32>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunExecutionLimits {
+    #[serde(default)]
+    pub retry_policy: RunRetryPolicy,
+    /// Latest runner admission time, in UTC milliseconds. Does not shorten an accepted turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_not_after_ms: Option<i64>,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunRetryPolicy {
+    #[default]
+    Automatic,
+    None,
+}
+impl RunRequest {
+    pub fn automatic_retry(&self) -> bool {
+        self.execution_limits
+            .as_ref()
+            .is_none_or(|limits| limits.retry_policy == RunRetryPolicy::Automatic)
+    }
+
+    pub fn require_dispatch_admission(&self, at_ms: i64) -> Result<()> {
+        if self.execution_limits.as_ref().is_some_and(|limits| {
+            limits
+                .dispatch_not_after_ms
+                .is_some_and(|deadline| at_ms >= deadline)
+        }) {
+            return Err(BenchmarkError::new(
+                "dispatch_deadline",
+                "Run dispatch admission deadline expired; no new turn was requested",
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -483,6 +522,9 @@ pub struct Attempt {
     /// terminal attempt. output remains the patch consumed by the grader.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository_result: Option<super::artifact_context::PublicResult>,
+    /// Native initial repository input frozen before a standalone turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_context: Option<super::runner::collection_context::Context>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

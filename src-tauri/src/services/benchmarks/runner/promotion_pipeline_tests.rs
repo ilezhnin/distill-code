@@ -115,6 +115,7 @@ async fn campaign(
 ) -> workflow_campaign::Campaign {
     service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            execution_limits: None,
             request_key: "invented-preregistered-comparison".into(),
             model_id: fit.model.id.clone(),
             version_ids: roots.iter().map(|v| v.id.clone()).collect(),
@@ -222,34 +223,50 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
         task.work_class_id = class.into();
         task.role_id = Some("invented-ordinary-agent".into());
         task.role_prompt = "An ordinary agent with its own tools.".into();
+        task.execution_profile = "interactive_acp".into();
+        task.entry = None;
+        task.permissions.tools = vec!["acp_session".into()];
+        task.permissions.network = true;
+        task.permissions.context = "Host-resolved interactive permissions".into();
+        task.limits.timeout_seconds = 0;
+        task.limits.max_turns = 0;
+        task.limits.max_artifact_bytes = 0;
+        task.budget_recipe = None;
         let candidates: Vec<RoutingCandidate> = configurations()
             .into_iter()
-            .map(|configuration| RoutingCandidate {
-                configuration,
-                available: true,
-                reason: None,
+            .map(|mut configuration| {
+                // Match applicationExecutorConfiguration, not benchmark inventory.
+                configuration.billing_mode = "unknown".into();
+                configuration.execution_profile = "interactive_acp".into();
+                configuration.inventory_revision = None;
+                RoutingCandidate {
+                    configuration,
+                    available: true,
+                    reason: None,
+                }
             })
             .collect();
         let painter = candidates
             .iter()
             .find(|row| row.configuration.model_id == "painter")
-            .map(|row| crate::services::benchmarks::routing::candidate_key(&row.configuration))
+            .map(|row| row.configuration.id.clone())
             .unwrap();
-        crate::services::benchmarks::executor::Request {
-            request_key: key.into(),
-            surface: "chat".into(),
-            context_id: "invented-ordinary-chat".into(),
-            prediction: learned::PredictionRequest {
+        crate::services::benchmarks::executor::Request::try_from(
+            crate::services::benchmarks::executor::ApplicationRequest {
+                request_key: key.into(),
+                surface: "chat".into(),
+                context_id: "invented-ordinary-chat".into(),
                 task,
                 target_family: "application:invented-ordinary".into(),
                 target_group: "application:invented-ordinary".into(),
                 candidates,
-                hard_candidate_key: None,
+                hard_candidate_id: None,
                 min_quality: 0.0,
+                prior_ids: vec![painter],
+                model_id: None,
             },
-            prior_keys: vec![painter],
-            model_id: None,
-        }
+        )
+        .unwrap()
     };
     let learned_chat = service
         .store
@@ -259,6 +276,45 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
     assert_eq!(learned_chat.source, "learned", "{learned_chat:#?}");
     assert!(learned_chat.learned_dispatch_allowed);
     assert_eq!(learned_chat.chosen.as_ref().unwrap().model_id, "parser");
+    let actual = learned_chat.chosen.as_ref().unwrap();
+    assert_eq!(actual.execution_profile, "interactive_acp");
+    assert_eq!(actual.billing_mode, "unknown");
+    assert!(actual.inventory_revision.is_none());
+    let mut wave_request = ordinary("debug", "ordinary-certified-wave");
+    wave_request.surface = "wave".into();
+    let learned_wave = service
+        .store
+        .prepare_ordinary_executor_decision(wave_request)
+        .await
+        .unwrap();
+    assert_eq!(learned_wave.source, "learned");
+    assert_eq!(learned_wave.chosen.as_ref().unwrap(), actual);
+    let mut pin_request = ordinary("debug", "ordinary-certified-pin");
+    pin_request.prediction.hard_candidate_key = pin_request.prior_keys.first().cloned();
+    let pinned = service
+        .store
+        .prepare_ordinary_executor_decision(pin_request)
+        .await
+        .unwrap();
+    assert_eq!(pinned.source, "pin");
+    assert_eq!(pinned.chosen.as_ref().unwrap().model_id, "painter");
+    let mut unavailable_request = ordinary("debug", "ordinary-certified-unavailable");
+    unavailable_request
+        .prediction
+        .candidates
+        .iter_mut()
+        .find(|row| row.configuration.model_id == "parser")
+        .unwrap()
+        .available = false;
+    let unavailable = service
+        .store
+        .prepare_ordinary_executor_decision(unavailable_request)
+        .await
+        .unwrap();
+    assert_ne!(
+        unavailable.chosen.as_ref().map(|c| c.model_id.as_str()),
+        Some("parser")
+    );
     let other_class = service
         .store
         .prepare_ordinary_executor_decision(ordinary("writing", "ordinary-uncertified"))
@@ -554,6 +610,7 @@ async fn effective_training_timeout_and_workflow_limits_must_match_deployment() 
             max_executions: 48,
             preview: false,
             parallelism: Some(4),
+            execution_limits: None,
             workflow_policy: None,
         })
         .await
@@ -626,6 +683,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
             max_executions: 48,
             preview: false,
             parallelism: Some(4),
+            execution_limits: None,
             workflow_policy: None,
         })
         .await
@@ -662,6 +720,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
     qualifications.extend(qualify(&service, &held).await);
     let frozen = service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            execution_limits: None,
             request_key: "v2-preregistered-comparison".into(),
             model_id: fit.model.id.clone(),
             version_ids: held.iter().map(|version| version.id.clone()).collect(),
@@ -917,6 +976,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
     let held_ids = qualify(&service, &held).await;
     let frozen = service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            execution_limits: None,
             request_key: "invented-trajectory-comparison".into(),
             model_id: implement_fit.model.id.clone(),
             version_ids: held.iter().map(|v| v.id.clone()).collect(),
@@ -1138,6 +1198,7 @@ async fn native_class(
             max_executions: 48,
             preview: false,
             parallelism: Some(4),
+            execution_limits: None,
             workflow_policy: None,
         })
         .await
@@ -1239,6 +1300,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
     ids.extend(qualify(&service, &held).await);
     let frozen = service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            execution_limits: None,
             request_key: "invented-native-trajectory-comparison".into(),
             model_id: implement_fit.model.id.clone(),
             version_ids: held.iter().map(|version| version.id.clone()).collect(),

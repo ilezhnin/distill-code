@@ -6,6 +6,9 @@ stored outside the application repository under the configured Distill root.
 Detailed working plans belong in `benchmark-tasks/documentation`. Do not append
 private task details or campaign results to this document.
 
+For the complete setup, qualification, measurement, training and deployment
+sequence, start with [Operating benchmarks and learned routing](benchmark-operations.md).
+
 ## Data ownership
 
 The benchmark service owns definitions, immutable versions, runs, attempts,
@@ -87,6 +90,89 @@ Text evaluators support exact, structured and rubric-based judgments. Browser
 checks must exercise declared interactions, keyboard behavior and viewport state.
 Visual judgments and functional correctness remain separately inspectable.
 Use invented examples in infrastructure tests rather than private task content.
+
+Browser specifications contain 1-200 `steps`, each with an `action` and a
+`selector`. `fill` and `press` take a `value`; `click` needs no value.
+`selectOption` selects a native select option by its exact string `value`, so
+tests need not assume the option order. `expectText`, `expectValue` and
+`expectCount` compare the observed text, input value and locator count.
+
+Browser steps may set an integer `timeoutMs` from 1 to 5000. Actions use it as
+their locator readiness budget and execute once; read-only assertions retry
+native observations during that polling budget, followed by one final observation
+if no match was found. An in-flight or final native read may finish after the
+polling deadline; this is a settling allowance, not an exact timestamp check.
+Each locator call uses the remaining budget, with a minimum of 1 ms for the
+final observation. The outer evaluator limit still bounds the entire invocation. Without this option, actions retain their 1500 ms
+default and assertions make one observation. Protected expected values and
+retry decisions remain in the controller process.
+
+The browser specification may set `timeoutSeconds` to an integer from 1 to 1200
+for the entire evaluator invocation, including startup. The host validates this
+before launch and caps it at the draft's time limit. Omitting it preserves the
+existing limit of at most 60 seconds. Publish the action and aggregate budgets
+in the task contract. `stopOnFailure: true` stops after recording the first
+failed step; its default is false. Such negative results contain only the
+executed prefix, while a passing result must complete every step.
+
+`expectSize` takes `value: { width, height, tolerance? }` and compares one
+element's rendered bounding box in CSS pixels, including borders and transforms.
+Dimensions and tolerance must be finite nonnegative numbers; tolerance defaults
+to 0.5 pixels per dimension. Missing, nonunique or unrendered elements fail.
+The browser supplies the geometry, so equivalent CSS and attribute sizing are
+accepted and page scripts cannot substitute a JavaScript geometry getter.
+
+`expectBounds` takes `value: { x, y, width, height, relativeTo?, tolerance?, coordinateSpace? }`.
+The default `coordinateSpace: "css"` compares one rendered bounding box in CSS pixels. Without `relativeTo`, x/y
+are viewport coordinates. With a selector in `relativeTo`, they are offsets from
+that element's rendered top-left corner; this does not invert its transforms.
+Both selectors use native main-document CSS and must match exactly one rendered
+element; Playwright selector extensions and shadow-root traversal are unsupported.
+Coordinates must be finite numbers; dimensions and tolerance must also be nonnegative. Tolerance
+defaults to 0.5 pixels per component. A fresh isolated browser world reads both
+boxes synchronously from native layout, keeping relative coordinates coherent
+during script and CSS animations. Equivalent SVG numeric spellings and translated
+groups are accepted. Expected coordinates stay in the controller process.
+
+With `coordinateSpace: "svg"`, the target must be an SVG `rect`, and `relativeTo`
+must select an SVG `svg` viewport. Coordinates and tolerance are then in that
+viewport's user coordinate system. The worker reads the native local `getBBox`
+and both `getScreenCTM` matrices in the same isolated-world observation, inverts
+the viewport matrix, and transforms the rectangle's four corners into that
+coordinate system. All four corners must match the expected axis-aligned
+rectangle, in any order, within the tolerance per coordinate. This accepts
+equivalent local geometry, translated groups, axis-aligned reflections/rotations,
+viewport borders/padding, and shared ancestor transforms; a skewed or rotated
+rectangle with only a matching axis-aligned envelope does not pass. Both screen
+matrices use the browser's native 2D SVG matrix interface and must be finite;
+the viewport matrix must be invertible. This
+checks the geometric rectangle, excluding stroke, clipping, and corner rounding;
+it does not assert visibility, styling, or arbitrary SVG shape equivalence.
+
+Accessibility checks read Chromium's accessibility tree outside candidate
+JavaScript. `expectAccessibleName` requires a nonempty computed name, or compares
+it exactly when a string `value` is supplied. `expectAccessibleDescription`
+compares the computed description with its required string `value` (an empty
+string checks that no description is present). Both require one element matched
+by a CSS selector. `expectAccessibleError` requires a nonempty string `value`
+and one CSS-matched control. It looks for that message in the computed
+description or the accessible text of active `errormessage` relations, with
+whitespace normalized and additional help text allowed. DOM descendants hidden
+from accessibility do not count as error text. Use separate checks for visible
+error text and invalid state when the public contract requires them. These
+assertions accept equivalent markup without prescribing an attribute spelling
+or the order of unrelated description nodes.
+
+Error text alternatives use the pinned Playwright runtime in its isolated
+utility world, restricted to Chromium's active error relations. The controller
+checks the same control and active relations before and after readback. Native
+reflection restricts the synchronous text computation to those live targets;
+candidate scripts, pending timers and animation callbacks remain enabled.
+ARIA element-reflection targets are resolved by browser node identity and do not
+need element IDs. Temporary utility-world facades do not change the page's DOM.
+Expected error text stays in the controller; it is never supplied to the page
+or utility world. Runtime upgrades must rerun the worker's accessibility and
+isolation regression tests because this readback uses a private Playwright API.
 
 JavaScript checks require a callable `functionName` and 1-100 `argsCases`, each
 with an `args` array and an explicit `expected` value. When the public contract
@@ -274,20 +360,55 @@ the plan, or a lineage longer than the certified sequence keeps its prior or
 explicit pin. Without a trajectory certificate, a certificate of one contract
 covers each step until the role or class changes.
 
+For repository training intended to transfer to cumulative workflows, declare
+`environment.nativeRepositoryRecipe = "repository-cumulative-v1"` together with
+`environment.nativeBudgetRecipe = "native-root-wall-budget-v1"`. Individual
+training tasks also require an explicit initial entry. The native runner creates
+and persists the actual initial repository artifact and wall-budget lease before
+dispatch; do not author either runtime record into a draft. Recovery uses that
+saved context without renewing its budget. The declared recipe gives training
+and frozen workflow steps the same public execution scope before those runtime
+artifacts exist. Older manifests without this declaration retain their original
+scope and collection behavior. A single class certificate still requires matching
+roles, permissions and limits across its training tasks and workflow steps.
+
 ## Class selection in ordinary chats and waves
 
 Once a work class has an active certificate, the newest one chooses for every
 ordinary chat and wave of that class: its class model scores the available
-candidates that it was trained on, under the same inventory, and the best one
-above the certificate's quality floor runs. This applies whatever the agent's
+candidates matching its trained provider, model, reasoning effort and speed
+mode, and the selected one above the certificate's quality floor runs.
+Interactive choices retain their own execution profile, billing information
+and runtime revision, including unknown values. The benchmark runtime used as
+evidence is not an attestation of the interactive session's isolation. Known
+runtime conflicts and ambiguous evidence matches cannot select a worker.
+This applies whatever the agent's
 role, prompt or tools, so it reaches beyond the exact contract the campaign
 evaluated. An explicit model pin or a bound session target stays binding. When
 the class has no certificate, or its model abstains (no trained candidate is
 available, or none reaches the floor), the preference order from Routing chooses
-and the decision records why. Revoking the certificate returns the class to that
-order at once. `benchmark_class_policies` reports each class's certificate, or
+and the decision records why. Revoking a certificate exposes the next newest
+active certificate, if one exists; with none, the class returns to that order.
+`benchmark_class_policies` reports each class's certificate, or
 the qualified training and held-out cases, fits and campaigns it still lacks;
 Routing, the agent page and the chat hint show the same state.
+
+## Learned selection recipe
+
+New fits use a joint selection head trained against soft distributions of
+measured candidate utility. Repeated rewards and the declared quality, speed
+and cost weights determine those targets; masked observations are excluded,
+not replaced with failures. Training gives related cases equal group weight.
+Quality estimates remain separate and enforce the minimum quality floor.
+The selector uses local public-task features and a linear selection head.
+It does not train the candidate language models or evolve complete workflows.
+
+The `family-weighted-softmax-kl-v1` recipe has its own immutable fit identity.
+Existing `family-weighted-ridge-v1` fits keep their original predictions and
+serialized form. A new fit requires its own evaluation and promotion; changing
+the learning recipe does not activate a policy or reinterpret old campaign
+results. Selection probabilities describe preference among available eligible
+candidates, not calibrated probabilities of task success.
 
 ## Verification and maintenance
 

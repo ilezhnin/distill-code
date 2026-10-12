@@ -84,13 +84,18 @@ describe("chat executor preview", () => {
       request.candidates.map((row) => [
         row.configuration.modelId,
         row.configuration.effort,
+        row.configuration.fastMode,
       ]),
     ).toEqual([
-      ["alpha", "high"],
-      ["beta", "low"],
+      ["alpha", "high", null],
+      ["beta", "low", null],
+      ["beta", "low", false],
+      ["alpha", "low", null],
+      ["beta", "high", null],
+      ["beta", "high", false],
     ]);
     expect(request.priorIds).toEqual(
-      request.candidates.map((row) => row.configuration.id),
+      request.candidates.slice(0, 3).map((row) => row.configuration.id),
     );
   });
 

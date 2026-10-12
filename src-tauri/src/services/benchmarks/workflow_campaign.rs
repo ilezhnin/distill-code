@@ -31,6 +31,8 @@ fn group(draft: &BenchmarkDraft) -> &str {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_limits: Option<RunExecutionLimits>,
     pub request_key: String,
     pub model_id: String,
     pub version_ids: Vec<String>,
@@ -154,6 +156,7 @@ impl Plan {
             .get(index)
             .ok_or_else(|| invalid("Unknown campaign cell"))?;
         WorkflowRunRequest {
+            execution_limits: self.request.execution_limits.clone(),
             request_key: format!("workflow-campaign:{}:{index}", self.id),
             version_ids: vec![self.cases[cell.case_index].version_id.clone()],
             policy: self.policies[cell.policy_index].clone(),

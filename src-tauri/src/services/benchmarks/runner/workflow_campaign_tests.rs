@@ -255,6 +255,7 @@ async fn frozen_rubric_campaign_reserves_and_scores_one_final_panel_per_trajecto
 }
 fn request(fit: &learned::FitArtifact, roots: &[BenchmarkVersion], key: &str) -> Request {
     Request {
+        execution_limits: None,
         request_key: key.into(),
         model_id: fit.model.id.clone(),
         version_ids: roots.iter().map(|v| v.id.clone()).collect(),
@@ -276,6 +277,85 @@ async fn finish(service: &Arc<BenchmarkService>, id: &str) -> Campaign {
         service.tick().await.unwrap();
     }
     panic!("campaign failed to settle")
+}
+
+#[tokio::test]
+async fn campaign_freezes_no_retry_limits_into_each_native_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(OfflineWorkers::default());
+    let service = open(dir.path(), backend.clone()).await;
+    let (train, fit) = training(&service).await;
+    let roots = roots(&service, &train, "bounded-campaign").await;
+    let mut request = request(&fit, &roots, "bounded-campaign");
+    let legacy = serde_json::to_value(&request).unwrap();
+    assert!(legacy.get("executionLimits").is_none());
+    let legacy_retry: Request = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(legacy_retry).unwrap(), legacy);
+
+    let deadline = now() + 120_000;
+    request.execution_limits = Some(RunExecutionLimits {
+        retry_policy: RunRetryPolicy::None,
+        dispatch_not_after_ms: Some(deadline),
+    });
+    let frozen = service
+        .freeze_workflow_campaign(request.clone())
+        .await
+        .unwrap();
+    let root_request = frozen.plan.run_request(0).unwrap();
+    assert!(!root_request.automatic_retry());
+    assert_eq!(
+        root_request
+            .execution_limits
+            .as_ref()
+            .unwrap()
+            .dispatch_not_after_ms,
+        Some(deadline)
+    );
+    assert_eq!(
+        root_request
+            .require_dispatch_admission(deadline)
+            .unwrap_err()
+            .code,
+        "dispatch_deadline"
+    );
+    for index in 0..frozen.plan.cells.len() {
+        assert!(!frozen.plan.run_request(index).unwrap().automatic_retry());
+    }
+    // Admission limits are part of the frozen identity, not a mutable runner hint.
+    request.execution_limits = None;
+    assert!(service.freeze_workflow_campaign(request).await.is_err());
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    *backend.refuse_next.lock().unwrap() = Some("dispatch_uncertain".into());
+    let stopped = finish(&service, &frozen.plan.id).await;
+    assert_eq!(stopped.state, "paused");
+    let child = service
+        .store
+        .all_runs()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|run| run.request.request_key == root_request.request_key)
+        .unwrap();
+    assert!(!child.request.automatic_retry());
+    assert_eq!(child.attempts.len(), 1);
+    assert_eq!(child.attempts[0].phase, "terminal");
+    assert_eq!(
+        child.attempts[0].outcome.as_deref(),
+        Some("dispatch_uncertain")
+    );
+    let recorded = serde_json::to_value(&child.attempts).unwrap();
+    let calls = backend.calls.load(Ordering::SeqCst);
+    for _ in 0..3 {
+        service.tick().await.unwrap();
+    }
+    assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(
+        serde_json::to_value(service.store.run(&child.id).await.unwrap().attempts).unwrap(),
+        recorded
+    );
 }
 
 #[tokio::test]
@@ -701,6 +781,7 @@ async fn reservations_cover_historical_relations_exposure_and_existing_holdouts(
         class_prior_ids: Default::default(),
     };
     let run: RunRequest = WorkflowRunRequest {
+        execution_limits: None,
         request_key: "preexisting-plan".into(),
         version_ids: vec![roots_b[0].id.clone()],
         policy,
@@ -777,6 +858,7 @@ async fn reservations_cover_historical_relations_exposure_and_existing_holdouts(
         request_key: "alias-bypass".into(),
         version_ids: vec![alias.id.clone()],
         configurations: configurations(),
+        execution_limits: None,
         workflow_policy: None,
         repetitions: 3,
         timeout_seconds: 10,

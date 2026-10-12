@@ -19,6 +19,7 @@ use std::{
 use tauri::Manager;
 use tokio::sync::watch;
 
+pub mod collection_context;
 pub(crate) mod native_receipt;
 
 /// Fewest judges whose votes may settle a rendering.
@@ -844,21 +845,16 @@ struct Seat<'a> {
     account_slots: usize,
 }
 
-/// How many attempts of one configuration of `provider_id` a run of
-/// `request` flies at once: what it was admitted with (one for a run
-/// admitted before that was recorded), and one on a bridge that serves one
-/// session at a time.
-pub(super) fn attempts_at_once(request: &RunRequest, provider_id: &str) -> u32 {
-    if serves_one_session(provider_id) {
+/// Concurrent attempts of a configuration, within the shared account limit.
+/// Grok's shared text bridge serves one session; repository attempts each
+/// own a separate bridge and can use the run's requested parallelism.
+pub(super) fn attempts_at_once(request: &RunRequest, configuration: &Configuration) -> u32 {
+    if configuration.execution_profile != "protected_repository"
+        && NativeProvider::for_harness(&configuration.provider_id) == Some(NativeProvider::Grok)
+    {
         return 1;
     }
     request.parallelism.unwrap_or(1).max(1)
-}
-
-/// Whether `provider_id`'s benchmark bridge answers one session at a time:
-/// the Grok CLI's.
-fn serves_one_session(provider_id: &str) -> bool {
-    NativeProvider::for_harness(provider_id) == Some(NativeProvider::Grok)
 }
 
 /// How many attempts of `run_id` fly at once on an account of `provider_id`:
@@ -1951,6 +1947,13 @@ impl NativeBackend {
                 "requestKey":key,"inFlight":false,"usageComplete":true,"dispatched":false}));
             return Ok(stopped);
         }
+        if let Some(run_id) = &stop.run_id {
+            store
+                .run(run_id)
+                .await?
+                .request
+                .require_dispatch_admission(now())?;
+        }
         let dispatch = host
             .dispatch_owned_turn(OwnedTurnRequest {
                 session_id: session.session_id.clone(),
@@ -2948,6 +2951,8 @@ impl ExecutionBackend for NativeBackend {
                     "Run stopped before preparation",
                 ));
             }
+            let run_request = store.run(&attempt.run_id).await?.request;
+            run_request.require_dispatch_admission(now())?;
             let host = self
                 .app
                 .state::<AgentHost>()
@@ -2969,9 +2974,10 @@ impl ExecutionBackend for NativeBackend {
                 })?;
             // Interactive work has priority, before anything touches the
             // bridge that serves it, and again once the runtime is checked.
+            let provider_id = attempt.configuration.provider_id.clone();
             let busy = || async {
                 let activity = host
-                    .account_activity(&attempt.configuration.provider_id, &account)
+                    .account_activity(&provider_id, &account)
                     .await
                     .map_err(host_error)?;
                 if activity.active_sessions.is_empty() {
@@ -2984,6 +2990,8 @@ impl ExecutionBackend for NativeBackend {
                 }
             };
             busy().await?;
+            let version =
+                collection_context::prepare(store, &mut attempt, version, timeout).await?;
             let repository = super::repository::is_repository_case(&version.manifest);
             let budget = collection_budget(&version.manifest)?;
             let deadline = budget
@@ -3116,6 +3124,7 @@ impl ExecutionBackend for NativeBackend {
                 tokio::fs::create_dir_all(&cwd).await?;
                 cwd.to_string_lossy().into_owned()
             };
+            run_request.require_dispatch_admission(now())?;
             let session = host
                 .create_owned_session(
                     OwnedSessionRequest {
@@ -3186,6 +3195,7 @@ impl ExecutionBackend for NativeBackend {
                 timeout_ms: turn_timeout_ms(timeout_seconds, budget.as_ref())?,
                 images: Vec::new(),
             };
+            run_request.require_dispatch_admission(now())?;
             let dispatch = match deadline {
                 Some(deadline) => {
                     host.dispatch_owned_turn_with_deadline(request, deadline as i64)
@@ -3197,148 +3207,24 @@ impl ExecutionBackend for NativeBackend {
             attempt.host_run_id = Some(dispatch.run_id);
             attempt.phase = "running".into();
             store.save_attempt(&attempt).await?;
-            let mut cancelled = false;
-            let mut timed_out = false;
-            let mut cancellation_started = None;
             let mut capture = TurnCapture::new(version.manifest.limits.max_artifact_bytes);
-            // The host's terminal dispatch record; every way out of the loop
-            // but an error sets it.
-            let terminal;
-            loop {
-                if (*cancel.borrow()
-                    || started.elapsed() > Duration::from_secs(u64::from(timeout_seconds))
-                    || budget
-                        .as_ref()
-                        .is_some_and(|budget| budget.remaining_ms(now()).is_err()))
-                    && !cancelled
-                {
-                    timed_out = !*cancel.borrow();
-                    host.cancel_owned_turn(&key).await.map_err(host_error)?;
-                    cancelled = true;
-                    cancellation_started = Some(Instant::now());
-                }
-                if cancellation_started.is_some_and(|t| t.elapsed() > Duration::from_secs(15)) {
-                    return Err(BenchmarkError::new(
-                        "dispatch_uncertain",
-                        "Cancellation was not confirmed; account requires inspection",
-                    ));
-                }
-                let page = host
-                    .read_owned_events(&session.session_id, attempt.event_cursor, 200)
-                    .await
-                    .map_err(host_error)?;
-                for event in page.events {
-                    capture.read(event.payload, &mut attempt)?;
-                }
-                attempt.event_cursor = page.cursor;
-                // An answer past the published cap, or a broken no-tool
-                // policy, has already decided the attempt; stop paying for
-                // the rest of the turn. The size of the event record never
-                // does (see `evidence`).
-                let answer_capped = capture.cap_answer();
-                if ((answer_capped && !repository) || capture.violation.is_some()) && !cancelled {
-                    host.cancel_owned_turn(&key).await.map_err(host_error)?;
-                    cancelled = true;
-                    cancellation_started = Some(Instant::now());
-                }
-                let status = host
-                    .execution_status(&key)
-                    .await
-                    .map_err(host_error)?
-                    .ok_or_else(|| {
-                        BenchmarkError::new(
-                            "dispatch_uncertain",
-                            "Host dispatch record disappeared",
-                        )
-                    })?;
-                if status.phase == "terminal"
-                    && !page.has_more
-                    && attempt.event_cursor >= status.event_cursor
-                {
-                    if let Some(error) = status.error.as_ref().filter(|e| {
-                        is_quota_wait(e) || refused_for_quota(e, &capture.output, &attempt.usage)
-                    }) {
-                        return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
-                    }
-                    terminal = json!({"terminalDispatch":status});
-                    if let Some(result) = status.result.as_ref() {
-                        consume_terminal_result(result, &mut attempt);
-                    }
-                    if let Some(violation) = capture.violation.take() {
-                        attempt.outcome = Some("execution_violation".into());
-                        attempt.reason = Some(violation);
-                        break;
-                    }
-                    if let Some(selection) = status
-                        .result
-                        .as_ref()
-                        .and_then(|r| r.get("observedSelection"))
-                    {
-                        let observed = ObservedSelection {
-                            model_id: selection["modelId"].as_str().map(str::to_owned),
-                            reasoning_effort: selection["reasoningEffort"]
-                                .as_str()
-                                .map(str::to_owned),
-                            fast_mode: selection["fastMode"].as_bool(),
-                        };
-                        if observed.model_id.as_deref()
-                            != Some(attempt.configuration.model_id.as_str())
-                            || attempt
-                                .configuration
-                                .effort
-                                .as_ref()
-                                .is_some_and(|e| Some(e) != observed.reasoning_effort.as_ref())
-                            || attempt
-                                .configuration
-                                .fast_mode
-                                .is_some_and(|f| Some(f) != observed.fast_mode)
-                        {
-                            attempt.outcome = Some("selection_changed".into());
-                            attempt.reason =
-                                Some("Provider selection changed during execution".into());
-                            break;
-                        }
-                    }
-                    if capture.answer_capped && !repository {
-                        attempt.outcome = Some("budget_reached".into());
-                        attempt.reason = Some(ANSWER_CAP_REASON.into());
-                    } else if let Some(error) = status.error {
-                        // A cancellation this loop issued because the time or
-                        // root budget ran out is that timeout, whichever clock
-                        // (this wall check or the host's deadline) fired first.
-                        attempt.outcome = Some(
-                            if timed_out && error["kind"] == "cancelled" {
-                                "budget_timeout"
-                            } else {
-                                terminal_outcome(&error, &attempt.configuration.model_id)
-                            }
-                            .into(),
-                        );
-                        attempt.reason = Some(error.to_string());
-                    } else if cancelled {
-                        attempt.outcome = Some(
-                            if timed_out {
-                                "budget_timeout"
-                            } else {
-                                "cancelled"
-                            }
-                            .into(),
-                        );
-                    } else {
-                        attempt.outcome = Some("completed".into());
-                    }
-                    break;
-                }
-                if status.phase == "uncertain" {
-                    return Err(BenchmarkError::new(
-                        "dispatch_uncertain",
-                        "Host cannot determine remote acceptance",
-                    ));
-                }
-                if !page.has_more {
-                    tokio::select! {_ = tokio::time::sleep(Duration::from_millis(250))=>{},_ = cancel.changed()=>{}}
-                }
-            }
+            let terminal = wait_for_owned_turn(
+                host.as_ref(),
+                &mut attempt,
+                &mut capture,
+                &mut cancel,
+                OwnedTurnWait {
+                    key: &key,
+                    session_id: &session.session_id,
+                    started,
+                    timeout: Duration::from_secs(u64::from(timeout_seconds)),
+                    budget: budget.as_ref(),
+                    repository,
+                    cancellation_grace: Duration::from_secs(15),
+                    terminal_drain_grace: Duration::from_secs(15),
+                },
+            )
+            .await?;
             attempt.output = Some(std::mem::take(&mut capture.output));
             attempt.duration_ms = Some(started.elapsed().as_millis() as u64);
             attempt.native_execution_ms = Some(
@@ -3836,6 +3722,238 @@ pub(crate) async fn monitor_owned_task(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Reading and cancelling an already dispatched turn never grants another
+/// provider call. This boundary also lets reconciliation run against recorded
+/// host responses without starting an application or a provider in tests.
+trait OwnedTurnReceiptSource: Sync {
+    fn cancel_owned_turn<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxFuture<'a, std::result::Result<(), String>>;
+    fn read_owned_events<'a>(
+        &'a self,
+        session: &'a str,
+        after: i64,
+        limit: u32,
+    ) -> BoxFuture<'a, std::result::Result<OwnedEventPage, String>>;
+    fn execution_status<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxFuture<'a, std::result::Result<Option<ExecutionDispatch>, String>>;
+}
+
+impl OwnedTurnReceiptSource for crate::services::agent_host::router::Inner {
+    fn cancel_owned_turn<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxFuture<'a, std::result::Result<(), String>> {
+        Box::pin(Self::cancel_owned_turn(self, key))
+    }
+    fn read_owned_events<'a>(
+        &'a self,
+        session: &'a str,
+        after: i64,
+        limit: u32,
+    ) -> BoxFuture<'a, std::result::Result<OwnedEventPage, String>> {
+        Box::pin(Self::read_owned_events(self, session, after, limit))
+    }
+    fn execution_status<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxFuture<'a, std::result::Result<Option<ExecutionDispatch>, String>> {
+        Box::pin(Self::execution_status(self, key))
+    }
+}
+
+struct OwnedTurnWait<'a> {
+    key: &'a str,
+    session_id: &'a str,
+    started: Instant,
+    timeout: Duration,
+    budget: Option<&'a super::artifact_context::BudgetLease>,
+    repository: bool,
+    cancellation_grace: Duration,
+    terminal_drain_grace: Duration,
+}
+
+fn reconcile_owned_cancel_request(result: std::result::Result<(), String>) -> Result<()> {
+    match result {
+        // The host may have stopped its sandbox while its terminal receipt is
+        // still being committed. Only that notification race gets a grace
+        // period; storage, validation and other host errors must propagate.
+        Err(message)
+            if message == "dispatch_uncertain: no live runtime can confirm cancellation" =>
+        {
+            Ok(())
+        }
+        other => other.map_err(host_error),
+    }
+}
+
+async fn wait_for_owned_turn(
+    host: &impl OwnedTurnReceiptSource,
+    attempt: &mut Attempt,
+    capture: &mut TurnCapture,
+    cancel: &mut watch::Receiver<bool>,
+    wait: OwnedTurnWait<'_>,
+) -> Result<Value> {
+    let OwnedTurnWait {
+        key,
+        session_id,
+        started,
+        timeout,
+        budget,
+        repository,
+        cancellation_grace,
+        terminal_drain_grace,
+    } = wait;
+    let mut cancelled = false;
+    let mut timed_out = false;
+    let mut cancellation_started = None;
+    let mut terminal_drain_started = None;
+    let terminal;
+    loop {
+        if (*cancel.borrow()
+            || started.elapsed() > timeout
+            || budget
+                .as_ref()
+                .is_some_and(|budget| budget.remaining_ms(now()).is_err()))
+            && !cancelled
+        {
+            timed_out = !*cancel.borrow();
+            reconcile_owned_cancel_request(host.cancel_owned_turn(key).await)?;
+            cancelled = true;
+            cancellation_started = Some(Instant::now());
+        }
+        let page = host
+            .read_owned_events(session_id, attempt.event_cursor, 200)
+            .await
+            .map_err(host_error)?;
+        for event in page.events {
+            capture.read(event.payload, attempt)?;
+        }
+        attempt.event_cursor = page.cursor;
+        // An answer past the published cap, or a broken no-tool
+        // policy, has already decided the attempt; stop paying for
+        // the rest of the turn. The size of the event record never
+        // does (see `evidence`).
+        let answer_capped = capture.cap_answer();
+        if ((answer_capped && !repository) || capture.violation.is_some()) && !cancelled {
+            reconcile_owned_cancel_request(host.cancel_owned_turn(key).await)?;
+            cancelled = true;
+            cancellation_started = Some(Instant::now());
+        }
+        let status = host
+            .execution_status(key)
+            .await
+            .map_err(host_error)?
+            .ok_or_else(|| {
+                BenchmarkError::new("dispatch_uncertain", "Host dispatch record disappeared")
+            })?;
+        if status.phase == "terminal"
+            && !page.has_more
+            && attempt.event_cursor >= status.event_cursor
+        {
+            if let Some(error) = status.error.as_ref().filter(|e| {
+                is_quota_wait(e) || refused_for_quota(e, &capture.output, &attempt.usage)
+            }) {
+                return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
+            }
+            terminal = json!({"terminalDispatch":status});
+            if let Some(result) = status.result.as_ref() {
+                consume_terminal_result(result, attempt);
+            }
+            if let Some(violation) = capture.violation.take() {
+                attempt.outcome = Some("execution_violation".into());
+                attempt.reason = Some(violation);
+                break;
+            }
+            if let Some(selection) = status
+                .result
+                .as_ref()
+                .and_then(|r| r.get("observedSelection"))
+            {
+                let observed = ObservedSelection {
+                    model_id: selection["modelId"].as_str().map(str::to_owned),
+                    reasoning_effort: selection["reasoningEffort"].as_str().map(str::to_owned),
+                    fast_mode: selection["fastMode"].as_bool(),
+                };
+                if observed.model_id.as_deref() != Some(attempt.configuration.model_id.as_str())
+                    || attempt
+                        .configuration
+                        .effort
+                        .as_ref()
+                        .is_some_and(|e| Some(e) != observed.reasoning_effort.as_ref())
+                    || attempt
+                        .configuration
+                        .fast_mode
+                        .is_some_and(|f| Some(f) != observed.fast_mode)
+                {
+                    attempt.outcome = Some("selection_changed".into());
+                    attempt.reason = Some("Provider selection changed during execution".into());
+                    break;
+                }
+            }
+            if capture.answer_capped && !repository {
+                attempt.outcome = Some("budget_reached".into());
+                attempt.reason = Some(ANSWER_CAP_REASON.into());
+            } else if let Some(error) = status.error {
+                // A cancellation this loop issued because the time or
+                // root budget ran out is that timeout, whichever clock
+                // (this wall check or the host's deadline) fired first.
+                attempt.outcome = Some(
+                    if timed_out && error["kind"] == "cancelled" {
+                        "budget_timeout"
+                    } else {
+                        terminal_outcome(&error, &attempt.configuration.model_id)
+                    }
+                    .into(),
+                );
+                attempt.reason = Some(error.to_string());
+            } else if cancelled {
+                attempt.outcome = Some(
+                    if timed_out {
+                        "budget_timeout"
+                    } else {
+                        "cancelled"
+                    }
+                    .into(),
+                );
+            } else {
+                attempt.outcome = Some("completed".into());
+            }
+            break;
+        }
+        if status.phase == "uncertain" {
+            return Err(BenchmarkError::new(
+                "dispatch_uncertain",
+                "Host cannot determine remote acceptance",
+            ));
+        }
+        // A committed terminal receipt confirms cancellation. Give its events
+        // a separate, fixed drain period; an unreachable cursor must not hold
+        // the attempt forever. Neither new pages nor progress reset the cap.
+        if status.phase == "terminal" && cancelled {
+            let draining = terminal_drain_started.get_or_insert_with(Instant::now);
+            if draining.elapsed() >= terminal_drain_grace {
+                return Err(BenchmarkError::new(
+                    "dispatch_uncertain",
+                    "Terminal receipt events could not be reconciled before the drain deadline",
+                ));
+            }
+        } else if cancellation_started.is_some_and(|t| t.elapsed() >= cancellation_grace) {
+            return Err(BenchmarkError::new(
+                "dispatch_uncertain",
+                "Cancellation was not confirmed; account requires inspection",
+            ));
+        }
+        if !page.has_more {
+            tokio::select! {_ = tokio::time::sleep(Duration::from_millis(250))=>{},_ = cancel.changed()=>{}}
+        }
+    }
+    Ok(terminal)
 }
 
 struct TurnCapture {
@@ -4998,6 +5116,7 @@ impl BenchmarkService {
         .await?;
         for data in interrupted {
             let mut a: Attempt = serde_json::from_str(&data)?;
+            let request = self.store.run(&a.run_id).await?.request;
             let version = self.store.version(&a.version_id).await?;
             let recovered = if version.manifest.workflow.is_some() {
                 super::workflow::recover(self, a.clone(), version.clone()).await?
@@ -5008,6 +5127,12 @@ impl BenchmarkService {
                 Some(mut restored) => {
                     // A recovered prefix waits for an explicit resume before another paid step.
                     if restored.phase == "pending" {
+                        if !request.automatic_retry() {
+                            restored.phase = "terminal".into();
+                            restored.outcome = Some("interrupted".into());
+                            restored.reason = Some("Recovered workflow prefix retained; this run forbids another dispatch after interruption".into());
+                            restored.finished_at = Some(now());
+                        }
                         self.store.save_attempt(&restored).await?;
                         continue;
                     }
@@ -5031,7 +5156,7 @@ impl BenchmarkService {
                     // A rendering whose panel a restart cut off keeps its paid
                     // generation and waits for its run's resume, which asks a
                     // fresh panel; anything else settles here.
-                    if self.awaits_panel(&restored, &version).await? {
+                    if request.automatic_retry() && self.awaits_panel(&restored, &version).await? {
                         restored.phase = AWAITING_JUDGES.into();
                         restored.reason = Some(JUDGING_STOPPED.into());
                     } else {
@@ -5043,7 +5168,11 @@ impl BenchmarkService {
                 None => {
                     a.phase = "terminal".into();
                     a.outcome = Some("dispatch_uncertain".into());
-                    a.reason=Some("Remote acceptance cannot be established after restart; the run continues with its other tests, and this case starts over when the run resumes".into());
+                    a.reason = Some(if request.automatic_retry() {
+                        "Remote acceptance cannot be established after restart; the run continues with its other tests, and this case starts over when the run resumes"
+                    } else {
+                        "Remote acceptance cannot be established after restart; this run forbids a replacement dispatch and requires operator inspection"
+                    }.into());
                     a.finished_at = Some(now());
                     self.store.save_attempt(&a).await?;
                     self.changed().await;
@@ -5210,7 +5339,26 @@ impl BenchmarkService {
     ) -> Result<bool> {
         // An account whose limit ran out under this run hands its tests to
         // another account of the provider that has room.
-        if let Some(account) = a.configuration.account_id.clone() {
+        if !run.request.automatic_retry()
+            && (a.started_at.is_some()
+                || a.session_id.is_some()
+                || a.host_run_id.is_some()
+                || !a.workflow_steps.is_empty())
+        {
+            a.phase = "terminal".into();
+            a.outcome = Some("dispatch_uncertain".into());
+            a.reason = Some("This run forbids replay of a previously started attempt".into());
+            a.finished_at = Some(now());
+            self.store.save_attempt(&a).await?;
+            self.store.set_run_state(&run.id, "needs_attention").await?;
+            return Ok(false);
+        }
+        if let Some(account) = a
+            .configuration
+            .account_id
+            .clone()
+            .filter(|_| run.request.automatic_retry())
+        {
             if exhausted(&run.id, &account) {
                 if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
                     a.configuration.account_id = Some(other);
@@ -5229,7 +5377,7 @@ impl BenchmarkService {
         let seat = Seat {
             id: &id,
             lane: &lane,
-            lane_slots: attempts_at_once(&run.request, provider) as usize,
+            lane_slots: attempts_at_once(&run.request, &a.configuration) as usize,
             account: &account,
             account_slots: account_slots(&run.id, provider),
         };
@@ -5336,7 +5484,9 @@ impl BenchmarkService {
         judge_budget: Option<std::result::Result<bool, String>>,
         cancel_rx: watch::Receiver<bool>,
     ) -> Result<()> {
-        let result = if version.manifest.workflow.is_some() {
+        let result = if let Err(error) = run.request.require_dispatch_admission(now()) {
+            Err(error)
+        } else if version.manifest.workflow.is_some() {
             super::workflow::execute(
                 self,
                 a.clone(),
@@ -5377,7 +5527,9 @@ impl BenchmarkService {
             }
             Err(error) => {
                 let mut failed = self.store.attempt(&a.id).await?;
-                if error.code == "account_busy" {
+                let retry_allowed = run.request.automatic_retry()
+                    && run.request.require_dispatch_admission(now()).is_ok();
+                if retry_allowed && error.code == "account_busy" {
                     failed.phase = "pending".into();
                     failed.started_at = None;
                     self.store.save_attempt(&failed).await?;
@@ -5392,7 +5544,7 @@ impl BenchmarkService {
                 // operator resumed settles the cell instead.
                 // A limit that ran out on this account moves the test to
                 // another account of the provider with room, if there is one.
-                if error.code == QUOTA_WAIT {
+                if retry_allowed && error.code == QUOTA_WAIT {
                     if let Some(account) = a.configuration.account_id.as_deref() {
                         exhaust(
                             &run.id,
@@ -5416,7 +5568,10 @@ impl BenchmarkService {
                         return Ok(());
                     }
                 }
-                if returns_to_queue(&error.code, &failed.phase) && !refused_again(&a, &error) {
+                if retry_allowed
+                    && returns_to_queue(&error.code, &failed.phase)
+                    && !refused_again(&a, &error)
+                {
                     // A limit that ran out mid-run discards the unfinished
                     // turn; the run waits for a reset it can reach, or stops
                     // for the operator with the reason on the test.
@@ -5465,12 +5620,24 @@ impl BenchmarkService {
                     self.changed().await;
                     return Ok(());
                 }
+                let needs_operator = !retry_allowed
+                    && (returns_to_queue(&error.code, &failed.phase)
+                        || matches!(
+                            error.code.as_str(),
+                            "account_busy"
+                                | "dispatch_deadline"
+                                | "selection_changed"
+                                | "validation"
+                                | "evidence_mismatch"
+                        ));
                 failed.phase = "terminal".into();
                 failed.outcome = Some(error.code.clone());
                 failed.reason = Some(error.message);
                 failed.finished_at = Some(now());
                 self.store.save_attempt(&failed).await?;
-                if ["dispatch_uncertain", "storage_unavailable"].contains(&error.code.as_str()) {
+                if needs_operator
+                    || ["dispatch_uncertain", "storage_unavailable"].contains(&error.code.as_str())
+                {
                     self.store.set_run_state(&run.id, "needs_attention").await?;
                 }
             }
@@ -5689,7 +5856,8 @@ impl BenchmarkService {
     /// else, a cancelled run included, settles the attempt.
     async fn settled_phase(&self, run: &BenchmarkRun, attempt: &Attempt) -> Result<&'static str> {
         Ok(
-            if judging_deferred(attempt)
+            if run.request.automatic_retry()
+                && judging_deferred(attempt)
                 && !matches!(
                     self.store.run_state(&run.id).await?.as_str(),
                     "cancelling" | "cancelled"
@@ -5740,6 +5908,10 @@ pub struct FakeBackend {
     pub fail_judges: std::sync::atomic::AtomicBool,
     /// Turns the host refuses for quota before any provider call.
     pub quota_waits: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    accepted_quota_waits: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    inventory_delay_ms: std::sync::atomic::AtomicU64,
     /// Sessions whose provider refuses the requested model before dispatch.
     pub refused_selections: std::sync::atomic::AtomicU64,
     /// Sessions the host refuses to open before any provider call (a sign-in
@@ -5812,6 +5984,12 @@ impl ExecutionBackend for FakeBackend {
         Box::pin(async move {
             // Fake models have no effort control unless a test lists levels,
             // so their measurements are fully specified with the effort unset.
+            #[cfg(test)]
+            tokio::time::sleep(Duration::from_millis(
+                self.inventory_delay_ms
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            ))
+            .await;
             let efforts = self
                 .effort_levels
                 .lock()
@@ -5896,6 +6074,19 @@ impl ExecutionBackend for FakeBackend {
                 return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            if take(&self.accepted_quota_waits) {
+                a.phase = "running".into();
+                a.session_id = Some(format!("accepted-session-{}", a.id));
+                a.host_run_id = Some(format!("accepted-turn-{}", a.id));
+                a.usage.input = Some(7);
+                store.save_attempt(&a).await?;
+                return Err(BenchmarkError::new(
+                    QUOTA_WAIT,
+                    json!({"kind":QUOTA_WAIT,"dispatchStarted":true,"nextReset":now()+60_000})
+                        .to_string(),
+                ));
+            }
             let flying = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak_in_flight.fetch_max(flying, Ordering::SeqCst);
             a.phase = "running".into();
@@ -5959,6 +6150,15 @@ pub fn seed_definitions() -> Vec<BenchmarkDraft> {
 
 #[cfg(test)]
 mod pipeline_tests;
+
+#[cfg(test)]
+mod reconciliation_tests;
+
+#[cfg(test)]
+mod execution_limits_tests;
+
+#[cfg(test)]
+mod collection_context_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6701,7 +6901,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
     use tokio::sync::Notify;
-    async fn setup() -> (tempfile::TempDir, Arc<BenchmarkService>, Arc<FakeBackend>) {
+    pub(super) async fn setup() -> (tempfile::TempDir, Arc<BenchmarkService>, Arc<FakeBackend>) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).await.unwrap();
         let backend = Arc::new(FakeBackend::default());
@@ -6714,7 +6914,7 @@ mod tests {
         });
         (dir, service, backend)
     }
-    async fn request(s: &BenchmarkService) -> RunRequest {
+    pub(super) async fn request(s: &BenchmarkService) -> RunRequest {
         let mut draft = seed_definitions().remove(0);
         draft.split = "train".into();
         let d = s.store.save_draft(None, None, draft).await.unwrap();
@@ -6739,12 +6939,13 @@ mod tests {
             max_executions: 2,
             preview: false,
             parallelism: None,
+            execution_limits: None,
             workflow_policy: None,
         }
     }
     /// [`request`] flown one attempt at a time, so a refused turn is the
     /// only one sent before the run reacts to it.
-    async fn serial_request(s: &BenchmarkService) -> RunRequest {
+    pub(super) async fn serial_request(s: &BenchmarkService) -> RunRequest {
         RunRequest {
             parallelism: Some(1),
             ..request(s).await
@@ -7474,6 +7675,47 @@ mod tests {
         assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
+    async fn independent_grok_repository_bridges_fill_the_shared_account_slots() {
+        let (_dir, s, _backend) = setup().await;
+        let mut request = deep_request(&s, "grok-acp").await;
+        request.parallelism = Some(4);
+        let mut configuration = request.configurations[0].clone();
+        configuration.execution_profile = "protected_repository".into();
+        let lane_slots = attempts_at_once(&request, &configuration) as usize;
+        let mut receivers = Vec::new();
+        // Both reasoning configurations share one account's four slots.
+        for index in 0..5 {
+            let id = format!("repository-attempt-{index}");
+            let lane = if index < 3 { "grok-low" } else { "grok-high" };
+            let seat = Seat {
+                id: &id,
+                lane,
+                lane_slots,
+                account: "grok-shared-account",
+                account_slots: ACCOUNT_SLOTS,
+            };
+            let claimed = s.claim("repository-run", seat).await;
+            assert_eq!(claimed.is_some(), index < ACCOUNT_SLOTS);
+            receivers.extend(claimed);
+        }
+        assert_eq!(s.active.lock().await.len(), ACCOUNT_SLOTS);
+        s.release("repository-attempt-0").await;
+        let replacement = s
+            .claim(
+                "repository-run",
+                Seat {
+                    id: "repository-attempt-4",
+                    lane: "grok-high",
+                    lane_slots,
+                    account: "grok-shared-account",
+                    account_slots: ACCOUNT_SLOTS,
+                },
+            )
+            .await;
+        assert!(replacement.is_some());
+        assert_eq!(s.active.lock().await.len(), ACCOUNT_SLOTS);
+    }
+    #[tokio::test]
     async fn a_spent_account_hands_its_tests_to_another_and_the_row_stays_one() {
         let (_dir, s, backend) = setup().await;
         *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "second".into()];
@@ -7546,6 +7788,7 @@ mod tests {
             native_execution_ms: None,
             resolved_model: None,
             repository_result: None,
+            collection_context: None,
         };
         let version = |id: &str| BenchmarkVersion {
             id: id.into(),
@@ -7588,6 +7831,7 @@ mod tests {
                 max_executions: 9,
                 preview: false,
                 parallelism: None,
+                execution_limits: None,
                 workflow_policy: None,
             },
             attempts,

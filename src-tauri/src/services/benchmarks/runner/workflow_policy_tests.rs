@@ -61,6 +61,7 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
     };
     let request = |key: &str, policy: WorkflowPolicy| {
         RunRequest::try_from(WorkflowRunRequest {
+            execution_limits: None,
             request_key: key.into(),
             version_ids: vec![version.id.clone()],
             policy,

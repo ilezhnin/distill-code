@@ -1,11 +1,64 @@
 import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import type { SessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
+import type { RankableModel } from "@/features/agents/lib/modelRanking";
 import type { Configuration } from "../types";
 import type { PublicSelectorTask } from "./benchmarkLearning";
 
 export interface ApplicationExecutorOption {
   target: SessionExecutionTarget;
   runSettings?: SessionRunSettings;
+}
+
+/** Add advertised effort/normal-mode choices after the original fallback options. */
+export function applicationExecutorEffortOptions(
+  preferred: readonly ApplicationExecutorOption[],
+  modelForTarget: (target: SessionExecutionTarget) => RankableModel | undefined,
+): ApplicationExecutorOption[] {
+  const options: ApplicationExecutorOption[] = [];
+  const seen = new Set<string>();
+  const add = (option: ApplicationExecutorOption) => {
+    const id = applicationExecutorConfiguration(option)?.id;
+    if (!id || seen.has(id) || options.length === 32) return;
+    seen.add(id);
+    options.push(option);
+  };
+  preferred.forEach(add);
+  for (const option of preferred) {
+    const model = modelForTarget(option.target);
+    if (
+      !model ||
+      model.id !== option.target.modelId ||
+      (model.providerId ?? option.target.harnessId) !==
+        option.target.modelProviderId
+    )
+      continue;
+    const addNormalMode = (choice: ApplicationExecutorOption) => {
+      if (
+        choice.runSettings?.fast === undefined &&
+        typeof model.supportsFast === "boolean"
+      ) {
+        add({
+          target: choice.target,
+          runSettings: { ...choice.runSettings, fast: false },
+        });
+      }
+    };
+    if (
+      !option.runSettings?.effort ||
+      model.efforts?.some((effort) => effort.id === option.runSettings?.effort)
+    )
+      addNormalMode(option);
+    for (const effort of model.efforts ?? []) {
+      if (!effort.id.trim()) continue;
+      const choice = {
+        target: option.target,
+        runSettings: { ...option.runSettings, effort: effort.id },
+      };
+      add(choice);
+      addNormalMode(choice);
+    }
+  }
+  return options;
 }
 
 /** Local inventory row identity; the native service owns evidence-key hashing. */
@@ -20,7 +73,7 @@ export function applicationExecutorConfiguration(
       target.modelProviderId,
       target.modelId,
       runSettings?.effort ?? null,
-      runSettings?.fast ?? false,
+      runSettings?.fast ?? null,
     ]),
     providerId: target.harnessId,
     accountId: null,
