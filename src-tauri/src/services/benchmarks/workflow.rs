@@ -461,6 +461,12 @@ async fn prepare_step(
     let store = &service.store;
     let workflow = version.manifest.workflow.as_ref().unwrap();
     let spec = &workflow.steps[index];
+    let root_request = store.run(&root.run_id).await?.request;
+    let concurrent_policy = root.configuration.execution_profile == "workflow_policy"
+        && store
+            .workflow_campaign_parallelism(&root_request.request_key)
+            .await?
+            > 1;
     let mut entry = step_entry(root, &version.manifest, index, remaining, previous)?;
     let new_clock = version
         .manifest
@@ -468,7 +474,7 @@ async fn prepare_step(
         .get("nativeBudgetRecipe")
         .and_then(serde_json::Value::as_str)
         == Some(super::artifact_context::CLOCK_RECIPE);
-    let budget = if new_clock {
+    let budget = if new_clock || concurrent_policy {
         let origin = root.started_at.ok_or_else(|| {
             BenchmarkError::new(
                 "budget_clock_conflict",
@@ -479,10 +485,10 @@ async fn prepare_step(
             recipe: super::artifact_context::CLOCK_RECIPE.into(),
             root_id: root.id.clone(),
             root_started_at_ms: origin,
-            root_cap_seconds: store.run(&root.run_id).await?.request.timeout_seconds,
+            root_cap_seconds: root_request.timeout_seconds,
             step_key: format!("workflow-root:{}", root.id),
             step_started_at_ms: origin,
-            step_cap_seconds: store.run(&root.run_id).await?.request.timeout_seconds,
+            step_cap_seconds: root_request.timeout_seconds,
         };
         Some(
             store
@@ -501,9 +507,18 @@ async fn prepare_step(
                     // allowance can then exceed the root it belongs to.
                     spec.scope
                         .as_ref()
-                        .map_or(version.manifest.limits.timeout_seconds, |scope| {
-                            scope.step_budget_seconds
-                        })
+                        .map_or_else(
+                            || {
+                                if new_clock {
+                                    version.manifest.limits.timeout_seconds
+                                } else {
+                                    // Legacy steps have no independent clock;
+                                    // concurrency only binds their root deadline.
+                                    root_budget.root_cap_seconds
+                                }
+                            },
+                            |scope| scope.step_budget_seconds,
+                        )
                         .min(root_budget.root_cap_seconds),
                     &root.id,
                 )
@@ -628,7 +643,7 @@ async fn prepare_step(
             repository: repository_context,
         }),
     };
-    let policy = store.run(&root.run_id).await?.request.workflow_policy;
+    let policy = root_request.workflow_policy;
     let executor = if let Some(policy) = &policy {
         let selected = policy
             .select(service, root, &step_version(version, &saved), index)
@@ -643,7 +658,9 @@ async fn prepare_step(
     } else {
         None
     };
-    let mut tx = store.pool.begin().await?;
+    // Reserve the writer before reading the decision. Concurrent roots can
+    // otherwise invalidate this WAL snapshot before the step is inserted.
+    let mut tx = store.pool.begin_with("BEGIN IMMEDIATE").await?;
     let root_decision: String = sqlx::query_scalar(
         "SELECT data_json FROM decision_snapshots WHERE run_id=? AND version_id=?",
     )
@@ -950,7 +967,17 @@ pub async fn execute(
         .get("nativeBudgetRecipe")
         .and_then(serde_json::Value::as_str)
         == Some(super::artifact_context::CLOCK_RECIPE);
-    if new_clock {
+    let concurrent_policy = if root.configuration.execution_profile == "workflow_policy" {
+        let request = service.store.run(&root.run_id).await?.request;
+        service
+            .store
+            .workflow_campaign_parallelism(&request.request_key)
+            .await?
+            > 1
+    } else {
+        false
+    };
+    if new_clock || concurrent_policy {
         let key = format!("workflow-root:{}", root.id);
         let old = service.store.native_budget(&key).await?;
         let origin = old
@@ -997,6 +1024,7 @@ pub async fn execute(
             return Ok(root);
         }
     }
+    let wall_origin = root.started_at.unwrap_or_else(now);
     let mut steps = saved_steps(&service.store, &root.id).await?;
     let consumed = steps
         .iter()
@@ -1060,14 +1088,10 @@ pub async fn execute(
         let remaining_ms = budget_ms
             .saturating_sub(consumed.unwrap_or(budget_ms))
             .saturating_sub(start.elapsed().as_millis() as u64);
-        let remaining = if new_clock {
+        let remaining = if new_clock || concurrent_policy {
             // Exhaustion is the timeout outcome; a clock that moved backwards
             // is a conflict to surface, never a recorded budget timeout.
-            match super::artifact_context::remaining_seconds(
-                root.started_at.unwrap(),
-                now(),
-                timeout,
-            ) {
+            match super::artifact_context::remaining_seconds(wall_origin, now(), timeout) {
                 Ok(seconds) => seconds,
                 Err(error) if error.code == "budget_timeout" => 0,
                 Err(error) => return Err(error),
@@ -1169,6 +1193,19 @@ pub async fn execute(
                 completed.phase = "terminal".into();
                 saved.attempt = completed;
             }
+            Err(error)
+                if root.configuration.execution_profile == "workflow_policy"
+                    && error.code == "budget_timeout" =>
+            {
+                // Local slot exhaustion is a measured first trajectory, not a
+                // dispatched infrastructure failure. Seal it below even when
+                // retries are disabled, without inventing worker evidence.
+                saved.attempt = service.store.attempt(&saved.attempt.id).await?;
+                saved.attempt.phase = "terminal".into();
+                saved.attempt.outcome = Some(error.code);
+                saved.attempt.reason = Some(error.message);
+                saved.attempt.finished_at = Some(now());
+            }
             Err(error) if !request.automatic_retry() => {
                 saved.attempt = service.store.attempt(&saved.attempt.id).await?;
                 saved.attempt.phase = "terminal".into();
@@ -1240,12 +1277,22 @@ pub async fn execute(
             root.reason = Some(reason.into());
             break;
         }
-        if native_elapsed.is_none()
-            && consumed
-                .unwrap_or(budget_ms)
-                .saturating_add(start.elapsed().as_millis() as u64)
-                > budget_ms
-        {
+        let wall_exhausted = if concurrent_policy {
+            // Native execution totals exclude earlier worker-slot waits. An
+            // opt-in concurrent trajectory keeps its original whole wall cap.
+            match super::artifact_context::remaining_seconds(wall_origin, now(), timeout) {
+                Ok(_) => false,
+                Err(error) if error.code == "budget_timeout" => true,
+                Err(error) => return Err(error),
+            }
+        } else {
+            native_elapsed.is_none()
+                && consumed
+                    .unwrap_or(budget_ms)
+                    .saturating_add(start.elapsed().as_millis() as u64)
+                    > budget_ms
+        };
+        if wall_exhausted {
             root.outcome = Some("budget_timeout".into());
             root.reason = Some("Workflow exceeded its shared duration budget".into());
             break;

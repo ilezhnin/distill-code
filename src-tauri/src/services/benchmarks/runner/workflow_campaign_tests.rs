@@ -1,8 +1,18 @@
 use super::*;
 use crate::services::benchmarks::{workflow_campaign::*, workflow_policy::*};
 
+#[path = "workflow_campaign_concurrency_tests.rs"]
+mod concurrency;
+
 async fn training(
     service: &Arc<BenchmarkService>,
+) -> (Vec<BenchmarkVersion>, learned::FitArtifact) {
+    training_with_weights(service, RoleWeights::default()).await
+}
+
+async fn training_with_weights(
+    service: &Arc<BenchmarkService>,
+    weights: RoleWeights,
 ) -> (Vec<BenchmarkVersion>, learned::FitArtifact) {
     let versions = publish_with_entry(service, "train", 8, true).await;
     measure(service, &versions, "campaign-training").await;
@@ -13,7 +23,7 @@ async fn training(
             version_ids: versions.iter().map(|v| v.id.clone()).collect(),
             configurations: configurations(),
             cutoff_at: now(),
-            weights: RoleWeights::default(),
+            weights,
         },
     )
     .await;
@@ -256,6 +266,7 @@ async fn frozen_rubric_campaign_reserves_and_scores_one_final_panel_per_trajecto
 fn request(fit: &learned::FitArtifact, roots: &[BenchmarkVersion], key: &str) -> Request {
     Request {
         execution_limits: None,
+        parallelism: None,
         request_key: key.into(),
         model_id: fit.model.id.clone(),
         version_ids: roots.iter().map(|v| v.id.clone()).collect(),

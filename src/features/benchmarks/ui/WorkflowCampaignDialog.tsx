@@ -13,10 +13,16 @@ import {
 } from "@/shared/ui/dialog";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
+import { campaignIdForRun } from "../lib/benchmarkActivity";
 import { shortId, workClassLabel } from "../lib/benchmarkLabels";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
-import type { BenchmarkVersion } from "../types";
-import { BenchmarkAlert, Field, SelectField } from "./BenchmarkPrimitives";
+import type { BenchmarkVersion, RunSummary } from "../types";
+import {
+  BenchmarkAlert,
+  Field,
+  SelectField,
+  StateBadge,
+} from "./BenchmarkPrimitives";
 import { WorkflowCampaignForm } from "./WorkflowCampaignForm";
 import { WorkflowPromotionPanel } from "./WorkflowPromotionPanel";
 
@@ -28,16 +34,23 @@ export function WorkflowCampaignDialog({
   currentVersions,
   onClose,
   onEvidence,
+  initialCampaignId,
+  runs = [],
+  onOpenRun,
 }: {
   versions: BenchmarkVersion[];
   currentVersions: BenchmarkVersion[];
   onClose: () => void;
   onEvidence: (id: string) => void;
+  initialCampaignId?: string;
+  runs?: RunSummary[];
+  onOpenRun?: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
   const client = useQueryClient();
   const [fitId, setFitId] = useState("none");
-  const [selected, setSelected] = useState("none");
+  const [selected, setSelected] = useState(initialCampaignId ?? "none");
+  const [controlError, setControlError] = useState<string | null>(null);
   const [pendingOwners, setPendingOwners] = useState({
     reservation: false,
     governance: false,
@@ -64,6 +77,7 @@ export function WorkflowCampaignDialog({
   const fits = useQuery({
     queryKey: ["benchmarks", "learned-fits"],
     queryFn: benchmarkApi.listSelectorFits,
+    enabled: !initialCampaignId,
   });
   const artifact = useQuery({
     queryKey: ["benchmarks", "learned-fit", fitId],
@@ -75,7 +89,10 @@ export function WorkflowCampaignDialog({
     queryFn: benchmarkApi.listWorkflowCampaigns,
     refetchInterval: (query) =>
       query.state.data?.some(
-        (c) => c.state === "running" || c.state === "paused",
+        (c) =>
+          c.state === "running" ||
+          c.state === "pausing" ||
+          c.state === "paused",
       )
         ? 2000
         : false,
@@ -90,8 +107,18 @@ export function WorkflowCampaignDialog({
     >
       <DialogContent size="xl" showCloseButton={!pending}>
         <DialogHeader>
-          <DialogTitle>{t("campaign.title")}</DialogTitle>
-          <DialogDescription>{t("campaign.description")}</DialogDescription>
+          <DialogTitle>
+            {t(initialCampaignId ? "activity.campaign" : "campaign.title")}
+          </DialogTitle>
+          <DialogDescription
+            className={initialCampaignId ? "sr-only" : undefined}
+          >
+            {t(
+              initialCampaignId
+                ? "campaign.detailsDescription"
+                : "campaign.description",
+            )}
+          </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-5">
           {[fits.error, artifact.error, campaigns.error]
@@ -101,44 +128,49 @@ export function WorkflowCampaignDialog({
                 {benchmarkErrorMessage(failure)}
               </BenchmarkAlert>
             ))}
-          <Field label={t("campaign.saved")}>
-            {(id) => (
-              <SelectField
-                id={id}
-                value={selected}
-                onChange={(value) => {
-                  if (!Object.values(pendingRef.current).some(Boolean))
-                    setSelected(value);
-                }}
-                disabled={pending}
-                options={[
-                  {
-                    value: "none",
-                    label: t(
-                      campaigns.isPending ? "loading" : "campaign.choose",
-                    ),
-                  },
-                  ...(campaigns.data ?? []).map((c) => ({
-                    value: c.plan.id,
-                    label: `${shortId(c.plan.id)} · ${t(`campaign.states.${c.state}`)} · ${c.nextCell}/${c.plan.cells.length}`,
-                  })),
-                ]}
-              />
-            )}
-          </Field>
+          {controlError ? (
+            <BenchmarkAlert>{controlError}</BenchmarkAlert>
+          ) : null}
+          {!initialCampaignId ? (
+            <Field label={t("campaign.saved")}>
+              {(id) => (
+                <SelectField
+                  id={id}
+                  value={selected}
+                  onChange={(value) => {
+                    if (!Object.values(pendingRef.current).some(Boolean)) {
+                      setSelected(value);
+                      setControlError(null);
+                    }
+                  }}
+                  disabled={pending}
+                  options={[
+                    {
+                      value: "none",
+                      label: t(
+                        campaigns.isPending ? "loading" : "campaign.choose",
+                      ),
+                    },
+                    ...(campaigns.data ?? []).map((c) => ({
+                      value: c.plan.id,
+                      label: `${shortId(c.plan.id)} · ${t(`campaign.states.${c.state}`)} · ${c.nextCell}/${c.plan.cells.length}`,
+                    })),
+                  ]}
+                />
+              )}
+            </Field>
+          ) : null}
           {campaign ? (
             <CampaignResult
               key={campaign.plan.id}
               campaign={campaign}
               versions={versions}
+              showPromotion={!initialCampaignId}
               evidenceDisabled={pending}
               promotionDisabled={
                 pendingOwners.reservation || pendingOwners.control
               }
               onPendingChange={(active) => changePending("governance", active)}
-              onControlPendingChange={(active) =>
-                changePending("control", active)
-              }
               onEvidence={(id) => {
                 if (!Object.values(pendingRef.current).some(Boolean))
                   onEvidence(id);
@@ -149,67 +181,153 @@ export function WorkflowCampaignDialog({
               {t("campaign.empty")}
             </p>
           )}
-          <details className="border-t pt-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              {t("campaign.new")}
-            </summary>
-            <div className="space-y-4 pt-4">
-              <Field label={t("learning.saved")}>
-                {(id) => (
-                  <SelectField
-                    id={id}
-                    value={fitId}
-                    onChange={(value) => {
-                      if (!Object.values(pendingRef.current).some(Boolean))
-                        setFitId(value);
-                    }}
-                    disabled={pending}
-                    options={[
-                      { value: "none", label: t("learning.chooseFit") },
-                      ...(fits.data ?? []).map((fit) => ({
-                        value: fit.id,
-                        label: `${workClassLabel(t, fit.workClassId)} · ${shortId(fit.id)}`,
-                      })),
-                    ]}
-                  />
-                )}
-              </Field>
-              {fits.data?.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  {t("campaign.noFits")}
-                </p>
-              ) : null}
-              {artifact.data ? (
-                <WorkflowCampaignForm
-                  key={artifact.data.model.id}
-                  artifact={artifact.data}
-                  versions={currentVersions}
-                  disabled={pendingOwners.governance || pendingOwners.control}
-                  onReservationPendingChange={(active) =>
-                    changePending("reservation", active)
-                  }
-                  onFrozen={(saved) => {
-                    client.setQueryData<WorkflowCampaign[]>(
-                      campaignKey,
-                      (previous) => [
-                        saved,
-                        ...(previous ?? []).filter(
-                          (c) => c.plan.id !== saved.plan.id,
-                        ),
-                      ],
+          {campaign && onOpenRun ? (
+            <section
+              className="space-y-2"
+              aria-label={t("campaign.recentWorkflows")}
+            >
+              <h3 className="text-sm font-medium">
+                {t("campaign.recentWorkflows")}
+              </h3>
+              <div className="max-h-64 divide-y overflow-auto">
+                {runs
+                  .filter((run) => campaignIdForRun(run) === campaign.plan.id)
+                  .map((run) => {
+                    const cell =
+                      campaign.plan.cells[
+                        Number(run.request.requestKey.split(":").at(-1))
+                      ];
+                    const versionId =
+                      run.request.versionIds[0] ??
+                      (cell
+                        ? campaign.plan.cases[cell.caseIndex]?.versionId
+                        : undefined);
+                    const finished =
+                      run.attemptCount > 0 &&
+                      run.settledCount === run.attemptCount;
+                    return (
+                      <div
+                        key={run.id}
+                        className="flex items-center justify-between gap-3 py-2"
+                      >
+                        <div className="min-w-0 space-y-1">
+                          <p className="truncate text-sm">
+                            {versions.find(
+                              (version) => version.id === versionId,
+                            )?.manifest.name ??
+                              (cell
+                                ? t("campaign.workflow", {
+                                    number: cell.caseIndex + 1,
+                                  })
+                                : t("activity.campaign"))}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            {run.request.workflowPolicy ? (
+                              <span>
+                                {t(
+                                  `activity.policies.${run.request.workflowPolicy.mode}`,
+                                )}
+                              </span>
+                            ) : null}
+                            {cell ? (
+                              <span>
+                                {t("campaign.repeat", {
+                                  number: cell.repetition + 1,
+                                })}
+                              </span>
+                            ) : null}
+                            <StateBadge
+                              state={finished ? "completed" : run.state}
+                            />
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          disabled={pending}
+                          onClick={() => onOpenRun(run.id)}
+                        >
+                          {t("actions.inspect")}
+                        </Button>
+                      </div>
                     );
-                    if (
-                      !pendingRef.current.governance &&
-                      !pendingRef.current.control
-                    )
-                      setSelected(saved.plan.id);
-                  }}
-                />
-              ) : null}
-            </div>
-          </details>
+                  })}
+              </div>
+            </section>
+          ) : null}
+          {!initialCampaignId ? (
+            <details className="border-t pt-4">
+              <summary className="cursor-pointer text-sm font-medium">
+                {t("campaign.new")}
+              </summary>
+              <div className="space-y-4 pt-4">
+                <Field label={t("learning.saved")}>
+                  {(id) => (
+                    <SelectField
+                      id={id}
+                      value={fitId}
+                      onChange={(value) => {
+                        if (!Object.values(pendingRef.current).some(Boolean))
+                          setFitId(value);
+                      }}
+                      disabled={pending}
+                      options={[
+                        { value: "none", label: t("learning.chooseFit") },
+                        ...(fits.data ?? []).map((fit) => ({
+                          value: fit.id,
+                          label: `${workClassLabel(t, fit.workClassId)} · ${shortId(fit.id)}`,
+                        })),
+                      ]}
+                    />
+                  )}
+                </Field>
+                {fits.data?.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {t("campaign.noFits")}
+                  </p>
+                ) : null}
+                {artifact.data ? (
+                  <WorkflowCampaignForm
+                    key={artifact.data.model.id}
+                    artifact={artifact.data}
+                    versions={currentVersions}
+                    disabled={pendingOwners.governance || pendingOwners.control}
+                    onReservationPendingChange={(active) =>
+                      changePending("reservation", active)
+                    }
+                    onFrozen={(saved) => {
+                      client.setQueryData<WorkflowCampaign[]>(
+                        campaignKey,
+                        (previous) => [
+                          saved,
+                          ...(previous ?? []).filter(
+                            (c) => c.plan.id !== saved.plan.id,
+                          ),
+                        ],
+                      );
+                      if (
+                        !pendingRef.current.governance &&
+                        !pendingRef.current.control
+                      )
+                        setSelected(saved.plan.id);
+                    }}
+                  />
+                ) : null}
+              </div>
+            </details>
+          ) : null}
         </DialogBody>
         <DialogFooter>
+          {campaign ? (
+            <CampaignControls
+              key={campaign.plan.id}
+              campaign={campaign}
+              disabled={pending}
+              onPendingChange={(active) => changePending("control", active)}
+              onError={setControlError}
+            />
+          ) : null}
           <Button
             type="button"
             variant="outline"
@@ -224,40 +342,26 @@ export function WorkflowCampaignDialog({
   );
 }
 
-function CampaignResult({
+function CampaignControls({
   campaign,
-  versions,
-  evidenceDisabled,
-  promotionDisabled,
+  disabled,
   onPendingChange,
-  onControlPendingChange,
-  onEvidence,
+  onError,
 }: {
   campaign: WorkflowCampaign;
-  versions: BenchmarkVersion[];
-  evidenceDisabled: boolean;
-  promotionDisabled: boolean;
-  onPendingChange: (pending: boolean) => boolean | undefined;
-  onControlPendingChange: (pending: boolean) => boolean;
-  onEvidence: (id: string) => void;
+  disabled: boolean;
+  onPendingChange: (pending: boolean) => boolean;
+  onError: (error: string | null) => void;
 }) {
   const { t } = useTranslation("benchmarks");
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
-  const report = useQuery({
-    queryKey: ["benchmarks", "workflow-campaign-report", campaign.plan.id],
-    queryFn: () => benchmarkApi.workflowCampaignReport(campaign.plan.id),
-    enabled: campaign.state === "completed",
-    retry: false,
-  });
   const control = async (action: "start" | "pause" | "resume" | "cancel") => {
-    if (inFlight.current || evidenceDisabled || !onControlPendingChange(true))
-      return;
+    if (inFlight.current || disabled || !onPendingChange(true)) return;
     inFlight.current = true;
     setBusy(true);
-    setError(null);
+    onError(null);
     try {
       const saved = await benchmarkApi.controlWorkflowCampaign(
         campaign.plan.id,
@@ -267,14 +371,83 @@ function CampaignResult({
         previous?.map((c) => (c.plan.id === saved.plan.id ? saved : c)),
       );
     } catch (failure) {
-      setError(benchmarkErrorMessage(failure));
+      onError(benchmarkErrorMessage(failure));
     } finally {
       await client.invalidateQueries({ queryKey: campaignKey });
-      onControlPendingChange(false);
+      onPendingChange(false);
       inFlight.current = false;
       setBusy(false);
     }
   };
+  if (campaign.state === "completed" || campaign.state === "cancelled")
+    return null;
+  return (
+    <>
+      {campaign.state === "reserved" ? (
+        <Button
+          type="button"
+          disabled={busy || disabled}
+          onClick={() => void control("start")}
+        >
+          {t("campaign.start")}
+        </Button>
+      ) : null}
+      {campaign.state === "running" ? (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy || disabled}
+          onClick={() => void control("pause")}
+        >
+          {t("campaign.pause")}
+        </Button>
+      ) : null}
+      {campaign.state === "paused" ? (
+        <Button
+          type="button"
+          disabled={busy || disabled}
+          onClick={() => void control("resume")}
+        >
+          {t("campaign.resume")}
+        </Button>
+      ) : null}
+      <Button
+        type="button"
+        variant="outline"
+        destructive
+        disabled={busy || disabled}
+        onClick={() => void control("cancel")}
+      >
+        {t("campaign.cancel")}
+      </Button>
+    </>
+  );
+}
+
+function CampaignResult({
+  campaign,
+  versions,
+  showPromotion,
+  evidenceDisabled,
+  promotionDisabled,
+  onPendingChange,
+  onEvidence,
+}: {
+  campaign: WorkflowCampaign;
+  versions: BenchmarkVersion[];
+  showPromotion: boolean;
+  evidenceDisabled: boolean;
+  promotionDisabled: boolean;
+  onPendingChange: (pending: boolean) => boolean | undefined;
+  onEvidence: (id: string) => void;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const report = useQuery({
+    queryKey: ["benchmarks", "workflow-campaign-report", campaign.plan.id],
+    queryFn: () => benchmarkApi.workflowCampaignReport(campaign.plan.id),
+    enabled: campaign.state === "completed",
+    retry: false,
+  });
   const candidate = (key: string) => {
     const c = campaign.plan.request.candidates.find(
       (c) => c.id === key.replace(/^worker:/, ""),
@@ -323,55 +496,20 @@ function CampaignResult({
       {campaign.stateReason ? (
         <BenchmarkAlert>{campaign.stateReason}</BenchmarkAlert>
       ) : null}
-      {error || report.error ? (
-        <BenchmarkAlert>
-          {error ?? benchmarkErrorMessage(report.error)}
-        </BenchmarkAlert>
+      {campaign.state === "paused" &&
+      campaign.plan.orderAlgorithm ===
+        "sha256-campaign-cell-bounded-refill-v2" ? (
+        <p className="text-xs text-muted-foreground">
+          {t("campaign.originalTiming")}
+        </p>
+      ) : null}
+      {report.error ? (
+        <BenchmarkAlert>{benchmarkErrorMessage(report.error)}</BenchmarkAlert>
       ) : null}
       {campaign.state !== "completed" && campaign.state !== "cancelled" ? (
-        <>
-          <p className="text-xs text-muted-foreground">
-            {t("campaign.startNotice")}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {campaign.state === "reserved" ? (
-              <Button
-                type="button"
-                disabled={busy || evidenceDisabled}
-                onClick={() => void control("start")}
-              >
-                {t("campaign.start")}
-              </Button>
-            ) : null}
-            {campaign.state === "running" ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy || evidenceDisabled}
-                onClick={() => void control("pause")}
-              >
-                {t("campaign.pause")}
-              </Button>
-            ) : null}
-            {campaign.state === "paused" ? (
-              <Button
-                type="button"
-                disabled={busy || evidenceDisabled}
-                onClick={() => void control("resume")}
-              >
-                {t("campaign.resume")}
-              </Button>
-            ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy || evidenceDisabled}
-              onClick={() => void control("cancel")}
-            >
-              {t("campaign.cancel")}
-            </Button>
-          </div>
-        </>
+        <p className="text-xs text-muted-foreground">
+          {t(showPromotion ? "campaign.startNotice" : "campaign.controlsHint")}
+        </p>
       ) : null}
       {campaign.state === "completed" && report.isPending ? (
         <p className="text-sm">{t("loading")}</p>
@@ -522,11 +660,13 @@ function CampaignResult({
           )}
         </pre>
       </details>
-      <WorkflowPromotionPanel
-        campaign={campaign}
-        disabled={promotionDisabled}
-        onPendingChange={onPendingChange}
-      />
+      {showPromotion ? (
+        <WorkflowPromotionPanel
+          campaign={campaign}
+          disabled={promotionDisabled}
+          onPendingChange={onPendingChange}
+        />
+      ) : null}
     </section>
   );
 }

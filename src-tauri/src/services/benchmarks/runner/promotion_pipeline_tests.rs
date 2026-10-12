@@ -115,6 +115,7 @@ async fn campaign(
 ) -> workflow_campaign::Campaign {
     service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            parallelism: None,
             execution_limits: None,
             request_key: "invented-preregistered-comparison".into(),
             model_id: fit.model.id.clone(),
@@ -720,6 +721,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
     qualifications.extend(qualify(&service, &held).await);
     let frozen = service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            parallelism: None,
             execution_limits: None,
             request_key: "v2-preregistered-comparison".into(),
             model_id: fit.model.id.clone(),
@@ -976,6 +978,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
     let held_ids = qualify(&service, &held).await;
     let frozen = service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            parallelism: None,
             execution_limits: None,
             request_key: "invented-trajectory-comparison".into(),
             model_id: implement_fit.model.id.clone(),
@@ -1300,6 +1303,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
     ids.extend(qualify(&service, &held).await);
     let frozen = service
         .freeze_workflow_campaign(workflow_campaign::Request {
+            parallelism: None,
             execution_limits: None,
             request_key: "invented-native-trajectory-comparison".into(),
             model_id: implement_fit.model.id.clone(),

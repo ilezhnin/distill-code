@@ -90,6 +90,9 @@ export function BenchmarksView({
   const definitions = useBenchmarkDefinitions();
   const runs = useBenchmarkRuns();
   const [dialog, setDialog] = useState<DialogKind | null>(null);
+  const [campaignSelection, setCampaignSelection] = useState<string | null>(
+    null,
+  );
   const [runSelection, setRunSelection] = useState<{
     versions: string[];
     preview: boolean;
@@ -225,7 +228,12 @@ export function BenchmarksView({
             <Fragment key={item.kind}>
               {index === 1 || index === 3 ? <DropdownMenuSeparator /> : null}
               <DropdownMenuItem
-                onSelect={() => guarded(() => setDialog(item.kind))}
+                onSelect={() =>
+                  guarded(() => {
+                    setCampaignSelection(null);
+                    setDialog(item.kind);
+                  })
+                }
               >
                 {item.icon}
                 {item.label}
@@ -245,6 +253,12 @@ export function BenchmarksView({
         <BenchmarkActivity
           runs={runs.data ?? []}
           onOpenRun={openRun}
+          onOpenCampaign={(id) =>
+            guarded(() => {
+              setCampaignSelection(id);
+              setDialog("campaigns");
+            })
+          }
           attentionFor={location.section === "leaderboard" ? openedRow : null}
         />
         {location.section === "development" ? (
@@ -420,6 +434,9 @@ export function BenchmarksView({
       ) : null}
       {dialog === "campaigns" ? (
         <WorkflowCampaignDialog
+          initialCampaignId={campaignSelection ?? undefined}
+          runs={runs.data ?? []}
+          onOpenRun={openRun}
           versions={versions}
           currentVersions={currentVersions}
           onClose={() => setDialog(null)}

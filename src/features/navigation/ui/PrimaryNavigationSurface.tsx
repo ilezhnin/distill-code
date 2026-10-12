@@ -9,9 +9,10 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { IconArrowLeft } from "@tabler/icons-react";
-import { ArrowUpCircle } from "lucide-react";
+import { ArrowUpCircle, Pause } from "lucide-react";
 import type { AppView } from "@/app/AppShell";
 import { PaneSurface } from "@/app/layout/panes/paneChrome";
+import type { BenchmarkProgress } from "@/features/benchmarks/lib/benchmarkActivity";
 import {
   BENCHMARK_SECTIONS,
   type BenchmarkSection,
@@ -46,8 +47,8 @@ type SidebarNavItemIcon = NonNullable<
 
 interface PrimaryNavigationSurfaceProps {
   activeBenchmarkSection?: BenchmarkSection;
-  /** Attempts settled and planned while benchmark runs dispatch. */
-  benchmarkProgress?: { settled: number; total: number } | null;
+  /** Progress retained while benchmarks run or a campaign is paused. */
+  benchmarkProgress?: BenchmarkProgress | null;
   activeSettingsSection?: SectionId;
   activeView?: AppView;
   agentUpdatesAvailable: boolean;
@@ -205,10 +206,14 @@ export const PrimaryNavigationSurface = forwardRef<
                       trailingIcon={
                         item.id === "benchmarks" && benchmarkProgress ? (
                           <span className="inline-flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
-                            <Spinner
-                              decorative
-                              className="size-3 text-chart-1"
-                            />
+                            {benchmarkProgress.paused ? (
+                              <Pause aria-hidden="true" className="size-3" />
+                            ) : (
+                              <Spinner
+                                decorative
+                                className="size-3 text-chart-1"
+                              />
+                            )}
                             {benchmarkProgress.settled}/
                             {benchmarkProgress.total}
                           </span>
@@ -216,7 +221,17 @@ export const PrimaryNavigationSurface = forwardRef<
                       }
                       trailingLabel={
                         item.id === "benchmarks" && benchmarkProgress
-                          ? t("benchmarks:activity.sidebar", benchmarkProgress)
+                          ? [
+                              benchmarkProgress.paused
+                                ? t("benchmarks:states.paused")
+                                : null,
+                              t("benchmarks:activity.sidebar", {
+                                settled: benchmarkProgress.settled,
+                                total: benchmarkProgress.total,
+                              }),
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")
                           : undefined
                       }
                     />

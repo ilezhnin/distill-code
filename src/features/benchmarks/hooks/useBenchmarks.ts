@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
-import { activeRuns, runProgress } from "../lib/benchmarkActivity";
+import { benchmarkProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
@@ -107,17 +107,28 @@ export const useBenchmarkRuns = () =>
     queryFn: benchmarkApi.listRuns,
   });
 
-/** Attempts settled and planned over the runs dispatching now; null while none is. */
+export const useWorkflowCampaigns = () =>
+  useQuery({
+    queryKey: [...benchmarkKeys, "workflow-campaigns"],
+    queryFn: benchmarkApi.listWorkflowCampaigns,
+    enabled: isDesktopRuntime(),
+    refetchInterval: 5000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    staleTime: 4000,
+  });
+
+/** Progress for dispatching runs and unfinished campaigns, including a full pause. */
 export function useBenchmarkProgress() {
+  const campaigns = useWorkflowCampaigns();
   const runs = useQuery({
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
     enabled: isDesktopRuntime(),
   });
   return useMemo(() => {
-    const dispatching = activeRuns(runs.data ?? []);
-    return dispatching.length > 0 ? runProgress(dispatching) : null;
-  }, [runs.data]);
+    return benchmarkProgress(runs.data ?? [], campaigns.data ?? []);
+  }, [runs.data, campaigns.data]);
 }
 
 /** Every pool release, oldest first. */

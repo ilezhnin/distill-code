@@ -295,16 +295,57 @@ Before starting any campaign cell:
 4. Read back the registered rule and verify the plan and qualification hashes.
    Only then start with `benchmark_control_workflow_campaign` and `action: "start"`.
 
-Current comparative workflow campaigns are serial. Their control API does not
-accept ordinary-run parallelism. Do not promise the throughput of a parallel
-training matrix or work around this by starting duplicate campaigns. Estimate
-the campaign's elapsed time from step budgets and the frozen plan before start.
+Campaign requests may freeze `parallelism` from 1 to 12. Omission retains the
+legacy serial plan and hashes. This bounds admitted, unfinished whole workflows;
+it does not multiply the execution budget or change dependencies within a workflow.
+The concurrent scheduling recipe admits cells in their frozen order and refills
+after collecting a first result, even if an earlier child is still running.
+Provider, account and global worker limits still apply. New concurrent plans use
+the `sha256-campaign-cell-reserved-workers-v3` admission recipe: a root stays
+pending, without an execution clock or worker call, until it can reserve all
+worker accounts and lanes its policy may select. A fixed policy reserves its
+fixed worker; adaptive policies reserve their candidate pool. Each workflow
+counts once per account, even when that account supplies several candidates.
+Reservations persist through dependent steps, so a newer root cannot take a
+slot needed by an admitted workflow. Older queued roots take precedence on
+shared accounts; disjoint accounts can proceed. This conservative reservation
+can leave a provider idle while another provider executes the current step.
 
-Keep campaign ownership intact when pausing or resuming. Do not resume child
+Saved concurrent v2 plans keep their original semantics: local slot contention
+spends the root wall budget. Serial v1 plans retain their immediate busy outcome.
+Installing a newer backend never rewrites a frozen campaign or its results.
+Freeze and review the concurrency contract before preregistration, and check
+that the installed backend supports it. No recipe changes accounts, replaces
+an attempt or retries a provider call.
+
+Record the runtime and competing load when interpreting speed. Whole-workflow
+wall time starts at worker admission for v3 and includes preparation and every
+dependent step. Queue time before admission is excluded. In v2, wall time also
+includes local worker waits. Do not pool these execution conditions as if they were
+interchangeable, change objective weights after results, or infer a throughput
+guarantee from the requested bound. Actual occupancy also depends on the frozen
+order, selected workers and available provider quotas.
+
+Pause closes admission for every owned child and drains already running whole
+workflows, including their dependent steps. A concurrent campaign stays `pausing`
+until its children drain; resume is refused until it is `paused`, when no further
+worker calls can start. Pending children remain untouched;
+inspect actual active sessions before refreshing credentials or replacing the
+runtime. Cancellation signals every active child and preserves settled evidence.
+After an application restart the campaign requires explicit resume; ambiguous
+first attempts remain final. Keep campaign ownership intact. Do not resume child
 runs separately, retry missing first measurements or tune thresholds after
 results. The report compares whole trajectories with equal group weights;
 intermediate steps are dependent observations and do not inherit the final score.
 Missing required measurements prevent a complete acceptance assessment.
+
+The leaderboard keeps the campaign's full workflow count while it drains.
+Its compact cards show an attempt-status dot, the current model, a step clock
+and one staircase rectangle per workflow step. A green rectangle means that
+step completed, not that the whole workflow passed. The activity icon shows
+when new session events were last observed; hover for the detailed state.
+The clock includes preparation and waiting. Quiet activity or an unavailable
+check alone does not establish a hung model.
 
 ## 7. Promote and verify orchestration
 

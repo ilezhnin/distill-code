@@ -324,7 +324,16 @@ or cancelled through `benchmark_control_workflow_campaign`. Freezing makes no
 provider calls. The immutable plan binds the fit, candidate settings/accounts,
 unused held-out families, every policy, repetitions, budgets, execution order
 and report recipe. Learned, training-aggregate, persona and every fixed-worker
-policy run as separate complete trajectories in the same serial campaign.
+policy run as separate complete trajectories in the same campaign. Omitted
+`parallelism` keeps legacy serial behavior and serialized identities. An explicit
+bound from 1 to 12 is immutable; concurrent campaigns admit in frozen order,
+refill collected slots and retain the shared provider/account limits. Steps
+within each trajectory remain sequential. Reports collect in frozen order,
+regardless of completion order. New v3 campaigns reserve the policy's worker
+accounts before starting the whole-workflow clock; queue time before admission
+is excluded. Saved v2 campaigns retain their original queue-inclusive timing.
+See [campaign operations](benchmark-operations.md#6-preregister-a-held-out-workflow-comparison)
+for reservation, pause and timing semantics.
 The aggregate order uses equal-group mean utility on common cases from the
 fit's saved training snapshot. Its order is checked before admission.
 

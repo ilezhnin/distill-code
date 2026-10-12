@@ -21,7 +21,7 @@ import type {
 } from "../lib/workflowCampaign";
 import { WorkflowCampaignDialog } from "../ui/WorkflowCampaignDialog";
 import { WorkflowCampaignForm } from "../ui/WorkflowCampaignForm";
-import { configuration, definition } from "./fixtures";
+import { configuration, definition, runSummary } from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) =>
@@ -325,7 +325,7 @@ it("preserves campaign A's unresolved rule while a prefilled campaign B cannot r
   ).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Start comparison" }));
   expect(
-    await screen.findByRole("button", { name: "Pause after current workflow" }),
+    await screen.findByRole("button", { name: "Pause after active workflows" }),
   ).toBeEnabled();
   expect(benchmarkApi.controlWorkflowCampaign).toHaveBeenCalledWith(
     "comparison-b",
@@ -487,7 +487,7 @@ it("keeps sibling reservations disabled until an in-flight campaign control is r
     settle(saved);
   });
   expect(
-    await screen.findByRole("button", { name: "Pause after current workflow" }),
+    await screen.findByRole("button", { name: "Pause after active workflows" }),
   ).toBeEnabled();
   expect(freeze).toBeEnabled();
 });
@@ -694,6 +694,92 @@ it("includes one frozen final panel in each trajectory's displayed and saved bud
   );
 });
 
+it("opens a selected paused comparison with controls and its own recent workflow details", async () => {
+  const user = userEvent.setup();
+  const onOpenRun = vi.fn();
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([
+    { ...campaign, state: "paused" },
+  ]);
+  wrap(
+    <WorkflowCampaignDialog
+      initialCampaignId="campaign"
+      versions={versions}
+      currentVersions={versions}
+      runs={[
+        {
+          ...runSummary,
+          id: "owned-run",
+          state: "completed",
+          request: {
+            ...runSummary.request,
+            requestKey: "workflow-campaign:campaign:0",
+            versionIds: [versions[0].id],
+          },
+        },
+        {
+          ...runSummary,
+          id: "unrelated",
+          request: {
+            ...runSummary.request,
+            requestKey: "workflow-campaign:another:0",
+          },
+        },
+      ]}
+      onOpenRun={onOpenRun}
+      onClose={vi.fn()}
+      onEvidence={vi.fn()}
+    />,
+  );
+  expect(
+    await screen.findByRole("button", { name: "Resume comparison" }),
+  ).toBeEnabled();
+  expect(
+    screen.getByRole("button", { name: "Cancel comparison" }),
+  ).toBeEnabled();
+  expect(
+    screen.queryByRole("combobox", { name: "Saved comparison" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("New comparison", { selector: "summary" }),
+  ).not.toBeInTheDocument();
+  const recent = screen.getByRole("region", { name: "Recent workflows" });
+  expect(within(recent).getByText(versions[0].manifest.name)).toBeVisible();
+  expect(within(recent).getAllByRole("button")).toHaveLength(1);
+  await user.click(within(recent).getByRole("button"));
+  expect(onOpenRun).toHaveBeenCalledExactlyOnceWith("owned-run");
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+  expect(benchmarkApi.freezeWorkflowCampaign).not.toHaveBeenCalled();
+});
+
+it("keeps polling a draining campaign and offers resume only after it is paused", async () => {
+  const user = userEvent.setup();
+  let saved: WorkflowCampaign = { ...campaign, state: "pausing" };
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockImplementation(async () => [
+    saved,
+  ]);
+  showCampaign();
+  await choose(
+    user,
+    "Saved comparison",
+    /campaign · Finishing active workflows/,
+  );
+  expect(
+    screen.queryByRole("button", { name: "Resume comparison" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Cancel comparison" }),
+  ).toBeEnabled();
+  saved = { ...campaign, state: "paused" };
+  await waitFor(
+    () =>
+      expect(
+        screen.getByRole("button", { name: "Resume comparison" }),
+      ).toBeEnabled(),
+    { timeout: 4000 },
+  );
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+});
+
 it("executes only explicit start, pause, resume and cancel actions and surfaces a failed start", async () => {
   const user = userEvent.setup();
   let saved = campaign;
@@ -722,7 +808,7 @@ it("executes only explicit start, pause, resume and cancel actions and surfaces 
   expect(await screen.findByText("Saved account is unavailable")).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Start comparison" }));
   await user.click(
-    await screen.findByRole("button", { name: "Pause after current workflow" }),
+    await screen.findByRole("button", { name: "Pause after active workflows" }),
   );
   await user.click(
     await screen.findByRole("button", { name: "Resume comparison" }),
@@ -762,7 +848,7 @@ it("reconciles a start whose native state changed before its reply failed", asyn
   await user.click(screen.getByRole("button", { name: "Start comparison" }));
   expect(await screen.findByText("Control reply unavailable")).toBeVisible();
   expect(
-    await screen.findByRole("button", { name: "Pause after current workflow" }),
+    await screen.findByRole("button", { name: "Pause after active workflows" }),
   ).toBeEnabled();
   expect(
     screen.queryByRole("button", { name: "Start comparison" }),

@@ -14,6 +14,7 @@ import { cn } from "@/shared/lib/cn";
 import type { AppView } from "@/app/AppShell";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import type { BenchmarkSection } from "@/features/benchmarks/lib/benchmarkNavigation";
+import type { BenchmarkProgress } from "@/features/benchmarks/lib/benchmarkActivity";
 import { PrimaryNavigationSurface } from "@/features/navigation/ui/PrimaryNavigationSurface";
 import type { CommandOutcome } from "@/features/distillctl/navigation";
 import { SessionListCapability } from "@/features/sessions/capabilities/SessionListCapability";
@@ -60,8 +61,8 @@ export interface NavigationPanesViewProps {
   projectCreatedRevision?: number;
   activeView?: AppView;
   activeBenchmarkSection?: BenchmarkSection;
-  /** Attempts settled and planned while benchmark runs dispatch. */
-  benchmarkProgress?: { settled: number; total: number } | null;
+  /** Progress retained while benchmarks run or a campaign is paused. */
+  benchmarkProgress?: BenchmarkProgress | null;
   activeSettingsSection?: SectionId;
   activeSessionId?: string | null;
   className?: string;

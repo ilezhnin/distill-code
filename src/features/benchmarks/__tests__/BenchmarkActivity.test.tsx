@@ -1,12 +1,22 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RunSummary } from "../types";
 import { BenchmarkActivity } from "../ui/BenchmarkActivity";
 import { configuration, runSummary } from "./fixtures";
+import type { WorkflowCampaign } from "../lib/workflowCampaign";
+
+const campaignState = vi.hoisted(() => ({ data: [] as WorkflowCampaign[] }));
 
 vi.mock("../hooks/useBenchmarks", () => ({
   modelNameKey: (entry: { modelId: string }) => entry.modelId,
   useModelNames: () => new Map([["model-1", "Model One"]]),
+  useWorkflowCampaigns: () => campaignState,
 }));
 
 const many = [1, 2, 3, 4, 5].map((n) => ({
@@ -26,7 +36,45 @@ function show(run: Partial<RunSummary>) {
   return within(screen.getByRole("button"));
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  campaignState.data = [];
+});
+
+it("opens the exact paused campaign from its progress row without opening a child run", () => {
+  campaignState.data = [
+    {
+      state: "paused",
+      nextCell: 2,
+      plan: { id: "comparison", cells: Array(12).fill({}) },
+    } as WorkflowCampaign,
+  ];
+  const onOpenCampaign = vi.fn();
+  const onOpenRun = vi.fn();
+  render(
+    <BenchmarkActivity
+      runs={[
+        {
+          ...runSummary,
+          state: "completed",
+          request: {
+            ...runSummary.request,
+            requestKey: "workflow-campaign:comparison:0",
+          },
+        },
+      ]}
+      onOpenRun={onOpenRun}
+      onOpenCampaign={onOpenCampaign}
+    />,
+  );
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: /Workflow comparison.*Paused.*2 \/ 12 workflows settled/,
+    }),
+  );
+  expect(onOpenCampaign).toHaveBeenCalledExactlyOnceWith("comparison");
+  expect(onOpenRun).not.toHaveBeenCalled();
+});
 
 it("names the model of a run that waits with nothing running", () => {
   const row = show({

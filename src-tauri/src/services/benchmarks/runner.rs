@@ -831,7 +831,26 @@ pub struct Flight {
     pub run_id: String,
     pub lane: String,
     pub account: String,
+    /// Held for the whole workflow, including preparation between steps.
+    pub workers: Vec<WorkerReservation>,
     pub cancel: watch::Sender<bool>,
+}
+
+#[derive(Clone)]
+pub struct WorkerReservation {
+    lane: String,
+    account: String,
+    lane_slots: usize,
+    account_slots: usize,
+}
+impl Flight {
+    fn uses_account(&self, account: &str) -> bool {
+        !account.is_empty()
+            && (self.account == account || self.workers.iter().any(|w| w.account == account))
+    }
+    fn uses_lane(&self, lane: &str) -> bool {
+        self.lane == lane || self.workers.iter().any(|w| w.lane == lane)
+    }
 }
 
 /// Where a flight would sit: its key in `BenchmarkService::active`, its lane
@@ -5182,13 +5201,14 @@ impl BenchmarkService {
         Ok(())
     }
     /// Starts what may run now and settles runs that paused, were cancelled or
-    /// have nothing left. Runs take turns, so a newer run never waits behind
-    /// an older one.
+    /// have nothing left. Runs take turns; workflows sharing reserved worker
+    /// accounts are admitted oldest first.
     async fn fill(
         self: &Arc<Self>,
         flights: &mut tokio::task::JoinSet<()>,
         tried: &mut std::collections::HashSet<String>,
     ) -> Result<()> {
+        super::workflow_campaign::refill(self).await?;
         let mut queues = Vec::new();
         for run in self.store.active_runs().await? {
             let flying = self.flying(&run.id).await;
@@ -5267,6 +5287,9 @@ impl BenchmarkService {
             }
             queues.push((run, ready.into_iter()));
         }
+        // An older workflow waiting for several accounts keeps its place
+        // on each of them. Disjoint accounts can still make progress.
+        let mut waiting_accounts = std::collections::BTreeSet::new();
         loop {
             let mut started = false;
             for (run, ready) in &mut queues {
@@ -5274,7 +5297,10 @@ impl BenchmarkService {
                     if tried.contains(&a.id) {
                         continue;
                     }
-                    if self.start(run, a, version, flights, tried).await? {
+                    if self
+                        .start(run, a, version, flights, tried, &mut waiting_accounts)
+                        .await?
+                    {
                         started = true;
                         break;
                     }
@@ -5297,19 +5323,39 @@ impl BenchmarkService {
     /// Takes `seat` if it is free: its lane and its account below their
     /// limits, [`TOTAL_SLOTS`] in all. Returns its cancel signal.
     async fn claim(&self, run_id: &str, seat: Seat<'_>) -> Option<watch::Receiver<bool>> {
+        self.claim_workers(run_id, seat, Vec::new()).await
+    }
+    async fn claim_workers(
+        &self,
+        run_id: &str,
+        seat: Seat<'_>,
+        workers: Vec<WorkerReservation>,
+    ) -> Option<watch::Receiver<bool>> {
         let mut active = self.active.lock().await;
         let on_account = active
             .values()
-            .filter(|flight| !seat.account.is_empty() && flight.account == seat.account)
+            .filter(|flight| flight.uses_account(seat.account))
             .count();
         let on_lane = active
             .values()
-            .filter(|flight| flight.lane == seat.lane)
+            .filter(|flight| flight.uses_lane(seat.lane))
             .count();
         if active.len() >= TOTAL_SLOTS
             || active.contains_key(seat.id)
             || on_lane >= seat.lane_slots
             || on_account >= seat.account_slots
+            || workers.iter().any(|worker| {
+                active
+                    .values()
+                    .filter(|flight| flight.uses_lane(&worker.lane))
+                    .count()
+                    >= worker.lane_slots
+                    || active
+                        .values()
+                        .filter(|flight| flight.uses_account(&worker.account))
+                        .count()
+                        >= worker.account_slots
+            })
         {
             return None;
         }
@@ -5320,6 +5366,7 @@ impl BenchmarkService {
                 run_id: run_id.to_owned(),
                 lane: seat.lane.to_owned(),
                 account: seat.account.to_owned(),
+                workers,
                 cancel,
             },
         );
@@ -5336,6 +5383,7 @@ impl BenchmarkService {
         version: BenchmarkVersion,
         flights: &mut tokio::task::JoinSet<()>,
         tried: &mut std::collections::HashSet<String>,
+        waiting_accounts: &mut std::collections::BTreeSet<String>,
     ) -> Result<bool> {
         // An account whose limit ran out under this run hands its tests to
         // another account of the provider that has room.
@@ -5367,12 +5415,28 @@ impl BenchmarkService {
         }
         // A configuration flies as many attempts as its run was admitted
         // with, within its account's and the app's slots.
-        let lane = super::analysis::configuration_key(&a.configuration);
+        let workflow_parallelism = if a.configuration.execution_profile == "workflow_policy" {
+            self.store
+                .workflow_campaign_parallelism(&run.request.request_key)
+                .await?
+        } else {
+            1
+        };
+        let concurrent_workflow = workflow_parallelism > 1;
+        let lane = if concurrent_workflow {
+            format!("workflow-root:{}", a.id)
+        } else {
+            super::analysis::configuration_key(&a.configuration)
+        };
         let provider = &a.configuration.provider_id;
-        let account = format!(
-            "{provider}\u{1f}{}",
-            a.configuration.account_id.as_deref().unwrap_or_default()
-        );
+        let account = if concurrent_workflow {
+            String::new()
+        } else {
+            format!(
+                "{provider}\u{1f}{}",
+                a.configuration.account_id.as_deref().unwrap_or_default()
+            )
+        };
         let id = a.id.clone();
         let seat = Seat {
             id: &id,
@@ -5381,7 +5445,61 @@ impl BenchmarkService {
             account: &account,
             account_slots: account_slots(&run.id, provider),
         };
-        let Some(cancel_rx) = self.claim(&run.id, seat).await else {
+        let reserve_workers = concurrent_workflow
+            && self
+                .store
+                .workflow_campaign_reserves_workers(&run.request.request_key)
+                .await?;
+        let workers = if reserve_workers {
+            let policy = run.request.workflow_policy.as_ref().ok_or_else(|| {
+                BenchmarkError::new(
+                    "invalid_workflow_policy",
+                    "Workflow worker policy is absent",
+                )
+            })?;
+            let mut worker_request = run.request.clone();
+            worker_request.parallelism = Some(workflow_parallelism.min(PARALLEL_ATTEMPTS));
+            let workers: Vec<_> = policy
+                .candidates
+                .iter()
+                .filter(|candidate| {
+                    policy.mode != "fixed"
+                        || policy.fixed_candidate_id.as_deref() == Some(candidate.id.as_str())
+                })
+                .map(|candidate| WorkerReservation {
+                    lane: super::analysis::configuration_key(candidate),
+                    account: format!(
+                        "{}\u{1f}{}",
+                        candidate.provider_id,
+                        candidate.account_id.as_deref().unwrap_or_default()
+                    ),
+                    lane_slots: attempts_at_once(&worker_request, candidate) as usize,
+                    account_slots: account_slots(&run.id, &candidate.provider_id),
+                })
+                .collect();
+            if workers.is_empty() {
+                return Err(BenchmarkError::new(
+                    "invalid_workflow_policy",
+                    "Workflow has no reservable worker",
+                ));
+            }
+            if workers
+                .iter()
+                .any(|worker| waiting_accounts.contains(&worker.account))
+            {
+                waiting_accounts.extend(workers.iter().map(|worker| worker.account.clone()));
+                return Ok(false);
+            }
+            workers
+        } else {
+            Vec::new()
+        };
+        let accounts: Vec<_> = workers
+            .iter()
+            .map(|worker| worker.account.clone())
+            .collect();
+        let Some(cancel_rx) = self.claim_workers(&run.id, seat, workers).await else {
+            waiting_accounts.extend(accounts);
             return Ok(false);
         };
         if let Err(error) =
@@ -5428,8 +5546,28 @@ impl BenchmarkService {
         attempt: Attempt,
         version: BenchmarkVersion,
         timeout: u32,
-        cancel: watch::Receiver<bool>,
+        mut cancel: watch::Receiver<bool>,
     ) -> Result<Attempt> {
+        let mut request = self.store.run(&attempt.run_id).await?.request;
+        let parallelism = self
+            .store
+            .workflow_campaign_parallelism(&request.request_key)
+            .await?;
+        let concurrent = parallelism > 1;
+        if concurrent {
+            request.parallelism = Some(parallelism.min(PARALLEL_ATTEMPTS));
+        }
+        let lane_slots = attempts_at_once(&request, &attempt.configuration) as usize;
+        let budget = if concurrent {
+            Some(collection_budget(&version.manifest)?.ok_or_else(|| {
+                BenchmarkError::new(
+                    "budget_clock_conflict",
+                    "Concurrent workflow step has no root wall deadline",
+                )
+            })?)
+        } else {
+            None
+        };
         let lane = super::analysis::configuration_key(&attempt.configuration);
         let account = format!(
             "{}\u{1f}{}",
@@ -5440,19 +5578,72 @@ impl BenchmarkService {
                 .as_deref()
                 .unwrap_or_default()
         );
-        let previous = {
+        let previous = loop {
+            if *cancel.borrow()
+                || matches!(
+                    self.store.run_state(&attempt.run_id).await?.as_str(),
+                    "cancelling" | "cancelled"
+                )
+            {
+                return Err(BenchmarkError::new(
+                    "cancelled",
+                    "Workflow cancelled while awaiting a worker slot",
+                ));
+            }
+            request.require_dispatch_admission(now())?;
+            if let Some(budget) = &budget {
+                budget.remaining_ms(now())?;
+            }
             let mut active = self.active.lock().await;
+            if let Some(root) = active.get(root_id).filter(|root| !root.workers.is_empty()) {
+                if !root
+                    .workers
+                    .iter()
+                    .any(|worker| worker.lane == lane && worker.account == account)
+                {
+                    return Err(BenchmarkError::new(
+                        "worker_reservation_conflict",
+                        "Selected worker is outside the admitted workflow reservation",
+                    ));
+                }
+                // The root owns this capacity until both steps and collection
+                // finish. A newer root cannot take its next step's slot.
+                let root = active
+                    .get_mut(root_id)
+                    .expect("checked workflow reservation");
+                break (
+                    std::mem::replace(&mut root.lane, lane.clone()),
+                    std::mem::replace(&mut root.account, account.clone()),
+                );
+            }
             let others = || active.iter().filter(|(id, _)| id.as_str() != root_id);
-            if others().any(|(_, flight)| flight.lane == lane)
+            if others()
+                .filter(|(_, flight)| flight.uses_lane(&lane))
+                .count()
+                >= lane_slots
                 || others()
-                    .filter(|(_, flight)| flight.account == account)
+                    .filter(|(_, flight)| flight.uses_account(&account))
                     .count()
                     >= account_slots(&attempt.run_id, &attempt.configuration.provider_id)
             {
-                return Err(BenchmarkError::new(
-                    "account_busy",
-                    "Workflow worker slots are occupied",
-                ));
+                drop(active);
+                if !concurrent {
+                    return Err(BenchmarkError::new(
+                        "account_busy",
+                        "Workflow worker slots are occupied",
+                    ));
+                }
+                // Local admission is not a provider retry. Keep the same first
+                // attempt and committed choice; contention spends root wall time.
+                tokio::select! {
+                    changed = cancel.changed() => {
+                        if changed.is_err() {
+                            return Err(BenchmarkError::new("cancelled", "Workflow worker reservation closed"));
+                        }
+                    },
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {},
+                }
+                continue;
             }
             let root = active.get_mut(root_id).ok_or_else(|| {
                 BenchmarkError::new(
@@ -5460,15 +5651,23 @@ impl BenchmarkService {
                     "Workflow has no active root reservation",
                 )
             })?;
-            (
-                std::mem::replace(&mut root.lane, lane),
-                std::mem::replace(&mut root.account, account),
-            )
+            break (
+                std::mem::replace(&mut root.lane, lane.clone()),
+                std::mem::replace(&mut root.account, account.clone()),
+            );
         };
-        let result = self
-            .backend
-            .execute(&self.store, attempt, version, timeout, cancel)
-            .await;
+        let result = async {
+            let timeout = match &budget {
+                Some(budget) => timeout.min(budget.remaining_seconds(now())?),
+                None => timeout,
+            };
+            // The projected lease also reaches native dispatch, after backend
+            // setup has consumed time. Always restore the reservation below.
+            self.backend
+                .execute(&self.store, attempt, version, timeout, cancel)
+                .await
+        }
+        .await;
         if let Some(root) = self.active.lock().await.get_mut(root_id) {
             (root.lane, root.account) = previous;
         }

@@ -503,7 +503,8 @@ pub struct Attempt {
     pub finished_at: Option<i64>,
     pub duration_ms: Option<u64>,
     /// Native dispatch-to-terminal time for the committed-entry-v2 budget.
-    /// duration_ms remains the measured end-to-end worker latency.
+    /// duration_ms measures prompt dispatch through terminal observation,
+    /// including dispatch/event overhead, but not session setup or grading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_execution_ms: Option<u64>,
     pub output: Option<String>,

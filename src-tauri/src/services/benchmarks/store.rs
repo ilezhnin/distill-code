@@ -610,7 +610,7 @@ impl Store {
         Ok(out)
     }
     pub async fn active_runs(&self) -> Result<Vec<BenchmarkRun>> {
-        let ids=sqlx::query_scalar::<_,String>("SELECT id FROM run_plans WHERE state NOT IN ('completed','cancelled') ORDER BY created_at").fetch_all(&self.pool).await?;
+        let ids=sqlx::query_scalar::<_,String>("SELECT id FROM run_plans WHERE state NOT IN ('completed','cancelled') ORDER BY created_at,rowid").fetch_all(&self.pool).await?;
         let mut out = Vec::new();
         for id in ids {
             out.push(self.run(&id).await?);

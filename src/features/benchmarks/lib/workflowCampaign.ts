@@ -3,6 +3,8 @@ import type { SelectorHoldoutReport } from "./benchmarkLearning";
 
 export interface WorkflowCampaignRequest {
   executionLimits?: RunRequest["executionLimits"];
+  /** Frozen maximum of unfinished trajectories (1..12); absent means serial. */
+  parallelism?: number;
   requestKey: string;
   modelId: string;
   versionIds: string[];
@@ -49,7 +51,13 @@ export interface WorkflowCampaign {
     evaluation: WorkflowCampaignProtocol;
   };
   planHash: string;
-  state: "reserved" | "running" | "paused" | "cancelled" | "completed";
+  state:
+    | "reserved"
+    | "running"
+    | "pausing"
+    | "paused"
+    | "cancelled"
+    | "completed";
   stateReason: string | null;
   nextCell: number;
   revision: number;

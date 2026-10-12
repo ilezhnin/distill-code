@@ -230,6 +230,7 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
             run_id: "other-run".into(),
             lane: crate::services::benchmarks::analysis::configuration_key(&configurations()[0]),
             account: "offline-pipeline\u{1f}".into(),
+            workers: vec![],
             cancel: watch::channel(false).0,
         },
     );

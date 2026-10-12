@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activeRuns,
+  benchmarkProgress,
   rowActivity,
   rowAttention,
   runProgress,
@@ -8,6 +9,7 @@ import {
   stalledRuns,
   workingConfigurations,
 } from "../lib/benchmarkActivity";
+import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import type { RunSummary } from "../types";
 import { configuration, leaderboardRow, runSummary } from "./fixtures";
 
@@ -34,6 +36,64 @@ function summary(overrides: Partial<RunSummary>): RunSummary {
 }
 
 describe("benchmark activity", () => {
+  it("retains settled campaign children and its frozen total without counting active children twice", () => {
+    const campaign = {
+      state: "pausing",
+      nextCell: 1,
+      plan: {
+        id: "campaign-1",
+        cells: Array.from({ length: 12 }, () => ({
+          caseIndex: 0,
+          policyIndex: 0,
+          repetition: 0,
+        })),
+      },
+    } as WorkflowCampaign;
+    const child = summary({
+      attemptCount: 1,
+      settledCount: 0,
+      request: {
+        ...runSummary.request,
+        requestKey: "workflow-campaign:campaign-1:1",
+      },
+      openCells: [
+        { configurationId: "config-1", versionId: "version-1", running: true },
+      ],
+    });
+    expect(benchmarkProgress([child], [campaign])).toEqual({
+      settled: 1,
+      total: 12,
+      running: 1,
+      paused: false,
+    });
+    expect(
+      benchmarkProgress([], [{ ...campaign, state: "paused", nextCell: 2 }]),
+    ).toEqual({ settled: 2, total: 12, running: 0, paused: true });
+    expect(benchmarkProgress([child, summary({})], [campaign])).toEqual({
+      settled: 2,
+      total: 16,
+      running: 3,
+      paused: false,
+    });
+    expect(
+      benchmarkProgress(
+        [],
+        [{ ...campaign, state: "completed", nextCell: 12 }],
+      ),
+    ).toBeNull();
+    // No dispatched cells can also mean preparation or a slot wait. Only a
+    // complete pause should replace the activity indicator with a pause icon.
+    expect(benchmarkProgress([], [campaign])?.paused).toBe(false);
+    expect(
+      benchmarkProgress([], [{ ...campaign, state: "running" }])?.paused,
+    ).toBe(false);
+    expect(
+      benchmarkProgress(
+        [summary({ openCells: [] })],
+        [{ ...campaign, state: "paused" }],
+      )?.paused,
+    ).toBe(false);
+  });
   it("tells runs that dispatch from runs that wait, never previews", () => {
     const runs = [
       summary({ id: "running" }),

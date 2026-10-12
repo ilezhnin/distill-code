@@ -41,6 +41,7 @@ import {
   type TaskReference,
 } from "./BenchmarkTaskGrid";
 import { FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
+import { BenchmarkWorkflowProgress } from "./BenchmarkWorkflowProgress";
 
 /**
  * One frozen run: its progress, every test in the order the run takes them
@@ -244,15 +245,22 @@ export function BenchmarkRunDrawer({
                       </span>
                     ) : null}
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {t("runs.progress", { completed: settled, total })}
-                  </span>
+                  {!run.request.workflowPolicy ? (
+                    <span className="text-xs text-muted-foreground">
+                      {t("runs.progress", { completed: settled, total })}
+                    </span>
+                  ) : null}
                 </div>
-                <Progress
-                  value={total === 0 ? 0 : (settled / total) * 100}
-                  aria-label={t("runs.progressLabel")}
-                />
+                {!run.request.workflowPolicy ? (
+                  <Progress
+                    value={total === 0 ? 0 : (settled / total) * 100}
+                    aria-label={t("runs.progressLabel")}
+                  />
+                ) : null}
               </div>
+              {run.request.workflowPolicy ? (
+                <BenchmarkWorkflowProgress runId={run.id} />
+              ) : null}
               <div className="max-h-[60vh] space-y-6 overflow-y-auto">
                 {grids.map((grid) => (
                   <section key={grid.key} className="space-y-3">

@@ -3,6 +3,54 @@
 import type { Configuration, LeaderboardRow, RunSummary } from "../types";
 import { requests } from "./benchmarkCatchUp";
 import { runWindowOpen } from "./benchmarkPlan";
+import type { WorkflowCampaign } from "./workflowCampaign";
+
+/** Only the native campaign child request namespace establishes membership. */
+export function campaignIdForRun(run: RunSummary): string | null {
+  return (
+    /^workflow-campaign:([^:]+):\d+$/.exec(run.request.requestKey)?.[1] ?? null
+  );
+}
+
+export function activeCampaigns(
+  campaigns: WorkflowCampaign[],
+): WorkflowCampaign[] {
+  return campaigns.filter((campaign) =>
+    ["running", "pausing", "paused"].includes(campaign.state),
+  );
+}
+
+export interface BenchmarkProgress {
+  settled: number;
+  total: number;
+  running: number;
+  paused: boolean;
+}
+
+/** A campaign keeps its entire denominator and completed children while draining. */
+export function benchmarkProgress(
+  runs: RunSummary[],
+  campaigns: WorkflowCampaign[],
+): BenchmarkProgress | null {
+  const active = activeCampaigns(campaigns);
+  const ids = new Set(active.map((campaign) => campaign.plan.id));
+  const dispatching = activeRuns(runs);
+  if (active.length === 0 && dispatching.length === 0) return null;
+  const progress = runProgress(
+    dispatching.filter((run) => !ids.has(campaignIdForRun(run) ?? "")),
+  );
+  for (const campaign of active) {
+    progress.total += campaign.plan.cells.length;
+    progress.settled += campaign.nextCell;
+  }
+  progress.running = runProgress(dispatching).running;
+  return {
+    ...progress,
+    paused:
+      dispatching.length === 0 &&
+      active.every((campaign) => campaign.state === "paused"),
+  };
+}
 
 /** Runs that dispatch now. */
 export function activeRuns(runs: RunSummary[]): RunSummary[] {

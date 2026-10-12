@@ -1,4 +1,4 @@
-//! Frozen, serial comparisons of complete research workflows. No promotion.
+//! Frozen comparisons of complete research workflows. No promotion.
 use super::{
     fixtures, learned, routing,
     store::{event, now, Store},
@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub mod acceptance;
 pub mod report;
+mod scheduler;
 
 fn invalid(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("invalid_workflow_campaign", message)
@@ -33,6 +34,9 @@ fn group(draft: &BenchmarkDraft) -> &str {
 pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_limits: Option<RunExecutionLimits>,
+    /// Maximum admitted, unfinished trajectories. Omission retains serial hashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallelism: Option<u32>,
     pub request_key: String,
     pub model_id: String,
     pub version_ids: Vec<String>,
@@ -47,6 +51,10 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub class_model_ids: BTreeMap<String, String>,
 }
+
+/// New campaigns reserve every possible worker before starting a root clock.
+/// Saved v1/v2 plans retain their original admission and timing semantics.
+pub(super) const RESERVED_WORKERS_ORDER: &str = "sha256-campaign-cell-reserved-workers-v3";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Case {
@@ -245,6 +253,7 @@ impl BenchmarkService {
             || !(1..=20).contains(&request.repetitions)
             || !(1..=3600).contains(&request.timeout_seconds)
             || !(1..=100_000).contains(&request.max_executions)
+            || !(1..=12).contains(&request.parallelism.unwrap_or(1))
         {
             return Err(invalid("Campaign requires distinct held-out cases, a request key and bounded repetitions, time and executions"));
         }
@@ -409,6 +418,11 @@ impl BenchmarkService {
             ));
         }
         let evaluation = report::protocol_for_cases(fit.model.weights, &cases);
+        let order_algorithm = if request.parallelism.unwrap_or(1) > 1 {
+            RESERVED_WORKERS_ORDER
+        } else {
+            "sha256-campaign-cell-v1"
+        };
         let mut plan = Plan {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: now(),
@@ -417,7 +431,7 @@ impl BenchmarkService {
             cases,
             policies,
             cells: vec![],
-            order_algorithm: "sha256-campaign-cell-v1".into(),
+            order_algorithm: order_algorithm.into(),
             aggregate_recipe: "fitted-common-cases-equal-group-mean-utility-v1".into(),
             evaluation,
             class_snapshot_hashes: if mixed {
@@ -521,10 +535,24 @@ impl Store {
         if plan.id != id || hash(&plan)? != plan_hash {
             return Err(invalid("Campaign integrity check failed"));
         }
+        let mut state: String = row.try_get("state")?;
+        if state == "paused" && plan.request.parallelism.unwrap_or(1) > 1 {
+            // The persisted pause closes admission atomically. Its public state
+            // stays pausing while owned trajectories drain their dependent steps.
+            // No schema or serialized legacy plan changes are needed for this
+            // projection of the already persisted child states.
+            let draining: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM workflow_campaign_cells c JOIN run_plans r ON r.request_key=c.request_key WHERE c.campaign_id=? AND r.state IN ('running','pausing'))",
+            )
+            .bind(id).fetch_one(&self.pool).await?;
+            if draining {
+                state = "pausing".into();
+            }
+        }
         Ok(Campaign {
             plan,
             plan_hash,
-            state: row.try_get("state")?,
+            state,
             state_reason: row.try_get("state_reason")?,
             next_cell: row.try_get::<i64, _>("next_cell")? as usize,
             revision: row.try_get("revision")?,
@@ -626,6 +654,46 @@ impl Store {
         .fetch_one(&self.pool)
         .await?)
     }
+    pub(super) async fn workflow_campaign_parallelism(&self, key: &str) -> Result<u32> {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT campaign_id FROM workflow_campaign_cells WHERE request_key=?",
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+        match id {
+            Some(id) => Ok(self
+                .workflow_campaign(&id)
+                .await?
+                .plan
+                .request
+                .parallelism
+                .unwrap_or(1)),
+            None => Ok(1),
+        }
+    }
+    pub(super) async fn workflow_campaign_reserves_workers(&self, key: &str) -> Result<bool> {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT campaign_id FROM workflow_campaign_cells WHERE request_key=?",
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+        match id {
+            Some(id) => match self
+                .workflow_campaign(&id)
+                .await?
+                .plan
+                .order_algorithm
+                .as_str()
+            {
+                RESERVED_WORKERS_ORDER => Ok(true),
+                "sha256-campaign-cell-v1" | "sha256-campaign-cell-bounded-refill-v2" => Ok(false),
+                _ => Err(invalid("Unsupported campaign worker admission recipe")),
+            },
+            None => Ok(false),
+        }
+    }
     pub(super) async fn require_independent_run(&self, key: &str) -> Result<()> {
         if self.workflow_campaign_owns(key).await? {
             return Err(invalid(
@@ -645,12 +713,26 @@ pub(super) async fn check_admission(
     tx: &mut Transaction<'_, Sqlite>,
     request: &RunRequest,
 ) -> Result<()> {
-    let registered = sqlx::query("SELECT c.campaign_id,c.cell_index,c.request_hash,p.state,p.next_cell FROM workflow_campaign_cells c JOIN workflow_campaigns p ON p.id=c.campaign_id WHERE c.request_key=?")
+    let registered = sqlx::query("SELECT c.campaign_id,c.cell_index,c.request_hash,p.state,p.next_cell,p.plan_json FROM workflow_campaign_cells c JOIN workflow_campaigns p ON p.id=c.campaign_id WHERE c.request_key=?")
         .bind(&request.request_key).fetch_optional(&mut **tx).await?;
     let owner: Option<String> = if let Some(row) = registered {
+        let plan: Plan = serde_json::from_str(row.try_get("plan_json")?)?;
+        let parallelism = plan.request.parallelism.unwrap_or(1);
+        let in_order = if parallelism > 1 {
+            // start_run inserted the current child under this same writer lock.
+            // Earlier children must all exist; unfinished children still own slots
+            // until their first result has been collected, regardless of run state.
+            let (admitted, unfinished): (i64, i64) = sqlx::query_as(
+                "SELECT COUNT(*),COALESCE(SUM(c.result_json IS NULL),0) FROM workflow_campaign_cells c JOIN run_plans r ON r.request_key=c.request_key WHERE c.campaign_id=? AND c.request_key<>?",
+            )
+            .bind(&plan.id).bind(&request.request_key).fetch_one(&mut **tx).await?;
+            row.try_get::<i64, _>("cell_index")? == admitted && unfinished < i64::from(parallelism)
+        } else {
+            row.try_get::<i64, _>("cell_index")? == row.try_get::<i64, _>("next_cell")?
+        };
         if row.try_get::<String, _>("request_hash")? != hash(request)?
             || row.try_get::<String, _>("state")? != "running"
-            || row.try_get::<i64, _>("cell_index")? != row.try_get::<i64, _>("next_cell")?
+            || !in_order
         {
             return Err(invalid(
                 "Campaign cell is changed, out of order or not running",
@@ -702,8 +784,8 @@ impl BenchmarkService {
         let saved = self.store.workflow_campaign(id).await?;
         let state = match (action, saved.state.as_str()) {
             ("start", "reserved") | ("resume", "paused") => "running",
-            ("pause", "running" | "paused") => "paused",
-            ("cancel", "reserved" | "running" | "paused" | "cancelled") => "cancelled",
+            ("pause", "running" | "pausing" | "paused") => "paused",
+            ("cancel", "reserved" | "running" | "pausing" | "paused" | "cancelled") => "cancelled",
             _ => return Err(invalid("Campaign does not permit this transition")),
         };
         let mut tx = self.store.pool.begin().await?;
@@ -720,38 +802,12 @@ impl BenchmarkService {
         {
             return Err(invalid("Campaign changed; reload before controlling it"));
         }
-        let key = saved
-            .plan
-            .run_request(saved.next_cell)
-            .ok()
-            .map(|r| r.request_key);
-        let child: Option<String> = if let Some(key) = key {
-            sqlx::query_scalar("SELECT id FROM run_plans WHERE request_key=?")
-                .bind(key)
-                .fetch_optional(&mut *tx)
-                .await?
-        } else {
-            None
-        };
-        if let Some(child) = &child {
-            // Resume changes state only. Terminal/uncertain first attempts are
-            // retained; the ordinary partial-cell retry path is never called.
-            let (next, eligible) = match state {
-                "running" => ("running", "'paused','needs_attention'"),
-                "paused" => ("pausing", "'running'"),
-                _ => (
-                    "cancelling",
-                    "'running','pausing','paused','needs_attention'",
-                ),
-            };
-            sqlx::query(&format!("UPDATE run_plans SET state=?,revision=revision+1,updated_at=? WHERE id=? AND state IN ({eligible})"))
-                .bind(next).bind(now()).bind(child).execute(&mut *tx).await?;
-        }
+        let children = scheduler::control_children(&mut tx, id, state).await?;
         event(&mut tx, id, "workflow_campaign_changed").await?;
         tx.commit().await?;
         if state == "cancelled" {
             for flight in self.active.lock().await.values() {
-                if Some(&flight.run_id) == child.as_ref() {
+                if children.contains(&flight.run_id) {
                     let _ = flight.cancel.send(true);
                 }
             }
@@ -763,6 +819,9 @@ impl BenchmarkService {
 }
 
 pub(super) async fn tick(service: &BenchmarkService) -> Result<()> {
+    // Keep the admission future out of the enclosing runner's inline state.
+    // It owns complete plans and run requests while awaiting SQLite.
+    Box::pin(scheduler::tick(service)).await?;
     // Query every running campaign; the bounded operator list is not a scheduler.
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM workflow_campaigns WHERE state='running' ORDER BY created_at,id",
@@ -772,6 +831,9 @@ pub(super) async fn tick(service: &BenchmarkService) -> Result<()> {
     for id in ids {
         let saved = service.store.workflow_campaign(&id).await?;
         if saved.state != "running" {
+            continue;
+        }
+        if saved.plan.request.parallelism.unwrap_or(1) > 1 {
             continue;
         }
         let request = saved.plan.run_request(saved.next_cell)?;
@@ -826,4 +888,8 @@ pub(super) async fn tick(service: &BenchmarkService) -> Result<()> {
         service.changed().await;
     }
     Ok(())
+}
+
+pub(super) async fn refill(service: &BenchmarkService) -> Result<()> {
+    Box::pin(scheduler::tick(service)).await
 }
