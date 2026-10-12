@@ -12,7 +12,7 @@ and review work, with projects, memory, and benchmarks in one place.
 ## Work with a team of agents
 
 - **Orchestrate tasks.** A conductor breaks work into steps, delegates to agents,
-  and reviews their results. Open any agent's chat to follow its progress.
+  and reviews their results.
 - **Choose your models.** Pin a model for a task or use routing informed by
   benchmark results.
 - **Compare what works.** Evaluate models and workflows on your own tasks.
@@ -20,11 +20,9 @@ and review work, with projects, memory, and benchmarks in one place.
 - **Keep your context.** Organize work into projects, reuse agents and skills,
   and carry editable memory and project knowledge across sessions.
 
-Connect Claude Code, Codex, Grok, Kimi Code, Z.ai, GitHub Copilot, or Amp.
-Manage accounts and view available usage limits in **Settings > Providers**.
+Connect your favorite AI providers.
 
-Your chats, settings, and project records are stored locally. Agents use your
-connected provider accounts.
+Your chats, settings, and project records are stored locally.
 
 ## Get started
 
@@ -43,8 +41,7 @@ just dev-windows
 Bootstrap installs the required development tools. If it updates your PATH,
 open a new PowerShell in the repository before continuing.
 
-Once the app opens, connect a provider in **Settings > Providers**, add your
-project, and start a chat.
+Once the app opens, connect a provider, add your project, and start a chat.
 
 For prerequisites, setup without `just`, troubleshooting, or building an
 installer, see the [Windows setup guide](docs/windows-onboarding.md).
