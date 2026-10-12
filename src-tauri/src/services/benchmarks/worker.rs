@@ -73,6 +73,26 @@ fn failed_artifact(draft: &BenchmarkDraft, reason: &str) -> Evaluation {
     }
 }
 
+fn browser_timeout(spec: &Value, draft_seconds: u32) -> Result<Duration> {
+    let seconds = match spec.get("timeoutSeconds") {
+        None => u64::from(draft_seconds.clamp(1, 60)),
+        Some(value) => value
+            .as_f64()
+            .filter(|seconds| {
+                seconds.is_finite() && seconds.fract() == 0.0 && (1.0..=1200.0).contains(seconds)
+            })
+            .map(|seconds| seconds as u64)
+            .ok_or_else(|| {
+                BenchmarkError::new(
+                    "invalid_definition",
+                    "Browser timeoutSeconds must be an integer from 1 to 1200",
+                )
+            })?
+            .min(u64::from(draft_seconds.max(1))),
+    };
+    Ok(Duration::from_secs(seconds))
+}
+
 pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation> {
     let runtime = RUNTIME.get().ok_or_else(|| {
         BenchmarkError::new(
@@ -193,6 +213,13 @@ pub async fn evaluate_with_runtime(
         ));
     }
     let spec: Value = serde_json::from_str(&draft.evaluator.expected)?;
+    // Only the protected specification can opt into a longer evaluator budget.
+    // Validate it before creating a directory or launching candidate content.
+    let timeout = if draft.evaluator.kind == "browser" {
+        browser_timeout(&spec, draft.limits.timeout_seconds)?
+    } else {
+        Duration::from_secs(u64::from(draft.limits.timeout_seconds.clamp(1, 60)))
+    };
     let id = uuid::Uuid::new_v4().to_string();
     let directory = runtime.root.join("evaluations").join(&id);
     tokio::fs::create_dir_all(&directory).await?;
@@ -267,12 +294,7 @@ pub async fn evaluate_with_runtime(
         }
         Ok(result)
     };
-    let result = match tokio::time::timeout(
-        Duration::from_secs(u64::from(draft.limits.timeout_seconds.clamp(1, 60))),
-        run,
-    )
-    .await
-    {
+    let result = match tokio::time::timeout(timeout, run).await {
         Ok(result) => result?,
         Err(_) => {
             if let Some(tree) = &tree {
@@ -336,4 +358,52 @@ pub async fn evaluate_with_runtime(
         judge: None,
         usage: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_timeout_preserves_defaults_and_limits_opt_in() {
+        for (spec, draft, expected) in [
+            (json!({}), 1800, 60),
+            (json!({}), 12, 12),
+            (json!({}), 0, 1),
+            (json!({"timeoutSeconds": 540}), 1800, 540),
+            (json!({"timeoutSeconds": 600}), 600, 600),
+            (json!({"timeoutSeconds": 601}), 1800, 601),
+            (json!({"timeoutSeconds": 1200}), 1800, 1200),
+            (json!({"timeoutSeconds": 1200}), 600, 600),
+            (
+                serde_json::from_str(r#"{"timeoutSeconds":540.0}"#).unwrap(),
+                1800,
+                540,
+            ),
+            (
+                serde_json::from_str(r#"{"timeoutSeconds":5.4e2}"#).unwrap(),
+                1800,
+                540,
+            ),
+            (json!({"timeoutSeconds": 540}), 30, 30),
+            (json!({"timeoutSeconds": 1}), 1800, 1),
+        ] {
+            assert_eq!(browser_timeout(&spec, draft).unwrap().as_secs(), expected);
+        }
+    }
+
+    #[test]
+    fn browser_timeout_rejects_invalid_protected_limits() {
+        for value in [
+            json!(null),
+            json!(true),
+            json!("60"),
+            json!(0),
+            json!(-1),
+            json!(1201),
+            json!(1.5),
+        ] {
+            assert!(browser_timeout(&json!({"timeoutSeconds": value}), 1800).is_err());
+        }
+    }
 }
