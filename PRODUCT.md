@@ -1,39 +1,68 @@
 # Product
 
-## Register
+## Purpose
 
-product
+Distill is a Windows desktop workspace for getting work done with AI agents.
+Users connect their favorite providers, work directly with an agent or delegate
+a larger task to a coordinated team, and keep the work in one place.
+
+The product brings together projects, reusable roles and skills, memory, and
+benchmarks. It helps users plan, execute, and review work, compare models and
+workflows, and resume a project with its context intact.
 
 ## Users
 
-Distill is for people doing real work with AI agents inside a desktop workspace: engineers, product designers, and other builders who need a persistent agent companion that can use projects, skills, extensions, memory, model providers, and local workspace context. Users are often moving between broad product thinking and concrete implementation, so the interface needs to support fast chat, precise context selection, and confidence about what the agent can see or do.
+Distill is for engineers, designers, and other builders who move between
+planning and implementation. They need clear context, visible progress, and
+results they can inspect and use.
 
-## Product Purpose
+Success means users can complete and resume work without reconstructing its
+history or losing track of which agent is doing what.
 
-Distill packages the desktop agent experience as a standalone Tauri app whose built-in ACP host drives the agent harnesses (Claude Code, Codex, Grok, Copilot, Amp) and keeps sessions on the user's machine. Its job is to make agent work feel grounded, inspectable, and continuous: start a chat, attach files or folders, choose agents and models, work inside projects, manage skills and extensions, review session history, configure providers, and hand larger work to the conductor's waves without losing the thread of the workspace.
+## Core experience
 
-Success looks like a user trusting the app as their daily AI work surface. They should understand where they are, what context is active, which model or agent is responding, and how to recover or adjust settings when something is not ready.
+- **Direct work and delegation.** Start a conversation or let a conductor divide
+  work into steps, delegate to agents, and review the results.
+- **Context that lasts.** Projects, history, editable memory, and project
+  knowledge support continuity across sessions. Roles and skills are reusable;
+  role images are optional.
+- **Informed model choice.** Pin a model or use routing informed by benchmarks.
+  Compare models and workflows on tasks using quality, execution time, and
+  reported usage and cost.
+- **A workspace users control.** Chats, settings, and project records live
+  locally. Users choose the providers their agents work with.
 
-## Brand Personality
+## Personality
 
-Focused, capable, companionable. Distill should feel like a calm, practical desktop tool with enough warmth to make repeated daily use pleasant. It should respect expert users without becoming cold or cryptic, and it should help less configured states feel approachable rather than broken.
+Calm, focused, and capable, with enough warmth to make daily use comfortable.
+Use plain language and respect experienced users without making the product
+cryptic for someone getting started.
 
-## Anti-references
+Avoid decorative AI effects, oversized cards, vague promises, and screens
+crowded with metrics or settings. Visuals should support the work.
 
-Do not make Distill feel like a generic chatbot wrapper, a dark terminal skin, a dashboard stuffed with metrics, or a marketing site wearing product chrome. Avoid novelty-first AI visuals, oversized decorative cards, vague "assistant magic" copy, and interfaces that hide operational state behind friendliness. The product should not feel like a toy, a sales demo, or a pile of disconnected settings pages.
+## Design principles
 
-## Design Principles
+- **Make context clear.** Show the active project, agent, model, and relevant
+  workspace context where they affect the task.
+- **Make collaboration visible.** Users should be able to follow delegated
+  work, open an agent's conversation, and inspect its results.
+- **Keep the work surface quiet.** Prioritize the conversation, active tools,
+  and useful artifacts. Reveal configuration when it is relevant.
+- **Show the actual state.** Distinguish progress, completion, failure, and
+  unavailable capabilities. Give a clear next action when work cannot proceed.
+- **Show evidence honestly.** Present measured results and their limits.
+  Missing measurements are unknown; benchmark claims need supporting evidence.
+- **Design for continuity.** Preserve context, drafts, history, and navigation
+  so users can move between tasks and return without unnecessary setup.
 
-Make context legible. The user should always be able to tell which project, files, agent, model, provider, and session state are shaping the conversation.
+## Accessibility
 
-Keep the work surface quiet. The interface should preserve attention for the conversation, active tools, and workspace state; chrome should be useful, dense, and calm.
+Use semantic controls, labels for icon-only actions, keyboard navigation,
+visible focus, localized text, and reduced-motion support. Keep light and dark
+themes readable, never rely on color alone to convey state, and make compact
+layouts usable with assistive technology.
 
-Treat configuration as part of the workflow. Providers, extensions, skills, memory, projects, and onboarding are not admin leftovers; they are how users shape what Distill can do.
-
-Show operational truth plainly. Loading, streaming, compacting, unavailable providers, failed imports, empty states, and permission-like boundaries should be honest and actionable.
-
-Design for continuity. Sessions, projects, history, navigation, and workspace context should make it easy to resume work without rebuilding mental state.
-
-## Accessibility & Inclusion
-
-Use semantic controls, labels for icon-only actions, keyboard-reachable navigation, visible focus states, localized strings, and reduced-motion-aware interaction patterns. Product work should preserve readability in light and dark themes, avoid relying on color alone for state, and keep compact desktop layouts usable without sacrificing touch or assistive technology affordances where applicable.
+For onboarding, see [README.md](README.md). Development guidance lives in
+[AGENTS.md](AGENTS.md); required product behavior is defined in
+[LAWS/](LAWS/README.md).
