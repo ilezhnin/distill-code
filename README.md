@@ -1,102 +1,59 @@
+<p align="center">
+  <img src="public/distill-icon.png" alt="Distill" width="80">
+</p>
+
 # Distill
 
-Distill is a desktop app for working with AI agents, built with Tauri 2 and
-React 19. A built-in Rust ACP host (`src-tauri/src/services/agent_host/`)
-spawns the agent harnesses on demand and keeps every session on your machine:
+A desktop workspace for AI agents. Bring your models together to plan, execute,
+and review work, with projects, memory, and benchmarks in one place.
 
-- Claude Code and Codex, through the ACP bridges pinned in
-  `acp-tools.lock.json` and installed at runtime onto a managed Node runtime;
-- GitHub Copilot, Grok and Amp, through their own CLIs when you have them
-  installed.
+[Get started](#get-started) · [Documentation](#documentation) · [License](LICENSE)
 
-On top of plain chats it has projects, agents and skills, a conductor that
-plans larger requests as waves of executor sessions and reviews their reports
-(`src/features/conductor/`, `LAWS/WAVES.md`), and memory that carries short facts into
-later prompts, globally or per project (`src/features/memory/`,
-`LAWS/MEMORY.md`). Agents drive the visible app through the bundled `distillctl`
-CLI.
+## Work with a team of agents
 
-Distill runs on Windows only. It is a personal fork of
-[block/berd](https://github.com/block/berd) by Ivan Lezhnin; the original work
-is Block's, and the project stays under the Apache 2.0 [LICENSE](LICENSE).
+- **Orchestrate tasks.** A conductor breaks work into steps, delegates to agents,
+  and reviews their results. Open any agent's chat to follow its progress.
+- **Choose your models.** Pin a model for a task or use routing informed by
+  benchmark results.
+- **Compare what works.** Evaluate models and workflows on your own tasks.
+  Inspect results, execution time, and reported usage and cost.
+- **Keep your context.** Organize work into projects, reuse agents and skills,
+  and carry editable memory and project knowledge across sessions.
 
-## Setup on Windows
+Connect Claude Code, Codex, Grok, Kimi Code, Z.ai, GitHub Copilot, or Amp.
+Manage accounts and view available usage limits in **Settings > Providers**.
 
-Every recipe below is a thin wrapper around a script in `scripts\windows\`.
-When `just` is not on `PATH`, run the script from the repository root with
-`powershell.exe -NoProfile -ExecutionPolicy Bypass -File <script>`.
+Your chats, settings, and project records are stored locally. Agents use your
+connected provider accounts.
 
-| Step | `just` | Script |
-| --- | --- | --- |
-| Check prerequisites | `just bootstrap-windows` | `scripts\windows\Bootstrap-Windows.ps1` |
-| Install what is missing with WinGet | `just bootstrap-windows install` | `scripts\windows\Bootstrap-Windows.ps1 -Mode install` |
-| Verify the machine | `just doctor-windows` | `scripts\windows\Doctor-Windows.ps1` |
-| Install pnpm dependencies and git hooks | `just setup-windows` | `scripts\windows\Setup-Windows.ps1` |
-| Run the dev app | `just dev-windows` | `scripts\windows\Dev-Windows.ps1` |
+## Get started
 
-For example, without `just`:
+Distill runs on **Windows**. To build and run it from source, install
+[Git](https://git-scm.com/downloads/win) and
+[just](https://just.systems/man/en/packages.html), then open PowerShell:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Bootstrap-Windows.ps1 -Mode install
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Setup-Windows.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Dev-Windows.ps1
+git clone https://github.com/ilezhnin/distill-code.git
+cd distill-code
+just bootstrap-windows install
+just setup-windows
+just dev-windows
 ```
 
-Bootstrap installs or checks Git, Visual Studio Build Tools (MSVC), the WebView2
-Runtime, the Rust toolchain from `rust-toolchain.toml`, fnm with Node and pnpm,
-CMake, just and Lefthook; `winget install --id Casey.Just -e` gets `just`
-itself. Open a new PowerShell when freshly installed tools are not on `PATH`.
+Bootstrap installs the required development tools. If it updates your PATH,
+open a new PowerShell in the repository before continuing.
 
-`dev-windows` builds `distillctl.exe` and `distill-monitor.exe`, starts Vite and the
-Tauri dev app, and points the app at this repository's `distro\` for bundled
-agents and skills. `scripts\windows\Launch-Distill.ps1 -InstallShortcut`
-creates a desktop shortcut that launches the dev app from Explorer.
+Once the app opens, connect a provider in **Settings > Providers**, add your
+project, and start a chat.
 
-The Rust build cache lives in `src-tauri\target` and grows to tens of GB; set
-`DISTILL_TAURI_CARGO_TARGET_DIR` to move it. More detail, cleanup and
-troubleshooting: [docs/windows-onboarding.md](docs/windows-onboarding.md).
+For prerequisites, setup without `just`, troubleshooting, or building an
+installer, see the [Windows setup guide](docs/windows-onboarding.md).
 
-## Bundling
+## Documentation
 
-| Output | `just` | Script |
-| --- | --- | --- |
-| NSIS installer | `just bundle` | `scripts\windows\Bundle-Windows.ps1` |
-| MSI installer | `just bundle-windows msi` | `scripts\windows\Bundle-Windows.ps1 -Bundle msi` |
-| NSIS installer with WebView devtools | `just bundle-debug` | `scripts\windows\Bundle-Windows.ps1 -Debug` |
+- [Provider accounts](docs/provider-accounts.md)
+- [Benchmarks and model selection](docs/benchmark-authoring.md)
+- [Local data and storage](docs/distill-root-layout.md)
+- [Development guide](AGENTS.md)
 
-The script installs locked dependencies, stages `distillctl` and `distill-monitor`
-as `externalBin` sidecars, runs `tauri build` for `x86_64-pc-windows-msvc`, and
-prints the installer path under
-`<target>\x86_64-pc-windows-msvc\release\bundle\`. Installers are unsigned.
-The harness bridges are not bundled; the app installs them at runtime.
-
-## Useful commands
-
-- `just check` — design-system, distillctl contract, formatting, lint, i18n and
-  TypeScript checks
-- `just test` — the Vitest suite (`pnpm test`) plus the hook launcher tests
-- `just fmt` — format frontend and Rust files
-- `just tauri-check` / `just clippy` — Rust check and lint with sidecars
-  disabled
-- `just ci` — the local gate: frontend checks, Rust format, check, tests and
-  clippy, unit and relay tests, frontend build
-- `just ci-windows` — Windows-native Rust tests for the managed Node runtime
-  and bridges (`scripts\windows\CI-Windows.ps1`)
-- `just test-windows-dev` — self-tests for the Windows scripts
-  (`scripts\windows\Test-WindowsDev.ps1`)
-- `just prune-build-cache` — reclaim build-cache disk; a dry run unless given
-  `-Remove` (`scripts\windows\Prune-BuildCache-Windows.ps1`)
-- `just cleanup-windows` — dry-run or remove local setup state
-  (`scripts\windows\Cleanup-Windows.ps1`)
-- `just new-command <noun> <verb>` — scaffold a distillctl command
-- `just bump-node-runtime <version>` — re-pin the managed Node runtime
-
-The app log is `%LOCALAPPDATA%\com.levocat.distill\logs\distill.log`; each harness's
-stderr lands there prefixed with its id, such as `[claude-acp]`. A dev build
-uses `com.levocat.distill.dev`. Chats, projects and installed bridges are under
-the same name in `%APPDATA%`. Folders left by a build that still ran as
-`xyz.block.berd` are renamed on the first start.
-
-[AGENTS.md](AGENTS.md) describes the layout and conventions,
-[LAWS/](LAWS/README.md) the product rules the code is held to, and
-[docs/app-e2e.md](docs/app-e2e.md) how to drive the running app from outside.
+Built with Tauri 2, React 19, and Rust. Licensed under [Apache 2.0](LICENSE).
