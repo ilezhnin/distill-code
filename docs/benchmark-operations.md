@@ -243,9 +243,10 @@ The fit response is a summary with an `id`. Fetch the actual artifact with
 `benchmark_get_selector_fit({ id })`. Inspect its training versions, groups,
 candidate identities, per-cell evidence, run IDs, repetition completeness and
 runtime revisions. Confirm that no held-out task or future observation entered
-the snapshot. Run research predictions on public training task inputs and inspect
-preference and quality estimates. Probabilities express relative preference,
-not calibrated probabilities of success.
+the snapshot. Inspect saved training targets and fit diagnostics before evaluating
+unseen tasks. The native prediction API refuses known training families and
+groups; do not relabel them to bypass that check. Probabilities express relative
+preference, not calibrated probabilities of success.
 
 If all candidates have indistinguishable utilities, labels are incomplete, or
 the selector simply reproduces one global winner without task-dependent evidence,
