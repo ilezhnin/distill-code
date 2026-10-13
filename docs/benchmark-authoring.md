@@ -334,7 +334,10 @@ worker when the step starts and give it back when it ends; waiting for that
 slot is recorded and excluded from the whole-workflow clock. `accountSlots`
 freezes the calls one account runs at once (1–8, default four). Saved v3
 campaigns keep reserving every selectable worker account before the clock, and
-saved v2 campaigns retain their original queue-inclusive timing.
+saved v2 campaigns retain their original queue-inclusive timing. A campaign may
+reuse the families of a cancelled campaign only; its plan then lists those
+campaigns in `supersedes`, and its report is a repeat measurement rather than
+an unseen-holdout claim.
 See [campaign operations](benchmark-operations.md#6-preregister-a-held-out-workflow-comparison)
 for reservation, pause and timing semantics.
 The aggregate order uses equal-group mean utility on common cases from the
