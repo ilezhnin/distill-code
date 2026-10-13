@@ -95,6 +95,37 @@ def prepare(value):
     write_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": originals}).encode())
 
 
+def grant_expiry(provider, value):
+    """When the grant in a credential document expires, as epoch seconds.
+
+    None when the document does not carry a readable expiry for its provider.
+    Kimi and Claude record epoch integers (Claude in milliseconds); Grok
+    records an RFC 3339 timestamp per issuer, possibly with nanoseconds.
+    """
+    try:
+        if provider == "kimi":
+            expiry = value.get("expires_at")
+            return float(expiry) if type(expiry) is int and expiry > 0 else None
+        if provider == "claude":
+            expiry = value.get("claudeAiOauth", {}).get("expiresAt")
+            return expiry / 1000 if type(expiry) is int and expiry > 0 else None
+        if provider == "grok":
+            from datetime import datetime, timezone
+            latest = None
+            for grant in value.values():
+                stamp = grant.get("expires_at") if isinstance(grant, dict) else None
+                if not isinstance(stamp, str) or not stamp.endswith("Z"):
+                    continue
+                head, _, fraction = stamp[:-1].partition(".")
+                text = head + ("." + fraction[:6] if fraction else "") + "+00:00"
+                moment = datetime.fromisoformat(text).astimezone(timezone.utc).timestamp()
+                latest = moment if latest is None else max(latest, moment)
+            return latest
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return None
+
+
 def save():
     receipt_file = directory / "receipt.json"
     if not receipt_file.exists():
@@ -117,14 +148,15 @@ def save():
         current_data = regular_bytes(target)
         current = digest(current_data)
         if current not in (before, after):
-            # Kimi refreshes at ACP startup, including parallel sessions.
-            # Its expiry is an integer epoch timestamp. Retain the newer
-            # grant regardless of the order in which the turns finish.
-            previous_expiry = credential_json(current_data).get("expires_at")
-            updated_expiry = updated.get("expires_at")
-            if (account.name != "kimi" or type(previous_expiry) is not int
-                    or type(updated_expiry) is not int
-                    or min(previous_expiry, updated_expiry) <= 0
+            # Parallel sessions on one account refresh their grants
+            # independently: Kimi at ACP startup, Claude and Grok whenever a
+            # turn outlives its token. Retain the newer grant regardless of
+            # the order in which the turns finish; only a document without a
+            # readable expiry, or two grants with the same expiry, is left
+            # for the operator.
+            previous_expiry = grant_expiry(account.name, credential_json(current_data))
+            updated_expiry = grant_expiry(account.name, updated)
+            if (previous_expiry is None or updated_expiry is None
                     or previous_expiry == updated_expiry):
                 raise ValueError("concurrent credential refresh; inspect sandbox account before retrying")
             if updated_expiry < previous_expiry:
