@@ -314,10 +314,19 @@
   "run": {
     "repositoryTools": "Repositorio con herramientas",
     "title": "Ejecutar benchmarks",
-    "description": "Elige pruebas publicadas y configuraciones fijadas. Las pruebas de desarrollo son solo diagnósticas y no afectan a las clasificaciones ni al entrenamiento. El número de ejecuciones y el presupuesto se comprueban antes de empezar.",
-    "tests": "Pruebas publicadas",
+    "description": "Elige modelos y pruebas, y comprueba el plan antes de empezar.",
+    "tests": "Pruebas",
+    "noMatchingTests": "Ninguna prueba coincide con la búsqueda.",
+    "selectGroup": "Seleccionar todas: {{group}}",
+    "version": "Versión {{number}}",
+    "testDetails": "{{name}}\n{{split}}\n{{hash}}",
+    "splitHints": {
+      "train": "Los resultados pueden usarse para entrenar el selector.",
+      "held_out": "Evaluación independiente. Mantener separada del entrenamiento.",
+      "development": "Solo diagnóstico. Excluidas de las clasificaciones y el entrenamiento."
+    },
     "noPublished": "Publica una prueba en Desarrollo de pruebas antes de ejecutarla.",
-    "configurations": "Configuraciones",
+    "configurations": "Modelos",
     "noConfigurations": "Añade al menos una configuración.",
     "chooseProvider": "Elige un proveedor",
     "chooseModel": "Elige un modelo",
@@ -334,7 +343,7 @@
     "checkPlan": "Comprobar plan",
     "start": "Iniciar lote",
     "preview": "Vista previa de desarrollo. Excluida de los tableros y del gráfico histórico.",
-    "budgetTitle": "Presupuesto"
+    "budgetTitle": "Ajustes de ejecución"
   },
   "modelRun": {
     "allTests": "Todas las pruebas",

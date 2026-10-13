@@ -6,6 +6,7 @@ import { listProviderAccounts } from "@/features/providers/api/providerAccounts"
 import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { Button } from "@/shared/ui/button";
+import { Card } from "@/shared/ui/card";
 import { Checkbox } from "@/shared/ui/checkbox";
 import {
   Dialog,
@@ -22,7 +23,6 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
-import { shortId } from "../lib/benchmarkLabels";
 import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
@@ -38,6 +38,7 @@ import {
   SectionHeading,
   SelectField,
 } from "./BenchmarkPrimitives";
+import { BenchmarkTestPicker } from "./BenchmarkTestPicker";
 
 /** The effort field's one value for a model without an effort control. */
 const NO_EFFORT = "no-effort-setting";
@@ -242,9 +243,9 @@ export function BenchmarkRunDialog({
             {previewOnly ? t("run.preview") : t("run.description")}
           </DialogDescription>
         </DialogHeader>
-        <DialogBody className="space-y-6">
+        <DialogBody className="space-y-4">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
-          <section className="space-y-3">
+          <Card className="gap-3 p-4">
             <SectionHeading title={t("run.configurations")} />
             <div className="grid gap-3 md:grid-cols-2">
               <Field label={t("fields.provider")}>
@@ -395,11 +396,11 @@ export function BenchmarkRunDialog({
                 </Button>
               </div>
             ) : null}
-            {configurations.length === 0 ? (
+            {configurations.length === 0 && providerId ? (
               <p className="text-xs text-muted-foreground">
                 {t("run.noConfigurations")}
               </p>
-            ) : (
+            ) : configurations.length > 0 ? (
               <ul className="divide-y divide-border">
                 {configurations.map((entry) => (
                   <li
@@ -428,25 +429,29 @@ export function BenchmarkRunDialog({
                   </li>
                 ))}
               </ul>
-            )}
-          </section>
-          <section className="space-y-3">
+            ) : null}
+          </Card>
+          <Card className="gap-3 p-4">
             <SectionHeading title={t("run.budgetTitle")} />
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3">
               {budgetField("repetitions", repetitions, setRepetitions)}
               {budgetField("maxExecutions", maxExecutions, setMaxExecutions)}
             </div>
             <p className="text-sm">
               <span>{t("run.executionCount", { count })}</span>
-              {" · "}
-              <span className="text-muted-foreground">
-                {t("run.estimatedCost", {
-                  value:
-                    validPreview?.estimatedCost == null
-                      ? t("unknown")
-                      : validPreview.estimatedCost.toFixed(4),
-                })}
-              </span>
+              {validPreview ? (
+                <>
+                  {" · "}
+                  <span className="text-muted-foreground">
+                    {t("run.estimatedCost", {
+                      value:
+                        validPreview?.estimatedCost == null
+                          ? t("unknown")
+                          : validPreview.estimatedCost.toFixed(4),
+                    })}
+                  </span>
+                </>
+              ) : null}
             </p>
             {validPreview?.costReason ? (
               <p className="text-xs text-muted-foreground">
@@ -456,44 +461,27 @@ export function BenchmarkRunDialog({
             {validPreview && !validPreview.valid ? (
               <BenchmarkAlert>{validPreview.issues.join("\n")}</BenchmarkAlert>
             ) : null}
-          </section>
-          <fieldset className="space-y-2">
-            <legend className="mb-2">
+          </Card>
+          <Card className="gap-3 p-4">
+            <div className="flex items-center justify-between gap-3">
               <SectionHeading title={t("run.tests")} />
-            </legend>
-            {published.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                {t("run.noPublished")}
-              </p>
-            ) : null}
-            {published.flatMap((definition) =>
-              definition.versions.map((version) => (
-                <Label
-                  key={version.id}
-                  className="flex items-center gap-2 py-1 text-sm"
-                >
-                  <Checkbox
-                    disabled={previewOnly}
-                    checked={versions.includes(version.id)}
-                    onCheckedChange={(checked) =>
-                      setVersions((previous) =>
-                        checked
-                          ? [...previous, version.id]
-                          : previous.filter((id) => id !== version.id),
-                      )
-                    }
-                  />
-                  <span className="min-w-0 truncate">
-                    {version.manifest.name} (
-                    {t(`split.${version.manifest.split}`)})
-                  </span>
-                  <code className="text-xs text-muted-foreground">
-                    {shortId(version.contentHash)}
-                  </code>
-                </Label>
-              )),
-            )}
-          </fieldset>
+              <span className="text-xs text-muted-foreground">
+                {t("modelRun.selected", {
+                  selected: chosenVersions.length,
+                  total: published.reduce(
+                    (total, definition) => total + definition.versions.length,
+                    0,
+                  ),
+                })}
+              </span>
+            </div>
+            <BenchmarkTestPicker
+              versions={published.flatMap((definition) => definition.versions)}
+              selectedIds={versions}
+              disabled={previewOnly || busy}
+              onChange={setVersions}
+            />
+          </Card>
         </DialogBody>
         <DialogFooter>
           <Button
