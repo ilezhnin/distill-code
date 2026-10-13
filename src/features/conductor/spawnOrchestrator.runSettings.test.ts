@@ -8,6 +8,7 @@ import {
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import type { CreateSessionOpts } from "@/features/chat/stores/chatSessionStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { updateSessionTitle } from "@/features/chat/stores/chatSessionOperations";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -63,11 +64,19 @@ describe("spawnConductorChildSession run settings", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(acceptFirstSend).mockReturnValue({ accepted: true } as never);
+    vi.mocked(updateSessionTitle).mockReset().mockResolvedValue(undefined);
+    vi.mocked(acceptFirstSend).mockReturnValue({
+      accepted: true,
+      deferred: false,
+      needsName: false,
+    });
     created = [];
     useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
     useConductorGraphStore.getState().registerNode(conductorNode());
-    useChatStore.setState({ messagesBySession: {} });
+    useChatStore.setState({
+      messagesBySession: {},
+      enqueueTransportReadyMessage: vi.fn(),
+    });
     useAgentStore.setState({ personas: [] });
     useChatSessionStore.setState({
       sessions: [
@@ -102,8 +111,87 @@ describe("spawnConductorChildSession run settings", () => {
   it.each([
     true,
     false,
+  ])("waits for the native worker title before first-send admission: %s", async (accepted) => {
+    let persistTitle!: () => void;
+    const persisted = new Promise<void>((resolve) => {
+      persistTitle = resolve;
+    });
+    vi.mocked(updateSessionTitle).mockReturnValueOnce(persisted);
+    vi.mocked(acceptFirstSend).mockReturnValue({
+      accepted,
+      deferred: false,
+      needsName: false,
+    });
+
+    const spawning = spawnConductorChildSession({
+      parentSessionId: PARENT_ID,
+      role: "worker",
+      displayName: "Verifier",
+      task: "Inspect the example",
+    });
+
+    await vi.waitFor(() => {
+      expect(updateSessionTitle).toHaveBeenCalledWith(CHILD_ID, "Verifier");
+    });
+    expect(acceptFirstSend).not.toHaveBeenCalled();
+    expect(createDeferredQueuedMessagePayload).not.toHaveBeenCalled();
+    expect(admitSystemInheritedQueuedMessage).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().enqueueTransportReadyMessage,
+    ).not.toHaveBeenCalled();
+    expect(useConductorGraphStore.getState().getNode(CHILD_ID)).toBeUndefined();
+
+    persistTitle();
+    const spawned = await spawning;
+
+    expect(spawned.sessionId).toBe(CHILD_ID);
+    expect(acceptFirstSend).toHaveBeenCalledTimes(1);
+    expect(
+      useChatStore.getState().enqueueTransportReadyMessage,
+    ).toHaveBeenCalledTimes(accepted ? 0 : 1);
+    expect(useConductorGraphStore.getState().getNode(CHILD_ID)).toMatchObject({
+      displayName: "Verifier",
+      status: "starting",
+      runId: spawned.runId,
+    });
+  });
+
+  it("does not queue a first prompt when the native worker title cannot be persisted", async () => {
+    const failure = new Error("Session title could not be saved");
+    vi.mocked(updateSessionTitle).mockRejectedValueOnce(failure);
+
+    await expect(
+      spawnConductorChildSession({
+        parentSessionId: PARENT_ID,
+        role: "worker",
+        displayName: "Verifier",
+        task: "Inspect the example",
+      }),
+    ).rejects.toBe(failure);
+
+    expect(created).toHaveLength(1);
+    expect(updateSessionTitle).toHaveBeenCalledWith(CHILD_ID, "Verifier");
+    expect(acceptFirstSend).not.toHaveBeenCalled();
+    expect(createDeferredQueuedMessagePayload).not.toHaveBeenCalled();
+    expect(admitSystemInheritedQueuedMessage).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().enqueueTransportReadyMessage,
+    ).not.toHaveBeenCalled();
+    expect(useConductorGraphStore.getState().getNode(CHILD_ID)).toBeUndefined();
+    expect(
+      useChatSessionStore.getState().getSession(CHILD_ID)?.userSetName,
+    ).not.toBe(true);
+  });
+
+  it.each([
+    true,
+    false,
   ])("carries the recorded decision and logical run through first-send admission: %s", async (accepted) => {
-    vi.mocked(acceptFirstSend).mockReturnValue({ accepted } as never);
+    vi.mocked(acceptFirstSend).mockReturnValue({
+      accepted,
+      deferred: false,
+      needsName: false,
+    });
     useChatStore.setState({ enqueueTransportReadyMessage: vi.fn() });
     const spawned = await spawnConductorChildSession({
       parentSessionId: PARENT_ID,

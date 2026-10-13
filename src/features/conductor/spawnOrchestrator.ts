@@ -205,24 +205,19 @@ export async function spawnConductorChildSession(args: {
         personaId: args.personaId,
       });
 
-  sessionStore.patchSession(child.id, {
-    title: displayName,
-    userSetName: true,
-    ...(args.personaId ? { personaId: args.personaId } : {}),
-  });
+  // Native prompt admission can generate a title for an unnamed session.
+  // Persist the intended worker name before any first prompt is queued;
+  // a renderer-only title must not let a failed rename start the worker.
+  await updateSessionTitle(child.id, displayName);
+  if (args.personaId) {
+    sessionStore.patchSession(child.id, { personaId: args.personaId });
+  }
   // The safety net, before the first prompt is queued below: a bridge that
   // did not take a value at creation gets it from the reconciler, or the
   // child shows why it runs without it.
   if (runSettings && !args.ownedTask) {
     await seedChildRunSettings(child.id, runSettings);
   }
-  void updateSessionTitle(child.id, displayName).catch(() => {
-    useChatSessionStore.getState().patchSession(child.id, {
-      title: displayName,
-      userSetName: true,
-    });
-  });
-
   const runId =
     args.ownedTask?.binding.request.requestKey ?? crypto.randomUUID();
   const actualRunSettings = args.ownedTask
