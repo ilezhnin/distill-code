@@ -98,7 +98,16 @@
     "cases": "Training cases selected: {{count}}",
     "noCases": "No published training cases in this class.",
     "candidates": "Candidates to compare",
-    "requirements": "Select at least 8 common cases across 2 declared independent groups and at least 2 candidates. Complete repetitions, matching runtimes and one role/context are required. Weights: quality 80%, speed 15%, cost 5%; unknown resources are omitted for all compared candidates.",
+    "requirements": "Select at least 8 common cases across 2 declared independent groups and at least 2 candidates. Complete repetitions, matching runtimes and one role/context are required.",
+    "weights": {
+      "title": "Training weights",
+      "quality": "Quality (%)",
+      "speed": "Speed (%)",
+      "cost": "Cost (%)",
+      "hint": "Weights are frozen in each saved fit. Unknown resources are omitted for all compared candidates. Changing these inputs does not change saved fits or active policies.",
+      "invalid": "Weights must total 100%, with at least 50% for quality and no negative values.",
+      "saved": "Frozen weights: quality {{quality}}%, speed {{speed}}%, cost {{cost}}%."
+    },
     "fit": "Fit from saved results",
     "saved": "Saved fits",
     "chooseFit": "Choose a fit",
@@ -856,10 +865,5 @@
     "revoke": "Revoke promotion",
     "trajectoryScope": "The rule covers this exact {{count}}-step trajectory with a {{seconds}} s root budget, because its steps do not all share one contract or each step class has its own model. Each step is checked against the model fitted for its own class.",
     "trajectoryCertificate": "This certificate covers only its exact {{count}}-step trajectory. Each step uses the model fitted for its own class; a single task or a different step sequence keeps its prior."
-  },
-  "learnedClass": {
-    "active": "Learned selection is active: the selector certified on {{date}} chooses the model for each task. This order is used only when it does not choose.",
-    "inactive": "Learned selection is not active yet, so this order chooses. Qualified evidence: {{training}}/8 training and {{heldOut}}/8 held-out cases ({{workflows}} workflows), {{fits}} fitted models, {{campaigns}} comparisons.",
-    "unavailable": "Learned selection status could not be read."
   }
 }

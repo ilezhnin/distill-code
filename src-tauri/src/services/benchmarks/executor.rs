@@ -182,6 +182,11 @@ fn application_candidate_key(configuration: &Configuration) -> String {
 fn validate(request: &Request) -> Result<()> {
     let prediction = &request.prediction;
     let candidates = &prediction.candidates;
+    // Ordinary requests carry the full live inventory. The class policy maps
+    // it to the bounded trained pool; a renderer ranking must not cut that
+    // evidence off before selection. The serialized request bound still applies.
+    let ordinary =
+        matches!(request.surface.as_str(), "chat" | "wave") && request.model_id.is_none();
     let keys: BTreeSet<_> = candidates
         .iter()
         .map(|candidate| application_candidate_key(&candidate.configuration))
@@ -191,13 +196,13 @@ fn validate(request: &Request) -> Result<()> {
         || request.context_id.trim().is_empty()
         || request.context_id.len() > 256
         || !matches!(request.surface.as_str(), "chat" | "wave" | "benchmark")
-        || candidates.len() > 32
+        || (!ordinary && candidates.len() > 32)
         || candidates.iter().any(|candidate| {
             candidate.configuration.provider_id.trim().is_empty()
                 || candidate.configuration.model_id.trim().is_empty()
         })
         || keys.len() != candidates.len()
-        || request.prior_keys.len() > 32
+        || (!ordinary && request.prior_keys.len() > 32)
         || request.prior_keys.iter().collect::<BTreeSet<_>>().len() != request.prior_keys.len()
         || request.prior_keys.iter().any(|key| !keys.contains(key))
         || request
@@ -211,7 +216,7 @@ fn validate(request: &Request) -> Result<()> {
     // Application intent uniqueness was checked above; the benchmark validator
     // deliberately shares a key for omitted speed and explicit normal mode.
     // Reuse its feature/floor bounds without asserting those intents are equal.
-    if matches!(request.surface.as_str(), "chat" | "wave") && request.model_id.is_none() {
+    if ordinary {
         let mut public_features = prediction.clone();
         public_features.candidates.clear();
         learned::validate_public_request(&public_features)?;

@@ -354,8 +354,17 @@ make that missing first measurement disappear.
 `benchmark_workflow_campaign_report` requires all planned first measurements.
 It compares whole trajectories with equal group weights, paired group bootstrap
 intervals, best-fixed reselection within each resample, and a hindsight upper
-bound over the registered policies. Timing covers whole workflow wall time;
-cost remains the reported generation cost. Missing weighted resources prevent
+bound over the registered policies. New concurrent step-admitted plans freeze
+the `quality_weighted_relative_execution_elapsed_excluding_account_slot_wait_v1`
+metric: whole workflow elapsed time minus validated persisted admitted-step
+account-slot waits. Selection, orchestration, and interruptions remain included;
+uncommitted waits are not subtracted. The first trajectory snapshot freezes raw
+elapsed time, excluded wait, and execution elapsed time, also exposed in the
+report's `timing` records. Invalid or missing timing prevents a new-contract
+report; its first outcome is retained with a timing error. Existing plans,
+including older v4 plans, retain raw wall-time utility, and saved reports are
+never recalculated. Serial plans also retain their existing timing contract.
+Cost remains the reported generation cost. Missing weighted resources prevent
 a complete utility comparison. Reports and traces remain private local data.
 Exploratory intervals do not establish qualification or authorize promotion.
 

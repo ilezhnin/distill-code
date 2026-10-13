@@ -122,9 +122,7 @@ export function AgentDetailPage({
           multiline: true,
         }
       : null,
-    // Model ranking replaced the legacy Provider/Model pair as how this
-    // agent's model is chosen; the summary shows the ranking the runtime
-    // walks (and surfaces a lone legacy single model instead of hiding it).
+    // Show automatic policy status and preserve the saved fallback preferences.
     {
       label: t("ranking.label"),
       content: <AgentModelRankingSummary persona={persona} />,

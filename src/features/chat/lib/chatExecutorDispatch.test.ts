@@ -11,6 +11,7 @@ import { useChatStore } from "../stores/chatStore";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { resetSessionTargetCoordinatorsForTests } from "./sessionTargetCoordinator";
 import {
+  captureInitialChatExecutorIntent,
   prepareChatExecutorDispatch,
   selectInitialChatExecutor,
   prepareQueuedInitialChatExecutor,
@@ -873,4 +874,39 @@ it("preserves the accepted decision identity when a failed dispatch only reveals
   expect(revealed.payload.executorRequestKey).toBe(
     head.payload.executorRequestKey,
   );
+});
+
+it("captures the full automatic inventory independently of the saved fallback order", () => {
+  const current = {
+    target: {
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+      modelId: "fictional-0",
+      modelName: "Fictional model 0",
+    },
+    runSettings: { effort: "high", fast: false },
+  };
+  const intent = captureInitialChatExecutorIntent({
+    current,
+    context: {
+      providers: [{ id: "codex-acp" }],
+      getModelsForHarness: () =>
+        Array.from({ length: 40 }, (_, index) => ({
+          id: `fictional-${index}`,
+          efforts: [{ id: "low" }, { id: "high" }],
+          supportsFast: true,
+        })),
+      rateLimits: [],
+    },
+  });
+  expect(intent.priorIds).toHaveLength(1);
+  expect(intent.options[0]).toEqual(current);
+  expect(
+    intent.options.some(
+      (option) =>
+        option.target.modelId === "fictional-39" &&
+        option.runSettings?.effort === "low" &&
+        option.runSettings?.fast === true,
+    ),
+  ).toBe(true);
 });

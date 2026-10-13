@@ -511,13 +511,13 @@
   },
   "title": "Configuración",
   "routing": {
-    "title": "Enrutado",
+    "title": "Selección automática por tarea",
     "waveThreshold": "Sacar los pasos de una ola de una plataforma al",
-    "waveThresholdDescription": "Los pasos de una ola se ejecutan sin supervisión y varios a la vez contra la misma cuota, así que salen antes que tus propios chats. Por encima de este gasto de una ventana, un paso prefiere el siguiente modelo de su lista, y lo indica en su chip.",
+    "waveThresholdDescription": "Preferir otra plataforma disponible al gastar esta proporción de su cuota. Si todas están cerca del límite, se puede usar una alternativa disponible.",
     "chatThreshold": "Sacar tus chats de una plataforma al",
     "chatThresholdDescription": "Estás delante de un chat y puedes reaccionar, así que puede acercarse más al límite que un paso de una ola.",
-    "classesDescription": "Qué modelos prefiere cada clase de trabajo, en orden. Un paso de una ola puede indicar su clase, y un agente sin lista propia usa la clase de su rol: cambiar el orden aquí cambia lo que se ejecuta, sin editar ningún agente.",
-    "classOverridden": "Modificado respecto al orden original.",
+    "classesDescription": "Distill selecciona proveedor, modelo y esfuerzo para cada tarea nueva. Las políticas certificadas aplicables tienen prioridad; en caso contrario se usan las preferencias de respaldo. Se respetan los modelos fijados explícitamente.",
+    "classOverridden": "Preferencias de respaldo personalizadas guardadas.",
     "classes": {
       "code-implement": "Implementación",
       "algorithms": "Algoritmos y código limpio",
@@ -540,7 +540,13 @@
     "add": "Añadir un modelo",
     "reset": "Restablecer el enrutado original",
     "notPersisted": "No se pudieron leer los ajustes de enrutamiento, así que los cambios solo se aplican a esta sesión y se perderán al reiniciar.",
-    "retryLoad": "Intentar leer de nuevo"
+    "retryLoad": "Intentar leer de nuevo",
+    "fallbackControls": "Preferencias de respaldo y límites de uso",
+    "fallbackDescription": "Orden de respaldo opcional. No restringe los modelos disponibles que puede elegir una política certificada.",
+    "evidenceLoading": "Cargando el estado de las políticas...",
+    "evidenceUnavailable": "No se pudo leer el estado de las políticas. No se confirma ninguna política aprendida.",
+    "evidenceCertified": "Política certificada disponible. Se evalúa cada tarea con los modelos disponibles; si la política se abstiene, se usan las preferencias de respaldo.",
+    "evidencePending": "Sin política certificada: se usan las preferencias de respaldo. Casos cualificados: {{training}} de entrenamiento, {{heldOut}} reservados; {{fits}} ajustes, {{campaigns}} comparaciones."
   },
   "accounts": {
     "title": "Cuentas y límites",

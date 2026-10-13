@@ -668,10 +668,10 @@ it("activates only a completed preregistered report and exposes certificate fall
   });
   expect(api.promoteSelector).not.toHaveBeenCalled();
   const status = await screen.findByTestId("learned-class-status");
-  expect(status).toHaveAttribute("data-active", "false");
+  expect(status).toHaveAttribute("data-certified", "false");
   await user.click(activate);
   expect(await screen.findByText("Promotion certificate issued")).toBeVisible();
-  await waitFor(() => expect(status).toHaveAttribute("data-active", "true"));
+  await waitFor(() => expect(status).toHaveAttribute("data-certified", "true"));
   expect(
     screen.getByText(/worker:prior.*minimum predicted quality: 0.6/),
   ).toBeVisible();
@@ -689,7 +689,9 @@ it("activates only a completed preregistered report and exposes certificate fall
   fill("Reason for revocation", "Runtime review withdrawn");
   await user.click(screen.getByRole("button", { name: "Revoke promotion" }));
   expect(await screen.findByText("Promotion revoked")).toBeVisible();
-  await waitFor(() => expect(status).toHaveAttribute("data-active", "false"));
+  await waitFor(() =>
+    expect(status).toHaveAttribute("data-certified", "false"),
+  );
   expect(api.classPolicies).toHaveBeenCalledTimes(3);
   expect(api.promoteSelector).toHaveBeenCalledWith("campaign");
   expect(api.revokePromotion).toHaveBeenCalledWith(

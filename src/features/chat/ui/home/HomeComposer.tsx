@@ -60,6 +60,9 @@ export function HomeComposer({
   const visibleQueuedRecords = (controller.queue.queuedRecords ?? []).filter(
     (record) => !(record.kind === "deferred" && deferredWorkspaceInFlight),
   );
+  const queueError = controller.unresolvedDeferredSend
+    ? controller.deferredWorkspaceError
+    : controller.error;
 
   return (
     <ChatInput
@@ -102,9 +105,9 @@ export function HomeComposer({
           controller.chatState === "thinking",
       }}
       queuedMessageAccessory={
-        controller.unresolvedDeferredSend ? (
+        queueError ? (
           <p className="text-xs text-destructive" role="alert">
-            {controller.deferredWorkspaceError}
+            {queueError}
           </p>
         ) : undefined
       }

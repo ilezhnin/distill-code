@@ -158,4 +158,45 @@ describe("HomeComposer", () => {
 
     expect(current.handleReasoningEffortChange).toHaveBeenCalledWith("max");
   });
+
+  it("shows a queued dispatch failure on Home and clears it when the controller recovers", () => {
+    const current = controllerWithoutSession(opus46);
+    controller.current = {
+      ...current,
+      error: "Restore the saved model before sending this queued message.",
+      queue: {
+        ...current.queue,
+        queuedRecords: [
+          {
+            kind: "transport-ready",
+            recordId: "example-record",
+            payload: { text: "Public example", persona: { kind: "none" } },
+          },
+        ],
+      },
+    };
+    const view = renderHome();
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Restore the saved model before sending this queued message.",
+    );
+    controller.current = { ...controller.current, error: null };
+    view.rerender(
+      <HomeComposer sessionId={null} onActivateSession={vi.fn()} />,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the actionable deferred-workspace error ahead of an older dispatch error", () => {
+    controller.current = {
+      ...controllerWithoutSession(opus46),
+      error: "Older dispatch error",
+      unresolvedDeferredSend: true,
+      deferredWorkspaceError: "Select a model before sending.",
+    };
+    renderHome();
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Select a model before sending.",
+    );
+    expect(screen.queryByText("Older dispatch error")).toBeNull();
+  });
 });

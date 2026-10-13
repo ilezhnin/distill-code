@@ -405,6 +405,8 @@ async fn legacy_recipes_keep_their_original_admission_behavior() {
         RESERVED_WORKERS_ORDER,
     ] {
         plan.order_algorithm = recipe.into();
+        plan.evaluation.primary_metric =
+            "quality_weighted_relative_whole_wall_time_reported_cost_requires_resources".into();
         service
             .require_ready_campaign_cells(&plan, &[0])
             .await

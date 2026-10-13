@@ -1,21 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plug, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
-import { providerDisplayName } from "@/features/providers/providerCatalog";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { cn } from "@/shared/lib/cn";
 import {
-  canConnectPlatform,
-  connectAllAgentPlatforms,
   connectAgentPlatform,
   openProviderAccounts,
   openUsageDetails,
@@ -72,11 +66,6 @@ export function StatusBar() {
     const installed = readiness === "ready" || readiness === "not_ready";
     return isListedUsageProvider(provider, installed);
   });
-  const connectable = catalog
-    .map((provider) => provider.id)
-    .filter((providerId) =>
-      canConnectPlatform(providerId, agentReadiness.get(providerId)),
-    );
   const isEmpty = visibleProviders.length === 0;
 
   return (
@@ -89,7 +78,7 @@ export function StatusBar() {
       {isEmpty ? (
         emptyCtaDismissed ? null : (
           <StatusBarUsageEmptyCta
-            onConnect={() => void connectAllAgentPlatforms(agentReadiness)}
+            onConnect={openProviderAccounts}
             onHide={dismissEmptyCta}
           />
         )
@@ -148,59 +137,6 @@ export function StatusBar() {
           </DropdownMenuContent>
         </DropdownMenu>
       )}
-
-      {connectable.length > 0 ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="ml-1 inline-flex h-5 items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-              aria-label={t("bar.connectAll")}
-            >
-              <Plug className="size-3.5" />
-              <span>{t("bar.connectAll")}</span>
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            side="top"
-            align="start"
-            sideOffset={6}
-            className="w-56"
-          >
-            <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-              {t("bar.connectDescription")}
-            </div>
-            <DropdownMenuSeparator />
-            {connectable.map((providerId) => (
-              <DropdownMenuItem
-                key={providerId}
-                onSelect={() =>
-                  void connectAgentPlatform(
-                    providerId,
-                    agentReadiness.get(providerId),
-                  )
-                }
-                className="gap-2"
-              >
-                {getProviderIcon(providerId, "size-3.5")}
-                <span className="flex-1">
-                  {providerDisplayName(providerId)}
-                </span>
-                <span className="text-[11px] text-muted-foreground">
-                  {t("bar.signIn")}
-                </span>
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={() => void connectAllAgentPlatforms(agentReadiness)}
-            >
-              <Plug className="size-3.5" />
-              {t("bar.connectAll")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
 
       <button
         type="button"

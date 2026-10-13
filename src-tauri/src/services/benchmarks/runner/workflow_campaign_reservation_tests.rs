@@ -8,6 +8,8 @@ async fn reserved_pool_plan(service: &BenchmarkService, frozen: Campaign) -> Cam
     assert_eq!(frozen.plan.order_algorithm, STEP_ADMISSION_ORDER);
     let mut plan = frozen.plan;
     plan.order_algorithm = RESERVED_WORKERS_ORDER.into();
+    plan.evaluation.primary_metric =
+        "quality_weighted_relative_whole_wall_time_reported_cost_requires_resources".into();
     let plan_hash = crate::services::benchmarks::workflow_campaign::hash(&plan).unwrap();
     sqlx::query("UPDATE workflow_campaigns SET plan_json=?,plan_hash=? WHERE id=?")
         .bind(serde_json::to_string(&plan).unwrap())
@@ -695,6 +697,8 @@ async fn reserved_campaign_fifo_allows_disjoint_accounts_but_protects_older_adap
         .unwrap();
     let adaptive = policies.iter().position(|p| p.mode == "learned").unwrap();
     frozen.plan.order_algorithm = RESERVED_WORKERS_ORDER.into();
+    frozen.plan.evaluation.primary_metric =
+        "quality_weighted_relative_whole_wall_time_reported_cost_requires_resources".into();
     let mut remaining = std::mem::take(&mut frozen.plan.cells);
     for policy_index in [a, b, adaptive, b] {
         let index = remaining

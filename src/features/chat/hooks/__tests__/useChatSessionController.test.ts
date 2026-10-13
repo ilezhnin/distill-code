@@ -13,7 +13,10 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectWikiPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
-import { useChatStore } from "../../stores/chatStore";
+import {
+  type QueuedMessagePayload,
+  useChatStore,
+} from "../../stores/chatStore";
 import {
   type ChatSession,
   useChatSessionStore,
@@ -702,6 +705,146 @@ describe("useChatSessionController", () => {
     expect(
       useChatStore.getState().queuedMessageBySession["session-1"][0],
     ).toEqual(accepted);
+  });
+
+  it.each([
+    "unchanged",
+    "manual pin",
+    "queue edit",
+  ])("keeps accepted Home artifact context intact through %s and dispatch", async (action) => {
+    useChatSessionStore.getState().patchSession("session-1", {
+      initialExecutorMode: "automatic",
+      workingDir: "/tmp/accepted-artifacts",
+    });
+    mockUseChatSendMessage.mockResolvedValue(true);
+    let drain: (
+      text: string,
+      persona?: { id: string | null; name?: string },
+      attachments?: ChatAttachmentDraft[],
+      options?: ChatSendOptions,
+    ) => boolean | Promise<boolean> = () => {
+      throw new Error("Queue owner has not mounted");
+    };
+    mockUseMessageQueue.mockImplementation(
+      (sessionId: string, _state: string, sendMessage: typeof drain) => {
+        drain = sendMessage;
+        return {
+          queuedMessage: null,
+          enqueue: (
+            text: string,
+            _personaId?: string,
+            attachments?: ChatAttachmentDraft[],
+            sendOptions?: ChatSendOptions,
+          ) =>
+            useChatStore.getState().enqueueTransportReadyMessage(sessionId, {
+              text,
+              persona: { kind: "none" },
+              attachments,
+              sendOptions,
+            }),
+          update: (recordId: string, payload: QueuedMessagePayload) =>
+            useChatStore
+              .getState()
+              .updateQueuedMessage(sessionId, recordId, payload),
+          dismiss: vi.fn(),
+        };
+      },
+    );
+    const { result } = renderHook(() =>
+      useChatSessionController({ sessionId: "session-1", isHomeSession: true }),
+    );
+    await waitFor(() =>
+      expect(result.current.workspaceContextReady).toBe(true),
+    );
+    act(() => {
+      result.current.handleSend(
+        "Return the public test value.",
+        null,
+        undefined,
+        {
+          assistantPrompt: "Follow the accepted output shape.",
+        },
+      );
+    });
+    const accepted =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    const acceptedOptions = accepted.payload.sendOptions;
+    expect(acceptedOptions?.initialExecutorIntent).toBeDefined();
+    expect(acceptedOptions?.assistantPromptCaptured).toBe(true);
+    expect(acceptedOptions?.assistantPrompt).toContain(
+      "/tmp/accepted-artifacts",
+    );
+    expect(acceptedOptions?.assistantPrompt).toContain(
+      "Follow the accepted output shape.",
+    );
+    expect(accepted.payload.text).toBe("Return the public test value.");
+    expect(mockUseChatSendMessage).not.toHaveBeenCalled();
+
+    if (action === "manual pin") {
+      act(() => {
+        result.current.handleModelChange("gpt-4o", {
+          id: "gpt-4o",
+          name: "GPT-4o",
+          providerId: "claude-acp",
+        });
+      });
+    } else if (action === "queue edit") {
+      act(() => {
+        result.current.queue.update(accepted.recordId, {
+          ...accepted.payload,
+          text: "Return the explicitly edited public value.",
+        });
+      });
+    }
+    const dispatchRecord =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    const dispatchOptions = dispatchRecord.payload.sendOptions;
+    expect(dispatchOptions?.assistantPromptCaptured).toBe(true);
+    expect(dispatchOptions?.assistantPrompt).toBe(
+      acceptedOptions?.assistantPrompt,
+    );
+    if (action === "manual pin")
+      expect(dispatchOptions?.initialExecutorIntent).toBeUndefined();
+    if (action !== "unchanged")
+      expect(dispatchRecord.payload.executorRequestKey).not.toBe(
+        accepted.payload.executorRequestKey,
+      );
+    expect(dispatchRecord.payload.text).toBe(
+      action === "queue edit"
+        ? "Return the explicitly edited public value."
+        : accepted.payload.text,
+    );
+
+    // Later UI context cannot rewrite the already accepted selector task.
+    act(() => {
+      useChatSessionStore.getState().patchSession("session-1", {
+        workingDir: "/tmp/later-artifacts",
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.sessionArtifactCwd).toBe("/tmp/later-artifacts"),
+    );
+    await act(async () => {
+      await drain(
+        dispatchRecord.payload.text,
+        { id: null },
+        undefined,
+        dispatchOptions,
+      );
+    });
+    expect(mockUseChatSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockUseChatSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      dispatchRecord.payload.text,
+      { id: null },
+      undefined,
+      expect.objectContaining({
+        assistantPrompt: acceptedOptions?.assistantPrompt,
+      }),
+    );
+    expect(useChatStore.getState().queuedMessageBySession["session-1"][0]).toBe(
+      dispatchRecord,
+    );
   });
 
   it.each([
@@ -2070,6 +2213,7 @@ describe("useChatSessionController", () => {
       text: "",
       attachments: [imageDraft],
       sendOptions: {
+        assistantPromptCaptured: true,
         executionSystemPrompt: MEMORY_PROTOCOL_PROMPT,
         initialExecutorIntent: expect.objectContaining({
           roleId: null,
@@ -2107,6 +2251,7 @@ describe("useChatSessionController", () => {
         attachments: [imageDraft],
         // Migration preserves the operator protocols accepted in Home.
         sendOptions: {
+          assistantPromptCaptured: true,
           executionSystemPrompt: MEMORY_PROTOCOL_PROMPT,
           initialExecutorIntent: expect.objectContaining({
             roleId: null,

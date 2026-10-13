@@ -1,15 +1,4 @@
-/**
- * Read-only view of the model preference an agent actually runs with, for the
- * agent detail page.
- *
- * Mirrors the runtime precedence in `rankedPersonaTarget.ts` instead of just
- * echoing stored fields, because the detail page's old Provider/Model block
- * lied by omission: it showed the legacy single model even when a ranking (or
- * the role's built-in order) would pick something else. Order shown here:
- * the agent's own ranking, else its role's built-in order, else the legacy
- * single model — with a note naming where the list came from (D5: what the
- * app will do must be visible, not inferred).
- */
+/** Automatic selection and its saved fallback, without predicting an unknown task. */
 
 import { useTranslation } from "react-i18next";
 
@@ -48,12 +37,10 @@ export function AgentModelRankingSummary({
   const { t } = useTranslation("agents");
 
   const source = parseAgentRankingSource(persona.modelRanking);
-  const roleClassId = source
-    ? undefined
-    : modelPreferenceClassForPersona(persona);
+  const roleClassId = modelPreferenceClassForPersona(persona);
   const legacyModel = persona.model?.trim() || undefined;
   const classId = source?.kind === "class" ? source.classId : roleClassId;
-  // The order in force: the operator's Routing override, else the built-in.
+  // Fallback order; this is not a prediction for a future task.
   const classOverride = useRoutingPolicyStore((state) =>
     classId ? state.policy.classOverrides[classId] : undefined,
   );
@@ -87,12 +74,6 @@ export function AgentModelRankingSummary({
     note = t("ranking.viewSingleModel");
   }
 
-  if (rows.length === 0) {
-    return (
-      <p data-testid="agent-ranking-summary-none">{t("ranking.viewNone")}</p>
-    );
-  }
-
   // A role-ordered agent that also carries a legacy single model falls back
   // to that model when nothing ranked is usable — say so instead of letting
   // the old pair silently vanish from the page.
@@ -113,56 +94,62 @@ export function AgentModelRankingSummary({
 
   return (
     <div className="space-y-1.5" data-testid="agent-ranking-summary">
-      <ol className="list-none space-y-1">
-        {keyedRows.map(({ key, row }, index) => (
-          <li
-            key={key}
-            className="flex items-baseline gap-2"
-            data-testid="agent-ranking-summary-row"
+      <p>{t("ranking.automatic")}</p>
+      <LearnedClassStatus classId={classId ?? "general"} />
+      <details>
+        <summary className="cursor-pointer">
+          {t("ranking.fallbackTitle")}
+        </summary>
+        {rows.length === 0 ? (
+          <p data-testid="agent-ranking-summary-none">
+            {t("ranking.viewNone")}
+          </p>
+        ) : null}
+        <ol className="list-none space-y-1">
+          {keyedRows.map(({ key, row }, index) => (
+            <li
+              key={key}
+              className="flex items-baseline gap-2"
+              data-testid="agent-ranking-summary-row"
+            >
+              <span className="w-4 shrink-0 text-[11px] text-surface-agent-profile-fg-muted">
+                {index + 1}
+              </span>
+              <span className="min-w-0 break-words">
+                {row.label}
+                {row.effort ? (
+                  <span className="text-surface-agent-profile-fg-muted">
+                    {" "}
+                    · {row.effort}
+                  </span>
+                ) : null}
+                {row.fast ? (
+                  <span className="text-surface-agent-profile-fg-muted">
+                    {" "}
+                    · {t("ranking.fast")}
+                  </span>
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ol>
+        {note ? (
+          <p
+            className="text-[11px] leading-4 text-surface-agent-profile-fg-muted"
+            data-testid="agent-ranking-summary-note"
           >
-            <span className="w-4 shrink-0 text-[11px] text-surface-agent-profile-fg-muted">
-              {index + 1}
-            </span>
-            <span className="min-w-0 break-words">
-              {row.label}
-              {row.effort ? (
-                <span className="text-surface-agent-profile-fg-muted">
-                  {" "}
-                  · {row.effort}
-                </span>
-              ) : null}
-              {row.fast ? (
-                <span className="text-surface-agent-profile-fg-muted">
-                  {" "}
-                  · {t("ranking.fast")}
-                </span>
-              ) : null}
-            </span>
-          </li>
-        ))}
-      </ol>
-      {note ? (
-        <p
-          className="text-[11px] leading-4 text-surface-agent-profile-fg-muted"
-          data-testid="agent-ranking-summary-note"
-        >
-          {note}
-        </p>
-      ) : null}
-      {classId ? (
-        <LearnedClassStatus
-          classId={classId}
-          className="text-[11px] leading-4 text-surface-agent-profile-fg-muted"
-        />
-      ) : null}
-      {fallbackNote ? (
-        <p
-          className="text-[11px] leading-4 text-surface-agent-profile-fg-muted"
-          data-testid="agent-ranking-summary-fallback"
-        >
-          {fallbackNote}
-        </p>
-      ) : null}
+            {note}
+          </p>
+        ) : null}
+        {fallbackNote ? (
+          <p
+            className="text-[11px] leading-4 text-surface-agent-profile-fg-muted"
+            data-testid="agent-ranking-summary-fallback"
+          >
+            {fallbackNote}
+          </p>
+        ) : null}
+      </details>
     </div>
   );
 }

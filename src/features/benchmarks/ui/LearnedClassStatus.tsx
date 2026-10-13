@@ -13,8 +13,8 @@ export function useClassPolicies() {
 }
 
 /**
- * Says whether a class's model is chosen by its certified learned selector or
- * by the manual order, and what evidence the class still lacks.
+ * Class certification makes selection available; individual tasks can still
+ * abstain when evidence or available models do not match.
  */
 export function LearnedClassStatus({
   classId,
@@ -23,31 +23,29 @@ export function LearnedClassStatus({
   classId: string;
   className?: string;
 }) {
-  const { t } = useTranslation("benchmarks");
+  const { t } = useTranslation("settings");
   const policies = useClassPolicies();
-  if (policies.isPending) return null;
   const policy = policies.data?.find((row) => row.workClassId === classId);
-  const text = policies.error
-    ? t("learnedClass.unavailable")
-    : !policy
-      ? null
-      : policy.certificateId && policy.certifiedAt !== null
-        ? t("learnedClass.active", {
-            date: new Date(policy.certifiedAt).toLocaleDateString(),
-          })
-        : t("learnedClass.inactive", {
-            training: policy.qualifiedTraining,
-            heldOut: policy.qualifiedHeldOut,
-            workflows: policy.heldOutWorkflows,
-            fits: policy.fits,
-            campaigns: policy.campaigns,
+  const certified = Boolean(
+    policy?.certificateId && policy.certifiedAt !== null,
+  );
+  const text = policies.isPending
+    ? t("routing.evidenceLoading")
+    : policies.error
+      ? t("routing.evidenceUnavailable")
+      : certified
+        ? t("routing.evidenceCertified")
+        : t("routing.evidencePending", {
+            training: policy?.qualifiedTraining ?? 0,
+            heldOut: policy?.qualifiedHeldOut ?? 0,
+            fits: policy?.fits ?? 0,
+            campaigns: policy?.campaigns ?? 0,
           });
-  if (!text) return null;
   return (
     <span
       className={cn("block", className)}
       data-testid="learned-class-status"
-      data-active={policy?.certificateId ? "true" : "false"}
+      data-certified={certified ? "true" : "false"}
     >
       {text}
     </span>

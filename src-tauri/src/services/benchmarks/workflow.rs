@@ -157,6 +157,83 @@ pub struct Trace {
     pub root: Attempt,
     pub policy: Option<super::workflow_policy::WorkflowPolicy>,
     pub steps: Vec<TraceStep>,
+    /// Frozen only by campaigns using the queue-excluded timing contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<WorkflowTiming>,
+    /// Preserve first outcomes even when timing cannot support a report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTiming {
+    pub raw_elapsed_ms: u64,
+    pub account_slot_wait_ms: u64,
+    pub execution_elapsed_ms: u64,
+}
+
+/// Validate committed, sequential admission waits without subtracting worker,
+/// selector, or orchestration time. Each wait fits inside its own interval
+/// after selection and before the step lease starts; intervals cannot overlap.
+pub(super) fn campaign_timing(root: &Attempt, steps: &[SavedStep]) -> Result<WorkflowTiming> {
+    let invalid = || {
+        BenchmarkError::new(
+            "invalid_workflow_timing",
+            "Committed workflow timing is incomplete or inconsistent",
+        )
+    };
+    let start = root.started_at.filter(|v| *v >= 0).ok_or_else(invalid)?;
+    let end = root.finished_at.ok_or_else(invalid)?;
+    let raw = end
+        .checked_sub(start)
+        .filter(|v| *v >= 0)
+        .ok_or_else(invalid)?;
+    let mut previous_end = start;
+    let mut waits = 0i64;
+    for (index, step) in steps.iter().enumerate() {
+        step.validate_decision(&root.id)?;
+        let decision = step.decision.as_ref().ok_or_else(invalid)?;
+        let selected_at = decision.executor.as_ref().ok_or_else(invalid)?.created_at;
+        let context = decision.native_context.as_ref().ok_or_else(invalid)?;
+        let wait =
+            i64::try_from(context.local_wait_ms.ok_or_else(invalid)?).map_err(|_| invalid())?;
+        let lease = &context.budget;
+        let step_start = step.attempt.started_at.ok_or_else(invalid)?;
+        let step_end = step.attempt.finished_at.ok_or_else(invalid)?;
+        let interval = lease
+            .step_started_at_ms
+            .checked_sub(selected_at)
+            .filter(|v| *v >= 0)
+            .ok_or_else(invalid)?;
+        waits = waits
+            .checked_add(wait)
+            .filter(|v| *v <= raw)
+            .ok_or_else(invalid)?;
+        if step.index != index
+            || step.attempt.run_id != root.run_id
+            || step.attempt.version_id != root.version_id
+            || selected_at < previous_end
+            || wait > interval
+            || lease.recipe != super::artifact_context::CLOCK_RECIPE
+            || lease.root_id != root.id
+            || lease.step_key != format!("workflow:{}:{index}", root.id)
+            || Some(lease.root_started_at_ms) != start.checked_add(waits)
+            || lease.root_started_at_ms > lease.step_started_at_ms
+            || lease.step_started_at_ms > decision.snapshot.created_at
+            || decision.snapshot.created_at > step_start
+            || step_start > step_end
+            || step_end > end
+        {
+            return Err(invalid());
+        }
+        previous_end = step_end;
+    }
+    Ok(WorkflowTiming {
+        raw_elapsed_ms: raw as u64,
+        account_slot_wait_ms: waits as u64,
+        execution_elapsed_ms: (raw - waits) as u64,
+    })
 }
 
 impl Store {
@@ -198,6 +275,8 @@ impl Store {
             root,
             policy,
             steps,
+            timing: None,
+            timing_error: None,
         })
     }
 }

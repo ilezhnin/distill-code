@@ -114,6 +114,8 @@ export interface ChatSendOptions {
   capturedPersonaSystemPrompt?: string;
   displayText?: string;
   assistantPrompt?: string;
+  /** App context is already included in this accepted assistant prompt. */
+  assistantPromptCaptured?: true;
   chips?: MessageChip[];
   userMessageMetadata?: Partial<MessageMetadata>;
   acpPromptMetadata?: Record<string, unknown>;

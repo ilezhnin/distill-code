@@ -210,9 +210,8 @@
     "pickedNearLimit": "{{agent}}: every ranked model is close to its usage limit — running {{picked}} anyway"
   },
   "ranking": {
-    "label": "Model ranking",
-    "empty": "No ranking yet — this agent uses its single model, or its role's built-in order.",
-    "fillFromRole": "Fill from role",
+    "label": "Model selection",
+    "empty": "No custom fallback list. Distill uses role preferences, then the saved single model or app default.",
     "add": "Add model",
     "remove": "Remove",
     "moveUp": "Move up",
@@ -223,21 +222,15 @@
     "effortNotOffered": "{{effort}} (not offered)",
     "fast": "fast",
     "fastAria": "Fast mode at position {{position}}",
-    "previewPick": "Right now: {{model}} · {{effort}}",
-    "previewEffortUnavailable": "Right now: {{model}} does not offer {{effort}} — running at {{actual}}",
-    "previewFastUnavailable": "{{model}} has no fast mode",
-    "previewNone": "Right now: nothing in this ranking is usable",
-    "skip": {
-      "at-limit": "{{model}} is at its usage limit",
-      "near-limit": "{{model}} is close to its usage limit",
-      "not-installed": "{{model}} is not installed"
-    },
     "legacySeeded": "Shown from this agent's saved single model. It becomes the ranking only when you edit the list and save.",
-    "viewFromRole": "From this agent's role — built-in order.",
-    "viewSingleModel": "Saved single model — no ranking configured yet.",
+    "viewFromRole": "Built-in fallback preferences for this role.",
+    "viewSingleModel": "Saved single-model fallback.",
     "viewLegacyFallback": "Falls back to its saved single model ({{model}}) when none of these are usable.",
-    "viewNone": "No ranking — uses the app's default model.",
-    "viewFromRouting": "From this agent's role — your order in Routing."
+    "viewNone": "App default fallback.",
+    "viewFromRouting": "Custom fallback preferences from Settings.",
+    "automatic": "Automatic for each new task. An applicable certified policy selects provider, model and reasoning effort; otherwise saved fallback preferences apply. An explicit model pin in the chat or step takes priority.",
+    "fallbackTitle": "Saved fallback preferences",
+    "fallbackDescription": "Optional order used when no learned choice applies. It does not limit the automatic selector to these models. Pin a model in the chat or step when a specific model is required."
   },
   "acl": {
     "sectionLabel": "Permissions",

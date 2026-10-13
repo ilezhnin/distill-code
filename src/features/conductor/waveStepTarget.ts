@@ -1,3 +1,7 @@
+import {
+  automaticExecutorOptions,
+  type ApplicationExecutorOption,
+} from "@/features/benchmarks/lib/applicationExecutor";
 /**
  * The execution target a wave step should run on.
  *
@@ -167,6 +171,21 @@ export function isAdvertisedModel(target: SessionExecutionTarget): boolean {
   // exactly when discovery is briefly down.
   if (advertised.length === 0) return true;
   return advertised.some((model) => model.id === modelId);
+}
+
+/** The same authoritative inventory pool used by automatic chat selection. */
+export function automaticWaveExecutorOptions(
+  preferred: readonly ApplicationExecutorOption[],
+) {
+  return automaticExecutorOptions(
+    {
+      providers: io.providers(),
+      getModelsForHarness: io.modelsForHarness,
+      rateLimits: io.rateLimits(),
+      nearLimitPercent: io.routingPolicy().waveNearLimitPercent,
+    },
+    preferred,
+  );
 }
 
 /**

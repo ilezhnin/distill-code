@@ -1,3 +1,10 @@
+import {
+  isAgentRankingPlatform,
+  scopedWindowForModel,
+} from "@/features/agents/lib/agentModelRanking";
+import type { RankedPersonaTargetContext } from "@/features/agents/lib/rankedPersonaTarget";
+import { normalizeSessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
+import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
 import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import type { SessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import type { RankableModel } from "@/features/agents/lib/modelRanking";
@@ -9,7 +16,72 @@ export interface ApplicationExecutorOption {
   runSettings?: SessionRunSettings;
 }
 
-/** Add advertised effort/normal-mode choices after the original fallback options. */
+/** Inventory is the candidate pool; saved rankings only order the fallback.
+ * The caller supplies authoritative inventory. Account access is rechecked by
+ * the native host; this pool does not grant execution or learned permission.
+ */
+export function automaticExecutorOptions(
+  context: RankedPersonaTargetContext,
+  preferred: readonly ApplicationExecutorOption[],
+): ApplicationExecutorOption[] {
+  const inventory: ApplicationExecutorOption[] = [];
+  for (const provider of context.providers) {
+    if (!isAgentRankingPlatform(provider.id)) continue;
+    for (const model of context.getModelsForHarness(provider.id)) {
+      const label = model.displayName ?? model.name ?? model.id;
+      if (
+        platformLimitState(context.rateLimits, provider.id, {
+          nearLimitPercent: context.nearLimitPercent,
+          scopedWindow: scopedWindowForModel(provider.id, model.id, label),
+        }) === "at-limit"
+      )
+        continue;
+      try {
+        inventory.push({
+          target: normalizeSessionExecutionTarget({
+            harnessId: provider.id,
+            modelProviderId: model.providerId ?? provider.id,
+            modelId: model.id,
+            modelName: label,
+          }),
+        });
+      } catch {
+        // An invalid advertised row is not an executable target.
+      }
+    }
+  }
+  const eligible = new Set(
+    inventory.map(({ target }) =>
+      JSON.stringify([
+        target.harnessId,
+        target.modelProviderId,
+        target.modelId,
+      ]),
+    ),
+  );
+  const feasiblePreferences = preferred.filter(({ target }) =>
+    eligible.has(
+      JSON.stringify([
+        target.harnessId,
+        target.modelProviderId,
+        target.modelId,
+      ]),
+    ),
+  );
+  return applicationExecutorEffortOptions(
+    [...feasiblePreferences, ...inventory],
+    (target) =>
+      context
+        .getModelsForHarness(target.harnessId)
+        .find(
+          (model) =>
+            model.id === target.modelId &&
+            (model.providerId ?? target.harnessId) === target.modelProviderId,
+        ),
+  );
+}
+
+/** Add advertised effort/speed choices after the original fallback options. */
 export function applicationExecutorEffortOptions(
   preferred: readonly ApplicationExecutorOption[],
   modelForTarget: (target: SessionExecutionTarget) => RankableModel | undefined,
@@ -18,7 +90,7 @@ export function applicationExecutorEffortOptions(
   const seen = new Set<string>();
   const add = (option: ApplicationExecutorOption) => {
     const id = applicationExecutorConfiguration(option)?.id;
-    if (!id || seen.has(id) || options.length === 32) return;
+    if (!id || seen.has(id)) return;
     seen.add(id);
     options.push(option);
   };
@@ -32,7 +104,7 @@ export function applicationExecutorEffortOptions(
         option.target.modelProviderId
     )
       continue;
-    const addNormalMode = (choice: ApplicationExecutorOption) => {
+    const addAdvertisedSpeedModes = (choice: ApplicationExecutorOption) => {
       if (
         choice.runSettings?.fast === undefined &&
         typeof model.supportsFast === "boolean"
@@ -41,13 +113,18 @@ export function applicationExecutorEffortOptions(
           target: choice.target,
           runSettings: { ...choice.runSettings, fast: false },
         });
+        if (model.supportsFast)
+          add({
+            target: choice.target,
+            runSettings: { ...choice.runSettings, fast: true },
+          });
       }
     };
     if (
       !option.runSettings?.effort ||
       model.efforts?.some((effort) => effort.id === option.runSettings?.effort)
     )
-      addNormalMode(option);
+      addAdvertisedSpeedModes(option);
     for (const effort of model.efforts ?? []) {
       if (!effort.id.trim()) continue;
       const choice = {
@@ -55,10 +132,26 @@ export function applicationExecutorEffortOptions(
         runSettings: { ...option.runSettings, effort: effort.id },
       };
       add(choice);
-      addNormalMode(choice);
+      addAdvertisedSpeedModes(choice);
     }
   }
   return options;
+}
+
+/** Preserve saved fallback order, then use an available inventory default if none survives. */
+export function applicationExecutorPriorIds(
+  candidates: readonly { configuration: Configuration; available: boolean }[],
+  preferredIds: Iterable<string | undefined>,
+): string[] {
+  const availableIds = new Set(
+    candidates
+      .filter((row) => row.available)
+      .map((row) => row.configuration.id),
+  );
+  const preferred = [...new Set(preferredIds)].filter((id): id is string =>
+    Boolean(id && availableIds.has(id)),
+  );
+  return preferred.length ? preferred : [...availableIds].slice(0, 1);
 }
 
 /** Local inventory row identity; the native service owns evidence-key hashing. */

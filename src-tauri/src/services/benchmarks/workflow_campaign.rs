@@ -476,7 +476,12 @@ impl BenchmarkService {
                 "Campaign execution budget does not cover all policies and repetitions",
             ));
         }
-        let evaluation = report::protocol_for_cases(fit.model.weights, &cases);
+        let mut evaluation = report::protocol_for_cases(fit.model.weights, &cases);
+        // Freeze the corrected metric only for new step-admitted campaigns.
+        // Existing plans retain their original wall-time utility contract.
+        if request.parallelism.unwrap_or(1) > 1 {
+            evaluation.primary_metric = report::QUEUE_EXCLUDED_METRIC.into();
+        }
         let order_algorithm = if request.parallelism.unwrap_or(1) > 1 {
             STEP_ADMISSION_ORDER
         } else {

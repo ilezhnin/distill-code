@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
+import { Input } from "@/shared/ui/input";
 import {
   Dialog,
   DialogBody,
@@ -62,6 +63,11 @@ export function BenchmarkLearningDialog({
   const [workClass, setWorkClass] = useState(classes[0] ?? "general");
   const [selectedVersions, setSelectedVersions] = useState<string[]>([]);
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
+  const [weightPercentages, setWeightPercentages] = useState({
+    quality: "85",
+    speed: "15",
+    cost: "0",
+  });
   const [fitId, setFitId] = useState("none");
   const [targetId, setTargetId] = useState("none");
   const [available, setAvailable] = useState<string[]>([]);
@@ -101,11 +107,24 @@ export function BenchmarkLearningDialog({
       !v.manifest.workflow,
   );
   const target = targets.find((v) => v.id === targetId);
+  const weights = {
+    quality: Number(weightPercentages.quality) / 100,
+    speed: Number(weightPercentages.speed) / 100,
+    cost: Number(weightPercentages.cost) / 100,
+  };
+  const validWeights =
+    Object.values(weightPercentages).every((value) => value.trim() !== "") &&
+    Object.values(weights).every(
+      (value) => Number.isFinite(value) && value >= 0,
+    ) &&
+    weights.quality >= 0.5 &&
+    Math.abs(weights.quality + weights.speed + weights.cost - 1) <= 1e-9;
   const toggle = (values: string[], value: string) =>
     values.includes(value)
       ? values.filter((id) => id !== value)
       : [...values, value];
   const trainModel = async () => {
+    if (!validWeights) return;
     setBusy(true);
     setError(null);
     setResult(null);
@@ -117,7 +136,7 @@ export function BenchmarkLearningDialog({
           selectedCandidates.includes(configurationKey(c)),
         ),
         cutoffAt: Date.now(),
-        weights: { quality: 0.8, speed: 0.15, cost: 0.05 },
+        weights,
       });
       await fits.refetch();
       setFitId(fit.id);
@@ -246,12 +265,49 @@ export function BenchmarkLearningDialog({
           <p className="text-xs text-muted-foreground">
             {t("learning.requirements")}
           </p>
+          <fieldset disabled={busy} className="space-y-3">
+            <legend className="text-sm font-medium">
+              {t("learning.weights.title")}
+            </legend>
+            <div className="grid grid-cols-3 gap-3">
+              {(["quality", "speed", "cost"] as const).map((dimension) => (
+                <Field
+                  key={dimension}
+                  label={t(`learning.weights.${dimension}`)}
+                >
+                  {(id) => (
+                    <Input
+                      id={id}
+                      type="number"
+                      min={dimension === "quality" ? 50 : 0}
+                      max={100}
+                      step={1}
+                      value={weightPercentages[dimension]}
+                      onChange={(event) =>
+                        setWeightPercentages((current) => ({
+                          ...current,
+                          [dimension]: event.target.value,
+                        }))
+                      }
+                    />
+                  )}
+                </Field>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("learning.weights.hint")}
+            </p>
+            {!validWeights ? (
+              <BenchmarkAlert>{t("learning.weights.invalid")}</BenchmarkAlert>
+            ) : null}
+          </fieldset>
           <Button
             type="button"
             disabled={
               busy ||
               selectedVersions.length < 8 ||
-              selectedCandidates.length < 2
+              selectedCandidates.length < 2 ||
+              !validWeights
             }
             onClick={() => void trainModel()}
           >
@@ -285,6 +341,13 @@ export function BenchmarkLearningDialog({
                 {t("learning.coverage", {
                   cases: artifact.data.model.commonCases,
                   groups: artifact.data.model.trainingGroups.length,
+                })}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("learning.weights.saved", {
+                  quality: artifact.data.snapshot.request.weights.quality * 100,
+                  speed: artifact.data.snapshot.request.weights.speed * 100,
+                  cost: artifact.data.snapshot.request.weights.cost * 100,
                 })}
               </p>
               <details className="text-sm">

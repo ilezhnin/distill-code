@@ -3,6 +3,8 @@ import {
   type RankedPersonaTargetContext,
 } from "@/features/agents/lib/rankedPersonaTarget";
 import {
+  automaticExecutorOptions,
+  applicationExecutorPriorIds,
   applicationExecutorConfiguration,
   applicationExecutorEffortOptions,
   applicationExecutorTask,
@@ -45,11 +47,7 @@ export function captureInitialChatExecutorIntent(input: {
     : [];
   const priors = [...ranked, ...(input.current ? [input.current] : [])];
   return {
-    options: applicationExecutorEffortOptions(priors, (target) =>
-      input.context
-        .getModelsForHarness(target.harnessId)
-        .find((model) => model.id === target.modelId),
-    ).slice(0, 32),
+    options: automaticExecutorOptions(input.context, priors),
     priorIds: priors.flatMap((option) => {
       const configuration = applicationExecutorConfiguration(option);
       return configuration ? [configuration.id] : [];
@@ -259,10 +257,7 @@ export async function prepareQueuedInitialChatExecutor(
             targetFamily: `chat:${sessionId}`,
             targetGroup: `chat:${sessionId}`,
             candidates,
-            priorIds:
-              intent.priorIds.length > 0
-                ? intent.priorIds
-                : candidates.slice(0, 1).map((row) => row.configuration.id),
+            priorIds: applicationExecutorPriorIds(candidates, intent.priorIds),
             hardCandidateId: null,
             modelId: null,
             minQuality: 0,
@@ -324,16 +319,10 @@ export async function selectInitialChatExecutor(input: {
   context: RankedPersonaTargetContext;
   fallback?: ApplicationExecutorOption;
 }): Promise<ApplicationExecutorOption | undefined> {
-  const options = applicationExecutorEffortOptions(
-    [
-      ...rankedPersonaExecutionTargets(input.persona, input.context),
-      ...(input.fallback ? [input.fallback] : []),
-    ],
-    (target) =>
-      input.context
-        .getModelsForHarness(target.harnessId)
-        .find((model) => model.id === target.modelId),
-  );
+  const options = automaticExecutorOptions(input.context, [
+    ...rankedPersonaExecutionTargets(input.persona, input.context),
+    ...(input.fallback ? [input.fallback] : []),
+  ]);
   if (!input.prompt.trim()) return input.fallback;
   const decision = await previewChatExecutor({
     ...input,

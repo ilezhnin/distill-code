@@ -1296,3 +1296,64 @@ async fn absent_host_evidence_and_partial_configuration_never_confirm_selected_d
     assert!(terminal.matches_selected.is_none());
     assert!(record.host_execution.is_none());
 }
+
+#[tokio::test]
+async fn ordinary_inventory_beyond_research_bound_keeps_priors_pins_and_learned_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let fit = fitted(&store).await;
+    for surface in ["chat", "wave"] {
+        let mut input = ordinary_application_request(surface);
+        let trained_choice = input.prediction.candidates[0].configuration.clone();
+        let mut untrained = Vec::new();
+        for index in 0..40 {
+            let mut row = input.prediction.candidates[0].clone();
+            row.configuration.id = format!("example-inventory-{index}");
+            row.configuration.model_id = format!("example-untrained-{index}");
+            untrained.push(row);
+        }
+        untrained.append(&mut input.prediction.candidates);
+        input.prediction.candidates = untrained;
+        input.prior_keys = input
+            .prediction
+            .candidates
+            .iter()
+            .map(|row| application_candidate_key(&row.configuration))
+            .collect();
+        let mut decision = store
+            .preview_executor_decision(input.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            decision.chosen.as_ref().unwrap().model_id,
+            "example-untrained-0"
+        );
+        apply_class_model(
+            &mut decision,
+            &fit.model,
+            "verified-example-certificate",
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(decision.source, "learned");
+        assert_eq!(decision.chosen, Some(trained_choice));
+        input.prediction.hard_candidate_key = Some(input.prior_keys[35].clone());
+        let pinned = store
+            .preview_ordinary_executor_decision(input.clone())
+            .await
+            .unwrap();
+        assert_eq!(pinned.source, "pin");
+        assert_eq!(
+            pinned.chosen.as_ref().unwrap().model_id,
+            "example-untrained-35"
+        );
+        input.surface = "benchmark".into();
+        assert!(validate(&input).is_err());
+        input.surface = surface.into();
+        input.model_id = Some("example-research-model".into());
+        assert!(validate(&input).is_err());
+        input.model_id = None;
+        input.prediction.task.prompt = "x".repeat(2 * 1024 * 1024);
+        assert!(validate(&input).is_err());
+    }
+}

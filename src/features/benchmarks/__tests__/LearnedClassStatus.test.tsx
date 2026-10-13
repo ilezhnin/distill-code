@@ -39,10 +39,10 @@ afterEach(cleanup);
 it("says what an uncertified class still needs", async () => {
   vi.mocked(api.classPolicies).mockResolvedValue([empty]);
   show("debug");
-  const status = await screen.findByTestId("learned-class-status");
-  expect(status).toHaveAttribute("data-active", "false");
+  const status = await screen.findByText(/No certified task policy yet/);
+  expect(status).toHaveAttribute("data-certified", "false");
   expect(status).toHaveTextContent(
-    /not active yet.*3\/8 training and 1\/8 held-out cases \(1 workflows\), 0 fitted models, 0 comparisons/,
+    /3 training, 1 held-out; 0 fits, 0 comparisons/,
   );
 });
 
@@ -57,21 +57,23 @@ it("says a certified class chooses through its selector", async () => {
     },
   ]);
   show("debug");
-  const status = await screen.findByTestId("learned-class-status");
-  expect(status).toHaveAttribute("data-active", "true");
-  expect(status).toHaveTextContent(/Learned selection is active/);
-  expect(status).toHaveTextContent(/used only when it does not choose/);
+  const status = await screen.findByText(/Certified task policy available/);
+  expect(status).toHaveAttribute("data-certified", "true");
+  expect(status).toHaveTextContent(/Certified task policy available/);
+  expect(status).toHaveTextContent(
+    /fallback preferences apply if the policy abstains/,
+  );
 });
 
-it("reports an unreadable status and stays silent for an unknown class", async () => {
+it("reports unreadable status and an absent class policy honestly", async () => {
   vi.mocked(api.classPolicies).mockRejectedValueOnce(new Error("offline"));
   show("debug");
   expect(
-    await screen.findByText("Learned selection status could not be read."),
+    await screen.findByText(/Task policy status could not be read/),
   ).toBeVisible();
   cleanup();
   vi.mocked(api.classPolicies).mockResolvedValue([empty]);
   show("writing");
   await vi.waitFor(() => expect(api.classPolicies).toHaveBeenCalledTimes(2));
-  expect(screen.queryByTestId("learned-class-status")).toBeNull();
+  expect(await screen.findByText(/No certified task policy yet/)).toBeVisible();
 });

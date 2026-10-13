@@ -32,6 +32,59 @@ function makeOperation(
 }
 
 describe("useAgentSetupStore", () => {
+  it("does not restore a dismissed failure from an in-flight startup snapshot", async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    const { useAgentSetupStore } = await import("./agentSetupStore");
+    const failed = makeOperation({ status: "failed", error: "Sign-in failed" });
+    mocks.clearAgentSetupStatus.mockResolvedValue(undefined);
+    mocks.onAgentSetupState.mockResolvedValue(vi.fn());
+    mocks.listAgentSetupStatus.mockImplementation(async () => {
+      useAgentSetupStore.getState().setOperation("copilot-acp", failed);
+      useAgentSetupStore.getState().clear("copilot-acp");
+      return [
+        ["copilot-acp", failed],
+        ["amp-acp", failed],
+      ];
+    });
+
+    await useAgentSetupStore.getState().init();
+
+    expect(
+      useAgentSetupStore.getState().getStatus("copilot-acp"),
+    ).toBeUndefined();
+    expect(useAgentSetupStore.getState().getStatus("amp-acp")).toEqual(failed);
+    expect(mocks.clearAgentSetupStatus).toHaveBeenCalledWith("copilot-acp");
+  });
+
+  it("does not restore a dismissed failure when the original start response arrives late", async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    const { useAgentSetupStore } = await import("./agentSetupStore");
+    mocks.clearAgentSetupStatus.mockResolvedValue(undefined);
+    mocks.startAgentSetup.mockImplementation(async () => {
+      useAgentSetupStore.getState().setOperation(
+        "copilot-acp",
+        makeOperation({
+          status: "failed",
+          error: "Sign-in failed",
+        }),
+      );
+      useAgentSetupStore.getState().clear("copilot-acp");
+      return makeOperation();
+    });
+
+    await useAgentSetupStore.getState().startSetup("copilot-acp", "auth", {
+      installFixType: null,
+      updateFixTypes: [],
+      verifyInstall: true,
+    });
+
+    expect(
+      useAgentSetupStore.getState().getStatus("copilot-acp"),
+    ).toBeUndefined();
+  });
+
   it("does not let rehydration overwrite a listener update that arrives during the list request", async () => {
     vi.resetModules();
     vi.clearAllMocks();

@@ -102,7 +102,7 @@ async fn reconcile(service: &BenchmarkService, id: &str) -> Result<()> {
         if root.phase == "terminal" {
             results.push((
                 request.request_key,
-                service.store.workflow_trace(&root.id).await?,
+                report::first_trace(&service.store, &saved.plan, &root.id).await?,
             ));
             if super::super::analysis::score(root).is_none() && reason.is_none() {
                 reason = Some(root.reason.clone().unwrap_or_else(||

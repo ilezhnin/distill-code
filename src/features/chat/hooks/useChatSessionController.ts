@@ -2362,6 +2362,7 @@ export function useChatSessionController({
   const {
     messages,
     chatState,
+    error,
     tokenState,
     sendMessage,
     steerMessage,
@@ -2412,7 +2413,9 @@ export function useChatSessionController({
         sendOptions,
       );
       const nextSendOptions = {
-        ...(artifactFolderInstructions
+        ...(artifactFolderInstructions &&
+        !builderSendOptions.assistantPromptCaptured &&
+        !builderSendOptions.initialExecutorIntent
           ? {
               ...builderSendOptions,
               assistantPrompt: composeSystemPrompt(
@@ -2827,34 +2830,47 @@ export function useChatSessionController({
               operatorProtocols,
             )
           : undefined);
-      const sendOptions = {
+      const initialExecutorIntent =
+        !explicitInitialPinsRef.current.has(stateSessionId) &&
+        session?.initialExecutorMode !== "manual" &&
+        (!sessionId || session?.initialExecutorMode === "automatic") &&
+        !sessionHasStarted
+          ? captureInitialChatExecutorIntent({
+              persona: queuedPersona,
+              current: initialTarget
+                ? {
+                    target: initialTarget,
+                    runSettings:
+                      session?.desiredRunSettings ?? pendingPersonaRunSettings,
+                  }
+                : undefined,
+              context: {
+                providers,
+                getModelsForHarness: getInstalledModelsForAgent,
+                rateLimits:
+                  useProviderRateLimitsStore.getState().snapshot?.providers ??
+                  [],
+                classOverrides: getRoutingPolicy().classOverrides,
+                nearLimitPercent: getRoutingPolicy().chatNearLimitPercent,
+              },
+            })
+          : undefined;
+      const sendOptions: ChatSendOptions = {
         ...payload.sendOptions,
-        initialExecutorIntent:
-          !explicitInitialPinsRef.current.has(stateSessionId) &&
-          session?.initialExecutorMode !== "manual" &&
-          (!sessionId || session?.initialExecutorMode === "automatic") &&
-          !sessionHasStarted
-            ? captureInitialChatExecutorIntent({
-                persona: queuedPersona,
-                current: initialTarget
-                  ? {
-                      target: initialTarget,
-                      runSettings:
-                        session?.desiredRunSettings ??
-                        pendingPersonaRunSettings,
-                    }
-                  : undefined,
-                context: {
-                  providers,
-                  getModelsForHarness: getInstalledModelsForAgent,
-                  rateLimits:
-                    useProviderRateLimitsStore.getState().snapshot?.providers ??
-                    [],
-                  classOverrides: getRoutingPolicy().classOverrides,
-                  nearLimitPercent: getRoutingPolicy().chatNearLimitPercent,
-                },
-              })
-            : undefined,
+        initialExecutorIntent,
+        // The selector and dispatch must see the same accepted context. Capture
+        // app-owned artifact guidance before selection, not during queue drain.
+        ...(initialExecutorIntent
+          ? {
+              assistantPromptCaptured: true,
+              assistantPrompt: payload.sendOptions?.assistantPromptCaptured
+                ? payload.sendOptions.assistantPrompt
+                : composeSystemPrompt(
+                    artifactFolderInstructions,
+                    payload.sendOptions?.assistantPrompt,
+                  ),
+            }
+          : {}),
         ...(capturedPersonaSystemPrompt !== undefined
           ? { capturedPersonaSystemPrompt }
           : {}),
@@ -2876,6 +2892,7 @@ export function useChatSessionController({
     },
     [
       appSkillsCatalogPrompt,
+      artifactFolderInstructions,
       availableSkillsCatalogPrompt,
       includedWorkspacesPrompt,
       operatorProtocols,
@@ -3766,6 +3783,7 @@ export function useChatSessionController({
     sessionArtifactCwd,
     messages,
     chatState,
+    error,
     tokenState: resolvedTokenState,
     stopStreaming,
     streamingMessageId,

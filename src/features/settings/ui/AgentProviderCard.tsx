@@ -826,7 +826,15 @@ export function AgentProviderCard({
                 <p className="min-w-0 text-xs font-medium leading-relaxed text-destructive">
                   {setupFailureMessage}
                 </p>
-                <div className="flex items-center justify-end gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => clearSetupStatus(provider.id)}
+                  >
+                    {t("common:actions.cancel")}
+                  </Button>
                   <Button
                     type="button"
                     variant="ghost"

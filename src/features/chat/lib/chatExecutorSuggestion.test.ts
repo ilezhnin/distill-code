@@ -90,6 +90,8 @@ describe("chat executor preview", () => {
       ["alpha", "high", null],
       ["beta", "low", null],
       ["beta", "low", false],
+      ["alpha", null, null],
+      ["beta", null, null],
       ["alpha", "low", null],
       ["beta", "high", null],
       ["beta", "high", false],
@@ -97,6 +99,11 @@ describe("chat executor preview", () => {
     expect(request.priorIds).toEqual(
       request.candidates.slice(0, 3).map((row) => row.configuration.id),
     );
+    // Advertised defaults are executable choices, not edits to the saved prior.
+    for (const row of request.candidates.slice(3, 5)) {
+      expect(row.available).toBe(true);
+      expect(request.priorIds).not.toContain(row.configuration.id);
+    }
   });
 
   it("keeps a pin even when its model is absent, without promoting a different prior", async () => {
@@ -111,6 +118,18 @@ describe("chat executor preview", () => {
       configuration: { modelId: "beta", effort: "low", fastMode: false },
     });
     expect(native.hardCandidateId).toBe(native.candidates[0].configuration.id);
+    // A pin keeps its exact effort/speed intent; automatic defaults and effort
+    // variants are not inserted even when another model is available.
+    expect(
+      native.candidates.map((row) => [
+        row.configuration.modelId,
+        row.configuration.effort,
+        row.configuration.fastMode,
+      ]),
+    ).toEqual([
+      ["beta", "low", false],
+      ["alpha", "high", null],
+    ]);
     expect(
       native.candidates.some(
         (row) => row.available && row.configuration.modelId === "alpha",

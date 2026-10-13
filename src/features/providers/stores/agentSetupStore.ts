@@ -66,17 +66,23 @@ export const useAgentSetupStore = create<AgentSetupStore>((set, get) => ({
 
     // Attach the listener *before* the snapshot read so a transition landing
     // between the two isn't missed. The rehydration merge below preserves any
-    // listener snapshot that arrives while the list request is in flight.
+    // listener snapshot or dismissal that arrives while the list request is
+    // in flight.
     await onAgentSetupState((providerId, operation) => {
       get().setOperation(providerId, operation);
     });
 
     try {
+      const listedVersions = new Map(operationVersions);
       const entries = await listAgentSetupStatus();
       set((state) => {
         const operations = new Map(state.operations);
         for (const [providerId, operation] of entries) {
-          if (!operations.has(providerId)) {
+          if (
+            !operations.has(providerId) &&
+            getOperationVersion(providerId) ===
+              (listedVersions.get(providerId) ?? 0)
+          ) {
             operations.set(providerId, operation);
             bumpOperationVersion(providerId);
           }

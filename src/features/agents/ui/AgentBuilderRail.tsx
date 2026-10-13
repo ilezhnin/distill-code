@@ -776,7 +776,6 @@ export function AgentBuilderRail({
     <ModelRankingField
       value={rankingFieldValue}
       onChange={onChangeModelRanking}
-      displayName={nameFieldValue}
       legacySeeded={rankingLegacySeeded}
       classes={{
         fieldLabel: FIELD_LABEL_CLASS,

@@ -33,19 +33,7 @@ import {
   SelectValue,
 } from "@/shared/ui/select";
 
-/**
- * How work is routed when a platform is running low, and which models each
- * class of work prefers (P36-P38).
- *
- * Both were constants in the source, and both are the operator's call. The
- * thresholds decide when a weekly allowance stops being spent on work that
- * did not need it; the class map is the "hard work here, light work there"
- * arrangement they described, editable without touching a single agent.
- *
- * Deliberately in AI providers rather than a section of its own: this is
- * about which provider gets the work, which is the question this page already
- * answers.
- */
+/** Automatic task selection status, with explicitly secondary fallback controls. */
 export function RoutingPolicySection() {
   const { t } = useTranslation("settings");
   const policy = useRoutingPolicyStore((state) => state.policy);
@@ -91,60 +79,75 @@ export function RoutingPolicySection() {
           </Button>
         </div>
       ) : null}
-      <SettingsRow
-        label={t("routing.waveThreshold")}
-        description={t("routing.waveThresholdDescription")}
-        action={
-          <PercentInput
-            value={policy.waveNearLimitPercent}
-            testId="routing-wave-threshold"
-            onChange={(percent) =>
-              setThreshold("waveNearLimitPercent", percent)
-            }
-          />
-        }
-      />
-      <SettingsRow
-        label={t("routing.chatThreshold")}
-        description={t("routing.chatThresholdDescription")}
-        action={
-          <PercentInput
-            value={policy.chatNearLimitPercent}
-            testId="routing-chat-threshold"
-            onChange={(percent) =>
-              setThreshold("chatNearLimitPercent", percent)
-            }
-          />
-        }
-      />
       <p className="text-xs text-muted-foreground">
         {t("routing.classesDescription")}
       </p>
       {modelPreferenceClassIds().map((classId) => (
-        <ClassRankingRow
+        <SettingsRow
           key={classId}
-          classId={classId}
-          labels={effectiveLabels(classId, policy.classOverrides[classId])}
-          overridden={Boolean(policy.classOverrides[classId])}
-          onChange={(labels) => setClassOverride(classId, labels)}
+          label={t(`routing.classes.${classId}`)}
+          description={<LearnedClassStatus classId={classId} />}
         />
       ))}
-      {isDefaultRoutingPolicy(policy) ? null : (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          data-testid="routing-reset"
-          onClick={resetPolicy}
-        >
-          {t("routing.reset")}
-        </Button>
-      )}
+      <details className="space-y-3" data-testid="routing-fallback-controls">
+        <summary className="cursor-pointer text-sm">
+          {t("routing.fallbackControls")}
+        </summary>
+        <p className="text-xs text-muted-foreground">
+          {t("routing.fallbackDescription")}
+        </p>
+        <SettingsRow
+          label={t("routing.waveThreshold")}
+          description={t("routing.waveThresholdDescription")}
+          action={
+            <PercentInput
+              value={policy.waveNearLimitPercent}
+              testId="routing-wave-threshold"
+              onChange={(percent) =>
+                setThreshold("waveNearLimitPercent", percent)
+              }
+            />
+          }
+        />
+        <SettingsRow
+          label={t("routing.chatThreshold")}
+          description={t("routing.chatThresholdDescription")}
+          action={
+            <PercentInput
+              value={policy.chatNearLimitPercent}
+              testId="routing-chat-threshold"
+              onChange={(percent) =>
+                setThreshold("chatNearLimitPercent", percent)
+              }
+            />
+          }
+        />
+        {modelPreferenceClassIds().map((classId) => (
+          <ClassRankingRow
+            key={classId}
+            classId={classId}
+            labels={effectiveLabels(classId, policy.classOverrides[classId])}
+            overridden={Boolean(policy.classOverrides[classId])}
+            onChange={(labels) => setClassOverride(classId, labels)}
+          />
+        ))}
+        {isDefaultRoutingPolicy(policy) ? null : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            data-testid="routing-reset"
+            onClick={resetPolicy}
+          >
+            {t("routing.reset")}
+          </Button>
+        )}
+      </details>
     </SettingsSection>
   );
 }
 
-/** The order in force for a class: the operator's, or the shipped one. */
+/** Saved fallback preferences, kept separate from automatic candidates. */
 function effectiveLabels(
   classId: ModelPreferenceClassId,
   override: string[] | undefined,
@@ -215,10 +218,7 @@ function ClassRankingRow({
       data-testid="routing-class-row"
       data-class-id={classId}
       description={
-        <>
-          <LearnedClassStatus classId={classId} />
-          {overridden ? <span>{t("routing.classOverridden")}</span> : null}
-        </>
+        overridden ? <span>{t("routing.classOverridden")}</span> : null
       }
       action={
         <div className="flex min-w-0 flex-col gap-1">

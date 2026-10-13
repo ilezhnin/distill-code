@@ -256,6 +256,8 @@ async fn legacy_bounded_plan(service: &BenchmarkService, frozen: Campaign) -> Ca
     assert_eq!(frozen.plan.order_algorithm, STEP_ADMISSION_ORDER);
     let mut plan = frozen.plan;
     plan.order_algorithm = "sha256-campaign-cell-bounded-refill-v2".into();
+    plan.evaluation.primary_metric =
+        "quality_weighted_relative_whole_wall_time_reported_cost_requires_resources".into();
     let plan_hash = crate::services::benchmarks::workflow_campaign::hash(&plan).unwrap();
     assert_ne!(plan_hash, frozen.plan_hash);
     sqlx::query("UPDATE workflow_campaigns SET plan_json=?,plan_hash=? WHERE id=?")
@@ -409,6 +411,24 @@ async fn concurrent_campaign_refills_while_slow_children_fly_and_drains_all_on_p
         .await
         .unwrap();
     assert_eq!(report.trace_hashes.len(), 120);
+    assert_eq!(report.timing.len(), 120);
+    for repeat in report
+        .cases
+        .iter()
+        .flat_map(|case| &case.cells)
+        .flat_map(|cell| &cell.repeats)
+    {
+        let timing = &report
+            .timing
+            .iter()
+            .find(|t| t.attempt_id == repeat.attempt_id)
+            .unwrap()
+            .elapsed;
+        assert_eq!(
+            repeat.duration_ms,
+            Some((timing.raw_elapsed_ms - timing.account_slot_wait_ms) as f64)
+        );
+    }
     assert_eq!(report.groups, 4);
     assert_eq!(
         report

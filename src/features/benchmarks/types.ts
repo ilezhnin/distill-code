@@ -137,7 +137,15 @@ export interface WorkflowPolicyRunRequest {
   maxExecutions: number;
 }
 
+export interface WorkflowTiming {
+  rawElapsedMs: number;
+  accountSlotWaitMs: number;
+  executionElapsedMs: number;
+}
+
 export interface WorkflowTrace {
+  timing?: WorkflowTiming;
+  timingError?: string;
   root: Attempt;
   policy: WorkflowPolicy | null;
   steps: {

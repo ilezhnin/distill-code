@@ -1,4 +1,9 @@
-import type { Configuration, RunRequest, WorkflowPolicy } from "../types";
+import type {
+  Configuration,
+  RunRequest,
+  WorkflowPolicy,
+  WorkflowTiming,
+} from "../types";
 import type { SelectorHoldoutReport } from "./benchmarkLearning";
 
 export interface WorkflowCampaignRequest {
@@ -67,6 +72,7 @@ export interface WorkflowCampaign {
   revision: number;
 }
 export interface WorkflowCampaignReport {
+  timing?: (WorkflowTiming & { attemptId: string })[];
   campaignId: string;
   supersedes?: string[];
   planHash: string;

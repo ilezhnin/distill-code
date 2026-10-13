@@ -210,9 +210,8 @@
     "pickedNearLimit": "{{agent}}: todos los modelos del ranking están cerca de su límite; se ejecuta {{picked}} de todos modos"
   },
   "ranking": {
-    "label": "Ranking de modelos",
-    "empty": "Sin ranking todavía: este agente usa su modelo único o el orden propio de su rol.",
-    "fillFromRole": "Rellenar por rol",
+    "label": "Selección de modelo",
+    "empty": "Sin lista de respaldo personalizada. Distill usa las preferencias del rol y luego el modelo guardado o predeterminado.",
     "add": "Añadir modelo",
     "remove": "Quitar",
     "moveUp": "Subir",
@@ -223,21 +222,15 @@
     "effortNotOffered": "{{effort}} (no disponible)",
     "fast": "rápido",
     "fastAria": "Modo rápido en la posición {{position}}",
-    "previewPick": "Ahora mismo: {{model}} · {{effort}}",
-    "previewEffortUnavailable": "Ahora mismo: {{model}} no ofrece {{effort}}; se ejecuta con {{actual}}",
-    "previewFastUnavailable": "{{model}} no tiene modo rápido",
-    "previewNone": "Ahora mismo: nada del ranking se puede usar",
-    "skip": {
-      "at-limit": "{{model}} está en su límite de uso",
-      "near-limit": "{{model}} está cerca de su límite de uso",
-      "not-installed": "{{model}} no está instalado"
-    },
     "legacySeeded": "Se muestra a partir del modelo único guardado de este agente. Solo pasa a ser el ranking cuando editas la lista y guardas.",
-    "viewFromRole": "Del rol de este agente: orden integrado.",
-    "viewSingleModel": "Modelo único guardado: aún sin ranking configurado.",
+    "viewFromRole": "Preferencias de respaldo integradas del rol.",
+    "viewSingleModel": "Modelo individual guardado como respaldo.",
     "viewLegacyFallback": "Recurre a su modelo único guardado ({{model}}) cuando ninguno de estos se puede usar.",
-    "viewNone": "Sin ranking: usa el modelo por defecto de la aplicación.",
-    "viewFromRouting": "Del rol de este agente: tu orden en Enrutamiento."
+    "viewNone": "Modelo predeterminado como respaldo.",
+    "viewFromRouting": "Preferencias de respaldo personalizadas de Ajustes.",
+    "automatic": "Automática para cada tarea nueva. Una política certificada aplicable elige proveedor, modelo y esfuerzo; en caso contrario se usan las preferencias de respaldo. Un modelo fijado en el chat o paso tiene prioridad.",
+    "fallbackTitle": "Preferencias de respaldo guardadas",
+    "fallbackDescription": "Orden opcional cuando no se aplica una elección aprendida. No limita el selector automático a estos modelos. Fija un modelo en el chat o paso si necesitas uno específico."
   },
   "acl": {
     "sectionLabel": "Permisos",

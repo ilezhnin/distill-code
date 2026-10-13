@@ -1,6 +1,84 @@
 //! First planned whole trajectories, including every registered repetition.
 use super::*;
-use crate::services::benchmarks::{learned::report::*, selector::RoleWeights, workflow::Trace};
+use crate::services::benchmarks::{
+    learned::report::*,
+    selector::RoleWeights,
+    workflow::{self, Trace, WorkflowTiming},
+};
+
+pub(super) const QUEUE_EXCLUDED_METRIC: &str =
+    "quality_weighted_relative_execution_elapsed_excluding_account_slot_wait_v1";
+
+pub(super) fn queue_excluded(plan: &Plan) -> bool {
+    plan.evaluation.primary_metric == QUEUE_EXCLUDED_METRIC
+}
+
+/// Freeze timing with the first trajectory, never retrofit a saved snapshot.
+pub(super) async fn first_trace(store: &Store, plan: &Plan, root_id: &str) -> Result<Trace> {
+    let mut trace = store.workflow_trace(root_id).await?;
+    if queue_excluded(plan) {
+        if plan.order_algorithm != STEP_ADMISSION_ORDER {
+            return Err(invalid("Queue-excluded timing requires step admission"));
+        }
+        let steps = workflow::saved_steps(store, root_id).await?;
+        if steps.len() != trace.steps.len() {
+            return Err(invalid("Workflow timing snapshot changed"));
+        }
+        for (saved, frozen) in steps.iter().zip(&trace.steps) {
+            if saved.index != frozen.index
+                || saved.decision.as_ref().map(|d| &d.content_hash) != frozen.input_hash.as_ref()
+                || hash(&saved.attempt)? != hash(&frozen.attempt)?
+            {
+                return Err(invalid("Workflow timing snapshot changed"));
+            }
+        }
+        match workflow::campaign_timing(&trace.root, &steps) {
+            Ok(timing) => trace.timing = Some(timing),
+            Err(error) => trace.timing_error = Some(error.message),
+        }
+    }
+    Ok(trace)
+}
+
+fn execution_duration(trace: &Trace) -> Result<&WorkflowTiming> {
+    if let Some(error) = &trace.timing_error {
+        return Err(incomplete(error));
+    }
+    let timing = trace
+        .timing
+        .as_ref()
+        .ok_or_else(|| incomplete("Frozen execution timing is missing"))?;
+    let raw = trace
+        .root
+        .started_at
+        .filter(|v| *v >= 0)
+        .zip(trace.root.finished_at)
+        .and_then(|(start, end)| end.checked_sub(start))
+        .and_then(|elapsed| u64::try_from(elapsed).ok());
+    if raw != Some(timing.raw_elapsed_ms)
+        || timing
+            .raw_elapsed_ms
+            .checked_sub(timing.account_slot_wait_ms)
+            != Some(timing.execution_elapsed_ms)
+    {
+        return Err(invalid("Frozen execution timing integrity check failed"));
+    }
+    Ok(timing)
+}
+
+fn measured_duration(trace: &Trace, exclude_queue: bool) -> Result<Option<f64>> {
+    if exclude_queue {
+        Ok(Some(execution_duration(trace)?.execution_elapsed_ms as f64))
+    } else {
+        // Keep historical raw-wall semantics even if timing fields are present.
+        Ok(trace
+            .root
+            .started_at
+            .zip(trace.root.finished_at)
+            .filter(|(a, b)| b >= a)
+            .map(|(a, b)| (b - a) as f64))
+    }
+}
 
 pub(super) fn protocol(weights: RoleWeights) -> ReportProtocol {
     let mut value = ReportProtocol::new(weights);
@@ -44,6 +122,17 @@ pub struct Report {
     /// Omitted for old objective reports to preserve their artifact hashes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub judging: Vec<JudgingOverhead>,
+    /// Raw wall time and excluded queue wait for the new metric only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timing: Vec<TrajectoryTiming>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrajectoryTiming {
+    pub attempt_id: String,
+    #[serde(flatten)]
+    pub elapsed: WorkflowTiming,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +241,13 @@ impl Store {
         }
         let plan = &saved.plan;
         let fit = self.selector_fit(&plan.request.model_id).await?;
+        let mut expected_protocol = protocol_for_cases(fit.model.weights, &plan.cases);
+        if queue_excluded(plan) {
+            if plan.order_algorithm != STEP_ADMISSION_ORDER {
+                return Err(invalid("Queue-excluded timing requires step admission"));
+            }
+            expected_protocol.primary_metric = QUEUE_EXCLUDED_METRIC.into();
+        }
         let mut class_changed =
             plan.class_snapshot_hashes.len() != plan.request.class_model_ids.len();
         for (class, id) in &plan.request.class_model_ids {
@@ -160,7 +256,7 @@ impl Store {
         }
         if fit.model.snapshot_hash != plan.model_snapshot_hash
             || class_changed
-            || hash(&protocol_for_cases(fit.model.weights, &plan.cases))? != hash(&plan.evaluation)?
+            || hash(&expected_protocol)? != hash(&plan.evaluation)?
         {
             return Err(invalid(
                 "Workflow report protocol or fitted snapshot changed",
@@ -171,6 +267,7 @@ impl Store {
         let mut first_runs = BTreeMap::new();
         let mut fallback_cases = BTreeSet::new();
         let mut judging = Vec::new();
+        let mut timing = Vec::new();
         for (index, cell) in plan.cells.iter().enumerate() {
             let request = plan.run_request(index)?;
             let row = sqlx::query("SELECT request_hash,result_json,result_hash FROM workflow_campaign_cells WHERE request_key=?").bind(&request.request_key).fetch_one(&self.pool).await?;
@@ -248,12 +345,14 @@ impl Store {
                 ));
             }
             repeat.repetition = cell.repetition;
-            repeat.duration_ms = trace
-                .root
-                .started_at
-                .zip(trace.root.finished_at)
-                .filter(|(a, b)| b >= a)
-                .map(|(a, b)| (b - a) as f64);
+            repeat.duration_ms = measured_duration(&trace, queue_excluded(plan))?;
+            if queue_excluded(plan) {
+                let elapsed = execution_duration(&trace)?.clone();
+                timing.push(TrajectoryTiming {
+                    attempt_id: trace.root.id.clone(),
+                    elapsed,
+                });
+            }
             evidence
                 .entry((cell.case_index, cell.policy_index))
                 .or_default()
@@ -341,10 +440,16 @@ impl Store {
             .collect();
         policies.extend(keys.iter().map(|k| format!("fixed:{k}")));
         let mut report = Report { campaign_id:plan.id.clone(),plan_hash:saved.plan_hash,artifact_hash:String::new(),created_at:now(),protocol:plan.evaluation.clone(),trace_hashes,
-            policies:summarize_policies(&cases,&plan.evaluation,&policies,&keys,"persona"),groups:cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),cases,dispatch_allowed:false,judging,supersedes:plan.supersedes.clone(),
+            policies:summarize_policies(&cases,&plan.evaluation,&policies,&keys,"persona"),groups:cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),cases,dispatch_allowed:false,judging,timing,supersedes:plan.supersedes.clone(),
             limitations:vec!["Declared groups still require independent semantic and grader qualification".into(),"Equal-group paired percentile intervals are exploratory, conditional on recorded repetitions, and unadjusted for multiple comparisons".into(),"Best fixed is reselected within every resample; oracle is the hindsight best registered whole-trajectory policy per case, not a deployable step oracle".into(),"Wall time includes orchestration and interruptions; cost is provider-reported generation cost, with absent resources left unknown".into(),"This research report grants no production promotion or deployment-scope authority".into()] };
         if !report.supersedes.is_empty() {
             report.limitations.push("This comparison reuses families exposed by cancelled campaigns. Its results are diagnostic measurements, not unseen held-out evidence, and cannot promote a selector".into());
+        }
+        if queue_excluded(plan) {
+            report
+                .limitations
+                .retain(|s| !s.starts_with("Wall time includes"));
+            report.limitations.push("Execution elapsed time retains selector and orchestration overhead and interruptions, excluding only validated persisted admitted-step account-slot waits. Raw elapsed time and excluded waits are recorded separately; uncommitted waits remain included. Cost is provider-reported generation cost, with absent resources left unknown".into());
         }
         if !report.judging.is_empty() {
             report.limitations.push("Frozen final-panel calls, recorded judge durations and reported judge costs are measurement overhead, excluded from executor utility; missing judge resources remain unknown".into());
@@ -365,6 +470,64 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn timed_trace(raw: u64, wait: u64) -> Trace {
+        serde_json::from_value(serde_json::json!({
+            "root": {"id":"invented-root","runId":"invented-run","versionId":"invented-version",
+                "configuration":{"id":"worker","providerId":"offline","modelId":"invented",
+                    "billingMode":"simulated","executionProfile":"workflow_policy"},
+                "repetition":0,"phase":"terminal","startedAt":1000,"finishedAt":1000 + raw,
+                "usage":{"schema":"invented"},"evaluations":[],"eventCursor":0},
+            "policy":null,"steps":[],
+            "timing":{"rawElapsedMs":raw,"accountSlotWaitMs":wait,"executionElapsedMs":raw - wait}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn queue_exclusion_is_frozen_opt_in_and_retains_overhead() {
+        // Equal two-second execution including selection/orchestration, unequal queues.
+        let slow_queue = timed_trace(10_000, 8_000);
+        let fast_queue = timed_trace(4_000, 2_000);
+        assert_eq!(measured_duration(&slow_queue, true).unwrap(), Some(2_000.0));
+        assert_eq!(measured_duration(&fast_queue, true).unwrap(), Some(2_000.0));
+        assert_eq!(
+            measured_duration(&slow_queue, false).unwrap(),
+            Some(10_000.0)
+        );
+        assert_eq!(
+            measured_duration(&fast_queue, false).unwrap(),
+            Some(4_000.0)
+        );
+    }
+
+    #[test]
+    fn invalid_or_missing_new_timing_never_falls_back() {
+        let mut trace = timed_trace(10_000, 8_000);
+        trace.timing.as_mut().unwrap().account_slot_wait_ms = u64::MAX;
+        assert!(measured_duration(&trace, true).is_err());
+        trace.timing = None;
+        assert!(measured_duration(&trace, true).is_err());
+        trace = timed_trace(10_000, 8_000);
+        trace.root.started_at = Some(i64::MIN);
+        trace.root.finished_at = Some(i64::MAX);
+        assert!(measured_duration(&trace, true).is_err());
+        trace = timed_trace(10_000, 8_000);
+        trace.timing_error = Some("Invalid committed timing".into());
+        assert!(measured_duration(&trace, true).is_err());
+    }
+
+    #[test]
+    fn legacy_trace_bytes_and_hash_remain_unchanged() {
+        let mut trace = timed_trace(4_000, 2_000);
+        trace.timing = None;
+        let value = serde_json::to_value(&trace).unwrap();
+        assert!(value.get("timing").is_none());
+        assert!(value.get("timingError").is_none());
+        let decoded: Trace = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), value);
+        assert_eq!(hash(&decoded).unwrap(), hash(&trace).unwrap());
+    }
 
     #[test]
     fn objective_serialization_and_protocol_remain_unchanged() {

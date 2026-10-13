@@ -1,6 +1,6 @@
 import {
+  applicationExecutorPriorIds,
   applicationExecutorConfiguration,
-  applicationExecutorEffortOptions,
   applicationExecutorTask,
   type ApplicationExecutorOption,
 } from "@/features/benchmarks/lib/applicationExecutor";
@@ -18,6 +18,7 @@ import type { WaveSpawnRequest, WaveState, WaveStepState } from "./waveEngine";
 import type { SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
 import {
+  automaticWaveExecutorOptions,
   advertisedModelForTarget,
   conductorExecutionTarget,
   isAdvertisedModel,
@@ -25,6 +26,26 @@ import {
   resolveWaveStepTargets,
   waveExecutorRoleContext,
 } from "./waveStepTarget";
+
+/** Explicit step settings constrain every automatic candidate, not only the prior. */
+function automaticOptionsForStep(
+  request: WaveSpawnRequest,
+  preferred: readonly ApplicationExecutorOption[],
+): ApplicationExecutorOption[] {
+  return automaticWaveExecutorOptions(preferred).flatMap((option) => {
+    const judged = planWaveStepRunSettings({
+      step: request.step,
+      ranked: option.runSettings,
+      model: advertisedModelForTarget(option.target),
+    });
+    if (
+      (request.step.effort && !judged.effortApplied) ||
+      (request.step.fast === true && !judged.fastApplied)
+    )
+      return [];
+    return [{ target: option.target, runSettings: judged.runSettings }];
+  });
+}
 
 /** Stable across renderer restarts; the wave and step persist this join. */
 export function waveExecutorKey(waveId: string, stepIndex: number): string {
@@ -326,24 +347,23 @@ export async function prepareWaveExecutor(
       option: ApplicationExecutorOption;
     }
   >();
-  const candidatesWithEffort =
-    request.step.model || request.step.effort
-      ? options
-      : applicationExecutorEffortOptions(options, advertisedModelForTarget);
+  const candidatesWithEffort = request.step.model
+    ? options
+    : automaticOptionsForStep(request, options);
   const priorIds = new Set(
     options.map((option) => applicationExecutorConfiguration(option)?.id),
   );
   for (const option of candidatesWithEffort) {
     const configuration = applicationExecutorConfiguration(option);
     if (!configuration || rows.has(configuration.id)) continue;
-    // The native boundary considers at most 32 distinct candidates. Keep the
-    // baseline (and explicit pin) first, including its unspecified settings.
-    if (rows.size === 32) break;
     rows.set(configuration.id, { configuration, option });
   }
   const candidates = [...rows.values()].map(({ configuration, option }) => ({
     configuration,
-    available: waveExecutorAvailable(request, option, baseline.ranked === true),
+    // The automatic pool already applied live inventory/quota/settings checks.
+    // Avoid rebuilding that full pool for each row; the winner is rechecked
+    // by waveExecutorAvailable immediately before dispatch.
+    available: Boolean(advertisedModelForTarget(option.target)),
     reason: null,
   }));
   const requestKey = waveExecutorKey(wave.waveId, request.stepIndex);
@@ -370,9 +390,7 @@ export async function prepareWaveExecutor(
       targetFamily: wave.rootRequestId,
       targetGroup: wave.rootRequestId,
       candidates,
-      priorIds: candidates
-        .map((row) => row.configuration.id)
-        .filter((id) => priorIds.has(id)),
+      priorIds: applicationExecutorPriorIds(candidates, priorIds),
       hardCandidateId: request.step.model
         ? (candidates[0]?.configuration.id ?? null)
         : null,
@@ -534,9 +552,7 @@ export function waveExecutorAvailable(
       model: advertisedModelForTarget(ranked.target),
     }).runSettings,
   }));
-  const available = request.step.effort
-    ? preferred
-    : applicationExecutorEffortOptions(preferred, advertisedModelForTarget);
+  const available = automaticOptionsForStep(request, preferred);
   return available.some(
     (candidate) => applicationExecutorConfiguration(candidate)?.id === id,
   );

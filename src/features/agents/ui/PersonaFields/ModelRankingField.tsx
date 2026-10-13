@@ -1,17 +1,4 @@
-/**
- * The agent's ranked model list, as an editable field.
- *
- * One model is a wish; a ranking is a policy. The operator asked to say, per
- * role, "first Opus 5 at extra-high, then Fable extra-high, then Sol, then
- * Grok" and have the conductor walk that against the live rate limits — so
- * this field edits the order, and shows what the order actually resolves to
- * right now, because a preference whose effect is invisible is a preference
- * nobody can trust (D5).
- *
- * The list is stored on the persona's `model_ranking` property; an agent that
- * has never been tuned shows the built-in class for its role as the starting
- * point rather than an empty box.
- */
+/** Optional saved fallback preferences; automatic task selection owns dispatch. */
 
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
@@ -25,8 +12,6 @@ import {
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
 import { providerModelInventoryMessage } from "@/features/providers/lib/providerModelInventoryStatus";
-import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
-import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Label } from "@/shared/ui/label";
@@ -40,23 +25,15 @@ import {
 import { Switch } from "@/shared/ui/switch";
 
 import {
-  candidatesForRankingSource,
   isAgentRankingPlatform,
   MAX_AGENT_RANKING_ENTRIES,
   parseAgentRankingSource,
   rankingEffortChoices,
-  rankingFromClass,
   rankingInventoryFromProviders,
   serializeAgentModelRanking,
   type AgentModelRanking,
   type AgentRankingEntry,
 } from "../../lib/agentModelRanking";
-import {
-  modelPreferenceClassForPersona,
-  resolveRankedCandidates,
-  type RankedModelChoice,
-} from "../../lib/modelRanking";
-
 const NO_EFFORT = "__default__";
 
 export interface ModelRankingFieldProps {
@@ -64,8 +41,6 @@ export interface ModelRankingFieldProps {
   value: string;
   /** Persisted as the property; `null` clears the ranking. */
   onChange: (next: string | null) => void;
-  /** Agent name, used to find the built-in class for its role. */
-  displayName?: string;
   /**
    * True when `value` is a display seed built from the agent's legacy single
    * provider/model pair rather than a stored ranking. Renders a note saying
@@ -80,7 +55,6 @@ export interface ModelRankingFieldProps {
 export function ModelRankingField({
   value,
   onChange,
-  displayName,
   legacySeeded = false,
   isReadOnly = false,
   classes,
@@ -88,10 +62,6 @@ export function ModelRankingField({
   const { t } = useTranslation(["agents", "common"]);
   const providers = useAgentStore((state) => state.providers);
   const { getModelsForAgent, getModelInventoryProblem } = useProviderModels();
-  const rateLimits = useProviderRateLimitsStore(
-    (state) => state.snapshot?.providers,
-  );
-
   const source = useMemo(() => parseAgentRankingSource(value), [value]);
   const entries = useMemo<AgentRankingEntry[]>(
     () => (source?.kind === "list" ? source.ranking.entries : []),
@@ -140,16 +110,6 @@ export function ModelRankingField({
     return null;
   }, [getModelInventoryProblem, inventory.length, providers]);
 
-  const classId = useMemo(
-    () => modelPreferenceClassForPersona({ displayName }),
-    [displayName],
-  );
-  const roleFill = useMemo(() => {
-    if (!classId) return null;
-    const built = rankingFromClass(classId, inventory);
-    return built.entries.length > 0 ? built : null;
-  }, [classId, inventory]);
-
   const commit = useCallback(
     (next: AgentRankingEntry[]) => {
       if (next.length === 0) {
@@ -176,11 +136,6 @@ export function ModelRankingField({
       },
     ]);
   }, [commit, entries, inventory]);
-
-  const fillFromRole = useCallback(() => {
-    if (!roleFill) return;
-    commit(roleFill.entries);
-  }, [commit, roleFill]);
 
   const move = useCallback(
     (index: number, delta: number) => {
@@ -247,272 +202,202 @@ export function ModelRankingField({
     [inventory],
   );
 
-  /**
-   * The preview line for a pick. It names what will actually run: a ranked
-   * effort or fast mode the model does not offer is still the intent, but the
-   * line says the model runs without it rather than repeating the wish.
-   */
-  const previewText = useCallback(
-    (choice: RankedModelChoice) => {
-      const pick =
-        choice.effort && choice.effortApplied === false
-          ? t("ranking.previewEffortUnavailable", {
-              model: choice.label,
-              effort: choice.effort,
-              actual: choice.model.defaultEffort || t("ranking.effortDefault"),
-            })
-          : t("ranking.previewPick", {
-              model: choice.label,
-              effort: choice.effort ?? t("ranking.effortDefault"),
-            });
-      if (choice.fast !== true) return pick;
-      return choice.fastApplied === false
-        ? `${pick} — ${t("ranking.previewFastUnavailable", { model: choice.label })}`
-        : `${pick} · ${t("ranking.fast")}`;
-    },
-    [t],
-  );
-
-  /**
-   * What this ranking resolves to right now — the same resolution the session
-   * path runs, against the same live limits.
-   */
-  const preview = useMemo(() => {
-    if (!source) return undefined;
-    const limits = rateLimits ?? [];
-    const installed = new Set(providers.map((provider) => provider.id));
-    return resolveRankedCandidates(candidatesForRankingSource(source), {
-      modelsForPlatform: (platform) =>
-        installed.has(platform) ? getModelsForAgent(platform) : [],
-      allModels: () =>
-        providers.flatMap((provider) =>
-          getModelsForAgent(provider.id).map((model) => ({
-            harnessId: provider.id,
-            model,
-          })),
-        ),
-      platformLimitState: (platform, scopedWindow) =>
-        platformLimitState(limits, platform, { scopedWindow }),
-    });
-  }, [getModelsForAgent, providers, rateLimits, source]);
-
   return (
     <div className="flex flex-col gap-2" data-testid="model-ranking-field">
       <Label className={classes?.fieldLabel}>{t("ranking.label")}</Label>
+      <p className="text-xs text-muted-foreground">{t("ranking.automatic")}</p>
+      <details>
+        <summary className="cursor-pointer text-sm">
+          {t("ranking.fallbackTitle")}
+        </summary>
+        <p className="text-xs text-muted-foreground">
+          {t("ranking.fallbackDescription")}
+        </p>
 
-      {/* The empty state is still a list — just one with no rows yet. The add
+        {/* The empty state is still a list — just one with no rows yet. The add
           control renders below in both states, so starting a ranking never
           requires discovering that a text placeholder hides the entry point. */}
-      {entries.length > 0 ? (
-        <ol className="flex list-none flex-col gap-1.5">
-          {keyedEntries.map(({ key, entry }, index) => {
-            const inventoryItem = inventoryItemFor(entry);
-            const effortChoices = rankingEffortChoices(entry, inventoryItem);
-            // The switch follows the model: shown where the model has fast
-            // mode, and kept where the entry already asks for it so a stored
-            // value never becomes invisible.
-            const showFast =
-              inventoryItem?.supportsFast === true || entry.fastMode === true;
-            return (
-              <li
-                key={key}
-                className="flex items-center gap-1.5"
-                data-testid="model-ranking-row"
-              >
-                <span className="w-4 shrink-0 text-[11px] text-muted-foreground">
-                  {index + 1}
-                </span>
-                <Select
-                  value={`${entry.platform}:${entry.modelId}`}
-                  onValueChange={(next) => setModel(index, next)}
-                  disabled={isReadOnly}
+        {entries.length > 0 ? (
+          <ol className="flex list-none flex-col gap-1.5">
+            {keyedEntries.map(({ key, entry }, index) => {
+              const inventoryItem = inventoryItemFor(entry);
+              const effortChoices = rankingEffortChoices(entry, inventoryItem);
+              // The switch follows the model: shown where the model has fast
+              // mode, and kept where the entry already asks for it so a stored
+              // value never becomes invisible.
+              const showFast =
+                inventoryItem?.supportsFast === true || entry.fastMode === true;
+              return (
+                <li
+                  key={key}
+                  className="flex items-center gap-1.5"
+                  data-testid="model-ranking-row"
                 >
-                  <SelectTrigger
-                    className={cn("min-w-0 flex-1", classes?.selectTrigger)}
-                    aria-label={t("ranking.modelAria", { position: index + 1 })}
+                  <span className="w-4 shrink-0 text-[11px] text-muted-foreground">
+                    {index + 1}
+                  </span>
+                  <Select
+                    value={`${entry.platform}:${entry.modelId}`}
+                    onValueChange={(next) => setModel(index, next)}
+                    disabled={isReadOnly}
                   >
-                    {/* The stored label renders as the value text directly: a
+                    <SelectTrigger
+                      className={cn("min-w-0 flex-1", classes?.selectTrigger)}
+                      aria-label={t("ranking.modelAria", {
+                        position: index + 1,
+                      })}
+                    >
+                      {/* The stored label renders as the value text directly: a
                       Radix placeholder only shows for an empty value, so a row
                       whose model id no longer matches the installed inventory
                       (a renamed model, or the legacy single-model seed for a
                       model that is not installed) would otherwise show a blank
                       select — exactly the silent drift the stored label exists
                       to survive. */}
-                    <SelectValue placeholder={entry.label}>
-                      {entry.label}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inventory.map((model) => (
-                      <SelectItem
-                        key={`${model.platform}:${model.modelId}`}
-                        value={`${model.platform}:${model.modelId}`}
-                      >
-                        {model.providerLabel} · {model.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={
-                    effortChoices.find(
-                      (choice) =>
-                        choice.id.toLowerCase() === entry.effort?.toLowerCase(),
-                    )?.id ?? NO_EFFORT
-                  }
-                  onValueChange={(next) => setEffort(index, next)}
-                  disabled={isReadOnly || effortChoices.length === 0}
-                >
-                  <SelectTrigger
-                    className={cn("w-24 shrink-0", classes?.selectTrigger)}
-                    aria-label={t("ranking.effortAria", {
-                      position: index + 1,
-                    })}
-                    data-testid="model-ranking-effort"
+                      <SelectValue placeholder={entry.label}>
+                        {entry.label}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {inventory.map((model) => (
+                        <SelectItem
+                          key={`${model.platform}:${model.modelId}`}
+                          value={`${model.platform}:${model.modelId}`}
+                        >
+                          {model.providerLabel} · {model.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={
+                      effortChoices.find(
+                        (choice) =>
+                          choice.id.toLowerCase() ===
+                          entry.effort?.toLowerCase(),
+                      )?.id ?? NO_EFFORT
+                    }
+                    onValueChange={(next) => setEffort(index, next)}
+                    disabled={isReadOnly || effortChoices.length === 0}
                   >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_EFFORT}>
-                      {t("ranking.effortDefault")}
-                    </SelectItem>
-                    {effortChoices.map((choice) => (
-                      <SelectItem key={choice.id} value={choice.id}>
-                        {choice.unlisted
-                          ? t("ranking.effortNotOffered", {
-                              effort: choice.name,
-                            })
-                          : choice.name}
+                    <SelectTrigger
+                      className={cn("w-24 shrink-0", classes?.selectTrigger)}
+                      aria-label={t("ranking.effortAria", {
+                        position: index + 1,
+                      })}
+                      data-testid="model-ranking-effort"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_EFFORT}>
+                        {t("ranking.effortDefault")}
                       </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {showFast ? (
-                  <Switch
-                    checked={entry.fastMode === true}
-                    onCheckedChange={(checked) => setFast(index, checked)}
+                      {effortChoices.map((choice) => (
+                        <SelectItem key={choice.id} value={choice.id}>
+                          {choice.unlisted
+                            ? t("ranking.effortNotOffered", {
+                                effort: choice.name,
+                              })
+                            : choice.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {showFast ? (
+                    <Switch
+                      checked={entry.fastMode === true}
+                      onCheckedChange={(checked) => setFast(index, checked)}
+                      disabled={isReadOnly}
+                      aria-label={t("ranking.fastAria", {
+                        position: index + 1,
+                      })}
+                      data-testid="model-ranking-fast"
+                    />
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    disabled={isReadOnly || index === 0}
+                    onClick={() => move(index, -1)}
+                    tooltip={t("ranking.moveUp")}
+                    aria-label={t("ranking.moveUp")}
+                  >
+                    <IconArrowUp />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    disabled={isReadOnly || index === entries.length - 1}
+                    onClick={() => move(index, 1)}
+                    tooltip={t("ranking.moveDown")}
+                    aria-label={t("ranking.moveDown")}
+                  >
+                    <IconArrowDown />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    destructive
                     disabled={isReadOnly}
-                    aria-label={t("ranking.fastAria", { position: index + 1 })}
-                    data-testid="model-ranking-fast"
-                  />
-                ) : null}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={isReadOnly || index === 0}
-                  onClick={() => move(index, -1)}
-                  tooltip={t("ranking.moveUp")}
-                  aria-label={t("ranking.moveUp")}
-                >
-                  <IconArrowUp />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={isReadOnly || index === entries.length - 1}
-                  onClick={() => move(index, 1)}
-                  tooltip={t("ranking.moveDown")}
-                  aria-label={t("ranking.moveDown")}
-                >
-                  <IconArrowDown />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  destructive
-                  disabled={isReadOnly}
-                  onClick={() => remove(index)}
-                  tooltip={t("ranking.remove")}
-                  aria-label={t("ranking.remove")}
-                >
-                  <IconX />
-                </Button>
-              </li>
-            );
-          })}
-        </ol>
-      ) : null}
+                    onClick={() => remove(index)}
+                    tooltip={t("ranking.remove")}
+                    aria-label={t("ranking.remove")}
+                  >
+                    <IconX />
+                  </Button>
+                </li>
+              );
+            })}
+          </ol>
+        ) : null}
 
-      {entries.length < MAX_AGENT_RANKING_ENTRIES ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xxs"
-          disabled={isReadOnly || inventory.length === 0}
-          onClick={addEntry}
-          leftIcon={<IconPlus />}
-          data-testid="model-ranking-add"
-        >
-          {t("ranking.add")}
-        </Button>
-      ) : null}
+        {entries.length < MAX_AGENT_RANKING_ENTRIES ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xxs"
+            disabled={isReadOnly || inventory.length === 0}
+            onClick={addEntry}
+            leftIcon={<IconPlus />}
+            data-testid="model-ranking-add"
+          >
+            {t("ranking.add")}
+          </Button>
+        ) : null}
 
-      {inventoryStatus ? (
-        // Sits under the disabled add control and says why it is disabled.
-        <p
-          className="text-[11px] text-muted-foreground"
-          data-testid="model-ranking-inventory-status"
-        >
-          {t(inventoryStatus.key, inventoryStatus.values)}
-        </p>
-      ) : null}
+        {inventoryStatus ? (
+          // Sits under the disabled add control and says why it is disabled.
+          <p
+            className="text-[11px] text-muted-foreground"
+            data-testid="model-ranking-inventory-status"
+          >
+            {t(inventoryStatus.key, inventoryStatus.values)}
+          </p>
+        ) : null}
 
-      {legacySeeded && entries.length > 0 ? (
-        <p
-          className="text-[11px] text-muted-foreground"
-          data-testid="model-ranking-legacy-note"
-        >
-          {t("ranking.legacySeeded")}
-        </p>
-      ) : null}
+        {legacySeeded && entries.length > 0 ? (
+          <p
+            className="text-[11px] text-muted-foreground"
+            data-testid="model-ranking-legacy-note"
+          >
+            {t("ranking.legacySeeded")}
+          </p>
+        ) : null}
 
-      {entries.length === 0 ? (
-        // Secondary helper under the empty list: what an empty ranking means,
-        // and the role shortcut for agents whose role has a built-in order.
-        <p
-          className="text-[11px] text-muted-foreground"
-          data-testid="model-ranking-empty"
-        >
-          {t("ranking.empty")}
-          {classId ? (
-            <>
-              {" "}
-              <Button
-                type="button"
-                variant="ghost"
-                size="xxs"
-                flush
-                disabled={isReadOnly || !roleFill}
-                onClick={fillFromRole}
-                data-testid="model-ranking-fill"
-              >
-                {t("ranking.fillFromRole")}
-              </Button>
-            </>
-          ) : null}
-        </p>
-      ) : null}
-
-      {preview ? (
-        <p
-          className="text-[11px] text-muted-foreground"
-          data-testid="model-ranking-preview"
-        >
-          {preview.choice
-            ? previewText(preview.choice)
-            : t("ranking.previewNone")}
-          {preview.skipped.length > 0
-            ? ` — ${preview.skipped
-                .map((skip) =>
-                  t(`ranking.skip.${skip.reason}`, { model: skip.label }),
-                )
-                .join("; ")}`
-            : ""}
-        </p>
-      ) : null}
+        {entries.length === 0 ? (
+          // Clearing a custom list restores the existing role/default fallback.
+          <p
+            className="text-[11px] text-muted-foreground"
+            data-testid="model-ranking-empty"
+          >
+            {t("ranking.empty")}
+          </p>
+        ) : null}
+      </details>
     </div>
   );
 }

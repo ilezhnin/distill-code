@@ -286,6 +286,64 @@ describe("AgentProviderCard", () => {
     expect(clearAgentSetupStatus).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "install",
+    "auth",
+  ] as const)("cancels a failed %s without changing other providers or restarting setup", async (action) => {
+    const user = userEvent.setup();
+    const provider = createProvider({ supportsInstall: true });
+    const readiness = action === "install" ? "not_installed" : "not_ready";
+    const card = (
+      <AgentProviderCard provider={provider} readiness={readiness} />
+    );
+    const otherOperation = makeOperation({
+      output: ["Other setup in progress"],
+    });
+    emitOperation("amp-acp", otherOperation);
+    emitOperation(
+      provider.id,
+      makeOperation({
+        action,
+        status: "failed",
+        phase: "idle",
+        error: "Command exited with code 1",
+        output: ["Failed attempt output"],
+      }),
+    );
+    const view = renderCard(card);
+    expect(await screen.findByText("Setup hit a snag.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(clearAgentSetupStatus).toHaveBeenCalledWith(provider.id);
+    expect(
+      useAgentSetupStore.getState().getStatus(provider.id),
+    ).toBeUndefined();
+    expect(useAgentSetupStore.getState().getStatus("amp-acp")).toEqual(
+      otherOperation,
+    );
+    expect(startAgentSetup).not.toHaveBeenCalled();
+    expect(screen.queryByText("Setup hit a snag.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed attempt output")).not.toBeInTheDocument();
+    const nextAction =
+      action === "install" ? /install claude/i : /sign in.*claude/i;
+    expect(
+      screen.getByRole("button", { name: nextAction }),
+    ).toBeInTheDocument();
+
+    view.unmount();
+    renderCard(card);
+    expect(screen.queryByText("Setup hit a snag.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: nextAction }));
+    await waitFor(() =>
+      expect(startAgentSetup).toHaveBeenCalledWith(
+        provider.id,
+        action,
+        expect.any(Object),
+      ),
+    );
+  });
+
   it("Fix builds a plan that installs the missing bridge and applies pending updates", async () => {
     const user = userEvent.setup();
 
