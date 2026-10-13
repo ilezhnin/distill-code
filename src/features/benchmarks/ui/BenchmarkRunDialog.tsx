@@ -244,43 +244,6 @@ export function BenchmarkRunDialog({
         </DialogHeader>
         <DialogBody className="space-y-6">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
-          <fieldset className="space-y-2">
-            <legend className="mb-2">
-              <SectionHeading title={t("run.tests")} />
-            </legend>
-            {published.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                {t("run.noPublished")}
-              </p>
-            ) : null}
-            {published.flatMap((definition) =>
-              definition.versions.map((version) => (
-                <Label
-                  key={version.id}
-                  className="flex items-center gap-2 py-1 text-sm"
-                >
-                  <Checkbox
-                    disabled={previewOnly}
-                    checked={versions.includes(version.id)}
-                    onCheckedChange={(checked) =>
-                      setVersions((previous) =>
-                        checked
-                          ? [...previous, version.id]
-                          : previous.filter((id) => id !== version.id),
-                      )
-                    }
-                  />
-                  <span className="min-w-0 truncate">
-                    {version.manifest.name} (
-                    {t(`split.${version.manifest.split}`)})
-                  </span>
-                  <code className="text-xs text-muted-foreground">
-                    {shortId(version.contentHash)}
-                  </code>
-                </Label>
-              )),
-            )}
-          </fieldset>
           <section className="space-y-3">
             <SectionHeading title={t("run.configurations")} />
             <div className="grid gap-3 md:grid-cols-2">
@@ -494,6 +457,43 @@ export function BenchmarkRunDialog({
               <BenchmarkAlert>{validPreview.issues.join("\n")}</BenchmarkAlert>
             ) : null}
           </section>
+          <fieldset className="space-y-2">
+            <legend className="mb-2">
+              <SectionHeading title={t("run.tests")} />
+            </legend>
+            {published.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("run.noPublished")}
+              </p>
+            ) : null}
+            {published.flatMap((definition) =>
+              definition.versions.map((version) => (
+                <Label
+                  key={version.id}
+                  className="flex items-center gap-2 py-1 text-sm"
+                >
+                  <Checkbox
+                    disabled={previewOnly}
+                    checked={versions.includes(version.id)}
+                    onCheckedChange={(checked) =>
+                      setVersions((previous) =>
+                        checked
+                          ? [...previous, version.id]
+                          : previous.filter((id) => id !== version.id),
+                      )
+                    }
+                  />
+                  <span className="min-w-0 truncate">
+                    {version.manifest.name} (
+                    {t(`split.${version.manifest.split}`)})
+                  </span>
+                  <code className="text-xs text-muted-foreground">
+                    {shortId(version.contentHash)}
+                  </code>
+                </Label>
+              )),
+            )}
+          </fieldset>
         </DialogBody>
         <DialogFooter>
           <Button
