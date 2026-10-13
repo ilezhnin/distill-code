@@ -10,6 +10,7 @@ import {
   IconEyeCheck,
   IconFilter,
   IconLayout,
+  IconLayoutGrid,
   IconMessage,
   IconNotebook,
   IconPalette,
@@ -419,6 +420,7 @@ export function AxisBars({
 
 /** Label over value, for the summary grid at the top of a report dialog. */
 const BOARD_ICONS: Record<string, typeof IconTrophy> = {
+  all: IconLayoutGrid,
   overall: IconTrophy,
   "code-implement": IconCode,
   algorithms: IconBraces,

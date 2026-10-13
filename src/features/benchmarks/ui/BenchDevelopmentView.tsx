@@ -247,12 +247,10 @@ export function BenchDevelopmentView({
         />
       </BenchmarkToolbar>
       <BenchmarkClassTabs
-        value={workClassId ?? "overall"}
-        onChange={(value) =>
-          onWorkClassChange(value === "overall" ? null : value)
-        }
+        value={workClassId ?? "all"}
+        onChange={(value) => onWorkClassChange(value === "all" ? null : value)}
         options={[
-          { id: "overall", workClass: null, label: t("benchmarks:all") },
+          { id: "all", workClass: null, label: t("benchmarks:all") },
           ...workClasses.map((id) => ({
             id,
             workClass: id,
