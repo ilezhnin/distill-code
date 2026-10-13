@@ -138,7 +138,7 @@ export function BenchmarkQualificationPanel({
     }
   };
   const revoke = async () => {
-    if (!binding || inFlight.current) return;
+    if (archived || !binding || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
@@ -275,7 +275,7 @@ export function BenchmarkQualificationPanel({
                   </details>
                 </>
               ) : null}
-              {binding.revokedAt === null ? (
+              {!archived && binding.revokedAt === null ? (
                 <div className="space-y-2">
                   <Field label={t("governance.revocationReason")}>
                     {(id) => (
@@ -422,7 +422,7 @@ export function BenchmarkQualificationPanel({
               </Button>
             </>
           ) : null}
-          {!eligible ? (
+          {!archived && !eligible ? (
             <p className="text-xs">{t("qualification.unsupported")}</p>
           ) : null}
         </div>

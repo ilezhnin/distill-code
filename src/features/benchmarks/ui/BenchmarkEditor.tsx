@@ -3,9 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconChevronDown, IconPlus, IconTrash } from "@tabler/icons-react";
 import { modelPreferenceClassIds } from "@/features/agents/lib/modelRanking";
-import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import { Card, CardContent } from "@/shared/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
@@ -19,7 +19,6 @@ import {
   benchmarkDraftSchema,
   createBenchmarkDraft,
 } from "../lib/benchmarkDraft";
-import { shortId } from "../lib/benchmarkLabels";
 import { hasDifficulty } from "../lib/benchmarkReleases";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type {
@@ -33,7 +32,6 @@ import {
   SectionHeading,
   SelectField,
 } from "./BenchmarkPrimitives";
-import { BenchmarkQualificationPanel } from "./BenchmarkQualificationPanel";
 
 interface Props {
   definition?: BenchmarkDefinition;
@@ -95,13 +93,14 @@ export function BenchmarkEditor({
   onRun,
 }: Props) {
   const { t } = useTranslation(["benchmarks", "settings"]);
-  const { formatDate } = useLocaleFormatting();
   const client = useQueryClient();
   const [draft, setDraft] = useState<BenchmarkDraft>(
     () =>
       definition?.draft ?? {
         ...createBenchmarkDraft(),
         workClassId: initialWorkClassId,
+        category: initialWorkClassId,
+        taskFamily: crypto.randomUUID(),
       },
   );
   const [record, setRecord] = useState(definition);
@@ -111,12 +110,7 @@ export function BenchmarkEditor({
   );
   const [entryState, setEntryState] = useState(() => pretty(draft.entryState));
   const [workflow, setWorkflow] = useState(() => pretty(draft.workflow));
-  const [advancedOpen, setAdvancedOpen] = useState(
-    () =>
-      Boolean(draft.roleId || draft.rolePrompt) ||
-      draft.entryState !== null ||
-      draft.workflow !== null,
-  );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
@@ -241,9 +235,7 @@ export function BenchmarkEditor({
     onSaved(saved.id);
     return saved;
   };
-  const text = (
-    key: "name" | "taskFamily" | "category" | "source" | "license",
-  ) => (
+  const text = (key: "name" | "taskFamily" | "source" | "license") => (
     <Field label={t(`benchmarks:fields.${key}`)} key={key}>
       {(id) => (
         <Input
@@ -390,294 +382,299 @@ export function BenchmarkEditor({
         </p>
       ) : null}
 
-      <section className="space-y-4">
-        <SectionHeading
-          title={t("benchmarks:editor.sections.test")}
-          description={t("benchmarks:editor.sections.testHint")}
-        />
-        <div className="grid gap-4 md:grid-cols-2">
-          {text("name")}
-          {text("taskFamily")}
-          <Field label={t("benchmarks:fields.workClass")}>
-            {(id) => (
-              <SelectField
-                id={id}
-                value={draft.workClassId}
-                onChange={(value) => patch("workClassId", value)}
-                options={modelPreferenceClassIds().map((value) => ({
-                  value,
-                  label: t(`settings:routing.classes.${value}`),
-                }))}
-              />
-            )}
-          </Field>
-          <Field label={t("benchmarks:fields.split")}>
-            {(id) => (
-              <SelectField
-                id={id}
-                value={draft.split}
-                onChange={(value) => patch("split", value)}
-                options={SPLITS.map((value) => ({
-                  value,
-                  label: t(`benchmarks:split.${value}`),
-                }))}
-              />
-            )}
-          </Field>
-          <Field label={t("benchmarks:fields.difficulty")}>
-            {(id) => (
-              <SelectField
-                id={id}
-                value={
-                  DIFFICULTIES.includes(draft.facets.difficulty ?? "")
-                    ? (draft.facets.difficulty as string)
-                    : "choose"
-                }
-                onChange={(value) =>
-                  patch("facets", { ...draft.facets, difficulty: value })
-                }
-                options={[
-                  {
-                    value: "choose",
-                    label: t("benchmarks:difficulty.choose"),
-                    disabled: true,
-                  },
-                  ...DIFFICULTIES.map((value) => ({
+      <Card>
+        <CardContent className="space-y-4">
+          <SectionHeading title={t("benchmarks:editor.sections.test")} />
+          <div className="grid gap-4 md:grid-cols-2">
+            {text("name")}
+            <Field label={t("benchmarks:detail.type")}>
+              {(id) => (
+                <SelectField
+                  id={id}
+                  value={draft.workClassId}
+                  onChange={(value) => {
+                    setDraft((previous) => ({
+                      ...previous,
+                      workClassId: value,
+                      category: value,
+                    }));
+                    setValidation(null);
+                  }}
+                  options={modelPreferenceClassIds().map((value) => ({
                     value,
-                    label: t(`benchmarks:difficulty.${value}`),
-                  })),
-                ]}
-              />
-            )}
-          </Field>
-          {text("category")}
-          <Field
-            label={t("benchmarks:fields.description")}
-            className="md:col-span-2"
-          >
-            {(id) => (
-              <Textarea
-                id={id}
-                rows={2}
-                value={draft.description}
-                onChange={(event) => patch("description", event.target.value)}
-              />
-            )}
-          </Field>
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <SectionHeading
-          title={t("benchmarks:editor.sections.task")}
-          description={t("benchmarks:editor.sections.taskHint")}
-        />
-        <Field label={t("benchmarks:fields.prompt")}>
-          {(id) => (
-            <Textarea
-              id={id}
-              rows={6}
-              value={draft.prompt}
-              onChange={(event) => patch("prompt", event.target.value)}
-            />
-          )}
-        </Field>
-        <div className="space-y-2">
-          <p className="text-sm">{t("benchmarks:fields.fixtures")}</p>
-          {fixtures.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {t("benchmarks:editor.noFixtures")}
-            </p>
-          ) : null}
-          {fixtures.map((fixture, index) => (
-            <div
-              key={fixture.key}
-              className="grid gap-2 rounded-md bg-muted/40 p-3 md:grid-cols-[14rem_1fr_auto]"
-            >
-              <Input
-                aria-label={t("benchmarks:fields.fixturePath")}
-                placeholder={t("benchmarks:fields.fixturePath")}
-                value={fixture.path}
-                onChange={(event) =>
-                  setFixtures((rows) =>
-                    rows.map((row, position) =>
-                      position === index
-                        ? { ...row, path: event.target.value }
-                        : row,
-                    ),
-                  )
-                }
-              />
-              <Textarea
-                aria-label={t("benchmarks:fields.fixtureContent")}
-                placeholder={t("benchmarks:fields.fixtureContent")}
-                variant="code"
-                rows={3}
-                value={fixture.content}
-                onChange={(event) =>
-                  setFixtures((rows) =>
-                    rows.map((row, position) =>
-                      position === index
-                        ? { ...row, content: event.target.value }
-                        : row,
-                    ),
-                  )
-                }
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                aria-label={t("benchmarks:actions.remove")}
-                onClick={() =>
-                  setFixtures((rows) =>
-                    rows.filter((_, position) => position !== index),
-                  )
-                }
-              >
-                <IconTrash />
-              </Button>
-            </div>
-          ))}
-          <Button
-            type="button"
-            variant="ghost"
-            flush
-            leftIcon={<IconPlus />}
-            onClick={() =>
-              setFixtures((rows) => [
-                ...rows,
-                { key: crypto.randomUUID(), path: "", content: "" },
-              ])
-            }
-          >
-            {t("benchmarks:editor.addFixture")}
-          </Button>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          {text("source")}
-          {text("license")}
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <SectionHeading
-          title={t("benchmarks:editor.sections.evaluation")}
-          description={t("benchmarks:editor.sections.evaluationHint")}
-        />
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label={t("benchmarks:fields.evaluator")}>
-            {(id) => (
-              <SelectField
-                id={id}
-                value={kind}
-                onChange={(value) => patchEvaluator("kind", value)}
-                options={EVALUATOR_KINDS.map((value) => ({
-                  value,
-                  label: t(`benchmarks:evaluators.${value}`),
-                }))}
-              />
-            )}
-          </Field>
-          <Field label={t("benchmarks:fields.evaluatorRevision")}>
-            {(id) => (
-              <Input
-                id={id}
-                value={draft.evaluator.revision}
-                onChange={(event) =>
-                  patchEvaluator("revision", event.target.value)
-                }
-              />
-            )}
-          </Field>
-          {kind === "rubric"
-            ? evaluatorText("rubric", t("benchmarks:fields.rubric"), false, 4)
-            : null}
-          {kind === "exact" || kind === "json"
-            ? evaluatorText(
-                "expected",
-                t("benchmarks:fields.expected"),
-                kind === "json",
-                kind === "json" ? 4 : 2,
-              )
-            : null}
-          {protectedKind
-            ? evaluatorText(
-                "expected",
-                t("benchmarks:fields.protectedChecks"),
-                true,
-                6,
-              )
-            : null}
-          {protectedKind && visualRubric !== null ? (
+                    label: t(`settings:routing.classes.${value}`),
+                  }))}
+                />
+              )}
+            </Field>
+            <Field label={t("benchmarks:fields.split")}>
+              {(id) => (
+                <SelectField
+                  id={id}
+                  value={draft.split}
+                  onChange={(value) => patch("split", value)}
+                  options={SPLITS.map((value) => ({
+                    value,
+                    label: t(`benchmarks:split.${value}`),
+                  }))}
+                />
+              )}
+            </Field>
+            <Field label={t("benchmarks:fields.difficulty")}>
+              {(id) => (
+                <SelectField
+                  id={id}
+                  value={
+                    DIFFICULTIES.includes(draft.facets.difficulty ?? "")
+                      ? (draft.facets.difficulty as string)
+                      : "choose"
+                  }
+                  onChange={(value) =>
+                    patch("facets", { ...draft.facets, difficulty: value })
+                  }
+                  options={[
+                    {
+                      value: "choose",
+                      label: t("benchmarks:difficulty.choose"),
+                      disabled: true,
+                    },
+                    ...DIFFICULTIES.map((value) => ({
+                      value,
+                      label: t(`benchmarks:difficulty.${value}`),
+                    })),
+                  ]}
+                />
+              )}
+            </Field>
             <Field
-              label={t("benchmarks:fields.visualRubric")}
+              label={t("benchmarks:fields.description")}
               className="md:col-span-2"
             >
               {(id) => (
                 <Textarea
                   id={id}
                   rows={2}
-                  value={visualRubric}
-                  onChange={(event) => setVisualRubric(event.target.value)}
+                  value={draft.description}
+                  onChange={(event) => patch("description", event.target.value)}
                 />
               )}
             </Field>
-          ) : null}
-          {kind !== "rubric"
-            ? evaluatorText(
-                "knownGood",
-                t("benchmarks:fields.knownGood"),
-                protectedKind,
-              )
-            : null}
-          {kind !== "rubric"
-            ? evaluatorText(
-                "knownBad",
-                t("benchmarks:fields.knownBad"),
-                protectedKind,
-              )
-            : null}
-        </div>
-      </section>
+          </div>
+        </CardContent>
+      </Card>
 
-      <section className="space-y-4">
-        <SectionHeading
-          title={t("benchmarks:editor.sections.execution")}
-          description={t("benchmarks:editor.sections.executionHint")}
-        />
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label={t("benchmarks:fields.executionProfile")}>
+      <Card>
+        <CardContent className="space-y-4">
+          <SectionHeading title={t("benchmarks:editor.sections.task")} />
+          <Field label={t("benchmarks:fields.prompt")}>
             {(id) => (
-              <SelectField
+              <Textarea
                 id={id}
-                value={draft.executionProfile}
-                onChange={(value) => patch("executionProfile", value)}
-                options={EXECUTION_PROFILES.map((value) => ({
-                  value,
-                  label: t(`benchmarks:profiles.${value}`),
-                }))}
+                rows={6}
+                value={draft.prompt}
+                onChange={(event) => patch("prompt", event.target.value)}
               />
             )}
           </Field>
-          {number("timeoutSeconds")}
-          {number("maxArtifactBytes")}
-          <Field label={t("benchmarks:fields.repetitions")}>
-            {(id) => (
-              <Input
-                id={id}
-                type="number"
-                min={1}
-                max={100}
-                value={draft.repetitions}
-                onChange={(event) =>
-                  patch("repetitions", Number(event.target.value))
+          <details>
+            <summary className="cursor-pointer text-sm">
+              {t("benchmarks:detail.files")}
+            </summary>
+            <div className="space-y-2 pt-3">
+              {fixtures.map((fixture, index) => (
+                <div
+                  key={fixture.key}
+                  className="grid gap-2 rounded-md bg-muted/40 p-3 md:grid-cols-[14rem_1fr_auto]"
+                >
+                  <Input
+                    aria-label={t("benchmarks:fields.fixturePath")}
+                    placeholder={t("benchmarks:fields.fixturePath")}
+                    value={fixture.path}
+                    onChange={(event) =>
+                      setFixtures((rows) =>
+                        rows.map((row, position) =>
+                          position === index
+                            ? { ...row, path: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
+                  />
+                  <Textarea
+                    aria-label={t("benchmarks:fields.fixtureContent")}
+                    placeholder={t("benchmarks:fields.fixtureContent")}
+                    variant="code"
+                    rows={3}
+                    value={fixture.content}
+                    onChange={(event) =>
+                      setFixtures((rows) =>
+                        rows.map((row, position) =>
+                          position === index
+                            ? { ...row, content: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={t("benchmarks:actions.remove")}
+                    onClick={() =>
+                      setFixtures((rows) =>
+                        rows.filter((_, position) => position !== index),
+                      )
+                    }
+                  >
+                    <IconTrash />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="ghost"
+                flush
+                leftIcon={<IconPlus />}
+                onClick={() =>
+                  setFixtures((rows) => [
+                    ...rows,
+                    { key: crypto.randomUUID(), path: "", content: "" },
+                  ])
                 }
-              />
-            )}
-          </Field>
-        </div>
-      </section>
+              >
+                {t("benchmarks:editor.addFixture")}
+              </Button>
+            </div>
+          </details>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-4">
+          <details>
+            <summary className="cursor-pointer text-sm">
+              {t("benchmarks:editor.sections.evaluation")}
+            </summary>
+            <div className="grid gap-4 pt-4 md:grid-cols-2">
+              <Field label={t("benchmarks:fields.evaluator")}>
+                {(id) => (
+                  <SelectField
+                    id={id}
+                    value={kind}
+                    onChange={(value) => patchEvaluator("kind", value)}
+                    options={EVALUATOR_KINDS.map((value) => ({
+                      value,
+                      label: t(`benchmarks:evaluators.${value}`),
+                    }))}
+                  />
+                )}
+              </Field>
+              <Field label={t("benchmarks:fields.evaluatorRevision")}>
+                {(id) => (
+                  <Input
+                    id={id}
+                    value={draft.evaluator.revision}
+                    onChange={(event) =>
+                      patchEvaluator("revision", event.target.value)
+                    }
+                  />
+                )}
+              </Field>
+              {kind === "rubric"
+                ? evaluatorText(
+                    "rubric",
+                    t("benchmarks:fields.rubric"),
+                    false,
+                    4,
+                  )
+                : null}
+              {kind === "exact" || kind === "json"
+                ? evaluatorText(
+                    "expected",
+                    t("benchmarks:fields.expected"),
+                    kind === "json",
+                    kind === "json" ? 4 : 2,
+                  )
+                : null}
+              {protectedKind
+                ? evaluatorText(
+                    "expected",
+                    t("benchmarks:fields.protectedChecks"),
+                    true,
+                    6,
+                  )
+                : null}
+              {protectedKind && visualRubric !== null ? (
+                <Field
+                  label={t("benchmarks:fields.visualRubric")}
+                  className="md:col-span-2"
+                >
+                  {(id) => (
+                    <Textarea
+                      id={id}
+                      rows={2}
+                      value={visualRubric}
+                      onChange={(event) => setVisualRubric(event.target.value)}
+                    />
+                  )}
+                </Field>
+              ) : null}
+              {kind !== "rubric"
+                ? evaluatorText(
+                    "knownGood",
+                    t("benchmarks:fields.knownGood"),
+                    protectedKind,
+                  )
+                : null}
+              {kind !== "rubric"
+                ? evaluatorText(
+                    "knownBad",
+                    t("benchmarks:fields.knownBad"),
+                    protectedKind,
+                  )
+                : null}
+            </div>
+          </details>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-4">
+          <SectionHeading title={t("benchmarks:editor.sections.execution")} />
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label={t("benchmarks:fields.executionProfile")}>
+              {(id) => (
+                <SelectField
+                  id={id}
+                  value={draft.executionProfile}
+                  onChange={(value) => patch("executionProfile", value)}
+                  options={EXECUTION_PROFILES.map((value) => ({
+                    value,
+                    label: t(`benchmarks:profiles.${value}`),
+                  }))}
+                />
+              )}
+            </Field>
+            {number("timeoutSeconds")}
+            {number("maxArtifactBytes")}
+            <Field label={t("benchmarks:fields.repetitions")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={draft.repetitions}
+                  onChange={(event) =>
+                    patch("repetitions", Number(event.target.value))
+                  }
+                />
+              )}
+            </Field>
+          </div>
+        </CardContent>
+      </Card>
 
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
         <CollapsibleTrigger asChild>
@@ -699,6 +696,17 @@ export function BenchmarkEditor({
         </CollapsibleTrigger>
         <CollapsibleContent className="space-y-4 pt-4">
           <div className="grid gap-4 md:grid-cols-2">
+            {text("source")}
+            {text("license")}
+            <Field label={t("benchmarks:detail.variantGroup")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  value={draft.taskFamily}
+                  onChange={(event) => patch("taskFamily", event.target.value)}
+                />
+              )}
+            </Field>
             <Field label={t("benchmarks:editor.roleId")}>
               {(id) => (
                 <Input
@@ -832,52 +840,6 @@ export function BenchmarkEditor({
           </div>
         </CollapsibleContent>
       </Collapsible>
-
-      {definition && definition.versions.length > 0 ? (
-        <section className="space-y-2">
-          <SectionHeading title={t("benchmarks:editor.versions")} />
-          <ul className="divide-y divide-border">
-            {definition.versions.map((version) => (
-              <li key={version.id} className="space-y-2 py-2">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0 text-sm">
-                    {formatDate(version.publishedAt, {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
-                    <code className="ml-2 text-xs text-muted-foreground">
-                      {shortId(version.contentHash)}
-                    </code>
-                  </div>
-                  {!definition.archived && version.id === latestVersion?.id ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="xs"
-                      disabled={
-                        !hasDifficulty(version.manifest.facets?.difficulty)
-                      }
-                      onClick={() => onRun(version.id)}
-                    >
-                      {t("benchmarks:actions.preview")}
-                    </Button>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">
-                      {t("benchmarks:editor.archivedVersion")}
-                    </span>
-                  )}
-                </div>
-                <BenchmarkQualificationPanel
-                  version={version}
-                  archived={
-                    definition.archived || version.id !== latestVersion?.id
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
     </section>
   );
 }

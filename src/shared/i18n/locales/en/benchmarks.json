@@ -249,7 +249,7 @@
       "evaluationHint": "Objective evaluators are verified against known passing and failing outputs before publication.",
       "execution": "Execution and budget",
       "executionHint": "Runs in a fresh session with a clean context, no tools and no network. Publishing freezes the prompt, fixtures, evaluator and environment; later edits create a new version.",
-      "advanced": "Advanced: role context, continuation and workflow"
+      "advanced": "Advanced"
     },
     "authoredBy": "Authored by",
     "authoredByHint": "Comma-separated needles matched against candidate model and provider IDs. A candidate that helped write the test is excluded from its scores.",
@@ -273,6 +273,18 @@
     "keepEditing": "Keep editing",
     "discard": "Discard changes",
     "archivedVersion": "Archived version"
+  },
+  "detail": {
+    "version": "v{{number}}",
+    "versions": "Versions",
+    "draft": "Draft",
+    "current": "Current",
+    "view": "Version details",
+    "settings": "Settings",
+    "type": "Type",
+    "files": "Files",
+    "technical": "Technical details",
+    "variantGroup": "Variant group"
   },
   "library": {
     "empty": "No tests yet.",

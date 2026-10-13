@@ -266,6 +266,7 @@ describe("benchmark authoring and saved evidence", () => {
         onRun={vi.fn()}
       />,
     );
+    fireEvent.click(screen.getByText("Files", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Add fixture" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Content" }), {
       target: { value: "fixture body" },
@@ -392,14 +393,14 @@ describe("benchmark authoring and saved evidence", () => {
     ).not.toBeInTheDocument();
     await user.click(dialog.getAllByRole("button", { name: "Close" })[0]);
     await user.click(screen.getByRole("button", { name: "New test" }));
-    expect(
-      screen.getByRole("combobox", { name: "Work class" }),
-    ).toHaveTextContent("Algorithms and clean code");
-    await user.click(screen.getByRole("combobox", { name: "Work class" }));
+    expect(screen.getByRole("combobox", { name: "Type" })).toHaveTextContent(
+      "Algorithms and clean code",
+    );
+    await user.click(screen.getByRole("combobox", { name: "Type" }));
     await user.click(screen.getByRole("option", { name: "Writing" }));
-    expect(
-      screen.getByRole("combobox", { name: "Work class" }),
-    ).toHaveTextContent("Writing");
+    expect(screen.getByRole("combobox", { name: "Type" })).toHaveTextContent(
+      "Writing",
+    );
     expect(benchmarkApi.saveDraft).not.toHaveBeenCalled();
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   });
@@ -1704,7 +1705,7 @@ describe("benchmark authoring and saved evidence", () => {
         onSelectSession={vi.fn()}
       />,
     );
-    await screen.findByRole("textbox", { name: "Name" });
+    await screen.findByRole("heading", { name: definition.draft.name });
     expect(benchmarkApi.listAttempts).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("tab", { name: "Results" }));
     await waitFor(() =>

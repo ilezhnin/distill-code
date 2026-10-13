@@ -28,20 +28,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/shared/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { hasDifficulty } from "../lib/benchmarkReleases";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
-import type {
-  BenchmarkDefinition,
-  BenchmarkVersion,
-  CaseStats,
-} from "../types";
-import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
-import { BenchmarkEditor } from "./BenchmarkEditor";
+import type { BenchmarkDefinition, CaseStats } from "../types";
+import { BenchmarkDetail } from "./BenchmarkDetail";
 import { SelectorHarness } from "./SelectorHarness";
 import {
   BenchmarkAlert,
@@ -108,7 +102,6 @@ export function BenchDevelopmentView({
   const client = useQueryClient();
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"active" | "all">("active");
-  const [tab, setTab] = useState("editor");
   const [error, setError] = useState<string | null>(null);
   const definition = definitions.find((entry) => entry.id === benchmarkId);
   const workClasses = useMemo(
@@ -166,28 +159,7 @@ export function BenchDevelopmentView({
     }
     return (
       <div className="space-y-5">
-        <BenchmarkToolbar
-          actions={actions}
-          trailing={
-            <Tabs
-              value={tab}
-              onValueChange={(value) =>
-                useBenchmarkViewStore
-                  .getState()
-                  .guardNavigation(() => setTab(value))
-              }
-            >
-              <TabsList variant="weight">
-                <TabsTrigger value="editor" variant="weight">
-                  {t("benchmarks:editor.tab")}
-                </TabsTrigger>
-                <TabsTrigger value="results" variant="weight">
-                  {t("benchmarks:editor.results")}
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-          }
-        >
+        <BenchmarkToolbar actions={actions}>
           <Button
             type="button"
             variant="ghost"
@@ -200,24 +172,14 @@ export function BenchDevelopmentView({
             {t("benchmarks:actions.back")}
           </Button>
         </BenchmarkToolbar>
-        <Tabs value={tab}>
-          <TabsContent value="editor">
-            <BenchmarkEditor
-              key={benchmarkId}
-              definition={definition}
-              initialWorkClassId={workClassId ?? "general"}
-              onSaved={onEdit}
-              onRun={(id) => onRun(id, true)}
-            />
-          </TabsContent>
-          <TabsContent value="results">
-            <BenchmarkResults
-              key={benchmarkId}
-              versions={definition?.versions ?? []}
-              onEvidence={onEvidence}
-            />
-          </TabsContent>
-        </Tabs>
+        <BenchmarkDetail
+          key={benchmarkId}
+          definition={definition}
+          initialWorkClassId={workClassId ?? "general"}
+          onSaved={onEdit}
+          onRun={(id) => onRun(id, true)}
+          onEvidence={onEvidence}
+        />
       </div>
     );
   }
@@ -531,25 +493,5 @@ function CaseStatsCells({ stats }: { stats: CaseStats | undefined }) {
         </TooltipContent>
       </Tooltip>
     </TableCell>
-  );
-}
-
-function BenchmarkResults({
-  versions,
-  onEvidence,
-}: {
-  versions: BenchmarkVersion[];
-  onEvidence: (id: string) => void;
-}) {
-  const { t } = useTranslation("benchmarks");
-  if (versions.length === 0)
-    return <BenchmarkEmpty title={t("results.empty")} compact />;
-  return (
-    <BenchmarkAttemptList
-      query={{ versionIds: versions.map((version) => version.id) }}
-      versions={versions}
-      showModel
-      onEvidence={onEvidence}
-    />
   );
 }
