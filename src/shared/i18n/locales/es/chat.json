@@ -919,7 +919,7 @@
     "standard": "velocidad normal",
     "basis": "{{workClass}} · Basado en el borrador y el rol.",
     "learned": "Elegido para esta tarea por el selector aprendido de la clase: {{model}}",
-    "noCertificate": "La selección aprendida aún no está activa para esta clase, así que eligen tus preferencias. Ajustes → Proveedores de IA → Enrutamiento muestra lo que aún necesita.",
+    "noCertificate": "La selección aprendida aún no está activa para esta clase, así que eligen tus preferencias. Abre Ajustes → Selección de modelos para las preferencias de respaldo y los detalles de certificación.",
     "abstained": "El selector aprendido de la clase no eligió ({{reason}}), así que se aplican tus preferencias."
   },
   "ownedTask": {
