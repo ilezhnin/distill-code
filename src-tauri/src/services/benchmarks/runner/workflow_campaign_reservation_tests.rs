@@ -1,10 +1,492 @@
 //! Admission regressions using isolated storage and gated, offline workers.
 use super::*;
 
+/// Rewrites a frozen plan to the saved v3 pool-reservation recipe in the
+/// isolated store, as a campaign the previous backend froze persists. Cell
+/// request hashes do not depend on the recipe.
+async fn reserved_pool_plan(service: &BenchmarkService, frozen: Campaign) -> Campaign {
+    assert_eq!(frozen.plan.order_algorithm, STEP_ADMISSION_ORDER);
+    let mut plan = frozen.plan;
+    plan.order_algorithm = RESERVED_WORKERS_ORDER.into();
+    let plan_hash = crate::services::benchmarks::workflow_campaign::hash(&plan).unwrap();
+    sqlx::query("UPDATE workflow_campaigns SET plan_json=?,plan_hash=? WHERE id=?")
+        .bind(serde_json::to_string(&plan).unwrap())
+        .bind(&plan_hash)
+        .bind(&plan.id)
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    let saved = service.store.workflow_campaign(&plan.id).await.unwrap();
+    assert_eq!(saved.plan.order_algorithm, RESERVED_WORKERS_ORDER);
+    saved
+}
+
+/// Freezes an invented admission order into the isolated store before any
+/// root starts: the cells whose policies are listed, in that order, then the
+/// rest. The recipe is kept.
+async fn order_cells(
+    service: &BenchmarkService,
+    mut frozen: Campaign,
+    first: &[usize],
+) -> Campaign {
+    let mut remaining = std::mem::take(&mut frozen.plan.cells);
+    for policy_index in first {
+        let index = remaining
+            .iter()
+            .position(|c| c.policy_index == *policy_index)
+            .unwrap();
+        frozen.plan.cells.push(remaining.remove(index));
+    }
+    frozen.plan.cells.extend(remaining);
+    frozen.plan_hash = crate::services::benchmarks::workflow_campaign::hash(&frozen.plan).unwrap();
+    let mut tx = service.store.pool.begin().await.unwrap();
+    sqlx::query("UPDATE workflow_campaigns SET plan_json=?,plan_hash=? WHERE id=?")
+        .bind(serde_json::to_string(&frozen.plan).unwrap())
+        .bind(&frozen.plan_hash)
+        .bind(&frozen.plan.id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    for index in 0..frozen.plan.cells.len() {
+        let request = frozen.plan.run_request(index).unwrap();
+        sqlx::query("UPDATE workflow_campaign_cells SET request_hash=? WHERE request_key=?")
+            .bind(crate::services::benchmarks::workflow_campaign::hash(&request).unwrap())
+            .bind(&request.request_key)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    frozen
+}
+
+fn policy_index(frozen: &Campaign, mode: &str, fixed: Option<&str>) -> usize {
+    frozen
+        .plan
+        .policies
+        .iter()
+        .position(|p| p.mode == mode && p.fixed_candidate_id.as_deref() == fixed)
+        .unwrap()
+}
+
+const PARSER_ACCOUNT: &str = "offline-pipeline\u{1f}invented-parser-account";
+const PAINTER_ACCOUNT: &str = "offline-pipeline\u{1f}invented-painter-account";
+
+fn account_key(configuration: &Configuration) -> String {
+    format!(
+        "{}\u{1f}{}",
+        configuration.provider_id,
+        configuration.account_id.as_deref().unwrap_or_default()
+    )
+}
+
+async fn admitted_roots(
+    service: &BenchmarkService,
+    frozen: &Campaign,
+    count: usize,
+) -> Vec<BenchmarkRun> {
+    tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            let runs = children(service, frozen).await;
+            if runs.len() >= count
+                && runs
+                    .iter()
+                    .take(count)
+                    .all(|run| run.attempts[0].started_at.is_some())
+            {
+                return runs;
+            }
+            assert_running(service, &frozen.plan.id).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn step_admission_runs_fixed_roots_of_the_idle_account_beside_adaptive_roots() {
+    let (_dir, service, backend, frozen) = setup_with_accounts(8, WALL_BUDGET_SECONDS, true).await;
+    assert_eq!(frozen.plan.order_algorithm, STEP_ADMISSION_ORDER);
+    let adaptive = policy_index(&frozen, "learned", None);
+    let parser = policy_index(&frozen, "fixed", Some("parser"));
+    let painter = policy_index(&frozen, "fixed", Some("painter"));
+    let frozen = order_cells(
+        &service,
+        frozen,
+        &[
+            adaptive, adaptive, adaptive, adaptive, parser, parser, painter, painter,
+        ],
+    )
+    .await;
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let worker = service.clone();
+    let tick = tokio::spawn(async move { worker.tick().await });
+    // The four adaptive roots decide their first workers on their own tasks,
+    // without holding any account first.
+    let children = tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            let runs = children(&service, &frozen).await;
+            if runs.len() == 8 {
+                let mut decided = 0;
+                for run in &runs[..4] {
+                    let key = format!("workflow:{}:0", run.attempts[0].id);
+                    if service
+                        .store
+                        .executor_decision(&key)
+                        .await
+                        .unwrap()
+                        .is_some()
+                    {
+                        decided += 1;
+                    }
+                }
+                if decided == 4 {
+                    return runs;
+                }
+            }
+            assert_running(&service, &frozen.plan.id).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Demand per account: the decided adaptive workers plus two fixed roots
+    // each. Every account runs min(demand, four) at once; under the pool
+    // reservation the adaptive roots alone would have filled both accounts.
+    let mut demand: BTreeMap<String, usize> = BTreeMap::from([
+        (PARSER_ACCOUNT.to_owned(), 2),
+        (PAINTER_ACCOUNT.to_owned(), 2),
+    ]);
+    for run in &children[..4] {
+        let key = format!("workflow:{}:0", run.attempts[0].id);
+        let record = service
+            .store
+            .executor_decision(&key)
+            .await
+            .unwrap()
+            .unwrap();
+        *demand
+            .entry(account_key(record.decision.chosen.as_ref().unwrap()))
+            .or_default() += 1;
+    }
+    let expected: usize = demand.values().map(|d| (*d).min(4)).sum();
+    assert!(expected >= 6, "{demand:?}");
+    wait_while_running(&service, &frozen.plan.id, || {
+        backend.waiting.lock().unwrap().len() == expected
+    })
+    .await;
+    {
+        let active = service.active.lock().await;
+        for (account, d) in &demand {
+            assert_eq!(
+                active.values().filter(|f| f.uses_account(account)).count(),
+                (*d).min(4),
+                "{account}"
+            );
+        }
+        // Roots still waiting for a full account hold nothing.
+        assert_eq!(
+            active
+                .values()
+                .filter(|f| f.lane.starts_with("workflow-root:") && f.workers.is_empty())
+                .count(),
+            8 - expected
+        );
+        assert_eq!(
+            active.values().filter(|f| f.workers.len() == 1).count(),
+            expected
+        );
+    }
+    assert_eq!(backend.peak.load(Ordering::SeqCst) as usize, expected);
+    for run in &children {
+        let root = &run.attempts[0];
+        assert!(root.started_at.is_some());
+        assert!(root.outcome.is_none());
+    }
+    service
+        .control_workflow_campaign(&frozen.plan.id, "pause")
+        .await
+        .unwrap();
+    backend.drain();
+    tick.await.unwrap().unwrap();
+    service.tick().await.unwrap();
+}
+
+#[tokio::test]
+async fn step_admission_excludes_worker_waits_from_the_root_clock_and_records_them() {
+    let (_dir, service, backend, frozen) = setup_with_accounts(2, 10, true).await;
+    let parser = policy_index(&frozen, "fixed", Some("parser"));
+    let frozen = order_cells(&service, frozen, &[parser, parser]).await;
+    for id in ["busy-1", "busy-2", "busy-3", "busy-4"] {
+        assert!(service
+            .claim("ordinary", seat(id, PARSER_ACCOUNT))
+            .await
+            .is_some());
+    }
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let worker = service.clone();
+    let tick = tokio::spawn(async move { worker.tick().await });
+    let admitted = admitted_roots(&service, &frozen, 2).await;
+    // Longer than the whole root budget, with the account full: no worker call,
+    // no timeout, no clock spent.
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    assert_eq!(backend.started.lock().unwrap().len(), 0);
+    for run in &admitted {
+        let root = service.store.run(&run.id).await.unwrap().attempts.remove(0);
+        assert_ne!(root.phase, "terminal", "{:?}", root.reason);
+        assert!(root.outcome.is_none());
+    }
+    for id in ["busy-1", "busy-2", "busy-3", "busy-4"] {
+        service.release(id).await;
+    }
+    service.wake.notify_one();
+    wait_while_running(&service, &frozen.plan.id, || {
+        backend.waiting.lock().unwrap().len() == 2
+    })
+    .await;
+    for run in &admitted {
+        let root = service.store.run(&run.id).await.unwrap().attempts.remove(0);
+        let steps = crate::services::benchmarks::workflow::saved_steps(&service.store, &root.id)
+            .await
+            .unwrap();
+        let waited = steps[0]
+            .native_context
+            .as_ref()
+            .unwrap()
+            .local_wait_ms
+            .unwrap();
+        assert!(waited >= 10_000, "recorded wait {waited} ms");
+        let lease = service
+            .store
+            .native_budget(&format!("workflow:{}:0", root.id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(lease.root_started_at_ms >= root.started_at.unwrap() + waited as i64 - 1);
+        assert_eq!(lease.root_cap_seconds, 10);
+        assert!(backend.budgets.lock().unwrap()[&steps[0].attempt.id] >= 8);
+    }
+    service
+        .control_workflow_campaign(&frozen.plan.id, "pause")
+        .await
+        .unwrap();
+    backend.drain();
+    tick.await.unwrap().unwrap();
+    service.tick().await.unwrap();
+    for run in &admitted {
+        let root = service.store.run(&run.id).await.unwrap().attempts.remove(0);
+        assert_eq!(root.phase, "terminal");
+        assert_ne!(
+            root.outcome.as_deref(),
+            Some("budget_timeout"),
+            "{:?}",
+            root.reason
+        );
+        assert_eq!(root.workflow_steps.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn step_admission_serves_the_oldest_admitted_root_first_on_a_full_account() {
+    let (_dir, service, backend, frozen) = setup_with_accounts(3, WALL_BUDGET_SECONDS, true).await;
+    let parser = policy_index(&frozen, "fixed", Some("parser"));
+    let frozen = order_cells(&service, frozen, &[parser, parser, parser]).await;
+    for id in ["busy-1", "busy-2", "busy-3", "busy-4"] {
+        assert!(service
+            .claim("ordinary", seat(id, PARSER_ACCOUNT))
+            .await
+            .is_some());
+    }
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let worker = service.clone();
+    let tick = tokio::spawn(async move { worker.tick().await });
+    let admitted = admitted_roots(&service, &frozen, 3).await;
+    let ids: Vec<_> = admitted.iter().map(|run| run.id.clone()).collect();
+    // Every root is admitted and decided, and every first step waits for the
+    // full account without a worker call or a clock.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(backend.started.lock().unwrap().len(), 0);
+    assert_eq!(
+        service
+            .active
+            .lock()
+            .await
+            .values()
+            .filter(|f| !f.workers.is_empty())
+            .count(),
+        0
+    );
+    // One slot frees: the oldest admitted root takes it.
+    service.release("busy-1").await;
+    service.wake.notify_one();
+    wait_while_running(&service, &frozen.plan.id, || {
+        backend.started.lock().unwrap().len() == 1
+    })
+    .await;
+    assert_eq!(backend.started.lock().unwrap()[0].0, ids[0]);
+    {
+        let active = service.active.lock().await;
+        assert_eq!(
+            active
+                .values()
+                .filter(|f| f.uses_account(PARSER_ACCOUNT))
+                .count(),
+            4
+        );
+        // The flying root holds exactly its decided worker; waiting roots
+        // hold no account.
+        assert_eq!(active.values().filter(|f| f.workers.len() == 1).count(), 1);
+    }
+    // Its step ends: the worker goes back, and whichever waiting root is
+    // oldest at that moment takes the one slot. The finished root holds
+    // nothing while its next step is decided.
+    backend.release_root(&ids[0]);
+    wait_while_running(&service, &frozen.plan.id, || {
+        backend.started.lock().unwrap().len() == 2
+    })
+    .await;
+    assert_eq!(
+        service
+            .active
+            .lock()
+            .await
+            .values()
+            .filter(|f| f.workers.len() == 1)
+            .count(),
+        1
+    );
+    assert_eq!(backend.peak.load(Ordering::SeqCst), 1);
+    // Close admission first: the three admitted roots finish, nothing new
+    // starts once the account frees up.
+    service
+        .control_workflow_campaign(&frozen.plan.id, "pause")
+        .await
+        .unwrap();
+    for id in ["busy-2", "busy-3", "busy-4"] {
+        service.release(id).await;
+    }
+    service.wake.notify_one();
+    backend.drain();
+    tick.await.unwrap().unwrap();
+    service.tick().await.unwrap();
+    for (index, id) in ids.iter().enumerate() {
+        let root = service.store.run(id).await.unwrap().attempts.remove(0);
+        assert_eq!(root.phase, "terminal");
+        // Both steps ran and the trajectory was graded; the invented workers
+        // pass or fail by fixture design, never by the slot they waited for.
+        assert!(
+            matches!(root.outcome.as_deref(), Some("pass") | Some("fail")),
+            "{:?} {:?}",
+            root.outcome,
+            root.reason
+        );
+        let steps = crate::services::benchmarks::workflow::saved_steps(&service.store, &root.id)
+            .await
+            .unwrap();
+        assert_eq!(steps.len(), 2);
+        let waits: Vec<u64> = steps
+            .iter()
+            .map(|s| s.native_context.as_ref().unwrap().local_wait_ms.unwrap())
+            .collect();
+        if index > 0 {
+            assert!(waits[0] >= 1_000, "root {index} first-step wait {waits:?}");
+        }
+    }
+    let started = backend.started.lock().unwrap();
+    assert_eq!(started.len(), 6);
+    assert_eq!(
+        started
+            .iter()
+            .map(|(_, id)| id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        6
+    );
+    drop(started);
+    assert_eq!(
+        service
+            .store
+            .workflow_campaign(&frozen.plan.id)
+            .await
+            .unwrap()
+            .next_cell,
+        3
+    );
+}
+
+#[tokio::test]
+async fn frozen_account_slots_bound_one_account_and_freezing_rejects_more_than_eight() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(GatedWorkers::default());
+    let service = service(dir.path(), backend.clone()).await;
+    let (train, fit) = training_with_weights(
+        &service,
+        RoleWeights {
+            quality: 0.85,
+            speed: 0.15,
+            cost: 0.0,
+        },
+    )
+    .await;
+    let roots = roots(&service, &train, "concurrent").await;
+    let mut request = request(&fit, &roots, "concurrent-slots");
+    for candidate in &mut request.candidates {
+        candidate.account_id = Some(format!("invented-{}-account", candidate.id));
+    }
+    request.parallelism = Some(8);
+    request.timeout_seconds = WALL_BUDGET_SECONDS;
+    request.execution_limits = Some(RunExecutionLimits {
+        retry_policy: RunRetryPolicy::None,
+        dispatch_not_after_ms: None,
+    });
+    request.account_slots = Some(9);
+    assert!(service
+        .freeze_workflow_campaign(request.clone())
+        .await
+        .is_err());
+    request.account_slots = Some(6);
+    let frozen = service.freeze_workflow_campaign(request).await.unwrap();
+    assert_eq!(frozen.plan.request.account_slots, Some(6));
+    backend.gated.store(true, Ordering::SeqCst);
+    let parser = policy_index(&frozen, "fixed", Some("parser"));
+    let frozen = order_cells(&service, frozen, &[parser; 8]).await;
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let worker = service.clone();
+    let tick = tokio::spawn(async move { worker.tick().await });
+    wait_while_running(&service, &frozen.plan.id, || {
+        backend.waiting.lock().unwrap().len() == 6
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(backend.waiting.lock().unwrap().len(), 6);
+    assert_eq!(children(&service, &frozen).await.len(), 8);
+    assert_eq!(backend.peak.load(Ordering::SeqCst), 6);
+    service
+        .control_workflow_campaign(&frozen.plan.id, "pause")
+        .await
+        .unwrap();
+    backend.drain();
+    tick.await.unwrap().unwrap();
+    service.tick().await.unwrap();
+}
+
 #[tokio::test]
 async fn reserved_campaign_queue_does_not_consume_execution_budget() {
     let (_dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
-    assert_eq!(frozen.plan.order_algorithm, RESERVED_WORKERS_ORDER);
+    let frozen = reserved_pool_plan(&service, frozen).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
@@ -135,6 +617,7 @@ async fn reserved_campaign_queue_does_not_consume_execution_budget() {
 #[tokio::test]
 async fn reserved_campaign_keeps_next_step_capacity_before_admitting_another_root() {
     let (_dir, service, backend, frozen) = setup(8).await;
+    let frozen = reserved_pool_plan(&service, frozen).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
@@ -209,6 +692,7 @@ async fn reserved_campaign_fifo_allows_disjoint_accounts_but_protects_older_adap
         .position(|p| p.fixed_candidate_id.as_deref() == Some("painter"))
         .unwrap();
     let adaptive = policies.iter().position(|p| p.mode == "learned").unwrap();
+    frozen.plan.order_algorithm = RESERVED_WORKERS_ORDER.into();
     let mut remaining = std::mem::take(&mut frozen.plan.cells);
     for policy_index in [a, b, adaptive, b] {
         let index = remaining

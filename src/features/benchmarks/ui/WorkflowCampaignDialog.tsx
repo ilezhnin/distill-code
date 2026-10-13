@@ -503,6 +503,20 @@ function CampaignResult({
           {t("campaign.originalTiming")}
         </p>
       ) : null}
+      {campaign.plan.orderAlgorithm ===
+      "sha256-campaign-cell-reserved-workers-v3" ? (
+        <p className="text-xs text-muted-foreground">
+          {t("campaign.reservedPool")}
+        </p>
+      ) : null}
+      {campaign.plan.orderAlgorithm ===
+      "sha256-campaign-cell-step-admission-v4" ? (
+        <p className="text-xs text-muted-foreground">
+          {t("campaign.stepAdmission", {
+            slots: campaign.plan.request.accountSlots ?? 4,
+          })}
+        </p>
+      ) : null}
       {report.error ? (
         <BenchmarkAlert>{benchmarkErrorMessage(report.error)}</BenchmarkAlert>
       ) : null}

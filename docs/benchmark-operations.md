@@ -300,16 +300,24 @@ legacy serial plan and hashes. This bounds admitted, unfinished whole workflows;
 it does not multiply the execution budget or change dependencies within a workflow.
 The concurrent scheduling recipe admits cells in their frozen order and refills
 after collecting a first result, even if an earlier child is still running.
-Provider, account and global worker limits still apply. New concurrent plans use
-the `sha256-campaign-cell-reserved-workers-v3` admission recipe: a root stays
-pending, without an execution clock or worker call, until it can reserve all
-worker accounts and lanes its policy may select. A fixed policy reserves its
-fixed worker; adaptive policies reserve their candidate pool. Each workflow
-counts once per account, even when that account supplies several candidates.
-Reservations persist through dependent steps, so a newer root cannot take a
-slot needed by an admitted workflow. Older queued roots take precedence on
-shared accounts; disjoint accounts can proceed. This conservative reservation
-can leave a provider idle while another provider executes the current step.
+Provider, account and global worker limits still apply. A campaign may also
+freeze `accountSlots`, the model calls one account runs at once for it, from 1
+to 8; omission keeps the shared default of four. The bound is part of the plan,
+so a report states the conditions it ran under.
+
+New concurrent plans use the `sha256-campaign-cell-step-admission-v4` recipe. A
+root is admitted into the trajectory bound without holding any account. Each
+step is decided first, on its public task; the root then takes that worker's
+slot, oldest waiting root on the account first, and gives it back when the step
+ends. Waiting for a free slot is recorded on the step and excluded from the
+whole-workflow clock, so an unrelated provider is never held idle for a worker
+the policy did not choose, and contention does not shorten a measured budget.
+
+Saved v3 plans (`sha256-campaign-cell-reserved-workers-v3`) keep their pool
+reservation: a root stays pending, without an execution clock or worker call,
+until it can reserve all worker accounts and lanes its policy may select, and
+holds them through its dependent steps. That reservation can leave a provider
+idle while another provider executes the current step.
 
 Saved concurrent v2 plans keep their original semantics: local slot contention
 spends the root wall budget. Serial v1 plans retain their immediate busy outcome.
@@ -319,12 +327,13 @@ that the installed backend supports it. No recipe changes accounts, replaces
 an attempt or retries a provider call.
 
 Record the runtime and competing load when interpreting speed. Whole-workflow
-wall time starts at worker admission for v3 and includes preparation and every
-dependent step. Queue time before admission is excluded. In v2, wall time also
-includes local worker waits. Do not pool these execution conditions as if they were
-interchangeable, change objective weights after results, or infer a throughput
-guarantee from the requested bound. Actual occupancy also depends on the frozen
-order, selected workers and available provider quotas.
+wall time starts at admission for v3 and v4 and includes preparation and every
+dependent step. Queue time before admission is excluded; v4 also excludes the
+recorded waits for a worker slot between admission and each step. In v2, wall
+time includes local worker waits. Do not pool these execution conditions as if
+they were interchangeable, change objective weights after results, or infer a
+throughput guarantee from the requested bound. Actual occupancy also depends on
+the frozen order, selected workers and available provider quotas.
 
 Pause closes admission for every owned child and drains already running whole
 workflows, including their dependent steps. A concurrent campaign stays `pausing`

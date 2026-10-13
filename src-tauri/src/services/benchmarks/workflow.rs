@@ -92,6 +92,10 @@ pub(super) struct StepDecision {
 pub(super) struct NativeStepContext {
     pub budget: super::artifact_context::BudgetLease,
     pub repository: Option<super::artifact_context::Input>,
+    /// Time the step waited for its decided worker's slot under step
+    /// admission, excluded from its root's wall clock. Absent elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_wait_ms: Option<u64>,
 }
 
 impl StepDecision {
@@ -527,8 +531,79 @@ async fn prepare_step(
     } else {
         None
     };
-    let mut repository_context = None;
-    if version.manifest.execution_profile == "protected_repository" && new_clock {
+    let repository_context = if new_clock {
+        repository_input(
+            store,
+            root,
+            version,
+            spec,
+            budget.as_ref().unwrap().deadline_at_ms()?,
+        )
+        .await?
+    } else {
+        None
+    };
+    if let Some(budget) = &budget {
+        entry.remaining_budget_seconds = budget.remaining_seconds(now())?;
+    }
+    if spec.include_previous_output {
+        if let Some(reports) = native_reports {
+            entry.previous_reports = reports;
+        }
+    }
+    // The hash covers the entry as committed. The budget measured just above
+    // can be a second below the one `step_entry` hashed when a second passed
+    // in between, so it is always computed again here.
+    entry.content_hash = super::routing::entry_hash(&entry);
+    let prompt = step_prompt(version, index, spec);
+    check_public_bytes(version, &prompt, &entry)?;
+    let child = child_attempt(root, index);
+    let mut saved = SavedStep {
+        index,
+        id: spec.id.clone(),
+        parent_id: entry.parent_step_id.clone(),
+        entry,
+        prompt,
+        attempt: child,
+        decision: None,
+        native_context: budget.map(|budget| NativeStepContext {
+            budget,
+            repository: repository_context,
+            local_wait_ms: None,
+        }),
+    };
+    let policy = root_request.workflow_policy;
+    let executor = if let Some(policy) = &policy {
+        let selected = policy
+            .select(service, root, &step_version(version, &saved), index)
+            .await?;
+        saved.attempt.configuration = selected.chosen.clone().ok_or_else(|| {
+            BenchmarkError::new(
+                "no_available_worker",
+                "No eligible worker for the frozen workflow policy",
+            )
+        })?;
+        Some(selected)
+    } else {
+        None
+    };
+    commit_step(store, root, version, saved, executor, remaining).await
+}
+
+/// The public repository input of a step: the snapshot advanced through the
+/// sealed artifacts of its visible predecessors, materialized before
+/// `deadline_ms`. Only native-clock repository steps have one.
+async fn repository_input(
+    store: &Store,
+    root: &Attempt,
+    version: &BenchmarkVersion,
+    spec: &WorkflowStep,
+    deadline_ms: i64,
+) -> Result<Option<super::artifact_context::Input>> {
+    if version.manifest.execution_profile != "protected_repository" {
+        return Ok(None);
+    }
+    {
         let snapshot = super::repository::snapshot(&version.manifest)?;
         let mut lineage = vec![];
         for prior in saved_steps(store, &root.id).await? {
@@ -554,62 +629,22 @@ async fn prepare_step(
             &lineage,
             spec.include_previous_output,
             version.manifest.limits.max_artifact_bytes as usize,
-            budget
-                .as_ref()
-                .unwrap()
-                .deadline_at_ms()?
-                .try_into()
-                .map_err(|_| {
-                    BenchmarkError::new("budget_clock_conflict", "Native deadline is invalid")
-                })?,
+            deadline_ms.try_into().map_err(|_| {
+                BenchmarkError::new("budget_clock_conflict", "Native deadline is invalid")
+            })?,
         )
         .await?;
-        repository_context = Some(super::artifact_context::Input {
+        Ok(Some(super::artifact_context::Input {
             before: package.artifact,
             lineage,
             access_all: spec.include_previous_output,
-        });
+        }))
     }
-    if let Some(budget) = &budget {
-        entry.remaining_budget_seconds = budget.remaining_seconds(now())?;
-    }
-    if spec.include_previous_output {
-        if let Some(reports) = native_reports {
-            entry.previous_reports = reports;
-        }
-    }
-    // The hash covers the entry as committed. The budget measured just above
-    // can be a second below the one `step_entry` hashed when a second passed
-    // in between, so it is always computed again here.
-    entry.content_hash = super::routing::entry_hash(&entry);
-    let prompt = format!(
-        "{}\n\nWorkflow step {} of {} ({}):\n{}",
-        version.manifest.prompt,
-        index + 1,
-        workflow.steps.len(),
-        spec.id,
-        spec.prompt
-    );
-    let public_bytes = prompt.len()
-        + version.manifest.role_prompt.len()
-        + entry.conversation_prefix.len()
-        + entry
-            .previous_reports
-            .iter()
-            .map(String::len)
-            .sum::<usize>()
-        + version
-            .manifest
-            .fixtures
-            .iter()
-            .map(|f| f.path.len() + f.content.len() + 20)
-            .sum::<usize>();
-    if public_bytes > 256 * 1024 {
-        return Err(BenchmarkError::new(
-            "budget_reached",
-            "Declared workflow feedback exceeds the native public context cap",
-        ));
-    }
+}
+
+/// The step's own attempt record: the root's identity and configuration
+/// before any dispatch, with nothing measured yet.
+fn child_attempt(root: &Attempt, index: usize) -> Attempt {
     let mut child = root.clone();
     child.id = fixtures::hash(format!("workflow-v1:{}:{index}", root.id).as_bytes());
     child.phase = "pending".into();
@@ -630,34 +665,21 @@ async fn prepare_step(
     child.event_cursor = 0;
     child.workflow_steps.clear();
     child.repository_result = None;
-    let mut saved = SavedStep {
-        index,
-        id: spec.id.clone(),
-        parent_id: entry.parent_step_id.clone(),
-        entry,
-        prompt,
-        attempt: child,
-        decision: None,
-        native_context: budget.map(|budget| NativeStepContext {
-            budget,
-            repository: repository_context,
-        }),
-    };
-    let policy = root_request.workflow_policy;
-    let executor = if let Some(policy) = &policy {
-        let selected = policy
-            .select(service, root, &step_version(version, &saved), index)
-            .await?;
-        saved.attempt.configuration = selected.chosen.clone().ok_or_else(|| {
-            BenchmarkError::new(
-                "no_available_worker",
-                "No eligible worker for the frozen workflow policy",
-            )
-        })?;
-        Some(selected)
-    } else {
-        None
-    };
+    child
+}
+
+/// Commits a prepared step with its pre-dispatch decision: one row, written
+/// under the writer lock so concurrent roots cannot invalidate the snapshot.
+async fn commit_step(
+    store: &Store,
+    root: &Attempt,
+    version: &BenchmarkVersion,
+    mut saved: SavedStep,
+    executor: Option<super::executor::Decision>,
+    remaining: u32,
+) -> Result<SavedStep> {
+    let workflow = version.manifest.workflow.as_ref().unwrap();
+    let index = saved.index;
     // Reserve the writer before reading the decision. Concurrent roots can
     // otherwise invalidate this WAL snapshot before the step is inserted.
     let mut tx = store.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -710,6 +732,236 @@ async fn prepare_step(
     event(&mut tx, &root.run_id, "workflow_step_prepared").await?;
     tx.commit().await?;
     Ok(saved)
+}
+
+/// The prompt a step's worker receives: the root prompt, then its own.
+fn step_prompt(version: &BenchmarkVersion, index: usize, spec: &WorkflowStep) -> String {
+    let count = version
+        .manifest
+        .workflow
+        .as_ref()
+        .map_or(0, |workflow| workflow.steps.len());
+    format!(
+        "{}\n\nWorkflow step {} of {} ({}):\n{}",
+        version.manifest.prompt,
+        index + 1,
+        count,
+        spec.id,
+        spec.prompt
+    )
+}
+
+/// Declared feedback stays inside the native public context cap.
+fn check_public_bytes(version: &BenchmarkVersion, prompt: &str, entry: &EntryState) -> Result<()> {
+    let public_bytes = prompt.len()
+        + version.manifest.role_prompt.len()
+        + entry.conversation_prefix.len()
+        + entry
+            .previous_reports
+            .iter()
+            .map(String::len)
+            .sum::<usize>()
+        + version
+            .manifest
+            .fixtures
+            .iter()
+            .map(|f| f.path.len() + f.content.len() + 20)
+            .sum::<usize>();
+    if public_bytes > 256 * 1024 {
+        return Err(BenchmarkError::new(
+            "budget_reached",
+            "Declared workflow feedback exceeds the native public context cap",
+        ));
+    }
+    Ok(())
+}
+
+/// Worker-slot waits the steps of a step-admitted root recorded; its wall
+/// clock runs from admission without them.
+fn excluded_waits_ms(steps: &[SavedStep]) -> i64 {
+    steps
+        .iter()
+        .filter_map(|step| step.native_context.as_ref().and_then(|c| c.local_wait_ms))
+        .sum::<u64>() as i64
+}
+
+/// A step's own allowance: its schema-2 scope, else the case limit on the
+/// native clock, else the root's; never above the root's.
+fn step_cap_seconds(
+    spec: &WorkflowStep,
+    new_clock: bool,
+    version: &BenchmarkVersion,
+    root_cap: u32,
+) -> u32 {
+    spec.scope
+        .as_ref()
+        .map_or_else(
+            || {
+                if new_clock {
+                    version.manifest.limits.timeout_seconds
+                } else {
+                    root_cap
+                }
+            },
+            |scope| scope.step_budget_seconds,
+        )
+        .min(root_cap)
+}
+
+/// [`prepare_step`] under the step-admission recipe: the policy decides the
+/// worker on the public task first, the root then takes that worker's slot,
+/// and only afterwards the step's budget lease starts, from a root origin
+/// that excludes the recorded wait. The projection the policy sees ignores
+/// the lease, so a provisional one stands in; the repository input is final.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_step_admitted(
+    service: &BenchmarkService,
+    root: &Attempt,
+    version: &BenchmarkVersion,
+    index: usize,
+    remaining: u32,
+    previous: Option<&str>,
+    native_reports: Option<Vec<String>>,
+    concurrency: &super::workflow_campaign::CampaignConcurrency,
+    steps: &[SavedStep],
+    cancel: watch::Receiver<bool>,
+) -> Result<SavedStep> {
+    let store = &service.store;
+    let workflow = version.manifest.workflow.as_ref().unwrap();
+    let spec = &workflow.steps[index];
+    let root_request = store.run(&root.run_id).await?.request;
+    let policy = root_request.workflow_policy.as_ref().ok_or_else(|| {
+        BenchmarkError::new(
+            "invalid_workflow_policy",
+            "Step admission requires a workflow policy",
+        )
+    })?;
+    let admitted_at = root.started_at.ok_or_else(|| {
+        BenchmarkError::new(
+            "budget_clock_conflict",
+            "Native workflow root clock is absent",
+        )
+    })?;
+    let origin = admitted_at + excluded_waits_ms(steps);
+    let root_cap = root_request.timeout_seconds;
+    let new_clock = version
+        .manifest
+        .environment
+        .get("nativeBudgetRecipe")
+        .and_then(serde_json::Value::as_str)
+        == Some(super::artifact_context::CLOCK_RECIPE);
+    // The entry declares the allowance the step may use. It is fixed before
+    // the policy decides, and the committed step keeps it unchanged, so the
+    // decision's public task and the sealed trace are the same bytes; the
+    // lease reserved after the wait enforces the real remaining time.
+    let step_cap = step_cap_seconds(spec, new_clock, version, root_cap);
+    let mut entry = step_entry(
+        root,
+        &version.manifest,
+        index,
+        remaining.min(step_cap),
+        previous,
+    )?;
+    let repository_context = if new_clock {
+        repository_input(
+            store,
+            root,
+            version,
+            spec,
+            origin + i64::from(root_cap) * 1000,
+        )
+        .await?
+    } else {
+        None
+    };
+    if spec.include_previous_output {
+        if let Some(reports) = native_reports {
+            entry.previous_reports = reports;
+        }
+    }
+    entry.content_hash = super::routing::entry_hash(&entry);
+    let prompt = step_prompt(version, index, spec);
+    check_public_bytes(version, &prompt, &entry)?;
+    let step_key = format!("workflow:{}:{index}", root.id);
+    let mut saved = SavedStep {
+        index,
+        id: spec.id.clone(),
+        parent_id: entry.parent_step_id.clone(),
+        entry,
+        prompt,
+        attempt: child_attempt(root, index),
+        decision: None,
+        native_context: Some(NativeStepContext {
+            budget: super::artifact_context::BudgetLease {
+                recipe: super::artifact_context::CLOCK_RECIPE.into(),
+                root_id: root.id.clone(),
+                root_started_at_ms: origin,
+                root_cap_seconds: root_cap,
+                step_key: step_key.clone(),
+                step_started_at_ms: now().max(origin),
+                step_cap_seconds: root_cap,
+            },
+            repository: repository_context.clone(),
+            local_wait_ms: None,
+        }),
+    };
+    let selected = policy
+        .select(service, root, &step_version(version, &saved), index)
+        .await?;
+    let chosen = selected.chosen.clone().ok_or_else(|| {
+        BenchmarkError::new(
+            "no_available_worker",
+            "No eligible worker for the frozen workflow policy",
+        )
+    })?;
+    saved.attempt.configuration = chosen.clone();
+    let waited = service
+        .acquire_step_worker(
+            &root.id,
+            &root.run_id,
+            admitted_at,
+            &chosen,
+            &root_request,
+            super::runner::account_slots_within(
+                &root.run_id,
+                &chosen.provider_id,
+                concurrency.account_slots,
+            ),
+            cancel,
+        )
+        .await?;
+    let origin = origin + waited as i64;
+    let root_budget = super::artifact_context::BudgetLease {
+        recipe: super::artifact_context::CLOCK_RECIPE.into(),
+        root_id: root.id.clone(),
+        root_started_at_ms: origin,
+        root_cap_seconds: root_cap,
+        step_key: format!("workflow-root:{}", root.id),
+        step_started_at_ms: origin,
+        step_cap_seconds: root_cap,
+    };
+    let budget = store
+        .reserve_task_budget(
+            &step_key,
+            &fixtures::hash(&serde_json::to_vec(&(
+                &root.id,
+                &version.content_hash,
+                index,
+                spec,
+            ))?),
+            &version.content_hash,
+            Some(&root_budget),
+            root_cap,
+            step_cap,
+            &root.id,
+        )
+        .await?;
+    saved.native_context = Some(NativeStepContext {
+        budget,
+        repository: repository_context,
+        local_wait_ms: Some(waited),
+    });
+    commit_step(store, root, version, saved, Some(selected), remaining).await
 }
 
 fn step_version(version: &BenchmarkVersion, saved: &SavedStep) -> BenchmarkVersion {
@@ -967,16 +1219,18 @@ pub async fn execute(
         .get("nativeBudgetRecipe")
         .and_then(serde_json::Value::as_str)
         == Some(super::artifact_context::CLOCK_RECIPE);
-    let concurrent_policy = if root.configuration.execution_profile == "workflow_policy" {
+    let concurrency = if root.configuration.execution_profile == "workflow_policy" {
         let request = service.store.run(&root.run_id).await?.request;
         service
             .store
-            .workflow_campaign_parallelism(&request.request_key)
+            .workflow_campaign_concurrency(&request.request_key)
             .await?
-            > 1
     } else {
-        false
+        super::workflow_campaign::CampaignConcurrency::SERIAL
     };
+    let concurrent_policy = concurrency.concurrent();
+    let step_admission =
+        concurrency.admission == super::workflow_campaign::WorkerAdmission::SelectedStep;
     if new_clock || concurrent_policy {
         let key = format!("workflow-root:{}", root.id);
         let old = service.store.native_budget(&key).await?;
@@ -1091,7 +1345,11 @@ pub async fn execute(
         let remaining = if new_clock || concurrent_policy {
             // Exhaustion is the timeout outcome; a clock that moved backwards
             // is a conflict to surface, never a recorded budget timeout.
-            match super::artifact_context::remaining_seconds(wall_origin, now(), timeout) {
+            match super::artifact_context::remaining_seconds(
+                wall_origin + excluded_waits_ms(&steps),
+                now(),
+                timeout,
+            ) {
                 Ok(seconds) => seconds,
                 Err(error) if error.code == "budget_timeout" => 0,
                 Err(error) => return Err(error),
@@ -1137,16 +1395,32 @@ pub async fn execute(
                     .map(committed_report)
                     .collect()
             });
-            let prepared = prepare_step(
-                service,
-                &root,
-                &version,
-                index,
-                remaining,
-                previous,
-                native_reports,
-            )
-            .await;
+            let prepared = if step_admission {
+                Box::pin(prepare_step_admitted(
+                    service,
+                    &root,
+                    &version,
+                    index,
+                    remaining,
+                    previous,
+                    native_reports,
+                    &concurrency,
+                    &steps,
+                    cancel.clone(),
+                ))
+                .await
+            } else {
+                prepare_step(
+                    service,
+                    &root,
+                    &version,
+                    index,
+                    remaining,
+                    previous,
+                    native_reports,
+                )
+                .await
+            };
             match prepared {
                 Ok(step) => steps.push(step),
                 Err(error) if error.code == "budget_timeout" => {
@@ -1280,7 +1554,11 @@ pub async fn execute(
         let wall_exhausted = if concurrent_policy {
             // Native execution totals exclude earlier worker-slot waits. An
             // opt-in concurrent trajectory keeps its original whole wall cap.
-            match super::artifact_context::remaining_seconds(wall_origin, now(), timeout) {
+            match super::artifact_context::remaining_seconds(
+                wall_origin + excluded_waits_ms(&steps),
+                now(),
+                timeout,
+            ) {
                 Ok(_) => false,
                 Err(error) if error.code == "budget_timeout" => true,
                 Err(error) => return Err(error),

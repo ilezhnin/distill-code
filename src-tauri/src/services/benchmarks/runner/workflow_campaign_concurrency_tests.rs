@@ -253,7 +253,7 @@ async fn children(service: &BenchmarkService, frozen: &Campaign) -> Vec<Benchmar
 // Recreate a persisted v2 contract in an isolated fixture. Installing v3 must
 // neither reinterpret its queue clock nor change its idempotent freeze result.
 async fn legacy_bounded_plan(service: &BenchmarkService, frozen: Campaign) -> Campaign {
-    assert_eq!(frozen.plan.order_algorithm, RESERVED_WORKERS_ORDER);
+    assert_eq!(frozen.plan.order_algorithm, STEP_ADMISSION_ORDER);
     let mut plan = frozen.plan;
     plan.order_algorithm = "sha256-campaign-cell-bounded-refill-v2".into();
     let plan_hash = crate::services::benchmarks::workflow_campaign::hash(&plan).unwrap();
@@ -760,9 +760,21 @@ async fn concurrent_campaign_cancels_every_active_and_waiting_child() {
     service.tick().await.unwrap();
     let cancelled = children(&service, &frozen).await;
     assert_eq!(cancelled.len(), 8);
-    assert!(cancelled
-        .iter()
-        .all(|r| r.state == "cancelled" && r.attempts[0].phase == "terminal"));
+    assert!(
+        cancelled
+            .iter()
+            .all(|r| r.state == "cancelled" && r.attempts[0].phase == "terminal"),
+        "{:?}",
+        cancelled
+            .iter()
+            .map(|r| (
+                r.state.clone(),
+                r.attempts[0].phase.clone(),
+                r.attempts[0].outcome.clone(),
+                r.attempts[0].reason.clone()
+            ))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(backend.active.load(Ordering::SeqCst), 0);
     let receipts: Vec<_> = cancelled
         .iter()

@@ -815,7 +815,7 @@ const PANEL_INCOMPLETE: &str =
 /// The error code a judge whose account turned busy answers with.
 const ACCOUNT_BUSY: &str = "account_busy";
 /// Attempts in flight at once on one account, and across the app.
-const ACCOUNT_SLOTS: usize = 4;
+pub(super) const ACCOUNT_SLOTS: usize = 4;
 const TOTAL_SLOTS: usize = 12;
 /// Attempts of one configuration a new run flies at once, recorded in its
 /// request. A stream's tokens per second do not depend on how many we send;
@@ -880,12 +880,66 @@ pub(super) fn attempts_at_once(request: &RunRequest, configuration: &Configurati
 /// one while the run waits out that provider's usage limit, so a single turn
 /// finds out whether the limit reset, else [`ACCOUNT_SLOTS`].
 fn account_slots(run_id: &str, provider_id: &str) -> usize {
+    account_slots_within(run_id, provider_id, ACCOUNT_SLOTS)
+}
+/// [`account_slots`] under a campaign's own frozen per-account bound.
+pub(super) fn account_slots_within(run_id: &str, provider_id: &str, configured: usize) -> usize {
     if quota_waiting(run_id, provider_id) {
         1
     } else {
-        ACCOUNT_SLOTS
+        configured
     }
 }
+
+/// Steps of admitted roots waiting for their selected worker's slot under the
+/// step-admission recipe, served oldest root first. Kept in memory beside the
+/// flights they wait for, scoped to the store they belong to; a waiter whose
+/// root no longer flies is ignored, and a dropped wait removes itself.
+static STEP_WAITERS: std::sync::LazyLock<std::sync::Mutex<Vec<StepWaiter>>> =
+    std::sync::LazyLock::new(Default::default);
+
+#[derive(Clone, PartialEq, Eq)]
+struct StepWaiter {
+    /// The store root the root's service runs on.
+    scope: String,
+    root_started_at: i64,
+    /// The root's campaign cell index: admission order when two roots were
+    /// admitted within the same millisecond.
+    order: u64,
+    root_id: String,
+    account: String,
+}
+
+/// Registers a waiter for as long as it is held; dropping it, by a finished
+/// wait or a cancelled future, takes the waiter out of the queue.
+struct Waiting(StepWaiter);
+impl Waiting {
+    fn new(waiter: StepWaiter) -> Self {
+        STEP_WAITERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(waiter.clone());
+        Self(waiter)
+    }
+}
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        STEP_WAITERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|waiter| waiter != &self.0);
+    }
+}
+
+/// A campaign child's cell index from its request key, else zero.
+fn cell_order(request_key: &str) -> u64 {
+    request_key
+        .rsplit(':')
+        .next()
+        .and_then(|index| index.parse().ok())
+        .unwrap_or(0)
+}
+
 /// The error code of a turn the host refused before any provider call because
 /// every eligible account waits for quota.
 const QUOTA_WAIT: &str = "account_quota_wait";
@@ -5415,14 +5469,14 @@ impl BenchmarkService {
         }
         // A configuration flies as many attempts as its run was admitted
         // with, within its account's and the app's slots.
-        let workflow_parallelism = if a.configuration.execution_profile == "workflow_policy" {
+        let concurrency = if a.configuration.execution_profile == "workflow_policy" {
             self.store
-                .workflow_campaign_parallelism(&run.request.request_key)
+                .workflow_campaign_concurrency(&run.request.request_key)
                 .await?
         } else {
-            1
+            super::workflow_campaign::CampaignConcurrency::SERIAL
         };
-        let concurrent_workflow = workflow_parallelism > 1;
+        let concurrent_workflow = concurrency.concurrent();
         let lane = if concurrent_workflow {
             format!("workflow-root:{}", a.id)
         } else {
@@ -5445,11 +5499,11 @@ impl BenchmarkService {
             account: &account,
             account_slots: account_slots(&run.id, provider),
         };
+        // A v3 root holds every worker its policy may select for the whole
+        // trajectory. A v4 root holds none here: each step takes its decided
+        // worker in `acquire_step_worker` and gives it back when it ends.
         let reserve_workers = concurrent_workflow
-            && self
-                .store
-                .workflow_campaign_reserves_workers(&run.request.request_key)
-                .await?;
+            && concurrency.admission == super::workflow_campaign::WorkerAdmission::ReservedPool;
         let workers = if reserve_workers {
             let policy = run.request.workflow_policy.as_ref().ok_or_else(|| {
                 BenchmarkError::new(
@@ -5458,7 +5512,7 @@ impl BenchmarkService {
                 )
             })?;
             let mut worker_request = run.request.clone();
-            worker_request.parallelism = Some(workflow_parallelism.min(PARALLEL_ATTEMPTS));
+            worker_request.parallelism = Some(concurrency.lane_parallelism());
             let workers: Vec<_> = policy
                 .candidates
                 .iter()
@@ -5474,7 +5528,11 @@ impl BenchmarkService {
                         candidate.account_id.as_deref().unwrap_or_default()
                     ),
                     lane_slots: attempts_at_once(&worker_request, candidate) as usize,
-                    account_slots: account_slots(&run.id, &candidate.provider_id),
+                    account_slots: account_slots_within(
+                        &run.id,
+                        &candidate.provider_id,
+                        concurrency.account_slots,
+                    ),
                 })
                 .collect();
             if workers.is_empty() {
@@ -5549,15 +5607,20 @@ impl BenchmarkService {
         mut cancel: watch::Receiver<bool>,
     ) -> Result<Attempt> {
         let mut request = self.store.run(&attempt.run_id).await?.request;
-        let parallelism = self
+        let concurrency = self
             .store
-            .workflow_campaign_parallelism(&request.request_key)
+            .workflow_campaign_concurrency(&request.request_key)
             .await?;
-        let concurrent = parallelism > 1;
+        let concurrent = concurrency.concurrent();
         if concurrent {
-            request.parallelism = Some(parallelism.min(PARALLEL_ATTEMPTS));
+            request.parallelism = Some(concurrency.lane_parallelism());
         }
         let lane_slots = attempts_at_once(&request, &attempt.configuration) as usize;
+        let account_slots = account_slots_within(
+            &attempt.run_id,
+            &attempt.configuration.provider_id,
+            concurrency.account_slots,
+        );
         let budget = if concurrent {
             Some(collection_budget(&version.manifest)?.ok_or_else(|| {
                 BenchmarkError::new(
@@ -5624,7 +5687,7 @@ impl BenchmarkService {
                 || others()
                     .filter(|(_, flight)| flight.uses_account(&account))
                     .count()
-                    >= account_slots(&attempt.run_id, &attempt.configuration.provider_id)
+                    >= account_slots
             {
                 drop(active);
                 if !concurrent {
@@ -5670,8 +5733,129 @@ impl BenchmarkService {
         .await;
         if let Some(root) = self.active.lock().await.get_mut(root_id) {
             (root.lane, root.account) = previous;
+            // A step-admitted worker is held for its step only; the next
+            // step decides, and takes, its own.
+            if concurrency.admission == super::workflow_campaign::WorkerAdmission::SelectedStep {
+                root.workers.clear();
+            }
         }
         result
+    }
+
+    /// Takes the slot of the worker a step-admitted root decided on, holding
+    /// it on the root's flight until [`Self::execute_workflow_policy_step`]
+    /// gives it back. Waits while the worker's lane or account is full, oldest
+    /// waiting root on that account first; the wait is returned for the
+    /// step's record and stays out of the root's wall clock. Nothing is sent
+    /// to a provider here.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn acquire_step_worker(
+        &self,
+        root_id: &str,
+        run_id: &str,
+        root_started_at: i64,
+        configuration: &Configuration,
+        request: &RunRequest,
+        account_slots: usize,
+        mut cancel: watch::Receiver<bool>,
+    ) -> Result<u64> {
+        let mut request = request.clone();
+        let concurrency = self
+            .store
+            .workflow_campaign_concurrency(&request.request_key)
+            .await?;
+        request.parallelism = Some(concurrency.lane_parallelism());
+        let lane_slots = attempts_at_once(&request, configuration) as usize;
+        let lane = super::analysis::configuration_key(configuration);
+        let account = format!(
+            "{}\u{1f}{}",
+            configuration.provider_id,
+            configuration.account_id.as_deref().unwrap_or_default()
+        );
+        let me = StepWaiter {
+            scope: self.store.root.to_string_lossy().into_owned(),
+            root_started_at,
+            order: cell_order(&request.request_key),
+            root_id: root_id.to_owned(),
+            account: account.clone(),
+        };
+        let _waiting = Waiting::new(me.clone());
+        // Only a slot that was busy counts as waited: a free one costs the
+        // root nothing and leaves its clock origin exactly at admission.
+        let mut blocked_since: Option<i64> = None;
+        loop {
+            if *cancel.borrow()
+                || matches!(
+                    self.store.run_state(run_id).await?.as_str(),
+                    "cancelling" | "cancelled"
+                )
+            {
+                break Err(BenchmarkError::new(
+                    "cancelled",
+                    "Workflow cancelled while awaiting a worker slot",
+                ));
+            }
+            if let Err(error) = request.require_dispatch_admission(now()) {
+                break Err(error);
+            }
+            let mut active = self.active.lock().await;
+            if !active.contains_key(root_id) {
+                break Err(BenchmarkError::new(
+                    "dispatch_uncertain",
+                    "Workflow has no active root reservation",
+                ));
+            }
+            // The oldest admitted root still flying that waits on this account
+            // goes first; a waiter whose flight ended cannot hold anyone back.
+            let first = STEP_WAITERS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|waiter| {
+                    waiter.scope == me.scope
+                        && waiter.account == account
+                        && active.contains_key(&waiter.root_id)
+                })
+                .min_by(|a, b| {
+                    a.root_started_at
+                        .cmp(&b.root_started_at)
+                        .then_with(|| a.order.cmp(&b.order))
+                        .then_with(|| a.root_id.cmp(&b.root_id))
+                })
+                .cloned();
+            let others = || active.iter().filter(|(id, _)| id.as_str() != root_id);
+            if first.as_ref() == Some(&me)
+                && others()
+                    .filter(|(_, flight)| flight.uses_lane(&lane))
+                    .count()
+                    < lane_slots
+                && others()
+                    .filter(|(_, flight)| flight.uses_account(&account))
+                    .count()
+                    < account_slots
+            {
+                let root = active.get_mut(root_id).expect("checked root flight");
+                root.workers = vec![WorkerReservation {
+                    lane: lane.clone(),
+                    account: account.clone(),
+                    lane_slots,
+                    account_slots,
+                }];
+                break Ok(
+                    blocked_since.map_or(0, |since| now().saturating_sub(since).max(0) as u64)
+                );
+            }
+            drop(active);
+            blocked_since.get_or_insert_with(now);
+            tokio::select! {
+                changed = cancel.changed() => {
+                    if changed.is_err() {
+                        break Err(BenchmarkError::new("cancelled", "Workflow worker reservation closed"));
+                    }
+                },
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {},
+            }
+        }
     }
 
     /// Runs one attempt to its settlement, as the runner always has.

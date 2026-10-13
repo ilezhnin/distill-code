@@ -60,6 +60,8 @@ export function WorkflowCampaignForm({
   const [persona, setPersona] = useState("none");
   const [repetitions, setRepetitions] = useState(3);
   const [minQuality, setMinQuality] = useState(0.5);
+  const [parallelism, setParallelism] = useState(8);
+  const [accountSlots, setAccountSlots] = useState(4);
   const [classModels, setClassModels] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<WorkflowCampaignRequest | null>(null);
   const [busy, setBusy] = useState(false);
@@ -160,6 +162,12 @@ export function WorkflowCampaignForm({
     Number.isFinite(minQuality) &&
     minQuality >= 0 &&
     minQuality <= 1 &&
+    Number.isInteger(parallelism) &&
+    parallelism >= 1 &&
+    parallelism <= 12 &&
+    Number.isInteger(accountSlots) &&
+    accountSlots >= 1 &&
+    accountSlots <= 8 &&
     classModelsReady;
   const freeze = async () => {
     if (
@@ -185,6 +193,8 @@ export function WorkflowCampaignForm({
           .map((c) => c.candidateKey)
           .filter((key) => key !== persona),
       ],
+      parallelism,
+      accountSlots,
       minQuality,
       repetitions,
       timeoutSeconds,
@@ -423,7 +433,36 @@ export function WorkflowCampaignForm({
             />
           )}
         </Field>
+        <Field label={t("campaign.parallelism")}>
+          {(id) => (
+            <Input
+              id={id}
+              type="number"
+              min={1}
+              max={12}
+              value={parallelism}
+              disabled={locked}
+              onChange={(e) => setParallelism(Number(e.target.value))}
+            />
+          )}
+        </Field>
+        <Field label={t("campaign.accountSlots")}>
+          {(id) => (
+            <Input
+              id={id}
+              type="number"
+              min={1}
+              max={8}
+              value={accountSlots}
+              disabled={locked}
+              onChange={(e) => setAccountSlots(Number(e.target.value))}
+            />
+          )}
+        </Field>
       </div>
+      <p className="text-xs text-muted-foreground">
+        {t("campaign.stepAdmission", { slots: accountSlots })}
+      </p>
       <p className="text-sm">
         {t("campaign.budget", {
           policies,

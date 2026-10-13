@@ -267,6 +267,7 @@ fn request(fit: &learned::FitArtifact, roots: &[BenchmarkVersion], key: &str) ->
     Request {
         execution_limits: None,
         parallelism: None,
+        account_slots: None,
         request_key: key.into(),
         model_id: fit.model.id.clone(),
         version_ids: roots.iter().map(|v| v.id.clone()).collect(),

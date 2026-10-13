@@ -37,6 +37,11 @@ pub struct Request {
     /// Maximum admitted, unfinished trajectories. Omission retains serial hashes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<u32>,
+    /// Worker calls one account may run at once for this campaign, 1 to
+    /// [`MAX_ACCOUNT_SLOTS`]. Omission keeps the shared default of four and
+    /// the saved hashes. Recorded in the frozen plan: the measured conditions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_slots: Option<u32>,
     pub request_key: String,
     pub model_id: String,
     pub version_ids: Vec<String>,
@@ -52,9 +57,57 @@ pub struct Request {
     pub class_model_ids: BTreeMap<String, String>,
 }
 
-/// New campaigns reserve every possible worker before starting a root clock.
-/// Saved v1/v2 plans retain their original admission and timing semantics.
+/// Saved v3 plans reserve every worker their policy may select before the
+/// root clock starts, for the whole trajectory. Saved v1/v2 plans retain
+/// their original admission and timing semantics.
 pub(super) const RESERVED_WORKERS_ORDER: &str = "sha256-campaign-cell-reserved-workers-v3";
+/// New concurrent campaigns admit a root into the trajectory bound without
+/// holding any account. Each step takes its selected worker's slot once the
+/// step is decided and gives it back when the step ends, so a provider is
+/// never held idle for a worker the policy did not choose. Waiting for that
+/// slot is recorded on the step and excluded from the whole-workflow clock.
+pub(super) const STEP_ADMISSION_ORDER: &str = "sha256-campaign-cell-step-admission-v4";
+/// The most worker calls a campaign may run at once on one account.
+pub(super) const MAX_ACCOUNT_SLOTS: u32 = 8;
+
+/// How a frozen campaign's roots take worker capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WorkerAdmission {
+    /// One root at a time; worker waits settle as busy outcomes.
+    Serial,
+    /// Bounded roots; a worker wait spends the root wall budget (v2).
+    QueueInClock,
+    /// Bounded roots holding every selectable worker account (v3).
+    ReservedPool,
+    /// Bounded roots taking only each decided step's worker (v4).
+    SelectedStep,
+}
+
+/// A run's frozen concurrency contract: how many roots fly, how they take
+/// workers and how many calls one account runs at once.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CampaignConcurrency {
+    pub parallelism: u32,
+    pub admission: WorkerAdmission,
+    pub account_slots: usize,
+}
+impl CampaignConcurrency {
+    /// An ordinary run or a serial campaign.
+    pub(super) const SERIAL: Self = Self {
+        parallelism: 1,
+        admission: WorkerAdmission::Serial,
+        account_slots: super::runner::ACCOUNT_SLOTS,
+    };
+    pub(super) fn concurrent(&self) -> bool {
+        self.parallelism > 1
+    }
+    /// Calls of one worker configuration in flight at once for this campaign:
+    /// its account bound, never above the trajectory bound. One configuration
+    /// cannot use more of an account than the account allows.
+    pub(super) fn lane_parallelism(&self) -> u32 {
+        self.parallelism.min(self.account_slots as u32).max(1)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Case {
@@ -254,8 +307,9 @@ impl BenchmarkService {
             || !(1..=3600).contains(&request.timeout_seconds)
             || !(1..=100_000).contains(&request.max_executions)
             || !(1..=12).contains(&request.parallelism.unwrap_or(1))
+            || !(1..=MAX_ACCOUNT_SLOTS).contains(&request.account_slots.unwrap_or(1))
         {
-            return Err(invalid("Campaign requires distinct held-out cases, a request key and bounded repetitions, time and executions"));
+            return Err(invalid("Campaign requires distinct held-out cases, a request key and bounded repetitions, time, executions and account slots"));
         }
         if let Some(saved) = self.store.workflow_campaign_retry(&request).await? {
             return Ok(saved);
@@ -419,7 +473,7 @@ impl BenchmarkService {
         }
         let evaluation = report::protocol_for_cases(fit.model.weights, &cases);
         let order_algorithm = if request.parallelism.unwrap_or(1) > 1 {
-            RESERVED_WORKERS_ORDER
+            STEP_ADMISSION_ORDER
         } else {
             "sha256-campaign-cell-v1"
         };
@@ -655,44 +709,40 @@ impl Store {
         .await?)
     }
     pub(super) async fn workflow_campaign_parallelism(&self, key: &str) -> Result<u32> {
-        let id: Option<String> = sqlx::query_scalar(
-            "SELECT campaign_id FROM workflow_campaign_cells WHERE request_key=?",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await?;
-        match id {
-            Some(id) => Ok(self
-                .workflow_campaign(&id)
-                .await?
-                .plan
-                .request
-                .parallelism
-                .unwrap_or(1)),
-            None => Ok(1),
-        }
+        Ok(self.workflow_campaign_concurrency(key).await?.parallelism)
     }
-    pub(super) async fn workflow_campaign_reserves_workers(&self, key: &str) -> Result<bool> {
+    /// The frozen concurrency contract of the campaign owning `key`; an
+    /// ordinary run is serial.
+    pub(super) async fn workflow_campaign_concurrency(
+        &self,
+        key: &str,
+    ) -> Result<CampaignConcurrency> {
         let id: Option<String> = sqlx::query_scalar(
             "SELECT campaign_id FROM workflow_campaign_cells WHERE request_key=?",
         )
         .bind(key)
         .fetch_optional(&self.pool)
         .await?;
-        match id {
-            Some(id) => match self
-                .workflow_campaign(&id)
-                .await?
-                .plan
-                .order_algorithm
-                .as_str()
-            {
-                RESERVED_WORKERS_ORDER => Ok(true),
-                "sha256-campaign-cell-v1" | "sha256-campaign-cell-bounded-refill-v2" => Ok(false),
-                _ => Err(invalid("Unsupported campaign worker admission recipe")),
-            },
-            None => Ok(false),
-        }
+        let Some(id) = id else {
+            return Ok(CampaignConcurrency::SERIAL);
+        };
+        let plan = self.workflow_campaign(&id).await?.plan;
+        let parallelism = plan.request.parallelism.unwrap_or(1);
+        let admission = match plan.order_algorithm.as_str() {
+            "sha256-campaign-cell-v1" => WorkerAdmission::Serial,
+            "sha256-campaign-cell-bounded-refill-v2" => WorkerAdmission::QueueInClock,
+            RESERVED_WORKERS_ORDER => WorkerAdmission::ReservedPool,
+            STEP_ADMISSION_ORDER => WorkerAdmission::SelectedStep,
+            _ => return Err(invalid("Unsupported campaign worker admission recipe")),
+        };
+        Ok(CampaignConcurrency {
+            parallelism,
+            admission,
+            account_slots: plan
+                .request
+                .account_slots
+                .map_or(super::runner::ACCOUNT_SLOTS, |slots| slots as usize),
+        })
     }
     pub(super) async fn require_independent_run(&self, key: &str) -> Result<()> {
         if self.workflow_campaign_owns(key).await? {

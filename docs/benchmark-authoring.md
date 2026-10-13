@@ -329,9 +329,12 @@ policy run as separate complete trajectories in the same campaign. Omitted
 bound from 1 to 12 is immutable; concurrent campaigns admit in frozen order,
 refill collected slots and retain the shared provider/account limits. Steps
 within each trajectory remain sequential. Reports collect in frozen order,
-regardless of completion order. New v3 campaigns reserve the policy's worker
-accounts before starting the whole-workflow clock; queue time before admission
-is excluded. Saved v2 campaigns retain their original queue-inclusive timing.
+regardless of completion order. New v4 campaigns take each step's decided
+worker when the step starts and give it back when it ends; waiting for that
+slot is recorded and excluded from the whole-workflow clock. `accountSlots`
+freezes the calls one account runs at once (1–8, default four). Saved v3
+campaigns keep reserving every selectable worker account before the clock, and
+saved v2 campaigns retain their original queue-inclusive timing.
 See [campaign operations](benchmark-operations.md#6-preregister-a-held-out-workflow-comparison)
 for reservation, pause and timing semantics.
 The aggregate order uses equal-group mean utility on common cases from the
