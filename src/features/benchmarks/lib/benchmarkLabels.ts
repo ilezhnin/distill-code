@@ -7,6 +7,7 @@ const POSITIVE = new Set(["pass", "completed", "comparable"]);
 const NEGATIVE = new Set([
   "fail",
   "no_answer",
+  "no_available_worker",
   "budget_timeout",
   "budget_reached",
   "selection_changed",
@@ -45,6 +46,32 @@ export function stateLabel(
 
 export function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+/** Compact workflow rows never print provider payloads or account identifiers. */
+export function workflowResultReason(
+  t: Translate,
+  result: { outcome: string | null; reason: string | null } | null | undefined,
+): string | null {
+  if (!result?.reason) return null;
+  if (result.outcome === "infrastructure_failure") {
+    try {
+      const failure = JSON.parse(result.reason);
+      if (failure?.data?.errorKind === "authentication_failed")
+        return t("campaign.reasons.authentication");
+    } catch {
+      // Plain-text and composite native reasons remain available in Inspect.
+    }
+  }
+  const reasons: Record<string, string> = {
+    budget_timeout: "campaign.reasons.timeout",
+    no_available_worker: "campaign.reasons.worker",
+    capability_missing: "campaign.reasons.capability",
+    storage_unavailable: "campaign.reasons.storage",
+    selection_changed: "campaign.reasons.selection",
+    infrastructure_failure: "campaign.reasons.infrastructure",
+  };
+  return t(reasons[result.outcome ?? ""] ?? "campaign.reasons.inspect");
 }
 
 /** An account as a reader knows it: the provider CLI's own sign-in, none, or its id. */

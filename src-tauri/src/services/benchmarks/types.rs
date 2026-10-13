@@ -334,6 +334,16 @@ pub struct RunSummary {
     /// still pending comes before anything that settled.
     #[serde(default)]
     pub attention: Option<RunAttention>,
+    /// The recorded result of a workflow run's sole retained terminal root.
+    /// Run lifecycle (including cancellation) does not replace this evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_result: Option<WorkflowRunResult>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunResult {
+    pub outcome: String,
+    pub reason: Option<String>,
 }
 /// What parked a run: the outcome and recorded reason of the attempt behind it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

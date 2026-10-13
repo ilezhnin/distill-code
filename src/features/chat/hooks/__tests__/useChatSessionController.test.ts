@@ -628,6 +628,133 @@ describe("useChatSessionController", () => {
     expect(mockUseChatSendMessage).toHaveBeenCalledTimes(sendCalls);
   });
 
+  it("previews an unsent automatic Home draft and snapshots the accepted first task", async () => {
+    useChatSessionStore.getState().patchSession("session-1", {
+      initialExecutorMode: "automatic",
+      desiredRunSettings: { effort: "high", fast: false },
+    });
+    useChatStore.getState().setDraft("session-1", "Explain a fictional queue.");
+    mockPickerState.installedModelsByAgent.set("claude-acp", [
+      { id: "gpt-4o", name: "GPT-4o", providerId: "claude-acp" },
+    ]);
+    mockUseMessageQueue.mockImplementation((sessionId: string) => ({
+      queuedMessage: null,
+      enqueue: (
+        text: string,
+        _personaId?: string,
+        attachments?: ChatAttachmentDraft[],
+        sendOptions?: ChatSendOptions,
+      ) => {
+        useChatStore.getState().enqueueTransportReadyMessage(sessionId, {
+          text,
+          persona: { kind: "inherit" },
+          attachments,
+          sendOptions,
+        });
+        return true;
+      },
+      dismiss: vi.fn(),
+    }));
+    const { result } = renderHook(() =>
+      useChatSessionController({ sessionId: "session-1", isHomeSession: true }),
+    );
+    await waitFor(() =>
+      expect(result.current.workspaceContextReady).toBe(true),
+    );
+    await act(async () => {
+      result.current.handlePickerOpen();
+      await result.current.readExecutorSuggestion();
+    });
+    expect(mockExecutorSelect).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        hardCandidateId: null,
+        task: expect.objectContaining({ prompt: "Explain a fictional queue." }),
+        candidates: expect.arrayContaining([
+          expect.objectContaining({
+            configuration: expect.objectContaining({
+              modelId: "gpt-4o",
+              effort: "high",
+              fastMode: false,
+            }),
+          }),
+        ]),
+      }),
+      false,
+    );
+    expect(useChatStore.getState().queuedMessageBySession).toEqual({});
+    expect(mockUseChatSendMessage).not.toHaveBeenCalled();
+
+    act(() => result.current.handleSend("Accepted first task"));
+    const accepted =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    expect(accepted.payload.text).toBe("Accepted first task");
+    expect(accepted.payload.sendOptions?.initialExecutorIntent).toMatchObject({
+      roleId: null,
+      workClassId: "general",
+      options: [
+        expect.objectContaining({
+          target: expect.objectContaining({ modelId: "gpt-4o" }),
+          runSettings: { effort: "high", fast: false },
+        }),
+      ],
+    });
+    act(() => result.current.handleDraftChange("A later unsent task"));
+    expect(
+      useChatStore.getState().queuedMessageBySession["session-1"][0],
+    ).toEqual(accepted);
+  });
+
+  it.each([
+    "none",
+    "model",
+    "effort",
+  ] as const)("preserves pending Home pin provenance after bootstrap: %s", async (choice) => {
+    useChatSessionStore.getState().patchSession("session-1", {
+      initialExecutorMode: "automatic",
+      desiredRunSettings: { effort: "high" },
+    });
+    mockPickerState.availableModels = [
+      { id: "gpt-4o", name: "GPT-4o", providerId: "claude-acp" },
+    ];
+    window.localStorage.setItem(
+      "distill:preferredModelsByAgent",
+      JSON.stringify({
+        "claude-acp": {
+          modelId: "gpt-4o",
+          modelName: "GPT-4o",
+          providerId: "claude-acp",
+          byModel: { "gpt-4o": { reasoningEffort: "high" } },
+        },
+      }),
+    );
+    const { result, rerender } = renderHook(
+      ({ sessionId }: { sessionId: string | null }) =>
+        useChatSessionController({ sessionId, isHomeSession: true }),
+      { initialProps: { sessionId: null as string | null } },
+    );
+    act(() => {
+      if (choice === "model") {
+        result.current.handleModelChange("gpt-4o", {
+          id: "gpt-4o",
+          name: "GPT-4o",
+          providerId: "claude-acp",
+        });
+      } else if (choice === "effort") {
+        result.current.handleReasoningEffortChange("high");
+      } else {
+        result.current.handlePickerOpen();
+      }
+    });
+    rerender({ sessionId: "session-1" });
+    await waitFor(() => {
+      expect(
+        useChatSessionStore.getState().getSession("session-1")
+          ?.initialExecutorMode,
+      ).toBe(choice === "none" ? "automatic" : "manual");
+    });
+    expect(mockUseChatSendMessage).not.toHaveBeenCalled();
+  });
+
   it("captures automatic accepted role intent and makes a same-value model pick an explicit pin", async () => {
     useChatSessionStore.getState().replaceSessionExecutionTarget("session-1", {
       harnessId: "claude-acp",

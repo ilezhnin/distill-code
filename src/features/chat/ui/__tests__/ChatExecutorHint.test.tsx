@@ -2,8 +2,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import type { ExecutorDecision } from "@/features/benchmarks/lib/executorSelection";
 import { ChatExecutorHint } from "../ChatExecutorHint";
+import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useProviderCatalogStore.getState().reset();
+});
 
 function decision(learnedStatus: string): ExecutorDecision {
   return {
@@ -27,6 +31,16 @@ function decision(learnedStatus: string): ExecutorDecision {
 }
 
 it("says why a class without a certificate keeps the preferences", async () => {
+  useProviderCatalogStore.getState().setEntries([
+    {
+      id: "codex-acp",
+      displayName: "Codex",
+      category: "agent",
+      description: "Test provider",
+      setupMethod: "none",
+      group: "default",
+    },
+  ]);
   render(
     <ChatExecutorHint
       open
@@ -37,6 +51,7 @@ it("says why a class without a certificate keeps the preferences", async () => {
     await screen.findByText(/Learned selection is not active for this class/),
   ).toBeVisible();
   expect(screen.getByText(/Suggested from preferences/)).toBeVisible();
+  expect(screen.getByText(/Invented model · Codex$/)).toBeVisible();
 });
 
 it("names the learned choice and an abstention", async () => {

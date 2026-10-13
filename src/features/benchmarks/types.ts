@@ -210,6 +210,8 @@ export interface RunSummary {
   openCells?: OpenRunCell[];
   /** Why a run waits for the operator: the attempt that stopped it. */
   attention?: { outcome: string | null; reason: string } | null;
+  /** Recorded result of the sole retained terminal workflow root, independent of run lifecycle. */
+  workflowResult?: { outcome: string; reason: string | null } | null;
 }
 /** A requested configuration and case an unfinished run has yet to settle. */
 export interface OpenRunCell {

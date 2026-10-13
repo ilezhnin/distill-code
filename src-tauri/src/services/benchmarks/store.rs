@@ -298,7 +298,16 @@ impl Store {
                     ORDER BY (a.phase='pending') DESC, COALESCE(json_extract(a.data_json,'$.finishedAt'),0) DESC, a.rowid DESC
                     LIMIT 1)
                 END,
-                r.baked_at
+                r.baked_at,
+                CASE WHEN json_extract(r.request_json,'$.workflowPolicy') IS NOT NULL
+                    AND (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id
+                        AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded')=1
+                THEN (SELECT json_object('outcome',json_extract(a.data_json,'$.outcome'),
+                        'reason',json_extract(a.data_json,'$.reason'))
+                    FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal'
+                        AND json_extract(a.data_json,'$.outcome') IS NOT NULL
+                        AND json_extract(a.data_json,'$.outcome')<>'superseded')
+                END
              FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
         .fetch_all(&self.pool)
@@ -318,6 +327,9 @@ impl Store {
                     observed_selections: observed_selections(r.get(8)),
                     open_cells: open_cells(r.get(9)),
                     attention: run_attention(r.get(10)),
+                    workflow_result: r
+                        .get::<Option<String>, _>(12)
+                        .and_then(|raw| serde_json::from_str(&raw).ok()),
                 })
             })
             .collect()
@@ -1785,6 +1797,99 @@ mod tests {
         assert_eq!(ledger[2].duration_ms, Some(40));
         assert_eq!(ledger[1].input_tokens, Some(5));
     }
+    #[tokio::test]
+    async fn workflow_summary_keeps_the_sole_terminal_root_result_without_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let draft = super::super::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = json!({"id":"candidate","providerId":"provider","accountId":null,"modelId":"native-model","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let request = json!({
+            "requestKey":"history", "versionIds":[version.id], "configurations":[configuration],
+            "repetitions":1, "timeoutSeconds":30, "maxExecutions":1, "preview":false,
+            "workflowPolicy":{"modelId":"fit","mode":"fixed","candidates":[configuration],
+                "priorIds":["candidate"],"fixedCandidateId":"candidate","minQuality":0.5}
+        });
+        let cases = [
+            (
+                "timeout",
+                "completed",
+                Some("budget_timeout"),
+                "terminal",
+                1,
+            ),
+            (
+                "infra",
+                "completed",
+                Some("infrastructure_failure"),
+                "terminal",
+                1,
+            ),
+            ("cancelled", "cancelled", Some("pass"), "terminal", 1),
+            ("absent", "completed", Some("pass"), "terminal", 0),
+            ("multiple", "completed", Some("pass"), "terminal", 2),
+            ("pending", "running", None, "pending", 1),
+            ("no-outcome", "completed", None, "terminal", 1),
+            ("ordinary", "completed", Some("pass"), "terminal", 1),
+            ("superseded", "completed", Some("pass"), "terminal", 2),
+        ];
+        for (run_id, state, outcome, phase, roots) in cases {
+            let mut run_request = request.clone();
+            if run_id == "ordinary" {
+                run_request
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("workflowPolicy");
+            }
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,?,1,1,1,?)")
+                .bind(run_id).bind(run_id).bind(state).bind(run_request.to_string())
+                .execute(&store.pool).await.unwrap();
+            for index in 0..roots {
+                let id = format!("{run_id}-{index}");
+                let outcome = if run_id == "superseded" && index == 1 {
+                    Some("superseded")
+                } else {
+                    outcome
+                };
+                let attempt = json!({
+                    "outcome":outcome, "reason":"Recorded diagnostic",
+                    "output":"private output must remain lazy", "evaluations":["private evaluation"],
+                    "workflowSteps":["private step evidence"], "sessionId":"private session identity"
+                });
+                sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,'candidate',?,?,?)")
+                    .bind(id).bind(run_id).bind(&version.id).bind(index).bind(phase).bind(attempt.to_string())
+                    .execute(&store.pool).await.unwrap();
+            }
+        }
+        let summaries = store.runs().await.unwrap();
+        assert_eq!(summaries.len(), cases.len());
+        for (run_id, state, outcome, _, _) in cases {
+            let summary = summaries.iter().find(|row| row.id == run_id).unwrap();
+            assert_eq!(summary.state, state);
+            let expected =
+                matches!(run_id, "timeout" | "infra" | "cancelled" | "superseded").then(|| {
+                    WorkflowRunResult {
+                        outcome: outcome.unwrap().into(),
+                        reason: Some("Recorded diagnostic".into()),
+                    }
+                });
+            assert_eq!(summary.workflow_result, expected, "{run_id}");
+            assert!(summary.attention.is_none(), "{run_id}");
+        }
+        let serialized = serde_json::to_value(&summaries).unwrap();
+        assert!(!serialized.to_string().contains("private "));
+        let mut old_summary = serde_json::to_value(&summaries[0]).unwrap();
+        old_summary
+            .as_object_mut()
+            .unwrap()
+            .remove("workflowResult");
+        assert!(serde_json::from_value::<RunSummary>(old_summary)
+            .unwrap()
+            .workflow_result
+            .is_none());
+    }
+
     #[tokio::test]
     async fn history_summaries_and_result_pages_do_not_load_attempt_evidence() {
         let directory = tempfile::tempdir().unwrap();

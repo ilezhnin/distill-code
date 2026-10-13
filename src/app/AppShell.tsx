@@ -1320,6 +1320,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             );
       const session = await createSession({
         title: DEFAULT_CHAT_TITLE,
+        // Remembered model settings seed the fallback; only a choice made in
+        // this composer pins the first task to that executor.
+        initialExecutorMode:
+          finalComposerTarget === undefined ? "automatic" : "manual",
         executionTarget: resolvedExecutionTarget,
         runSettings: resolveSessionCreationRunSettings(
           resolvedExecutionTarget,
@@ -2394,14 +2398,32 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   // The global composer's effort and fast controls act on the Home session it
   // is attached to, through the same intent-first path as every other chat.
+  const markHomeExecutorPinned = useCallback(() => {
+    if (!homeSessionId) return;
+    patchSession(homeSessionId, { initialExecutorMode: "manual" });
+    const store = useChatStore.getState();
+    for (const record of store.queuedMessageBySession[homeSessionId] ?? []) {
+      if (record.editing || !record.payload.sendOptions?.initialExecutorIntent)
+        continue;
+      store.updateQueuedMessage(homeSessionId, record.recordId, {
+        ...record.payload,
+        sendOptions: {
+          ...record.payload.sendOptions,
+          initialExecutorIntent: undefined,
+        },
+      });
+    }
+  }, [homeSessionId, patchSession]);
+
   const handleGlobalComposerReasoningEffortChange = useCallback(
     (value: string) => {
       if (!homeSessionId) {
         return;
       }
+      markHomeExecutorPinned();
       void applyRunSettingsToSession(homeSessionId, { effort: value });
     },
-    [homeSessionId],
+    [homeSessionId, markHomeExecutorPinned],
   );
 
   const handleGlobalComposerFastModeChange = useCallback(
@@ -2409,9 +2431,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       if (!homeSessionId) {
         return;
       }
+      markHomeExecutorPinned();
       void applyRunSettingsToSession(homeSessionId, { fast: enabled });
     },
-    [homeSessionId],
+    [homeSessionId, markHomeExecutorPinned],
   );
 
   const globalComposerSessionRunSettings = useMemo(
@@ -2515,13 +2538,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const handleGlobalComposerExecutionTargetChange = useCallback(
     (target: SessionExecutionTarget | null) => {
+      markHomeExecutorPinned();
       globalComposerExecutionTargetRef.current = target;
       setGlobalComposerExecutionTarget(target);
       if (!target && homeSessionId) {
         clearCurrentModelSelectionIntent(homeSessionId);
       }
     },
-    [homeSessionId],
+    [homeSessionId, markHomeExecutorPinned],
   );
 
   const handleGlobalCompose = useCallback(

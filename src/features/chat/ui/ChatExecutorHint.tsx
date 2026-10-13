@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
+import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { workClassLabel } from "@/features/benchmarks/lib/benchmarkLabels";
 import {
   useChatExecutorHint,
@@ -45,7 +45,7 @@ export function ChatExecutorHint({
           {
             model: [
               chosen.modelName ?? chosen.modelId,
-              formatProviderLabel(chosen.providerId),
+              providerDisplayName(chosen.providerId),
               chosen.effort,
               chosen.fastMode === null
                 ? null

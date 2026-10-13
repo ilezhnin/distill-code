@@ -1302,6 +1302,39 @@ describe("AppShell global navigation", () => {
     });
   });
 
+  it("bootstraps Home with remembered settings as an automatic fallback", async () => {
+    useChatSessionStore.setState({ hasHydratedSessions: true });
+    window.localStorage.setItem(
+      "distill:preferredModelsByAgent",
+      JSON.stringify({
+        "claude-acp": {
+          modelId: "claude-opus-5",
+          modelName: "Opus 5",
+          providerId: "claude-acp",
+          byModel: {
+            "claude-opus-5": { reasoningEffort: "high", fastMode: false },
+          },
+        },
+      }),
+    );
+    renderAppShell();
+
+    await waitFor(() => {
+      expect(
+        useChatSessionStore.getState().getSession("created-session"),
+      ).toMatchObject({
+        initialExecutorMode: "automatic",
+        executionTarget: {
+          modelId: "claude-opus-5",
+          modelProviderId: "claude-acp",
+        },
+        desiredRunSettings: { effort: "high", fast: false },
+        messageCount: 0,
+      });
+    });
+    expect(useChatStore.getState().queuedMessageBySession).toEqual({});
+  });
+
   it("opens a chat sent from the global composer on the Home selection's model, effort and fast mode in session/new", async () => {
     mockGetPlatform.mockReturnValue("windows");
     window.localStorage.setItem(

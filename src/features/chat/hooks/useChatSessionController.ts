@@ -3470,6 +3470,15 @@ export function useChatSessionController({
 
     flushPendingDraftStoreWrite();
 
+    // A click before Home finishes bootstrapping is still a manual choice.
+    // Transfer its provenance along with the pending target and run settings.
+    if (explicitInitialPinsRef.current.delete(PENDING_HOME_SESSION_ID)) {
+      explicitInitialPinsRef.current.add(sessionId);
+      useChatSessionStore
+        .getState()
+        .patchSession(sessionId, { initialExecutorMode: "manual" });
+    }
+
     // Pending values are read off the store below; the closures above keep
     // them in the dep array so this effect re-runs when home-side pending
     // state mutates.

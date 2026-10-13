@@ -10,6 +10,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { formatDate } from "@/shared/i18n";
 import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
 import { benchmarkApi } from "../api/benchmarks";
 import { benchmarkGovernanceApi } from "../api/benchmarkGovernance";
@@ -249,7 +250,7 @@ it("preserves campaign A's unresolved rule while a prefilled campaign B cannot r
     },
   );
   showCampaign();
-  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await choose(user, "Saved comparison", / · Ready to start/);
   await prefillComparison(user);
   const freeze = screen.getByRole("button", { name: "Save comparison plan" });
   expect(freeze).toBeEnabled();
@@ -316,7 +317,7 @@ it("preserves campaign A's unresolved rule while a prefilled campaign B cannot r
   await waitFor(() =>
     expect(
       screen.getByRole("combobox", { name: "Saved comparison" }),
-    ).toHaveTextContent("comparis · Ready to start"),
+    ).toHaveTextContent(" · Ready to start"),
   );
   for (const close of screen.getAllByRole("button", { name: "Close" }))
     expect(close).toBeEnabled();
@@ -338,7 +339,7 @@ it("prevents governance operations and campaign switches while a sibling compari
   const user = userEvent.setup();
   vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([campaign]);
   showCampaign();
-  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await choose(user, "Saved comparison", / · Ready to start/);
   await user.click(
     await screen.findByText("Preregister deployment rule before starting", {
       selector: "summary",
@@ -394,7 +395,7 @@ it("unlocks the dialog when a background native query recovers the exact frozen 
     />,
     client,
   );
-  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await choose(user, "Saved comparison", / · Ready to start/);
   await user.click(
     await screen.findByText("Preregister deployment rule before starting", {
       selector: "summary",
@@ -474,7 +475,7 @@ it("keeps sibling reservations disabled until an in-flight campaign control is r
       }),
   );
   showCampaign();
-  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await choose(user, "Saved comparison", / · Ready to start/);
   await prefillComparison(user);
   const freeze = screen.getByRole("button", { name: "Save comparison plan" });
   await user.click(screen.getByRole("button", { name: "Start comparison" }));
@@ -796,7 +797,150 @@ it.each([
   );
   expect(recent.getByText(label)).toBeVisible();
   expect(recent.queryByText("Completed")).not.toBeInTheDocument();
-  if (attention) expect(recent.getByText(attention.reason)).toBeVisible();
+  if (attention)
+    expect(
+      recent.getByText(
+        "Execution stopped on an infrastructure error. Inspect the workflow for details.",
+      ),
+    ).toBeVisible();
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["completed", "budget_timeout", "Time limit reached"],
+  ["completed", "infrastructure_failure", "Infrastructure failure"],
+  ["cancelled", "infrastructure_failure", "Infrastructure failure"],
+  ["cancelled", "pass", "Pass"],
+  ["completed", "no_available_worker", "No available worker"],
+] as const)("shows the recorded %s root outcome %s independently of lifecycle", async (state, outcome, label) => {
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([
+    { ...campaign, state: "cancelled" },
+  ]);
+  const user = userEvent.setup();
+  const onOpenRun = vi.fn();
+  wrap(
+    <WorkflowCampaignDialog
+      initialCampaignId="campaign"
+      versions={versions}
+      currentVersions={versions}
+      runs={[
+        {
+          ...runSummary,
+          state,
+          attemptCount: 1,
+          settledCount: 1,
+          workflowResult: {
+            outcome,
+            reason: 'Provider error {"accountId":"private-account"}',
+          },
+          request: {
+            ...runSummary.request,
+            requestKey: "workflow-campaign:campaign:0",
+          },
+        },
+      ]}
+      onOpenRun={onOpenRun}
+      onClose={vi.fn()}
+      onEvidence={vi.fn()}
+    />,
+  );
+  const recent = within(
+    await screen.findByRole("region", { name: "Recent workflows" }),
+  );
+  expect(recent.getByText(label)).toBeVisible();
+  expect(recent.queryByText("Settled")).not.toBeInTheDocument();
+  expect(recent.queryByText("Completed")).not.toBeInTheDocument();
+  if (state === "cancelled")
+    expect(recent.getByText("Cancelled")).toBeVisible();
+  expect(
+    recent.queryByText(/private-account|accountId/),
+  ).not.toBeInTheDocument();
+  await user.click(recent.getByRole("button", { name: "Inspect" }));
+  expect(onOpenRun).toHaveBeenCalledExactlyOnceWith(runSummary.id);
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+});
+
+it("explains a native authentication failure without exposing its provider payload", async () => {
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([
+    { ...campaign, state: "cancelled" },
+  ]);
+  wrap(
+    <WorkflowCampaignDialog
+      initialCampaignId="campaign"
+      versions={versions}
+      currentVersions={versions}
+      runs={[
+        {
+          ...runSummary,
+          state: "cancelled",
+          workflowResult: {
+            outcome: "infrastructure_failure",
+            reason: JSON.stringify({
+              code: -32603,
+              data: {
+                accountId: "private-account",
+                errorKind: "authentication_failed",
+              },
+              message: "Internal error on private-account",
+            }),
+          },
+          request: {
+            ...runSummary.request,
+            requestKey: "workflow-campaign:campaign:0",
+          },
+        },
+      ]}
+      onOpenRun={vi.fn()}
+      onClose={vi.fn()}
+      onEvidence={vi.fn()}
+    />,
+  );
+  const recent = within(
+    await screen.findByRole("region", { name: "Recent workflows" }),
+  );
+  expect(
+    recent.getByText(
+      "Provider sign-in failed. Inspect the account status before another run.",
+    ),
+  ).toBeVisible();
+  expect(
+    recent.queryByText(/private-account|accountId|32603|Internal error/),
+  ).not.toBeInTheDocument();
+});
+
+it("identifies saved comparisons by localized creation time including seconds", async () => {
+  const user = userEvent.setup();
+  const createdAt = Date.UTC(2026, 0, 2, 12, 34, 10);
+  const comparisons: WorkflowCampaign[] = [0, 1].map((index) => ({
+    ...campaign,
+    plan: {
+      ...campaign.plan,
+      id: `opaque-comparison-${index}`,
+      createdAt: createdAt + index * 1000,
+    },
+    state: "cancelled",
+  }));
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue(comparisons);
+  showCampaign();
+  await user.click(
+    await screen.findByRole("combobox", { name: "Saved comparison" }),
+  );
+  for (const saved of comparisons) {
+    const label = `${formatDate(saved.plan.createdAt, { dateStyle: "short", timeStyle: "medium" })} · Cancelled · 0/1`;
+    expect(await screen.findByRole("option", { name: label })).toBeVisible();
+  }
+  expect(
+    screen.queryByRole("option", { name: /opaque-comparison/ }),
+  ).not.toBeInTheDocument();
+  const selected = comparisons[1];
+  await user.click(
+    screen.getByRole("option", {
+      name: `${formatDate(selected.plan.createdAt, { dateStyle: "short", timeStyle: "medium" })} · Cancelled · 0/1`,
+    }),
+  );
+  expect(
+    screen.getByRole("region", { name: "Comparison results" }),
+  ).toHaveTextContent("Cancelled");
   expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
 });
 
@@ -807,11 +951,7 @@ it("keeps polling a draining campaign and offers resume only after it is paused"
     saved,
   ]);
   showCampaign();
-  await choose(
-    user,
-    "Saved comparison",
-    /campaign · Finishing active workflows/,
-  );
+  await choose(user, "Saved comparison", / · Finishing active workflows/);
   expect(
     screen.queryByRole("button", { name: "Resume comparison" }),
   ).not.toBeInTheDocument();
@@ -851,7 +991,7 @@ it("executes only explicit start, pause, resume and cancel actions and surfaces 
       return saved;
     });
   showCampaign();
-  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await choose(user, "Saved comparison", / · Ready to start/);
   expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Start comparison" }));
   expect(await screen.findByText("Saved account is unavailable")).toBeVisible();
@@ -893,7 +1033,7 @@ it("reconciles a start whose native state changed before its reply failed", asyn
     },
   );
   showCampaign();
-  await choose(user, "Saved comparison", /campaign · Ready to start/);
+  await choose(user, "Saved comparison", / · Ready to start/);
   await user.click(screen.getByRole("button", { name: "Start comparison" }));
   expect(await screen.findByText("Control reply unavailable")).toBeVisible();
   expect(
@@ -974,7 +1114,7 @@ it("renders fixed workers and comparator results, missing measurements, limitati
   ]);
   vi.mocked(benchmarkApi.workflowCampaignReport).mockResolvedValue(report);
   const onEvidence = showCampaign();
-  await choose(user, "Saved comparison", /campaign · Finished/);
+  await choose(user, "Saved comparison", / · Finished/);
   const table = await screen.findByRole("table");
   for (const label of [
     "claude-acp / model-1 / high",
@@ -1041,7 +1181,7 @@ it("keeps a completed comparison visible when the saved report cannot be read", 
     message: "Report evidence hash mismatch",
   });
   showCampaign();
-  await choose(user, "Saved comparison", /campaign · Finished/);
+  await choose(user, "Saved comparison", / · Finished/);
   expect(
     await screen.findByText("Report evidence hash mismatch"),
   ).toBeVisible();

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { Button } from "@/shared/ui/button";
 import {
   Dialog,
@@ -14,7 +15,11 @@ import {
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { campaignIdForRun } from "../lib/benchmarkActivity";
-import { shortId, workClassLabel } from "../lib/benchmarkLabels";
+import {
+  shortId,
+  workClassLabel,
+  workflowResultReason,
+} from "../lib/benchmarkLabels";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import type { BenchmarkVersion, RunSummary } from "../types";
 import {
@@ -47,6 +52,7 @@ export function WorkflowCampaignDialog({
   onOpenRun?: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   const client = useQueryClient();
   const [fitId, setFitId] = useState("none");
   const [selected, setSelected] = useState(initialCampaignId ?? "none");
@@ -153,7 +159,7 @@ export function WorkflowCampaignDialog({
                     },
                     ...(campaigns.data ?? []).map((c) => ({
                       value: c.plan.id,
-                      label: `${shortId(c.plan.id)} · ${t(`campaign.states.${c.state}`)} · ${c.nextCell}/${c.plan.cells.length}`,
+                      label: `${formatDate(c.plan.createdAt, { dateStyle: "short", timeStyle: "medium" })} · ${t(`campaign.states.${c.state}`)} · ${c.nextCell}/${c.plan.cells.length}`,
                     })),
                   ]}
                 />
@@ -205,6 +211,15 @@ export function WorkflowCampaignDialog({
                     const finished =
                       run.attemptCount > 0 &&
                       run.settledCount === run.attemptCount;
+                    const result = run.workflowResult ?? run.attention;
+                    const outcome =
+                      result?.outcome ??
+                      (finished &&
+                      run.state !== "needs_attention" &&
+                      run.state !== "cancelled"
+                        ? "terminal"
+                        : run.state);
+                    const reason = workflowResultReason(t, result);
                     return (
                       <div
                         key={run.id}
@@ -236,20 +251,15 @@ export function WorkflowCampaignDialog({
                                 })}
                               </span>
                             ) : null}
-                            <StateBadge
-                              state={
-                                run.attention?.outcome ??
-                                (finished &&
-                                run.state !== "needs_attention" &&
-                                run.state !== "cancelled"
-                                  ? "terminal"
-                                  : run.state)
-                              }
-                            />
+                            <StateBadge state={outcome} />
+                            {run.state === "cancelled" &&
+                            outcome !== "cancelled" ? (
+                              <StateBadge state="cancelled" />
+                            ) : null}
                           </div>
-                          {run.attention?.reason ? (
+                          {reason ? (
                             <p className="break-words text-xs text-muted-foreground">
-                              {run.attention.reason}
+                              {reason}
                             </p>
                           ) : null}
                         </div>
