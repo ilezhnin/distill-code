@@ -24,6 +24,8 @@ import {
   LearnedClassStatus,
   useClassPolicies,
 } from "@/features/benchmarks/ui/LearnedClassStatus";
+import { ModelPolicyDialog } from "@/features/benchmarks/ui/ModelPolicyDialog";
+import type { BenchmarkLocation } from "@/features/benchmarks/lib/benchmarkNavigation";
 import { cn } from "@/shared/lib/cn";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -35,10 +37,7 @@ import {
 import { Input } from "@/shared/ui/input";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { SettingsRow } from "@/shared/ui/settings-row";
-import {
-  SettingsSection,
-  SettingsSections,
-} from "@/shared/ui/settings-section";
+import { SettingsSection } from "@/shared/ui/settings-section";
 import {
   Select,
   SelectContent,
@@ -48,7 +47,11 @@ import {
 } from "@/shared/ui/select";
 
 /** Selection preferences are independent of provider setup and account controls. */
-export function ModelSelectionSettings() {
+export function ModelSelectionSettings({
+  onNavigate,
+}: {
+  onNavigate?: (location: BenchmarkLocation) => void;
+}) {
   const { t } = useTranslation("settings");
   const policy = useRoutingPolicyStore((state) => state.policy);
   const setThreshold = useRoutingPolicyStore((state) => state.setThreshold);
@@ -61,6 +64,8 @@ export function ModelSelectionSettings() {
   );
   const [retrying, setRetrying] = useState(false);
   const [expandedClass, setExpandedClass] =
+    useState<ModelPreferenceClassId | null>(null);
+  const [managedClass, setManagedClass] =
     useState<ModelPreferenceClassId | null>(null);
   const policies = useClassPolicies();
   const classes = modelPreferenceClassIds();
@@ -88,51 +93,36 @@ export function ModelSelectionSettings() {
   return (
     <SettingsPage
       title={t("nav.routing")}
-      description={t("routing.pageDescription")}
+      description={t("routing.selectionDescription")}
     >
-      <SettingsSections>
-        <SettingsSection
-          title={t("routing.title")}
-          titleId="settings-routing"
-          data-testid="settings-routing"
-        >
-          <div className="space-y-2 py-3">
-            <p className="text-sm" role="status">
-              {summary}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {t("routing.selectionDescription")}
-            </p>
-          </div>
-          {hydrationFailed ? (
-            <div
-              className="flex flex-wrap items-center justify-between gap-2 py-3 text-xs"
-              data-testid="routing-not-persisted"
-              role="status"
+      <div className="space-y-5" data-testid="settings-routing">
+        <p className="text-xs text-muted-foreground" role="status">
+          {summary}
+        </p>
+        {hydrationFailed ? (
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 py-3 text-xs"
+            data-testid="routing-not-persisted"
+            role="status"
+          >
+            <span>{t("routing.notPersisted")}</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              disabled={retrying}
+              onClick={() => {
+                setRetrying(true);
+                void retryRoutingPolicyHydration().finally(() =>
+                  setRetrying(false),
+                );
+              }}
             >
-              <span>{t("routing.notPersisted")}</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                disabled={retrying}
-                onClick={() => {
-                  setRetrying(true);
-                  void retryRoutingPolicyHydration().finally(() =>
-                    setRetrying(false),
-                  );
-                }}
-              >
-                {t("routing.retryLoad")}
-              </Button>
-            </div>
-          ) : null}
-        </SettingsSection>
-
-        <SettingsSection
-          title={t("routing.categories")}
-          titleId="routing-categories"
-        >
+              {t("routing.retryLoad")}
+            </Button>
+          </div>
+        ) : null}
+        <SettingsSection>
           {classes.map((classId) => {
             const expanded = expandedClass === classId;
             const certified = certifiedClasses.has(classId);
@@ -193,33 +183,43 @@ export function ModelSelectionSettings() {
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <div className="space-y-4 px-3 pb-5 pt-2">
-                    <div className="space-y-1">
-                      <h3 className="text-sm font-medium">
-                        {t("routing.fallbackOrder")}
-                      </h3>
-                      <p className="text-xs text-muted-foreground">
-                        {t("routing.fallbackDescription")}
-                      </p>
-                    </div>
-                    <FallbackOrder
-                      labels={labels}
-                      onChange={(next) => setClassOverride(classId, next)}
-                    />
-                    {override ? (
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <LearnedClassStatus
+                        classId={classId}
+                        className="max-w-xl text-xs text-muted-foreground"
+                      />
                       <Button
                         type="button"
-                        variant="ghost"
                         size="xs"
-                        onClick={() => setClassOverride(classId, null)}
+                        variant="outline"
+                        onClick={() => setManagedClass(classId)}
                       >
-                        {t("routing.resetClass")}
+                        {t("routing.managePolicy")}
                       </Button>
-                    ) : null}
-                    <details className="text-xs text-muted-foreground">
-                      <summary className="cursor-pointer">
-                        {t("routing.evidenceDetails")}
+                    </div>
+                    <details>
+                      <summary className="cursor-pointer text-sm">
+                        {t("routing.fallbackOrder")} · {labels.join(" → ")}
                       </summary>
-                      <LearnedClassStatus classId={classId} className="pt-2" />
+                      <div className="space-y-3 pt-3">
+                        <p className="text-xs text-muted-foreground">
+                          {t("routing.fallbackDescription")}
+                        </p>
+                        <FallbackOrder
+                          labels={labels}
+                          onChange={(next) => setClassOverride(classId, next)}
+                        />
+                        {override ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => setClassOverride(classId, null)}
+                          >
+                            {t("routing.resetClass")}
+                          </Button>
+                        ) : null}
+                      </div>
                     </details>
                   </div>
                 </CollapsibleContent>
@@ -282,7 +282,14 @@ export function ModelSelectionSettings() {
             {t("routing.reset")}
           </Button>
         )}
-      </SettingsSections>
+      </div>
+      {managedClass ? (
+        <ModelPolicyDialog
+          classId={managedClass}
+          onClose={() => setManagedClass(null)}
+          onNavigate={onNavigate}
+        />
+      ) : null}
     </SettingsPage>
   );
 }

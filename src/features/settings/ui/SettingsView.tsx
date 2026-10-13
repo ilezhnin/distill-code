@@ -1,3 +1,4 @@
+import type { BenchmarkLocation } from "@/features/benchmarks/lib/benchmarkNavigation";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppearanceSettings } from "./AppearanceSettings";
@@ -21,6 +22,7 @@ import { useProfileCapability } from "@/shared/profile/capabilities";
 
 interface SettingsViewProps {
   activeSection: SectionId;
+  onNavigateBenchmarks?: (location: BenchmarkLocation) => void;
   onStartTroubleshootingChat?: (
     request: AgentSetupTroubleshootingRequest,
   ) => void;
@@ -41,6 +43,7 @@ interface SettingsViewProps {
 // the AI providers page and the Doctor dialog both read that same cache.
 export function SettingsView({
   activeSection,
+  onNavigateBenchmarks,
   onStartTroubleshootingChat,
 }: SettingsViewProps) {
   const queryClient = useQueryClient();
@@ -74,7 +77,9 @@ export function SettingsView({
         />
       )}
       {activeSection === "benchmarks" && <BenchmarkSettings />}
-      {activeSection === "routing" && <ModelSelectionSettings />}
+      {activeSection === "routing" && (
+        <ModelSelectionSettings onNavigate={onNavigateBenchmarks} />
+      )}
       {activeSection === "notifications" && <NotificationSettings />}
       {activeSection === "shortcuts" && <KeyboardShortcutsSettings />}
       {activeSection === "stats" && <StatsSettings />}

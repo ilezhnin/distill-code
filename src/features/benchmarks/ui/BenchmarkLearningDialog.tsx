@@ -52,15 +52,24 @@ function SelectionCheckbox({
 export function BenchmarkLearningDialog({
   versions,
   onClose,
+  initialWorkClassId,
+  initialFitId,
 }: {
+  initialWorkClassId?: string;
+  initialFitId?: string;
   versions: BenchmarkVersion[];
   onClose: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
   const classes = [
-    ...new Set(versions.map((v) => v.manifest.workClassId)),
+    ...new Set([
+      ...versions.map((v) => v.manifest.workClassId),
+      ...(initialWorkClassId ? [initialWorkClassId] : []),
+    ]),
   ].sort();
-  const [workClass, setWorkClass] = useState(classes[0] ?? "general");
+  const [workClass, setWorkClass] = useState(
+    initialWorkClassId ?? classes[0] ?? "general",
+  );
   const [selectedVersions, setSelectedVersions] = useState<string[]>([]);
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
   const [weightPercentages, setWeightPercentages] = useState({
@@ -68,7 +77,7 @@ export function BenchmarkLearningDialog({
     speed: "15",
     cost: "0",
   });
-  const [fitId, setFitId] = useState("none");
+  const [fitId, setFitId] = useState(initialFitId ?? "none");
   const [targetId, setTargetId] = useState("none");
   const [available, setAvailable] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);

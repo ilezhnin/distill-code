@@ -24,6 +24,31 @@ import { WorkflowCampaignDialog } from "../ui/WorkflowCampaignDialog";
 import { WorkflowCampaignForm } from "../ui/WorkflowCampaignForm";
 import { configuration, definition, runSummary } from "./fixtures";
 
+it("opens governance for a selected comparison without starting it", async () => {
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([
+    { ...campaign, state: "cancelled" },
+  ]);
+  wrap(
+    <WorkflowCampaignDialog
+      initialCampaignId="campaign"
+      showGovernance
+      versions={versions}
+      currentVersions={versions}
+      onClose={vi.fn()}
+      onEvidence={vi.fn()}
+    />,
+  );
+  expect(
+    await screen.findByText("Deployment approval", { selector: "h4" }),
+  ).toBeVisible();
+  expect(benchmarkGovernanceApi.getPromotionRule).toHaveBeenCalledWith(
+    "campaign",
+  );
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+  expect(benchmarkApi.freezeWorkflowCampaign).not.toHaveBeenCalled();
+  expect(benchmarkGovernanceApi.registerPromotionRule).not.toHaveBeenCalled();
+});
+
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) =>
     error && typeof error === "object" && "message" in error

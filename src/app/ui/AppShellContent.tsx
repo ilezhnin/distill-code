@@ -328,6 +328,7 @@ function renderRouteContent({
       return (
         <SettingsView
           activeSection={location.settingsSection}
+          onNavigateBenchmarks={onNavigateBenchmarks}
           onStartTroubleshootingChat={onStartProviderTroubleshootingChat}
         />
       );

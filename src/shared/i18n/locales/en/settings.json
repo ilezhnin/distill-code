@@ -514,7 +514,7 @@
   "routing": {
     "title": "Automatic task selection",
     "pageDescription": "Choose how Distill selects models for your chats and wave steps.",
-    "selectionDescription": "Distill chooses the provider, model and reasoning effort for each task. Applicable certified policies take priority, then fallback preferences. A model you pin stays selected.",
+    "selectionDescription": "Certified selectors choose a provider, model and effort for each task. When no policy applies, Distill uses the category’s fallback order. Explicit model pins stay selected.",
     "fallbackSummary": "Using fallback preferences",
     "certifiedSummary": "Certified policies available for {{count}} of {{total}} categories",
     "categories": "Task categories",
@@ -564,7 +564,8 @@
     "evidenceLoading": "Loading task policy status...",
     "evidenceUnavailable": "Task policy status could not be read. No learned policy is confirmed here.",
     "evidenceCertified": "Certified task policy available. Each task is evaluated against available models; saved fallback preferences apply if the policy abstains.",
-    "evidencePending": "No certified task policy yet: saved fallback preferences apply. Qualified cases: {{training}} training, {{heldOut}} held-out; {{fits}} fits, {{campaigns}} comparisons."
+    "evidencePending": "No certified task policy yet: saved fallback preferences apply. Qualified cases: {{training}} training, {{heldOut}} held-out; {{fits}} fits, {{campaigns}} comparisons.",
+    "managePolicy": "Policies and certificates"
   },
   "accounts": {
     "title": "Accounts and limits",

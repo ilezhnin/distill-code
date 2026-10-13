@@ -40,6 +40,8 @@ export function WorkflowCampaignDialog({
   onClose,
   onEvidence,
   initialCampaignId,
+  initialWorkClassId,
+  showGovernance = false,
   runs = [],
   onOpenRun,
 }: {
@@ -48,6 +50,8 @@ export function WorkflowCampaignDialog({
   onClose: () => void;
   onEvidence: (id: string) => void;
   initialCampaignId?: string;
+  initialWorkClassId?: string;
+  showGovernance?: boolean;
   runs?: RunSummary[];
   onOpenRun?: (id: string) => void;
 }) {
@@ -171,7 +175,7 @@ export function WorkflowCampaignDialog({
               key={campaign.plan.id}
               campaign={campaign}
               versions={versions}
-              showPromotion={!initialCampaignId}
+              showPromotion={showGovernance || !initialCampaignId}
               evidenceDisabled={pending}
               promotionDisabled={
                 pendingOwners.reservation || pendingOwners.control
@@ -296,10 +300,16 @@ export function WorkflowCampaignDialog({
                       disabled={pending}
                       options={[
                         { value: "none", label: t("learning.chooseFit") },
-                        ...(fits.data ?? []).map((fit) => ({
-                          value: fit.id,
-                          label: `${workClassLabel(t, fit.workClassId)} · ${shortId(fit.id)}`,
-                        })),
+                        ...(fits.data ?? [])
+                          .filter(
+                            (fit) =>
+                              !initialWorkClassId ||
+                              fit.workClassId === initialWorkClassId,
+                          )
+                          .map((fit) => ({
+                            value: fit.id,
+                            label: `${workClassLabel(t, fit.workClassId)} · ${shortId(fit.id)}`,
+                          })),
                       ]}
                     />
                   )}

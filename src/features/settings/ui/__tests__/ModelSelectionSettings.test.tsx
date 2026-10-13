@@ -68,8 +68,13 @@ it("has its own destination and keeps detailed evidence out of the category over
     name: "Debugging and bug fixing",
   });
   fireEvent.click(debug);
-  const details = screen.getByText("Certification details");
-  fireEvent.click(details);
+  expect(
+    screen.getByRole("button", { name: "Policies and certificates" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("heading", { name: "Automatic task selection" }),
+  ).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Task categories" })).toBeNull();
   expect(
     await screen.findByText(/2 training, 3 held-out; 1 fits, 1 comparisons/),
   ).toBeVisible();
@@ -91,6 +96,7 @@ it("edits and resets one fallback order without changing other classes or usage 
   fireEvent.click(
     screen.getByRole("button", { name: "Debugging and bug fixing" }),
   );
+  fireEvent.click(screen.getByText(/^Fallback order/));
   fireEvent.click(screen.getByRole("button", { name: "Move Astra up" }));
   expect(useRoutingPolicyStore.getState().policy.classOverrides.debug).toEqual([
     "Astra",

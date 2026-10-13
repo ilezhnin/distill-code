@@ -103,6 +103,11 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     labelKey: "nav.routing",
   },
   {
+    id: "policy-certificates",
+    sectionId: "routing",
+    labelKey: "routing.managePolicy",
+  },
+  {
     id: "fallback-preferences",
     sectionId: "routing",
     labelKey: "routing.fallbackOrder",

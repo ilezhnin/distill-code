@@ -514,7 +514,7 @@
   "routing": {
     "title": "Selección automática por tarea",
     "pageDescription": "Elige cómo selecciona Distill los modelos para tus chats y pasos de olas.",
-    "selectionDescription": "Distill elige proveedor, modelo y esfuerzo para cada tarea. Las políticas certificadas aplicables tienen prioridad, seguidas de las preferencias de respaldo. Los modelos que fijas se respetan.",
+    "selectionDescription": "Los selectores certificados eligen proveedor, modelo y esfuerzo por tarea. Si no aplica ninguna política, Distill usa el orden de respaldo de la categoría. Se respetan los modelos fijados.",
     "fallbackSummary": "Usando preferencias de respaldo",
     "certifiedSummary": "Políticas certificadas disponibles para {{count}} de {{total}} categorías",
     "categories": "Categorías de tareas",
@@ -564,7 +564,8 @@
     "evidenceLoading": "Cargando el estado de las políticas...",
     "evidenceUnavailable": "No se pudo leer el estado de las políticas. No se confirma ninguna política aprendida.",
     "evidenceCertified": "Política certificada disponible. Se evalúa cada tarea con los modelos disponibles; si la política se abstiene, se usan las preferencias de respaldo.",
-    "evidencePending": "Sin política certificada: se usan las preferencias de respaldo. Casos cualificados: {{training}} de entrenamiento, {{heldOut}} reservados; {{fits}} ajustes, {{campaigns}} comparaciones."
+    "evidencePending": "Sin política certificada: se usan las preferencias de respaldo. Casos cualificados: {{training}} de entrenamiento, {{heldOut}} reservados; {{fits}} ajustes, {{campaigns}} comparaciones.",
+    "managePolicy": "Políticas y certificados"
   },
   "accounts": {
     "title": "Cuentas y límites",
