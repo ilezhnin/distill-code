@@ -985,6 +985,14 @@ impl Store {
         Ok(Some(value))
     }
     pub async fn promote_selector(&self, campaign_id: &str) -> Result<State> {
+        let campaign = self.workflow_campaign(campaign_id).await?;
+        // A cancelled comparison may be repeated for diagnosis, but its
+        // exposed families cannot acquire fresh deployment authority.
+        if !campaign.plan.supersedes.is_empty() {
+            return Err(invalid(
+                "A comparison that reuses exposed campaign families cannot promote a selector",
+            ));
+        }
         if let Some(state) = self.promotion_for_campaign(campaign_id).await? {
             return Ok(state);
         }
@@ -992,7 +1000,6 @@ impl Store {
             .promotion_rule(campaign_id)
             .await?
             .ok_or_else(|| invalid("No preregistered deployment rule exists"))?;
-        let campaign = self.workflow_campaign(campaign_id).await?;
         // The rule must still name exactly what the campaign evaluated, also
         // for rules registered before trajectories had their own form.
         let deployment = self.campaign_deployment(campaign_id).await?;
@@ -1132,6 +1139,26 @@ impl Store {
         let state = self.promotion(id).await?;
         if state.revoked_at.is_some() {
             return Err(invalid("Promotion was revoked"));
+        }
+        // Older runtimes could issue authority for an exposed replacement.
+        // Check only its immutable plan metadata, never comparison outcomes.
+        let row = sqlx::query("SELECT plan_json,plan_hash FROM workflow_campaigns WHERE id=?")
+            .bind(&state.certificate.campaign_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| invalid("Promotion campaign authority disappeared"))?;
+        let plan: super::workflow_campaign::Plan = serde_json::from_str(row.try_get("plan_json")?)?;
+        let plan_hash: String = row.try_get("plan_hash")?;
+        if plan.id != state.certificate.campaign_id
+            || hash(&plan)? != plan_hash
+            || plan_hash != state.certificate.campaign_plan_hash
+        {
+            return Err(invalid("Promotion campaign authority changed"));
+        }
+        if !plan.supersedes.is_empty() {
+            return Err(invalid(
+                "A promotion from exposed campaign families cannot authorize dispatch",
+            ));
         }
         // Inference reads no fit snapshot, controls, evaluators or run outcomes.
         // Full evidence validation happened when this certificate was issued.

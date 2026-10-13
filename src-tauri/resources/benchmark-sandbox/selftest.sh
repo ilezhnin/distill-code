@@ -62,6 +62,207 @@ check "check sees the answer and its files" "$(run check selftest-a -- bash chec
 check "check has no network" "$(run check selftest-a -- curl -s -m 5 https://api.anthropic.com/ >/dev/null; echo $?)" 6
 
 # Synthetic sign-in data only: no real credential is read or changed.
+# This block also runs on the host with Python alone: it loads only helper
+# function definitions, substitutes ownership operations, and uses temporary
+# invented accounts. It never executes the helper's Linux command entrypoint.
+python3 - /usr/local/sbin/bench-auth <<'BENCH_AUTH_UNIT_TESTS'
+import ast
+import contextlib
+from datetime import datetime, timezone
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+import time
+import tomllib
+import types
+import unittest
+
+
+class TestOS:
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+    def chown(self, *args):
+        pass
+
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
+scope = dict(Path=Path, os=TestOS(), stat=stat, json=json, re=re,
+             hashlib=hashlib, tomllib=tomllib, LIMIT=1024 * 1024,
+             CANDIDATE=types.SimpleNamespace(pw_uid=0, pw_gid=0))
+exec(compile(ast.Module(body=functions, type_ignores=[]), "bench-auth-functions", "exec"), scope)
+
+
+def claude(expiry, marker):
+    return {"claudeAiOauth": {"accessToken": marker, "refreshToken": marker,
+                             "expiresAt": expiry * 1000}}
+
+
+def grok(expiry, marker, issuer="https://auth.x.ai::invented-client"):
+    stamp = datetime.fromtimestamp(expiry, timezone.utc).isoformat().replace("+00:00", "Z")
+    return {issuer: {"key": marker, "refresh_token": marker,
+                     "auth_mode": "oidc", "expires_at": stamp}}
+
+
+class CredentialTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name).resolve()
+        scope["ROOT"] = root / "attempts"
+        scope["ACCOUNTS"] = root / "accounts"
+        scope["ROOT"].mkdir()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def account(self, provider, document):
+        account = scope["ACCOUNTS"] / "invented-account" / provider
+        account.mkdir(parents=True)
+        filename = ".credentials.json" if provider == "claude" else "auth.json"
+        target = account / filename
+        target.write_text(json.dumps(document), encoding="utf-8")
+        return account, target
+
+    def prepare(self, account, target, attempt, document):
+        scope["directory"] = scope["ROOT"] / attempt
+        scope["prepare"](str(account))
+        path = scope["directory"] / "home" / target.name
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def save(self, attempt):
+        scope["directory"] = scope["ROOT"] / attempt
+        scope["save"]()
+
+    def test_claude_and_grok_keep_newer_grants_in_both_completion_orders(self):
+        for provider, document in (("claude", claude), ("grok", grok)):
+            account, target = self.account(provider, document(100, "original"))
+            for first, second in (("newer", "older"), ("older", "newer")):
+                with self.subTest(provider=provider, first=first):
+                    suffix = provider + first
+                    target.write_text(json.dumps(document(100, "original")), encoding="utf-8")
+                    self.prepare(account, target, "older" + suffix, document(200, "older"))
+                    self.prepare(account, target, "newer" + suffix, document(300, "newer"))
+                    self.save(first + suffix)
+                    self.save(second + suffix)
+                    self.assertEqual(json.loads(target.read_text()), document(300, "newer"))
+
+    def test_equal_expiry_conflicts_preserve_stored_and_candidate_grants(self):
+        for provider, document in (("claude", claude), ("grok", grok)):
+            account, target = self.account(provider, document(100, "original"))
+            self.prepare(account, target, provider + "a", document(200, "first"))
+            self.prepare(account, target, provider + "b", document(200, "second"))
+            self.save(provider + "a")
+            with self.assertRaisesRegex(ValueError, "concurrent credential refresh"):
+                self.save(provider + "b")
+            self.assertEqual(json.loads(target.read_text()), document(200, "first"))
+            retained = scope["ROOT"] / (provider + "b") / "home" / target.name
+            self.assertEqual(json.loads(retained.read_text()), document(200, "second"))
+
+    def test_malformed_refreshed_credentials_do_not_overwrite_account(self):
+        for provider, document in (("claude", claude), ("grok", grok)):
+            original = document(100, "original")
+            account, target = self.account(provider, original)
+            self.prepare(account, target, provider, {"unreadable": "invented-secret"})
+            with self.assertRaisesRegex(ValueError, "unreadable refreshed credential"):
+                self.save(provider)
+            self.assertEqual(json.loads(target.read_text()), original)
+
+    def test_grok_issuer_maximum_cannot_mask_a_regressing_grant(self):
+        previous = grok(300, "newer-a", "a") | grok(100, "older-b", "b")
+        updated = grok(200, "older-a", "a") | grok(400, "newer-b", "b")
+        with self.assertRaisesRegex(ValueError, "concurrent credential refresh"):
+            scope["prefer_refreshed_grant"]("grok", previous, updated)
+
+    def test_grok_unchanged_issuer_does_not_hide_one_ordered_refresh(self):
+        previous = grok(500, "same-a", "a") | grok(100, "old-b", "b")
+        updated = grok(500, "same-a", "a") | grok(200, "new-b", "b")
+        self.assertTrue(scope["prefer_refreshed_grant"]("grok", previous, updated))
+        self.assertFalse(scope["prefer_refreshed_grant"]("grok", updated, previous))
+
+    def test_changed_issuer_set_and_unreadable_expiry_fail_closed(self):
+        previous = grok(100, "old", "a")
+        for updated in (grok(200, "new", "b"),
+                        {"a": {"key": "new", "expires_at": "invalid-invented-secret"}}):
+            with self.subTest(updated=bool(updated)):
+                with self.assertRaisesRegex(ValueError, "concurrent credential refresh"):
+                    scope["prefer_refreshed_grant"]("grok", previous, updated)
+
+    def test_unknown_or_equal_claude_expiry_is_not_a_refresh_order(self):
+        for expiry in ("invalid-invented-secret", True, None):
+            updated = claude(200, "new")
+            updated["claudeAiOauth"]["expiresAt"] = expiry
+            with self.assertRaisesRegex(ValueError, "concurrent credential refresh"):
+                scope["prefer_refreshed_grant"]("claude", claude(100, "old"), updated)
+
+    def test_local_health_distinguishes_current_expired_and_unknown(self):
+        for provider, document in (("claude", claude), ("grok", grok)):
+            self.assertEqual(scope["local_credential_health"](provider, document(200, "key"), 150000),
+                             ("oauth", "current", 200000))
+            self.assertEqual(scope["local_credential_health"](provider, document(100, "key"), 150000),
+                             ("oauth", "expired", 100000))
+        value = claude(200, "key")
+        del value["claudeAiOauth"]["expiresAt"]
+        self.assertEqual(scope["local_credential_health"]("claude", value, 150000),
+                         ("oauth", "unknown", None))
+
+    def test_grok_preferred_expired_issuer_is_not_masked_by_other_current_issuer(self):
+        value = grok(100, "expired") | grok(900, "unrelated", "https://other.example.invalid")
+        self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
+                         ("oauth", "expired", 100000))
+
+    def test_grok_selected_unknown_expiry_cannot_borrow_later_preferred_window(self):
+        for expiry in (None, "invalid-invented-expiry"):
+            grant = {"key": "synthetic-unknown-key", "auth_mode": "oidc"}
+            if expiry is not None:
+                grant["expires_at"] = expiry
+            # Deliberately insert the current grant first: host selection uses
+            # issuer ordering rather than the document's insertion order.
+            value = grok(900, "current", "https://auth.x.ai::b")
+            value["https://auth.x.ai::a"] = grant
+            for earlier_expired in (False, True):
+                if earlier_expired:
+                    value |= grok(100, "expired", "https://auth.x.ai")
+                self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
+                                 ("oauth", "unknown", None))
+
+    def test_grok_unbounded_keys_remain_unknown_without_fabricated_expiry(self):
+        value = {"invented-api": {"key": "synthetic-api-key"}}
+        self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
+                         ("unbounded", "unknown", None))
+        value["invented-api"]["auth_mode"] = "oidc"
+        self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
+                         ("oauth", "unknown", None))
+
+    def test_status_never_prints_tokens_or_invalid_document_excerpts(self):
+        expiry = int(time.time()) + 3600
+        account, target = self.account("claude", claude(expiry, "synthetic-private-token"))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["account_status"](str(account))
+        self.assertEqual(output.getvalue().splitlines(), [
+            "account claude invented-account yes",
+            f"account-health claude invented-account oauth current {expiry * 1000}",
+        ])
+        target.write_text("synthetic-private-token-invalid-json", encoding="utf-8")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["account_status"](str(account))
+        self.assertEqual(output.getvalue().splitlines(), [
+            "account claude invented-account no",
+            "account-health claude invented-account unknown invalid -",
+        ])
+
+
+unittest.main(argv=["bench-auth-selftest"])
+BENCH_AUTH_UNIT_TESTS
+[[ $? == 0 ]] || failed=1
 auth_account=$(mktemp -d /home/candidate/accounts/selftest-auth-XXXXXXXX)
 auth_home=$auth_account/codex
 install -d -m 700 -o candidate -g candidate "$auth_home"

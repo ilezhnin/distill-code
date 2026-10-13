@@ -31,10 +31,15 @@ pub(super) async fn control_children(
     Ok(children)
 }
 
-async fn pause(service: &BenchmarkService, id: &str, reason: &str) -> Result<()> {
+async fn pause(
+    service: &BenchmarkService,
+    id: &str,
+    expected_revision: i64,
+    reason: &str,
+) -> Result<()> {
     let mut tx = service.store.pool.begin().await?;
-    if sqlx::query("UPDATE workflow_campaigns SET state='paused',state_reason=?,revision=revision+1 WHERE id=? AND state='running'")
-        .bind(reason).bind(id).execute(&mut *tx).await?.rows_affected() == 1
+    if sqlx::query("UPDATE workflow_campaigns SET state='paused',state_reason=?,revision=revision+1 WHERE id=? AND revision=? AND state='running'")
+        .bind(reason).bind(id).bind(expected_revision).execute(&mut *tx).await?.rows_affected() == 1
     {
         control_children(&mut tx, id, "paused").await?;
         event(&mut tx, id, "workflow_campaign_changed").await?;
@@ -81,7 +86,13 @@ async fn reconcile(service: &BenchmarkService, id: &str) -> Result<()> {
         let request = saved.plan.run_request(index)?;
         let run = service.store.run(row.try_get("run_id")?).await?;
         if hash(&run.request)? != hash(&request)? || run.attempts.len() != 1 {
-            pause(service, id, "Campaign cell evidence changed").await?;
+            pause(
+                service,
+                id,
+                saved.revision,
+                "Campaign cell evidence changed",
+            )
+            .await?;
             return Err(invalid("Campaign cell evidence changed"));
         }
         let root = &run.attempts[0];
@@ -115,6 +126,7 @@ async fn reconcile(service: &BenchmarkService, id: &str) -> Result<()> {
     } else {
         "running"
     };
+    let mut revision = saved.revision;
     if !results.is_empty() || state != stored_state || repair_cancel {
         let mut tx = service.store.pool.begin().await?;
         if sqlx::query("UPDATE workflow_campaigns SET next_cell=?,state=?,state_reason=?,revision=revision+1 WHERE id=? AND revision=?")
@@ -138,6 +150,7 @@ async fn reconcile(service: &BenchmarkService, id: &str) -> Result<()> {
         }
         event(&mut tx, id, "workflow_campaign_changed").await?;
         tx.commit().await?;
+        revision += 1;
         service.changed().await;
     }
     if state != "running" {
@@ -146,11 +159,22 @@ async fn reconcile(service: &BenchmarkService, id: &str) -> Result<()> {
     let unfinished = rows.len() - recorded;
     let available =
         (saved.plan.request.parallelism.unwrap_or(1) as usize).saturating_sub(unfinished);
+    let indices: Vec<_> =
+        (rows.len()..(rows.len() + available).min(saved.plan.cells.len())).collect();
+    if let Err(error) = service
+        .require_ready_campaign_cells(&saved.plan, &indices)
+        .await
+    {
+        // Readiness can await provider inventory while the operator repairs
+        // and resumes the campaign. A stale refusal must not undo that resume.
+        pause(service, id, revision, &error.message).await?;
+        return Ok(());
+    }
     // Registration fixes admission order, not completion order. Only collected
     // first outcomes free slots, so a fast child can refill beside a slow one.
-    for index in rows.len()..(rows.len() + available).min(saved.plan.cells.len()) {
+    for index in indices {
         if let Err(error) = service.start_run(saved.plan.run_request(index)?).await {
-            pause(service, id, &error.message).await?;
+            pause(service, id, revision, &error.message).await?;
             break;
         }
     }

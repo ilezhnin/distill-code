@@ -887,6 +887,124 @@ pub(super) async fn check_reserved_versions(
 }
 
 impl BenchmarkService {
+    /// Check only the cells about to enter the scheduler. Unavailable
+    /// alternatives remain in adaptive policies; a fixed policy still needs
+    /// its exact worker. This does not select a step or start its clock.
+    pub(super) async fn require_ready_campaign_cells(
+        &self,
+        plan: &Plan,
+        indices: &[usize],
+    ) -> Result<()> {
+        if plan.order_algorithm != STEP_ADMISSION_ORDER || indices.is_empty() {
+            return Ok(());
+        }
+        let mut inventories = BTreeMap::new();
+        let mut readiness = BTreeMap::new();
+        let mut activity = BTreeMap::new();
+        let mut versions = BTreeMap::new();
+        for &index in indices {
+            let cell = plan
+                .cells
+                .get(index)
+                .ok_or_else(|| invalid("Unknown campaign cell"))?;
+            let policy = &plan.policies[cell.policy_index];
+            let version_id = &plan.cases[cell.case_index].version_id;
+            if !versions.contains_key(version_id) {
+                versions.insert(version_id.clone(), self.store.version(version_id).await?);
+            }
+            let version = &versions[version_id];
+            let mut ready = false;
+            for candidate in policy.candidates.iter().filter(|candidate| {
+                policy.mode != "fixed" || policy.fixed_candidate_id.as_ref() == Some(&candidate.id)
+            }) {
+                let key = (candidate.provider_id.clone(), candidate.account_id.clone());
+                if !inventories.contains_key(&key) {
+                    let inventory = self
+                        .backend
+                        .inventory(
+                            &candidate.provider_id,
+                            candidate.account_id.as_deref(),
+                            true,
+                        )
+                        .await;
+                    inventories.insert(key.clone(), inventory);
+                }
+                let available = inventories[&key].as_ref().is_ok_and(|rows| {
+                    rows.iter()
+                        .any(|row| super::task_execution::inventory_acknowledges(row, candidate))
+                });
+                if !available
+                    || self
+                        .backend
+                        .unsupported(candidate, &version.manifest)
+                        .is_some()
+                {
+                    continue;
+                }
+                if !activity.contains_key(&key) {
+                    activity.insert(
+                        key.clone(),
+                        self.backend
+                            .activity(candidate)
+                            .await
+                            .is_ok_and(|state| state.active_sessions.is_empty()),
+                    );
+                }
+                if !activity[&key] {
+                    continue;
+                }
+                let candidate_key = hash(candidate)?;
+                if !readiness.contains_key(&candidate_key) {
+                    readiness.insert(
+                        candidate_key.clone(),
+                        self.backend
+                            .readiness_for_budget(candidate, plan.request.timeout_seconds)
+                            .await
+                            .is_ok(),
+                    );
+                }
+                if readiness[&candidate_key] {
+                    ready = true;
+                    break;
+                }
+            }
+            if !ready {
+                return Err(BenchmarkError::new(
+                    "campaign_not_ready",
+                    format!(
+                        "Workflow {} ({}) has no ready worker matching its frozen settings and runtime; restore provider readiness before starting or resuming. No new workflow was admitted",
+                        index + 1,
+                        policy.mode,
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn require_ready_campaign_control(&self, saved: &Campaign) -> Result<()> {
+        if saved.plan.order_algorithm != STEP_ADMISSION_ORDER {
+            return Ok(());
+        }
+        let rows = sqlx::query(
+            "SELECT c.cell_index,a.phase FROM workflow_campaign_cells c JOIN run_plans r ON r.request_key=c.request_key JOIN attempts a ON a.run_id=r.id WHERE c.campaign_id=? ORDER BY c.cell_index",
+        )
+        .bind(&saved.plan.id)
+        .fetch_all(&self.store.pool)
+        .await?;
+        let mut indices = Vec::new();
+        for row in &rows {
+            if row.try_get::<String, _>("phase")? != "terminal" {
+                indices.push(row.try_get::<i64, _>("cell_index")? as usize);
+            }
+        }
+        let available =
+            (saved.plan.request.parallelism.unwrap_or(1) as usize).saturating_sub(indices.len());
+        indices.extend(rows.len()..(rows.len() + available).min(saved.plan.cells.len()));
+        self.require_ready_campaign_cells(&saved.plan, &indices)
+            .await
+    }
+
     pub async fn control_workflow_campaign(&self, id: &str, action: &str) -> Result<Campaign> {
         let saved = self.store.workflow_campaign(id).await?;
         let state = match (action, saved.state.as_str()) {
@@ -895,6 +1013,9 @@ impl BenchmarkService {
             ("cancel", "reserved" | "running" | "pausing" | "paused" | "cancelled") => "cancelled",
             _ => return Err(invalid("Campaign does not permit this transition")),
         };
+        if state == "running" {
+            self.require_ready_campaign_control(&saved).await?;
+        }
         let mut tx = self.store.pool.begin().await?;
         if sqlx::query(
             "UPDATE workflow_campaigns SET state=?,state_reason=NULL,revision=revision+1 WHERE id=? AND revision=?",

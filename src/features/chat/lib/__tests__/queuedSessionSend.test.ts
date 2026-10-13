@@ -15,6 +15,12 @@ import type { QueuedMessageRecord } from "@/features/chat/stores/chatStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
+import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
+import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
+
+vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
+  executorSelection: { get: vi.fn(), select: vi.fn(), prepare: vi.fn() },
+}));
 
 const mocks = vi.hoisted(() => ({
   loadSessionMessages: vi.fn(),
@@ -127,6 +133,7 @@ function queuedRecord(): QueuedMessageRecord & { kind: "transport-ready" } {
 describe("acquireExistingSessionForBackgroundSend", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(executorSelection.get).mockResolvedValue(null);
     resetSessionTargetCoordinatorsForTests();
     mocks.loadSessionMessages.mockResolvedValue(true);
     useChatStore.setState({
@@ -136,6 +143,124 @@ describe("acquireExistingSessionForBackgroundSend", () => {
       draftsBySession: {},
       activeSessionId: null,
     });
+  });
+
+  it("selects an accepted automatic task after hydration and leases the selected target", async () => {
+    seedSession();
+    const target = {
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+      modelId: "task-model",
+      modelName: "Task model",
+    };
+    useProviderModelCacheStore.setState({
+      providers: new Map([
+        [
+          "codex-acp",
+          {
+            providerId: "codex-acp",
+            fetchedAt: Date.now(),
+            models: [
+              { id: "task-model", name: "Task model", providerId: "codex-acp" },
+            ],
+          },
+        ],
+      ]),
+    });
+    const record = queuedRecord();
+    record.payload.sendOptions = {
+      initialExecutorIntent: {
+        options: [{ target }],
+        priorIds: [],
+        roleId: null,
+        rolePrompt: "",
+        workClassId: "general",
+      },
+    };
+    useChatStore.setState({
+      queuedMessageBySession: { [SESSION_ID]: [record] },
+    });
+    vi.mocked(executorSelection.select).mockImplementation(async (request) => ({
+      request: {
+        requestKey: request.requestKey,
+        surface: "chat",
+        contextId: SESSION_ID,
+        prediction: {
+          task: request.task,
+          targetFamily: request.targetFamily,
+          targetGroup: request.targetGroup,
+          candidates: request.candidates,
+          hardCandidateKey: null,
+          minQuality: 0,
+        },
+        priorKeys: [],
+        modelId: null,
+      },
+      chosen: request.candidates[0].configuration,
+      chosenKey: "native-key",
+      source: "prior",
+      reason: "no certificate",
+      inputHash: "input",
+      artifactHash: "artifact",
+      createdAt: 1,
+      policyVersion: "test",
+      learnedStatus: "unavailable",
+      researchPrediction: null,
+      learnedDispatchAllowed: false,
+    }));
+    const acquired = await acquireExistingSessionForBackgroundSend(
+      SESSION_ID,
+      record,
+    );
+    expect(acquired).toMatchObject({ status: "acquired", target });
+    expect(executorSelection.select).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: expect.objectContaining({ prompt: "first prompt" }),
+        hardCandidateId: null,
+      }),
+      true,
+    );
+    expect(mocks.loadSessionMessages.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(executorSelection.select).mock.invocationCallOrder[0],
+    );
+    expect(acquireSessionDispatchTarget(SESSION_ID).status).toBe("contended");
+    expect(useChatStore.getState().queuedMessageBySession[SESSION_ID][0]).toBe(
+      record,
+    );
+    if (acquired.status === "acquired") acquired.release();
+  });
+
+  it("keeps the hydrated history target instead of selecting a new executor", async () => {
+    seedSession();
+    const record = queuedRecord();
+    record.payload.sendOptions = {
+      initialExecutorIntent: {
+        options: [],
+        priorIds: [],
+        roleId: null,
+        rolePrompt: "",
+        workClassId: "general",
+      },
+    };
+    useChatStore.setState({
+      queuedMessageBySession: { [SESSION_ID]: [record] },
+    });
+    mocks.loadSessionMessages.mockImplementation(async () => {
+      useChatSessionStore
+        .getState()
+        .patchSession(SESSION_ID, { messageCount: 2 });
+      return true;
+    });
+    const acquired = await acquireExistingSessionForBackgroundSend(
+      SESSION_ID,
+      record,
+    );
+    expect(acquired).toMatchObject({
+      status: "acquired",
+      target: { harnessId: "goose" },
+    });
+    expect(executorSelection.select).not.toHaveBeenCalled();
+    if (acquired.status === "acquired") acquired.release();
   });
 
   it("holds the dispatch target across hydration so no other sender dispatches into the load", async () => {

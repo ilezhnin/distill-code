@@ -1,8 +1,144 @@
 //! Invented service-API acceptance; it establishes plumbing, never model quality.
 use super::*;
+use crate::services::agent_host::executor_receipts::{
+    ExecutorLink, ReceiptStart, ReportedSelection,
+};
 use crate::services::benchmarks::{
     promotion::*, qualification, workflow_campaign, workflow_campaign::acceptance,
 };
+
+fn ordinary_start(decision: &crate::services::benchmarks::executor::Decision) -> ReceiptStart {
+    let chosen = decision.chosen.as_ref().unwrap();
+    ReceiptStart {
+        link: ExecutorLink {
+            decision_key: decision.request.request_key.clone(),
+            logical_run_id: "invented-logical-run".into(),
+        },
+        session_id: "invented-session".into(),
+        host_run_id: "invented-host-run".into(),
+        message_id: "invented-message".into(),
+        bridge_generation: 1,
+        provider_id: chosen.provider_id.clone(),
+        account_id: chosen.account_id.clone(),
+        started_at: "2026-01-01T00:00:00Z".into(),
+        selection: ReportedSelection {
+            model_id: Some(chosen.model_id.clone()),
+            model_name: chosen.model_name.clone(),
+            effort: chosen.effort.clone(),
+            fast: chosen.fast_mode,
+        },
+    }
+}
+
+// Keep the additional handoff scenarios out of the already large end-to-end
+// fixture's stack-resident async state machine on the Windows test runner.
+fn check_ordinary_admission<'a>(
+    store: &'a Store,
+    decisions: [&'a crate::services::benchmarks::executor::Decision; 2],
+) -> BoxFuture<'a, ()> {
+    Box::pin(async move {
+        for decision in decisions {
+            let start = ordinary_start(decision);
+            let permit = store.admit_ordinary_executor(&start).await.unwrap();
+            assert!(permit.is_some());
+            drop(permit);
+            // Unspecified accounts preserve the learned provider/model choice.
+            let mut routed = start.clone();
+            routed.account_id = Some("invented-fallback-account".into());
+            assert!(store
+                .admit_ordinary_executor(&routed)
+                .await
+                .unwrap()
+                .is_some());
+            for changed in [
+                ReceiptStart {
+                    provider_id: "other-provider".into(),
+                    ..start.clone()
+                },
+                ReceiptStart {
+                    selection: ReportedSelection {
+                        model_id: Some("other-model".into()),
+                        ..start.selection.clone()
+                    },
+                    ..start.clone()
+                },
+                ReceiptStart {
+                    selection: ReportedSelection {
+                        effort: None,
+                        ..start.selection.clone()
+                    },
+                    ..start.clone()
+                },
+                ReceiptStart {
+                    selection: ReportedSelection {
+                        fast: Some(true),
+                        ..start.selection.clone()
+                    },
+                    ..start.clone()
+                },
+            ] {
+                assert!(store.admit_ordinary_executor(&changed).await.is_err());
+            }
+        }
+    })
+}
+
+fn revoke_at_ordinary_handoff<'a>(
+    service: &'a Arc<BenchmarkService>,
+    certificate_id: &'a str,
+    decisions: [&'a crate::services::benchmarks::executor::Decision; 2],
+    pinned: &'a crate::services::benchmarks::executor::Decision,
+    backend: &'a OfflineWorkers,
+) -> BoxFuture<'a, ()> {
+    Box::pin(async move {
+        // Releasing this permit represents bridge submission, not completion.
+        let permit = service
+            .store
+            .admit_ordinary_executor(&ordinary_start(decisions[0]))
+            .await
+            .unwrap()
+            .unwrap();
+        let revoker_service = service.clone();
+        let certificate_id = certificate_id.to_owned();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let revoker = tokio::spawn(async move {
+            started_tx.send(()).unwrap();
+            revoker_service
+                .store
+                .revoke_promotion(&certificate_id, "Invented revocation")
+                .await
+        });
+        started_rx.await.unwrap();
+        assert!(!revoker.is_finished());
+        drop(permit);
+        revoker.await.unwrap().unwrap();
+        let before_refused_dispatch = backend.calls.load(Ordering::SeqCst);
+        for decision in decisions {
+            let restored = service
+                .store
+                .prepare_ordinary_executor_decision(decision.request.clone())
+                .await
+                .unwrap();
+            assert_eq!(restored.artifact_hash, decision.artifact_hash);
+            assert_eq!(restored.chosen, decision.chosen);
+            let refusal = service
+                .store
+                .admit_ordinary_executor(&ordinary_start(&restored))
+                .await;
+            assert_eq!(refusal.err().unwrap().code, "invalid_promotion");
+        }
+        assert_eq!(
+            backend.calls.load(Ordering::SeqCst),
+            before_refused_dispatch
+        );
+        assert!(service
+            .store
+            .admit_ordinary_executor(&ordinary_start(pinned))
+            .await
+            .unwrap()
+            .is_none());
+    })
+}
 
 async fn qualify(service: &BenchmarkService, versions: &[BenchmarkVersion]) -> Vec<String> {
     let mut ids = vec![];
@@ -293,13 +429,14 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
     assert_eq!(learned_wave.chosen.as_ref().unwrap(), actual);
     let mut pin_request = ordinary("debug", "ordinary-certified-pin");
     pin_request.prediction.hard_candidate_key = pin_request.prior_keys.first().cloned();
-    let pinned = service
+    let ordinary_pinned = service
         .store
         .prepare_ordinary_executor_decision(pin_request)
         .await
         .unwrap();
-    assert_eq!(pinned.source, "pin");
-    assert_eq!(pinned.chosen.as_ref().unwrap().model_id, "painter");
+    assert_eq!(ordinary_pinned.source, "pin");
+    assert_eq!(ordinary_pinned.chosen.as_ref().unwrap().model_id, "painter");
+    check_ordinary_admission(&service.store, [&learned_chat, &learned_wave]).await;
     let mut unavailable_request = ordinary("debug", "ordinary-certified-unavailable");
     unavailable_request
         .prediction
@@ -523,11 +660,14 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
             .artifact_hash,
         state.certificate.artifact_hash
     );
-    service
-        .store
-        .revoke_promotion(&state.certificate.id, "Invented revocation")
-        .await
-        .unwrap();
+    revoke_at_ordinary_handoff(
+        &service,
+        &state.certificate.id,
+        [&learned_chat, &learned_wave],
+        &ordinary_pinned,
+        &backend,
+    )
+    .await;
     assert!(service
         .store
         .require_active_promotion(&state.certificate.id)
@@ -568,6 +708,175 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
         .unwrap();
     assert_eq!(backend.calls.load(Ordering::SeqCst), 288);
 }
+#[tokio::test]
+async fn exposed_replacement_reports_cannot_promote_even_when_acceptance_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(OfflineWorkers::default());
+    let service = open(dir.path(), backend).await;
+    let training = publish_with_entry(&service, "train", 8, true).await;
+    let mut ids = qualify(&service, &training).await;
+    measure(&service, &training, "replacement-training").await;
+    let fit = fit(&service, &training).await;
+    let held = roots(&service, &training).await;
+    ids.extend(qualify(&service, &held).await);
+    let original = campaign(&service, &fit, &held).await;
+    service
+        .control_workflow_campaign(&original.plan.id, "start")
+        .await
+        .unwrap();
+    for _ in 0..60 {
+        service.tick().await.unwrap();
+        if service
+            .store
+            .workflow_campaign(&original.plan.id)
+            .await
+            .unwrap()
+            .next_cell
+            > 0
+        {
+            break;
+        }
+    }
+    assert!(
+        service
+            .store
+            .workflow_campaign(&original.plan.id)
+            .await
+            .unwrap()
+            .next_cell
+            > 0
+    );
+    service
+        .control_workflow_campaign(&original.plan.id, "cancel")
+        .await
+        .unwrap();
+    service.tick().await.unwrap();
+    let mut request = original.plan.request.clone();
+    request.request_key = "invented-exposed-replacement".into();
+    let replacement = service.freeze_workflow_campaign(request).await.unwrap();
+    assert_eq!(replacement.plan.supersedes, vec![original.plan.id]);
+    let rule = service
+        .store
+        .register_promotion_rule(registration(&replacement, &training, ids))
+        .await
+        .unwrap();
+    service
+        .control_workflow_campaign(&replacement.plan.id, "start")
+        .await
+        .unwrap();
+    for _ in 0..600 {
+        if service
+            .store
+            .workflow_campaign(&replacement.plan.id)
+            .await
+            .unwrap()
+            .state
+            != "running"
+        {
+            break;
+        }
+        service.tick().await.unwrap();
+    }
+    let report = service
+        .store
+        .workflow_campaign_report(&replacement.plan.id)
+        .await
+        .unwrap();
+    assert_eq!(report.supersedes, replacement.plan.supersedes);
+    assert!(report
+        .limitations
+        .iter()
+        .any(|limitation| limitation.contains("not unseen held-out evidence")));
+    let fixed = replacement
+        .plan
+        .request
+        .candidates
+        .iter()
+        .map(|candidate| candidate.id.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        acceptance::assess(&rule.request.rule, &report.cases, &fixed)
+            .unwrap()
+            .passed
+    );
+    let cached = service
+        .store
+        .workflow_campaign_report(&replacement.plan.id)
+        .await
+        .unwrap();
+    assert_eq!(cached.supersedes, report.supersedes);
+    assert_eq!(cached.artifact_hash, report.artifact_hash);
+    let refused = service
+        .store
+        .promote_selector(&replacement.plan.id)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "invalid_promotion");
+    assert!(refused.message.contains("reuses exposed campaign families"));
+    assert!(service.store.promotions().await.unwrap().is_empty());
+
+    // Simulate a certificate persisted by the former issuer, which accepted
+    // this passing report despite its already exposed campaign provenance.
+    let mut qualifications = Vec::new();
+    for version in training.iter().chain(&held) {
+        qualifications.extend(
+            service
+                .store
+                .qualification_bindings(&version.id)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|binding| rule.request.qualification_ids.contains(&binding.id)),
+        );
+    }
+    let mut legacy = Certificate {
+        id: String::new(),
+        created_at: now(),
+        model_id: fit.model.id.clone(),
+        model_snapshot_hash: fit.model.snapshot_hash.clone(),
+        campaign_id: replacement.plan.id.clone(),
+        campaign_plan_hash: replacement.plan_hash.clone(),
+        report_hash: report.artifact_hash,
+        rule_hash: rule.artifact_hash,
+        contract: rule.request.contract,
+        assessment: acceptance::assess(&rule.request.rule, &report.cases, &fixed).unwrap(),
+        qualifications,
+        prior_keys: replacement
+            .plan
+            .request
+            .candidates
+            .iter()
+            .map(crate::services::benchmarks::routing::candidate_key)
+            .collect(),
+        min_prediction_quality: replacement.plan.request.min_quality,
+        artifact_hash: String::new(),
+        native_inventory: None,
+        trajectory: None,
+    };
+    legacy.id = fixtures::hash(&serde_json::to_vec(&legacy).unwrap());
+    legacy.artifact_hash = fixtures::hash(&serde_json::to_vec(&legacy).unwrap());
+    sqlx::query("INSERT INTO selector_promotions(id,campaign_id,created_at,artifact_json,artifact_hash) VALUES(?,?,?,?,?)")
+        .bind(&legacy.id).bind(&legacy.campaign_id).bind(legacy.created_at)
+        .bind(serde_json::to_string(&legacy).unwrap()).bind(&legacy.artifact_hash)
+        .execute(&service.store.pool).await.unwrap();
+    // The old bytes remain readable as historical evidence, but discovery and
+    // final native handoff cannot treat them as current dispatch authority.
+    assert!(service.store.promotion(&legacy.id).await.is_ok());
+    let refused = service
+        .store
+        .require_active_promotion(&legacy.id)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "invalid_promotion");
+    assert!(refused.message.contains("exposed campaign families"));
+    assert!(service
+        .store
+        .class_certificate("debug")
+        .await
+        .unwrap()
+        .is_none());
+}
+
 #[tokio::test]
 async fn later_qualification_and_fit_cutoff_cannot_launder_earlier_data() {
     let dir = tempfile::tempdir().unwrap();

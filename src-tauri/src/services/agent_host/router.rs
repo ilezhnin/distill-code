@@ -6028,8 +6028,22 @@ impl Inner {
             });
             (run.run_id.clone(), receipt)
         };
+        let mut prompt_admission = task_admission;
         if let Some(start) = &receipt_start {
             check_owned_deadline(owned_deadline)?;
+            if prompt_admission.is_none() {
+                let service = self
+                    .app
+                    .state::<crate::services::benchmarks::BenchmarkState>()
+                    .get(&self.app)
+                    .await
+                    .map_err(|error| protocol::internal(error.message))?;
+                prompt_admission = service
+                    .store
+                    .admit_ordinary_executor(start)
+                    .await
+                    .map_err(|error| protocol::internal(error.message))?;
+            }
             if !self
                 .store
                 .claim_executor_receipt_with_routing(
@@ -6042,7 +6056,7 @@ impl Inner {
                 return Err(invalid_params("This executor decision already claimed a provider dispatch; inspect its recorded run before retrying"));
             }
         }
-        let raw_result = match task_admission {
+        let raw_result = match prompt_admission {
             Some(admission) => {
                 bridge
                     .prompt_with_admission(request, run_id.clone(), Some(admission), owned_deadline)

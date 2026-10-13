@@ -37,6 +37,14 @@ const FILES: &[(&str, &[u8])] = resources![
 pub(crate) struct Status {
     pub revision: String,
     accounts: Vec<(String, String)>,
+    account_health: BTreeMap<(String, String), AccountHealth>,
+}
+
+#[derive(Debug)]
+struct AccountHealth {
+    mode: String,
+    state: String,
+    expires_at_ms: Option<i64>,
 }
 
 impl Status {
@@ -50,6 +58,53 @@ impl Status {
             return Err(io::Error::other(format!(
                 "The {provider} account {account} is not signed in inside {DISTRIBUTION}; run bench-login in the sandbox"
             )));
+        }
+        Ok(())
+    }
+
+    /// Local expiry evidence covers the entire admitted attempt plus cleanup.
+    /// This is not a claim that a grant has been remotely authenticated.
+    pub fn require_account_window(
+        &self,
+        provider: &str,
+        account: &str,
+        now_ms: i64,
+        timeout_seconds: u32,
+    ) -> io::Result<()> {
+        self.require_account(provider, account)?;
+        // These providers expose expiry metadata in bench-auth. Other
+        // providers retain their existing sign-in and usage-policy checks
+        // until their actual credential formats have a health adapter.
+        if !matches!(provider, "claude" | "grok") {
+            return Ok(());
+        }
+        if now_ms < 0 || timeout_seconds == 0 {
+            return Err(io::Error::other("Invalid credential admission window"));
+        }
+        let health = self
+            .account_health
+            .get(&(provider.to_owned(), account.to_owned()))
+            .ok_or_else(|| {
+                io::Error::other(
+                    "Sandbox credential health is unknown; inspect the account before admission",
+                )
+            })?;
+        if health.mode == "unbounded" && health.state == "unknown" {
+            // This mode makes no expiry claim (for example an API key). Its
+            // existing account/usage policy remains responsible for admission.
+            return Ok(());
+        }
+        let deadline = now_ms
+            .checked_add(i64::from(timeout_seconds) * 1000)
+            .and_then(|value| value.checked_add(300_000))
+            .ok_or_else(|| io::Error::other("Invalid credential admission window"))?;
+        if health.mode != "oauth"
+            || health.state != "current"
+            || health.expires_at_ms.is_none_or(|expiry| expiry <= deadline)
+        {
+            return Err(io::Error::other(
+                "Sandbox OAuth credentials do not cover the complete attempt and cleanup margin; drain active work and refresh or sign in before admission",
+            ));
         }
         Ok(())
     }
@@ -199,8 +254,8 @@ async fn invoke(
     }
 }
 
-/// Readiness is independent of credentials. Status exposes only an account's
-/// signed-in flag; it never returns tokens or credential contents.
+/// Runtime identity is independent of credentials. Status separately exposes
+/// redacted local health and expiry, never tokens or credential contents.
 pub(crate) async fn ready() -> io::Result<Status> {
     let out = invoke(
         "/usr/local/sbin/bench-status",
@@ -263,9 +318,52 @@ fn parse_status(text: &str) -> io::Result<Status> {
             _ => None,
         })
         .collect();
+    let mut account_health = BTreeMap::new();
+    for parts in &lines {
+        if parts.first() != Some(&"account-health") {
+            continue;
+        }
+        let [_, provider, account, mode, state, expiry] = parts.as_slice() else {
+            return Err(io::Error::other("Malformed sandbox credential health"));
+        };
+        valid_id(provider)?;
+        valid_id(account)?;
+        if !matches!(*mode, "oauth" | "unbounded" | "unknown")
+            || !matches!(
+                *state,
+                "current" | "expired" | "missing" | "invalid" | "unknown"
+            )
+        {
+            return Err(io::Error::other("Unknown sandbox credential health"));
+        }
+        let expires_at_ms = if *expiry == "-" {
+            None
+        } else {
+            Some(
+                expiry
+                    .parse::<i64>()
+                    .map_err(|_| io::Error::other("Invalid sandbox credential expiry"))?,
+            )
+        };
+        if expires_at_ms.is_some_and(|value| value <= 0)
+            || account_health
+                .insert(
+                    (provider.to_string(), account.to_string()),
+                    AccountHealth {
+                        mode: mode.to_string(),
+                        state: state.to_string(),
+                        expires_at_ms,
+                    },
+                )
+                .is_some()
+        {
+            return Err(io::Error::other("Conflicting sandbox credential health"));
+        }
+    }
     Ok(Status {
         revision: hex::encode(Sha256::digest(serde_json::to_vec(&identity)?)),
         accounts,
+        account_health,
     })
 }
 
@@ -673,6 +771,134 @@ mod tests {
         assert!(parse_status(&base.replace("netns up", "netns down")).is_err());
         for id in ["", "../other", "/tmp/file", "a;b"] {
             assert!(valid_id(id).is_err());
+        }
+    }
+
+    #[test]
+    fn oauth_health_must_cover_the_whole_attempt_and_cleanup() {
+        let base = format!("{}\naccount claude account-1 yes", status());
+        let now = 1_800_000_000_000;
+        let deadline = now + 600_000 + 300_000;
+        let check = |health: &str| {
+            parse_status(&format!("{base}\naccount-health claude account-1 {health}"))
+                .unwrap()
+                .require_account_window("claude", "account-1", now, 600)
+        };
+        assert!(check(&format!("oauth current {}", deadline + 1)).is_ok());
+        for health in [
+            format!("oauth current {deadline}"),
+            format!("oauth current {}", now + 1),
+            format!("oauth expired {}", deadline + 1),
+            "oauth current -".into(),
+            "oauth unknown -".into(),
+            "unknown unknown -".into(),
+            "oauth missing -".into(),
+            "oauth invalid -".into(),
+        ] {
+            assert!(check(&health).is_err(), "{health}");
+        }
+        assert!(parse_status(&base)
+            .unwrap()
+            .require_account_window("claude", "account-1", now, 600)
+            .is_err());
+        let ready = parse_status(&format!(
+            "{base}\naccount-health claude account-1 oauth current {}",
+            deadline + 1
+        ))
+        .unwrap();
+        assert!(ready
+            .require_account_window("claude", "account-2", now, 600)
+            .is_err());
+        assert!(ready
+            .require_account_window("claude", "account-1", -1, 600)
+            .is_err());
+        assert!(ready
+            .require_account_window("claude", "account-1", now, 0)
+            .is_err());
+        assert!(ready
+            .require_account_window("claude", "account-1", i64::MAX, 600)
+            .is_err());
+    }
+
+    #[test]
+    fn credential_health_is_volatile_evidence_not_runtime_identity() {
+        let base = status();
+        let original = parse_status(&base).unwrap();
+        for health in [
+            "oauth expired 100",
+            "oauth current 1800001000000",
+            "unbounded unknown -",
+        ] {
+            let signed = parse_status(&format!(
+                "{base}\naccount grok account-1 yes\naccount-health grok account-1 {health}"
+            ))
+            .unwrap();
+            assert_eq!(signed.revision, original.revision);
+        }
+        let unbounded = parse_status(&format!(
+            "{base}\naccount grok account-1 yes\naccount-health grok account-1 unbounded unknown -"
+        ))
+        .unwrap();
+        assert!(unbounded
+            .require_account_window("grok", "account-1", 1_800_000_000_000, 3600)
+            .is_ok());
+    }
+
+    #[test]
+    fn a_refreshed_shared_grant_cannot_extend_an_earlier_session_snapshot() {
+        let start = 1_800_000_000_000;
+        let prefix = format!(
+            "{}\naccount claude account-1 yes\naccount-health claude account-1 oauth current",
+            status()
+        );
+        let original = parse_status(&format!("{prefix} {}", start + 1_000_000)).unwrap();
+        assert!(original
+            .require_account_window("claude", "account-1", start, 600)
+            .is_ok());
+        let after_setup = start + 200_000;
+        let refreshed = parse_status(&format!("{prefix} {}", start + 2_000_000)).unwrap();
+        assert!(refreshed
+            .require_account_window("claude", "account-1", after_setup, 600)
+            .is_ok());
+        assert!(original
+            .require_account_window("claude", "account-1", after_setup, 600)
+            .is_err());
+    }
+
+    #[test]
+    fn providers_without_an_expiry_adapter_keep_existing_account_checks() {
+        for provider in ["codex", "kimi"] {
+            let base = status();
+            let signed = parse_status(&format!(
+                "{base}\naccount {provider} account-1 yes\naccount-health {provider} account-1 unknown unknown -"
+            ))
+            .unwrap();
+            assert!(signed
+                .require_account_window(provider, "account-1", 1_800_000_000_000, 3600)
+                .is_ok());
+            assert!(signed
+                .require_account_window(provider, "account-2", 1_800_000_000_000, 3600)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_or_duplicate_credential_health_is_rejected_without_echoing_input() {
+        let base = status();
+        for health in [
+            "claude account-1 oauth current",
+            "claude account-1 invented current -",
+            "claude account-1 oauth invented -",
+            "claude account-1 oauth current secret-value",
+            "claude account-1 oauth current -1",
+            "claude account-1 oauth current 0",
+            "claude ../account oauth current 1000",
+            "claude account-1 oauth current 1000\naccount-health claude account-1 oauth current 2000",
+        ] {
+            let error = parse_status(&format!("{base}\naccount-health {health}"))
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("secret-value"));
         }
     }
     #[tokio::test]

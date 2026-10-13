@@ -88,7 +88,10 @@ import {
 } from "../lib/firstWorkspaceSend";
 export type { WorkspaceNameRequest } from "../lib/firstWorkspaceSend";
 import { activateSession } from "../lib/sessionActivation";
-import { selectInitialChatExecutor } from "../lib/chatExecutorDispatch";
+import {
+  captureInitialChatExecutorIntent,
+  selectInitialChatExecutor,
+} from "../lib/chatExecutorDispatch";
 import type { ApplicationExecutorOption } from "@/features/benchmarks/lib/applicationExecutor";
 import {
   previewChatExecutor,
@@ -1597,8 +1600,33 @@ export function useChatSessionController({
     sessionId,
   ]);
 
+  const explicitInitialPinsRef = useRef(new Set<string>());
+  const markInitialExecutorPinned = useCallback(() => {
+    explicitInitialPinsRef.current.add(stateSessionId);
+    if (sessionId) {
+      useChatSessionStore
+        .getState()
+        .patchSession(sessionId, { initialExecutorMode: "manual" });
+    }
+    // A manual selection also replaces any still-queued automatic intent.
+    // updateQueuedMessage gives this explicit edit a new accepted request key.
+    const store = useChatStore.getState();
+    for (const record of store.queuedMessageBySession[stateSessionId] ?? []) {
+      if (record.editing || !record.payload.sendOptions?.initialExecutorIntent)
+        continue;
+      store.updateQueuedMessage(stateSessionId, record.recordId, {
+        ...record.payload,
+        sendOptions: {
+          ...record.payload.sendOptions,
+          initialExecutorIntent: undefined,
+        },
+      });
+    }
+  }, [sessionId, stateSessionId]);
+
   const handleProviderChangeWithContextReset = useCallback(
     (providerId: string) => {
+      markInitialExecutorPinned();
       personaTargetEpochRef.current += 1;
       if (providerId === selectedProvider) {
         return;
@@ -1607,11 +1635,17 @@ export function useChatSessionController({
       useChatStore.getState().resetTokenState(stateSessionId);
       handleProviderChange(providerId);
     },
-    [handleProviderChange, selectedProvider, stateSessionId],
+    [
+      handleProviderChange,
+      selectedProvider,
+      stateSessionId,
+      markInitialExecutorPinned,
+    ],
   );
 
   const handleModelChangeWithContextReset = useCallback(
     (modelId: string, model?: ModelOption) => {
+      markInitialExecutorPinned();
       personaTargetEpochRef.current += 1;
       const nextModelProviderId = model?.providerId;
       if (
@@ -1628,6 +1662,7 @@ export function useChatSessionController({
       effectiveModelSelection?.id,
       effectiveModelSelection?.modelProviderId,
       handleModelChange,
+      markInitialExecutorPinned,
       stateSessionId,
     ],
   );
@@ -1677,6 +1712,7 @@ export function useChatSessionController({
   // is refused, it is rolled back together with the optimistic value.
   const handleReasoningEffortChange = useCallback(
     (value: string) => {
+      markInitialExecutorPinned();
       if (!sessionId) {
         // No session to write to yet: the choice joins the pending selection
         // and is applied the moment one exists.
@@ -1757,6 +1793,7 @@ export function useChatSessionController({
     },
     [
       rememberRunSettingsChoice,
+      markInitialExecutorPinned,
       session?.desiredRunSettings,
       session?.executionTarget,
       session?.fastMode,
@@ -1767,6 +1804,7 @@ export function useChatSessionController({
 
   const handleFastModeChange = useCallback(
     (enabled: boolean) => {
+      markInitialExecutorPinned();
       if (!sessionId) {
         setPendingRunSettings((previous) =>
           normalizeSessionRunSettings({ ...previous, fast: enabled }),
@@ -1841,6 +1879,7 @@ export function useChatSessionController({
     },
     [
       rememberRunSettingsChoice,
+      markInitialExecutorPinned,
       session?.desiredRunSettings,
       session?.executionTarget,
       session?.fastMode,
@@ -2758,6 +2797,16 @@ export function useChatSessionController({
           : undefined;
       const queuedPersona =
         payload.persona.kind === "inherit" ? selectedPersona : requestedPersona;
+      const currentTarget = session?.executionTarget ?? pendingExecutionTarget;
+      const initialTarget = currentTarget?.modelId
+        ? currentTarget
+        : effectiveModelSelection?.id && effectiveModelSelection.modelProviderId
+          ? targetFromAgentModelSelection(selectedAgentId, {
+              modelProviderId: effectiveModelSelection.modelProviderId,
+              modelId: effectiveModelSelection.id,
+              modelName: effectiveModelSelection.name,
+            })
+          : currentTarget;
       const capturedPersonaSystemPrompt =
         formatPersonaSystemPrompt(queuedPersona);
       const executionSystemPrompt =
@@ -2780,6 +2829,32 @@ export function useChatSessionController({
           : undefined);
       const sendOptions = {
         ...payload.sendOptions,
+        initialExecutorIntent:
+          !explicitInitialPinsRef.current.has(stateSessionId) &&
+          session?.initialExecutorMode !== "manual" &&
+          (!sessionId || session?.initialExecutorMode === "automatic") &&
+          !sessionHasStarted
+            ? captureInitialChatExecutorIntent({
+                persona: queuedPersona,
+                current: initialTarget
+                  ? {
+                      target: initialTarget,
+                      runSettings:
+                        session?.desiredRunSettings ??
+                        pendingPersonaRunSettings,
+                    }
+                  : undefined,
+                context: {
+                  providers,
+                  getModelsForHarness: getInstalledModelsForAgent,
+                  rateLimits:
+                    useProviderRateLimitsStore.getState().snapshot?.providers ??
+                    [],
+                  classOverrides: getRoutingPolicy().classOverrides,
+                  nearLimitPercent: getRoutingPolicy().chatNearLimitPercent,
+                },
+              })
+            : undefined,
         ...(capturedPersonaSystemPrompt !== undefined
           ? { capturedPersonaSystemPrompt }
           : {}),
@@ -2810,6 +2885,18 @@ export function useChatSessionController({
       sessionNodeRole,
       workspaceContextReady,
       workspaceInstructionsPrompt,
+      stateSessionId,
+      sessionId,
+      session?.initialExecutorMode,
+      session?.executionTarget,
+      session?.desiredRunSettings,
+      sessionHasStarted,
+      pendingExecutionTarget,
+      pendingPersonaRunSettings,
+      providers,
+      getInstalledModelsForAgent,
+      effectiveModelSelection,
+      selectedAgentId,
     ],
   );
 
@@ -3205,8 +3292,10 @@ export function useChatSessionController({
             }
           : undefined,
         pinned:
-          session?.executionTargetSource === "ui" ||
-          Boolean(pendingExecutionTarget),
+          sessionHasStarted ||
+          session?.initialExecutorMode === "manual" ||
+          explicitInitialPinsRef.current.has(stateSessionId) ||
+          Boolean(sessionId && session?.initialExecutorMode !== "automatic"),
         context: {
           providers,
           getModelsForHarness: getInstalledModelsForAgent,
@@ -3224,7 +3313,8 @@ export function useChatSessionController({
       selectedPersona,
       pendingExecutionTarget,
       session?.executionTarget,
-      session?.executionTargetSource,
+      session?.initialExecutorMode,
+      sessionHasStarted,
       session?.desiredRunSettings,
       sessionId,
       pendingRunSettingsForDisplay,

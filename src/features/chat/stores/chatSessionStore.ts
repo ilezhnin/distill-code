@@ -69,6 +69,9 @@ export interface ChatSession {
   accountId?: string | null;
   executionTarget?: SessionExecutionTarget;
   executionTargetSource?: "ui" | "acp";
+  /** UI target ownership also includes automatic persona defaults. */
+  initialExecutorMode?: "automatic" | "manual";
+  initialExecutorRequestKey?: string;
   personaId?: string;
   /**
    * OBSERVED: the effort menu the CURRENT model advertises and the value it is
@@ -231,6 +234,7 @@ interface ChatSessionStoreState {
 }
 
 export interface CreateSessionOpts {
+  initialExecutorMode?: "automatic" | "manual";
   title?: string;
   projectId?: string;
   executionTarget?: SessionExecutionTarget;
@@ -688,6 +692,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       projectId: opts.projectId,
       executionTarget,
       executionTargetSource: "ui",
+      initialExecutorMode: opts.initialExecutorMode,
       personaId: opts.personaId,
       reasoningEffort: configOptionsSnapshot?.reasoningEffort ?? undefined,
       // The toggle the model answered with. Without it the fast control reads
@@ -747,6 +752,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       updatedAt: now,
       messageCount: 0,
       creationState: "pending",
+      initialExecutorMode: opts.initialExecutorMode,
       clientSessionId: id,
       intent: null,
       agentBuilderOpen: false,

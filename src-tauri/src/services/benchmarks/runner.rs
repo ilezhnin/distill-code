@@ -209,6 +209,13 @@ pub trait ExecutionBackend: Send + Sync {
     fn readiness<'a>(&'a self, _configuration: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
+    fn readiness_for_budget<'a>(
+        &'a self,
+        configuration: &'a Configuration,
+        _timeout_seconds: u32,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.readiness(configuration)
+    }
     /// Scores a creative rendering with a panel of other models; nothing happens
     /// where no panel can be assembled.
     fn judge<'a>(
@@ -547,6 +554,19 @@ fn native_refusal(c: &Configuration) -> Option<String> {
 }
 
 async fn repository_runtime(c: &Configuration) -> Result<String> {
+    repository_runtime_for_budget(c, None).await
+}
+
+async fn repository_runtime_for_budget(c: &Configuration, budget: Option<u32>) -> Result<String> {
+    repository_runtime_snapshot(c, budget)
+        .await
+        .map(|(revision, _)| revision)
+}
+
+async fn repository_runtime_snapshot(
+    c: &Configuration,
+    budget: Option<u32>,
+) -> Result<(String, sandbox::Status)> {
     if let Some(reason) = profile_refusal(c) {
         return Err(BenchmarkError::new("capability_missing", reason));
     }
@@ -555,7 +575,17 @@ async fn repository_runtime(c: &Configuration) -> Result<String> {
         repository_execution::readiness(provider, c.account_id.as_deref().unwrap_or_default())
             .await
             .map_err(host_error)?;
-    Ok(repository_execution::revision(provider, &status))
+    if let Some(timeout) = budget {
+        status
+            .require_account_window(
+                provider.key(),
+                c.account_id.as_deref().unwrap_or_default(),
+                now(),
+                timeout,
+            )
+            .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
+    }
+    Ok((repository_execution::revision(provider, &status), status))
 }
 
 /// A repository answer comes from the stopped working copy, never the agent's
@@ -2946,6 +2976,18 @@ impl ExecutionBackend for NativeBackend {
             Ok(())
         })
     }
+    fn readiness_for_budget<'a>(
+        &'a self,
+        c: &'a Configuration,
+        timeout_seconds: u32,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if c.execution_profile == "protected_repository" {
+                repository_runtime_for_budget(c, Some(timeout_seconds)).await?;
+            }
+            Ok(())
+        })
+    }
     fn activity<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<AccountActivity>> {
         Box::pin(async move {
             let host = self
@@ -3091,8 +3133,11 @@ impl ExecutionBackend for NativeBackend {
                     &account,
                 )
                 .await?;
+            let mut credential_snapshot = None;
             let runtime_revision = if repository {
-                let runtime = repository_runtime(&attempt.configuration).await?;
+                let (runtime, status) =
+                    repository_runtime_snapshot(&attempt.configuration, Some(timeout)).await?;
+                credential_snapshot = Some(status);
                 repository_inventory_revision(&runtime, &inventory, &attempt.configuration.model_id)
             } else {
                 let native_cli = crate::services::managed_acp_tools::native_cli_path(
@@ -3259,6 +3304,45 @@ impl ExecutionBackend for NativeBackend {
             }
             store.save_attempt(&attempt).await?;
             let key = dispatch_key(&attempt);
+            if repository && budget.is_none() {
+                // Legacy repository runs start a fresh turn clock after setup.
+                // Recheck here so archive/copy/session time cannot consume the
+                // credential window reserved before preparation.
+                let runtime =
+                    repository_runtime_for_budget(&attempt.configuration, Some(timeout_seconds))
+                        .await?;
+                let revision = repository_inventory_revision(
+                    &runtime,
+                    &inventory,
+                    &attempt.configuration.model_id,
+                );
+                if observed.inventory_revision.as_deref() != Some(revision.as_str()) {
+                    return Err(BenchmarkError::new(
+                        "selection_changed",
+                        "Sandbox runtime changed during repository preparation",
+                    ));
+                }
+                // The session may already hold a private copy of this grant;
+                // a newer shared refresh cannot extend that copy's lifetime.
+                // Check after the final awaited probe so its own latency
+                // cannot consume the original credential's cleanup margin.
+                credential_snapshot
+                    .as_ref()
+                    .expect("repository readiness snapshot")
+                    .require_account_window(
+                        provider.key(),
+                        attempt
+                            .configuration
+                            .account_id
+                            .as_deref()
+                            .unwrap_or_default(),
+                        now(),
+                        timeout_seconds,
+                    )
+                    .map_err(|error| {
+                        BenchmarkError::new("capability_missing", error.to_string())
+                    })?;
+            }
             let started = Instant::now();
             let request = OwnedTurnRequest {
                 session_id: session.session_id.clone(),

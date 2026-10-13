@@ -2,6 +2,12 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatState } from "@/shared/types/chat";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
+import {
+  executorSelection,
+  type ApplicationExecutorRequest,
+  type ExecutorDecision,
+} from "@/features/benchmarks/lib/executorSelection";
+import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { QueuedMessageOwnershipLostError } from "../../lib/preCommitSendRejection";
 import { beginModelSelectionIntent } from "../../model-selection/modelSelectionIntent";
 import {
@@ -19,6 +25,9 @@ import {
 } from "../../lib/accountQuotaWait";
 
 const mockAcpPrepareSession = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
+  executorSelection: { get: vi.fn(), select: vi.fn(), prepare: vi.fn() },
+}));
 
 vi.mock("@/shared/api/acp", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/shared/api/acp")>()),
@@ -35,8 +44,43 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
+function initialDecision(
+  request: ApplicationExecutorRequest,
+): ExecutorDecision {
+  return {
+    request: {
+      requestKey: request.requestKey,
+      surface: "chat",
+      contextId: request.contextId,
+      prediction: {
+        task: request.task,
+        targetFamily: request.targetFamily,
+        targetGroup: request.targetGroup,
+        candidates: request.candidates,
+        hardCandidateKey: null,
+        minQuality: 0,
+      },
+      priorKeys: [],
+      modelId: null,
+    },
+    chosen: request.candidates[0].configuration,
+    chosenKey: "native-key",
+    source: "learned",
+    reason: "certified",
+    inputHash: "input",
+    artifactHash: "artifact",
+    createdAt: 1,
+    policyVersion: "test",
+    learnedStatus: "active",
+    researchPrediction: null,
+    learnedDispatchAllowed: true,
+  };
+}
+
 describe("useMessageQueue", () => {
   beforeEach(() => {
+    vi.mocked(executorSelection.get).mockReset().mockResolvedValue(null);
+    vi.mocked(executorSelection.select).mockReset();
     resetSessionTargetCoordinatorsForTests();
     useChatSessionStore.setState({
       sessions: [
@@ -61,6 +105,113 @@ describe("useMessageQueue", () => {
       activeSessionId: null,
       isConnected: false,
     });
+  });
+
+  it("holds FIFO through first-task selection and does not duplicate dispatch when the foreground remounts", async () => {
+    const selected = {
+      target: {
+        harnessId: "codex-acp",
+        modelProviderId: "codex-acp",
+        modelId: "task-model",
+        modelName: "Task model",
+      },
+      runSettings: { effort: "low" },
+    };
+    useProviderModelCacheStore.setState({
+      providers: new Map([
+        [
+          "codex-acp",
+          {
+            providerId: "codex-acp",
+            fetchedAt: Date.now(),
+            models: [
+              { id: "task-model", name: "Task model", providerId: "codex-acp" },
+            ],
+          },
+        ],
+      ]),
+    });
+    const selecting = deferred<ExecutorDecision>();
+    let request: ApplicationExecutorRequest | undefined;
+    vi.mocked(executorSelection.select).mockImplementation((input) => {
+      request = input;
+      return selecting.promise;
+    });
+    useChatStore.getState().enqueueTransportReadyMessage("s1", {
+      text: "first accepted task",
+      persona: { kind: "none" },
+      sendOptions: {
+        initialExecutorIntent: {
+          options: [selected],
+          priorIds: [],
+          roleId: null,
+          rolePrompt: "",
+          workClassId: "general",
+        },
+      },
+    });
+    useChatStore.getState().enqueueTransportReadyMessage("s1", {
+      text: "second accepted task",
+      persona: { kind: "none" },
+    });
+    const sending = deferred<boolean>();
+    const sendMessage = vi.fn(
+      (_text, _persona, _attachments, options: ChatSendOptions = {}) => {
+        options.beforeUserMessageCommitted?.();
+        options.onUserMessageCommitted?.();
+        useChatSessionStore.getState().patchSession("s1", { messageCount: 1 });
+        useChatStore.getState().setChatState("s1", "streaming");
+        return sending.promise;
+      },
+    );
+    const first = renderHook(() => useMessageQueue("s1", "idle", sendMessage));
+    await waitFor(() =>
+      expect(executorSelection.select).toHaveBeenCalledTimes(1),
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+    first.unmount();
+    const second = renderHook(() => useMessageQueue("s1", "idle", sendMessage));
+    if (!request) throw new Error("Missing initial selection");
+    const prepared: ExecutorDecision = {
+      request: {
+        requestKey: request.requestKey,
+        surface: "chat",
+        contextId: "s1",
+        prediction: {
+          task: request.task,
+          targetFamily: request.targetFamily,
+          targetGroup: request.targetGroup,
+          candidates: request.candidates,
+          hardCandidateKey: null,
+          minQuality: 0,
+        },
+        priorKeys: [],
+        modelId: null,
+      },
+      chosen: request.candidates[0].configuration,
+      chosenKey: "native-key",
+      source: "learned",
+      reason: "certified",
+      inputHash: "input",
+      artifactHash: "artifact",
+      createdAt: 1,
+      policyVersion: "test",
+      learnedStatus: "active",
+      researchPrediction: null,
+      learnedDispatchAllowed: true,
+    };
+    await act(async () => selecting.resolve(prepared));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+    expect(sendMessage.mock.calls[0][0]).toBe("first accepted task");
+    expect(sendMessage.mock.calls[0][3]?.sessionSelection).toMatchObject(
+      selected.target,
+    );
+    expect(executorSelection.select).toHaveBeenCalledTimes(1);
+    await act(async () => sending.resolve(true));
+    act(() => useChatStore.getState().setChatState("s1", "idle"));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
+    expect(sendMessage.mock.calls[1][0]).toBe("second accepted task");
+    second.unmount();
   });
 
   it("retains the original head across repeated quota deferrals without exhausting rejection retries", () => {
@@ -91,6 +242,76 @@ describe("useMessageQueue", () => {
     expect(sendMessage).toHaveBeenCalledTimes(9);
     expect(useChatStore.getState().queuedMessageBySession.s1).toBeUndefined();
     hook.unmount();
+  });
+
+  it("does not resume an old session's accepted task through a new session's callback", async () => {
+    const target = {
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+      modelId: "task-model",
+      modelName: "Task model",
+    };
+    useProviderModelCacheStore.setState({
+      providers: new Map([
+        [
+          "codex-acp",
+          {
+            providerId: "codex-acp",
+            fetchedAt: Date.now(),
+            models: [
+              { id: "task-model", name: "Task model", providerId: "codex-acp" },
+            ],
+          },
+        ],
+      ]),
+    });
+    useChatSessionStore.setState((state) => ({
+      sessions: [...state.sessions, { ...state.sessions[0], id: "s2" }],
+    }));
+    useChatStore.getState().enqueueTransportReadyMessage("s1", {
+      text: "old session accepted task",
+      persona: { kind: "none" },
+      sendOptions: {
+        initialExecutorIntent: {
+          options: [{ target }],
+          priorIds: [],
+          roleId: null,
+          rolePrompt: "",
+          workClassId: "general",
+        },
+      },
+    });
+    const selecting = deferred<void>();
+    vi.mocked(executorSelection.select).mockImplementation(async (request) => {
+      await selecting.promise;
+      return initialDecision(request);
+    });
+    const oldSend = vi.fn().mockResolvedValue(true);
+    const newSend = vi.fn().mockResolvedValue(true);
+    const view = renderHook(
+      ({ sessionId }) =>
+        useMessageQueue(
+          sessionId,
+          "idle",
+          sessionId === "s1" ? oldSend : newSend,
+        ),
+      { initialProps: { sessionId: "s1" } },
+    );
+    await waitFor(() =>
+      expect(executorSelection.select).toHaveBeenCalledTimes(1),
+    );
+    view.rerender({ sessionId: "s2" });
+    await act(async () => selecting.resolve());
+    expect(oldSend).not.toHaveBeenCalled();
+    expect(newSend).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().queuedMessageBySession.s1[0].payload.text,
+    ).toBe("old session accepted task");
+    view.rerender({ sessionId: "s1" });
+    await waitFor(() => expect(oldSend).toHaveBeenCalledTimes(1));
+    expect(newSend).not.toHaveBeenCalled();
+    expect(executorSelection.select).toHaveBeenCalledTimes(1);
+    view.unmount();
   });
 
   it("retains a proven rejected head when account switching clears the wait before dispatch acknowledgment", async () => {

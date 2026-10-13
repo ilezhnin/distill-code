@@ -1,7 +1,8 @@
 #!/bin/bash
 # bench-status: what the host reads before it plans a repository case, one
 # "key value" pair per line: the digest of every sandbox file, the tool
-# versions and the signed-in provider accounts.
+# versions and redacted local credential health. Presence or a future expiry
+# is not proof that the provider accepts a credential or can refresh it.
 set -uo pipefail
 # Admission can be the first command after WSL starts. Join the boot helper's
 # lock and finish initialization before reporting readiness.
@@ -33,12 +34,19 @@ for account in /home/candidate/accounts/*/*; do
   [[ -d $account ]] || continue
   provider=$(basename "$account")
   id=$(basename "$(dirname "$account")")
+  if [[ $provider == claude || $provider == grok ]]; then
+    /usr/local/sbin/bench-auth status "$account" || {
+      echo "account $provider $id no"
+      echo "account-health $provider $id unknown invalid -"
+    }
+    continue
+  fi
   signed=no
   case $provider in
-    claude) [[ -s $account/.credentials.json ]] && signed=yes ;;
     codex) [[ -s $account/auth.json ]] && signed=yes ;;
-    grok) [[ -s $account/auth.json ]] && signed=yes ;;
     kimi) [[ -n $(find "$account/credentials" -type f -size +0c -print -quit 2>/dev/null) ]] && signed=yes ;;
   esac
   echo "account $provider $id $signed"
+  # Preserve existing non-OAuth modes without inventing an expiry for them.
+  echo "account-health $provider $id unknown $([[ $signed == yes ]] && echo unknown || echo missing) -"
 done

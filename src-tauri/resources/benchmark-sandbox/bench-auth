@@ -101,6 +101,8 @@ def grant_expiry(provider, value):
     None when the document does not carry a readable expiry for its provider.
     Kimi and Claude record epoch integers (Claude in milliseconds); Grok
     records an RFC 3339 timestamp per issuer, possibly with nanoseconds.
+    A document with several issuers returns its earliest readable expiry;
+    this value must never decide which entire multi-issuer document wins.
     """
     try:
         if provider == "kimi":
@@ -111,19 +113,128 @@ def grant_expiry(provider, value):
             return expiry / 1000 if type(expiry) is int and expiry > 0 else None
         if provider == "grok":
             from datetime import datetime, timezone
-            latest = None
+            earliest = None
             for grant in value.values():
                 stamp = grant.get("expires_at") if isinstance(grant, dict) else None
-                if not isinstance(stamp, str) or not stamp.endswith("Z"):
-                    continue
+                if (not isinstance(stamp, str)
+                        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", stamp)):
+                    return None
                 head, _, fraction = stamp[:-1].partition(".")
                 text = head + ("." + fraction[:6] if fraction else "") + "+00:00"
                 moment = datetime.fromisoformat(text).astimezone(timezone.utc).timestamp()
-                latest = moment if latest is None else max(latest, moment)
-            return latest
-    except (AttributeError, TypeError, ValueError):
+                if moment <= 0:
+                    return None
+                earliest = moment if earliest is None else min(earliest, moment)
+            return earliest
+    except (AttributeError, TypeError, ValueError, OverflowError):
         return None
     return None
+
+
+def prefer_refreshed_grant(provider, previous, updated):
+    """Whether a concurrent save may replace the stored document.
+
+    Expiry orders recorded grants, not remote refresh-token validity. Grok
+    issuers must move in the same direction; combining independent documents
+    or choosing by their maximum expiry can lose another issuer's newer grant.
+    Ambiguous changes stay on disk for the operator instead.
+    """
+    conflict = "concurrent credential refresh; inspect sandbox account before retrying"
+    if previous == updated:
+        return True
+    if provider == "grok":
+        if previous.keys() != updated.keys():
+            raise ValueError(conflict)
+        directions = set()
+        for issuer in previous:
+            if previous[issuer] == updated[issuer]:
+                continue
+            before = grant_expiry(provider, {issuer: previous[issuer]})
+            after = grant_expiry(provider, {issuer: updated[issuer]})
+            if before is None or after is None or before == after:
+                raise ValueError(conflict)
+            directions.add(after > before)
+        if len(directions) != 1:
+            raise ValueError(conflict)
+        return directions.pop()
+    before = grant_expiry(provider, previous)
+    after = grant_expiry(provider, updated)
+    if before is None or after is None or before == after:
+        raise ValueError(conflict)
+    return after > before
+
+
+def local_credential_health(provider, value, at_ms):
+    """Redacted local structure/expiry only, never remote authentication.
+
+    Non-expiring Grok key documents remain compatible with the existing host
+    contract. Neither they nor an OAuth refresh token prove refreshability.
+    """
+    if provider == "claude":
+        grant = value.get("claudeAiOauth")
+        if not isinstance(grant, dict):
+            return "unknown", "invalid", None
+        token = grant.get("accessToken")
+        if not isinstance(token, str) or not token.strip():
+            return "oauth", "missing", None
+        expiry = grant_expiry(provider, value)
+        if expiry is None:
+            return "oauth", "unknown", None
+        expiry_ms = int(expiry * 1000)
+        return "oauth", "current" if expiry_ms > at_ms else "expired", expiry_ms
+    if provider == "grok":
+        preferred = [key for key in sorted(value)
+                     if key == "https://auth.x.ai" or key.startswith("https://auth.x.ai::")]
+        issuers = preferred or sorted(value)
+        first = None
+        for issuer in issuers:
+            grant = value[issuer]
+            if not isinstance(grant, dict):
+                continue
+            token = grant.get("key")
+            if not isinstance(token, str) or not token.strip():
+                continue
+            expiry = grant_expiry(provider, {issuer: grant})
+            if expiry is not None:
+                expiry_ms = int(expiry * 1000)
+                health = ("oauth", "current" if expiry_ms > at_ms else "expired", expiry_ms)
+            elif "expires_at" not in grant and grant.get("auth_mode") != "oidc":
+                health = ("unbounded", "unknown", None)
+            else:
+                health = ("oauth", "unknown", None)
+            # The host treats unreadable expiry as selectable, so an earlier
+            # unknown grant must not borrow a later issuer's validity window.
+            # An unrelated issuer cannot mask a preferred entry either.
+            if not preferred:
+                return health
+            if expiry is None or health[1] == "current":
+                return health
+            if first is None:
+                first = health
+        return first or ("unknown", "missing", None)
+    return "unknown", "unknown", None
+
+
+def account_status(value):
+    import time
+    account = account_path(value)
+    provider = account.name
+    try:
+        source = account / (".credentials.json" if provider == "claude" else "auth.json")
+        if source.resolve(strict=True) != source:
+            raise ValueError("unsafe credential path")
+        health = local_credential_health(provider, credential_json(regular_bytes(source)),
+                                         int(time.time() * 1000))
+    except FileNotFoundError:
+        health = ("unknown", "missing", None)
+    except Exception:
+        health = ("unknown", "invalid", None)
+    mode, state, expiry = health
+    # Compatibility hint for existing consumers; only local usability, never
+    # evidence that a provider accepted the credential.
+    usable = state == "current" or mode == "unbounded"
+    print(f"account {provider} {account.parent.name} {'yes' if usable else 'no'}")
+    print(f"account-health {provider} {account.parent.name} {mode} {state} {expiry if expiry is not None else '-'}")
 
 
 def save():
@@ -142,24 +253,19 @@ def save():
         if after == before:
             continue
         updated = credential_json(data)
+        if account.name in ("claude", "grok"):
+            # Validate structure only, not freshness or remote acceptance. An
+            # expired but well-formed grant still belongs to the evidence.
+            mode, state, _ = local_credential_health(account.name, updated, 0)
+            if state != "current" and mode != "unbounded":
+                raise ValueError("unreadable refreshed credential; inspect sandbox account before retrying")
         target = account / name
         if target.resolve(strict=True) != target:
             raise ValueError("unsafe account credential path")
         current_data = regular_bytes(target)
         current = digest(current_data)
         if current not in (before, after):
-            # Parallel sessions on one account refresh their grants
-            # independently: Kimi at ACP startup, Claude and Grok whenever a
-            # turn outlives its token. Retain the newer grant regardless of
-            # the order in which the turns finish; only a document without a
-            # readable expiry, or two grants with the same expiry, is left
-            # for the operator.
-            previous_expiry = grant_expiry(account.name, credential_json(current_data))
-            updated_expiry = grant_expiry(account.name, updated)
-            if (previous_expiry is None or updated_expiry is None
-                    or previous_expiry == updated_expiry):
-                raise ValueError("concurrent credential refresh; inspect sandbox account before retrying")
-            if updated_expiry < previous_expiry:
+            if not prefer_refreshed_grant(account.name, credential_json(current_data), updated):
                 receipt["originals"][name] = after
                 continue
         pending.append((name, target, data, after))
@@ -182,6 +288,12 @@ def save():
 
 
 try:
+    if len(sys.argv) == 3 and sys.argv[1] == "status":
+        # Status never copies grants, refreshes tokens, or starts a session.
+        with open("/run/lock/distill-bench-auth", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            account_status(sys.argv[2])
+        sys.exit(0)
     action, attempt = sys.argv[1:3]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", attempt):
         raise ValueError("invalid attempt")

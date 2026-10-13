@@ -376,6 +376,7 @@
     "left": "Waiting",
     "running": "Running",
     "campaign": "Workflow comparison",
+    "campaignCreated": "Created {{date}}",
     "campaignProgress": "{{settled}} / {{total}} workflows settled",
     "step": "Step {{number}}",
     "elapsed": "Elapsed {{elapsed}}",

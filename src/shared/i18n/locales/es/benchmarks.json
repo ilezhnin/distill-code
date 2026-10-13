@@ -376,6 +376,7 @@
     "left": "En espera",
     "running": "En curso",
     "campaign": "Comparación de flujos",
+    "campaignCreated": "Creada el {{date}}",
     "campaignProgress": "{{settled}} / {{total}} flujos terminados",
     "step": "Paso {{number}}",
     "elapsed": "Tiempo transcurrido {{elapsed}}",

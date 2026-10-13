@@ -628,6 +628,75 @@ describe("useChatSessionController", () => {
     expect(mockUseChatSendMessage).toHaveBeenCalledTimes(sendCalls);
   });
 
+  it("captures automatic accepted role intent and makes a same-value model pick an explicit pin", async () => {
+    useChatSessionStore.getState().replaceSessionExecutionTarget("session-1", {
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
+      modelId: "gpt-4o",
+      modelName: "GPT-4o",
+    });
+    useChatSessionStore.getState().patchSession("session-1", {
+      initialExecutorMode: "automatic",
+      personaId: "persona-1",
+    });
+    useAgentStore.setState({ personas: [personaFixture()] });
+    const enqueue = vi.fn((text, personaId, attachments, sendOptions) => {
+      useChatStore.getState().enqueueTransportReadyMessage("session-1", {
+        text,
+        persona: { kind: "persona", id: personaId },
+        attachments,
+        sendOptions,
+      });
+      return true;
+    });
+    mockUseMessageQueue.mockImplementation(() => ({
+      queuedMessage: null,
+      queuedMessages: [],
+      enqueue,
+      update: vi.fn(),
+      sendQueued: vi.fn(),
+      edit: vi.fn(),
+      cancelEdit: vi.fn(),
+      dismiss: vi.fn(),
+    }));
+    const { result } = renderHook(() =>
+      useChatSessionController({ sessionId: "session-1" }),
+    );
+    await waitFor(() =>
+      expect(result.current.workspaceContextReady).toBe(true),
+    );
+    act(() => {
+      result.current.handleSend("Actual accepted task", "persona-1");
+    });
+    const original =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    expect(original.payload.sendOptions?.initialExecutorIntent).toMatchObject({
+      roleId: "persona-1",
+      rolePrompt: "Gather context.",
+    });
+    expect(original.payload.text).toBe("Actual accepted task");
+    const prepareCalls = mockAcpPrepareSession.mock.calls.length;
+    act(() =>
+      result.current.handleModelChange("gpt-4o", {
+        id: "gpt-4o",
+        name: "GPT-4o",
+        providerId: "claude-acp",
+      }),
+    );
+    const pinned =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    expect(pinned.recordId).toBe(original.recordId);
+    expect(pinned.payload.executorRequestKey).not.toBe(
+      original.payload.executorRequestKey,
+    );
+    expect(pinned.payload.sendOptions?.initialExecutorIntent).toBeUndefined();
+    expect(
+      useChatSessionStore.getState().getSession("session-1")
+        ?.initialExecutorMode,
+    ).toBe("manual");
+    expect(mockAcpPrepareSession).toHaveBeenCalledTimes(prepareCalls);
+  });
+
   describe("persona run settings", () => {
     const OPUS_EFFORTS = [
       { id: "low", name: "Low" },
@@ -1875,6 +1944,10 @@ describe("useChatSessionController", () => {
       attachments: [imageDraft],
       sendOptions: {
         executionSystemPrompt: MEMORY_PROTOCOL_PROMPT,
+        initialExecutorIntent: expect.objectContaining({
+          roleId: null,
+          workClassId: "general",
+        }),
       },
     });
 
@@ -1908,6 +1981,10 @@ describe("useChatSessionController", () => {
         // Migration preserves the operator protocols accepted in Home.
         sendOptions: {
           executionSystemPrompt: MEMORY_PROTOCOL_PROMPT,
+          initialExecutorIntent: expect.objectContaining({
+            roleId: null,
+            workClassId: "general",
+          }),
         },
       });
     });

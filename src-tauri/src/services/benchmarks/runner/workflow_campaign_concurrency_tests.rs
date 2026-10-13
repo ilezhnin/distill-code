@@ -391,17 +391,18 @@ async fn concurrent_campaign_refills_while_slow_children_fly_and_drains_all_on_p
             .collect::<Vec<_>>()
     );
     assert_eq!(backend.workers.calls.load(Ordering::SeqCst), 48 + 240);
-    let started = backend.started.lock().unwrap();
-    assert_eq!(started.len(), 240);
-    assert_eq!(
-        started
-            .iter()
-            .map(|(_, id)| id)
-            .collect::<BTreeSet<_>>()
-            .len(),
-        240
-    );
-    drop(started);
+    {
+        let started = backend.started.lock().unwrap();
+        assert_eq!(started.len(), 240);
+        assert_eq!(
+            started
+                .iter()
+                .map(|(_, id)| id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            240
+        );
+    }
     let report = service
         .store
         .workflow_campaign_report(&frozen.plan.id)

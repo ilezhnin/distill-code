@@ -237,9 +237,21 @@ export function WorkflowCampaignDialog({
                               </span>
                             ) : null}
                             <StateBadge
-                              state={finished ? "completed" : run.state}
+                              state={
+                                run.attention?.outcome ??
+                                (finished &&
+                                run.state !== "needs_attention" &&
+                                run.state !== "cancelled"
+                                  ? "terminal"
+                                  : run.state)
+                              }
                             />
                           </div>
+                          {run.attention?.reason ? (
+                            <p className="break-words text-xs text-muted-foreground">
+                              {run.attention.reason}
+                            </p>
+                          ) : null}
                         </div>
                         <Button
                           type="button"

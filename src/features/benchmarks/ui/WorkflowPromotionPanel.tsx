@@ -237,6 +237,9 @@ export function WorkflowPromotionPanel({
           (p) => p.certificate.id !== saved.certificate.id,
         ),
       ]);
+      await client.invalidateQueries({
+        queryKey: ["benchmarks", "class-policies"],
+      });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
     } finally {

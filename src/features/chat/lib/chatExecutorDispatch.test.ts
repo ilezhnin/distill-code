@@ -8,9 +8,13 @@ import {
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { useChatStore } from "../stores/chatStore";
+import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
+import { resetSessionTargetCoordinatorsForTests } from "./sessionTargetCoordinator";
 import {
   prepareChatExecutorDispatch,
   selectInitialChatExecutor,
+  prepareQueuedInitialChatExecutor,
+  needsInitialChatExecutor,
 } from "./chatExecutorDispatch";
 import { dispatchPrompt } from "./sendCore";
 
@@ -99,6 +103,7 @@ function rejectedReceipt(
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  resetSessionTargetCoordinatorsForTests();
   useChatSessionStore.setState({
     sessions: [
       {
@@ -137,6 +142,300 @@ beforeEach(() => {
     options.onPromptDispatching();
     options.onPromptDispatched?.();
   });
+});
+
+function seedAutomaticFirstTask() {
+  useChatSessionStore.getState().patchSession("example-chat", {
+    messageCount: 0,
+    initialExecutorMode: "automatic",
+  });
+  const option = {
+    target: {
+      harnessId: "grok-acp",
+      modelProviderId: "grok-acp",
+      modelId: "task-model",
+      modelName: "Task model",
+    },
+    runSettings: { effort: "low", fast: false },
+  };
+  useProviderModelCacheStore.setState({
+    providers: new Map([
+      [
+        "grok-acp",
+        {
+          providerId: "grok-acp",
+          fetchedAt: Date.now(),
+          schemaVersion: 3,
+          models: [
+            {
+              id: "task-model",
+              name: "Task model",
+              providerId: "grok-acp",
+              efforts: [{ id: "low", name: "Low" }],
+            },
+          ],
+        },
+      ],
+    ]),
+  });
+  useChatStore.getState().enqueueTransportReadyMessage("example-chat", {
+    text: "Solve the accepted algorithm task.",
+    persona: { kind: "persona", id: "accepted-role" },
+    sendOptions: {
+      initialExecutorIntent: {
+        options: [option],
+        priorIds: [],
+        roleId: "accepted-role",
+        rolePrompt: "Check invariants.",
+        workClassId: "algorithms",
+      },
+    },
+  });
+  return useChatStore.getState().queuedMessageBySession["example-chat"][0];
+}
+
+it("routes the accepted first task and preserves learned provenance through the native dispatch join", async () => {
+  const record = seedAutomaticFirstTask();
+  useChatStore.setState({
+    draftsBySession: { "example-chat": "A later unrelated draft" },
+  });
+  let saved: ExecutorDecision | undefined;
+  vi.mocked(executorSelection.select).mockImplementation(async (request) => {
+    saved = {
+      ...decision(request),
+      source: "learned",
+      learnedDispatchAllowed: true,
+    };
+    return saved;
+  });
+  await Promise.all([
+    prepareQueuedInitialChatExecutor("example-chat", record),
+    prepareQueuedInitialChatExecutor("example-chat", record),
+  ]);
+  expect(executorSelection.select).toHaveBeenCalledTimes(1);
+  expect(executorSelection.select).toHaveBeenCalledWith(
+    expect.objectContaining({
+      requestKey: record.payload.executorRequestKey,
+      hardCandidateId: null,
+      task: expect.objectContaining({
+        prompt: record.payload.text,
+        roleId: "accepted-role",
+        rolePrompt: "Check invariants.",
+      }),
+    }),
+    true,
+  );
+  expect(
+    useChatSessionStore.getState().getSession("example-chat"),
+  ).toMatchObject({
+    executionTarget: { harnessId: "grok-acp", modelId: "task-model" },
+    desiredRunSettings: { effort: "low", fast: false },
+  });
+  expect(
+    useChatStore.getState().queuedMessageBySession["example-chat"][0],
+  ).toBe(record);
+  expect(mocks.send).not.toHaveBeenCalled();
+  if (!saved) throw new Error("Missing committed selection");
+  vi.mocked(executorSelection.get).mockResolvedValue({
+    decision: saved,
+    hostExecution: null,
+    observations: [],
+  });
+  vi.mocked(executorSelection.prepare).mockResolvedValue(saved);
+  const input = {
+    sessionId: "example-chat",
+    requestKey: record.payload.executorRequestKey ?? "",
+    prompt: record.payload.text,
+    personaId: "accepted-role",
+  };
+  await expect(prepareChatExecutorDispatch(input)).rejects.toThrow(
+    "prepared executor decision",
+  );
+  // Only a matching host model/effort acknowledgement permits dispatch.
+  useChatSessionStore.getState().patchSession("example-chat", {
+    reasoningEffort: {
+      configId: "effort",
+      currentValue: "low",
+      options: [{ id: "low", name: "Low" }],
+    },
+    fastMode: { configId: "fast", enabled: false, kind: "boolean" },
+  });
+  await dispatchPrompt("example-chat", record.payload.text, {
+    executorRequestKey: record.payload.executorRequestKey,
+    persona: { id: "accepted-role" },
+    systemPrompt: "Actual workspace context, composed after the accepted role.",
+  });
+  expect(executorSelection.prepare).toHaveBeenCalledWith(saved.request);
+  expect(saved.source).toBe("learned");
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+  expect(mocks.send.mock.calls[0][2].promptMeta.executorSelection).toEqual({
+    decisionKey: record.payload.executorRequestKey,
+    logicalRunId: record.payload.executorRequestKey,
+  });
+});
+
+it.each([
+  "manual",
+  "history",
+] as const)("does not reroute an initial-looking task after %s binding", async (binding) => {
+  const record = seedAutomaticFirstTask();
+  useChatSessionStore
+    .getState()
+    .patchSession(
+      "example-chat",
+      binding === "manual"
+        ? { initialExecutorMode: "manual" }
+        : { messageCount: 1 },
+    );
+  expect(needsInitialChatExecutor("example-chat", record)).toBe(false);
+  await prepareQueuedInitialChatExecutor("example-chat", record);
+  expect(executorSelection.select).not.toHaveBeenCalled();
+  expect(
+    useChatSessionStore.getState().getSession("example-chat")?.executionTarget
+      ?.modelId,
+  ).toBe("example-model");
+});
+
+it("keeps the edited queue head and the current model when an older selection resolves", async () => {
+  const record = seedAutomaticFirstTask();
+  let resolve!: () => void;
+  vi.mocked(executorSelection.select).mockImplementation(
+    (request) =>
+      new Promise((done) => {
+        resolve = () => done({ ...decision(request), source: "prior" });
+      }),
+  );
+  const pending = prepareQueuedInitialChatExecutor("example-chat", record);
+  await Promise.resolve();
+  useChatStore.getState().updateQueuedMessage("example-chat", record.recordId, {
+    ...record.payload,
+    text: "Explicitly edited task",
+  });
+  resolve();
+  await expect(pending).rejects.toThrow();
+  expect(
+    useChatStore.getState().queuedMessageBySession["example-chat"][0].payload
+      .text,
+  ).toBe("Explicitly edited task");
+  expect(
+    useChatSessionStore.getState().getSession("example-chat")?.executionTarget
+      ?.modelId,
+  ).toBe("example-model");
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+it.each([
+  false,
+  true,
+])("replays native-shaped initial decisions after marker loss (proven quota withdrawal: %s)", async (quotaWithdrawal) => {
+  const record = seedAutomaticFirstTask();
+  let saved: ExecutorDecision | undefined;
+  vi.mocked(executorSelection.select).mockImplementation(async (request) => {
+    saved = {
+      ...decision(request),
+      source: "learned",
+      learnedDispatchAllowed: true,
+    };
+    return saved;
+  });
+  await prepareQueuedInitialChatExecutor("example-chat", record);
+  if (!saved) throw new Error("Missing initial decision");
+  const task = saved.request.prediction.task;
+  // Exact Rust PublicTask field order and null-default TaskFacets shape.
+  saved.request.prediction.task = {
+    workClassId: task.workClassId,
+    prompt: task.prompt,
+    fixtures: task.fixtures,
+    facets: {
+      language: null,
+      domain: null,
+      difficulty: null,
+      inputBytes: task.facets.inputBytes,
+      outputFormat: null,
+    },
+    roleId: task.roleId,
+    rolePrompt: task.rolePrompt,
+    permissions: task.permissions,
+    executionProfile: task.executionProfile,
+    limits: task.limits,
+    entry: null,
+  };
+  const receipt = quotaWithdrawal
+    ? rejectedReceipt(record.payload.executorRequestKey ?? "", true)
+    : null;
+  if (receipt) {
+    receipt.start.providerId = "grok-acp";
+    receipt.start.selection = {
+      modelId: "task-model",
+      modelName: "Task model",
+      effort: "low",
+      fast: false,
+    };
+    if (receipt.finish) receipt.finish.selection = receipt.start.selection;
+  }
+  vi.mocked(executorSelection.get).mockResolvedValue({
+    decision: saved,
+    hostExecution: receipt,
+    observations: [],
+  });
+  vi.mocked(executorSelection.prepare).mockResolvedValue(saved);
+  useChatSessionStore
+    .getState()
+    .patchSession("example-chat", { initialExecutorRequestKey: undefined });
+  await prepareQueuedInitialChatExecutor("example-chat", record);
+  expect(executorSelection.select).toHaveBeenCalledTimes(1);
+  expect(executorSelection.prepare).toHaveBeenCalledWith(saved.request);
+  expect(
+    useChatSessionStore.getState().getSession("example-chat")
+      ?.initialExecutorRequestKey,
+  ).toBe(record.payload.executorRequestKey);
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+it("does not dispatch or commit a user turn after an initial certificate is revoked", async () => {
+  const record = seedAutomaticFirstTask();
+  let saved: ExecutorDecision | undefined;
+  vi.mocked(executorSelection.select).mockImplementation(async (request) => {
+    saved = {
+      ...decision(request),
+      source: "learned",
+      learnedDispatchAllowed: true,
+    };
+    return saved;
+  });
+  await prepareQueuedInitialChatExecutor("example-chat", record);
+  if (!saved) throw new Error("Missing committed selection");
+  useChatSessionStore.getState().patchSession("example-chat", {
+    reasoningEffort: {
+      configId: "effort",
+      currentValue: "low",
+      options: [{ id: "low", name: "Low" }],
+    },
+    fastMode: { configId: "fast", enabled: false, kind: "boolean" },
+  });
+  vi.mocked(executorSelection.get).mockResolvedValue({
+    decision: saved,
+    hostExecution: null,
+    observations: [],
+  });
+  vi.mocked(executorSelection.prepare).mockRejectedValue(
+    new Error("Certificate revoked"),
+  );
+  await expect(
+    dispatchPrompt("example-chat", record.payload.text, {
+      executorRequestKey: record.payload.executorRequestKey,
+      persona: { id: "accepted-role" },
+    }),
+  ).rejects.toThrow("Certificate revoked");
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(
+    (useChatStore.getState().messagesBySession["example-chat"] ?? []).filter(
+      (message) => message.role === "user",
+    ),
+  ).toHaveLength(0);
+  expect(
+    useChatStore.getState().queuedMessageBySession["example-chat"][0],
+  ).toBe(record);
 });
 
 it("resolves a certified advertised effort choice into the initial chat target", async () => {

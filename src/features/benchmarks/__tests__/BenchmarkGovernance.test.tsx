@@ -24,6 +24,7 @@ import {
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import { BenchmarkQualificationPanel } from "../ui/BenchmarkQualificationPanel";
 import { WorkflowPromotionPanel } from "../ui/WorkflowPromotionPanel";
+import { LearnedClassStatus } from "../ui/LearnedClassStatus";
 import { definition } from "./fixtures";
 
 vi.mock("../api/benchmarkGovernance", () => ({
@@ -38,6 +39,7 @@ vi.mock("../api/benchmarkGovernance", () => ({
     promoteSelector: vi.fn(),
     listPromotions: vi.fn(),
     revokePromotion: vi.fn(),
+    classPolicies: vi.fn(),
   },
 }));
 
@@ -625,6 +627,23 @@ it("activates only a completed preregistered report and exposes certificate fall
   let saved: PromotionState[] = [];
   vi.mocked(api.getPromotionRule).mockResolvedValue(registered);
   vi.mocked(api.listPromotions).mockImplementation(async () => saved);
+  vi.mocked(api.classPolicies).mockImplementation(async () => {
+    const active = saved.find((entry) => entry.revokedAt === null);
+    return [
+      {
+        workClassId: contract.workClassId,
+        certificateId: active?.certificate.id ?? null,
+        certifiedAt: active?.certificate.createdAt ?? null,
+        campaignId: active?.certificate.campaignId ?? null,
+        modelId: active?.certificate.modelId ?? null,
+        qualifiedTraining: 8,
+        qualifiedHeldOut: 8,
+        heldOutWorkflows: 8,
+        fits: 1,
+        campaigns: 1,
+      },
+    ];
+  });
   vi.mocked(api.promoteSelector).mockImplementation(async () => {
     saved = [state];
     return state;
@@ -635,18 +654,24 @@ it("activates only a completed preregistered report and exposes certificate fall
     return revoked;
   });
   show(
-    <WorkflowPromotionPanel
-      campaign={{ ...campaign, state: "completed" }}
-      onPendingChange={vi.fn()}
-    />,
+    <>
+      <LearnedClassStatus classId={contract.workClassId} />
+      <WorkflowPromotionPanel
+        campaign={{ ...campaign, state: "completed" }}
+        onPendingChange={vi.fn()}
+      />
+    </>,
   );
   const user = userEvent.setup();
   const activate = await screen.findByRole("button", {
     name: "Validate evidence and activate promotion",
   });
   expect(api.promoteSelector).not.toHaveBeenCalled();
+  const status = await screen.findByTestId("learned-class-status");
+  expect(status).toHaveAttribute("data-active", "false");
   await user.click(activate);
   expect(await screen.findByText("Promotion certificate issued")).toBeVisible();
+  await waitFor(() => expect(status).toHaveAttribute("data-active", "true"));
   expect(
     screen.getByText(/worker:prior.*minimum predicted quality: 0.6/),
   ).toBeVisible();
@@ -664,6 +689,8 @@ it("activates only a completed preregistered report and exposes certificate fall
   fill("Reason for revocation", "Runtime review withdrawn");
   await user.click(screen.getByRole("button", { name: "Revoke promotion" }));
   expect(await screen.findByText("Promotion revoked")).toBeVisible();
+  await waitFor(() => expect(status).toHaveAttribute("data-active", "false"));
+  expect(api.classPolicies).toHaveBeenCalledTimes(3);
   expect(api.promoteSelector).toHaveBeenCalledWith("campaign");
   expect(api.revokePromotion).toHaveBeenCalledWith(
     "certificate",

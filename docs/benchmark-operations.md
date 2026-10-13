@@ -74,6 +74,14 @@ account. Refresh expiring credentials only after that account's active sessions
 have drained. Choose a dispatch deadline that leaves a complete attempt budget
 before a known authentication deadline.
 
+Sandbox status reports redacted local credential health separately from its
+runtime identity. Claude/Grok protected repository admission requires an OAuth
+expiry that covers the complete attempt plus five minutes for cleanup, and checks again
+before execution. Missing or invalid OAuth metadata refuses admission. A local
+expiry does not prove remote acceptance or refreshability; non-expiring key
+accounts make no expiry claim and retain their existing usage-policy checks.
+Providers without an expiry adapter retain their existing account checks.
+
 `benchmark_get_capabilities` reports supported execution profiles and reasons
 for refusals. Resolve the reported prerequisite; do not substitute a different
 account, execution profile or provider to make a frozen run proceed.
@@ -313,6 +321,12 @@ ends. Waiting for a free slot is recorded on the step and excluded from the
 whole-workflow clock, so an unrelated provider is never held idle for a worker
 the policy did not choose, and contention does not shorten a measured budget.
 
+Before starting or resuming v4, and before refilling its next batch, the host
+checks exact inventory, account availability, supported task capabilities and
+runtime readiness. A failed check pauses admission without creating new roots.
+An older in-flight check cannot pause a newer operator resume. These checks do
+not preselect future dependent steps or rewrite a frozen plan.
+
 Saved v3 plans (`sha256-campaign-cell-reserved-workers-v3`) keep their pool
 reservation: a root stays pending, without an execution clock or worker call,
 until it can reserve all worker accounts and lanes its policy may select, and
@@ -324,6 +338,8 @@ campaign, with one exception: the cells of a campaign that was cancelled, for
 example after its runtime failed. The replacement plan records those campaigns
 in `supersedes`, their first outcomes stay as recorded, and the new report is a
 repeat measurement of exposed families, not an unseen-holdout claim.
+Such a report retains its `supersedes` provenance and cannot promote a selector,
+even if its numeric comparison passes the registered acceptance rule.
 
 Saved concurrent v2 plans keep their original semantics: local slot contention
 spends the root wall budget. Serial v1 plans retain their immediate busy outcome.
@@ -392,6 +408,13 @@ floor causes abstention and a recorded fallback reason. Never silently replace
 the requested account or reinterpret unknown interactive metadata as a verified
 benchmark runtime.
 
+For a new automatic chat, selection uses the accepted first message, attachments
+and role snapshot before the queue acquires its dispatch target. Later draft
+edits cannot change that accepted decision. An explicit model or settings choice,
+including selecting the same value, pins the target; established conversations
+keep their bound target. Foreground and background queue owners use the same
+saved decision and native dispatch receipt.
+
 Verify the real application path with an authorized task: inspect the work class,
 candidate set, decision reason, certificate, chosen provider/model/effort and
 the worker's actual acknowledgement. For a wave, inspect each step and its entry
@@ -401,6 +424,10 @@ does not prove dispatch. Revoke a certificate through
 `benchmark_class_policies`: an older active certificate can become the class
 policy. The class returns to its preference order when no active certificate
 remains. Revocation preserves the research evidence.
+Saved ordinary chat and wave decisions are checked against their original
+certificate immediately before native provider handoff. A queued decision whose
+certificate was revoked is refused; it is not silently reselected under another
+certificate. Explicit pins remain independent of learned authority.
 
 ## API and maintenance map
 

@@ -2,7 +2,7 @@
 //! Research predictions are inspectable, but cannot authorize a worker change.
 
 use super::{learned, routing, store::now, store::Store, types::*};
-use crate::services::agent_host::executor_receipts::ExecutorReceipt;
+use crate::services::agent_host::executor_receipts::{ExecutorReceipt, ReceiptStart};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -674,6 +674,91 @@ impl Store {
         validate(&request)?;
         let decision = self.preview_ordinary_executor_decision(request).await?;
         self.persist_executor_decision(decision).await
+    }
+
+    /// Revalidate a saved ordinary choice at the final native handoff. The
+    /// caller holds the returned permit through receipt claim and synchronous
+    /// bridge submission, then releases it without waiting for the model.
+    /// Revocation uses the same gate; queued/restored choices never reselect.
+    pub async fn admit_ordinary_executor(
+        &self,
+        start: &ReceiptStart,
+    ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>> {
+        let record = self
+            .executor_decision(&start.link.decision_key)
+            .await?
+            .ok_or_else(|| error("invalid_decision", "Executor decision was not prepared"))?;
+        let decision = record.decision;
+        if !decision.learned_dispatch_allowed && decision.source != "learned" {
+            // Explicit pins and persona choices do not rely on a certificate.
+            return Ok(None);
+        }
+        let refused = || {
+            error(
+                "invalid_decision",
+                "Learned executor authority or selection changed before provider handoff",
+            )
+        };
+        if !decision.learned_dispatch_allowed
+            || decision.source != "learned"
+            || decision.learned_status != CERTIFIED_CLASS_POLICY
+            || !matches!(decision.request.surface.as_str(), "chat" | "wave")
+            || decision.request.prediction.hard_candidate_key.is_some()
+        {
+            return Err(refused());
+        }
+        // This identity is part of the immutable decision, including older
+        // saved choices. Never substitute today's newest class certificate.
+        let certificate_id = decision
+            .reason
+            .strip_prefix("certificate:")
+            .and_then(|reason| reason.strip_suffix(";class_recommendation_not_runtime_attestation"))
+            .filter(|id| !id.is_empty())
+            .ok_or_else(refused)?;
+        let admission = super::promotion::admission_gate().lock_owned().await;
+        let certificate = self.require_active_promotion(certificate_id).await?;
+        let model_id = certificate
+            .model_for_class(&decision.request.prediction.task.work_class_id)
+            .ok_or_else(refused)?;
+        let model = self.selector_model(model_id).await?;
+        let chosen = decision.chosen.as_ref().ok_or_else(refused)?;
+        if decision
+            .research_prediction
+            .as_ref()
+            .is_none_or(|prediction| prediction.model_id != model_id)
+            || decision.chosen_key.as_deref() != Some(application_candidate_key(chosen).as_str())
+            || !decision
+                .request
+                .prediction
+                .candidates
+                .iter()
+                .any(|candidate| candidate.available && candidate.configuration == *chosen)
+            || !model
+                .candidates
+                .iter()
+                .any(|trained| class_evidence_matches(chosen, &trained.configuration))
+            || chosen.provider_id != start.provider_id
+            || start.selection.model_id.as_deref() != Some(chosen.model_id.as_str())
+            || chosen
+                .effort
+                .as_ref()
+                .is_some_and(|effort| start.selection.effort.as_ref() != Some(effort))
+            || chosen
+                .fast_mode
+                .is_some_and(|fast| start.selection.fast != Some(fast))
+            || chosen
+                .account_id
+                .as_ref()
+                .is_some_and(|account| start.account_id.as_ref() != Some(account))
+            || chosen
+                .model_name
+                .as_ref()
+                .zip(start.selection.model_name.as_ref())
+                .is_some_and(|(expected, reported)| expected != reported)
+        {
+            return Err(refused());
+        }
+        Ok(Some(admission))
     }
 
     /// Commit before any external session effect. Repeated keys never reselect.

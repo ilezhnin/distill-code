@@ -93,6 +93,8 @@ export interface ChatSkillDraft {
 }
 
 export interface ChatSendOptions {
+  /** Explicitly automatic first-task selection, captured when the queue accepts it. */
+  initialExecutorIntent?: import("./lib/chatExecutorDispatch").InitialChatExecutorIntent;
   /** Durable identity of one accepted queue payload, regenerated on an edit. */
   executorRequestKey?: string;
   /** Internal target snapshot owned by the active queued dispatch attempt. */

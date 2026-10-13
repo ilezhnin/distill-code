@@ -36,6 +36,10 @@ pub struct Report {
     pub groups: usize,
     pub dispatch_allowed: bool,
     pub limitations: Vec<String>,
+    /// Reused families are exposed measurements, not an unseen comparison.
+    /// Omitted when empty to preserve historical report hashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<String>,
     /// Judging is measurement overhead, separate from executor utility.
     /// Omitted for old objective reports to preserve their artifact hashes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -135,6 +139,7 @@ impl Store {
             if hash(&body)? != report.artifact_hash
                 || report.artifact_hash != row.try_get::<String, _>("report_hash")?
                 || report.plan_hash != saved.plan_hash
+                || report.supersedes != saved.plan.supersedes
             {
                 return Err(invalid("Workflow report integrity check failed"));
             }
@@ -336,8 +341,11 @@ impl Store {
             .collect();
         policies.extend(keys.iter().map(|k| format!("fixed:{k}")));
         let mut report = Report { campaign_id:plan.id.clone(),plan_hash:saved.plan_hash,artifact_hash:String::new(),created_at:now(),protocol:plan.evaluation.clone(),trace_hashes,
-            policies:summarize_policies(&cases,&plan.evaluation,&policies,&keys,"persona"),groups:cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),cases,dispatch_allowed:false,judging,
+            policies:summarize_policies(&cases,&plan.evaluation,&policies,&keys,"persona"),groups:cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),cases,dispatch_allowed:false,judging,supersedes:plan.supersedes.clone(),
             limitations:vec!["Declared groups still require independent semantic and grader qualification".into(),"Equal-group paired percentile intervals are exploratory, conditional on recorded repetitions, and unadjusted for multiple comparisons".into(),"Best fixed is reselected within every resample; oracle is the hindsight best registered whole-trajectory policy per case, not a deployable step oracle".into(),"Wall time includes orchestration and interruptions; cost is provider-reported generation cost, with absent resources left unknown".into(),"This research report grants no production promotion or deployment-scope authority".into()] };
+        if !report.supersedes.is_empty() {
+            report.limitations.push("This comparison reuses families exposed by cancelled campaigns. Its results are diagnostic measurements, not unseen held-out evidence, and cannot promote a selector".into());
+        }
         if !report.judging.is_empty() {
             report.limitations.push("Frozen final-panel calls, recorded judge durations and reported judge costs are measurement overhead, excluded from executor utility; missing judge resources remain unknown".into());
         }
@@ -375,6 +383,17 @@ mod tests {
             "createdAt":1,"protocol":protocol,"traceHashes":[],"cases":[],"policies":[],
             "groups":0,"dispatchAllowed":false,"limitations":[]});
         let decoded: Report = serde_json::from_value(body.clone()).unwrap();
+        assert!(decoded.supersedes.is_empty());
+        assert_eq!(serde_json::to_value(decoded).unwrap(), body);
+    }
+
+    #[test]
+    fn report_serialization_preserves_prior_exposure() {
+        let body = serde_json::json!({"campaignId":"replacement","planHash":"plan","artifactHash":"artifact",
+            "createdAt":1,"protocol":protocol(RoleWeights::default()),"traceHashes":[],"cases":[],"policies":[],
+            "groups":0,"dispatchAllowed":false,"limitations":[],"supersedes":["cancelled-campaign"]});
+        let decoded: Report = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(decoded.supersedes, vec!["cancelled-campaign"]);
         assert_eq!(serde_json::to_value(decoded).unwrap(), body);
     }
 }

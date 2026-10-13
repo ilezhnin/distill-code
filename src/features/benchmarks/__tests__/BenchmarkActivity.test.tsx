@@ -46,7 +46,11 @@ it("opens the exact paused campaign from its progress row without opening a chil
     {
       state: "paused",
       nextCell: 2,
-      plan: { id: "comparison", cells: Array(12).fill({}) },
+      plan: {
+        id: "comparison",
+        createdAt: Date.UTC(2026, 0, 1),
+        cells: Array(12).fill({}),
+      },
     } as WorkflowCampaign,
   ];
   const onOpenCampaign = vi.fn();
@@ -74,6 +78,48 @@ it("opens the exact paused campaign from its progress row without opening a chil
   );
   expect(onOpenCampaign).toHaveBeenCalledExactlyOnceWith("comparison");
   expect(onOpenRun).not.toHaveBeenCalled();
+});
+
+it("distinguishes same-state comparisons by their creation time and exposes the reason for pausing", () => {
+  const reason = "Sign in to the benchmark account before resuming.";
+  campaignState.data = [0, 1].map(
+    (index) =>
+      ({
+        state: "paused",
+        stateReason: index === 0 ? reason : null,
+        nextCell: 2,
+        plan: {
+          id: `private-comparison-${index}`,
+          createdAt: Date.UTC(2026, 0, 1, 12, 0, index),
+          cells: Array(12).fill({}),
+        },
+      }) as WorkflowCampaign,
+  );
+  const onOpenCampaign = vi.fn();
+  render(
+    <BenchmarkActivity
+      runs={campaignState.data.map((entry) => ({
+        ...runSummary,
+        state: "completed",
+        request: {
+          ...runSummary.request,
+          requestKey: `workflow-campaign:${entry.plan.id}:0`,
+        },
+      }))}
+      onOpenRun={vi.fn()}
+      onOpenCampaign={onOpenCampaign}
+    />,
+  );
+  const rows = screen.getAllByRole("button");
+  const dates = rows.map((row) => within(row).getByText(/^Created /));
+  expect(dates[0].textContent).not.toBe(dates[1].textContent);
+  expect(within(rows[0]).getByText(reason)).toBeVisible();
+  expect(within(rows[1]).queryByText(reason)).not.toBeInTheDocument();
+  expect(screen.queryByText(/private-comparison/)).not.toBeInTheDocument();
+  fireEvent.click(rows[1]);
+  expect(onOpenCampaign).toHaveBeenCalledExactlyOnceWith(
+    "private-comparison-1",
+  );
 });
 
 it("names the model of a run that waits with nothing running", () => {

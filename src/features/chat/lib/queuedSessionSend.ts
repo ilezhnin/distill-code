@@ -1,4 +1,8 @@
 import { useAgentStore } from "@/features/agents/stores/agentStore";
+import {
+  needsInitialChatExecutor,
+  prepareQueuedInitialChatExecutor,
+} from "./chatExecutorDispatch";
 import { listPersonas } from "@/shared/api/agents";
 import type { Persona } from "@/shared/types/agents";
 import { listProjects } from "@/features/projects/api/projects";
@@ -165,6 +169,7 @@ async function hydrateSessionForBackgroundSend(
 
 export async function acquireExistingSessionForBackgroundSend(
   sessionId: string,
+  initialQueuedMessage?: QueuedMessageRecord,
 ) {
   const sessionBeforeHydration = useChatSessionStore
     .getState()
@@ -199,6 +204,8 @@ export async function acquireExistingSessionForBackgroundSend(
     if (!(await hydrateSessionForBackgroundSend(sessionId))) {
       return { status: "session-missing" } as const;
     }
+    if (initialQueuedMessage)
+      await prepareQueuedInitialChatExecutor(sessionId, initialQueuedMessage);
     return acquireSessionDispatchTarget(sessionId);
   }
   if (acquisition.status !== "acquired") {
@@ -208,6 +215,16 @@ export async function acquireExistingSessionForBackgroundSend(
     if (!(await hydrateSessionForBackgroundSend(sessionId))) {
       acquisition.release();
       return { status: "session-missing" } as const;
+    }
+    if (
+      initialQueuedMessage &&
+      needsInitialChatExecutor(sessionId, initialQueuedMessage)
+    ) {
+      // Hydration establishes whether this really has no history. Release its
+      // old target lease before selecting, then lease the acknowledged choice.
+      acquisition.release();
+      await prepareQueuedInitialChatExecutor(sessionId, initialQueuedMessage);
+      return acquireSessionDispatchTarget(sessionId);
     }
     return acquisition;
   } catch (error) {
@@ -325,7 +342,10 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     return targetPath;
   };
   assertAgentBuilderPreparationReady();
-  const acquisition = await acquireExistingSessionForBackgroundSend(sessionId);
+  const acquisition = await acquireExistingSessionForBackgroundSend(
+    sessionId,
+    queuedMessage,
+  );
   if (acquisition.status === "contended") {
     throw new SessionDispatchContentionError(acquisition.waiter);
   }

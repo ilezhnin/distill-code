@@ -397,6 +397,7 @@ export async function dispatchPrompt(
     if (!acpPromptMetadata?.executorSelection) {
       preparedExecutor = await prepareChatExecutorDispatch({
         sessionId,
+        acceptedPrompt: text,
         requestKey:
           opts.executorRequestKey ??
           `chat:${sessionId}:message:${userMessageId}`,

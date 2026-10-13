@@ -1974,6 +1974,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         existingDraft &&
         (chatState.queuedMessageBySession[existingDraft.id]?.length ?? 0) === 0
       ) {
+        if (options.executionTarget || options.runSettings) {
+          sessionState.patchSession(existingDraft.id, {
+            initialExecutorMode: "manual",
+          });
+        }
         if (shouldActivate) {
           clearSettingsSectionUrl();
           setActiveSession(existingDraft.id);
@@ -1990,6 +1995,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         const workingDir = await resolveSessionCwd(project);
         const session = await createSession({
           title,
+          initialExecutorMode:
+            options.executionTarget || options.runSettings
+              ? "manual"
+              : "automatic",
           projectId: project?.id,
           executionTarget: sessionExecutionTarget,
           runSettings,
@@ -2004,6 +2013,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       const optimisticWorkingDir = getOptimisticSessionCwd(project);
       const session = createDraftSession({
         title,
+        initialExecutorMode:
+          options.executionTarget || options.runSettings
+            ? "manual"
+            : "automatic",
         projectId: project?.id,
         executionTarget: sessionExecutionTarget,
         runSettings,
@@ -2097,6 +2110,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         existingDraft &&
         (chatState.queuedMessageBySession[existingDraft.id]?.length ?? 0) === 0
       ) {
+        if (options.executionTarget || options.runSettings) {
+          sessionState.patchSession(existingDraft.id, {
+            initialExecutorMode: "manual",
+          });
+        }
         clearSettingsSectionUrl();
         setActiveSession(existingDraft.id);
         setActiveView("chat");
@@ -2109,6 +2127,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           : null;
       const session = createDraftSession({
         title,
+        initialExecutorMode:
+          options.executionTarget || options.runSettings
+            ? "manual"
+            : "automatic",
         projectId: project.id,
         executionTarget: sessionExecutionTarget,
         runSettings,
@@ -2185,6 +2207,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         existingDraft &&
         (chatState.queuedMessageBySession[existingDraft.id]?.length ?? 0) === 0
       ) {
+        if (options.executionTarget || options.runSettings) {
+          sessionState.patchSession(existingDraft.id, {
+            initialExecutorMode: "manual",
+          });
+        }
         perfLog(
           `[perf:newtab] ${logSessionId(existingDraft.id)} reused background draft in ${(performance.now() - tStart).toFixed(1)}ms`,
         );
@@ -2194,6 +2221,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       const optimisticWorkingDir = getOptimisticSessionCwd(project);
       const session = createDraftSession({
         title,
+        initialExecutorMode:
+          options.executionTarget || options.runSettings
+            ? "manual"
+            : "automatic",
         projectId: project?.id,
         executionTarget: sessionExecutionTarget,
         runSettings,

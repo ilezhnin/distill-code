@@ -4,6 +4,9 @@ use crate::services::benchmarks::{workflow_campaign::*, workflow_policy::*};
 #[path = "workflow_campaign_concurrency_tests.rs"]
 mod concurrency;
 
+#[path = "workflow_campaign_readiness_tests.rs"]
+mod readiness;
+
 async fn training(
     service: &Arc<BenchmarkService>,
 ) -> (Vec<BenchmarkVersion>, learned::FitArtifact) {

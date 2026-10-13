@@ -2,6 +2,11 @@ import { useEffect, useCallback, useMemo, useRef } from "react";
 import type { ChatState } from "@/shared/types/chat";
 import { isPromiseLike } from "@/shared/lib/isPromiseLike";
 import { isAccountQuotaWaiting } from "../lib/accountQuotaWait";
+import {
+  needsInitialChatExecutor,
+  prepareQueuedInitialChatExecutor,
+} from "../lib/chatExecutorDispatch";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import {
   assertQueuedMessageAttemptOwned,
@@ -92,6 +97,10 @@ export function useMessageQueue(
   isSendBlocked = false,
   isPreparationReady = true,
 ) {
+  const ownerRef = useRef({ sessionId, active: true });
+  if (ownerRef.current.sessionId !== sessionId) {
+    ownerRef.current = { sessionId, active: true };
+  }
   const queuedRecords = useChatStore(
     (s) => s.queuedMessageBySession[sessionId] ?? EMPTY_QUEUED_RECORDS,
   );
@@ -123,6 +132,18 @@ export function useMessageQueue(
   } | null>(null);
   const suppressNextRenderIdleCycleRef = useRef(false);
   const dismissedRecordIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const owner = ownerRef.current;
+    if (owner.sessionId !== sessionId) return;
+    owner.active = true;
+    // These markers belong to the mounted view's session. Real transport
+    // ownership stays in queueAttemptLeaseBySession across a view change.
+    lastAttemptRef.current = null;
+    inFlightAttemptKeyRef.current = null;
+    return () => {
+      owner.active = false;
+    };
+  }, [sessionId]);
   const queuedMessageKey = useMemo(
     () => getQueuedMessageKey(queuedRecord),
     [queuedRecord],
@@ -198,6 +219,38 @@ export function useMessageQueue(
 
       if (dispatchReleaseUnsubscribeRef.current) {
         return false;
+      }
+      if (needsInitialChatExecutor(sessionId, queuedMsg)) {
+        const owner = ownerRef.current;
+        const stillOwnsQueue = () => ownerRef.current === owner && owner.active;
+        lastAttemptRef.current = {
+          key,
+          payload,
+          idleCycle: idleCycleRef.current,
+        };
+        inFlightAttemptKeyRef.current = key;
+        void prepareQueuedInitialChatExecutor(sessionId, queuedMsg)
+          .then(() => {
+            if (!stillOwnsQueue()) return;
+            inFlightAttemptKeyRef.current = null;
+            lastAttemptRef.current = null;
+            tryDrainQueuedMessage(
+              useChatStore.getState().queuedMessageBySession[sessionId]?.[0],
+            );
+          })
+          .catch((error) => {
+            if (!stillOwnsQueue()) return;
+            inFlightAttemptKeyRef.current = null;
+            const state = useChatStore.getState();
+            const head = state.queuedMessageBySession[sessionId]?.[0];
+            if (head?.payload !== payload) {
+              lastAttemptRef.current = null;
+              tryDrainQueuedMessage(head);
+            } else {
+              state.setError(sessionId, formatAcpErrorMessage(error));
+            }
+          });
+        return true;
       }
       const acquisition = acquireSessionDispatchTarget(sessionId);
       if (acquisition.status === "contended") {

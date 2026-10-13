@@ -751,6 +751,55 @@ it("opens a selected paused comparison with controls and its own recent workflow
   expect(benchmarkApi.freezeWorkflowCampaign).not.toHaveBeenCalled();
 });
 
+it.each([
+  [
+    "needs_attention",
+    {
+      outcome: "infrastructure_failure",
+      reason: "Sign in to the benchmark account before resuming.",
+    },
+    "Infrastructure failure",
+  ],
+  ["needs_attention", null, "Needs attention"],
+  ["completed", null, "Settled"],
+  ["cancelled", null, "Cancelled"],
+] as const)("preserves the verdict of a fully settled %s workflow", async (state, attention, label) => {
+  vi.mocked(benchmarkApi.listWorkflowCampaigns).mockResolvedValue([
+    { ...campaign, state: "paused" },
+  ]);
+  wrap(
+    <WorkflowCampaignDialog
+      initialCampaignId="campaign"
+      versions={versions}
+      currentVersions={versions}
+      runs={[
+        {
+          ...runSummary,
+          state,
+          attemptCount: 1,
+          settledCount: 1,
+          attention,
+          request: {
+            ...runSummary.request,
+            requestKey: "workflow-campaign:campaign:0",
+            versionIds: [versions[0].id],
+          },
+        },
+      ]}
+      onOpenRun={vi.fn()}
+      onClose={vi.fn()}
+      onEvidence={vi.fn()}
+    />,
+  );
+  const recent = within(
+    await screen.findByRole("region", { name: "Recent workflows" }),
+  );
+  expect(recent.getByText(label)).toBeVisible();
+  expect(recent.queryByText("Completed")).not.toBeInTheDocument();
+  if (attention) expect(recent.getByText(attention.reason)).toBeVisible();
+  expect(benchmarkApi.controlWorkflowCampaign).not.toHaveBeenCalled();
+});
+
 it("keeps polling a draining campaign and offers resume only after it is paused", async () => {
   const user = userEvent.setup();
   let saved: WorkflowCampaign = { ...campaign, state: "pausing" };

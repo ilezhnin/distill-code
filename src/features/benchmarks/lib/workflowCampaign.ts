@@ -68,6 +68,7 @@ export interface WorkflowCampaign {
 }
 export interface WorkflowCampaignReport {
   campaignId: string;
+  supersedes?: string[];
   planHash: string;
   artifactHash: string;
   createdAt: number;

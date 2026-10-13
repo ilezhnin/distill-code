@@ -85,9 +85,22 @@ export function BenchmarkActivity({
             }
             aria-label={t("activity.campaign")}
           />
+          <p className="text-xs text-muted-foreground tabular-nums">
+            {t("activity.campaignCreated", {
+              date: formatDate(campaign.plan.createdAt, {
+                dateStyle: "short",
+                timeStyle: "medium",
+              }),
+            })}
+          </p>
           {campaign.state === "pausing" ? (
             <p className="text-xs text-muted-foreground">
               {t("activity.draining")}
+            </p>
+          ) : null}
+          {campaign.stateReason ? (
+            <p className="break-words text-xs text-muted-foreground">
+              {campaign.stateReason}
             </p>
           ) : null}
         </button>

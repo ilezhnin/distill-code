@@ -1181,6 +1181,11 @@ describe("AppShell global navigation", () => {
     await waitFor(() => expect(mockAcpCreateSession).toHaveBeenCalled());
     const draftSessionId = useChatSessionStore.getState().activeSessionId ?? "";
 
+    expect(
+      useChatSessionStore.getState().getSession(draftSessionId)
+        ?.initialExecutorMode,
+    ).toBe("automatic");
+
     act(() => {
       pendingSession.resolve({ sessionId: "created-session" });
     });
@@ -1198,6 +1203,10 @@ describe("AppShell global navigation", () => {
       "created-session",
     );
     expect(draftStillPresentAtRename).toEqual([true]);
+    expect(
+      useChatSessionStore.getState().getSession("created-session")
+        ?.initialExecutorMode,
+    ).toBe("automatic");
   });
 
   it("applies the latest pending draft selection before promotion", async () => {
@@ -1354,6 +1363,10 @@ describe("AppShell global navigation", () => {
     expect(
       useChatSessionStore.getState().getSession(sentChatId)?.desiredRunSettings,
     ).toEqual({ effort: "xhigh", fast: true });
+    expect(
+      useChatSessionStore.getState().getSession(sentChatId)
+        ?.initialExecutorMode,
+    ).toBe("manual");
   });
 
   it("creates a failed draft again on the agent it was moved to", async () => {

@@ -1786,6 +1786,7 @@ const createChatStore: StateCreator<
         value.sendOptions?.capturedPersonaSystemPrompt,
         value.sendOptions?.assistantPrompt,
         value.sendOptions?.acpPromptMetadata,
+        value.sendOptions?.initialExecutorIntent,
       ]);
     const payload = {
       ...editedSnapshot,

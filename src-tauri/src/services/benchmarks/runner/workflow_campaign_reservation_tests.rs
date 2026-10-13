@@ -403,17 +403,18 @@ async fn step_admission_serves_the_oldest_admitted_root_first_on_a_full_account(
             assert!(waits[0] >= 1_000, "root {index} first-step wait {waits:?}");
         }
     }
-    let started = backend.started.lock().unwrap();
-    assert_eq!(started.len(), 6);
-    assert_eq!(
-        started
-            .iter()
-            .map(|(_, id)| id)
-            .collect::<BTreeSet<_>>()
-            .len(),
-        6
-    );
-    drop(started);
+    {
+        let started = backend.started.lock().unwrap();
+        assert_eq!(started.len(), 6);
+        assert_eq!(
+            started
+                .iter()
+                .map(|(_, id)| id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            6
+        );
+    }
     assert_eq!(
         service
             .store
