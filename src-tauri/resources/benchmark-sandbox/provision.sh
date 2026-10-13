@@ -78,10 +78,13 @@ nm=$tools/grok/node_modules
 [[ -x $nm/@xai-official/grok/bin/grok-native ]] && launcher grok "$nm/@xai-official/grok/bin/grok-native"
 
 # What bench-status reports: each tool's version and the digests of the
-# files its runtime identity rests on.
+# files its runtime identity rests on. Only provisioned tools carry a
+# package.json; other folders under $tools (toolchains that task preparation
+# installs later) are not part of the identity and are skipped.
 for dir in "$tools"/*/; do
   id=$(basename "$dir")
   [[ $id == bin ]] && continue
+  [[ -f $dir/package.json ]] || continue
   {
     version=$(node -e 'const l=require(process.argv[1]);const d=l.dependencies||{};console.log(Object.entries(d).map(([k,v])=>k+"@"+v).join(","))' "$dir/package.json")
     echo "$id version $version"
