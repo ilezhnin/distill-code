@@ -36,6 +36,7 @@ import { BenchmarkQualificationPanel } from "./BenchmarkQualificationPanel";
 
 interface Props {
   definition?: BenchmarkDefinition;
+  initialWorkClassId?: string;
   onSaved: (id: string) => void;
   onRun: (versionId: string) => void;
 }
@@ -86,12 +87,21 @@ function readAuthoredBy(environment: string): string | null {
   return Array.isArray(value) ? value.map(String).join(", ") : "";
 }
 
-export function BenchmarkEditor({ definition, onSaved, onRun }: Props) {
+export function BenchmarkEditor({
+  definition,
+  initialWorkClassId = "general",
+  onSaved,
+  onRun,
+}: Props) {
   const { t } = useTranslation(["benchmarks", "settings"]);
   const { formatDate } = useLocaleFormatting();
   const client = useQueryClient();
   const [draft, setDraft] = useState<BenchmarkDraft>(
-    () => definition?.draft ?? createBenchmarkDraft(),
+    () =>
+      definition?.draft ?? {
+        ...createBenchmarkDraft(),
+        workClassId: initialWorkClassId,
+      },
   );
   const [record, setRecord] = useState(definition);
   const [fixtures, setFixtures] = useState(() => rowsFrom(draft.fixtures));

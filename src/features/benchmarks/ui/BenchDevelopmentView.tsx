@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { modelPreferenceClassIds } from "@/features/agents/lib/modelRanking";
 import {
   IconArchive,
   IconArchiveOff,
@@ -45,6 +46,7 @@ import {
   BenchmarkAlert,
   BenchmarkEmpty,
   BenchmarkToolbar,
+  BenchmarkClassTabs,
   FilterMenu,
 } from "./BenchmarkPrimitives";
 
@@ -82,6 +84,8 @@ export function BenchDevelopmentView({
   definitions,
   loading,
   benchmarkId,
+  workClassId,
+  onWorkClassChange,
   onEdit,
   onRun,
   onEvidence,
@@ -90,6 +94,8 @@ export function BenchDevelopmentView({
   definitions: BenchmarkDefinition[];
   loading: boolean;
   benchmarkId?: string;
+  workClassId: string | null;
+  onWorkClassChange: (id: string | null) => void;
   onEdit: (id?: string) => void;
   onRun: (versionId: string, preview?: boolean) => void;
   onEvidence: (id: string) => void;
@@ -103,6 +109,16 @@ export function BenchDevelopmentView({
   const [tab, setTab] = useState("editor");
   const [error, setError] = useState<string | null>(null);
   const definition = definitions.find((entry) => entry.id === benchmarkId);
+  const workClasses = useMemo(
+    () =>
+      [
+        ...new Set([
+          ...modelPreferenceClassIds(),
+          ...definitions.map((entry) => entry.draft.workClassId),
+        ]),
+      ].sort(),
+    [definitions],
+  );
   // How each pool case separates the models measured on it.
   const caseStats = useQuery({
     queryKey: [...benchmarkKeys, "case-stats"],
@@ -179,6 +195,7 @@ export function BenchDevelopmentView({
             <BenchmarkEditor
               key={benchmarkId}
               definition={definition}
+              initialWorkClassId={workClassId ?? "general"}
               onSaved={onEdit}
               onRun={(id) => onRun(id, true)}
             />
@@ -198,6 +215,7 @@ export function BenchDevelopmentView({
   const visible = definitions.filter(
     (entry) =>
       (scope === "all" || !entry.archived) &&
+      (workClassId === null || entry.draft.workClassId === workClassId) &&
       [entry.draft.name, entry.draft.taskFamily, entry.draft.workClassId]
         .join(" ")
         .toLowerCase()
@@ -228,6 +246,20 @@ export function BenchDevelopmentView({
           className="w-64"
         />
       </BenchmarkToolbar>
+      <BenchmarkClassTabs
+        value={workClassId ?? "overall"}
+        onChange={(value) =>
+          onWorkClassChange(value === "overall" ? null : value)
+        }
+        options={[
+          { id: "overall", workClass: null, label: t("benchmarks:all") },
+          ...workClasses.map((id) => ({
+            id,
+            workClass: id,
+            label: t(`settings:routing.classes.${id}`, { defaultValue: id }),
+          })),
+        ]}
+      />
       {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
       {loading ? (
         <BenchmarkEmpty title={t("benchmarks:loading")} compact />

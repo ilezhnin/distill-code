@@ -52,6 +52,7 @@ vi.mock("../api/benchmarks", () => ({
   benchmarkApi: {
     listDefinitions: vi.fn(),
     listRuns: vi.fn(),
+    listWorkflowCampaigns: vi.fn().mockResolvedValue([]),
     listAttempts: vi.fn(),
     getRun: vi.fn(),
     getEvidence: vi.fn(),
@@ -316,6 +317,90 @@ describe("benchmark authoring and saved evidence", () => {
       ).not.toBeInTheDocument();
     }
     expect(benchmarkApi.getInventory).not.toHaveBeenCalled();
+    expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  });
+  it("keeps authoring, run selection and editable new-task defaults in the chosen class", async () => {
+    const user = userEvent.setup();
+    const sample = (id: string, workClassId: string, name: string) => ({
+      ...definition,
+      id,
+      draft: { ...draft, workClassId, name },
+      versions: [
+        {
+          ...definition.versions[0],
+          id: `${id}-version`,
+          definitionId: id,
+          manifest: { ...draft, workClassId, name },
+        },
+      ],
+    });
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      sample("algorithm", "algorithms", "Algorithm sample"),
+      sample("writing", "writing", "Writing sample"),
+      {
+        ...sample("archived", "algorithms", "Archived algorithm"),
+        archived: true,
+      },
+    ]);
+    vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([]);
+    function Authoring() {
+      const [location, setLocation] = useState<BenchmarkLocation>({
+        section: "development",
+      });
+      return (
+        <BenchmarksView
+          location={location}
+          onNavigate={setLocation}
+          onSelectSession={vi.fn()}
+        />
+      );
+    }
+    wrap(<Authoring />);
+    await screen.findByRole("button", { name: "Writing sample" });
+    await user.click(
+      screen.getByRole("tab", { name: "Algorithms and clean code" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Algorithm sample" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Writing sample" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Archived algorithm" }),
+    ).not.toBeInTheDocument();
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search tests" }),
+      "Writing",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Algorithm sample" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Writing sample" }),
+    ).not.toBeInTheDocument();
+    await user.clear(screen.getByRole("searchbox", { name: "Search tests" }));
+    await user.click(screen.getByRole("button", { name: "Run tests" }));
+    const dialog = within(
+      screen.getByRole("dialog", { name: "Run benchmarks" }),
+    );
+    expect(
+      dialog.getByRole("checkbox", { name: /Algorithm sample/ }),
+    ).toBeInTheDocument();
+    expect(
+      dialog.queryByRole("checkbox", { name: /Writing sample/ }),
+    ).not.toBeInTheDocument();
+    await user.click(dialog.getAllByRole("button", { name: "Close" })[0]);
+    await user.click(screen.getByRole("button", { name: "New test" }));
+    expect(
+      screen.getByRole("combobox", { name: "Work class" }),
+    ).toHaveTextContent("Algorithms and clean code");
+    await user.click(screen.getByRole("combobox", { name: "Work class" }));
+    await user.click(screen.getByRole("option", { name: "Writing" }));
+    expect(
+      screen.getByRole("combobox", { name: "Work class" }),
+    ).toHaveTextContent("Writing");
+    expect(benchmarkApi.saveDraft).not.toHaveBeenCalled();
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   });
   it("keeps the page actions in the first row of the board and the model page", async () => {

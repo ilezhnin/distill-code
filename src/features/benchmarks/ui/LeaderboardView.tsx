@@ -12,9 +12,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/shared/ui/table";
-import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
-import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { Spinner } from "@/shared/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import {
@@ -52,7 +49,7 @@ import {
   BenchmarkEmpty,
   BenchmarkPager,
   BenchmarkToolbar,
-  BoardIcon,
+  BenchmarkClassTabs,
   AttentionMark,
   ModelIdentity,
   RatingValue,
@@ -322,31 +319,15 @@ export function LeaderboardView({
           </>
         }
       >
-        <Tabs
+        <BenchmarkClassTabs
           value={board.id}
-          onValueChange={(value) => chooseBoard(value as BoardId)}
-        >
-          <TabsList variant="buttons" className="flex-wrap justify-start">
-            {boards.map((entry) => (
-              <Tooltip key={entry.id} delayDuration={TOOLTIP_DELAY.held}>
-                <TooltipTrigger asChild>
-                  <TabsTrigger
-                    value={entry.id}
-                    variant="buttons"
-                    className="size-8 flex-none px-0 data-[state=active]:bg-chart-1/15 data-[state=active]:text-chart-1"
-                    aria-label={boardLabel(entry)}
-                  >
-                    <BoardIcon board={entry} className="size-4" />
-                  </TabsTrigger>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-64">
-                  <p className="font-medium">{boardLabel(entry)}</p>
-                  <p className="opacity-80">{boardDescription(t, entry)}</p>
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </TabsList>
-        </Tabs>
+          onChange={(value) => chooseBoard(value as BoardId)}
+          options={boards.map((entry) => ({
+            ...entry,
+            label: boardLabel(entry),
+            description: boardDescription(t, entry),
+          }))}
+        />
       </BenchmarkToolbar>
       {loading ? (
         <BenchmarkEmpty title={t("loading")} compact />

@@ -96,7 +96,9 @@ export function BenchmarksView({
   const [runSelection, setRunSelection] = useState<{
     versions: string[];
     preview: boolean;
+    workClassId: string | null;
   } | null>(null);
+  const [developmentClass, setDevelopmentClass] = useState<string | null>(null);
   // A model page's run: its leaderboard row, and the run measuring it now.
   const [modelRun, setModelRun] = useState<{
     row: LeaderboardRow;
@@ -169,7 +171,14 @@ export function BenchmarksView({
   };
   const openRunDialog = (version?: string, preview = false) =>
     guarded(() =>
-      setRunSelection({ versions: version ? [version] : [], preview }),
+      setRunSelection({
+        versions: version ? [version] : [],
+        preview,
+        workClassId:
+          !version && location.section === "development"
+            ? developmentClass
+            : null,
+      }),
     );
   const errors = [
     ...new Set(
@@ -266,6 +275,8 @@ export function BenchmarksView({
             definitions={definitions.data ?? []}
             loading={definitions.isPending}
             benchmarkId={location.benchmarkId}
+            workClassId={developmentClass}
+            onWorkClassChange={setDevelopmentClass}
             onEdit={(id) =>
               onNavigate(
                 { section: "development", benchmarkId: id },
@@ -341,7 +352,17 @@ export function BenchmarksView({
       </section>
       {runSelection ? (
         <BenchmarkRunDialog
-          definitions={definitions.data ?? []}
+          definitions={(definitions.data ?? []).map((definition) =>
+            runSelection.workClassId === null
+              ? definition
+              : {
+                  ...definition,
+                  versions: definition.versions.filter(
+                    (version) =>
+                      version.manifest.workClassId === runSelection.workClassId,
+                  ),
+                },
+          )}
           selectedVersionIds={runSelection.versions}
           previewOnly={runSelection.preview}
           onClose={() => setRunSelection(null)}

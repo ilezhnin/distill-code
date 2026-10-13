@@ -42,6 +42,7 @@ import {
 } from "@/shared/ui/hover-card";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
+import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
@@ -621,6 +622,49 @@ export function BoardIcon({
 }) {
   const Icon = BOARD_ICONS[board.workClass ?? board.id] ?? IconSparkles;
   return <Icon className={className} aria-hidden />;
+}
+
+/** Shared category navigation for the leaderboard and benchmark authoring. */
+export function BenchmarkClassTabs({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: {
+    id: string;
+    workClass: string | null;
+    label: string;
+    description?: string;
+  }[];
+}) {
+  return (
+    <Tabs value={value} onValueChange={onChange}>
+      <TabsList variant="buttons" className="flex-wrap justify-start">
+        {options.map((entry) => (
+          <Tooltip key={entry.id} delayDuration={TOOLTIP_DELAY.held}>
+            <TooltipTrigger asChild>
+              <TabsTrigger
+                value={entry.id}
+                variant="buttons"
+                className="size-8 flex-none px-0 aria-selected:bg-chart-1/15 aria-selected:text-chart-1"
+                aria-label={entry.label}
+              >
+                <BoardIcon board={entry} className="size-4" />
+              </TabsTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-64">
+              <p className="font-medium">{entry.label}</p>
+              {entry.description ? (
+                <p className="opacity-80">{entry.description}</p>
+              ) : null}
+            </TooltipContent>
+          </Tooltip>
+        ))}
+      </TabsList>
+    </Tabs>
+  );
 }
 
 export function Metric({ label, value }: { label: string; value: ReactNode }) {
