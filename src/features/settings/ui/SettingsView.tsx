@@ -6,6 +6,7 @@ import { MemorySettings } from "@/features/memory/ui/MemorySettings";
 import { BehaviorSettings } from "./BehaviorSettings";
 import { BenchmarkSettings } from "./BenchmarkSettings";
 import { ProvidersSettings } from "./ProvidersSettings";
+import { ModelSelectionSettings } from "./ModelSelectionSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { SecuritySettings } from "./SecuritySettings";
 import { StatsSettings } from "./StatsSettings";
@@ -73,6 +74,7 @@ export function SettingsView({
         />
       )}
       {activeSection === "benchmarks" && <BenchmarkSettings />}
+      {activeSection === "routing" && <ModelSelectionSettings />}
       {activeSection === "notifications" && <NotificationSettings />}
       {activeSection === "shortcuts" && <KeyboardShortcutsSettings />}
       {activeSection === "stats" && <StatsSettings />}

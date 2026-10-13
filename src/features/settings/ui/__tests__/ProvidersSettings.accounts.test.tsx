@@ -35,9 +35,6 @@ vi.mock(
     startProviderAccountsMonitor: vi.fn(),
   }),
 );
-vi.mock("../RoutingPolicySection", () => ({
-  RoutingPolicySection: () => null,
-}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -131,6 +128,7 @@ it("uses the same provider sections and usage rows for Grok and Kimi", () => {
     screen.getByText("Extra usage: $7.50 of $20.00 left"),
   ).toBeInTheDocument();
   expect(screen.queryByText("Other providers")).toBeNull();
+  expect(screen.queryByTestId("settings-routing")).toBeNull();
   expect(screen.getAllByText(/^Last checked/)).toHaveLength(1);
   expect(screen.getByText(/^Last checked/)).toHaveAttribute(
     "datetime",

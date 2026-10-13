@@ -9,7 +9,6 @@ import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProvi
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { AgentProviderCard } from "./AgentProviderCard";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
-import { RoutingPolicySection } from "./RoutingPolicySection";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type { ProviderDisplayInfo } from "@/shared/types/providers";
 import { ProviderAccountsPanel } from "@/features/providers/ui/ProviderAccountsPanel";
@@ -91,12 +90,6 @@ export function ProvidersSettings({
           ) : null;
         }}
       />
-
-      {/* Which harness gets the work when one is running low, and which
-          models each class of work prefers. Here rather than in a section of
-          its own: this page already answers "which harness", and routing is
-          the same question asked automatically. */}
-      <RoutingPolicySection />
     </SettingsPage>
   );
 }

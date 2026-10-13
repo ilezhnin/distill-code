@@ -98,6 +98,21 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     labelKey: "nav.providers",
   },
   {
+    id: "model-selection",
+    sectionId: "routing",
+    labelKey: "nav.routing",
+  },
+  {
+    id: "fallback-preferences",
+    sectionId: "routing",
+    labelKey: "routing.fallbackOrder",
+  },
+  {
+    id: "routing-usage-limits",
+    sectionId: "routing",
+    labelKey: "routing.usageLimits",
+  },
+  {
     id: "notifications-enabled",
     sectionId: "notifications",
     labelKey: "notifications.enabled.label",
