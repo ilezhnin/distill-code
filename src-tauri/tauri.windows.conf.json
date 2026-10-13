@@ -9,6 +9,7 @@
         "minWidth": 608,
         "minHeight": 600,
         "visible": false,
+        "focus": false,
         "titleBarStyle": "Visible",
         "hiddenTitle": false,
         "dragDropEnabled": true
