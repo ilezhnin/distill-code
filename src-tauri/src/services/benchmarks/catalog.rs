@@ -282,6 +282,47 @@ impl Store {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn publication_and_new_work_require_explicit_difficulty() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        for difficulty in [None, Some("unspecified"), Some("unknown")] {
+            let mut draft = super::super::seeds::definitions().remove(0);
+            draft.facets.difficulty = difficulty.map(Into::into);
+            let definition = store.save_draft(None, None, draft).await.unwrap();
+            assert!(store
+                .publish(&definition.id, 1)
+                .await
+                .unwrap_err()
+                .message
+                .contains("Difficulty is required"));
+            assert!(store.versions_for(&definition.id).await.unwrap().is_empty());
+        }
+        let mut draft = super::super::seeds::definitions().remove(0);
+        draft.facets.difficulty = Some("medium".into());
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        store
+            .require_current_versions(std::slice::from_ref(&version.id))
+            .await
+            .unwrap();
+        // Simulate a legacy publication made before difficulty was mandatory.
+        sqlx::query("UPDATE benchmark_versions SET manifest_json=json_remove(manifest_json,'$.facets.difficulty') WHERE id=?").bind(&version.id).execute(&store.pool).await.unwrap();
+        assert!(store
+            .version(&version.id)
+            .await
+            .unwrap()
+            .manifest
+            .facets
+            .difficulty
+            .is_none());
+        assert!(store
+            .require_current_versions(&[version.id])
+            .await
+            .unwrap_err()
+            .message
+            .contains("difficulty"));
+    }
+    #[tokio::test]
     async fn malformed_javascript_checks_cannot_reach_reference_execution() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).await.unwrap();

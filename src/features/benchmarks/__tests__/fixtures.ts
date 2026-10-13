@@ -18,6 +18,7 @@ export const draft: BenchmarkDraft = {
   category: "text",
   taskFamily: "integer",
   split: "train",
+  facets: { difficulty: "easy" },
   prompt: "Return the number 4.",
   source: "local",
   license: "CC0",

@@ -163,9 +163,9 @@ pub fn validate_draft(d: &BenchmarkDraft) -> Vec<String> {
     if d.facets
         .difficulty
         .as_ref()
-        .is_some_and(|v| !["easy", "medium", "hard", "unspecified"].contains(&v.as_str()))
+        .is_none_or(|v| !["easy", "medium", "hard"].contains(&v.as_str()))
     {
-        issues.push("Difficulty must be declared as easy, medium, hard or unspecified".into());
+        issues.push("Difficulty is required: choose easy, medium or hard".into());
     }
     if d.role_prompt.len() > 64 * 1024 {
         issues.push("Role context exceeds 64 KiB".into());

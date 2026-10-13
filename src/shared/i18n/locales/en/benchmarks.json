@@ -191,7 +191,7 @@
     "status": "Status",
     "success": "Success",
     "coverage": "Measured / planned",
-    "versions": "Published",
+    "versions": "Version",
     "workClass": "Work class",
     "difficulty": "Difficulty",
     "before": "Used before",
@@ -215,7 +215,7 @@
     "held_out": "Held-out evaluation"
   },
   "difficulty": {
-    "unspecified": "Unspecified",
+    "choose": "Set difficulty",
     "easy": "Easy",
     "medium": "Medium",
     "hard": "Hard"
@@ -283,10 +283,11 @@
   },
   "tracker": {
     "passedBy": "Passed by",
-    "passedByHint": "Models that passed the case every repetition, out of the models with a complete cell on it. Below: the widest gap between two models' shares of passed repetitions (0% when every model did alike, 100% when one always passed and another never did), and the cells whose repetitions disagree.",
+    "passedByHint": "Model configurations that passed every required repetition, out of configurations with complete results for this version. Different reasoning levels count separately.",
+    "versionHint": "Current published version. Earlier versions and their results remain in the test's history and cannot be run again.",
     "passedOf": "{{passed}} / {{models}}",
     "smoke": "Smoke set",
-    "detail": "{{spread}}% apart · {{flaky}} flaky"
+    "detail": "Success-rate gap: {{spread}}%. Configurations with mixed pass/fail repetitions: {{flaky}}."
   },
   "selector": {
     "title": "Selector against fixed models",

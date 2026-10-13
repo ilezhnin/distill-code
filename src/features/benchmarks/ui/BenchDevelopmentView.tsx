@@ -33,6 +33,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { hasDifficulty } from "../lib/benchmarkReleases";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type {
   BenchmarkDefinition,
@@ -47,6 +48,7 @@ import {
   BenchmarkEmpty,
   BenchmarkToolbar,
   BenchmarkClassTabs,
+  BoardIcon,
   FilterMenu,
 } from "./BenchmarkPrimitives";
 
@@ -128,9 +130,17 @@ export function BenchDevelopmentView({
   const statsOf = useMemo(
     () =>
       new Map<string, CaseStats>(
-        (caseStats.data ?? []).map((entry) => [entry.definitionId, entry]),
+        (caseStats.data ?? [])
+          .filter((entry) =>
+            definitions.some(
+              (definition) =>
+                definition.id === entry.definitionId &&
+                definition.versions[0]?.id === entry.versionId,
+            ),
+          )
+          .map((entry) => [entry.definitionId, entry]),
       ),
-    [caseStats.data],
+    [caseStats.data, definitions],
   );
   const operate = async (operation: () => Promise<void>) => {
     setError(null);
@@ -291,10 +301,12 @@ export function BenchDevelopmentView({
             <TableHeader>
               <TableRow>
                 <TableHead>{t("benchmarks:fields.name")}</TableHead>
-                <TableHead>{t("benchmarks:fields.workClass")}</TableHead>
                 <TableHead>{t("benchmarks:fields.difficulty")}</TableHead>
                 <TableHead>{t("benchmarks:fields.split")}</TableHead>
-                <TableHead>{t("benchmarks:fields.versions")}</TableHead>
+                <HintedHead
+                  label={t("benchmarks:fields.versions")}
+                  hint={t("benchmarks:tracker.versionHint")}
+                />
                 <HintedHead
                   label={t("benchmarks:tracker.passedBy")}
                   hint={t("benchmarks:tracker.passedByHint")}
@@ -306,34 +318,70 @@ export function BenchDevelopmentView({
               {visible.map((entry) => (
                 <TableRow key={entry.id}>
                   <TableCell className="whitespace-normal">
-                    <Button
-                      type="button"
-                      variant="link"
-                      size="xs"
-                      className="h-auto px-0 text-left text-sm whitespace-normal"
-                      onClick={() => onEdit(entry.id)}
-                    >
-                      {entry.draft.name || t("benchmarks:editor.new")}
-                    </Button>
-                    <p className="text-xs text-muted-foreground">
-                      {entry.draft.taskFamily}
-                      {entry.archived
-                        ? ` · ${t("benchmarks:library.archivedTag")}`
-                        : ""}
-                      {statsOf.get(entry.id)?.smoke
-                        ? ` · ${t("benchmarks:tracker.smoke")}`
-                        : ""}
-                    </p>
+                    <div className="flex items-start gap-3">
+                      <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+                        <TooltipTrigger asChild>
+                          <span
+                            role="img"
+                            aria-label={t(
+                              `settings:routing.classes.${entry.draft.workClassId}`,
+                              { defaultValue: entry.draft.workClassId },
+                            )}
+                            className="mt-1 shrink-0 text-muted-foreground"
+                          >
+                            <BoardIcon
+                              board={{
+                                id: entry.draft.workClassId,
+                                workClass: entry.draft.workClassId,
+                              }}
+                              className="size-4"
+                            />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {t(
+                            `settings:routing.classes.${entry.draft.workClassId}`,
+                            { defaultValue: entry.draft.workClassId },
+                          )}
+                        </TooltipContent>
+                      </Tooltip>
+                      <div className="min-w-0">
+                        <Button
+                          type="button"
+                          variant="link"
+                          size="xs"
+                          className="h-auto px-0 text-left text-sm whitespace-normal"
+                          onClick={() => onEdit(entry.id)}
+                        >
+                          {entry.draft.name || t("benchmarks:editor.new")}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          {entry.draft.taskFamily}
+                          {entry.archived
+                            ? ` · ${t("benchmarks:library.archivedTag")}`
+                            : ""}
+                          {statsOf.get(entry.id)?.smoke
+                            ? ` · ${t("benchmarks:tracker.smoke")}`
+                            : ""}
+                        </p>
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell>
-                    {t(`settings:routing.classes.${entry.draft.workClassId}`, {
-                      defaultValue: entry.draft.workClassId,
-                    })}
-                  </TableCell>
-                  <TableCell>
-                    {t(
-                      `benchmarks:difficulty.${entry.draft.facets.difficulty ?? "unspecified"}`,
-                      { defaultValue: entry.draft.facets.difficulty ?? "" },
+                    {hasDifficulty(entry.draft.facets.difficulty) ? (
+                      t(
+                        `benchmarks:difficulty.${entry.draft.facets.difficulty}`,
+                      )
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="xs"
+                        className="px-0"
+                        onClick={() => onEdit(entry.id)}
+                      >
+                        {t("benchmarks:difficulty.choose")}
+                      </Button>
                     )}
                   </TableCell>
                   <TableCell>
@@ -343,7 +391,9 @@ export function BenchDevelopmentView({
                       })}
                     </Badge>
                   </TableCell>
-                  <TableCell>{entry.versions.length}</TableCell>
+                  <TableCell>
+                    {entry.versions.length ? `v${entry.versions.length}` : "-"}
+                  </TableCell>
                   <CaseStatsCells stats={statsOf.get(entry.id)} />
                   <TableCell>
                     <DropdownMenu>
@@ -361,7 +411,13 @@ export function BenchDevelopmentView({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent variant="raised" align="end">
                         <DropdownMenuItem
-                          disabled={!entry.versions.length || entry.archived}
+                          disabled={
+                            !entry.versions.length ||
+                            entry.archived ||
+                            !hasDifficulty(
+                              entry.versions[0]?.manifest.facets.difficulty,
+                            )
+                          }
                           onSelect={() => onRun(entry.versions[0].id)}
                         >
                           <IconPlayerPlay className="size-3.5" />
@@ -455,13 +511,25 @@ function CaseStatsCells({ stats }: { stats: CaseStats | undefined }) {
     return <TableCell className="text-muted-foreground">-</TableCell>;
   return (
     <TableCell className="tabular-nums">
-      {t("tracker.passedOf", { passed: stats.passed, models: stats.models })}
-      <p className="text-xs text-muted-foreground">
-        {t("tracker.detail", {
-          spread: Math.round((stats.spread ?? 0) * 100),
-          flaky: stats.flaky,
-        })}
-      </p>
+      <Tooltip delayDuration={TOOLTIP_DELAY.held}>
+        <TooltipTrigger asChild>
+          <span className="cursor-help">
+            {t("tracker.passedOf", {
+              passed: stats.passed,
+              models: stats.models,
+            })}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-72">
+          <p>{t("tracker.passedByHint")}</p>
+          <p className="mt-1">
+            {t("tracker.detail", {
+              spread: Math.round((stats.spread ?? 0) * 100),
+              flaky: stats.flaky,
+            })}
+          </p>
+        </TooltipContent>
+      </Tooltip>
     </TableCell>
   );
 }

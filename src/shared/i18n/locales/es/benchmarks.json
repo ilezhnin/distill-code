@@ -191,7 +191,7 @@
     "status": "Estado",
     "success": "Éxito",
     "coverage": "Medidas / planificadas",
-    "versions": "Publicadas",
+    "versions": "Versión",
     "workClass": "Clase de trabajo",
     "difficulty": "Dificultad",
     "before": "Usado antes",
@@ -215,7 +215,7 @@
     "held_out": "Evaluación reservada"
   },
   "difficulty": {
-    "unspecified": "Sin especificar",
+    "choose": "Definir dificultad",
     "easy": "Fácil",
     "medium": "Media",
     "hard": "Difícil"
@@ -283,10 +283,11 @@
   },
   "tracker": {
     "passedBy": "Superada por",
-    "passedByHint": "Modelos que superaron el caso en todas las repeticiones, de los modelos con una celda completa en él. Debajo: la mayor diferencia entre las proporciones de repeticiones superadas de dos modelos (0 % si todos hicieron lo mismo, 100 % si uno siempre la superó y otro nunca) y las celdas cuyas repeticiones no coinciden.",
+    "passedByHint": "Configuraciones de modelo que superaron todas las repeticiones requeridas, de las configuraciones con resultados completos para esta versión. Los niveles de razonamiento cuentan por separado.",
+    "versionHint": "Versión publicada actual. Las versiones anteriores y sus resultados permanecen en el historial y no pueden ejecutarse de nuevo.",
     "passedOf": "{{passed}} / {{models}}",
     "smoke": "Conjunto de humo",
-    "detail": "{{spread}} % de diferencia · {{flaky}} inestables"
+    "detail": "Diferencia de éxito: {{spread}} %. Configuraciones con repeticiones aprobadas y fallidas: {{flaky}}."
   },
   "selector": {
     "title": "Selector frente a modelos fijos",

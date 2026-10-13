@@ -216,6 +216,11 @@ impl Store {
                     "This test version is archived or unavailable; select its latest published version for a new run",
                 ));
             }
+            let difficulty: Option<String> = sqlx::query_scalar("SELECT json_extract(manifest_json,'$.facets.difficulty') FROM benchmark_versions WHERE id=?")
+                .bind(id).fetch_one(&mut **tx).await?;
+            if !matches!(difficulty.as_deref(), Some("easy" | "medium" | "hard")) {
+                return Err(BenchmarkError::new("validation", "Set the test difficulty to easy, medium or hard and publish it before starting new work"));
+            }
         }
         Ok(())
     }

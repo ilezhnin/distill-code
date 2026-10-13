@@ -42,6 +42,18 @@ describe("pool releases", () => {
     expect(liveVersionIds(tests)).toEqual(["a2", "b1", "d1"]);
   });
 
+  it("requires difficulty on the latest publication without reviving an older version", () => {
+    const missing = test("missing", [
+      ["old", 1],
+      ["new", 2],
+    ]);
+    missing.versions[1].manifest = {
+      ...missing.versions[1].manifest,
+      facets: { difficulty: "unspecified" },
+    };
+    expect(liveVersionIds([missing])).toEqual([]);
+  });
+
   it("excludes development even when a draft's split differs from its publication", () => {
     const diagnostic = test("smoke", [["smoke-1", 2]]);
     diagnostic.versions[0] = {

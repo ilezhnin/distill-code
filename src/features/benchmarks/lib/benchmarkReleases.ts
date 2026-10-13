@@ -1,5 +1,9 @@
 import type { BenchmarkDefinition, PoolRelease } from "../types";
 
+export function hasDifficulty(value: string | null | undefined): boolean {
+  return value === "easy" || value === "medium" || value === "hard";
+}
+
 /** Development fixtures remain diagnostic and never enter capability ratings. */
 export function isRankedSplit(split: string): boolean {
   return split === "train" || split === "held_out";
@@ -12,7 +16,8 @@ export function currentVersions(definitions: BenchmarkDefinition[]) {
     .flatMap((definition) =>
       [...definition.versions]
         .sort((a, b) => b.publishedAt - a.publishedAt)
-        .slice(0, 1),
+        .slice(0, 1)
+        .filter((version) => hasDifficulty(version.manifest.facets.difficulty)),
     );
 }
 

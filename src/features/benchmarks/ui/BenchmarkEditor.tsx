@@ -20,6 +20,7 @@ import {
   createBenchmarkDraft,
 } from "../lib/benchmarkDraft";
 import { shortId } from "../lib/benchmarkLabels";
+import { hasDifficulty } from "../lib/benchmarkReleases";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type {
   BenchmarkDefinition,
@@ -54,7 +55,7 @@ const EXECUTION_PROFILES = [
   "isolated_ui",
 ];
 const SPLITS = ["development", "train", "held_out"];
-const DIFFICULTIES = ["unspecified", "easy", "medium", "hard"];
+const DIFFICULTIES = ["easy", "medium", "hard"];
 
 function pretty(value: unknown): string {
   return JSON.stringify(value, null, 2);
@@ -326,7 +327,11 @@ export function BenchmarkEditor({
             <Button
               type="button"
               variant="ghost"
-              disabled={busy || dirty}
+              disabled={
+                busy ||
+                dirty ||
+                !hasDifficulty(latestVersion.manifest.facets?.difficulty)
+              }
               onClick={() => onRun(latestVersion.id)}
             >
               {t("benchmarks:actions.preview")}
@@ -423,14 +428,25 @@ export function BenchmarkEditor({
             {(id) => (
               <SelectField
                 id={id}
-                value={draft.facets.difficulty ?? "unspecified"}
+                value={
+                  DIFFICULTIES.includes(draft.facets.difficulty ?? "")
+                    ? (draft.facets.difficulty as string)
+                    : "choose"
+                }
                 onChange={(value) =>
                   patch("facets", { ...draft.facets, difficulty: value })
                 }
-                options={DIFFICULTIES.map((value) => ({
-                  value,
-                  label: t(`benchmarks:difficulty.${value}`),
-                }))}
+                options={[
+                  {
+                    value: "choose",
+                    label: t("benchmarks:difficulty.choose"),
+                    disabled: true,
+                  },
+                  ...DIFFICULTIES.map((value) => ({
+                    value,
+                    label: t(`benchmarks:difficulty.${value}`),
+                  })),
+                ]}
               />
             )}
           </Field>
@@ -838,6 +854,9 @@ export function BenchmarkEditor({
                       type="button"
                       variant="ghost"
                       size="xs"
+                      disabled={
+                        !hasDifficulty(version.manifest.facets?.difficulty)
+                      }
                       onClick={() => onRun(version.id)}
                     >
                       {t("benchmarks:actions.preview")}
