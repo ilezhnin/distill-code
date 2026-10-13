@@ -202,7 +202,8 @@ async fn step_admission_runs_fixed_roots_of_the_idle_account_beside_adaptive_roo
         );
     }
     assert_eq!(backend.peak.load(Ordering::SeqCst) as usize, expected);
-    for run in &children {
+    // Every admitted root carries its admission time; none has settled.
+    for run in admitted_roots(&service, &frozen, 8).await {
         let root = &run.attempts[0];
         assert!(root.started_at.is_some());
         assert!(root.outcome.is_none());

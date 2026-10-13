@@ -170,6 +170,11 @@ pub struct Plan {
     /// Frozen snapshot hash of every class model of a mixed campaign.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub class_snapshot_hashes: BTreeMap<String, String>,
+    /// Cancelled campaigns whose cells already measured these families. This
+    /// plan replaces them after their runtime failed; its report is a repeat
+    /// measurement of exposed families, never an unseen-holdout claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<String>,
 }
 
 /// The public task each workflow step receives, with its schema-2 scope.
@@ -497,6 +502,7 @@ impl BenchmarkService {
             } else {
                 BTreeMap::new()
             },
+            supersedes: Vec::new(),
         };
         for case_index in 0..plan.cases.len() {
             for policy_index in 0..plan.policies.len() {
@@ -625,9 +631,10 @@ impl Store {
         Ok(result)
     }
     async fn reserve_workflow_campaign(&self, plan: &Plan) -> Result<Campaign> {
+        let mut plan = plan.clone();
         let mut tx = self.pool.begin().await?;
         let inserted = sqlx::query("INSERT OR IGNORE INTO workflow_campaigns(id,request_key,request_hash,plan_hash,created_at,plan_json,state) VALUES(?,?,?,?,?,?,'reserved')")
-            .bind(&plan.id).bind(&plan.request.request_key).bind(hash(&plan.request)?).bind(hash(plan)?).bind(plan.created_at).bind(serde_json::to_string(plan)?).execute(&mut *tx).await?.rows_affected();
+            .bind(&plan.id).bind(&plan.request.request_key).bind(hash(&plan.request)?).bind(hash(&plan)?).bind(plan.created_at).bind(serde_json::to_string(&plan)?).execute(&mut *tx).await?.rows_affected();
         if inserted == 0 {
             tx.rollback().await?;
             return self
@@ -670,26 +677,76 @@ impl Store {
                 return Err(invalid("Campaign version changed during reservation"));
             }
         }
-        let runs: Vec<String> = sqlx::query_scalar("SELECT request_json FROM run_plans")
-            .fetch_all(&mut *tx)
-            .await?;
-        for body in runs {
+        // A related family that any run already measured stays unavailable,
+        // with one exception: cells of a campaign that was cancelled. Their
+        // first outcomes stay as they are; this plan records which campaigns
+        // it replaces, so no report presents the families as unseen.
+        let cancelled: BTreeSet<String> =
+            sqlx::query_scalar("SELECT id FROM workflow_campaigns WHERE state='cancelled'")
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .collect();
+        let owners: BTreeMap<String, String> = sqlx::query_as::<_, (String, String)>(
+            "SELECT request_key,campaign_id FROM workflow_campaign_cells",
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        let mut supersedes = BTreeSet::new();
+        let runs =
+            sqlx::query_as::<_, (String, String)>("SELECT request_key,request_json FROM run_plans")
+                .fetch_all(&mut *tx)
+                .await?;
+        for (key, body) in runs {
             let run: RunRequest = serde_json::from_str(&body)?;
-            if run.version_ids.iter().any(|id| related.contains(id)) {
-                return Err(invalid("Campaign family already appeared in a run plan"));
+            if !run.version_ids.iter().any(|id| related.contains(id)) {
+                continue;
+            }
+            match owners.get(&key).filter(|owner| cancelled.contains(*owner)) {
+                Some(owner) => {
+                    supersedes.insert(owner.clone());
+                }
+                None => return Err(invalid("Campaign family already appeared in a run plan")),
             }
         }
-        let attempted: Vec<String> = sqlx::query_scalar("SELECT DISTINCT version_id FROM attempts")
-            .fetch_all(&mut *tx)
-            .await?;
-        if attempted.iter().any(|id| related.contains(id)) {
-            return Err(invalid("Campaign family already has an attempt"));
+        let attempted = sqlx::query_as::<_, (String, String)>(
+            "SELECT DISTINCT a.version_id,r.request_key FROM attempts a JOIN run_plans r ON r.id=a.run_id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for (version_id, key) in attempted {
+            if related.contains(&version_id)
+                && !owners
+                    .get(&key)
+                    .is_some_and(|owner| supersedes.contains(owner))
+            {
+                return Err(invalid("Campaign family already has an attempt"));
+            }
         }
         for (kind, values) in [("family", families), ("group", groups)] {
             for value in values {
                 if sqlx::query("INSERT OR IGNORE INTO evaluation_reservations(kind,value,owner_kind,owner_id) VALUES(?,?,'workflow_campaign',?)")
-                .bind(kind).bind(value).bind(&plan.id).execute(&mut *tx).await?.rows_affected() == 0 { return Err(invalid("Family is reserved by another evaluation")); }
+                .bind(kind).bind(&value).bind(&plan.id).execute(&mut *tx).await?.rows_affected() == 0 {
+                    // The replaced campaign hands its reservation over; any
+                    // other owner keeps the family.
+                    let moved = sqlx::query("UPDATE evaluation_reservations SET owner_id=? WHERE kind=? AND value=? AND owner_kind='workflow_campaign' AND owner_id IN (SELECT id FROM workflow_campaigns WHERE state='cancelled')")
+                        .bind(&plan.id).bind(kind).bind(&value).execute(&mut *tx).await?.rows_affected();
+                    if moved == 0 {
+                        return Err(invalid("Family is reserved by another evaluation"));
+                    }
+                }
             }
+        }
+        if !supersedes.is_empty() {
+            plan.supersedes = supersedes.into_iter().collect();
+            sqlx::query("UPDATE workflow_campaigns SET plan_json=?,plan_hash=? WHERE id=?")
+                .bind(serde_json::to_string(&plan)?)
+                .bind(hash(&plan)?)
+                .bind(&plan.id)
+                .execute(&mut *tx)
+                .await?;
         }
         for index in 0..plan.cells.len() {
             let run = plan.run_request(index)?;

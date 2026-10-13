@@ -740,6 +740,93 @@ async fn concurrent_campaign_admission_is_ordered_atomic_and_idempotent() {
 }
 
 #[tokio::test]
+async fn a_replacement_campaign_measures_the_families_of_a_cancelled_one_only() {
+    let (_dir, service, backend, frozen) = setup(4).await;
+    let mut again = frozen.plan.request.clone();
+    again.request_key = "concurrent-comparison-again".into();
+    // Reserved, running or paused, the frozen campaign owns its families.
+    assert!(service
+        .freeze_workflow_campaign(again.clone())
+        .await
+        .is_err());
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let worker = service.clone();
+    let tick = tokio::spawn(async move { worker.tick().await });
+    wait_while_running(&service, &frozen.plan.id, || {
+        backend.waiting.lock().unwrap().len() == 4
+    })
+    .await;
+    service
+        .control_workflow_campaign(&frozen.plan.id, "pause")
+        .await
+        .unwrap();
+    backend.drain();
+    tick.await.unwrap().unwrap();
+    service.tick().await.unwrap();
+    assert_eq!(
+        service
+            .store
+            .workflow_campaign(&frozen.plan.id)
+            .await
+            .unwrap()
+            .state,
+        "paused"
+    );
+    assert!(service
+        .freeze_workflow_campaign(again.clone())
+        .await
+        .is_err());
+    service
+        .control_workflow_campaign(&frozen.plan.id, "cancel")
+        .await
+        .unwrap();
+    service.tick().await.unwrap();
+    assert_eq!(
+        service
+            .store
+            .workflow_campaign(&frozen.plan.id)
+            .await
+            .unwrap()
+            .state,
+        "cancelled"
+    );
+    let before = children(&service, &frozen).await;
+    assert_eq!(before.len(), 4);
+    // Once cancelled, a replacement may measure the same families again. It
+    // names what it replaces, and the replaced first outcomes stay untouched.
+    let replacement = service.freeze_workflow_campaign(again).await.unwrap();
+    assert_eq!(replacement.plan.supersedes, vec![frozen.plan.id.clone()]);
+    assert_eq!(replacement.state, "reserved");
+    backend.gated.store(true, Ordering::SeqCst);
+    service
+        .control_workflow_campaign(&replacement.plan.id, "start")
+        .await
+        .unwrap();
+    let worker = service.clone();
+    let tick = tokio::spawn(async move { worker.tick().await });
+    wait_while_running(&service, &replacement.plan.id, || {
+        backend.waiting.lock().unwrap().len() == 4
+    })
+    .await;
+    service
+        .control_workflow_campaign(&replacement.plan.id, "pause")
+        .await
+        .unwrap();
+    backend.drain();
+    tick.await.unwrap().unwrap();
+    service.tick().await.unwrap();
+    let after = children(&service, &frozen).await;
+    assert_eq!(
+        serde_json::to_value(after.iter().map(|r| &r.attempts).collect::<Vec<_>>()).unwrap(),
+        serde_json::to_value(before.iter().map(|r| &r.attempts).collect::<Vec<_>>()).unwrap()
+    );
+    assert_eq!(children(&service, &replacement).await.len(), 4);
+}
+
+#[tokio::test]
 async fn concurrent_campaign_cancels_every_active_and_waiting_child() {
     let (_dir, service, backend, frozen) = setup(8).await;
     service

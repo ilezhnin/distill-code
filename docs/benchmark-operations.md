@@ -319,6 +319,12 @@ until it can reserve all worker accounts and lanes its policy may select, and
 holds them through its dependent steps. That reservation can leave a provider
 idle while another provider executes the current step.
 
+A family that any run already measured cannot be frozen into another
+campaign, with one exception: the cells of a campaign that was cancelled, for
+example after its runtime failed. The replacement plan records those campaigns
+in `supersedes`, their first outcomes stay as recorded, and the new report is a
+repeat measurement of exposed families, not an unseen-holdout claim.
+
 Saved concurrent v2 plans keep their original semantics: local slot contention
 spends the root wall budget. Serial v1 plans retain their immediate busy outcome.
 Installing a newer backend never rewrites a frozen campaign or its results.

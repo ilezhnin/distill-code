@@ -51,6 +51,8 @@ export interface WorkflowCampaign {
     orderAlgorithm: string;
     aggregateRecipe: string;
     evaluation: WorkflowCampaignProtocol;
+    /** Cancelled campaigns whose cells already measured these families. */
+    supersedes?: string[];
   };
   planHash: string;
   state:
