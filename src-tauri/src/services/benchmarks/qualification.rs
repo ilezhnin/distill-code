@@ -322,6 +322,11 @@ impl BenchmarkService {
             tx.commit().await?;
             return self.store.qualification(&id).await;
         }
+        Store::require_current_versions_in(
+            &mut tx,
+            std::slice::from_ref(&record.request.version_id),
+        )
+        .await?;
         if sqlx::query_scalar::<_, String>(
             "SELECT id FROM selector_qualifications WHERE version_id=?",
         )

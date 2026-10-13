@@ -70,6 +70,50 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it("offers only the latest publication and discards stale preselected versions", async () => {
+  const user = userEvent.setup();
+  const latest = {
+    ...definition.versions[0],
+    id: "version-new",
+    publishedAt: definition.versions[0].publishedAt + 1,
+    manifest: { ...definition.draft, name: "Current test" },
+  };
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[
+          { ...definition, versions: [definition.versions[0], latest] },
+        ]}
+        selectedVersionIds={[definition.versions[0].id]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText("0 of 1 selected")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("checkbox", { name: definition.draft.name }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("checkbox", { name: "Current test" }));
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  await user.click(screen.getByRole("option", { name: "Test account" }));
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  await user.click(screen.getByRole("option", { name: "Test model" }));
+  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+      expect.objectContaining({ versionIds: ["version-new"] }),
+    ),
+  );
+});
+
 it("counts every workflow step against the explicit execution budget", async () => {
   const user = userEvent.setup();
   const workflowDefinition = {

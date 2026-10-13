@@ -21,7 +21,7 @@ import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
-import { isRankedSplit } from "../lib/benchmarkReleases";
+import { currentVersions, isRankedSplit } from "../lib/benchmarkReleases";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { modelDisplayName, providerVendor } from "../lib/benchmarkLabels";
 import {
@@ -76,15 +76,12 @@ function sameConfiguration(a: Configuration, b: Configuration): boolean {
 export function BenchmarkModelRunDialog({
   row,
   definitions,
-  pool = null,
   runId: activeRunId,
   onClose,
 }: {
   /** The model's leaderboard row, as the leaderboard stands now. */
   row: LeaderboardRow;
   definitions: BenchmarkDefinition[];
-  /** The versions the boards measure (the newest release once there is one). */
-  pool?: string[] | null;
   /** The model's newest run inside its window: followed, finished or warned about. */
   runId: string | null;
   onClose: () => void;
@@ -95,21 +92,9 @@ export function BenchmarkModelRunDialog({
   const configuration = row.configuration;
   const name = modelDisplayName(configuration);
   const effort = explicitEffort(configuration.effort);
-  // The pool the boards measure: the newest release once there is one, else
-  // the newest published version of every live test. A run of it counts
-  // whole.
+  // Frozen leaderboard releases remain readable; new runs use current tests.
   const { eligible, authored } = useMemo(() => {
-    const inPool = pool ? new Set(pool) : null;
-    const current = definitions
-      .flatMap((definition) =>
-        inPool
-          ? definition.versions.filter((version) => inPool.has(version.id))
-          : definition.archived
-            ? []
-            : [...definition.versions]
-                .sort((a, b) => b.publishedAt - a.publishedAt)
-                .slice(0, 1),
-      )
+    const current = currentVersions(definitions)
       .filter((version) => isRankedSplit(version.manifest.split))
       .sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
     const wrote = (version: BenchmarkVersion) =>
@@ -118,7 +103,7 @@ export function BenchmarkModelRunDialog({
       eligible: current.filter((version) => !wrote(version)),
       authored: current.filter(wrote),
     };
-  }, [definitions, configuration, pool]);
+  }, [definitions, configuration]);
   // A click overrides a test's default until a run finishes.
   const [overrides, setOverrides] = useState<Map<string, boolean>>(
     () => new Map(),

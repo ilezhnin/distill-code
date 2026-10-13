@@ -212,29 +212,22 @@ impl Store {
             tx.commit().await?;
             return self.version(&key).await;
         }
-        // A version that changes only the evaluator of the newest one carries
-        // its cells: the stored outputs are evaluated again, not run again.
-        let newest = sqlx::query(
-            "SELECT id,manifest_json FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC LIMIT 1",
+        // Publication retires earlier versions for new work. Their original
+        // manifests, evaluations and results remain independent and immutable.
+        let previous: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(published_at) FROM benchmark_versions WHERE definition_id=?",
         )
         .bind(id)
-        .fetch_optional(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
-        use sqlx::Row;
-        let carries_from = match newest {
-            Some(row) => {
-                let previous: BenchmarkDraft = serde_json::from_str(row.get(1))?;
-                evaluator_only(&previous, &def.draft).then(|| row.get::<String, _>(0))
-            }
-            None => None,
-        };
+        let published_at = now().max(previous.unwrap_or(0).saturating_add(1));
         let v = BenchmarkVersion {
             id: uuid::Uuid::new_v4().to_string(),
             definition_id: id.into(),
             content_hash: hash,
-            published_at: now(),
+            published_at,
             manifest: def.draft,
-            carries_from,
+            carries_from: None,
         };
         sqlx::query("INSERT INTO benchmark_versions(id,definition_id,content_hash,manifest_json,published_at,carries_from) VALUES(?,?,?,?,?,?)").bind(&v.id).bind(id).bind(&v.content_hash).bind(serde_json::to_string(&v.manifest)?).bind(v.published_at).bind(&v.carries_from).execute(&mut *tx).await?;
         event(&mut tx, id, "version_published").await?;
@@ -283,22 +276,6 @@ impl Store {
         draft.name = format!("{} (copy)", draft.name);
         self.save_draft(None, None, draft).await
     }
-}
-
-/// Whether `next` differs from `previous` in its evaluator alone: a fixed
-/// expected answer, check or rubric, with the same task, fixtures, limits and
-/// everything else a candidate sees or is held to.
-pub(super) fn evaluator_only(previous: &BenchmarkDraft, next: &BenchmarkDraft) -> bool {
-    let parts = |draft: &BenchmarkDraft| {
-        let mut value = serde_json::to_value(draft).unwrap_or_default();
-        let evaluator = value
-            .as_object_mut()
-            .and_then(|object| object.remove("evaluator"));
-        (value, evaluator)
-    };
-    let (before, old) = parts(previous);
-    let (after, new) = parts(next);
-    old != new && before == after
 }
 
 #[cfg(test)]
@@ -357,20 +334,6 @@ mod tests {
             .await
             .unwrap();
         assert!(store.publish(&definition.id, 2).await.is_ok());
-    }
-    #[test]
-    fn only_a_change_confined_to_the_evaluator_carries_cells() {
-        let draft = super::super::seeds::definitions().remove(0);
-        let mut fixed = draft.clone();
-        fixed.evaluator.expected.push_str(" corrected");
-        assert!(evaluator_only(&draft, &fixed));
-        assert!(!evaluator_only(&draft, &draft));
-        let mut reworded = fixed.clone();
-        reworded.prompt.push_str(" Answer in one line.");
-        assert!(!evaluator_only(&draft, &reworded));
-        let mut limited = fixed;
-        limited.limits.timeout_seconds += 1;
-        assert!(!evaluator_only(&draft, &limited));
     }
     #[tokio::test]
     async fn archiving_records_the_first_archive_time() {

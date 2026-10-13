@@ -24,6 +24,7 @@ import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
 import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
+import { currentVersions } from "../lib/benchmarkReleases";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   BenchmarkDefinition,
@@ -74,15 +75,16 @@ export function BenchmarkRunDialog({
   // and for a model without an effort control.
   const [effort, setEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
-  const [versions, setVersions] = useState(selectedVersionIds);
+  const [selected, setVersions] = useState(selectedVersionIds);
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
   const [repetitions, setRepetitions] = useState(REQUIRED_REPETITIONS);
-  const published = definitions.filter(
-    (entry) => !entry.archived && entry.versions.length > 0,
+  const published = currentVersions(definitions);
+  // A publication invalidates an old selection instead of silently running
+  // different test content under an already checked plan.
+  const chosenVersions = published.filter((version) =>
+    selected.includes(version.id),
   );
-  const chosenVersions = published
-    .flatMap((definition) => definition.versions)
-    .filter((version) => versions.includes(version.id));
+  const versions = chosenVersions.map((version) => version.id);
   const owedTurns = (configuration: Configuration) =>
     plannedTurns(chosenVersions, configuration);
   // The run's limit only stops a turn that never ends (Settings).
@@ -468,15 +470,12 @@ export function BenchmarkRunDialog({
               <span className="text-xs text-muted-foreground">
                 {t("modelRun.selected", {
                   selected: chosenVersions.length,
-                  total: published.reduce(
-                    (total, definition) => total + definition.versions.length,
-                    0,
-                  ),
+                  total: published.length,
                 })}
               </span>
             </div>
             <BenchmarkTestPicker
-              versions={published.flatMap((definition) => definition.versions)}
+              versions={published}
               selectedIds={versions}
               disabled={previewOnly || busy}
               onChange={setVersions}

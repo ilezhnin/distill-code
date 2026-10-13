@@ -341,6 +341,9 @@ impl BenchmarkService {
         Ok(owed_executions(&versions, request))
     }
     pub async fn preview_run(&self, request: &RunRequest) -> Result<RunPreview> {
+        self.store
+            .require_current_versions(&request.version_ids)
+            .await?;
         let mut issues = Vec::new();
         let mut versions = Vec::new();
         for id in &request.version_ids {
@@ -636,6 +639,7 @@ impl BenchmarkService {
             }
             return Ok(run);
         }
+        Store::require_current_versions_in(&mut tx, &request.version_ids).await?;
         workflow_campaign::check_admission(&mut tx, &request).await?;
         // Persist the seeded cell order before any cell can become runnable.
         for version in &versions {
@@ -766,6 +770,10 @@ impl BenchmarkService {
     }
     pub async fn extend_run(&self, id: &str, version_ids: &[String]) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
+        self.store
+            .require_current_versions(&run.request.version_ids)
+            .await?;
+        self.store.require_current_versions(version_ids).await?;
         if !run.request.automatic_retry() {
             return Err(BenchmarkError::new(
                 "retry_forbidden",
@@ -852,6 +860,9 @@ impl BenchmarkService {
     /// in one sitting rather than topped up across days. Pending repetitions
     /// stay queued. Returns whether anything is left to run.
     async fn restart_unfinished_cells(&self, run: &BenchmarkRun) -> Result<bool> {
+        self.store
+            .require_current_versions(&run.request.version_ids)
+            .await?;
         run.request.require_dispatch_admission(now())?;
         if !run.request.automatic_retry() {
             // Resume may finish original, never-started slots. It must not
@@ -1017,6 +1028,9 @@ impl BenchmarkService {
         }
         let mut a = self.store.attempt(id).await?;
         self.store
+            .require_current_versions(std::slice::from_ref(&a.version_id))
+            .await?;
+        self.store
             .require_independent_run(&self.store.run(&a.run_id).await?.request.request_key)
             .await?;
         let v = self.store.version(&a.version_id).await?;
@@ -1097,6 +1111,9 @@ impl BenchmarkService {
             ));
         }
         let mut a = self.store.attempt(id).await?;
+        self.store
+            .require_current_versions(std::slice::from_ref(&a.version_id))
+            .await?;
         if a.phase != "terminal" {
             return Err(BenchmarkError::new(
                 "validation",
@@ -1164,76 +1181,11 @@ impl BenchmarkService {
         self.store.save_attempt(&a).await?;
         Ok(a)
     }
-    /// Publishes a definition's draft. A version that changes only the
-    /// evaluator carries the cells of the newest one: an objective evaluator
-    /// evaluates their sealed outputs again here, locally and free; a judged
-    /// case keeps its panels' scores until the operator asks for new judges,
-    /// which costs model calls.
+    /// Publishes a new immutable version without changing earlier results.
     pub async fn publish_version(&self, id: &str, revision: i64) -> Result<BenchmarkVersion> {
         let version = self.store.publish(id, revision).await?;
-        if version.carries_from.is_some() && version.manifest.evaluator.kind != "rubric" {
-            self.evaluate_carried(&version).await?;
-        }
         self.changed().await;
         Ok(version)
-    }
-    /// Evaluates every settled, evaluated output of the versions `version`
-    /// carries with its evaluator; returns how many it evaluated.
-    async fn evaluate_carried(&self, version: &BenchmarkVersion) -> Result<usize> {
-        let mut carried = Vec::new();
-        let mut from = version.carries_from.clone();
-        while let Some(id) = from {
-            if carried.contains(&id) {
-                break;
-            }
-            from = self.store.version(&id).await?.carries_from;
-            carried.push(id);
-        }
-        let mut evaluated = 0;
-        for run in self.store.all_runs().await? {
-            for attempt in run
-                .attempts
-                .iter()
-                .filter(|a| a.phase == "terminal" && carried.contains(&a.version_id))
-            {
-                let lock = evaluation_lock(&attempt.id);
-                let _guard = lock.lock().await;
-                // Budget failures, cancellations, exclusions and retired
-                // repetitions keep their recorded outcome, as in a rescore.
-                let evaluated_before = matches!(
-                    self.store.stored_outcome(&attempt.id).await?.as_deref(),
-                    Some("pass" | "fail" | "completed" | "evaluation_error")
-                );
-                let step = sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM workflow_steps WHERE attempt_id=?",
-                )
-                .bind(&attempt.id)
-                .fetch_one(&self.store.pool)
-                .await?
-                    != 0;
-                if !evaluated_before || step {
-                    continue;
-                }
-                let mut a = self.store.attempt(&attempt.id).await?;
-                let Some(output) = a.output.clone() else {
-                    continue;
-                };
-                match runner::evaluate(&version.manifest, &output).await {
-                    Ok(mut e) => {
-                        e.details = Some(serde_json::json!({ "carriedTo": version.id }));
-                        a.outcome = Some(e.verdict.clone());
-                        a.evaluations.push(e);
-                    }
-                    Err(error) => {
-                        a.outcome = Some("evaluation_error".into());
-                        a.reason = Some(error.message);
-                    }
-                }
-                self.store.save_attempt(&a).await?;
-                evaluated += 1;
-            }
-        }
-        Ok(evaluated)
     }
     /// Freezes every live training/evaluation test's newest published version,
     /// named `name` or the next `vN`. A release that would repeat the newest

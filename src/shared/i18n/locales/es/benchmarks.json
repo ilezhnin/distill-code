@@ -272,7 +272,7 @@
     "leaveDescription": "El borrador guardado y los resultados publicados seguirán disponibles.",
     "keepEditing": "Seguir editando",
     "discard": "Descartar cambios",
-    "carried": "Solo cambió el evaluador: los resultados anteriores se evaluaron de nuevo con él y la prueba conserva sus mediciones."
+    "archivedVersion": "Versión archivada"
   },
   "library": {
     "empty": "Todavía no hay pruebas.",

@@ -319,6 +319,9 @@ impl BenchmarkService {
         if let Some(saved) = self.store.workflow_campaign_retry(&request).await? {
             return Ok(saved);
         }
+        self.store
+            .require_current_versions(&request.version_ids)
+            .await?;
         let fit = self.store.selector_fit(&request.model_id).await?;
         let mixed = !request.class_model_ids.is_empty();
         // Every step class of a mixed trajectory has its own fitted model;
@@ -647,6 +650,7 @@ impl Store {
                 .await?
                 .ok_or_else(|| invalid("Campaign identity conflict"));
         }
+        Store::require_current_versions_in(&mut tx, &plan.request.version_ids).await?;
         let versions = drafts(&mut tx).await?;
         let selected: BTreeSet<_> = plan.cases.iter().map(|c| c.group.clone()).collect();
         for initial in &selected {

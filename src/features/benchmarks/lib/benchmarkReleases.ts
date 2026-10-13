@@ -5,17 +5,22 @@ export function isRankedSplit(split: string): boolean {
   return split === "train" || split === "held_out";
 }
 
-/** Every live ranked test's newest version: what the next release freezes. */
-export function liveVersionIds(definitions: BenchmarkDefinition[]): string[] {
+/** Only the newest published version of each active test accepts new runs. */
+export function currentVersions(definitions: BenchmarkDefinition[]) {
   return definitions
     .filter((definition) => !definition.archived)
     .flatMap((definition) =>
       [...definition.versions]
         .sort((a, b) => b.publishedAt - a.publishedAt)
-        .slice(0, 1)
-        .filter((version) => isRankedSplit(version.manifest.split))
-        .map((version) => version.id),
-    )
+        .slice(0, 1),
+    );
+}
+
+/** Every live ranked test's newest version: what the next release freezes. */
+export function liveVersionIds(definitions: BenchmarkDefinition[]): string[] {
+  return currentVersions(definitions)
+    .filter((version) => isRankedSplit(version.manifest.split))
+    .map((version) => version.id)
     .sort();
 }
 
@@ -38,8 +43,8 @@ export function poolChanges(
   const testOf = new Map(
     versions.map((version) => [version.id, version.definitionId] as const),
   );
-  // A version republished with only its evaluator changed is the same
-  // measurement: the release reads it through the version that carries it.
+  // Preserve historical release comparisons that used evaluator-only carry
+  // links. New publications never create these links.
   const carriedFrom = new Map(
     versions
       .filter((version) => version.carriesFrom)

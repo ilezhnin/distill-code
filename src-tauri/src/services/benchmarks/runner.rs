@@ -10099,7 +10099,7 @@ mod tests {
         assert_eq!(then, frozen);
     }
     #[tokio::test]
-    async fn an_evaluator_only_republish_evaluates_the_stored_outputs_again() {
+    async fn republication_retires_old_versions_without_changing_their_results() {
         let (_dir, s, backend) = setup().await;
         let mut draft = seed_definitions()
             .into_iter()
@@ -10121,7 +10121,8 @@ mod tests {
             .iter()
             .all(|a| a.outcome.as_deref() == Some("pass")));
         let calls = backend.calls.load(Ordering::SeqCst);
-        // The expected answer is corrected: the same outputs now fail.
+        let frozen = serde_json::to_value(&run).unwrap();
+        // A corrected evaluator belongs to a new version, never to old outputs.
         let mut fixed = draft.clone();
         fixed.evaluator.expected = format!("{} corrected", draft.evaluator.expected);
         fixed.evaluator.known_good = fixed.evaluator.expected.clone();
@@ -10135,22 +10136,55 @@ mod tests {
             .publish_version(&definition.id, saved.draft_revision)
             .await
             .unwrap();
-        assert_eq!(second.carries_from.as_deref(), Some(first.id.as_str()));
+        assert_eq!(second.carries_from, None);
+        assert!(second.published_at > first.published_at);
+        assert_eq!(
+            serde_json::to_value(s.store.run(&run.id).await.unwrap()).unwrap(),
+            frozen
+        );
         assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
-        for attempt in s.store.run(&run.id).await.unwrap().attempts {
-            assert_eq!(attempt.version_id, first.id);
-            assert_eq!(attempt.outcome.as_deref(), Some("fail"));
-            let evaluation = attempt.evaluations.last().unwrap();
-            assert_eq!(evaluation.evaluator_revision, "corrected");
-            assert_eq!(evaluation.details.as_ref().unwrap()["carriedTo"], second.id);
-        }
-        // The case stands on the new version with its old cells: no gap.
+        // Retrieving the admitted request is idempotent, but no new execution,
+        // preview, extension, resume or rescore may target its retired version.
+        assert_eq!(s.start_run(run.request.clone()).await.unwrap().id, run.id);
+        let mut stale = run.request.clone();
+        stale.request_key = "retired-version".into();
+        assert_eq!(
+            s.preview_run(&stale).await.unwrap_err().code,
+            "version_retired"
+        );
+        assert_eq!(
+            s.start_run(stale).await.unwrap_err().code,
+            "version_retired"
+        );
+        assert_eq!(
+            s.extend_run(&run.id, &[]).await.unwrap_err().code,
+            "version_retired"
+        );
+        assert_eq!(
+            s.control(&run.id, "resume").await.unwrap_err().code,
+            "version_retired"
+        );
+        assert_eq!(
+            s.rescore(&run.attempts[0].id).await.unwrap_err().code,
+            "version_retired"
+        );
+        assert_eq!(
+            serde_json::to_value(s.store.run(&run.id).await.unwrap()).unwrap(),
+            frozen
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
+        assert_eq!(s.store.versions_for(&definition.id).await.unwrap().len(), 2);
+        let mut fresh = run.request.clone();
+        fresh.request_key = "current-version".into();
+        fresh.version_ids = vec![second.id.clone()];
+        assert!(s.preview_run(&fresh).await.unwrap().valid);
+        // No measurements are silently carried to the new evaluator.
         let data = s.query_data().await.unwrap();
-        let row = super::super::analysis::leaderboard(&data, &ResultQuery::default())
+        let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
+        assert!(report
             .rows
-            .remove(0);
-        assert!(row.scored_version_ids.contains(&second.id));
-        assert!(!row.missing_version_ids.contains(&second.id));
+            .iter()
+            .all(|row| !row.scored_version_ids.contains(&second.id)));
         // A changed prompt is another task: it opens a gap and carries nothing.
         let mut reworded = fixed;
         reworded.prompt.push_str(" Answer in one line.");

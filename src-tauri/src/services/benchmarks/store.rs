@@ -183,7 +183,7 @@ impl Store {
         Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
     pub async fn versions_for(&self, id: &str) -> Result<Vec<BenchmarkVersion>> {
-        let rows=sqlx::query("SELECT id,content_hash,manifest_json,published_at,carries_from FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC").bind(id).fetch_all(&self.pool).await?;
+        let rows=sqlx::query("SELECT id,content_hash,manifest_json,published_at,carries_from FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC,rowid DESC").bind(id).fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|r| {
                 Ok(BenchmarkVersion {
@@ -196,6 +196,28 @@ impl Store {
                 })
             })
             .collect()
+    }
+    /// Historical manifests stay readable; only current versions accept new work.
+    pub async fn require_current_versions(&self, ids: &[String]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::require_current_versions_in(&mut tx, ids).await
+    }
+    pub(super) async fn require_current_versions_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        ids: &[String],
+    ) -> Result<()> {
+        for id in ids {
+            let current: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM benchmark_versions v JOIN benchmark_definitions d ON d.id=v.definition_id WHERE v.id=? AND d.archived=0 AND v.id=(SELECT newest.id FROM benchmark_versions newest WHERE newest.definition_id=v.definition_id ORDER BY newest.published_at DESC,newest.rowid DESC LIMIT 1))",
+            ).bind(id).fetch_one(&mut **tx).await?;
+            if !current {
+                return Err(BenchmarkError::new(
+                    "version_retired",
+                    "This test version is archived or unavailable; select its latest published version for a new run",
+                ));
+            }
+        }
+        Ok(())
     }
     pub async fn version(&self, id: &str) -> Result<BenchmarkVersion> {
         let r=sqlx::query("SELECT definition_id,content_hash,manifest_json,published_at,carries_from FROM benchmark_versions WHERE id=?").bind(id).fetch_optional(&self.pool).await?.ok_or_else(||BenchmarkError::new("validation","Published version not found"))?;

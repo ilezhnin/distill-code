@@ -272,7 +272,7 @@
     "leaveDescription": "Your saved draft and published results remain available.",
     "keepEditing": "Keep editing",
     "discard": "Discard changes",
-    "carried": "Only the evaluator changed: the earlier results were evaluated again with it, and the test keeps its measurements."
+    "archivedVersion": "Archived version"
   },
   "library": {
     "empty": "No tests yet.",

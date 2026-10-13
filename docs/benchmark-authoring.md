@@ -17,6 +17,15 @@ inside the configured application root. Private authoring assets live under
 `benchmark-tasks` in that root, outside project checkouts. Local publication in
 Bench development freezes a version in this store; it does not publish to GitHub.
 
+Only the latest published version of an active definition accepts new runs,
+previews and qualifications. Publishing a replacement retires earlier versions
+from execution automatically; saving a draft does not. Historical versions,
+run plans, outputs and evaluations remain available on their original identities.
+Even an evaluator-only correction requires fresh measurements of the new version:
+publication never transfers or rescales earlier results. An old run cannot be
+resumed or extended after its test version retires. Already admitted work keeps
+its original immutable inputs rather than switching tests mid-run.
+
 Actual evaluation prompts, fixture data, repository snapshots, expected answers,
 protected checks, rubrics, alternatives, mutants, per-task documentation and
 results must not enter project Git, public issues, commit messages or CI uploads.

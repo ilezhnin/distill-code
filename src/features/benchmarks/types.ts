@@ -84,9 +84,8 @@ export interface BenchmarkVersion {
   publishedAt: number;
   manifest: BenchmarkDraft;
   /**
-   * The version whose cells this one carries: it changed only the evaluator,
-   * so the stored outputs were evaluated again instead of the case opening a
-   * gap.
+   * Legacy evaluator-only carry link, retained to read historical evidence.
+   * New publications never carry or re-evaluate an earlier version's results.
    */
   carriesFrom?: string | null;
 }

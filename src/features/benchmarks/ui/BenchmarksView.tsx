@@ -377,7 +377,6 @@ export function BenchmarksView({
             ) ?? modelRun.row
           }
           definitions={definitions.data ?? []}
-          pool={leaderboard.data?.cohort?.versionIds ?? null}
           runId={modelRun.runId}
           onClose={() => setModelRun(null)}
         />

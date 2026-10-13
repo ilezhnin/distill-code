@@ -290,6 +290,9 @@ impl BenchmarkService {
         if let Some(existing) = self.store.holdout_retry(&request).await? {
             return Ok(existing);
         }
+        self.store
+            .require_current_versions(&request.version_ids)
+            .await?;
         let data = self.query_data().await?;
         let plan = tauri::async_runtime::spawn_blocking(move || prepare(&data, &model, request))
             .await
@@ -331,6 +334,7 @@ impl Store {
                 .await?
                 .ok_or_else(|| invalid("Holdout identity conflict"));
         }
+        Store::require_current_versions_in(&mut tx, &plan.request.version_ids).await?;
         let mut families: BTreeSet<String> = plan.cases.iter().map(|c| c.family.clone()).collect();
         let mut groups: BTreeSet<String> =
             plan.cases.iter().map(|c| c.split_group.clone()).collect();

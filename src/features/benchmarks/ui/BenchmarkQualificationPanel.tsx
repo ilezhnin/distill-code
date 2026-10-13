@@ -12,8 +12,10 @@ import { BenchmarkAlert, Field } from "./BenchmarkPrimitives";
 
 export function BenchmarkQualificationPanel({
   version,
+  archived = false,
 }: {
   version: BenchmarkVersion;
+  archived?: boolean;
 }) {
   const { t } = useTranslation("benchmarks");
   const client = useQueryClient();
@@ -66,6 +68,7 @@ export function BenchmarkQualificationPanel({
       ? panel.judges.length
       : 0;
   const eligible =
+    !archived &&
     ["train", "held_out"].includes(version.manifest.split) &&
     ["exact", "json", "javascript", "browser", "repository", "rubric"].includes(
       version.manifest.evaluator.kind,

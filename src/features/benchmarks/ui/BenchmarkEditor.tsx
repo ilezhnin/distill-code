@@ -119,8 +119,6 @@ export function BenchmarkEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
-  // The last publication changed only the evaluator and kept the results.
-  const [carried, setCarried] = useState(false);
   const signature = (
     value: BenchmarkDraft,
     rows: FixtureRow[],
@@ -324,7 +322,7 @@ export function BenchmarkEditor({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {latestVersion ? (
+          {latestVersion && !definition?.archived ? (
             <Button
               type="button"
               variant="ghost"
@@ -353,11 +351,10 @@ export function BenchmarkEditor({
             onClick={() =>
               void execute(async () => {
                 const saved = await save();
-                const version = await benchmarkApi.publishVersion(
+                await benchmarkApi.publishVersion(
                   saved.id,
                   saved.draftRevision,
                 );
-                setCarried(Boolean(version.carriesFrom));
                 await client.invalidateQueries({ queryKey: benchmarkKeys });
               })
             }
@@ -385,11 +382,6 @@ export function BenchmarkEditor({
       {validation?.valid ? (
         <p role="status" className="text-sm text-muted-foreground">
           {t("benchmarks:editor.valid")}
-        </p>
-      ) : null}
-      {carried ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {t("benchmarks:editor.carried")}
         </p>
       ) : null}
 
@@ -841,16 +833,27 @@ export function BenchmarkEditor({
                       {shortId(version.contentHash)}
                     </code>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => onRun(version.id)}
-                  >
-                    {t("benchmarks:actions.preview")}
-                  </Button>
+                  {!definition.archived && version.id === latestVersion?.id ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => onRun(version.id)}
+                    >
+                      {t("benchmarks:actions.preview")}
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">
+                      {t("benchmarks:editor.archivedVersion")}
+                    </span>
+                  )}
                 </div>
-                <BenchmarkQualificationPanel version={version} />
+                <BenchmarkQualificationPanel
+                  version={version}
+                  archived={
+                    definition.archived || version.id !== latestVersion?.id
+                  }
+                />
               </li>
             ))}
           </ul>
