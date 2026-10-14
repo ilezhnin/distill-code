@@ -12,6 +12,10 @@ use std::path::Path;
 use super::execution::{ExecutionDispatch, OwnedEvent, OwnedEventPage, OwnedSessionRequest};
 use super::protocol::now_iso;
 
+// Ownership can grow from one probe to thousands of rows between planner
+// maintenance runs. Its unique key must remain a lookup even with stale stats.
+const SESSION_LIST_SQL: &str = "SELECT s.*, o.policy_json AS execution_policy_json, o.owner_purpose AS execution_owner_purpose FROM sessions s INDEXED BY sessions_visible_activity LEFT JOIN session_execution_owners o INDEXED BY sqlite_autoindex_session_execution_owners_1 ON o.session_id = s.id WHERE s.hidden = 0 ORDER BY s.updated_at DESC, s.created_at DESC LIMIT ? OFFSET ?";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub id: String,
@@ -961,14 +965,12 @@ impl SessionStore {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<SessionRecord>, String> {
-        let rows = sqlx::query(
-            "SELECT s.*, o.policy_json AS execution_policy_json, o.owner_purpose AS execution_owner_purpose FROM sessions s LEFT JOIN session_execution_owners o ON o.session_id = s.id WHERE s.hidden = 0 ORDER BY s.updated_at DESC, s.created_at DESC LIMIT ? OFFSET ?",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|error| db_error("failed to list sessions", error))?;
+        let rows = sqlx::query(SESSION_LIST_SQL)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to list sessions", error))?;
         // List hydration must carry the same dedicated-table owner as a direct
         // read before restored sessions can reach ordinary chat consumers.
         rows.iter().map(Self::row_to_owned_session).collect()

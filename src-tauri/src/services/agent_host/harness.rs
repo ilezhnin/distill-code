@@ -344,8 +344,13 @@ pub fn bridge_mode(spec: &HarnessSpec, agent_mode: &str) -> Option<&'static str>
 /// — not even a project directory — which is what lets the probe open one
 /// without leaving a chat behind in the user's own history.
 pub fn probe_session_meta(harness_id: &str) -> Option<Value> {
-    (harness_id == CLAUDE_HARNESS)
-        .then(|| json!({ "claudeCode": { "options": { "persistSession": false } } }))
+    match harness_id {
+        CLAUDE_HARNESS => Some(json!({ "claudeCode": { "options": {
+            "persistSession": false, "mcpServers": {}, "strictMcpConfig": true
+        } } })),
+        "grok-acp" => Some(json!({ "agentProfile": { "mcpInheritance": "none" } })),
+        _ => None,
+    }
 }
 
 /// Where a bridge row the harness does not declare is filed: after every
