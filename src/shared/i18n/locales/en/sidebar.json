@@ -84,6 +84,12 @@
   "viewMoreChats": "View more",
   "viewAllInHistory": "View all chats",
   "olderChatsInHistory": "View older chats in Session History",
+  "projectPreview": {
+    "chats_one": "{{displayCount}} chat",
+    "chats_other": "{{displayCount}} chats",
+    "active_one": "{{count}} active",
+    "active_other": "{{count}} active"
+  },
   "projectsInfo": {
     "label": "About projects",
     "tooltip": "What are projects?",

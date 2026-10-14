@@ -84,6 +84,12 @@
   "viewMoreChats": "Ver más",
   "viewAllInHistory": "Ver todo",
   "olderChatsInHistory": "Ver chats antiguos en Historial de sesiones",
+  "projectPreview": {
+    "chats_one": "{{displayCount}} chat",
+    "chats_other": "{{displayCount}} chats",
+    "active_one": "{{count}} activo",
+    "active_other": "{{count}} activos"
+  },
   "projectsInfo": {
     "label": "Acerca de los proyectos",
     "tooltip": "¿Qué son los proyectos?",

@@ -33,7 +33,6 @@ import {
 } from "@/features/sidebar/lib/pointerDrag";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
-import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
   SIDEBAR_CHAT_ROW_DENSITY_CLASSES,
   SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
@@ -52,7 +51,6 @@ import { SidebarChatMenuIcon } from "./SidebarChatMenuIcon";
 import { DropdownMenu, DropdownMenuTrigger } from "@/shared/ui/dropdown-menu";
 import { ContextMenu, ContextMenuTrigger } from "@/shared/ui/context-menu";
 import { Input } from "@/shared/ui/input";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import {
   RESPONDING_SHIMMER_PROPS,
   Shimmer,
@@ -67,6 +65,8 @@ import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
 import { useSidebarChatDrag } from "./SidebarChatDragContext";
 import { formatSidebarChatTimestamp } from "./sidebarChatTimestamp";
+import { SidebarHoverCard } from "./SidebarHoverCard";
+import { SidebarChatPreview } from "./SidebarChatPreview";
 
 const INACTIVE_CHAT_ROW_CLASS = cn(
   SIDEBAR_ROW_TEXT_DEFAULT_CLASS,
@@ -176,7 +176,7 @@ export function SidebarChatRow({
   className,
   contentPaddingClassName,
   nested = false,
-  showRenameTooltip = true,
+  showRenameTooltip: _showRenameTooltip = true,
   pointerDragEnabled = true,
   density = "default",
   showLeadingIcon = true,
@@ -286,8 +286,6 @@ export function SidebarChatRow({
   const shouldApplyToSelection = selected && selectionCount > 1;
   const showSelectionCheck =
     selectionEnabled && selected && onSelectionChange != null;
-  const rowTooltipLabel = t("actions.renameHint");
-  const showRowTooltip = showRenameTooltip;
   const projectEditLabel = flatProjectName?.trim()
     ? t("actions.editProject", { name: flatProjectName })
     : t("actions.editProjectFallback");
@@ -388,7 +386,7 @@ export function SidebarChatRow({
     startRename();
   };
 
-  const titleButton = (
+  const rowButton = (
     <Button
       type="button"
       variant="ghost"
@@ -413,14 +411,6 @@ export function SidebarChatRow({
     >
       {rowTitleContent}
     </Button>
-  );
-  const rowButton = showRowTooltip ? (
-    <Tooltip delayDuration={TOOLTIP_DELAY.restedHover} disableHoverableContent>
-      <TooltipTrigger asChild>{titleButton}</TooltipTrigger>
-      <TooltipContent pointerEvents="none">{rowTooltipLabel}</TooltipContent>
-    </Tooltip>
-  ) : (
-    titleButton
   );
 
   useEffect(() => {
@@ -646,207 +636,226 @@ export function SidebarChatRow({
         onMenuOpenChange?.(open);
       }}
     >
-      <ContextMenuTrigger asChild>
-        <div
-          data-session-id={id}
-          data-sidebar-chat-row
-          data-sidebar-chat-draggable
-          data-selected={selected ? "" : undefined}
-          onPointerDown={pointerDragEnabled ? handlePointerDown : undefined}
-          onClickCapture={(event) => {
-            if (!suppressNextClickRef.current) return;
-            clearPointerDragClickSuppression(
-              suppressNextClickRef,
-              suppressNextClickResetRef,
-            );
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-          className={cn(
-            "relative flex items-center group/chat-row rounded-sm",
-            SIDEBAR_ROW_SHELL_HOVER_CLASS,
-            SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
-            (isActive || menuOpen || contextMenuOpen) &&
-              (!selectionEnabled || selected) &&
-              SIDEBAR_ROW_SHELL_ACTIVE_CLASS,
-            selected && SELECTED_CHAT_ROW_CLASS,
-            selected && SELECTED_CHAT_ROW_MERGE_CLASS,
-            draggingSession !== null && "pointer-events-none",
-            dragging && "bg-[var(--sidebar-row-active)] opacity-40",
-            hasFlatProjectColumn && densityClasses.flatProjectGap,
-            className,
-          )}
-          data-sidebar-chat-density={density}
-        >
-          {dragging && dragPreviewPosition && typeof document !== "undefined"
-            ? createPortal(
-                <div
-                  aria-hidden="true"
-                  data-sidebar-chat-drag-preview
-                  className="pointer-events-none fixed z-50 flex max-w-72 items-center gap-2 rounded-sm border border-sidebar-border bg-card-glass px-3 py-2 text-sm text-sidebar-foreground shadow-lg [backdrop-filter:var(--backdrop-panel)] [-webkit-backdrop-filter:var(--backdrop-panel)]"
-                  style={{
-                    left: dragPreviewPosition.x + 12,
-                    top: dragPreviewPosition.y + 12,
-                  }}
-                >
-                  <SidebarChatMenuIcon className="size-3.5 shrink-0" />
-                  <span className="truncate">{displayTitle}</span>
-                </div>,
-                document.body,
-              )
-            : null}
-          {showAbsoluteLeadingSlot ? (
-            <SidebarLeadingIcon
-              className={absoluteLeadingSlotClass}
-              activeLabel={t("status.chatActive")}
-              unreadLabel={t("status.unreadMessages")}
-              testId={leadingIconTestId}
-            >
-              {showLeadingIcon || isConductor
-                ? (resolvedLeadingIcon ?? <SidebarChatMenuIcon />)
-                : null}
-            </SidebarLeadingIcon>
-          ) : null}
-          {hasFlatProjectColumn ? (
-            <>
+      <SidebarHoverCard
+        label={displayTitle}
+        disabled={
+          menuOpen ||
+          contextMenuOpen ||
+          dragging ||
+          draggingSession !== null ||
+          selectionEnabled
+        }
+        content={
+          <SidebarChatPreview
+            title={displayTitle}
+            activityAt={activityAt}
+            projectId={currentProjectId}
+            isRunning={isRunning}
+          />
+        }
+      >
+        <ContextMenuTrigger asChild>
+          <div
+            data-session-id={id}
+            data-sidebar-chat-row
+            data-sidebar-chat-draggable
+            data-selected={selected ? "" : undefined}
+            onPointerDown={pointerDragEnabled ? handlePointerDown : undefined}
+            onClickCapture={(event) => {
+              if (!suppressNextClickRef.current) return;
+              clearPointerDragClickSuppression(
+                suppressNextClickRef,
+                suppressNextClickResetRef,
+              );
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            className={cn(
+              "relative flex items-center group/chat-row rounded-sm",
+              SIDEBAR_ROW_SHELL_HOVER_CLASS,
+              SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
+              (isActive || menuOpen || contextMenuOpen) &&
+                (!selectionEnabled || selected) &&
+                SIDEBAR_ROW_SHELL_ACTIVE_CLASS,
+              selected && SELECTED_CHAT_ROW_CLASS,
+              selected && SELECTED_CHAT_ROW_MERGE_CLASS,
+              draggingSession !== null && "pointer-events-none",
+              dragging && "bg-[var(--sidebar-row-active)] opacity-40",
+              hasFlatProjectColumn && densityClasses.flatProjectGap,
+              className,
+            )}
+            data-sidebar-chat-density={density}
+          >
+            {dragging && dragPreviewPosition && typeof document !== "undefined"
+              ? createPortal(
+                  <div
+                    aria-hidden="true"
+                    data-sidebar-chat-drag-preview
+                    className="pointer-events-none fixed z-50 flex max-w-72 items-center gap-2 rounded-sm border border-sidebar-border bg-card-glass px-3 py-2 text-sm text-sidebar-foreground shadow-lg [backdrop-filter:var(--backdrop-panel)] [-webkit-backdrop-filter:var(--backdrop-panel)]"
+                    style={{
+                      left: dragPreviewPosition.x + 12,
+                      top: dragPreviewPosition.y + 12,
+                    }}
+                  >
+                    <SidebarChatMenuIcon className="size-3.5 shrink-0" />
+                    <span className="truncate">{displayTitle}</span>
+                  </div>,
+                  document.body,
+                )
+              : null}
+            {showAbsoluteLeadingSlot ? (
               <SidebarLeadingIcon
+                className={absoluteLeadingSlotClass}
                 activeLabel={t("status.chatActive")}
                 unreadLabel={t("status.unreadMessages")}
-                className={cn(
-                  "rounded-sm text-muted-foreground/70",
-                  flatProjectIconSlotClass,
-                )}
+                testId={leadingIconTestId}
               >
-                <span aria-hidden="true" data-sidebar-flat-project-icon>
-                  {flatProjectGlyph}
-                </span>
+                {showLeadingIcon || isConductor
+                  ? (resolvedLeadingIcon ?? <SidebarChatMenuIcon />)
+                  : null}
               </SidebarLeadingIcon>
-              {rowButton}
-            </>
-          ) : (
-            rowButton
-          )}
+            ) : null}
+            {hasFlatProjectColumn ? (
+              <>
+                <SidebarLeadingIcon
+                  activeLabel={t("status.chatActive")}
+                  unreadLabel={t("status.unreadMessages")}
+                  className={cn(
+                    "rounded-sm text-muted-foreground/70",
+                    flatProjectIconSlotClass,
+                  )}
+                >
+                  <span aria-hidden="true" data-sidebar-flat-project-icon>
+                    {flatProjectGlyph}
+                  </span>
+                </SidebarLeadingIcon>
+                {rowButton}
+              </>
+            ) : (
+              rowButton
+            )}
 
-          {isRunning ? (
-            <span
-              data-sidebar-chat-status
-              role="status"
-              aria-label={t("status.chatActive")}
-              className={cn(
-                "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
-                hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
-                densityClasses.menuInset,
-                selectionEnabled || menuOpen || contextMenuOpen || dragging
-                  ? "opacity-0"
-                  : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
-              )}
-            >
-              <ActiveChatPulseDot />
-            </span>
-          ) : workingChildCount > 0 ? (
-            // The chat itself is idle but its agents are not: the operator
-            // should expect a result later. Mirrors `brigadeWaitIndicator`,
-            // which is likewise "only when the session itself is idle", and so
-            // sits below the row's own running state but above unread and the
-            // timestamp.
-            <span
-              data-sidebar-chat-children-status
-              role="status"
-              aria-label={t("status.childrenWorking", {
-                count: workingChildCount,
-              })}
-              className={cn(
-                "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
-                hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
-                densityClasses.menuInset,
-                selectionEnabled || menuOpen || contextMenuOpen || dragging
-                  ? "opacity-0"
-                  : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
-              )}
-            >
-              <SidebarChildWorkDot />
-            </span>
-          ) : hasUnread ? (
-            <span
-              data-sidebar-chat-ready-status
-              role="status"
-              aria-label={t("status.unreadMessages")}
-              className={cn(
-                "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
-                hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
-                densityClasses.menuInset,
-                selectionEnabled || menuOpen || contextMenuOpen || dragging
-                  ? "opacity-0"
-                  : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
-              )}
-            >
-              <SidebarUnreadDot />
-            </span>
-          ) : activityTimestamp ? (
-            <span
-              data-sidebar-chat-timestamp
-              className={cn(
-                "pointer-events-none absolute text-xs tabular-nums text-muted-foreground/70 transition-opacity duration-75",
-                hasBranchName ? "top-2" : "top-1/2 -translate-y-1/2",
-                densityClasses.menuInset,
-                selectionEnabled || menuOpen || contextMenuOpen || dragging
-                  ? "opacity-0"
-                  : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
-              )}
-              aria-hidden="true"
-            >
-              {activityTimestamp}
-            </span>
-          ) : null}
-
-          {showSelectionCheck ? (
-            <span
-              className={cn(
-                "pointer-events-none absolute flex size-5 items-center justify-center rounded-sm transition-opacity duration-75",
-                densityClasses.menuInset,
-                dragging || menuOpen || contextMenuOpen
-                  ? "opacity-0"
-                  : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
-              )}
-              aria-hidden="true"
-            >
-              <IconCheck className="size-4 text-sidebar-foreground" />
-            </span>
-          ) : null}
-
-          <DropdownMenu
-            open={menuOpen}
-            onOpenChange={(open) => {
-              setMenuOpen(open);
-              onMenuOpenChange?.(open);
-            }}
-          >
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                flush
-                size="icon-xs"
-                aria-label={t("menu.optionsFor", { label: displayTitle })}
-                data-sidebar-drag-ignore
-                onClick={(e) => e.stopPropagation()}
+            {isRunning ? (
+              <span
+                data-sidebar-chat-status
+                role="status"
+                aria-label={t("status.chatActive")}
                 className={cn(
-                  "absolute size-5",
+                  "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
+                  hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
                   densityClasses.menuInset,
-                  dragging
-                    ? "invisible pointer-events-none opacity-0"
-                    : menuOpen
-                      ? "visible opacity-100"
-                      : "invisible opacity-0 group-hover/chat-row:visible group-hover/chat-row:opacity-100 group-focus-within/chat-row:visible group-focus-within/chat-row:opacity-100",
+                  selectionEnabled || menuOpen || contextMenuOpen || dragging
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
                 )}
               >
-                <MoreHorizontal className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <SessionActionsMenuContent {...sessionActionsMenuProps} />
-          </DropdownMenu>
-        </div>
-      </ContextMenuTrigger>
+                <ActiveChatPulseDot />
+              </span>
+            ) : workingChildCount > 0 ? (
+              // The chat itself is idle but its agents are not: the operator
+              // should expect a result later. Mirrors `brigadeWaitIndicator`,
+              // which is likewise "only when the session itself is idle", and so
+              // sits below the row's own running state but above unread and the
+              // timestamp.
+              <span
+                data-sidebar-chat-children-status
+                role="status"
+                aria-label={t("status.childrenWorking", {
+                  count: workingChildCount,
+                })}
+                className={cn(
+                  "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
+                  hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
+                  densityClasses.menuInset,
+                  selectionEnabled || menuOpen || contextMenuOpen || dragging
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
+                )}
+              >
+                <SidebarChildWorkDot />
+              </span>
+            ) : hasUnread ? (
+              <span
+                data-sidebar-chat-ready-status
+                role="status"
+                aria-label={t("status.unreadMessages")}
+                className={cn(
+                  "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
+                  hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
+                  densityClasses.menuInset,
+                  selectionEnabled || menuOpen || contextMenuOpen || dragging
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
+                )}
+              >
+                <SidebarUnreadDot />
+              </span>
+            ) : activityTimestamp ? (
+              <span
+                data-sidebar-chat-timestamp
+                className={cn(
+                  "pointer-events-none absolute text-xs tabular-nums text-muted-foreground/70 transition-opacity duration-75",
+                  hasBranchName ? "top-2" : "top-1/2 -translate-y-1/2",
+                  densityClasses.menuInset,
+                  selectionEnabled || menuOpen || contextMenuOpen || dragging
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
+                )}
+                aria-hidden="true"
+              >
+                {activityTimestamp}
+              </span>
+            ) : null}
+
+            {showSelectionCheck ? (
+              <span
+                className={cn(
+                  "pointer-events-none absolute flex size-5 items-center justify-center rounded-sm transition-opacity duration-75",
+                  densityClasses.menuInset,
+                  dragging || menuOpen || contextMenuOpen
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
+                )}
+                aria-hidden="true"
+              >
+                <IconCheck className="size-4 text-sidebar-foreground" />
+              </span>
+            ) : null}
+
+            <DropdownMenu
+              open={menuOpen}
+              onOpenChange={(open) => {
+                setMenuOpen(open);
+                onMenuOpenChange?.(open);
+              }}
+            >
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  flush
+                  size="icon-xs"
+                  aria-label={t("menu.optionsFor", { label: displayTitle })}
+                  data-sidebar-drag-ignore
+                  onClick={(e) => e.stopPropagation()}
+                  className={cn(
+                    "absolute size-5",
+                    densityClasses.menuInset,
+                    dragging
+                      ? "invisible pointer-events-none opacity-0"
+                      : menuOpen
+                        ? "visible opacity-100"
+                        : "invisible opacity-0 group-hover/chat-row:visible group-hover/chat-row:opacity-100 group-focus-within/chat-row:visible group-focus-within/chat-row:opacity-100",
+                  )}
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <SessionActionsMenuContent {...sessionActionsMenuProps} />
+            </DropdownMenu>
+          </div>
+        </ContextMenuTrigger>
+      </SidebarHoverCard>
       <SessionActionsContextMenuContent {...sessionActionsMenuProps} />
     </ContextMenu>
   );

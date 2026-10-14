@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { IconCubePlus, IconEdit, IconPlus } from "@tabler/icons-react";
+import { IconFolderPlus, IconEdit, IconPlus } from "@tabler/icons-react";
 import type { AppView } from "@/app/AppShell";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { selectHasFetchedProjects } from "@/features/projects/stores/projectSelectors";
@@ -314,7 +314,7 @@ export function SidebarProjectsSection({
                 tooltip={t("empty.createProject")}
                 className="rounded-lg"
               >
-                <IconCubePlus className="size-4" />
+                <IconFolderPlus className="size-4" />
               </Button>
             </div>
           ) : (
@@ -326,7 +326,7 @@ export function SidebarProjectsSection({
                 size="xs"
                 onClick={onCreateProject}
                 className={emptyActionClasses}
-                leftIcon={<IconCubePlus className="size-3.5" />}
+                leftIcon={<IconFolderPlus className="size-3.5" />}
               >
                 {t("empty.createProject")}
               </Button>

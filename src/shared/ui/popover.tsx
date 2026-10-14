@@ -18,7 +18,7 @@ function PopoverTrigger({
 type PopoverContentProps = React.ComponentProps<
   typeof PopoverPrimitive.Content
 > & {
-  variant?: "default" | "tooltip";
+  variant?: "default" | "tooltip" | "raised";
 };
 
 function PopoverContent({
@@ -43,7 +43,9 @@ function PopoverContent({
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 origin-(--radix-popover-content-transform-origin) rounded-md outline-hidden",
           isTooltipVariant
             ? "bg-popover-inverse text-popover-inverse-foreground w-fit px-3 py-1.5 text-xs shadow-popover"
-            : "bg-popover text-popover-foreground w-72 p-4 shadow-popover",
+            : variant === "raised"
+              ? "bg-popover-raised text-popover-raised-foreground w-80 rounded-xl p-2 shadow-popover-raised [--muted-foreground:var(--popover-raised-muted-foreground)] [--border:var(--popover-raised-focus)] [--accent:var(--popover-raised-focus)] [--accent-foreground:var(--popover-raised-foreground)]"
+              : "bg-popover text-popover-foreground w-72 p-4 shadow-popover",
           className,
         )}
         {...props}

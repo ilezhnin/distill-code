@@ -120,6 +120,7 @@ export const DESIGN_SYSTEM_COMPONENT_SECTIONS: Array<{
   { id: "component-radio-group", label: "Radio Group" },
   { id: "component-scroll-area", label: "Scroll Area" },
   { id: "component-search-bar", label: "Search Bar" },
+  { id: "component-separator", label: "Separator" },
   {
     id: "component-session-activity-indicator",
     label: "Session Activity Indicator",
@@ -160,7 +161,6 @@ export const DESIGN_SYSTEM_UNUSED_COMPONENT_SECTIONS: Array<{
   { id: "component-navigation-menu", label: "Navigation Menu" },
   { id: "component-pagination", label: "Pagination" },
   { id: "component-resizable-handle", label: "Resizable Handle" },
-  { id: "component-separator", label: "Separator" },
 ];
 
 export const DESIGN_SYSTEM_ALL_COMPONENT_SECTIONS = [

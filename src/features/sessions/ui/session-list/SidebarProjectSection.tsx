@@ -24,6 +24,8 @@ import {
 import { SidebarChatRow } from "./SidebarChatRow";
 import { SidebarSectionHeaderAction } from "./SidebarSectionHeader";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
+import { SidebarHoverCard } from "./SidebarHoverCard";
+import { SidebarProjectPreview } from "./SidebarProjectPreview";
 import { useSidebarChatDrag } from "./SidebarChatDragContext";
 import { CollapseReveal } from "@/shared/ui/collapse-reveal";
 import { ContextMenu, ContextMenuTrigger } from "@/shared/ui/context-menu";
@@ -95,7 +97,7 @@ export function SidebarProjectSection({
   showTimestamps,
   onNavigate,
   onOpenProject,
-  hasMoreSessions: _hasMoreSessions = false,
+  hasMoreSessions = false,
   dropTargetEnabled = true,
   showExpansionChevron = true,
   emptyState,
@@ -135,8 +137,11 @@ export function SidebarProjectSection({
   emptyState?: "no-chats";
 }) {
   const { t } = useTranslation(["sidebar", "common"]);
-  const { activeSessionDropTargetKey, registerSessionDropTarget } =
-    useSidebarChatDrag();
+  const {
+    draggingSession,
+    activeSessionDropTargetKey,
+    registerSessionDropTarget,
+  } = useSidebarChatDrag();
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const dropTargetKey = `project:${project.id}`;
   const [renderProjectChats, setRenderProjectChats] = useState(isExpanded);
@@ -305,116 +310,130 @@ export function SidebarProjectSection({
       data-project-id={project.id}
     >
       <ContextMenu onOpenChange={setContextMenuOpen}>
-        <ContextMenuTrigger asChild>
-          <div
-            data-sidebar-project-row
-            className={cn(
-              "relative flex items-center group group/chat-row rounded-sm pr-3 hover:bg-[var(--sidebar-row-hover)] focus-within:bg-[var(--sidebar-row-hover)]",
-              SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
-              (menuOpen || contextMenuOpen) && "bg-[var(--sidebar-row-active)]",
-            )}
-          >
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                if (projectCanExpand) {
-                  toggleProject(project.id);
-                } else if (onOpenProject) {
-                  onOpenProject(project.id);
-                } else {
-                  onNavigate?.("projects");
-                }
-              }}
-              aria-expanded={projectCanExpand ? isExpanded : undefined}
+        <SidebarHoverCard
+          label={project.name}
+          disabled={menuOpen || contextMenuOpen || draggingSession !== null}
+          content={
+            <SidebarProjectPreview
+              project={project}
+              chats={projectChats}
+              hasMoreSessions={hasMoreSessions}
+              onEdit={onEditProject}
+            />
+          }
+        >
+          <ContextMenuTrigger asChild>
+            <div
+              data-sidebar-project-row
               className={cn(
-                "flex-1 min-w-0 justify-start rounded-sm",
-                SIDEBAR_NAV_ROW_SPACING_CLASS,
+                "relative flex items-center group group/chat-row rounded-sm pr-3 hover:bg-[var(--sidebar-row-hover)] focus-within:bg-[var(--sidebar-row-hover)]",
                 SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
-                SIDEBAR_NAV_TEXT_CLASS,
-                PROJECT_ROW_TEXT_CLASS,
+                (menuOpen || contextMenuOpen) &&
+                  "bg-[var(--sidebar-row-active)]",
               )}
             >
-              <SidebarLeadingIcon
-                hasUnread={showProjectUnread}
-                activeLabel={t("status.chatActive")}
-                unreadLabel={t("status.unreadMessages")}
-                className="text-sidebar-foreground"
-              >
-                {showExpansionChevron && projectCanExpand ? (
-                  <>
-                    <span className="group-hover/chat-row:hidden group-focus-within/chat-row:hidden">
-                      <ProjectIcon
-                        icon={project.icon}
-                        color={project.color}
-                        projectId={project.id}
-                        imageClassName="size-[18px] rounded-[4px]"
-                      />
-                    </span>
-                    {isExpanded ? (
-                      <IconChevronDown className="hidden size-3 text-muted-foreground group-hover/chat-row:block group-focus-within/chat-row:block" />
-                    ) : (
-                      <IconChevronRight className="hidden size-3 text-muted-foreground group-hover/chat-row:block group-focus-within/chat-row:block" />
-                    )}
-                  </>
-                ) : (
-                  <ProjectIcon
-                    icon={project.icon}
-                    color={project.color}
-                    projectId={project.id}
-                    imageClassName="size-[18px] rounded-[4px]"
-                  />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (projectCanExpand) {
+                    toggleProject(project.id);
+                  } else if (onOpenProject) {
+                    onOpenProject(project.id);
+                  } else {
+                    onNavigate?.("projects");
+                  }
+                }}
+                aria-expanded={projectCanExpand ? isExpanded : undefined}
+                className={cn(
+                  "flex-1 min-w-0 justify-start rounded-sm",
+                  SIDEBAR_NAV_ROW_SPACING_CLASS,
+                  SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
+                  SIDEBAR_NAV_TEXT_CLASS,
+                  PROJECT_ROW_TEXT_CLASS,
                 )}
-              </SidebarLeadingIcon>
-              <span className="flex-1 min-w-0 truncate text-left">
-                {project.name}
+              >
+                <SidebarLeadingIcon
+                  hasUnread={showProjectUnread}
+                  activeLabel={t("status.chatActive")}
+                  unreadLabel={t("status.unreadMessages")}
+                  className="group/project-icon text-sidebar-foreground"
+                >
+                  {showExpansionChevron && projectCanExpand ? (
+                    <>
+                      <span className="group-hover/project-icon:hidden group-focus-within/chat-row:hidden">
+                        <ProjectIcon
+                          icon={project.icon}
+                          color={project.color}
+                          projectId={project.id}
+                          imageClassName="size-[18px] rounded-[4px]"
+                        />
+                      </span>
+                      {isExpanded ? (
+                        <IconChevronDown className="hidden size-3 text-muted-foreground group-hover/project-icon:block group-focus-within/chat-row:block" />
+                      ) : (
+                        <IconChevronRight className="hidden size-3 text-muted-foreground group-hover/project-icon:block group-focus-within/chat-row:block" />
+                      )}
+                    </>
+                  ) : (
+                    <ProjectIcon
+                      icon={project.icon}
+                      color={project.color}
+                      projectId={project.id}
+                      imageClassName="size-[18px] rounded-[4px]"
+                    />
+                  )}
+                </SidebarLeadingIcon>
+                <span className="flex-1 min-w-0 truncate text-left">
+                  {project.name}
+                </span>
+              </Button>
+              <div className="translate-y-px" data-sidebar-drag-ignore>
+                <SidebarItemMenu
+                  label={project.name}
+                  onOpenChange={setMenuOpen}
+                  {...projectMenuActions}
+                />
+              </div>
+              <span
+                data-sidebar-drag-ignore
+                className="ml-1 flex flex-shrink-0 gap-0.5"
+              >
+                <SidebarSectionHeaderAction
+                  icon={IconSitemap}
+                  label={t("actions.newConductorInProject")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNewConductorInProject?.(project.id);
+                  }}
+                  revealClassName={
+                    menuOpen || contextMenuOpen
+                      ? "visible"
+                      : "invisible group-hover:visible group-focus-within:visible"
+                  }
+                />
+                <SidebarSectionHeaderAction
+                  icon={IconEdit}
+                  label={t("actions.newChatInProject")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNewChatInProject?.(project.id);
+                  }}
+                  revealClassName={
+                    menuOpen || contextMenuOpen
+                      ? "visible"
+                      : "invisible group-hover:visible group-focus-within:visible"
+                  }
+                />
               </span>
-            </Button>
-            <div className="translate-y-px" data-sidebar-drag-ignore>
-              <SidebarItemMenu
-                label={project.name}
-                onOpenChange={setMenuOpen}
-                {...projectMenuActions}
-              />
-            </div>
-            <span
-              data-sidebar-drag-ignore
-              className="ml-1 flex flex-shrink-0 gap-0.5"
-            >
-              <SidebarSectionHeaderAction
-                icon={IconSitemap}
-                label={t("actions.newConductorInProject")}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNewConductorInProject?.(project.id);
-                }}
-                revealClassName={
-                  menuOpen || contextMenuOpen
-                    ? "visible"
-                    : "invisible group-hover:visible group-focus-within:visible"
-                }
-              />
-              <SidebarSectionHeaderAction
-                icon={IconEdit}
-                label={t("actions.newChatInProject")}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNewChatInProject?.(project.id);
-                }}
-                revealClassName={
-                  menuOpen || contextMenuOpen
-                    ? "visible"
-                    : "invisible group-hover:visible group-focus-within:visible"
-                }
-              />
-            </span>
 
-            {dragOver && (
-              <div className="absolute bottom-0 left-3 right-3 h-px bg-sidebar-foreground" />
-            )}
-          </div>
-        </ContextMenuTrigger>
+              {dragOver && (
+                <div className="absolute bottom-0 left-3 right-3 h-px bg-sidebar-foreground" />
+              )}
+            </div>
+          </ContextMenuTrigger>
+        </SidebarHoverCard>
         <SidebarItemContextMenuContent {...projectMenuActions} />
       </ContextMenu>
 
