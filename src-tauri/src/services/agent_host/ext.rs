@@ -324,7 +324,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             let records = host.store.mcp_list().await.map_err(protocol::internal)?;
             let extensions: Vec<Value> = records
                 .into_iter()
-                .map(|record| json!({ "extension": record.config, "enabled": record.enabled, "configKey": record.config_key }))
+                .map(|record| json!({ "configurationRevision": crate::commands::local_mcp_inventory::configuration_revision(&record.config.to_string()), "extension": record.config, "enabled": record.enabled, "configKey": record.config_key }))
                 .collect();
             Ok(json!({ "extensions": extensions, "warnings": [] }))
         }

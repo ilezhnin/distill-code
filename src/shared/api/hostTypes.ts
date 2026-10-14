@@ -65,6 +65,7 @@ export interface McpExtensionEntry {
   extension: McpExtension;
   enabled: boolean;
   configKey?: string | null;
+  configurationRevision?: string;
 }
 
 export interface PreferenceValue {

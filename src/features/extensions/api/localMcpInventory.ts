@@ -1,11 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type McpHarnessId = "claudeCode" | "codex";
+export type McpHarnessId =
+  | "claudeCode"
+  | "codex"
+  | "grok"
+  | "gemini"
+  | "openCode";
 export type McpConfigScope =
   | "user"
   | "project"
   | "localProject"
   | "profile"
+  | "plugin"
   | "additional";
 export type McpTransportKind =
   | "stdio"
@@ -39,6 +45,9 @@ export interface McpConfiguredServer {
   transport: McpTransportKind;
   identityFingerprint: string;
   enabled?: boolean | null;
+  description?: string | null;
+  endpoint?: string | null;
+  configurationRevision?: string;
 }
 
 export interface McpHarnessInventory {

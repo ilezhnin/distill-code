@@ -15,6 +15,9 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub enum McpHarnessId {
     ClaudeCode,
     Codex,
+    Grok,
+    Gemini,
+    OpenCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -24,6 +27,7 @@ pub enum McpConfigScope {
     Project,
     LocalProject,
     Profile,
+    Plugin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -63,6 +67,10 @@ pub struct McpConfiguredServer {
     pub name: String,
     pub transport: McpTransportKind,
     pub identity_fingerprint: String,
+    pub enabled: bool,
+    pub description: Option<String>,
+    pub endpoint: Option<String>,
+    pub configuration_revision: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -116,9 +124,10 @@ impl ConfigFile {
 
 #[tauri::command]
 pub async fn list_local_mcp_inventory(
+    app: tauri::AppHandle,
     workspace_paths: Option<Vec<String>>,
 ) -> Result<McpInventory, String> {
-    let workspace_paths = workspace_paths.unwrap_or_default();
+    let workspace_paths = effective_workspace_paths(&app, workspace_paths)?;
     tauri::async_runtime::spawn_blocking(move || {
         list_local_mcp_inventory_blocking(&workspace_paths)
     })
@@ -126,11 +135,29 @@ pub async fn list_local_mcp_inventory(
     .map_err(|error| format!("MCP inventory task failed: {error}"))?
 }
 
+pub(crate) fn effective_workspace_paths(
+    app: &tauri::AppHandle,
+    workspace_paths: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    let paths = workspace_paths.unwrap_or_default();
+    if paths.is_empty() {
+        Ok(vec![crate::services::distill_root::app_root(app)?
+            .join("artifacts")
+            .to_string_lossy()
+            .into_owned()])
+    } else {
+        Ok(paths)
+    }
+}
+
 fn list_local_mcp_inventory_blocking(workspace_paths: &[String]) -> Result<McpInventory, String> {
     Ok(McpInventory {
         harnesses: vec![
             discover_claude_code(workspace_paths),
             discover_codex(workspace_paths),
+            discover_grok(workspace_paths),
+            discover_additional(McpHarnessId::Gemini, workspace_paths),
+            discover_additional(McpHarnessId::OpenCode, workspace_paths),
         ],
     })
 }
@@ -214,8 +241,417 @@ fn discover_codex(workspace_paths: &[String]) -> McpHarnessInventory {
         };
         collect_codex_servers(&mut inventory.servers, &file, &value);
     }
+    for file in codex_plugin_config_files(workspace_paths) {
+        if let Some(value) = read_json_config(&file, &mut inventory, &mut messages) {
+            collect_json_server_map(
+                &mut inventory.servers,
+                McpHarnessId::Codex,
+                &file,
+                value.get("mcpServers").or_else(|| value.get("mcp_servers")),
+            );
+        }
+    }
 
     finish_inventory(inventory, messages)
+}
+
+fn codex_plugin_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
+    let files = codex_config_files(workspace_paths);
+    let Some(root) = files.first().and_then(|file| file.path.parent()) else {
+        return Vec::new();
+    };
+    let cache = root.join("plugins/cache");
+    let mut result = Vec::new();
+    let mut enabled = std::collections::BTreeMap::new();
+    for file in &files {
+        if let Some(config) = fs::read_to_string(&file.path)
+            .ok()
+            .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        {
+            if let Some(plugins) = config.get("plugins").and_then(toml::Value::as_table) {
+                for (name, config) in plugins {
+                    enabled.insert(
+                        name.clone(),
+                        config
+                            .get("enabled")
+                            .and_then(toml::Value::as_bool)
+                            .unwrap_or(true),
+                    );
+                }
+            }
+        }
+    }
+    for (plugin, active) in enabled {
+        if !active {
+            continue;
+        }
+        let Some((name, registry)) = plugin.rsplit_once('@') else {
+            continue;
+        };
+        if ![name, registry].into_iter().all(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        }) {
+            continue;
+        }
+        let registries = fs::read_dir(&cache)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(registry))
+            .take(32);
+        for registry_dir in registries {
+            let versions = fs::read_dir(registry_dir.path().join(name))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    semver::Version::parse(&entry.file_name().to_string_lossy())
+                        .ok()
+                        .map(|version| (version, entry.path()))
+                })
+                .filter(|(_, path)| path.join(".mcp.json").is_file())
+                .take(32);
+            if let Some((version, path)) = versions.max_by(|a, b| a.0.cmp(&b.0)) {
+                result.push(ConfigFile {
+                    path: path.join(".mcp.json"),
+                    scope: McpConfigScope::Plugin,
+                    label: format!("Codex plugin {name} ({version})"),
+                });
+            }
+        }
+    }
+    result
+}
+
+/// File discovery is passive. It never starts a CLI, MCP process or OAuth flow.
+fn additional_config_files(harness: McpHarnessId, workspace_paths: &[String]) -> Vec<ConfigFile> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let (root, filename, project_dir, label) = match harness {
+        McpHarnessId::Grok => (
+            crate::services::shell_env::user_env_var("GROK_HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .unwrap_or_else(|| home.join(".grok")),
+            "config.toml",
+            ".grok",
+            "Grok",
+        ),
+        McpHarnessId::Gemini => (
+            home.join(".gemini"),
+            "settings.json",
+            ".gemini",
+            "Gemini CLI",
+        ),
+        McpHarnessId::OpenCode => (
+            home.join(".config/opencode"),
+            "opencode.json",
+            "",
+            "OpenCode",
+        ),
+        _ => return Vec::new(),
+    };
+    let mut files = vec![ConfigFile {
+        path: root.join(filename),
+        scope: McpConfigScope::User,
+        label: format!("{label} user config"),
+    }];
+    for workspace in canonical_workspace_paths(workspace_paths) {
+        files.push(ConfigFile {
+            path: workspace.join(project_dir).join(filename),
+            scope: McpConfigScope::Project,
+            label: format!("{label} project config"),
+        });
+    }
+    files
+}
+
+fn discover_additional(harness: McpHarnessId, workspace_paths: &[String]) -> McpHarnessInventory {
+    let mut inventory = empty_inventory(harness);
+    let mut messages = Vec::new();
+    for file in additional_config_files(harness, workspace_paths) {
+        let value = if harness == McpHarnessId::Grok {
+            read_toml_config(&file, &mut inventory, &mut messages)
+        } else {
+            read_json_config(&file, &mut inventory, &mut messages)
+        };
+        if let Some(value) = value {
+            let map = value
+                .get("mcp_servers")
+                .or_else(|| value.get("mcpServers"))
+                .or_else(|| value.get("mcp"));
+            collect_json_server_map(&mut inventory.servers, harness, &file, map);
+            if let Some(disabled) = value
+                .get("disabled_mcp_servers")
+                .and_then(JsonValue::as_array)
+            {
+                for server in &mut inventory.servers {
+                    if disabled
+                        .iter()
+                        .any(|name| name.as_str() == Some(&server.config_key))
+                    {
+                        server.enabled = false;
+                    }
+                }
+            }
+        }
+    }
+    if harness == McpHarnessId::Gemini {
+        if let Some(home) = home_dir() {
+            let file = ConfigFile {
+                path: home.join(".gemini/mcp-server-enablement.json"),
+                scope: McpConfigScope::User,
+                label: "Gemini MCP enablement settings".into(),
+            };
+            let state = read_json_config(&file, &mut inventory, &mut messages);
+            for server in &mut inventory.servers {
+                if let Some(enabled) = state
+                    .as_ref()
+                    .and_then(|state| state.get(server.config_key.trim().to_ascii_lowercase()))
+                    .and_then(|row| row.get("enabled"))
+                    .and_then(JsonValue::as_bool)
+                {
+                    server.enabled = enabled;
+                }
+            }
+        }
+    }
+    finish_inventory(inventory, messages)
+}
+
+fn discover_grok(workspace_paths: &[String]) -> McpHarnessInventory {
+    let mut inventory = discover_additional(McpHarnessId::Grok, workspace_paths);
+    let mut messages = inventory.message.take().into_iter().collect::<Vec<_>>();
+    let mut config = JsonValue::Null;
+    if let Some(file) = additional_config_files(McpHarnessId::Grok, &[]).first() {
+        config = fs::read_to_string(&file.path)
+            .ok()
+            .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+            .and_then(|value| serde_json::to_value(value).ok())
+            .unwrap_or(JsonValue::Null);
+    }
+    let enabled = |vendor: &str, env: &str| {
+        crate::services::shell_env::user_env_var(env)
+            .map(|value| value != "0" && value != "false")
+            .unwrap_or_else(|| {
+                config
+                    .pointer(&format!("/compat/{vendor}/mcps"))
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(true)
+            })
+    };
+    if enabled("claude", "GROK_CLAUDE_MCPS_ENABLED") {
+        let inherited = discover_claude_code(workspace_paths);
+        messages.extend(inherited.message);
+        for mut server in inherited.servers {
+            if inventory
+                .servers
+                .iter()
+                .any(|own| own.config_key == server.config_key)
+            {
+                continue;
+            }
+            server.harness = McpHarnessId::Grok;
+            server.id = format!("grok-inherited:{}", server.id);
+            server.source.label = format!("Grok inherits {}", server.source.label);
+            if config
+                .get("disabled_mcp_servers")
+                .and_then(JsonValue::as_array)
+                .is_some_and(|names| {
+                    names
+                        .iter()
+                        .any(|name| name.as_str() == Some(&server.config_key))
+                })
+            {
+                server.enabled = false;
+            }
+            inventory.servers.push(server);
+        }
+    }
+    if enabled("cursor", "GROK_CURSOR_MCPS_ENABLED") {
+        if let Some(home) = home_dir() {
+            let mut files = vec![ConfigFile {
+                path: home.join(".cursor/mcp.json"),
+                scope: McpConfigScope::User,
+                label: "Grok inherits Cursor user config".into(),
+            }];
+            files.extend(
+                canonical_workspace_paths(workspace_paths)
+                    .into_iter()
+                    .map(|path| ConfigFile {
+                        path: path.join(".cursor/mcp.json"),
+                        scope: McpConfigScope::Project,
+                        label: "Grok inherits Cursor project config".into(),
+                    }),
+            );
+            for file in files {
+                if let Some(value) = read_json_config(&file, &mut inventory, &mut messages) {
+                    let mut servers = Vec::new();
+                    collect_json_server_map(
+                        &mut servers,
+                        McpHarnessId::Grok,
+                        &file,
+                        value.get("mcpServers"),
+                    );
+                    for server in servers {
+                        if !inventory
+                            .servers
+                            .iter()
+                            .any(|own| own.config_key == server.config_key)
+                        {
+                            inventory.servers.push(server);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    finish_inventory(inventory, messages)
+}
+
+pub(crate) fn configuration_revision(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(raw.as_bytes()))
+}
+
+pub(crate) struct LocatedMcpServer {
+    pub file: ConfigFile,
+    pub harness: McpHarnessId,
+    pub pointer: Vec<String>,
+    pub config_key: String,
+    pub config: JsonValue,
+    pub contents: String,
+}
+
+/// Resolve an inventory id back to an allowlisted source; never accept a path
+/// supplied by the renderer as a configuration file to edit or execute.
+pub(crate) fn locate_server(
+    id: &str,
+    workspace_paths: &[String],
+) -> Result<LocatedMcpServer, String> {
+    let id = id.strip_prefix("grok-inherited:").unwrap_or(id);
+    let files = claude_code_config_files(workspace_paths)
+        .into_iter()
+        .map(|file| (McpHarnessId::ClaudeCode, file))
+        .chain(
+            codex_config_files(workspace_paths)
+                .into_iter()
+                .map(|file| (McpHarnessId::Codex, file)),
+        )
+        .chain(
+            [
+                McpHarnessId::Grok,
+                McpHarnessId::Gemini,
+                McpHarnessId::OpenCode,
+            ]
+            .into_iter()
+            .flat_map(|harness| {
+                additional_config_files(harness, workspace_paths)
+                    .into_iter()
+                    .map(move |file| (harness, file))
+            }),
+        );
+    let files = files.chain(
+        codex_plugin_config_files(workspace_paths)
+            .into_iter()
+            .map(|file| (McpHarnessId::Codex, file)),
+    );
+    let mut cursor_files = Vec::new();
+    if let Some(home) = home_dir() {
+        cursor_files.push((
+            McpHarnessId::Grok,
+            ConfigFile {
+                path: home.join(".cursor/mcp.json"),
+                scope: McpConfigScope::User,
+                label: "Grok inherits Cursor user config".into(),
+            },
+        ));
+        cursor_files.extend(
+            canonical_workspace_paths(workspace_paths)
+                .into_iter()
+                .map(|path| {
+                    (
+                        McpHarnessId::Grok,
+                        ConfigFile {
+                            path: path.join(".cursor/mcp.json"),
+                            scope: McpConfigScope::Project,
+                            label: "Grok inherits Cursor project config".into(),
+                        },
+                    )
+                }),
+        );
+    }
+    let files = files.chain(cursor_files);
+    for (harness, file) in files {
+        let mut inventory = empty_inventory(harness);
+        let mut messages = Vec::new();
+        let value = if file.path.extension().is_some_and(|ext| ext == "toml") {
+            read_toml_config(&file, &mut inventory, &mut messages)
+        } else {
+            read_json_config(&file, &mut inventory, &mut messages)
+        };
+        let Some(value) = value else { continue };
+        let mut maps = vec![(file.clone(), Vec::<String>::new(), &value)];
+        if harness == McpHarnessId::Codex {
+            if let Some(profiles) = value.get("profiles").and_then(JsonValue::as_object) {
+                for (name, profile) in profiles {
+                    maps.push((
+                        file.with_scope(
+                            McpConfigScope::Profile,
+                            &format!("Codex profile config ({name})"),
+                        ),
+                        vec!["profiles".into(), name.clone()],
+                        profile,
+                    ));
+                }
+            }
+        }
+        if harness == McpHarnessId::ClaudeCode && file.scope == McpConfigScope::User {
+            if let Some(projects) = value.get("projects").and_then(JsonValue::as_object) {
+                for (path, project) in projects {
+                    if canonical_matching_workspace(
+                        path,
+                        &canonical_workspace_paths(workspace_paths),
+                    )
+                    .is_some()
+                    {
+                        maps.push((
+                            file.with_scope(
+                                McpConfigScope::LocalProject,
+                                "Claude Code local project config",
+                            ),
+                            vec!["projects".into(), path.clone()],
+                            project,
+                        ));
+                    }
+                }
+            }
+        }
+        for (scoped, prefix, value) in maps {
+            for map_key in ["mcpServers", "mcp_servers", "mcp"] {
+                if let Some(map) = value.get(map_key).and_then(JsonValue::as_object) {
+                    for (key, config) in map {
+                        if server_id(harness, &scoped, key) == id {
+                            let mut pointer = prefix.clone();
+                            pointer.push(map_key.into());
+                            pointer.push(key.clone());
+                            return Ok(LocatedMcpServer {
+                                contents: fs::read_to_string(&file.path)
+                                    .map_err(|_| "Cannot read MCP configuration".to_string())?,
+                                file: scoped,
+                                harness,
+                                pointer,
+                                config_key: key.clone(),
+                                config: config.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Err("The MCP configuration changed or is no longer available. Refresh the list.".into())
 }
 
 fn empty_inventory(harness: McpHarnessId) -> McpHarnessInventory {
@@ -369,6 +805,31 @@ fn collect_claude_code_servers(
         value.get("mcpServers").or_else(|| value.get("mcp_servers")),
     );
 
+    let disabled = value
+        .get("projects")
+        .and_then(JsonValue::as_object)
+        .and_then(|projects| {
+            projects.iter().find(|(path, _)| {
+                canonical_matching_workspace(
+                    path,
+                    &active_workspaces[..active_workspaces.len().min(1)],
+                )
+                .is_some()
+            })
+        })
+        .and_then(|(_, project)| project.get("disabledMcpServers"))
+        .and_then(JsonValue::as_array);
+    if let Some(disabled) = disabled {
+        for server in servers.iter_mut() {
+            if disabled
+                .iter()
+                .any(|name| name.as_str() == Some(&server.config_key))
+            {
+                server.enabled = false;
+            }
+        }
+    }
+
     if file.scope != McpConfigScope::User || active_workspaces.is_empty() {
         return;
     }
@@ -428,11 +889,13 @@ fn json_server_from_value(
         .and_then(JsonValue::as_str)
         .unwrap_or(config_key)
         .to_string();
-    let command = object
-        .get("command")
-        .or_else(|| object.get("cmd"))
-        .and_then(JsonValue::as_str);
-    let args = object
+    let command_value = object.get("command").or_else(|| object.get("cmd"));
+    let command = command_value.and_then(|value| {
+        value
+            .as_str()
+            .or_else(|| value.as_array()?.first()?.as_str())
+    });
+    let mut args = object
         .get("args")
         .and_then(JsonValue::as_array)
         .map(|values| {
@@ -443,9 +906,19 @@ fn json_server_from_value(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if let Some(argv) = command_value.and_then(JsonValue::as_array) {
+        args.splice(
+            0..0,
+            argv.iter()
+                .skip(1)
+                .filter_map(JsonValue::as_str)
+                .map(str::to_string),
+        );
+    }
     let url = object
         .get("url")
         .or_else(|| object.get("uri"))
+        .or_else(|| object.get("httpUrl"))
         .and_then(JsonValue::as_str);
     let server_type = object
         .get("type")
@@ -466,6 +939,19 @@ fn json_server_from_value(
         name,
         transport,
         identity_fingerprint: identity_fingerprint(transport, command, &args, url),
+        enabled: object
+            .get("enabled")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(true)
+            && object.get("disabled").and_then(JsonValue::as_bool) != Some(true),
+        description: object
+            .get("description")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string),
+        endpoint: url
+            .map(|url| safe_remote_identity(Some(url)))
+            .filter(|url| !url.is_empty()),
+        configuration_revision: configuration_revision(&value.to_string()),
     })
 }
 
@@ -625,6 +1111,7 @@ fn identity_fingerprint(
 fn server_id(harness: McpHarnessId, file: &ConfigFile, config_key: &str) -> String {
     let mut hasher = DefaultHasher::new();
     file.path.hash(&mut hasher);
+    file.label.hash(&mut hasher);
     format!(
         "{:?}:{:?}:{:016x}:{}",
         harness,

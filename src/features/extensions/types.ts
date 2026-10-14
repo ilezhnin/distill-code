@@ -94,6 +94,7 @@ export type ExtensionConfig =
 export type ExtensionEntry = ExtensionConfig & {
   config_key: string;
   enabled: boolean;
+  configurationRevision?: string;
 };
 
 export function getDisplayName(ext: {

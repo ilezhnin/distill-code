@@ -13,6 +13,7 @@ pub mod doctor;
 pub mod git;
 pub mod git_changes;
 pub mod local_mcp_inventory;
+pub mod mcp_manager;
 pub mod message_queues;
 pub mod notifications;
 pub mod path_resolver;

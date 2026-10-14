@@ -41,6 +41,7 @@ nucleo-matcher = "0.3"
 percent-encoding = "2"
 portable-pty = "0.9.0"
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls", "stream"] }
+rmcp = { version = "3.5.1", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
 tar = "0.4"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
@@ -51,6 +52,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 tauri = { version = "2", features = ["protocol-asset"] }
 toml = "1.1.4"
+toml_edit = "0.25.13"
 tauri-plugin-distillctl = { path = "plugins/distillctl" }
 tauri-plugin-app-test-driver = { path = "plugins/app-test-driver" }
 tauri-plugin-clipboard-manager = "2"

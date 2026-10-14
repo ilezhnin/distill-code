@@ -15,11 +15,17 @@ export interface McpInventoryGroup {
 const HARNESS_ORDER: Record<McpHarnessId, number> = {
   claudeCode: 0,
   codex: 1,
+  grok: 2,
+  gemini: 3,
+  openCode: 4,
 };
 
 export const HARNESS_LABELS: Record<McpHarnessId, string> = {
   claudeCode: "Claude Code",
   codex: "Codex",
+  grok: "Grok",
+  gemini: "Gemini CLI",
+  openCode: "OpenCode",
 };
 
 function normalizeIdentity(value: string): string {

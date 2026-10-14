@@ -12,6 +12,7 @@ function toExtensionEntry(entry: McpExtensionEntry): ExtensionEntry {
     ...extension,
     config_key: entry.configKey ?? extension.name,
     enabled: entry.enabled,
+    configurationRevision: entry.configurationRevision,
   };
 }
 
@@ -19,4 +20,28 @@ export async function listExtensions(): Promise<ExtensionEntry[]> {
   const client = await getClient();
   const response = await client.host.configExtensionsList({});
   return response.extensions.map(toExtensionEntry);
+}
+
+export async function saveExtension(
+  extension: ExtensionConfig,
+  enabled = true,
+): Promise<void> {
+  const client = await getClient();
+  await client.host.configExtensionsAdd({
+    extension: { ...extension },
+    enabled,
+  });
+}
+
+export async function setExtensionEnabled(
+  configKey: string,
+  enabled: boolean,
+): Promise<void> {
+  const client = await getClient();
+  await client.host.configExtensionsSetEnabled({ configKey, enabled });
+}
+
+export async function removeExtension(configKey: string): Promise<void> {
+  const client = await getClient();
+  await client.host.configExtensionsRemove({ configKey });
 }
