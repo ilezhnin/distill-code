@@ -5,7 +5,6 @@ import { modelPreferenceClassIds } from "@/features/agents/lib/modelRanking";
 import {
   IconArchive,
   IconArchiveOff,
-  IconChevronLeft,
   IconCopy,
   IconDots,
   IconPlayerPlay,
@@ -33,7 +32,6 @@ import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { hasDifficulty } from "../lib/benchmarkReleases";
-import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type { BenchmarkDefinition, CaseStats } from "../types";
 import { BenchmarkDetail } from "./BenchmarkDetail";
 import { SelectorHarness } from "./SelectorHarness";
@@ -148,7 +146,6 @@ export function BenchDevelopmentView({
     if (benchmarkId !== "new" && !definition) {
       return (
         <div className="space-y-5">
-          <BenchmarkToolbar actions={actions} />
           {loading ? (
             <BenchmarkEmpty title={t("benchmarks:loading")} compact />
           ) : (
@@ -159,25 +156,36 @@ export function BenchDevelopmentView({
     }
     return (
       <div className="space-y-5">
-        <BenchmarkToolbar actions={actions}>
-          <Button
-            type="button"
-            variant="ghost"
-            flush
-            leftIcon={<IconChevronLeft />}
-            onClick={() =>
-              useBenchmarkViewStore.getState().guardNavigation(() => onEdit())
-            }
-          >
-            {t("benchmarks:actions.back")}
-          </Button>
-        </BenchmarkToolbar>
+        {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
         <BenchmarkDetail
           key={benchmarkId}
           definition={definition}
           initialWorkClassId={workClassId ?? "general"}
           onSaved={onEdit}
-          onRun={(id) => onRun(id, true)}
+          onBack={() => onEdit()}
+          onDuplicate={
+            definition
+              ? () =>
+                  void operate(async () => {
+                    const copy = await benchmarkApi.duplicateDefinition(
+                      definition.id,
+                    );
+                    onEdit(copy.id);
+                  })
+              : undefined
+          }
+          onArchive={
+            definition
+              ? () =>
+                  void operate(async () => {
+                    await benchmarkApi.archiveDefinition(
+                      definition.id,
+                      !definition.archived,
+                    );
+                  })
+              : undefined
+          }
+          onRun={(id) => onRun(id)}
           onEvidence={onEvidence}
         />
       </div>

@@ -221,11 +221,12 @@
     "hard": "Difícil"
   },
   "evaluators": {
-    "exact": "Respuesta exacta",
-    "json": "JSON estructurado",
-    "rubric": "Revisión humana con rúbrica",
-    "javascript": "Comprobaciones JavaScript protegidas",
-    "browser": "Interacciones en navegador"
+    "exact": "Coincidencia de texto",
+    "json": "Coincidencia de JSON",
+    "rubric": "Revisión manual",
+    "javascript": "Función JavaScript",
+    "browser": "Página web",
+    "repository": "Cambios del repositorio"
   },
   "profiles": {
     "native_text": "Texto limpio, sin herramientas",
@@ -264,7 +265,7 @@
     "structuredHelp": "El estado de entrada incluye rootTaskId, stepId, parentStepId, fixtureSnapshotHash, conversationPrefix, previousReports y remainingBudgetSeconds. Un flujo de trabajo incluye driverRevision y de 2 a 4 pasos con id, prompt e includePreviousOutput. Los hashes se recalculan al guardar.",
     "entryTemplate": "Insertar plantilla de estado de entrada",
     "workflowTemplate": "Insertar plantilla de flujo de trabajo",
-    "addFixture": "Añadir fixture",
+    "addFixture": "Añadir archivo",
     "noFixtures": "Sin fixtures públicos.",
     "versions": "Versiones publicadas",
     "versionLabel": "{{name}} · {{hash}}",
@@ -920,5 +921,55 @@
     "contract": "{{role}} · {{runtime}} · Límite de {{seconds}}s por paso · {{steps}} pasos",
     "manageCertificate": "Gestionar certificado",
     "noRole": "Sin restricción de rol"
+  },
+  "authoring": {
+    "createVersion": "Crear versión",
+    "chooseSplit": "Elige un conjunto",
+    "invalidValue": "Introduce un valor JSON válido.",
+    "check": "Comprobación",
+    "method": "Método",
+    "criteria": "Criterios",
+    "references": "Soluciones de referencia",
+    "referencesHint": "Sirven para verificar el evaluador. El modelo no ve estas soluciones.",
+    "correct": "Solución correcta",
+    "incorrect": "Solución incorrecta",
+    "program": "Programa de comprobación",
+    "arguments": "Argumentos",
+    "argumentsHint": "Un argumento por línea.",
+    "function": "Nombre de la función",
+    "inputs": "Entradas (array JSON)",
+    "addCase": "Añadir caso",
+    "action": "Acción",
+    "element": "Elemento (selector CSS)",
+    "value": "Valor",
+    "addStep": "Añadir paso",
+    "checkTimeout": "Tiempo límite de comprobación (segundos)",
+    "checkFiles": "Archivos de comprobación",
+    "probe": "Ejecutor de la solución",
+    "advancedCheck": "Ajustes avanzados de comprobación",
+    "checkDefinition": "Definición de la comprobación (JSON)",
+    "runTest": "Ejecutar esta prueba",
+    "hints": {
+      "exact": "La respuesta debe coincidir con el texto esperado.",
+      "json": "Compara el valor JSON completo. El orden de las claves no importa.",
+      "rubric": "Revisas la respuesta según estos criterios.",
+      "javascript": "Llama a la función enviada con cada entrada y compara el resultado.",
+      "browser": "Realiza estas acciones y comprobaciones en la página enviada.",
+      "repository": "Ejecuta este programa sobre los cambios enviados. Los archivos de comprobación se ocultan al modelo."
+    },
+    "browserActions": {
+      "click": "Hacer clic",
+      "fill": "Introducir texto",
+      "selectOption": "Seleccionar opción",
+      "press": "Pulsar tecla",
+      "expectText": "Comprobar texto",
+      "expectValue": "Comprobar valor del campo",
+      "expectCount": "Contar elementos",
+      "expectAccessibleName": "Comprobar nombre accesible",
+      "expectAccessibleDescription": "Comprobar descripción accesible",
+      "expectAccessibleError": "Comprobar error accesible",
+      "expectSize": "Comprobar tamaño",
+      "expectBounds": "Comprobar posición"
+    }
   }
 }

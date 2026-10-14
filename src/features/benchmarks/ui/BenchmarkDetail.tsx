@@ -1,6 +1,21 @@
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
+import {
+  IconArchive,
+  IconArchiveOff,
+  IconChevronLeft,
+  IconCopy,
+  IconDots,
+  IconPlayerPlay,
+} from "@tabler/icons-react";
+import { PageToolbarButton } from "@/shared/ui/page-toolbar-button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/shared/ui/dropdown-menu";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card";
@@ -11,6 +26,7 @@ import type { BenchmarkDefinition, BenchmarkVersion } from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import { BenchmarkEditor } from "./BenchmarkEditor";
 import { BenchmarkQualificationPanel } from "./BenchmarkQualificationPanel";
+import { BenchmarkToolbar } from "./BenchmarkPrimitives";
 
 export function BenchmarkDetail({
   definition,
@@ -18,12 +34,18 @@ export function BenchmarkDetail({
   onSaved,
   onRun,
   onEvidence,
+  onBack,
+  onDuplicate,
+  onArchive,
 }: {
   definition?: BenchmarkDefinition;
   initialWorkClassId: string;
   onSaved: (id: string) => void;
   onRun: (id: string) => void;
   onEvidence: (id: string) => void;
+  onBack?: () => void;
+  onDuplicate?: () => void;
+  onArchive?: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
   const versions = [...(definition?.versions ?? [])].sort(
@@ -35,15 +57,22 @@ export function BenchmarkDetail({
   const archived = Boolean(
     definition?.archived || (selected && selected.id !== versions[0]?.id),
   );
-  const editor = (
-    <BenchmarkEditor
-      definition={definition}
-      initialWorkClassId={initialWorkClassId}
-      onSaved={onSaved}
-      onRun={onRun}
-    />
-  );
-  if (!versions.length) return editor;
+  const guarded = (action: () => void) =>
+    useBenchmarkViewStore.getState().guardNavigation(action);
+  const picker = versions.length ? (
+    <div className="max-w-full overflow-x-auto">
+      <TabsList aria-label={t("detail.versions")} variant="buttons">
+        {versions.map((version, index) => (
+          <TabsTrigger key={version.id} value={version.id} variant="buttons">
+            {t("detail.version", { number: versions.length - index })}
+          </TabsTrigger>
+        ))}
+        <TabsTrigger value="draft" variant="buttons">
+          {t("detail.draft")}
+        </TabsTrigger>
+      </TabsList>
+    </div>
+  ) : null;
   return (
     <Tabs
       value={selection}
@@ -54,26 +83,86 @@ export function BenchmarkDetail({
       }
       className="gap-5"
     >
-      <div className="overflow-x-auto">
-        <TabsList aria-label={t("detail.versions")} variant="buttons">
-          {versions.map((version, index) => (
-            <TabsTrigger key={version.id} value={version.id} variant="buttons">
-              {t("detail.version", { number: versions.length - index })}
-            </TabsTrigger>
-          ))}
-          <TabsTrigger value="draft" variant="buttons">
-            {t("detail.draft")}
-          </TabsTrigger>
-        </TabsList>
-      </div>
-      <TabsContent value="draft">{editor}</TabsContent>
+      <BenchmarkToolbar
+        actions={
+          <>
+            <PageToolbarButton
+              type="button"
+              size="icon-xs"
+              aria-label={t("authoring.runTest")}
+              tooltip={t("authoring.runTest")}
+              disabled={
+                !selected ||
+                archived ||
+                !hasDifficulty(selected.manifest.facets.difficulty)
+              }
+              onClick={() => {
+                if (selected && !archived) guarded(() => onRun(selected.id));
+              }}
+            >
+              <IconPlayerPlay />
+            </PageToolbarButton>
+            {definition && onDuplicate && onArchive ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <PageToolbarButton
+                    type="button"
+                    size="icon-xs"
+                    aria-label={t("actions.more")}
+                  >
+                    <IconDots />
+                  </PageToolbarButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => guarded(onDuplicate)}>
+                    <IconCopy />
+                    {t("actions.duplicate")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => guarded(onArchive)}>
+                    {definition.archived ? <IconArchiveOff /> : <IconArchive />}
+                    {t(
+                      definition.archived
+                        ? "actions.restore"
+                        : "actions.archive",
+                    )}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </>
+        }
+      >
+        {onBack ? (
+          <Button
+            type="button"
+            variant="ghost"
+            flush
+            leftIcon={<IconChevronLeft />}
+            onClick={() => guarded(onBack)}
+          >
+            {t("actions.back")}
+          </Button>
+        ) : null}
+      </BenchmarkToolbar>
+      <TabsContent value="draft">
+        <BenchmarkEditor
+          definition={definition}
+          initialWorkClassId={initialWorkClassId}
+          onSaved={onSaved}
+          versionPicker={picker}
+        />
+      </TabsContent>
       {selected ? (
         <TabsContent
           key={selected.id}
           value={selected.id}
           className="space-y-5"
         >
-          <VersionHeader version={selected} archived={archived} onRun={onRun} />
+          <VersionHeader
+            version={selected}
+            archived={archived}
+            picker={picker}
+          />
           <Tabs value={tab} onValueChange={setTab} className="gap-4">
             <TabsList variant="weight" aria-label={t("detail.view")}>
               <TabsTrigger value="test" variant="weight">
@@ -109,11 +198,11 @@ export function BenchmarkDetail({
 function VersionHeader({
   version,
   archived,
-  onRun,
+  picker,
 }: {
   version: BenchmarkVersion;
   archived: boolean;
-  onRun: (id: string) => void;
+  picker: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -133,16 +222,7 @@ function VersionHeader({
           </span>
         </div>
       </div>
-      {!archived ? (
-        <Button
-          type="button"
-          variant="outline"
-          disabled={!hasDifficulty(version.manifest.facets.difficulty)}
-          onClick={() => onRun(version.id)}
-        >
-          {t("actions.preview")}
-        </Button>
-      ) : null}
+      {picker}
     </div>
   );
 }

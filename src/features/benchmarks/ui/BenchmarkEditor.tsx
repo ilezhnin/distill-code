@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconChevronDown, IconPlus, IconTrash } from "@tabler/icons-react";
@@ -19,7 +19,7 @@ import {
   benchmarkDraftSchema,
   createBenchmarkDraft,
 } from "../lib/benchmarkDraft";
-import { hasDifficulty } from "../lib/benchmarkReleases";
+import { BenchmarkCheckSetup } from "./BenchmarkCheckSetup";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type {
   BenchmarkDefinition,
@@ -37,7 +37,8 @@ interface Props {
   definition?: BenchmarkDefinition;
   initialWorkClassId?: string;
   onSaved: (id: string) => void;
-  onRun: (versionId: string) => void;
+  onRun?: (versionId: string) => void;
+  versionPicker?: ReactNode;
 }
 
 interface FixtureRow {
@@ -46,13 +47,20 @@ interface FixtureRow {
   content: string;
 }
 
-const EVALUATOR_KINDS = ["exact", "json", "rubric", "javascript", "browser"];
+const EVALUATOR_KINDS = [
+  "exact",
+  "json",
+  "rubric",
+  "javascript",
+  "browser",
+  "repository",
+];
 const EXECUTION_PROFILES = [
   "native_text",
   "protected_repository",
   "isolated_ui",
 ];
-const SPLITS = ["development", "train", "held_out"];
+const SPLITS = ["train", "held_out"];
 const DIFFICULTIES = ["easy", "medium", "hard"];
 
 function pretty(value: unknown): string {
@@ -90,7 +98,7 @@ export function BenchmarkEditor({
   definition,
   initialWorkClassId = "general",
   onSaved,
-  onRun,
+  versionPicker,
 }: Props) {
   const { t } = useTranslation(["benchmarks", "settings"]);
   const client = useQueryClient();
@@ -114,6 +122,8 @@ export function BenchmarkEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
+  const [invalidCheck, setInvalidCheck] = useState(false);
+  const evaluationRevision = useRef<string | null>(null);
   const signature = (
     value: BenchmarkDraft,
     rows: FixtureRow[],
@@ -128,8 +138,9 @@ export function BenchmarkEditor({
     signature(draft, fixtures, [environment, entryState, workflow]),
   );
   const dirty =
+    invalidCheck ||
     signature(draft, fixtures, [environment, entryState, workflow]) !==
-    savedSignature;
+      savedSignature;
   useEffect(() => {
     useBenchmarkViewStore.getState().setDirty(dirty);
   }, [dirty]);
@@ -149,7 +160,24 @@ export function BenchmarkEditor({
   const patchEvaluator = (
     key: keyof BenchmarkDraft["evaluator"],
     value: string,
-  ) => patch("evaluator", { ...draft.evaluator, [key]: value });
+  ) => {
+    const evaluator = { ...draft.evaluator, [key]: value };
+    if (key === "kind" && value !== draft.evaluator.kind)
+      evaluator.expected = "";
+    evaluator.revision = evaluationRevision.current ??= crypto.randomUUID();
+    if (evaluator.kind === "exact" || evaluator.kind === "json") {
+      evaluator.knownGood = evaluator.expected;
+      evaluator.knownBad =
+        evaluator.kind === "json"
+          ? evaluator.expected.trim() === "null"
+            ? "false"
+            : "null"
+          : evaluator.expected.trim() === "__different_answer__"
+            ? "__other_answer__"
+            : "__different_answer__";
+    }
+    patch("evaluator", evaluator);
+  };
   const visualRubric = useMemo(
     () => readVisualRubric(environment),
     [environment],
@@ -192,6 +220,9 @@ export function BenchmarkEditor({
     }
   };
   const readDraft = (): BenchmarkDraft => {
+    if (!SPLITS.includes(draft.split))
+      throw new Error(t("benchmarks:authoring.chooseSplit"));
+    if (invalidCheck) throw new Error(t("benchmarks:authoring.invalidValue"));
     const result = {
       ...draft,
       // A draft saved for a retired quota or capacity batch measures tasks now.
@@ -224,6 +255,7 @@ export function BenchmarkEditor({
       pretty(saved.draft.workflow),
     ];
     setRecord(saved);
+    evaluationRevision.current = null;
     setDraft(saved.draft);
     setFixtures(rows);
     setEnvironment(texts[0]);
@@ -235,7 +267,7 @@ export function BenchmarkEditor({
     onSaved(saved.id);
     return saved;
   };
-  const text = (key: "name" | "taskFamily" | "source" | "license") => (
+  const text = (key: "name") => (
     <Field label={t(`benchmarks:fields.${key}`)} key={key}>
       {(id) => (
         <Input
@@ -299,8 +331,7 @@ export function BenchmarkEditor({
     </Field>
   );
   const kind = draft.evaluator.kind;
-  const protectedKind = kind === "javascript" || kind === "browser";
-  const latestVersion = definition?.versions[0];
+  const protectedKind = ["javascript", "browser", "repository"].includes(kind);
   return (
     <section className="space-y-8" aria-label={t("benchmarks:editor.tab")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -314,63 +345,47 @@ export function BenchmarkEditor({
               : t("benchmarks:editor.saved")}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {latestVersion && !definition?.archived ? (
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={
-                busy ||
-                dirty ||
-                !hasDifficulty(latestVersion.manifest.facets?.difficulty)
-              }
-              onClick={() => onRun(latestVersion.id)}
-            >
-              {t("benchmarks:actions.preview")}
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() =>
-              void execute(async () => {
-                setValidation(await benchmarkApi.validateDraft(readDraft()));
-              })
-            }
-          >
-            {t("benchmarks:actions.validate")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() =>
-              void execute(async () => {
-                const saved = await save();
-                await benchmarkApi.publishVersion(
-                  saved.id,
-                  saved.draftRevision,
-                );
-                await client.invalidateQueries({ queryKey: benchmarkKeys });
-              })
-            }
-          >
-            {t("benchmarks:actions.publish")}
-          </Button>
-          <Button
-            type="button"
-            variant="primary"
-            disabled={busy}
-            onClick={() =>
-              void execute(async () => {
-                await save();
-              })
-            }
-          >
-            {t("benchmarks:actions.save")}
-          </Button>
-        </div>
+        {versionPicker}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy || invalidCheck}
+          onClick={() =>
+            void execute(async () => {
+              setValidation(await benchmarkApi.validateDraft(readDraft()));
+            })
+          }
+        >
+          {t("benchmarks:actions.validate")}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy || invalidCheck}
+          onClick={() =>
+            void execute(async () => {
+              const saved = await save();
+              await benchmarkApi.publishVersion(saved.id, saved.draftRevision);
+              await client.invalidateQueries({ queryKey: benchmarkKeys });
+            })
+          }
+        >
+          {t("benchmarks:authoring.createVersion")}
+        </Button>
+        <Button
+          type="button"
+          variant="primary"
+          disabled={busy || invalidCheck}
+          onClick={() =>
+            void execute(async () => {
+              await save();
+            })
+          }
+        >
+          {t("benchmarks:actions.save")}
+        </Button>
       </div>
       {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
       {validation && !validation.valid ? (
@@ -411,12 +426,19 @@ export function BenchmarkEditor({
               {(id) => (
                 <SelectField
                   id={id}
-                  value={draft.split}
+                  value={SPLITS.includes(draft.split) ? draft.split : "choose"}
                   onChange={(value) => patch("split", value)}
-                  options={SPLITS.map((value) => ({
-                    value,
-                    label: t(`benchmarks:split.${value}`),
-                  }))}
+                  options={[
+                    {
+                      value: "choose",
+                      label: t("benchmarks:authoring.chooseSplit"),
+                      disabled: true,
+                    },
+                    ...SPLITS.map((value) => ({
+                      value,
+                      label: t(`benchmarks:split.${value}`),
+                    })),
+                  ]}
                 />
               )}
             </Field>
@@ -476,166 +498,153 @@ export function BenchmarkEditor({
               />
             )}
           </Field>
-          <details>
-            <summary className="cursor-pointer text-sm">
-              {t("benchmarks:detail.files")}
-            </summary>
-            <div className="space-y-2 pt-3">
-              {fixtures.map((fixture, index) => (
-                <div
-                  key={fixture.key}
-                  className="grid gap-2 rounded-md bg-muted/40 p-3 md:grid-cols-[14rem_1fr_auto]"
-                >
-                  <Input
-                    aria-label={t("benchmarks:fields.fixturePath")}
-                    placeholder={t("benchmarks:fields.fixturePath")}
-                    value={fixture.path}
-                    onChange={(event) =>
-                      setFixtures((rows) =>
-                        rows.map((row, position) =>
-                          position === index
-                            ? { ...row, path: event.target.value }
-                            : row,
-                        ),
-                      )
-                    }
-                  />
-                  <Textarea
-                    aria-label={t("benchmarks:fields.fixtureContent")}
-                    placeholder={t("benchmarks:fields.fixtureContent")}
-                    variant="code"
-                    rows={3}
-                    value={fixture.content}
-                    onChange={(event) =>
-                      setFixtures((rows) =>
-                        rows.map((row, position) =>
-                          position === index
-                            ? { ...row, content: event.target.value }
-                            : row,
-                        ),
-                      )
-                    }
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={t("benchmarks:actions.remove")}
-                    onClick={() =>
-                      setFixtures((rows) =>
-                        rows.filter((_, position) => position !== index),
-                      )
-                    }
-                  >
-                    <IconTrash />
-                  </Button>
-                </div>
-              ))}
-              <Button
-                type="button"
-                variant="ghost"
-                flush
-                leftIcon={<IconPlus />}
-                onClick={() =>
-                  setFixtures((rows) => [
-                    ...rows,
-                    { key: crypto.randomUUID(), path: "", content: "" },
-                  ])
-                }
+          <div className="space-y-2">
+            {fixtures.map((fixture, index) => (
+              <div
+                key={fixture.key}
+                className="grid gap-2 rounded-md bg-muted/40 p-3 md:grid-cols-[14rem_1fr_auto]"
               >
-                {t("benchmarks:editor.addFixture")}
-              </Button>
-            </div>
-          </details>
+                <Input
+                  aria-label={t("benchmarks:fields.fixturePath")}
+                  placeholder={t("benchmarks:fields.fixturePath")}
+                  value={fixture.path}
+                  onChange={(event) =>
+                    setFixtures((rows) =>
+                      rows.map((row, position) =>
+                        position === index
+                          ? { ...row, path: event.target.value }
+                          : row,
+                      ),
+                    )
+                  }
+                />
+                <Textarea
+                  aria-label={t("benchmarks:fields.fixtureContent")}
+                  placeholder={t("benchmarks:fields.fixtureContent")}
+                  variant="code"
+                  rows={3}
+                  value={fixture.content}
+                  onChange={(event) =>
+                    setFixtures((rows) =>
+                      rows.map((row, position) =>
+                        position === index
+                          ? { ...row, content: event.target.value }
+                          : row,
+                      ),
+                    )
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("benchmarks:actions.remove")}
+                  onClick={() =>
+                    setFixtures((rows) =>
+                      rows.filter((_, position) => position !== index),
+                    )
+                  }
+                >
+                  <IconTrash />
+                </Button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="ghost"
+              flush
+              leftIcon={<IconPlus />}
+              onClick={() =>
+                setFixtures((rows) => [
+                  ...rows,
+                  { key: crypto.randomUUID(), path: "", content: "" },
+                ])
+              }
+            >
+              {t("benchmarks:editor.addFixture")}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardContent className="space-y-4">
-          <details>
-            <summary className="cursor-pointer text-sm">
-              {t("benchmarks:editor.sections.evaluation")}
-            </summary>
-            <div className="grid gap-4 pt-4 md:grid-cols-2">
-              <Field label={t("benchmarks:fields.evaluator")}>
-                {(id) => (
-                  <SelectField
-                    id={id}
-                    value={kind}
-                    onChange={(value) => patchEvaluator("kind", value)}
-                    options={EVALUATOR_KINDS.map((value) => ({
-                      value,
-                      label: t(`benchmarks:evaluators.${value}`),
-                    }))}
-                  />
-                )}
-              </Field>
-              <Field label={t("benchmarks:fields.evaluatorRevision")}>
-                {(id) => (
-                  <Input
-                    id={id}
-                    value={draft.evaluator.revision}
-                    onChange={(event) =>
-                      patchEvaluator("revision", event.target.value)
-                    }
-                  />
-                )}
-              </Field>
-              {kind === "rubric"
-                ? evaluatorText(
-                    "rubric",
-                    t("benchmarks:fields.rubric"),
-                    false,
-                    4,
-                  )
-                : null}
-              {kind === "exact" || kind === "json"
-                ? evaluatorText(
-                    "expected",
-                    t("benchmarks:fields.expected"),
-                    kind === "json",
-                    kind === "json" ? 4 : 2,
-                  )
-                : null}
-              {protectedKind
-                ? evaluatorText(
-                    "expected",
-                    t("benchmarks:fields.protectedChecks"),
-                    true,
-                    6,
-                  )
-                : null}
-              {protectedKind && visualRubric !== null ? (
-                <Field
-                  label={t("benchmarks:fields.visualRubric")}
-                  className="md:col-span-2"
-                >
-                  {(id) => (
-                    <Textarea
-                      id={id}
-                      rows={2}
-                      value={visualRubric}
-                      onChange={(event) => setVisualRubric(event.target.value)}
-                    />
-                  )}
-                </Field>
-              ) : null}
-              {kind !== "rubric"
-                ? evaluatorText(
+          <SectionHeading title={t("benchmarks:authoring.check")} />
+          <Field
+            label={t("benchmarks:authoring.method")}
+            hint={t(`benchmarks:authoring.hints.${kind}`)}
+          >
+            {(id) => (
+              <SelectField
+                id={id}
+                value={kind}
+                onChange={(value) => patchEvaluator("kind", value)}
+                options={EVALUATOR_KINDS.map((value) => ({
+                  value,
+                  label: t(`benchmarks:evaluators.${value}`),
+                }))}
+              />
+            )}
+          </Field>
+          {kind === "rubric"
+            ? evaluatorText(
+                "rubric",
+                t("benchmarks:authoring.criteria"),
+                false,
+                4,
+              )
+            : null}
+          {kind === "exact" || kind === "json"
+            ? evaluatorText(
+                "expected",
+                t("benchmarks:fields.expected"),
+                kind === "json",
+                kind === "json" ? 4 : 2,
+              )
+            : null}
+          {protectedKind ? (
+            <>
+              <BenchmarkCheckSetup
+                key={kind}
+                kind={kind}
+                value={draft.evaluator.expected}
+                onChange={(value) => patchEvaluator("expected", value)}
+                onInvalidChange={setInvalidCheck}
+              />
+              <details>
+                <summary className="cursor-pointer text-sm">
+                  {t("benchmarks:authoring.references")}
+                </summary>
+                <div className="space-y-4 pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    {t("benchmarks:authoring.referencesHint")}
+                  </p>
+                  {evaluatorText(
                     "knownGood",
-                    t("benchmarks:fields.knownGood"),
-                    protectedKind,
-                  )
-                : null}
-              {kind !== "rubric"
-                ? evaluatorText(
+                    t("benchmarks:authoring.correct"),
+                    true,
+                  )}
+                  {evaluatorText(
                     "knownBad",
-                    t("benchmarks:fields.knownBad"),
-                    protectedKind,
-                  )
-                : null}
-            </div>
-          </details>
+                    t("benchmarks:authoring.incorrect"),
+                    true,
+                  )}
+                </div>
+              </details>
+            </>
+          ) : null}
+          {kind === "browser" && visualRubric ? (
+            <Field label={t("benchmarks:fields.visualRubric")}>
+              {(id) => (
+                <Textarea
+                  id={id}
+                  rows={2}
+                  value={visualRubric}
+                  onChange={(event) => setVisualRubric(event.target.value)}
+                />
+              )}
+            </Field>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -696,8 +705,6 @@ export function BenchmarkEditor({
         </CollapsibleTrigger>
         <CollapsibleContent className="space-y-4 pt-4">
           <div className="grid gap-4 md:grid-cols-2">
-            {text("source")}
-            {text("license")}
             <Field label={t("benchmarks:detail.variantGroup")}>
               {(id) => (
                 <Input

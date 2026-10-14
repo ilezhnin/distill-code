@@ -91,7 +91,7 @@ export function createBenchmarkDraft(): BenchmarkDraft {
     description: "",
     category: "text",
     taskFamily: "",
-    split: "development",
+    split: "train",
     prompt: "",
     source: "",
     license: "",

@@ -221,11 +221,12 @@
     "hard": "Hard"
   },
   "evaluators": {
-    "exact": "Exact answer",
-    "json": "Structured JSON",
-    "rubric": "Human rubric review",
-    "javascript": "Protected JavaScript checks",
-    "browser": "Browser interactions"
+    "exact": "Text match",
+    "json": "JSON match",
+    "rubric": "Manual review",
+    "javascript": "JavaScript function",
+    "browser": "Web page",
+    "repository": "Repository changes"
   },
   "profiles": {
     "native_text": "Clean text, no tools",
@@ -264,7 +265,7 @@
     "structuredHelp": "Entry state carries rootTaskId, stepId, parentStepId, fixtureSnapshotHash, conversationPrefix, previousReports and remainingBudgetSeconds. A workflow carries driverRevision and 2–4 steps with id, prompt and includePreviousOutput. Hashes are recomputed on save.",
     "entryTemplate": "Insert entry-state template",
     "workflowTemplate": "Insert workflow template",
-    "addFixture": "Add fixture",
+    "addFixture": "Add file",
     "noFixtures": "No public fixtures.",
     "versions": "Published versions",
     "versionLabel": "{{name}} · {{hash}}",
@@ -920,5 +921,55 @@
     "contract": "{{role}} · {{runtime}} · {{seconds}}s step limit · {{steps}} steps",
     "manageCertificate": "Manage certificate",
     "noRole": "No role restriction"
+  },
+  "authoring": {
+    "createVersion": "Create version",
+    "chooseSplit": "Choose a dataset",
+    "invalidValue": "Enter a valid JSON value.",
+    "check": "Check",
+    "method": "Method",
+    "criteria": "Criteria",
+    "references": "Reference solutions",
+    "referencesHint": "Used to verify the checker. These solutions are hidden from the model.",
+    "correct": "Correct solution",
+    "incorrect": "Incorrect solution",
+    "program": "Check program",
+    "arguments": "Arguments",
+    "argumentsHint": "One argument per line.",
+    "function": "Function name",
+    "inputs": "Inputs (JSON array)",
+    "addCase": "Add case",
+    "action": "Action",
+    "element": "Element (CSS selector)",
+    "value": "Value",
+    "addStep": "Add step",
+    "checkTimeout": "Check time limit (seconds)",
+    "checkFiles": "Check files",
+    "probe": "Candidate runner",
+    "advancedCheck": "Advanced check settings",
+    "checkDefinition": "Check definition (JSON)",
+    "runTest": "Run this test",
+    "hints": {
+      "exact": "The answer must match the expected text.",
+      "json": "Compares the complete JSON value. Object key order does not matter.",
+      "rubric": "You review the answer against these criteria.",
+      "javascript": "Calls the submitted function with each input and compares its result.",
+      "browser": "Performs these actions and checks in the submitted page.",
+      "repository": "Runs this program against the submitted changes. Check files stay hidden from the model."
+    },
+    "browserActions": {
+      "click": "Click",
+      "fill": "Enter text",
+      "selectOption": "Select option",
+      "press": "Press key",
+      "expectText": "Check text",
+      "expectValue": "Check field value",
+      "expectCount": "Count elements",
+      "expectAccessibleName": "Check accessible name",
+      "expectAccessibleDescription": "Check accessible description",
+      "expectAccessibleError": "Check accessible error",
+      "expectSize": "Check size",
+      "expectBounds": "Check position"
+    }
   }
 }

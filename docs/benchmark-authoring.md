@@ -75,13 +75,31 @@ its contract and evaluator have been qualified.
 
 Specify:
 
-- A descriptive name, category, work class, task family, source and license.
+- A descriptive name, a predefined type, difficulty and dataset split.
 - The public prompt, permitted fixture files and required deliverable format.
 - An execution profile: native text, isolated UI or protected repository.
 - An objective evaluator or a versioned rubric with a calibrated judge protocol.
 - Tool and network permissions, prerequisites, time and artifact bounds.
 - Repetition count, dataset split, difficulty and other applicable facets.
-- Source provenance, author exclusions, role context and related-family grouping.
+- Author exclusions, role context and related-family grouping when applicable.
+
+The editor offers Training and Held-out evaluation. Development remains a
+legacy data value for historical diagnostics, not a choice for new tests.
+Optional files are added only when the task needs them. Imported source and
+license metadata are preserved without adding fields to the authoring form.
+
+Under Check, select text comparison, JSON comparison, manual review, a JavaScript
+function, a web page or repository changes. Simple comparisons need an expected
+answer; their sanity references and checker revision are generated automatically
+when edited. Code and browser checks expose inputs, expected results, actions or
+program arguments. Reference solutions verify the checker and stay hidden from
+the model. Imported extra checker settings remain available under Advanced check
+settings and are retained when editing individual fields.
+
+Open Draft to make changes. Save draft preserves work; Create version freezes
+the edited draft and retires its predecessor from new runs. Version tabs next to
+the test title open its immutable history. The play button runs only the current
+version of the open test; archived versions and unpublished drafts cannot run.
 
 Keep every requirement visible in the public contract. Protected tests may vary
 inputs but must not invent hidden requirements. Known-good and known-bad outputs

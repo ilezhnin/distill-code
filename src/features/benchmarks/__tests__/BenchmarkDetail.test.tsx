@@ -52,6 +52,8 @@ function setup(record = history) {
         onSaved={vi.fn()}
         onRun={onRun}
         onEvidence={vi.fn()}
+        onDuplicate={vi.fn()}
+        onArchive={vi.fn()}
       />
     </QueryClientProvider>,
   );
@@ -69,15 +71,13 @@ describe("benchmark version history", () => {
   });
   afterEach(cleanup);
 
-  it("shows frozen versions instead of draft content and only previews the current one", async () => {
+  it("shows frozen versions instead of draft content and only runs the current one", async () => {
     const { user, onRun } = setup();
     expect(screen.getByText("Current instructions")).toBeInTheDocument();
     expect(
       screen.queryByText("Unpublished instructions"),
     ).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Preview this version" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Run this test" }));
     expect(onRun).toHaveBeenCalledWith("v2");
     await user.click(screen.getByRole("tab", { name: "v1" }));
     expect(screen.getByText("Original instructions")).toBeInTheDocument();
@@ -85,8 +85,8 @@ describe("benchmark version history", () => {
     expect(screen.getByText("Archived")).toBeInTheDocument();
     expect(screen.queryByText("Current instructions")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Preview this version" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Run this test" }),
+    ).toBeDisabled();
     expect(
       screen.queryByRole("button", { name: "Save draft" }),
     ).not.toBeInTheDocument();
@@ -110,6 +110,23 @@ describe("benchmark version history", () => {
       "aria-selected",
       "true",
     );
+  });
+
+  it("offers only actions for the open test", async () => {
+    const { user } = setup();
+    expect(
+      screen.getAllByRole("button", { name: "Run this test" }),
+    ).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: "New test" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Preview this version" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Duplicate", "Archive"]);
   });
 
   it("protects unsaved drafts when opening a publication", async () => {
@@ -139,8 +156,8 @@ describe("benchmark version history", () => {
     setup({ ...history, archived: true });
     expect(screen.getByText("Archived")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Preview this version" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Run this test" }),
+    ).toBeDisabled();
   });
 
   it("uses one type selector and preserves the existing variant group on save", async () => {

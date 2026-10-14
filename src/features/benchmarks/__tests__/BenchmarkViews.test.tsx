@@ -220,7 +220,7 @@ describe("benchmark authoring and saved evidence", () => {
       "Revised extraction",
     );
     expect(useBenchmarkViewStore.getState().dirty).toBe(true);
-    await user.click(screen.getByRole("button", { name: "Publish version" }));
+    await user.click(screen.getByRole("button", { name: "Create version" }));
     await waitFor(() =>
       expect(benchmarkApi.publishVersion).toHaveBeenCalledWith(
         "definition-1",
@@ -266,8 +266,7 @@ describe("benchmark authoring and saved evidence", () => {
         onRun={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByText("Files", { selector: "summary" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add fixture" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add file" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Content" }), {
       target: { value: "fixture body" },
     });

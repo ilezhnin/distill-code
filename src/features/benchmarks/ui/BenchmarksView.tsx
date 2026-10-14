@@ -259,17 +259,19 @@ export function BenchmarksView({
         {errors.map((error) => (
           <BenchmarkAlert key={error}>{error}</BenchmarkAlert>
         ))}
-        <BenchmarkActivity
-          runs={runs.data ?? []}
-          onOpenRun={openRun}
-          onOpenCampaign={(id) =>
-            guarded(() => {
-              setCampaignSelection(id);
-              setDialog("campaigns");
-            })
-          }
-          attentionFor={location.section === "leaderboard" ? openedRow : null}
-        />
+        {!(location.section === "development" && location.benchmarkId) ? (
+          <BenchmarkActivity
+            runs={runs.data ?? []}
+            onOpenRun={openRun}
+            onOpenCampaign={(id) =>
+              guarded(() => {
+                setCampaignSelection(id);
+                setDialog("campaigns");
+              })
+            }
+            attentionFor={location.section === "leaderboard" ? openedRow : null}
+          />
+        ) : null}
         {location.section === "development" ? (
           <BenchDevelopmentView
             definitions={definitions.data ?? []}
@@ -352,17 +354,26 @@ export function BenchmarksView({
       </section>
       {runSelection ? (
         <BenchmarkRunDialog
-          definitions={(definitions.data ?? []).map((definition) =>
-            runSelection.workClassId === null
-              ? definition
-              : {
-                  ...definition,
-                  versions: definition.versions.filter(
-                    (version) =>
-                      version.manifest.workClassId === runSelection.workClassId,
-                  ),
-                },
-          )}
+          definitions={(definitions.data ?? [])
+            .filter(
+              (definition) =>
+                !runSelection.versions.length ||
+                definition.versions.some((version) =>
+                  runSelection.versions.includes(version.id),
+                ),
+            )
+            .map((definition) =>
+              runSelection.workClassId === null
+                ? definition
+                : {
+                    ...definition,
+                    versions: definition.versions.filter(
+                      (version) =>
+                        version.manifest.workClassId ===
+                        runSelection.workClassId,
+                    ),
+                  },
+            )}
           selectedVersionIds={runSelection.versions}
           previewOnly={runSelection.preview}
           onClose={() => setRunSelection(null)}
