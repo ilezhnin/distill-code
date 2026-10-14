@@ -51,7 +51,6 @@ function renderProject(
       toggleProject={toggleProject}
       onEditProject={onEditProject}
       showChatIcons={false}
-      showTimestamps={true}
       {...overrides}
     />,
   );
@@ -138,7 +137,6 @@ describe("sidebar hover previews", () => {
         activityAt={chats[0].activityAt}
         currentProjectId={project.id}
         isActive={false}
-        showTimestamp={false}
         onSelect={onSelect}
       />,
     );

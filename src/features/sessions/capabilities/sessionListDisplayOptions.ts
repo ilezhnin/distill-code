@@ -9,9 +9,7 @@
 
 export type SessionListDisplayOptions = {
   projectShowChatIcons: boolean;
-  projectShowTimestamps: boolean;
   chatShowChatIcons: boolean;
-  chatShowTimestamps: boolean;
 };
 
 export function validateDisplayOptions(
@@ -23,14 +21,10 @@ export function validateDisplayOptions(
     Record<keyof SessionListDisplayOptions, unknown>
   > & {
     showChatIcons?: unknown;
-    showTimestamps?: unknown;
     showProjectChatIcons?: unknown;
-    showProjectTimestamps?: unknown;
   };
   const legacyShowChatIcons =
     typeof parsed.showChatIcons === "boolean" ? parsed.showChatIcons : null;
-  const legacyShowTimestamps =
-    typeof parsed.showTimestamps === "boolean" ? parsed.showTimestamps : null;
   const booleanOption = (
     value: unknown,
     legacy: boolean | null,
@@ -44,22 +38,10 @@ export function validateDisplayOptions(
         : legacyShowChatIcons,
       defaults.projectShowChatIcons,
     ),
-    projectShowTimestamps: booleanOption(
-      parsed.projectShowTimestamps,
-      typeof parsed.showProjectTimestamps === "boolean"
-        ? parsed.showProjectTimestamps
-        : legacyShowTimestamps,
-      defaults.projectShowTimestamps,
-    ),
     chatShowChatIcons: booleanOption(
       parsed.chatShowChatIcons,
       legacyShowChatIcons,
       defaults.chatShowChatIcons,
-    ),
-    chatShowTimestamps: booleanOption(
-      parsed.chatShowTimestamps,
-      legacyShowTimestamps,
-      defaults.chatShowTimestamps,
     ),
   };
 }

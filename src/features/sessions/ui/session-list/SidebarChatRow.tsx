@@ -64,7 +64,6 @@ import { ConductorLeadingIcon } from "@/features/conductor/ui/ConductorLeadingIc
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
 import { useSidebarChatDrag } from "./SidebarChatDragContext";
-import { formatSidebarChatTimestamp } from "./sidebarChatTimestamp";
 import { SidebarHoverCard } from "./SidebarHoverCard";
 import { SidebarChatPreview } from "./SidebarChatPreview";
 
@@ -112,9 +111,8 @@ interface SidebarChatRowProps {
   title: string;
   /** Current Git branch for this chat; only passed when the sidebar branch setting is enabled. */
   branchName?: string;
-  /** Latest visible chat activity. Rendered as a compact relative timestamp on the row's right edge; hidden on hover when the row menu takes its place. */
+  /** Latest visible chat activity, shown in the hover preview. */
   activityAt?: string | null;
-  showTimestamp?: boolean;
   isActive: boolean;
   isRunning?: boolean;
   hasUnread?: boolean;
@@ -165,7 +163,6 @@ export function SidebarChatRow({
   title,
   branchName,
   activityAt,
-  showTimestamp = true,
   isActive,
   isRunning = false,
   hasUnread = false,
@@ -253,13 +250,10 @@ export function SidebarChatRow({
     t("common:session.defaultTitle"),
   );
   const [draftTitle, setDraftTitle] = useState(editableTitle);
-  const activityTimestamp = showTimestamp
-    ? formatSidebarChatTimestamp(activityAt)
-    : "";
   const hasFlatProjectColumn = flatProjectName != null;
   const trimmedBranchName = branchName?.trim() ?? "";
   const hasBranchName = trimmedBranchName.length > 0;
-  // Running and ready/unread states share the trailing timestamp slot.
+  // Running and ready/unread states share the trailing menu slot.
   const needsLeadingSlot =
     nested || showLeadingIcon || isConductor || hasFlatProjectColumn;
   const showAbsoluteLeadingSlot = !hasFlatProjectColumn && needsLeadingSlot;
@@ -398,8 +392,8 @@ export function SidebarChatRow({
       className={cn(
         "min-w-0 flex-1 justify-start rounded-sm",
         hasFlatProjectColumn ? "pl-0 gap-0" : rowPaddingClass,
-        isRunning || hasUnread || activityTimestamp
-          ? densityClasses.timestampReserve
+        isRunning || hasUnread
+          ? densityClasses.statusReserve
           : densityClasses.menuReserve,
         hasBranchName
           ? "h-auto py-1.5"
@@ -755,8 +749,7 @@ export function SidebarChatRow({
               // The chat itself is idle but its agents are not: the operator
               // should expect a result later. Mirrors `brigadeWaitIndicator`,
               // which is likewise "only when the session itself is idle", and so
-              // sits below the row's own running state but above unread and the
-              // timestamp.
+              // sits below the row's own running state but above unread.
               <span
                 data-sidebar-chat-children-status
                 role="status"
@@ -789,21 +782,6 @@ export function SidebarChatRow({
                 )}
               >
                 <SidebarUnreadDot />
-              </span>
-            ) : activityTimestamp ? (
-              <span
-                data-sidebar-chat-timestamp
-                className={cn(
-                  "pointer-events-none absolute text-xs tabular-nums text-muted-foreground/70 transition-opacity duration-75",
-                  hasBranchName ? "top-2" : "top-1/2 -translate-y-1/2",
-                  densityClasses.menuInset,
-                  selectionEnabled || menuOpen || contextMenuOpen || dragging
-                    ? "opacity-0"
-                    : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
-                )}
-                aria-hidden="true"
-              >
-                {activityTimestamp}
               </span>
             ) : null}
 

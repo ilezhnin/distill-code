@@ -46,12 +46,8 @@ export interface SidebarProjectsSectionProps {
   onGroupChatsByProjectChange?: (grouped: boolean) => void;
   projectShowChatIcons: boolean;
   onProjectShowChatIconsChange: (show: boolean) => void;
-  projectShowTimestamps: boolean;
-  onProjectShowTimestampsChange: (show: boolean) => void;
   chatShowChatIcons: boolean;
   onChatShowChatIconsChange: (show: boolean) => void;
-  chatShowTimestamps: boolean;
-  onChatShowTimestampsChange: (show: boolean) => void;
   expandedProjects: Record<string, boolean>;
   toggleProject: (projectId: string) => void;
   collapsed: boolean;
@@ -109,12 +105,8 @@ export function SidebarProjectsSection({
   onGroupChatsByProjectChange,
   projectShowChatIcons,
   onProjectShowChatIconsChange,
-  projectShowTimestamps,
-  onProjectShowTimestampsChange,
   chatShowChatIcons,
   onChatShowChatIconsChange,
-  chatShowTimestamps,
-  onChatShowTimestampsChange,
   expandedProjects,
   toggleProject,
   collapsed,
@@ -206,8 +198,6 @@ export function SidebarProjectsSection({
         onArchiveSelected={onArchiveSelected}
         onMarkSelectedRead={onMarkSelectedRead}
         onMarkSelectedUnread={onMarkSelectedUnread}
-        showTimestamps={chatShowTimestamps}
-        onShowTimestampsChange={onChatShowTimestampsChange}
         showViewAllInHistory={hasFlatChatOverflow}
         showTopDivider={_showTopDivider}
       />
@@ -248,8 +238,6 @@ export function SidebarProjectsSection({
                   labelKey="actions.projectDisplayOptions"
                   showChatIcons={projectShowChatIcons}
                   onShowChatIconsChange={onProjectShowChatIconsChange}
-                  showTimestamps={projectShowTimestamps}
-                  onShowTimestampsChange={onProjectShowTimestampsChange}
                   groupChatsByProject
                   onGroupChatsByProjectChange={onGroupChatsByProjectChange}
                   className={SIDEBAR_SECTION_HEADER_ACTION_REVEAL_CLASS}
@@ -294,7 +282,6 @@ export function SidebarProjectsSection({
             onMarkSelectedRead={onMarkSelectedRead}
             onMarkSelectedUnread={onMarkSelectedUnread}
             showChatIcons={projectShowChatIcons}
-            showTimestamps={projectShowTimestamps}
             onReorderProject={onReorderProject}
             hasMoreSessions={hasMoreSessions}
             dropTargetsEnabled={showProjects}
@@ -399,8 +386,6 @@ export function SidebarProjectsSection({
             onMarkSelectedUnread={onMarkSelectedUnread}
             showChatIcons={chatShowChatIcons}
             onShowChatIconsChange={onChatShowChatIconsChange}
-            showTimestamps={chatShowTimestamps}
-            onShowTimestampsChange={onChatShowTimestampsChange}
             isOpen={recentsSectionOpen}
             onToggleOpen={onToggleRecentsSection}
             sectionHeaderTextClass={SECTION_HEADER_TEXT_CLASS}

@@ -1073,7 +1073,7 @@ export function SessionHistoryView({
         ref={setScrollNode}
         data-testid="session-history-scroll"
         onScroll={handleScroll}
-        className={PAGE_SCROLL_CLASS}
+        className={cn(PAGE_SCROLL_CLASS, "scrollbar-visible")}
       >
         <div
           ref={pageContentRef}

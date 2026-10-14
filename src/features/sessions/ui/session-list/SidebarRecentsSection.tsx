@@ -50,8 +50,6 @@ export function SidebarRecentsSection({
   onMarkSelectedUnread,
   showChatIcons,
   onShowChatIconsChange,
-  showTimestamps,
-  onShowTimestampsChange,
   isOpen,
   onToggleOpen,
   sectionHeaderTextClass,
@@ -83,8 +81,6 @@ export function SidebarRecentsSection({
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
   onShowChatIconsChange: (show: boolean) => void;
-  showTimestamps: boolean;
-  onShowTimestampsChange: (show: boolean) => void;
   isOpen: boolean;
   onToggleOpen: () => void;
   sectionHeaderTextClass: string;
@@ -136,8 +132,6 @@ export function SidebarRecentsSection({
                   labelKey="actions.chatDisplayOptions"
                   showChatIcons={showChatIcons}
                   onShowChatIconsChange={onShowChatIconsChange}
-                  showTimestamps={showTimestamps}
-                  onShowTimestampsChange={onShowTimestampsChange}
                   className={SIDEBAR_SECTION_HEADER_ACTION_REVEAL_CLASS}
                 />
                 {onNewChat && !showEmptyState ? (
@@ -242,7 +236,6 @@ export function SidebarRecentsSection({
                 branchName={session.branchName}
                 activityAt={session.activityAt}
                 showLeadingIcon={showChatIcons}
-                showTimestamp={showTimestamps}
                 showRenameTooltip={false}
                 isActive={isActive}
                 clientSessionId={session.clientSessionId}

@@ -51,8 +51,6 @@ export function SidebarFlatChatsSection({
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons = false,
-  showTimestamps,
-  onShowTimestampsChange,
   showViewAllInHistory = false,
   showTopDivider: _showTopDivider = true,
 }: {
@@ -82,8 +80,6 @@ export function SidebarFlatChatsSection({
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons?: boolean;
-  showTimestamps: boolean;
-  onShowTimestampsChange: (show: boolean) => void;
   showViewAllInHistory?: boolean;
   showTopDivider?: boolean;
 }) {
@@ -120,8 +116,6 @@ export function SidebarFlatChatsSection({
               <>
                 <SidebarDisplayOptionsMenu
                   labelKey="actions.chatDisplayOptions"
-                  showTimestamps={showTimestamps}
-                  onShowTimestampsChange={onShowTimestampsChange}
                   groupChatsByProject={false}
                   onGroupChatsByProjectChange={onGroupChatsByProjectChange}
                   className={SIDEBAR_SECTION_HEADER_ACTION_REVEAL_CLASS}
@@ -292,7 +286,6 @@ export function SidebarFlatChatsSection({
                       branchName={session.branchName}
                       activityAt={session.activityAt}
                       showLeadingIcon={showChatIcons}
-                      showTimestamp={showTimestamps}
                       showRenameTooltip={false}
                       isActive={isActive}
                       clientSessionId={session.clientSessionId}

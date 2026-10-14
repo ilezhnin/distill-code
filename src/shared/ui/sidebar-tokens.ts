@@ -104,7 +104,7 @@ export const SIDEBAR_CHAT_ROW_DENSITY_CLASSES = {
   default: {
     contentPadding: SIDEBAR_CHAT_ROW_PADDING_CLASS,
     menuReserve: "pr-8",
-    timestampReserve: "pr-12",
+    statusReserve: "pr-12",
     menuInset: "right-3",
     flatProjectGap: "gap-1",
     flatProjectIconInset: "ml-3",
@@ -115,7 +115,7 @@ export const SIDEBAR_CHAT_ROW_DENSITY_CLASSES = {
     // Dense only tightens the left side; the right edge keeps the same
     // inset as default so flat and grouped views align at the panel edge.
     menuReserve: "pr-8",
-    timestampReserve: "pr-12",
+    statusReserve: "pr-12",
     menuInset: "right-3",
     flatProjectGap: SIDEBAR_ROW_ICON_TEXT_GAP_CLASS,
     // Align the flat project icon with main-nav icons (px-3 row inset).
@@ -127,7 +127,7 @@ export const SIDEBAR_CHAT_ROW_DENSITY_CLASSES = {
   {
     contentPadding: string;
     menuReserve: string;
-    timestampReserve: string;
+    statusReserve: string;
     menuInset: string;
     flatProjectGap: string;
     flatProjectIconInset: string;

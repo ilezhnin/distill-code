@@ -90,9 +90,7 @@ const DEFAULT_SECTION_VISIBILITY: SessionListSectionVisibility = {
 
 const DEFAULT_DISPLAY_OPTIONS: SessionListDisplayOptions = {
   projectShowChatIcons: false,
-  projectShowTimestamps: true,
   chatShowChatIcons: false,
-  chatShowTimestamps: true,
 };
 
 type SessionListGroups = {
@@ -821,12 +819,8 @@ export function SessionListCapability({
     onGroupChatsByProjectChange: setGroupChatsByProject,
     projectShowChatIcons: displayOptions.projectShowChatIcons,
     onProjectShowChatIconsChange: setDisplayOption("projectShowChatIcons"),
-    projectShowTimestamps: displayOptions.projectShowTimestamps,
-    onProjectShowTimestampsChange: setDisplayOption("projectShowTimestamps"),
     chatShowChatIcons: displayOptions.chatShowChatIcons,
     onChatShowChatIconsChange: setDisplayOption("chatShowChatIcons"),
-    chatShowTimestamps: displayOptions.chatShowTimestamps,
-    onChatShowTimestampsChange: setDisplayOption("chatShowTimestamps"),
     expandedProjects,
     toggleProject,
     collapsed,

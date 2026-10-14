@@ -94,7 +94,6 @@ export function SidebarProjectSection({
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons,
-  showTimestamps,
   onNavigate,
   onOpenProject,
   hasMoreSessions = false,
@@ -128,7 +127,6 @@ export function SidebarProjectSection({
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
-  showTimestamps: boolean;
   onNavigate?: (view: AppView) => void;
   onOpenProject?: (projectId: string) => void;
   hasMoreSessions?: boolean;
@@ -472,7 +470,6 @@ export function SidebarProjectSection({
                   selectionActionsDisabled={selectionActionsDisabled}
                   selectedSessionIds={selectedSessionIds}
                   showLeadingIcon={showChatIcons}
-                  showTimestamp={showTimestamps}
                   showRenameTooltip={false}
                   nested
                   currentProjectId={project.id}
@@ -511,7 +508,6 @@ export function SidebarProjectSection({
                       selectionActionsDisabled={selectionActionsDisabled}
                       selectedSessionIds={selectedSessionIds}
                       showLeadingIcon={showChatIcons}
-                      showTimestamp={showTimestamps}
                       showRenameTooltip={false}
                       nested
                       currentProjectId={project.id}

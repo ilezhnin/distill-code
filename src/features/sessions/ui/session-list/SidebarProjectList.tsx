@@ -67,7 +67,6 @@ export function SidebarProjectList({
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons,
-  showTimestamps,
   onReorderProject,
   hasMoreSessions = false,
   dropTargetsEnabled = true,
@@ -100,7 +99,6 @@ export function SidebarProjectList({
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
-  showTimestamps: boolean;
   onReorderProject?: (
     fromId: string,
     toId: string,
@@ -362,7 +360,6 @@ export function SidebarProjectList({
             onMarkSelectedRead={onMarkSelectedRead}
             onMarkSelectedUnread={onMarkSelectedUnread}
             showChatIcons={showChatIcons}
-            showTimestamps={showTimestamps}
             hasMoreSessions={hasMoreSessions}
             dropTargetEnabled={dropTargetsEnabled}
           />

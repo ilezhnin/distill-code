@@ -18,8 +18,6 @@ interface SidebarDisplayOptionsMenuProps {
   /** Omit for layouts that always show a project identity icon (flat chats). */
   showChatIcons?: boolean;
   onShowChatIconsChange?: (show: boolean) => void;
-  showTimestamps: boolean;
-  onShowTimestampsChange: (show: boolean) => void;
   groupChatsByProject?: boolean;
   onGroupChatsByProjectChange?: (grouped: boolean) => void;
   className?: string;
@@ -54,8 +52,6 @@ export function SidebarDisplayOptionsMenu({
   labelKey,
   showChatIcons,
   onShowChatIconsChange,
-  showTimestamps,
-  onShowTimestampsChange,
   groupChatsByProject = false,
   onGroupChatsByProjectChange,
   className,
@@ -96,12 +92,6 @@ export function SidebarDisplayOptionsMenu({
             {t("actions.showChatIcons")}
           </CheckableMenuItem>
         ) : null}
-        <CheckableMenuItem
-          checked={showTimestamps}
-          onCheckedChange={onShowTimestampsChange}
-        >
-          {t("actions.showTimestamp")}
-        </CheckableMenuItem>
         {onGroupChatsByProjectChange ? (
           <CheckableMenuItem
             checked={groupChatsByProject}
