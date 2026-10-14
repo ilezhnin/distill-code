@@ -1,5 +1,4 @@
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
-import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 import {
   hasConversationMessages,
   replaceMessagesFromSessionReplay,
@@ -47,10 +46,7 @@ import {
   isSameWorkspacePath,
 } from "@/features/chat/lib/workspaceAttachments";
 import { executionTargetFromHostSession } from "@/features/chat/lib/hostExecutionTarget";
-import {
-  hydrateSessionTarget,
-  transitionSessionTarget,
-} from "@/features/chat/lib/sessionTargetCoordinator";
+import { hydrateSessionTarget } from "@/features/chat/lib/sessionTargetCoordinator";
 
 export function clearIdleStreamingMessageAfterReplay(
   sessionId: string,
@@ -279,6 +275,7 @@ function reportSessionLoadFailure(sessionId: string, error: unknown): void {
   });
 }
 
+/** Restore local history and folder state without waking the provider. */
 export async function loadSessionMessagesAndPrepare(
   sessionId: string,
   options: LoadSessionMessagesOptions = {},
@@ -319,19 +316,8 @@ export async function loadSessionMessagesAndPrepare(
       // instead of waiting for a cold reload.
       applyMissingCwdRecovery(sessionId, missingCwdWarning, workingDir);
     }
-    try {
-      if (isBenchmarkSession(sessionId)) return true;
-      await transitionSessionTarget({
-        sessionId,
-        target: liveTarget,
-        workingDir: missingCwdWarning
-          ? workingDir
-          : (session?.workingDir ?? workingDir),
-        prepareWorkingDir: workingDir,
-      });
-    } catch (error) {
-      console.warn("Failed to prepare loaded session selection:", error);
-    }
+    // Reading a transcript is local. The send path prepares the selected
+    // provider before dispatch; activating a chat must not connect its MCPs.
   }
   return true;
 }

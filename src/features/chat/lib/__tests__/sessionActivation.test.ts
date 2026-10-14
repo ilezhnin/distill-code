@@ -298,7 +298,25 @@ describe("loadSessionMessages", () => {
     });
   });
 
-  it("reasserts a UI selection changed while cwd resolution delayed ACP load", async () => {
+  it.each([
+    "claude-acp",
+    "grok-acp",
+  ])("restores a cached %s chat without preparing its provider", async (harnessId) => {
+    seedSession({ id: "cached-activation", executionTarget: { harnessId } });
+    useChatStore
+      .getState()
+      .addMessage("cached-activation", replayUserMessage());
+
+    await expect(
+      loadSessionMessagesAndPrepare("cached-activation"),
+    ).resolves.toBe(true);
+
+    expect(acpLoadSession).not.toHaveBeenCalled();
+    expect(acpPrepareSession).not.toHaveBeenCalled();
+    expect(messagesFor("cached-activation")).toHaveLength(1);
+  });
+
+  it("preserves a selection changed during activation without waking its provider", async () => {
     const cwdCheck = deferred<string[]>();
     checkDirectoriesExist.mockReturnValueOnce(cwdCheck.promise);
     seedSession({
@@ -333,15 +351,11 @@ describe("loadSessionMessages", () => {
       "s-selection-race",
       "/resolved/existing/session",
     );
-    expect(acpPrepareSession).toHaveBeenCalledWith(
-      "s-selection-race",
-      "claude-acp",
-      "/resolved/existing/session",
-      { modelId: "goose-gpt-5-6-sol" },
-    );
-    expect(acpLoadSession.mock.invocationCallOrder[0]).toBeLessThan(
-      acpPrepareSession.mock.invocationCallOrder[0],
-    );
+    expect(acpPrepareSession).not.toHaveBeenCalled();
+    expect(
+      useChatSessionStore.getState().getSession("s-selection-race")
+        ?.executionTarget?.modelId,
+    ).toBe("goose-gpt-5-6-sol");
   });
 
   it("skips ACP load while optimistic session creation is pending", async () => {

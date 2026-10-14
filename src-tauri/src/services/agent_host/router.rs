@@ -142,10 +142,6 @@ fn discard_route_sign_in(runtime_root: &std::path::Path, route_key: &str) -> std
 }
 
 const SESSION_PAGE_SIZE: i64 = 200;
-/// How long a chat has to stay on screen before its agent is woken in the
-/// background. Clicking through the list attaches nothing; the prompt path
-/// attaches on demand regardless.
-const BACKGROUND_ATTACH_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 /// How long closing a bridge session may take before reopening it anyway.
 const BRIDGE_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a bridge no chat is attached to may sit unused before the host
@@ -161,14 +157,13 @@ const BRIDGE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// longer than [`BRIDGE_IDLE_TIMEOUT`].
 const BRIDGE_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// How long an attached chat may go unused before the host lets go of its
-/// bridge session. Every chat left on screen for [`BACKGROUND_ATTACH_DELAY`]
+/// bridge session. Every chat explicitly prepared for a send
 /// is attached, and without a limit each one keeps its agent context loaded in
 /// the bridge, and keeps that bridge from ever being shut down, for the rest of
 /// the run. The price is paid by the next prompt or model change in that chat,
 /// which has to resume the bridge session first: one to three seconds, more if
-/// the bridge itself was shut down meanwhile. Opening the chat again resumes it
-/// in the background instead. Half an hour keeps a conversation with pauses in
-/// it attached, and still lets the chats someone merely clicked through go.
+/// the bridge itself was shut down meanwhile. Half an hour keeps a conversation
+/// with pauses attached; merely reading history never opens a bridge session.
 const SESSION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 const SNIPPET_CHARS: usize = 200;
 /// How much of a conversation goes with a chat that moved to another agent
@@ -688,13 +683,10 @@ pub struct Inner {
     next_client_request_id: AtomicU64,
     events_tx: mpsc::UnboundedSender<BridgeEvent>,
     spawn_env: Mutex<Option<Arc<SpawnEnv>>>,
-    /// One lock per session so a background attach started by `session/load`
-    /// and a prompt arriving while it runs never race to attach twice; the
+    /// One lock per session so an explicit configuration and a prompt
+    /// arriving together never race to attach twice; the
     /// second caller waits and then takes the already-attached fast path.
     attach_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-    /// The session `session/load` answered most recently; a delayed background
-    /// attach only proceeds if it is still this one.
-    last_loaded: StdMutex<Option<String>>,
     /// Reply text of the throwaway naming sessions `summarize_title` has open,
     /// by `naming_key` (harness and bridge session id).
     naming_replies: StdMutex<HashMap<String, String>>,
@@ -903,7 +895,6 @@ impl Inner {
             events_tx,
             spawn_env: Mutex::new(None),
             attach_locks: Mutex::new(HashMap::new()),
-            last_loaded: StdMutex::new(None),
             naming_replies: StdMutex::new(HashMap::new()),
             selection_split: AtomicU8::new(0),
             shutdown_prepared: AtomicBool::new(false),
@@ -3423,7 +3414,7 @@ impl Inner {
             ));
         }
         // The caller's copy may predate a move to another harness made while
-        // it waited for the lock (a delayed background attach, say); attach
+        // it waited for the lock (an explicit preparation, say); attach
         // what the store holds now.
         self.attach_session_locked(&current).await
     }
@@ -3656,8 +3647,8 @@ impl Inner {
         // The transcript is ours: replay it from the local log and answer
         // right away. Waking the agent behind the session (spawning its
         // bridge, resuming its own context) is only needed for the next
-        // prompt, so it happens in the background — the user may just read
-        // the chat and never send anything.
+        // prompt, so the prompt path attaches on demand. Reading a chat must not
+        // connect integrations or request their authorization.
         //
         // The log is read, so the event loop's own buffer has to be committed
         // first: a chat that is streaming right now has its last chunks there,
@@ -3712,9 +3703,8 @@ impl Inner {
         );
         let attached = self.attached_route(&session_id).await.is_some();
         if attached {
-            // Opening a chat whose agent is awake counts as using it: the
-            // background attach that would wake it otherwise is skipped, and a
-            // chat someone is looking at is the likeliest to be prompted next.
+            // Opening a chat whose agent is already awake counts as using it.
+            // A dormant chat stays dormant until an explicit preparation.
             self.touch_session(&session_id).await;
         }
         let (snapshot, has_model_option, substitutions) =
@@ -3743,27 +3733,6 @@ impl Inner {
             response["_meta"]["distillHistory"] = json!(history);
         }
         let response = Self::with_substitutions(response, &substitutions);
-        if let Ok(mut last) = self.last_loaded.lock() {
-            *last = Some(session_id.clone());
-        }
-        if !owned
-            && !attached
-            && account_validation_id(&record.harness, record.account_id.as_deref()).is_ok()
-        {
-            let host = Arc::clone(self);
-            let presented = response["configOptions"].clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(BACKGROUND_ATTACH_DELAY).await;
-                let still_current = host
-                    .last_loaded
-                    .lock()
-                    .map(|last| last.as_deref() == Some(record.id.as_str()))
-                    .unwrap_or(false);
-                if still_current {
-                    host.attach_in_background(record, presented).await;
-                }
-            });
-        }
         Ok(response)
     }
 
@@ -3779,51 +3748,6 @@ impl Inner {
                 runtime.substitutions.clone(),
             )
         })
-    }
-
-    /// Wake the agent behind a session after `session/load` has already
-    /// answered from the local log. When the bridge reports different config
-    /// options than the stored snapshot the chat was opened with, the
-    /// renderer gets the live ones as a `config_option_update`.
-    async fn attach_in_background(self: Arc<Self>, record: SessionRecord, presented_before: Value) {
-        if let Err(error) = self.attach_session(&record).await {
-            log::warn!(
-                "[agent-host] background attach of session {} to {} failed: {}",
-                record.id,
-                record.harness,
-                error_text(&error)
-            );
-            return;
-        }
-        let Some((_, _, _)) = self.runtime_route(&record.id).await else {
-            return;
-        };
-        let Some((snapshot, has_model_option, substitutions)) =
-            self.runtime_snapshot(&record.id).await
-        else {
-            return;
-        };
-        let current = match self.session_record(&record.id).await {
-            Ok(record) => record,
-            Err(_) => return,
-        };
-        let presented = Self::presented_snapshot(&current.harness, &snapshot, has_model_option);
-        if presented["configOptions"] == presented_before && substitutions.is_empty() {
-            return;
-        }
-        // The attach happened with nobody watching, so this notification is
-        // the only way a value the agent would not take reaches the screen.
-        let mut update = json!({
-            "sessionUpdate": "config_option_update",
-            "configOptions": presented["configOptions"],
-        });
-        if !substitutions.is_empty() {
-            update["_meta"] = json!({ "substitutions": substitutions });
-        }
-        self.notify_frontend(
-            "session/update",
-            json!({ "sessionId": record.id, "update": update }),
-        );
     }
 
     pub fn session_info(record: &SessionRecord, active_run_id: Option<&str>) -> Value {
