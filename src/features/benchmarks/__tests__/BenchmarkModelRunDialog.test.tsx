@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import type {
   AttemptSummary,
+  BenchmarkAuthor,
   BenchmarkDefinition,
   BenchmarkRun,
   Configuration,
@@ -45,7 +46,7 @@ function test(
   index: number,
   name: string,
   kind = "exact",
-  authoredBy?: string[],
+  authoredBy?: BenchmarkAuthor[],
 ): BenchmarkDefinition {
   return {
     ...definition,
@@ -72,7 +73,7 @@ const definitions: BenchmarkDefinition[] = [
   test(4, "Delta"),
   test(5, "Echo"),
   // Written by the candidate: listed, never run.
-  test(6, "Foxtrot", "exact", ["model-1"]),
+  test(6, "Foxtrot", "exact", [configuration]),
   // Archived: not a current test.
   { ...test(7, "Golf"), archived: true },
   {

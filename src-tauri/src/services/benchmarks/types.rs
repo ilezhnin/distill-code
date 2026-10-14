@@ -40,6 +40,24 @@ impl From<serde_json::Error> for BenchmarkError {
 }
 pub type Result<T> = std::result::Result<T, BenchmarkError>;
 
+/// Only the provider, concrete model and reasoning effort identify an author.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkAuthor {
+    pub provider_id: String,
+    pub model_id: String,
+    pub effort: Option<String>,
+}
+impl From<&Configuration> for BenchmarkAuthor {
+    fn from(configuration: &Configuration) -> Self {
+        Self {
+            provider_id: configuration.provider_id.clone(),
+            model_id: configuration.model_id.clone(),
+            effort: configuration.effort.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Evaluator {

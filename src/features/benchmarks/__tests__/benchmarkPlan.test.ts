@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { plannedTurns } from "../lib/benchmarkPlan";
-import type { BenchmarkVersion } from "../types";
+import type { BenchmarkAuthor, BenchmarkVersion } from "../types";
 import { configuration, definition } from "./fixtures";
 
 const version = definition.versions[0];
 const caseOf = (
   kind: string,
-  authoredBy?: string[],
+  authoredBy?: BenchmarkAuthor[],
   steps = 0,
 ): BenchmarkVersion => ({
   ...version,
@@ -38,8 +38,8 @@ describe("planned turns", () => {
           caseOf("exact"),
           caseOf("rubric"),
           caseOf("exact", undefined, 3),
-          caseOf("rubric", ["MODEL-1"]),
-          caseOf("exact", ["model-1"]),
+          caseOf("rubric", [{ ...configuration, modelId: "MODEL-1" }]),
+          caseOf("exact", [configuration]),
         ],
         configuration,
       ),

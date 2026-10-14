@@ -58,7 +58,7 @@ export function runWindowOpen(
  */
 export function plannedTurns(
   versions: readonly BenchmarkVersion[],
-  configuration: Pick<Configuration, "modelId" | "providerId">,
+  configuration: Pick<Configuration, "modelId" | "providerId" | "effort">,
 ): number {
   return versions.reduce(
     (total, version) =>

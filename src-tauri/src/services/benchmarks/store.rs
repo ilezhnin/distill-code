@@ -1413,7 +1413,8 @@ mod tests {
             .into_iter()
             .find(|d| d.work_class_id == "creative")
             .unwrap();
-        draft.environment["authoredBy"] = json!(["fable"]);
+        draft.environment["authoredBy"] =
+            json!([{"providerId":"claude-acp","modelId":"claude-fable-5-1","effort":null}]);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
         let configuration = json!({"id":"fable","providerId":"claude-acp","accountId":"account","modelId":"claude-fable-5-1","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"r1"});

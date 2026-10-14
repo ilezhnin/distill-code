@@ -562,7 +562,10 @@ pub(super) mod tests {
             let version = data.versions.iter_mut().find(|v| v.id == "held-0").unwrap();
             match mode {
                 0 => version.manifest.environment["splitGroup"] = serde_json::json!("group-0"),
-                1 => version.manifest.environment["authoredBy"] = serde_json::json!(["parser"]),
+                1 => {
+                    version.manifest.environment["authoredBy"] =
+                        serde_json::json!([data.runs[0].request.configurations[0]])
+                }
                 2 => version.manifest.role_prompt = "different role".into(),
                 _ => {
                     for version in data

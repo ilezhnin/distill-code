@@ -895,7 +895,8 @@ mod tests {
         }
         assert_eq!(harness(&stale, &harness_query()).unwrap().cases, 0);
         let mut authored = original.clone();
-        authored.versions[10].manifest.environment["authoredBy"] = serde_json::json!(["strong"]);
+        authored.versions[10].manifest.environment["authoredBy"] =
+            serde_json::json!([configuration("strong")]);
         assert_eq!(harness(&authored, &harness_query()).unwrap().cases, 3);
         let mut role = original.clone();
         role.versions[10].manifest.role_context_hash = "different-persona".into();

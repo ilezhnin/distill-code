@@ -308,7 +308,7 @@ mod tests {
         let concrete = runner::concrete_model("claude-acp", "haiku").unwrap();
         assert!(frozen(&base, &[&judge(&concrete)]).is_err());
         let mut authored = base.clone();
-        authored.environment["authoredBy"] = json!(["sonnet"]);
+        authored.environment["authoredBy"] = json!([judge("sonnet")]);
         assert!(frozen(&authored, &[]).is_err());
         let mut duplicate = base.clone();
         duplicate.environment["judgePanel"]["judges"][0] = json!(judge(&concrete));

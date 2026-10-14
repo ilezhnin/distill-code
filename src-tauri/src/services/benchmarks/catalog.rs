@@ -7,6 +7,7 @@ use super::{
 pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
     let mut issues = fixtures::validate(d);
     issues.extend(super::routing::validate_draft(d));
+    issues.extend(super::routing::validate_authored_by(d));
     issues.extend(super::workflow::validate(d));
     issues.extend(evaluation::validate(&d.evaluator));
     issues.extend(super::repository::validate(d));
@@ -369,7 +370,7 @@ mod tests {
             .is_empty());
         let mut fixed = definition.draft;
         fixed.environment["authorshipStatus"] = serde_json::json!("verified");
-        fixed.environment["authoredBy"] = serde_json::json!(["source-model", "task-model"]);
+        fixed.environment["authoredBy"] = serde_json::json!([{"providerId":"invented-provider","modelId":"source-model","effort":"high"},{"providerId":"invented-provider","modelId":"task-model","effort":"high"}]);
         store
             .save_draft(Some(&definition.id), Some(1), fixed)
             .await

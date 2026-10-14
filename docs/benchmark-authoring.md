@@ -83,6 +83,25 @@ Specify:
 - Repetition count, dataset split, difficulty and other applicable facets.
 - Author exclusions, role context and related-family grouping when applicable.
 
+`environment.authoredBy` is an array of exact author identities:
+
+```json
+{
+  "authoredBy": [
+    { "providerId": "example-provider", "modelId": "example-model", "effort": "xhigh" }
+  ]
+}
+```
+
+Only a candidate with the same provider, concrete model and reasoning effort
+is excluded from that test. Declared model aliases resolve to their concrete
+target before comparison. Account, speed and execution profile are not part
+of authorship. Use an explicit effort, or `null` only for a model without
+reasoning control. Changing effort does not inherit an author's exclusion.
+Legacy string tags are provenance, not wildcard exclusions; convert them using
+the original authoring evidence before publishing. Preserve unresolved tags
+in `environment.legacyAuthoredBy` rather than guessing a model or effort.
+
 The editor offers Training and Held-out evaluation. Development remains a
 legacy data value for historical diagnostics, not a choice for new tests.
 Optional files are added only when the task needs them. Imported source and

@@ -6,8 +6,8 @@ import type { Configuration, Evaluation } from "../types";
 
 /**
  * A candidate is never planned on, nor scored on, a case it helped write.
- * Authors are lowercase needles in `environment.authoredBy`; one matches when
- * it appears in the model or provider ID.
+ * Authors in `environment.authoredBy` name a provider, model and effort.
+ * All three must match. Legacy string needles cannot identify an author.
  */
 // Declared harness aliases (`alias_of` in agent_host/harness.rs): an alias is
 // the author of whatever the model it stands for wrote.
@@ -17,22 +17,36 @@ const MODEL_ALIASES: Record<string, Record<string, string>> = {
 
 export function authoredByCandidate(
   environment: unknown,
-  configuration: Pick<Configuration, "modelId" | "providerId">,
+  configuration: Pick<Configuration, "modelId" | "providerId" | "effort">,
 ): boolean {
   if (!environment || typeof environment !== "object") return false;
   const authors = (environment as { authoredBy?: unknown }).authoredBy;
   if (!Array.isArray(authors)) return false;
-  const model = configuration.modelId.toLowerCase();
-  const provider = configuration.providerId.toLowerCase();
-  const target = MODEL_ALIASES[configuration.providerId]?.[model] ?? "";
+  const normalize = (value: string) => value.trim().toLowerCase();
+  const provider = normalize(configuration.providerId);
+  const modelId = normalize(configuration.modelId);
+  const model = MODEL_ALIASES[provider]?.[modelId] ?? modelId;
   return authors.some((author) => {
-    if (typeof author !== "string") return false;
-    const needle = author.trim().toLowerCase();
+    if (!author || typeof author !== "object" || Array.isArray(author))
+      return false;
+    const { providerId, modelId, effort } = author;
+    if (
+      typeof providerId !== "string" ||
+      typeof modelId !== "string" ||
+      !(effort === null || typeof effort === "string")
+    )
+      return false;
+    const authorProvider = normalize(providerId);
+    const authorModelId = normalize(modelId);
+    const authorModel =
+      MODEL_ALIASES[authorProvider]?.[authorModelId] ?? authorModelId;
     return (
-      needle.length > 0 &&
-      (model.includes(needle) ||
-        provider.includes(needle) ||
-        target.includes(needle))
+      authorProvider.length > 0 &&
+      authorModel.length > 0 &&
+      authorProvider === provider &&
+      authorModel === model &&
+      (effort === null ? null : normalize(effort)) ===
+        (configuration.effort === null ? null : normalize(configuration.effort))
     );
   });
 }

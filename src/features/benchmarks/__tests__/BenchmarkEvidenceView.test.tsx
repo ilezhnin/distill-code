@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import { BenchmarkEvidenceView } from "../ui/BenchmarkEvidenceView";
 import type { Attempt, BenchmarkDefinition } from "../types";
-import { attempt, definition } from "./fixtures";
+import { attempt, configuration, definition } from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) => String(error),
@@ -583,7 +583,7 @@ describe("creative rubric review", () => {
               ...version.manifest,
               environment: {
                 ...(version.manifest.environment as object),
-                authoredBy: ["MODEL-1"],
+                authoredBy: [{ ...configuration, modelId: "MODEL-1" }],
               },
             },
           },

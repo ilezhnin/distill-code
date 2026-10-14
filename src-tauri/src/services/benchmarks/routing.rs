@@ -72,15 +72,16 @@ pub const CANDIDATE_KEY_ALGORITHM: &str = "leaderboard-identity-v2";
 pub fn candidate_key(c: &Configuration) -> String {
     hash(super::analysis::leaderboard_key(c).as_bytes())
 }
-/// A candidate that helped write a test must not be scored on it. Authors are
-/// declared as lowercase needles in `environment.authoredBy`; a needle matches
-/// when it appears in the model or provider ID of the candidate, or in the
-/// model a declared alias stands for, as for judges.
+/// Excludes only an exact provider, concrete model and reasoning-effort match.
+/// Legacy strings carry insufficient identity and never act as wildcards.
 pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configuration) -> bool {
-    let model = configuration.model_id.to_lowercase();
-    let provider = configuration.provider_id.to_lowercase();
-    let target = super::runner::concrete_model(&configuration.provider_id, &configuration.model_id)
-        .unwrap_or_default();
+    let normalize = |value: &str| value.trim().to_lowercase();
+    let concrete = |provider: &str, model: &str| {
+        super::runner::concrete_model(provider, model).unwrap_or_else(|| model.into())
+    };
+    let provider = normalize(&configuration.provider_id);
+    let model = concrete(&provider, &normalize(&configuration.model_id));
+    let effort = configuration.effort.as_deref().map(normalize);
     draft
         .environment
         .get("authoredBy")
@@ -88,15 +89,40 @@ pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configurati
         .is_some_and(|authors| {
             authors
                 .iter()
-                .filter_map(serde_json::Value::as_str)
-                .any(|needle| {
-                    let needle = needle.trim().to_lowercase();
-                    !needle.is_empty()
-                        && (model.contains(&needle)
-                            || provider.contains(&needle)
-                            || target.contains(&needle))
+                .filter(|author| author.get("effort").is_some())
+                .filter_map(|author| serde_json::from_value::<BenchmarkAuthor>(author.clone()).ok())
+                .any(|author| {
+                    let author_provider = normalize(&author.provider_id);
+                    let author_model = normalize(&author.model_id);
+                    !author_provider.is_empty()
+                        && !author_model.is_empty()
+                        && author_provider == provider
+                        && concrete(&author_provider, &author_model) == model
+                        && author.effort.as_deref().map(normalize) == effort
                 })
         })
+}
+
+pub fn validate_authored_by(draft: &BenchmarkDraft) -> Vec<String> {
+    let Some(authors) = draft.environment.get("authoredBy") else {
+        return Vec::new();
+    };
+    let Some(authors) = authors.as_array() else {
+        return vec![
+            "Author exclusions must be an array of provider, model and effort identities".into(),
+        ];
+    };
+    authors.iter().enumerate().filter_map(|(index, value)| {
+        let valid = value.get("effort").is_some()
+            && serde_json::from_value::<BenchmarkAuthor>(value.clone()).is_ok_and(|author| {
+                !author.provider_id.trim().is_empty()
+                    && !author.model_id.trim().is_empty()
+                    && author.effort.as_deref().is_none_or(|effort| {
+                        !effort.trim().is_empty() && effort.trim() != "default"
+                    })
+            });
+        (!valid).then(|| format!("Author {} requires a providerId, modelId and explicit effort (or null for a model without reasoning)", index + 1))
+    }).collect()
 }
 pub fn context_hash(d: &BenchmarkDraft) -> String {
     if d.role_id.is_none() && d.role_prompt.is_empty() {
@@ -1056,7 +1082,8 @@ mod tests {
     fn a_candidate_that_authored_the_cases_is_excluded_not_scored() {
         let (mut data, mut q) = matrix();
         for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] = serde_json::json!(["model-native"]);
+            version.manifest.environment["authoredBy"] =
+                serde_json::json!([config("low"), config("high")]);
         }
         let evidence = get_evidence(&data, &q).unwrap();
         assert!(evidence
@@ -1064,14 +1091,16 @@ mod tests {
             .iter()
             .all(|c| c.status == "excluded" && !c.eligible && c.sample_count == 0));
         for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] = serde_json::json!(["provider-native"]);
+            version.manifest.environment["authoredBy"] = serde_json::json!([config("low")]);
         }
         assert_eq!(
             get_evidence(&data, &q).unwrap().candidates[0].status,
             "excluded"
         );
         for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] = serde_json::json!(["someone-else"]);
+            version.manifest.environment["authoredBy"] = serde_json::json!([{
+                "providerId":"provider-native", "modelId":"someone-else", "effort":"low"
+            }]);
         }
         q.facets.difficulty = Some("easy".into());
         assert_eq!(
@@ -1084,20 +1113,51 @@ mod tests {
             &data.versions[0].manifest,
             &config("low")
         ));
-        data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([" native "]);
+        data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([config("low")]);
         assert!(authored_by_candidate(&data.versions[0].manifest, &other));
+        assert!(!authored_by_candidate(
+            &data.versions[0].manifest,
+            &config("high")
+        ));
+        other.provider_id = "other-provider".into();
+        assert!(!authored_by_candidate(&data.versions[0].manifest, &other));
+        other.provider_id = "provider-native".into();
+        other.model_id = "model-native-preview".into();
+        assert!(!authored_by_candidate(&data.versions[0].manifest, &other));
     }
     #[test]
     fn an_alias_authors_what_its_target_wrote() {
         let (data, _) = matrix();
         let mut draft = data.versions[0].manifest.clone();
-        draft.environment["authoredBy"] = serde_json::json!(["opus"]);
+        draft.environment["authoredBy"] = serde_json::json!([{
+            "providerId":"claude-acp", "modelId":"opus[1m]", "effort":"low"
+        }]);
         let mut alias = config("low");
         alias.provider_id = "claude-acp".into();
         alias.model_id = "default".into();
         assert!(authored_by_candidate(&draft, &alias));
         alias.model_id = "sonnet".into();
         assert!(!authored_by_candidate(&draft, &alias));
+    }
+    #[test]
+    fn incomplete_author_identity_never_becomes_a_wildcard() {
+        let (data, _) = matrix();
+        let mut draft = data.versions[0].manifest.clone();
+        for authors in [
+            json!(["provider-native", "model-native"]),
+            json!([{"providerId":"provider-native","modelId":"model-native"}]),
+            json!([{"providerId":"","modelId":"model-native","effort":"low"}]),
+        ] {
+            draft.environment["authoredBy"] = authors;
+            assert!(!authored_by_candidate(&draft, &config("low")));
+            assert!(!validate_authored_by(&draft).is_empty());
+        }
+        let mut author = config("low");
+        author.effort = None;
+        draft.environment["authoredBy"] = json!([author]);
+        assert!(validate_authored_by(&draft).is_empty());
+        assert!(authored_by_candidate(&draft, &author));
+        assert!(!authored_by_candidate(&draft, &config("low")));
     }
     #[test]
     fn a_newer_run_outside_the_protocol_never_hides_an_older_compliant_cell() {
@@ -1136,7 +1196,8 @@ mod tests {
     fn a_candidate_that_wrote_every_compatible_case_is_excluded_without_attempts() {
         let (mut data, mut q) = matrix();
         for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] = serde_json::json!(["model-native"]);
+            version.manifest.environment["authoredBy"] =
+                serde_json::json!([config("low"), config("high")]);
         }
         // Authored cells are no longer planned, and an older plan's authored
         // cells settle as excluded without starting.

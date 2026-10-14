@@ -774,7 +774,7 @@ mod tests {
         let all: Vec<String> = data.versions.iter().map(|v| v.id.clone()).collect();
         let all: Vec<&str> = all.iter().map(String::as_str).collect();
         add_run(&mut data, "author-run", &author, "pass", &all);
-        data.versions[0].manifest.environment["authoredBy"] = json!(["author-model"]);
+        data.versions[0].manifest.environment["authoredBy"] = json!([author]);
         let rows = ledger_rows(&data, false, "t").unwrap();
         let authored = rows.iter().find(|r| r["taskVersion"] == "v0").unwrap();
         assert_eq!(columns(authored), 2);

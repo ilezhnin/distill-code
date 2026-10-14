@@ -960,7 +960,7 @@ pub fn codex_user_skills_preflight(profile: Option<&Path>) -> Result<(), String>
     };
     if present {
         return Err(format!(
-            "capability_missing: Codex adds the personal skills in {} to any task that names one, and no setting turns that off; Codex benchmarks need that folder empty",
+            "capability_missing: Codex text benchmarks on this host cannot isolate personal skills in {}; repository benchmarks use the separate Linux sandbox",
             skills.display()
         ));
     }

@@ -566,7 +566,8 @@ mod tests {
             app: None,
         };
         let mut draft = super::super::runner::seed_definitions().remove(0);
-        draft.environment["authoredBy"] = serde_json::json!(["fake-fail"]);
+        draft.environment["authoredBy"] =
+            serde_json::json!([{"providerId":"fake","modelId":"fake-fail","effort":null}]);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();
         let inventory = service
@@ -621,7 +622,8 @@ mod tests {
         };
         // The saved candidate, first in inventory order, wrote the only case.
         let mut draft = super::super::runner::seed_definitions().remove(0);
-        draft.environment["authoredBy"] = serde_json::json!(["fake-pass"]);
+        draft.environment["authoredBy"] =
+            serde_json::json!([{"providerId":"fake","modelId":"fake-pass","effort":null}]);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();
         let inventory = service

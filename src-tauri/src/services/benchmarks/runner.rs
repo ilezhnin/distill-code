@@ -7278,23 +7278,23 @@ mod tests {
         let panel = select_judges(&[&judge_row("default")], &draft, offered());
         assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "sonnet", "haiku"]);
         // An author of the case never judges it; one judge cannot settle anything.
-        draft.environment["authoredBy"] = json!(["haiku", "fable"]);
+        draft.environment["authoredBy"] =
+            json!([judge_row("haiku"), judge_row("claude-fable-5-1[1m]")]);
         let panel = select_judges(&[&judge_row("opus[1m]")], &draft, offered());
         assert_eq!(ids(&panel), ["sonnet"]);
         assert!(panel_issue(&panel).is_some());
         // An author never judges through its alias either.
-        draft.environment["authoredBy"] = json!(["opus"]);
+        draft.environment["authoredBy"] = json!([judge_row("opus[1m]")]);
         let panel = select_judges(&[&judge_row("sonnet")], &draft, offered());
         assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "haiku"]);
         // A candidate alias with an unknown target admits no judge.
         let mut moving = judge_row("current");
         moving.provider_id = "other-provider".into();
         assert!(select_judges(&[&moving], &draft, offered()).is_empty());
-        // The seeded tasks were written by Fable, so as their author it never judges them.
+        // Generic examples without an exact author still exclude their candidate from judging.
         let seeded = creative();
         for candidate in ["opus[1m]", "sonnet", "haiku", "claude-fable-5-1[1m]"] {
             let panel = select_judges(&[&judge_row(candidate)], &seeded, offered());
-            assert!(!panel.iter().any(|j| j.model_id.contains("fable")));
             assert!(!panel.iter().any(|j| j.model_id == candidate));
         }
     }
@@ -10234,7 +10234,7 @@ mod tests {
         let mut authored = seed_definitions().remove(0);
         authored.split = "train".into();
         authored.name.push_str(" written by the candidate");
-        authored.environment["authoredBy"] = json!(["fake-pass"]);
+        authored.environment["authoredBy"] = json!([req.configurations[0]]);
         let written = publish(&s, authored).await;
         req.version_ids.push(written.id.clone());
         req.repetitions = 1;
@@ -10690,7 +10690,7 @@ mod tests {
         // a restart cut off its panel.
         let mut authored = creative();
         authored.name.push_str(" written by the candidate");
-        authored.environment["authoredBy"] = json!(["fake-pass"]);
+        authored.environment["authoredBy"] = json!([run.request.configurations[0]]);
         let written = publish(&s, authored).await;
         let mut legacy = s.store.attempt(&run.attempts[0].id).await.unwrap();
         legacy.id = "legacy-authored".into();

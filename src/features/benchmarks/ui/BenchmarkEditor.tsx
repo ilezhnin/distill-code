@@ -22,6 +22,7 @@ import {
 import { BenchmarkCheckSetup } from "./BenchmarkCheckSetup";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type {
+  BenchmarkAuthor,
   BenchmarkDefinition,
   BenchmarkDraft,
   ValidationReport,
@@ -88,10 +89,19 @@ function readVisualRubric(environment: string): string | null {
   return value === null ? null : String(value);
 }
 
-function readAuthoredBy(environment: string): string | null {
+function readAuthoredBy(environment: string): BenchmarkAuthor[] | null {
   const value = readEnvironmentField(environment, "authoredBy");
   if (value === null) return null;
-  return Array.isArray(value) ? value.map(String).join(", ") : "";
+  return Array.isArray(value)
+    ? value.filter(
+        (author): author is BenchmarkAuthor =>
+          author !== null &&
+          typeof author === "object" &&
+          typeof author.providerId === "string" &&
+          typeof author.modelId === "string" &&
+          (author.effort === null || typeof author.effort === "string"),
+      )
+    : [];
 }
 
 export function BenchmarkEditor({
@@ -189,6 +199,20 @@ export function BenchmarkEditor({
         parsed && typeof parsed === "object" && !Array.isArray(parsed)
           ? { ...(parsed as Record<string, unknown>) }
           : {};
+      if (key === "authoredBy" && Array.isArray(next.authoredBy)) {
+        const legacy = next.authoredBy.filter(
+          (author) => typeof author === "string",
+        );
+        if (legacy.length > 0)
+          next.legacyAuthoredBy = [
+            ...new Set([
+              ...(Array.isArray(next.legacyAuthoredBy)
+                ? next.legacyAuthoredBy
+                : []),
+              ...legacy,
+            ]),
+          ];
+      }
       if (value === undefined) delete next[key];
       else next[key] = value;
       setEnvironment(pretty(next));
@@ -200,14 +224,20 @@ export function BenchmarkEditor({
   const setVisualRubric = (value: string) =>
     setEnvironmentField("visualRubric", value.trim() ? value : undefined);
   const authoredBy = useMemo(() => readAuthoredBy(environment), [environment]);
-  const [authoredByText, setAuthoredByText] = useState(authoredBy ?? "");
-  const commitAuthoredBy = (value: string) => {
-    const needles = value
-      .split(",")
-      .map((entry) => entry.trim().toLowerCase())
-      .filter(Boolean);
-    setEnvironmentField("authoredBy", needles.length ? needles : undefined);
-  };
+  const authorKeys = useRef<string[]>([]);
+  while (authorKeys.current.length < (authoredBy?.length ?? 0))
+    authorKeys.current.push(crypto.randomUUID());
+  const legacyAuthors = readEnvironmentField(environment, "authoredBy");
+  const hasLegacyAuthors =
+    Array.isArray(legacyAuthors) &&
+    legacyAuthors.some((author) => typeof author === "string");
+  const patchAuthor = (index: number, patch: Partial<BenchmarkAuthor>) =>
+    setEnvironmentField(
+      "authoredBy",
+      authoredBy?.map((author, position) =>
+        position === index ? { ...author, ...patch } : author,
+      ),
+    );
   const execute = async (action: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -735,12 +765,87 @@ export function BenchmarkEditor({
                 hint={t("benchmarks:editor.authoredByHint")}
               >
                 {(id) => (
-                  <Input
-                    id={id}
-                    value={authoredByText}
-                    onChange={(event) => setAuthoredByText(event.target.value)}
-                    onBlur={() => commitAuthoredBy(authoredByText)}
-                  />
+                  <div id={id} className="space-y-3">
+                    {hasLegacyAuthors ? (
+                      <BenchmarkAlert>
+                        {t("benchmarks:editor.legacyAuthors")}
+                      </BenchmarkAlert>
+                    ) : null}
+                    {authoredBy.map((author, index) => (
+                      <div
+                        key={authorKeys.current[index]}
+                        className="grid gap-3 md:grid-cols-4"
+                      >
+                        <Field label={t("benchmarks:editor.authorProvider")}>
+                          {(fieldId) => (
+                            <Input
+                              id={fieldId}
+                              value={author.providerId}
+                              onChange={(event) =>
+                                patchAuthor(index, {
+                                  providerId: event.target.value,
+                                })
+                              }
+                            />
+                          )}
+                        </Field>
+                        <Field label={t("benchmarks:editor.authorModel")}>
+                          {(fieldId) => (
+                            <Input
+                              id={fieldId}
+                              value={author.modelId}
+                              onChange={(event) =>
+                                patchAuthor(index, {
+                                  modelId: event.target.value,
+                                })
+                              }
+                            />
+                          )}
+                        </Field>
+                        <Field label={t("benchmarks:editor.authorEffort")}>
+                          {(fieldId) => (
+                            <Input
+                              id={fieldId}
+                              value={author.effort ?? ""}
+                              onChange={(event) =>
+                                patchAuthor(index, {
+                                  effort: event.target.value || null,
+                                })
+                              }
+                            />
+                          )}
+                        </Field>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="self-end"
+                          onClick={() => {
+                            authorKeys.current.splice(index, 1);
+                            setEnvironmentField(
+                              "authoredBy",
+                              authoredBy.filter(
+                                (_, position) => position !== index,
+                              ),
+                            );
+                          }}
+                        >
+                          {t("benchmarks:editor.removeAuthor")}
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        setEnvironmentField("authoredBy", [
+                          ...authoredBy,
+                          { providerId: "", modelId: "", effort: null },
+                        ])
+                      }
+                    >
+                      {t("benchmarks:editor.addAuthor")}
+                    </Button>
+                  </div>
                 )}
               </Field>
             ) : null}

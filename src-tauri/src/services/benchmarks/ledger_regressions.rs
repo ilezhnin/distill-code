@@ -1049,7 +1049,7 @@ fn only_a_candidate_with_a_different_eligible_set_loses_its_rank() {
     let rows = leaderboard(&data, &ResultQuery::default()).rows;
     assert!(rows.iter().all(|r| r.status == "comparable"));
     // The first candidate helped author v0, so it answers five cases.
-    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!(["model"]);
+    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([{"providerId":"claude","modelId":"model","effort":"medium"},{"providerId":"claude","modelId":"model-b","effort":"medium"}]);
     let rows = leaderboard(&data, &ResultQuery::default()).rows;
     let row = |model: &str| {
         rows.iter()
@@ -1077,8 +1077,9 @@ fn without_a_full_pool_row_the_most_shared_eligible_set_keeps_the_rank() {
     let mut data = before_only();
     add_candidate(&mut data, "model-b");
     add_candidate(&mut data, "other");
-    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!(["model"]);
-    data.versions[1].manifest.environment["authoredBy"] = serde_json::json!(["other"]);
+    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([{"providerId":"claude","modelId":"model","effort":"medium"},{"providerId":"claude","modelId":"model-b","effort":"medium"}]);
+    data.versions[1].manifest.environment["authoredBy"] =
+        serde_json::json!([{"providerId":"claude","modelId":"other","effort":"medium"}]);
     let status = |data: &QueryData| {
         leaderboard(data, &ResultQuery::default())
             .rows

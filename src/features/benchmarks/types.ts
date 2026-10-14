@@ -117,6 +117,11 @@ export interface Configuration {
   /** Display name the bridge reported for the model id, for example "Opus 5.5". */
   modelName?: string | null;
 }
+/** Exact authorship identity; account, speed and runtime do not affect it. */
+export type BenchmarkAuthor = Pick<
+  Configuration,
+  "providerId" | "modelId" | "effort"
+>;
 export interface WorkflowPolicy {
   modelId: string;
   mode: "learned" | "aggregate" | "persona" | "fixed";

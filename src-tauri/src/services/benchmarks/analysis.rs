@@ -2130,7 +2130,8 @@ pub(super) mod tests {
         let mut data = dataset();
         let query = ResultQuery::default();
         assert_eq!(leaderboard(&data, &query).rows[0].status, "comparable");
-        data.versions[0].manifest.environment["authoredBy"] = serde_json::json!(["model"]);
+        data.versions[0].manifest.environment["authoredBy"] =
+            serde_json::json!([data.runs[0].request.configurations[0]]);
         // Both frozen runs share the suite, so the authored case drops one cell each.
         let row = &leaderboard(&data, &query).rows[0];
         assert_eq!(row.planned, 5);
@@ -2140,7 +2141,8 @@ pub(super) mod tests {
         assert!(!row.attempt_ids.contains(&"after-v0".to_string()));
         assert_eq!(row.scored_version_ids, vec!["v1", "v2", "v3", "v4", "v5"]);
         for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] = serde_json::json!(["claude"]);
+            version.manifest.environment["authoredBy"] =
+                serde_json::json!([data.runs[0].request.configurations[0]]);
         }
         let report = leaderboard(&data, &query);
         assert_eq!(report.rows[0].status, "excluded");

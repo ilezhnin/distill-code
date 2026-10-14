@@ -710,7 +710,7 @@ fn masks_never_supply_common_coverage_or_false_zero_targets() {
         a.observed = Some(extra.clone());
         data.attempts.push(a);
     }
-    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!(["third"]);
+    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([extra]);
     let artifact = fit(&data, request(&data)).unwrap();
     assert_eq!(artifact.model.common_cases, 15);
     let excluded = artifact.snapshot.examples[0]
@@ -721,7 +721,7 @@ fn masks_never_supply_common_coverage_or_false_zero_targets() {
     assert_eq!(excluded.reward, None);
     assert_eq!(excluded.utility, None);
     for v in &mut data.versions {
-        v.manifest.environment["authoredBy"] = serde_json::json!(["third"]);
+        v.manifest.environment["authoredBy"] = serde_json::json!([extra]);
     }
     assert_eq!(
         fit(&data, request(&data)).unwrap_err().code,
