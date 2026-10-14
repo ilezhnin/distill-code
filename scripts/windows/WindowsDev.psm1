@@ -224,27 +224,47 @@ function Invoke-CaptureCommand {
         [string]$WorkingDirectory = (Get-Location).Path
     )
 
-    $stdout = New-DistillTemporaryFile
-    $stderr = New-DistillTemporaryFile
+    # Start-Process in Windows PowerShell can return a detached Process for a
+    # fast redirected command, losing its exit code before Handle is read.
+    # Starting the Process directly retains the handle from creation.
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.WorkingDirectory = $WorkingDirectory
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $arguments = Join-WindowsProcessArguments $ArgumentList
+    if ([System.IO.Path]::GetExtension($FilePath) -in @(".cmd", ".bat")) {
+        $process.StartInfo.FileName = "cmd.exe"
+        $process.StartInfo.Arguments = "/d /s /c `"`"$FilePath`" $arguments`""
+    } else {
+        $process.StartInfo.FileName = $FilePath
+        $process.StartInfo.Arguments = $arguments
+    }
     try {
-        $arguments = Join-WindowsProcessArguments $ArgumentList
-        $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
-        $null = $process.Handle
-        Wait-ForProcessExit -Process $process | Out-Null
+        $null = $process.Start()
+        # Drain both pipes while the child runs so either stream can exceed
+        # the pipe buffer without blocking the command.
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
         $output = @()
-        if (Test-Path $stdout.FullName) {
-            $output += @(Get-Content $stdout.FullName -ErrorAction SilentlyContinue)
-        }
-        if (Test-Path $stderr.FullName) {
-            $output += @(Get-Content $stderr.FullName -ErrorAction SilentlyContinue)
+        foreach ($stream in @($stdout, $stderr)) {
+            $reader = [System.IO.StringReader]::new($stream.GetAwaiter().GetResult())
+            try {
+                while ($null -ne ($line = $reader.ReadLine())) { $output += $line }
+            } finally {
+                $reader.Dispose()
+            }
         }
     } finally {
-        Remove-Item -LiteralPath $stdout.FullName, $stderr.FullName -Force -ErrorAction SilentlyContinue
+        $process.Dispose()
     }
 
     $text = (@($output) -join [Environment]::NewLine).Trim()
     return [pscustomobject]@{
-        ExitCode = $process.ExitCode
+        ExitCode = $exitCode
         Output = $text
         Lines = @($output)
     }

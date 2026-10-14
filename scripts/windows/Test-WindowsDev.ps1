@@ -91,6 +91,21 @@ try {
         ($justfile -match '(?m)^\[windows\]\r?\n\[positional-arguments\]\r?\n\[script\("powershell\.exe"[^\]]*\]\r?\n_tauri-cargo-windows[^:]*:') $true
     Assert-Equal "stage-sidecar dispatches through its native wrapper" `
         ($justfile -match '(?m)^\[windows\]\r?\nstage\-sidecar:\r?\n\s+powershell\.exe .* -File scripts/windows/Invoke-Stage-Sidecar-Windows\.ps1\r?$') $true
+    $capturedFailure = Invoke-CaptureCommand -FilePath "cmd.exe" -ArgumentList @("/d", "/c", "echo captured-out& echo captured-err 1>&2& exit /b 7")
+    Assert-Equal "capture retains a fast command's nonzero exit code" $capturedFailure.ExitCode 7
+    Assert-Equal "capture reads stdout" ($capturedFailure.Output -match "captured-out") $true
+    Assert-Equal "capture reads stderr" ($capturedFailure.Output -match "captured-err") $true
+    $batchFixture = Join-Path $temp "capture command.cmd"
+    [System.IO.File]::WriteAllText($batchFixture, "@echo off`r`necho %~1`r`nexit /b 0`r`n")
+    $capturedBatch = Invoke-CaptureCommand -FilePath $batchFixture -ArgumentList @("argument with spaces")
+    Assert-Equal "capture runs batch files with spaced paths and arguments" $capturedBatch.Output "argument with spaces"
+    Assert-Equal "capture retains a fast command's successful exit code" $capturedBatch.ExitCode 0
+    $pipeFixture = Join-Path $temp "capture-pipes.ps1"
+    [System.IO.File]::WriteAllText($pipeFixture, '[Console]::Out.Write("o" * 131072); [Console]::Error.Write("e" * 131072); exit 9')
+    $capturedPipes = Invoke-CaptureCommand -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-File", $pipeFixture)
+    Assert-Equal "capture drains both pipes beyond their buffer capacity" $capturedPipes.Output ($("o" * 131072) + [Environment]::NewLine + $("e" * 131072))
+    Assert-Equal "capture preserves failure after large output" $capturedPipes.ExitCode 9
+
     $just = Get-CommandSource "just"
     $dryRunTargets = [ordered]@{
         "bundle" = 'Bundle-Windows\.ps1'
