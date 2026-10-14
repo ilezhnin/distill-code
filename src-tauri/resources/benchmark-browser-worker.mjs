@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 const MAX_INPUT = 4 * 1024 * 1024;
+const MAX_ARTIFACT = 2 * 1024 * 1024;
+const MAX_RESULT = 262144;
 const ASSERTIONS = new Set([
   "expectAccessibleName",
   "expectAccessibleDescription",
@@ -292,13 +294,26 @@ async function readActiveErrorMessage(client, locator, nodeId, relations) {
   }
 }
 
-let input = "";
+const inputChunks = [];
+let inputBytes = 0;
 for await (const chunk of process.stdin) {
-  input += chunk;
-  if (Buffer.byteLength(input) > MAX_INPUT)
-    throw new Error("Worker input exceeds limit");
+  inputBytes += chunk.length;
+  if (inputBytes > MAX_INPUT) throw new Error("Worker input exceeds limit");
+  inputChunks.push(chunk);
 }
-const request = JSON.parse(input);
+const request = JSON.parse(
+  Buffer.concat(inputChunks, inputBytes).toString("utf8"),
+);
+if (
+  process.platform !== "linux" ||
+  !["javascript", "browser", "render"].includes(request.kind) ||
+  typeof request.output !== "string" ||
+  Buffer.byteLength(request.output) > MAX_ARTIFACT ||
+  !request.spec ||
+  typeof request.spec !== "object" ||
+  Array.isArray(request.spec)
+)
+  throw new Error("Invalid isolated Linux worker request");
 const imported = await import(pathToFileURL(process.argv[2]).href);
 const { chromium } = imported.chromium ? imported : imported.default;
 const viewport = request.spec.viewport ?? { width: 1000, height: 700 };
@@ -322,6 +337,11 @@ const launchOptions = {
     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
   ],
   viewport,
+  locale: "en-US",
+  timezoneId: "UTC",
+  deviceScaleFactor: 1,
+  colorScheme: "light",
+  reducedMotion: "reduce",
   serviceWorkers: "block",
   acceptDownloads: false,
   permissions: [],
@@ -332,8 +352,11 @@ const csp =
   "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 let context;
 let result;
+let browserVersion;
+let unexpectedNavigation = false;
 try {
   context = await chromium.launchPersistentContext(profile, launchOptions);
+  browserVersion = context.browser().version();
   await context.addInitScript(() => {
     for (const name of [
       "RTCPeerConnection",
@@ -360,6 +383,18 @@ try {
     if (context.pages().length > 1) void page.close();
   });
   const page = context.pages()[0] ?? (await context.newPage());
+  page.on("framenavigated", (frame) => {
+    // Candidate content is one standalone document. Even if a Chromium build
+    // changes file/URL interception behavior, no protected local file may become
+    // the artifact seen by the controller or a visual judge.
+    if (
+      frame === page.mainFrame() &&
+      !/^about:blank(?:#.*)?$/u.test(frame.url())
+    ) {
+      unexpectedNavigation = true;
+      void page.close().catch(() => {});
+    }
+  });
   page.setDefaultTimeout(1500);
   const shell = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
   const quietShell =
@@ -720,8 +755,12 @@ try {
     });
     await page.waitForTimeout(400);
   } else throw new Error("Unsupported artifact evaluator");
+  if (unexpectedNavigation)
+    throw new Error("Candidate navigated outside the artifact document");
   if (request.screenshotPath) {
     const screenshot = await page.screenshot({ type: "png", timeout: 3000 });
+    if (unexpectedNavigation)
+      throw new Error("Candidate navigated outside the artifact document");
     if (screenshot.length > 2 * 1024 * 1024)
       throw new Error("Screenshot exceeds artifact cap");
     await writeFile(request.screenshotPath, screenshot, { flag: "wx" });
@@ -731,20 +770,33 @@ try {
     checks,
     boundary,
     blockedRequests,
-    browserVersion: context.browser().version(),
+    browserVersion,
   };
 } catch (error) {
-  result = { error: String(error.message ?? error) };
-  process.exitCode = 1;
+  if (unexpectedNavigation) {
+    result = {
+      pass: false,
+      checks,
+      blockedRequests,
+      browserVersion,
+      candidatePolicyViolation: "artifact_navigation",
+    };
+  } else {
+    result = { error: String(error.message ?? error) };
+    process.exitCode = 1;
+  }
 } finally {
   await context?.close();
-  // Only remove the exact profile returned by mkdtemp above. On Windows, Edge
-  // profile files can deny deletion after the browser exits. Do not retry every
-  // file recursively and turn a completed check into a candidate timeout.
+  // Remove only this attempt's exact profile. OS-level cleanup still kills the
+  // complete owned cgroup before removing the disposable Linux workspace.
   try {
     await rm(profile, { recursive: true, force: true, maxRetries: 0 });
   } catch (error) {
     result.cleanupWarning = { code: error.code, retainedProfile: profile };
   }
 }
-process.stdout.write(JSON.stringify(result));
+const response = JSON.stringify(result);
+if (Buffer.byteLength(response) > MAX_RESULT) {
+  process.exitCode = 1;
+  process.stdout.write('{"error":"Browser controller response exceeded cap"}');
+} else process.stdout.write(response);

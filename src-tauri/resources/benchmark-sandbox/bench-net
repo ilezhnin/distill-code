@@ -13,9 +13,10 @@ exec 9>/run/lock/distill-bench-net
 flock 9
 # The first distribution to boot cannot depend on another distro's systemd
 # enabling these controllers on the shared cgroup root.
-echo "+memory +pids" >/sys/fs/cgroup/cgroup.subtree_control
-mkdir -p /sys/fs/cgroup/distill-bench
-echo "+memory +pids" >/sys/fs/cgroup/distill-bench/cgroup.subtree_control
+if [ -f /var/lib/distill-bench/scratch.ext4 ]; then
+  /usr/local/sbin/bench-budget mount-scratch
+fi
+/usr/local/sbin/bench-budget setup
 # The VM's network namespace outlives this distribution's restarts, so a
 # leftover half (a veth without its namespace) is torn down and rebuilt.
 if ip netns exec bench ip -4 route show default 2>/dev/null | grep -q 10.231.0.1; then

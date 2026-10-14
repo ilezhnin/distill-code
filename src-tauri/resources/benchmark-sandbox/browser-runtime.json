@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux-x64-ubuntu-24.04",
+  "playwrightVersion": "1.62.1",
+  "playwrightIntegrity": "sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==",
+  "chromiumRevision": "1234",
+  "chromiumVersion": "151.0.7922.34",
+  "fontPackage": "fonts-dejavu-core=2.37-8",
+  "renderer": "isolated-linux-chromium-v2",
+  "locale": "en-US",
+  "timezone": "UTC",
+  "deviceScaleFactor": 1
+}

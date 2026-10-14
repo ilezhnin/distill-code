@@ -83,6 +83,15 @@ Specify:
 - Repetition count, dataset split, difficulty and other applicable facets.
 - Author exclusions, role context and related-family grouping when applicable.
 
+Every execution profile uses the dedicated Linux benchmark runtime. Profile
+permissions remain authoritative: native text has no tools even though its
+process is isolated, while protected repository grants only its declared tools
+and network policy. Windows personal skills, home directories and ordinary chat
+configuration are not task inputs. Declare every fixture the candidate needs.
+JavaScript and browser evaluators use the pinned Linux renderer; changing its
+installed identity requires new compatible qualification evidence. See
+[runtime setup and resource limits](benchmark-operations.md#1-prepare-the-runtime).
+
 `environment.authoredBy` is an array of exact author identities:
 
 ```json

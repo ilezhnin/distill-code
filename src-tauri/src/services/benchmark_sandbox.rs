@@ -2,7 +2,13 @@
 //! No candidate or check command is ever launched on Windows.
 
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, io, process::Stdio, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io,
+    process::Stdio,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 pub(crate) const DISTRIBUTION: &str = "distill-bench";
@@ -18,6 +24,8 @@ macro_rules! resources {
 const FILES: &[(&str, &[u8])] = resources![
     "bench-artifact",
     "bench-auth",
+    "bench-browser",
+    "bench-budget",
     "bench-check-prep",
     "bench-clean",
     "bench-copy",
@@ -29,9 +37,449 @@ const FILES: &[(&str, &[u8])] = resources![
     "bench-network",
     "bench-patch",
     "bench-run",
+    "bench-run-inner",
     "bench-status",
+    "bench-unpack",
+    "browser-runtime.json",
     "wsl.conf",
 ];
+
+fn resource_hash(bytes: &[u8]) -> String {
+    // Windows checkouts may use CRLF; Linux deployment canonicalizes source
+    // files to LF. Bind runtime identity to the actual canonical bytes.
+    let normalized: Vec<u8> = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, byte)| {
+            if *byte == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                None
+            } else {
+                Some(*byte)
+            }
+        })
+        .collect();
+    hex::encode(Sha256::digest(normalized))
+}
+
+pub(crate) const RESOURCE_POLICY: &str =
+    "aggregate-linux-v1-memory12-cpu4-disk8-inodes131072-read128-write32";
+const GIB: u64 = 1024 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ResourceClass {
+    Text,
+    Repository,
+    Browser,
+    Preparation,
+    PairedCheck,
+    Check,
+}
+
+impl ResourceClass {
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Repository => "repository",
+            Self::Browser => "browser",
+            Self::Preparation => "prep",
+            Self::PairedCheck => "pair",
+            Self::Check => "check",
+        }
+    }
+    fn memory(self) -> u64 {
+        match self {
+            Self::Text | Self::Browser | Self::Preparation => 2 * GIB,
+            Self::Repository => 6 * GIB,
+            Self::PairedCheck => 8 * GIB,
+            Self::Check => 4 * GIB,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HostHeadroom {
+    available_ram: u64,
+    available_commit: u64,
+    sandbox_volume_free: u64,
+}
+
+fn check_headroom(headroom: &HostHeadroom, additional_memory: u64) -> io::Result<()> {
+    if headroom.available_ram < 12 * GIB + additional_memory {
+        return Err(io::Error::new(io::ErrorKind::WouldBlock,
+            "resource_busy: Windows available RAM cannot cover the benchmark reservation and 12 GiB desktop floor"));
+    }
+    if headroom.available_commit < 8 * GIB + additional_memory {
+        return Err(io::Error::new(io::ErrorKind::WouldBlock,
+            "resource_busy: Windows commit headroom cannot cover the benchmark reservation and 8 GiB floor"));
+    }
+    if headroom.sandbox_volume_free < 30 * GIB {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "resource_busy: The registered sandbox volume has less than 30 GiB free",
+        ));
+    }
+    Ok(())
+}
+
+/// Metadata-only host admission. It reserves no account or paid model turn.
+/// The Linux broker separately owns fair, atomic process/resource leases.
+pub(crate) async fn host_admission() -> io::Result<()> {
+    host_admission_for(ResourceClass::Text).await
+}
+
+pub(crate) async fn host_admission_for(class: ResourceClass) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || check_headroom(&host_headroom()?, class.memory()))
+        .await
+        .map_err(io::Error::other)?
+}
+
+static HOST_PREPARATION: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+/// Acquire before allocating a snapshot/package, and retain through its final
+/// import/export. Invocation deliberately does not acquire this gate again.
+pub(crate) async fn host_preparation(
+    deadline_ms: u64,
+) -> io::Result<tokio::sync::OwnedSemaphorePermit> {
+    let gate = HOST_PREPARATION
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone();
+    let permit = tokio::time::timeout(
+        Duration::from_millis(remaining_ms(deadline_ms)?),
+        gate.acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Native preparation queue deadline expired",
+        )
+    })?
+    .map_err(io::Error::other)?;
+    // Max input512MiB + ring/output overlap1GiB, in addition to Linux prep2GiB.
+    tokio::task::spawn_blocking(|| {
+        check_headroom(
+            &host_headroom()?,
+            ResourceClass::Preparation.memory() + 3 * GIB / 2,
+        )
+    })
+    .await
+    .map_err(io::Error::other)??;
+    Ok(permit)
+}
+
+pub(crate) fn host_gate() -> io::Result<String> {
+    let headroom = host_headroom()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_millis();
+    Ok(format!(
+        "{now},{},{},{}",
+        headroom.available_ram, headroom.available_commit, headroom.sandbox_volume_free
+    ))
+}
+
+/// A pending lease expires in Linux after sixty seconds. Dropping it releases
+/// only an unclaimed lease, never a process tree already owned by bench-run.
+pub(crate) struct Reservation {
+    pub token: String,
+    class: ResourceClass,
+}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut command = std::process::Command::new("wsl.exe");
+        command
+            .args([
+                "-d",
+                DISTRIBUTION,
+                "-u",
+                "root",
+                "--exec",
+                "/usr/local/sbin/bench-budget",
+                "release",
+                &self.token,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        super::process::apply_no_window(&mut command);
+        if let Err(error) = command.spawn() {
+            log::warn!("[benchmarks] cannot release pending sandbox resource lease: {error}");
+        }
+    }
+}
+
+pub(crate) async fn reserve(
+    class: ResourceClass,
+    id: &str,
+    deadline_ms: u64,
+) -> io::Result<Reservation> {
+    reserve_with_buffers(class, id, deadline_ms, 0).await
+}
+
+async fn reserve_with_buffers(
+    class: ResourceClass,
+    id: &str,
+    deadline_ms: u64,
+    host_buffers: usize,
+) -> io::Result<Reservation> {
+    valid_id(id)?;
+    remaining_ms(deadline_ms)?;
+    host_admission_for(class).await?;
+    let gate = host_gate()?;
+    let deadline = deadline_ms.to_string();
+    let host_buffers = host_buffers.to_string();
+    let out = invoke_raw(
+        "/usr/local/sbin/bench-budget",
+        &["reserve", class.key(), id, &deadline, &gate, &host_buffers],
+        None,
+        4096,
+        Duration::from_millis(remaining_ms(deadline_ms)?.min(15_000)),
+        None,
+    )
+    .await?;
+    if !out.success() && out.reason().contains("resource_busy:") {
+        return Err(io::Error::new(io::ErrorKind::WouldBlock, out.reason()));
+    }
+    let out = out.require_success("resource admission")?;
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let token = value["token"]
+        .as_str()
+        .filter(|token| {
+            token.len() == 32
+                && token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .ok_or_else(|| {
+            io::Error::other("capability_missing: malformed sandbox resource reservation")
+        })?;
+    if value["id"] != id
+        || value["class"] != class.key()
+        || value["deadlineMs"].as_u64() != Some(deadline_ms)
+    {
+        return Err(io::Error::other(
+            "capability_missing: sandbox resource reservation owner differs",
+        ));
+    }
+    Ok(Reservation {
+        token: token.to_owned(),
+        class,
+    })
+}
+
+#[cfg(not(windows))]
+fn host_headroom() -> io::Result<HostHeadroom> {
+    Err(io::Error::other(
+        "capability_missing: the benchmark host headroom service requires Windows",
+    ))
+}
+
+#[cfg(windows)]
+fn host_headroom() -> io::Result<HostHeadroom> {
+    use std::mem::size_of;
+    // Native APIs avoid starting PowerShell, inheriting profiles or parsing
+    // localized shell output at each scheduling/admission decision.
+    #[repr(C)]
+    struct MemoryStatus {
+        length: u32,
+        load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page: u64,
+        avail_page: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended: u64,
+    }
+    #[repr(C)]
+    struct PerformanceInfo {
+        size: u32,
+        commit_total: usize,
+        commit_limit: usize,
+        commit_peak: usize,
+        physical_total: usize,
+        physical_available: usize,
+        system_cache: usize,
+        kernel_total: usize,
+        kernel_paged: usize,
+        kernel_nonpaged: usize,
+        page_size: usize,
+        handle_count: u32,
+        process_count: u32,
+        thread_count: u32,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatus) -> i32;
+        fn GetDiskFreeSpaceExW(
+            path: *const u16,
+            available: *mut u64,
+            total: *mut u64,
+            free: *mut u64,
+        ) -> i32;
+    }
+    #[link(name = "psapi")]
+    unsafe extern "system" {
+        fn GetPerformanceInfo(info: *mut PerformanceInfo, size: u32) -> i32;
+    }
+    let mut memory: MemoryStatus = unsafe { std::mem::zeroed() };
+    memory.length = size_of::<MemoryStatus>() as u32;
+    let mut performance: PerformanceInfo = unsafe { std::mem::zeroed() };
+    performance.size = size_of::<PerformanceInfo>() as u32;
+    if unsafe { GlobalMemoryStatusEx(&mut memory) } == 0
+        || unsafe { GetPerformanceInfo(&mut performance, size_of::<PerformanceInfo>() as u32) } == 0
+    {
+        return Err(io::Error::other(
+            "capability_missing: Windows memory/commit metadata is unavailable",
+        ));
+    }
+    let path = registered_sandbox_path()?;
+    let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    let mut available = 0;
+    if unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::other(
+            "capability_missing: registered sandbox volume metadata is unavailable",
+        ));
+    }
+    Ok(HostHeadroom {
+        available_ram: memory.avail_phys,
+        available_commit: performance
+            .commit_limit
+            .saturating_sub(performance.commit_total)
+            .saturating_mul(performance.page_size) as u64,
+        sandbox_volume_free: available,
+    })
+}
+
+#[cfg(windows)]
+fn registered_sandbox_path() -> io::Result<String> {
+    use std::ffi::c_void;
+    type Key = *mut c_void;
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegOpenKeyExW(
+            key: Key,
+            name: *const u16,
+            options: u32,
+            access: u32,
+            out: *mut Key,
+        ) -> i32;
+        fn RegEnumKeyExW(
+            key: Key,
+            index: u32,
+            name: *mut u16,
+            length: *mut u32,
+            reserved: *mut u32,
+            class: *mut u16,
+            class_length: *mut u32,
+            written: *mut c_void,
+        ) -> i32;
+        fn RegQueryValueExW(
+            key: Key,
+            name: *const u16,
+            reserved: *mut u32,
+            kind: *mut u32,
+            bytes: *mut u8,
+            length: *mut u32,
+        ) -> i32;
+        fn RegCloseKey(key: Key) -> i32;
+    }
+    struct RegistryKey(Key);
+    impl Drop for RegistryKey {
+        fn drop(&mut self) {
+            unsafe {
+                RegCloseKey(self.0);
+            }
+        }
+    }
+    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let query = |key: Key, name: &str| -> Option<String> {
+        let name = wide(name);
+        let mut bytes = [0_u16; 4096];
+        let mut length = (bytes.len() * 2) as u32;
+        let mut kind = 0;
+        let result = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut kind,
+                bytes.as_mut_ptr().cast(),
+                &mut length,
+            )
+        };
+        if result != 0 || kind != 1 || length < 2 || length as usize > bytes.len() * 2 {
+            return None;
+        }
+        let text = &bytes[..length as usize / 2];
+        String::from_utf16(text.strip_suffix(&[0]).unwrap_or(text)).ok()
+    };
+    let mut root: Key = std::ptr::null_mut();
+    // HKEY_CURRENT_USER is a sign-extended predefined handle on Windows x64.
+    let current_user = (0x8000_0001_u32 as i32 as isize) as Key;
+    let result = unsafe {
+        RegOpenKeyExW(
+            current_user,
+            wide("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss").as_ptr(),
+            0,
+            0x20019,
+            &mut root,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::other(
+            "capability_missing: the benchmark WSL distribution is not registered",
+        ));
+    }
+    let root = RegistryKey(root);
+    for index in 0..1024 {
+        let mut name = [0_u16; 256];
+        let mut length = name.len() as u32;
+        let result = unsafe {
+            RegEnumKeyExW(
+                root.0,
+                index,
+                name.as_mut_ptr(),
+                &mut length,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if result == 259 {
+            break;
+        }
+        if result != 0 {
+            continue;
+        }
+        name[length as usize] = 0;
+        let mut child: Key = std::ptr::null_mut();
+        if unsafe { RegOpenKeyExW(root.0, name.as_ptr(), 0, 0x20019, &mut child) } != 0 {
+            continue;
+        }
+        let child = RegistryKey(child);
+        if query(child.0, "DistributionName").as_deref() == Some(DISTRIBUTION) {
+            return query(child.0, "BasePath")
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    io::Error::other("capability_missing: sandbox storage location is unavailable")
+                });
+        }
+    }
+    Err(io::Error::other(
+        "capability_missing: the benchmark WSL distribution is not registered",
+    ))
+}
 
 #[derive(Debug)]
 pub(crate) struct Status {
@@ -123,8 +571,26 @@ pub(crate) fn valid_id(id: &str) -> io::Result<()> {
 }
 
 pub(crate) fn command(program: &str, args: &[&str]) -> tokio::process::Command {
+    command_with_host_buffers(program, args, 0, None)
+}
+
+fn command_with_host_buffers(
+    program: &str,
+    args: &[&str],
+    host_buffers: usize,
+    reservation: Option<&Reservation>,
+) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("wsl.exe");
-    cmd.args(["-d", DISTRIBUTION, "-u", "root", "--exec", program])
+    cmd.args(["-d", DISTRIBUTION, "-u", "root", "--exec"]);
+    cmd.arg("/usr/bin/env");
+    if let Ok(gate) = host_gate() {
+        cmd.arg(format!("DISTILL_BENCH_HOST_GATE={gate}"));
+    }
+    cmd.arg(format!("DISTILL_BENCH_HOST_BUFFER_BYTES={host_buffers}"));
+    if let Some(reservation) = reservation {
+        cmd.arg(format!("DISTILL_BENCH_RESERVATION={}", reservation.token));
+    }
+    cmd.arg(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -140,17 +606,25 @@ pub(crate) struct Output {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub truncated: bool,
+    infrastructure: Option<String>,
 }
 
 impl Output {
+    /// Only root-owned lease receipts establish this classification. Submitted
+    /// code cannot turn its stderr text into an infrastructure verdict.
+    pub(crate) fn infrastructure_error(&self) -> Option<&str> {
+        self.infrastructure.as_deref()
+    }
     pub fn success(&self) -> bool {
-        self.code == Some(0)
+        self.code == Some(0) && self.infrastructure.is_none()
     }
     pub fn reason(&self) -> String {
+        let out_start = self.stdout.len().saturating_sub(TAIL_BYTES);
+        let err_start = self.stderr.len().saturating_sub(TAIL_BYTES);
         let text = format!(
             "{}\n{}",
-            String::from_utf8_lossy(&self.stdout),
-            String::from_utf8_lossy(&self.stderr)
+            String::from_utf8_lossy(&self.stdout[out_start..]),
+            String::from_utf8_lossy(&self.stderr[err_start..])
         );
         text.chars()
             .rev()
@@ -179,7 +653,7 @@ pub(crate) async fn read_tail(
     mut reader: impl AsyncRead + Unpin,
     cap: usize,
 ) -> io::Result<(Vec<u8>, bool)> {
-    let mut tail = Vec::new();
+    let mut tail = VecDeque::new();
     let mut truncated = false;
     let mut block = [0_u8; 8192];
     loop {
@@ -187,23 +661,73 @@ pub(crate) async fn read_tail(
         if count == 0 {
             break;
         }
-        tail.extend_from_slice(&block[..count]);
-        if tail.len() > cap {
-            tail.drain(..tail.len() - cap);
+        let retained = count.min(cap);
+        let overflow = tail.len().saturating_add(count).saturating_sub(cap);
+        if overflow > 0 {
+            for _ in 0..overflow.min(tail.len()) {
+                tail.pop_front();
+            }
             truncated = true;
         }
+        let needed = tail.len() + retained;
+        if needed > tail.capacity() {
+            let target = tail
+                .capacity()
+                .max(8192)
+                .saturating_mul(2)
+                .min(cap)
+                .max(needed);
+            tail.reserve_exact(target - tail.len());
+        }
+        tail.extend(block[count - retained..count].iter().copied());
     }
-    Ok((tail, truncated))
+    Ok((tail.into_iter().collect(), truncated))
 }
 
-async fn invoke(
+async fn invoke_raw(
     program: &str,
     args: &[&str],
     input: Option<&[u8]>,
     cap: usize,
     timeout: Duration,
+    reservation: Option<&Reservation>,
 ) -> io::Result<Output> {
-    let mut cmd = command(program, args);
+    const MAX_TRANSPORT: usize = 512 * 1024 * 1024;
+    if cap > MAX_TRANSPORT || input.is_some_and(|bytes| bytes.len() > MAX_TRANSPORT) {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "Sandbox transport exceeds its byte budget",
+        ));
+    }
+    // Ring collection and its returned Vec can coexist briefly. Count the
+    // future host allocation in addition to the Linux process-tree class.
+    let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
+    // Cleanup/status remain available when RAM is low. Workload-bearing
+    // operations must pass the dynamic host guard before entering Linux.
+    if program != "/usr/local/sbin/bench-budget"
+        && !matches!(
+            program,
+            "/usr/local/sbin/bench-kill"
+                | "/usr/local/sbin/bench-clean"
+                | "/usr/local/sbin/bench-status"
+        )
+    {
+        let class = reservation.map(|lease| lease.class).unwrap_or_else(|| {
+            if program == "/usr/local/sbin/bench-judge" {
+                ResourceClass::PairedCheck
+            } else if program == "/usr/local/sbin/bench-browser" {
+                ResourceClass::Browser
+            } else {
+                ResourceClass::Preparation
+            }
+        });
+        tokio::task::spawn_blocking(move || {
+            check_headroom(&host_headroom()?, class.memory() + host_buffers as u64)
+        })
+        .await
+        .map_err(io::Error::other)??;
+    }
+    let mut cmd = command_with_host_buffers(program, args, host_buffers, reservation);
     if input.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -237,6 +761,7 @@ async fn invoke(
             stdout,
             stderr,
             truncated,
+            infrastructure: None,
         })
     };
     match tokio::time::timeout(timeout, run).await {
@@ -254,9 +779,132 @@ async fn invoke(
     }
 }
 
+fn helper_phase<'a>(program: &str, args: &'a [&str]) -> Option<(ResourceClass, &'a str)> {
+    match program {
+        "/usr/local/sbin/bench-copy"
+        | "/usr/local/sbin/bench-check-prep"
+        | "/usr/local/sbin/bench-artifact"
+        | "/usr/local/sbin/bench-patch" => args.first().map(|id| (ResourceClass::Preparation, *id)),
+        "/usr/local/sbin/bench-judge" => args.first().map(|id| (ResourceClass::PairedCheck, *id)),
+        "/usr/local/sbin/bench-browser"
+            if matches!(args.first(), Some(&"evaluate") | Some(&"provision-receipt")) =>
+        {
+            args.get(1).map(|id| (ResourceClass::Browser, *id))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) async fn invoke_reserved_bounded(
+    reservation: &Reservation,
+    program: &str,
+    args: &[&str],
+    input: Option<&[u8]>,
+    cap: usize,
+    timeout: Duration,
+) -> io::Result<Output> {
+    let mut out = invoke_raw(program, args, input, cap, timeout, Some(reservation)).await?;
+    let receipt = invoke_raw(
+        "/usr/local/sbin/bench-budget",
+        &["outcome", &reservation.token],
+        None,
+        4096,
+        Duration::from_secs(5),
+        None,
+    )
+    .await?
+    .require_success("resource outcome")?;
+    let value: serde_json::Value = serde_json::from_slice(&receipt.stdout)?;
+    if let Some(reason) = value["infrastructureError"].as_str() {
+        if value["token"] != reservation.token {
+            return Err(io::Error::other("Sandbox resource outcome owner differs"));
+        }
+        out.infrastructure = Some(reason.to_owned());
+    }
+    Ok(out)
+}
+
+pub(crate) async fn invoke_bounded(
+    program: &str,
+    args: &[&str],
+    input: Option<&[u8]>,
+    cap: usize,
+    timeout: Duration,
+) -> io::Result<Output> {
+    if cap > 512 * 1024 * 1024 || input.is_some_and(|bytes| bytes.len() > 512 * 1024 * 1024) {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "Sandbox transport exceeds its byte budget",
+        ));
+    }
+    let Some((mut class, id)) = helper_phase(program, args) else {
+        return invoke_raw(program, args, input, cap, timeout, None).await;
+    };
+    if program == "/usr/local/sbin/bench-judge" {
+        let response = invoke_raw(
+            "/usr/local/sbin/bench-budget",
+            &["check-class", id],
+            None,
+            64,
+            Duration::from_secs(5),
+            None,
+        )
+        .await?
+        .require_success("check classification")?;
+        class = match response.stdout.as_slice() {
+            b"check\n" => ResourceClass::Check,
+            b"pair\n" => ResourceClass::PairedCheck,
+            _ => return Err(io::Error::other("Sandbox check classification is invalid")),
+        };
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_millis() as u64;
+    let deadline = now.saturating_add(timeout.as_millis().min(u64::MAX as u128) as u64);
+    let admission_deadline = deadline.min(now.saturating_add(300_000));
+    let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
+    let lease = loop {
+        match reserve_with_buffers(class, id, deadline, host_buffers).await {
+            Ok(lease) => break lease,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let remaining =
+                    remaining_ms(admission_deadline).map_err(|_| {
+                        io::Error::new(io::ErrorKind::WouldBlock,
+                    "resource_busy: benchmark preparation queue expired before worker startup")
+                    })?;
+                tokio::time::sleep(Duration::from_millis(remaining.min(1000))).await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    // A child is launched exactly once. Only failed pre-execution admissions
+    // are retried; captured input is retained without paid-model replay.
+    invoke_reserved_bounded(
+        &lease,
+        program,
+        args,
+        input,
+        cap,
+        Duration::from_millis(remaining_ms(deadline)?),
+    )
+    .await
+}
+
+async fn invoke(
+    program: &str,
+    args: &[&str],
+    input: Option<&[u8]>,
+    cap: usize,
+    timeout: Duration,
+) -> io::Result<Output> {
+    invoke_bounded(program, args, input, cap, timeout).await
+}
+
 /// Runtime identity is independent of credentials. Status separately exposes
 /// redacted local health and expiry, never tokens or credential contents.
 pub(crate) async fn ready() -> io::Result<Status> {
+    host_admission().await?;
     let out = invoke(
         "/usr/local/sbin/bench-status",
         &[],
@@ -278,8 +926,24 @@ fn parse_status(text: &str) -> io::Result<Status> {
         .map(|line| line.split_whitespace().collect())
         .collect();
     let mut identity = BTreeMap::new();
+    for line in [
+        "budget memory 12884901888",
+        "budget cpu 400000/100000",
+        "budget swap 0",
+        "budget pids 1536",
+        "budget disk 8589934592",
+        "budget inodes 131072",
+        "budget io 134217728/33554432",
+    ] {
+        if !text.lines().any(|observed| observed == line) {
+            return Err(io::Error::other(
+                "capability_missing: required aggregate benchmark containment is missing",
+            ));
+        }
+    }
+    identity.insert("resourcePolicy".to_owned(), RESOURCE_POLICY.to_owned());
     for (name, bytes) in FILES {
-        let expected = hex::encode(Sha256::digest(bytes));
+        let expected = resource_hash(bytes);
         if !lines
             .iter()
             .any(|parts| parts == &["file", name, &expected])
@@ -641,7 +1305,7 @@ pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result
 
 pub(crate) async fn kill(mode: &str, id: &str) -> io::Result<()> {
     valid_id(id)?;
-    if !["session", "check", "login"].contains(&mode) {
+    if !["session", "check", "probe", "login", "browser", "prep"].contains(&mode) {
         return Err(io::Error::other("Invalid sandbox mode"));
     }
     invoke(
@@ -664,7 +1328,9 @@ pub(crate) fn kill_detached(id: &str) {
 }
 
 pub(crate) fn kill_mode_detached(mode: &str, id: &str) {
-    if !["session", "check", "login"].contains(&mode) || valid_id(id).is_err() {
+    if !["session", "check", "probe", "login", "browser", "prep"].contains(&mode)
+        || valid_id(id).is_err()
+    {
         return;
     }
     let mut command = std::process::Command::new("wsl.exe");
@@ -707,12 +1373,31 @@ pub(crate) async fn clean(id: &str) -> io::Result<()> {
 pub(crate) struct Cleanup(pub Option<String>);
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        if let (Some(id), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current()) {
-            runtime.spawn(async move {
-                if let Err(error) = clean(&id).await {
-                    log::warn!("[benchmarks] sandbox cleanup {id}: {error}");
-                }
-            });
+        if let Some(id) = self.0.take() {
+            if valid_id(&id).is_err() {
+                return;
+            }
+            // An async spawn can be discarded while Tokio is shutting down.
+            // This independent Windows helper owns bounded Linux cleanup even
+            // after the application/runtime has exited.
+            let mut command = std::process::Command::new("wsl.exe");
+            command
+                .args([
+                    "-d",
+                    DISTRIBUTION,
+                    "-u",
+                    "root",
+                    "--exec",
+                    "/usr/local/sbin/bench-clean",
+                    &id,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            super::process::apply_no_window(&mut command);
+            if let Err(error) = command.spawn() {
+                log::warn!("[benchmarks] cannot start independent sandbox cleanup {id}: {error}");
+            }
         }
     }
 }
@@ -724,7 +1409,7 @@ mod tests {
     fn status() -> String {
         let mut lines: Vec<String> = FILES
             .iter()
-            .map(|(name, bytes)| format!("file {name} {}", hex::encode(Sha256::digest(bytes))))
+            .map(|(name, bytes)| format!("file {name} {}", resource_hash(bytes)))
             .collect();
         let pins: BTreeMap<String, String> = serde_json::from_str(include_str!(
             "../../resources/benchmark-sandbox/runtime-pins.json"
@@ -732,6 +1417,18 @@ mod tests {
         .unwrap();
         lines.extend(pins.iter().map(|(key, value)| format!("{key} {value}")));
         lines.push("netns up".into());
+        lines.extend(
+            [
+                "budget memory 12884901888",
+                "budget cpu 400000/100000",
+                "budget swap 0",
+                "budget pids 1536",
+                "budget disk 8589934592",
+                "budget inodes 131072",
+                "budget io 134217728/33554432",
+            ]
+            .map(str::to_owned),
+        );
         lines.join("\n")
     }
     #[test]
@@ -753,6 +1450,52 @@ mod tests {
             deadline_outcome(io::Error::other("unrelated"), now + 3_600_000).kind(),
             io::ErrorKind::Other
         );
+    }
+
+    #[test]
+    fn linux_source_identity_canonicalizes_windows_line_endings() {
+        assert_eq!(
+            resource_hash(b"first\nsecond\n"),
+            resource_hash(b"first\r\nsecond\r\n")
+        );
+        assert_ne!(
+            resource_hash(b"first\rsecond\n"),
+            resource_hash(b"first\nsecond\n")
+        );
+    }
+
+    #[test]
+    fn admission_keeps_desktop_ram_commit_and_actual_sandbox_volume_floors() {
+        let healthy = HostHeadroom {
+            available_ram: 28 * GIB,
+            available_commit: 20 * GIB,
+            sandbox_volume_free: 57 * GIB,
+        };
+        assert!(check_headroom(&healthy, ResourceClass::PairedCheck.memory()).is_ok());
+        assert!(check_headroom(
+            &HostHeadroom {
+                available_ram: 13 * GIB,
+                ..healthy
+            },
+            2 * GIB
+        )
+        .is_err());
+        assert!(check_headroom(
+            &HostHeadroom {
+                available_commit: 9 * GIB,
+                ..healthy
+            },
+            2 * GIB
+        )
+        .is_err());
+        assert!(check_headroom(
+            &HostHeadroom {
+                sandbox_volume_free: 29 * GIB,
+                ..healthy
+            },
+            2 * GIB
+        )
+        .is_err());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //   node scripts/benchmark-sandbox.mjs            provision (create if missing)
 //   node scripts/benchmark-sandbox.mjs status     print bench-status
 //   node scripts/benchmark-sandbox.mjs selftest   check the confinement from inside
+//   node scripts/benchmark-sandbox.mjs deploy-helpers  network-free helper update
 //
 // Provider sign-in happens inside the sandbox, by hand, once per account:
 //   wsl -d distill-bench -u root bench-login claude|codex|grok|kimi <account-id>
@@ -17,6 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runSelftest } from "./benchmark-sandbox-selftest.mjs";
 
 const DISTRO = "distill-bench";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,8 +71,23 @@ function create() {
 function stage() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "distill-provision-"));
   for (const file of fs.readdirSync(resources)) {
-    fs.copyFileSync(path.join(resources, file), path.join(dir, file));
+    if (!fs.statSync(path.join(resources, file)).isFile()) continue;
+    fs.writeFileSync(
+      path.join(dir, file),
+      fs
+        .readFileSync(path.join(resources, file), "utf8")
+        .replace(/\r\n/g, "\n"),
+    );
   }
+  fs.writeFileSync(
+    path.join(dir, "benchmark-browser-worker.mjs"),
+    fs
+      .readFileSync(
+        path.join(resources, "..", "benchmark-browser-worker.mjs"),
+        "utf8",
+      )
+      .replace(/\r\n/g, "\n"),
+  );
   const lock = JSON.parse(
     fs.readFileSync(path.join(repo, "acp-tools.lock.json"), "utf8"),
   );
@@ -139,27 +156,52 @@ function status() {
   process.stderr.write(result.stderr);
 }
 
-function selftest() {
-  const script = fs.readFileSync(path.join(resources, "selftest.sh"));
-  const result = wsl(["-d", DISTRO, "-u", "root", "--exec", "bash", "-s"], {
-    input: script,
-    stdio: ["pipe", "inherit", "inherit"],
-  });
-  process.exitCode = result.status ?? 1;
-  if (process.exitCode === 0) {
-    const artifacts = wsl(
-      ["-d", DISTRO, "-u", "root", "--exec", "python3", "-"],
-      {
-        input: fs.readFileSync(path.join(resources, "artifact-selftest.py")),
-        stdio: ["pipe", "inherit", "inherit"],
-      },
+function deployHelpers() {
+  if (!distroExists())
+    throw new Error(
+      "The benchmark distribution must already exist; provision explicitly first",
     );
-    process.exitCode = artifacts.status ?? 1;
+  // This update neither downloads packages nor restarts WSL. Runtime/browser
+  // provisioning remains a separate explicit installation operation.
+  const dir = stage();
+  try {
+    const tar = spawnSync("tar", ["-cf", "-", "-C", dir, "."], {
+      maxBuffer: 1 << 24,
+    });
+    if (tar.status !== 0)
+      throw new Error(`helper archive failed: ${tar.stderr}`);
+    const result = wsl(
+      [
+        "-d",
+        DISTRO,
+        "-u",
+        "root",
+        "--exec",
+        "python3",
+        "-c",
+        "import pathlib,subprocess,sys,tempfile; " +
+          "p=tempfile.mkdtemp(prefix='distill-helper-update.',dir='/tmp'); " +
+          "subprocess.run(['tar','-x','-C',p],stdin=sys.stdin.buffer,check=True); " +
+          "subprocess.run(['bash',p+'/install-helpers.sh',p],check=True)",
+      ],
+      { input: tar.stdout, stdio: ["pipe", "inherit", "inherit"] },
+    );
+    if (result.status !== 0)
+      throw new Error(
+        `helper deployment exited ${result.status}; retained recovery backups must be inspected`,
+      );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function selftest() {
+  runSelftest(resources);
 }
 
 const [command] = process.argv.slice(2);
 if (!command) provision();
 else if (command === "status") status();
 else if (command === "selftest") selftest();
+else if (command === "deploy-helpers") deployHelpers();
 else throw new Error(`unknown command ${command}`);

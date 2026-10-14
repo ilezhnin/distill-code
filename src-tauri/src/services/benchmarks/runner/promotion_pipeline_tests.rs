@@ -290,6 +290,11 @@ fn registration(
 }
 #[tokio::test]
 async fn qualified_collection_preregistration_positive_promotion_and_revocation() {
+    // Keep the complete async scenario off libtest's small Windows stack.
+    Box::pin(qualified_collection_scenario()).await;
+}
+
+async fn qualified_collection_scenario() {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(OfflineWorkers::default());
     let service = open(dir.path(), backend.clone()).await;

@@ -1,0 +1,56 @@
+#!/bin/bash
+# Explicit provisioning only. Never called by a benchmark or app startup.
+set -euo pipefail
+src=${1:?provision source directory required}
+runtime=/opt/distill-browser
+[[ $(id -u) == 0 && $src == /tmp/distill-provision ]] || exit 64
+[[ $(. /etc/os-release; printf '%s' "$VERSION_ID") == 24.04 ]] || exit 65
+for group in /sys/fs/cgroup/distill-bench/*/; do
+  [[ $(basename "$group") == control || ! -f $group/cgroup.procs || -z $(cat "$group/cgroup.procs") ]] || {
+    echo 'Drain benchmark workloads before changing the pinned browser runtime' >&2; exit 65;
+  }
+done
+install -d -m 755 "$runtime" /usr/local/lib/distill
+install -m 644 "$src/browser-runtime.json" "$runtime/runtime.json"
+install -m 644 "$src/benchmark-browser-worker.mjs" /usr/local/lib/distill/benchmark-browser-worker.mjs
+python3 - "$runtime" <<'PY'
+import json, pathlib, sys
+r=pathlib.Path(sys.argv[1]); spec=json.loads((r/'runtime.json').read_text())
+package={'private':True,'dependencies':{'playwright-core':spec['playwrightVersion']}}
+lock={'name':'distill-benchmark-browser','lockfileVersion':3,'requires':True,'packages':{
+  '':package,'node_modules/playwright-core':{'version':spec['playwrightVersion'],
+  'resolved':'https://registry.npmjs.org/playwright-core/-/playwright-core-'+spec['playwrightVersion']+'.tgz',
+  'integrity':spec['playwrightIntegrity'],'bin':{'playwright-core':'cli.js'},'engines':{'node':'>=20'}}}}
+(r/'package.json').write_text(json.dumps(package)); (r/'package-lock.json').write_text(json.dumps(lock))
+PY
+(cd "$runtime" && npm ci --omit=dev --no-audit --no-fund --ignore-scripts)
+export PLAYWRIGHT_BROWSERS_PATH=$runtime/browsers
+node "$runtime/node_modules/playwright-core/cli.js" install --with-deps --no-shell chromium
+# Restrict discovery to a pinned font package copied into a private font set.
+# Ubuntu Noble publishes fonts-dejavu-core 2.37-8.
+apt-get install -y --no-install-recommends fonts-dejavu-core=2.37-8
+install -d -m 755 "$runtime/fonts"
+[[ ! -L $runtime/fonts && $(stat -c %u "$runtime/fonts") == 0 ]] || exit 65
+find "$runtime/fonts" -maxdepth 1 -type f -name '*.ttf' -delete
+while IFS= read -r font; do
+  [[ $font == /usr/share/fonts/truetype/dejavu/*.ttf ]] || continue
+  install -m 644 "$font" "$runtime/fonts/$(basename "$font")"
+done < <(dpkg-query -L fonts-dejavu-core)
+cat >"$runtime/fonts.conf" <<'XML'
+<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig><dir>/opt/distill-browser/fonts</dir><cachedir>/tmp/font-cache</cachedir>
+<alias><family>sans-serif</family><prefer><family>DejaVu Sans</family></prefer></alias>
+<alias><family>serif</family><prefer><family>DejaVu Serif</family></prefer></alias>
+<alias><family>monospace</family><prefer><family>DejaVu Sans Mono</family></prefer></alias>
+</fontconfig>
+XML
+if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns && $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns) == 1 ]]; then
+  command -v apparmor_parser >/dev/null || { echo 'Pinned browser requires its scoped AppArmor profile' >&2; exit 65; }
+  install -m 644 "$src/browser-apparmor" /etc/apparmor.d/distill-benchmark-chromium
+  apparmor_parser -r /etc/apparmor.d/distill-benchmark-chromium
+fi
+chmod -R a+rX,go-w "$runtime" /usr/local/lib/distill/benchmark-browser-worker.mjs
+# Downloads can outlast a fresh Windows headroom sample. The host performs this
+# final step separately with a newly reserved Browser lease; readiness stays
+# unavailable until the real sandboxed launch and interaction have succeeded.
+printf '%s\n' 'Browser pins installed; finalize with a fresh host-reserved bench-browser provision-receipt ID'

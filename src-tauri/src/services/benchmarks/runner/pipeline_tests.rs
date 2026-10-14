@@ -216,6 +216,7 @@ impl OfflineWorkers {
             execution_profile: "native_text".into(),
             inventory_revision: fixtures::hash(b"invented-native-pipeline-runtime-v1"),
             repository_revision: None,
+            text_revision: None,
         };
         let receipt = native_receipt::attest(
             host,

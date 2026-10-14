@@ -7,11 +7,11 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
 
 use super::execution::{NativeProvider, RuntimePaths};
 use super::harness::HarnessSpec;
@@ -35,6 +35,99 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// goes quiet must cost seconds, not the full request deadline.
 const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
 
+const OWNED_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const CHAT_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const TRANSPORT_UNIT: usize = 1024;
+const OWNED_QUEUE_UNITS: usize = 32 * 1024;
+const OWNED_EVENT_SLOTS: usize = 256;
+const OWNED_WRITE_SLOTS: usize = 8;
+const OWNED_STDERR_LINE_BYTES: usize = 16 * 1024;
+const OWNED_STDERR_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+const TRANSPORT_WAIT: Duration = Duration::from_secs(30);
+
+fn outgoing_budget() -> Arc<Semaphore> {
+    static BUDGET: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    BUDGET
+        .get_or_init(|| Arc::new(Semaphore::new(OWNED_QUEUE_UNITS)))
+        .clone()
+}
+
+fn event_budget() -> Arc<Semaphore> {
+    static BUDGET: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    BUDGET
+        .get_or_init(|| Arc::new(Semaphore::new(OWNED_QUEUE_UNITS)))
+        .clone()
+}
+
+fn event_slots() -> Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS
+        .get_or_init(|| Arc::new(Semaphore::new(OWNED_EVENT_SLOTS)))
+        .clone()
+}
+
+fn frame_units(bytes: usize) -> u32 {
+    bytes.div_ceil(TRANSPORT_UNIT).max(1) as u32
+}
+
+struct QueuedFrame {
+    line: String,
+    _lease: OwnedSemaphorePermit,
+}
+
+enum BridgeWriter {
+    Chat(mpsc::UnboundedSender<String>),
+    Owned(mpsc::Sender<QueuedFrame>),
+}
+
+impl BridgeWriter {
+    fn send(&self, line: String) -> Result<(), &'static str> {
+        match self {
+            Self::Chat(sender) => sender.send(line).map_err(|_| "bridge stdin closed"),
+            Self::Owned(sender) => {
+                if line.len() > OWNED_FRAME_BYTES {
+                    return Err("benchmark outbound protocol frame exceeds limit");
+                }
+                let lease = outgoing_budget()
+                    .try_acquire_many_owned(frame_units(line.len()))
+                    .map_err(|_| "benchmark outgoing byte budget exhausted")?;
+                sender
+                    .try_send(QueuedFrame {
+                        line,
+                        _lease: lease,
+                    })
+                    .map_err(|_| "benchmark outgoing queue unavailable or full")
+            }
+        }
+    }
+}
+
+fn bounded_json(value: &Value, cap: usize) -> Result<String, &'static str> {
+    struct Frame {
+        bytes: Vec<u8>,
+        cap: usize,
+    }
+    impl std::io::Write for Frame {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.cap.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other("protocol frame exceeds limit"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut frame = Frame {
+        bytes: Vec::new(),
+        cap,
+    };
+    serde_json::to_writer(&mut frame, value)
+        .map_err(|_| "benchmark outbound protocol frame exceeds limit")?;
+    String::from_utf8(frame.bytes).map_err(|_| "invalid outbound protocol encoding")
+}
+
 /// How long a bridge gets to answer `method`; `None` is unbounded.
 fn request_deadline(method: &str) -> Option<Duration> {
     match method {
@@ -47,6 +140,13 @@ fn request_deadline(method: &str) -> Option<Duration> {
 }
 
 pub enum BridgeEvent {
+    /// Admission follows the event into the shared router queue and is released
+    /// only after processing. Ordinary interactive bridges retain their API.
+    Bounded {
+        event: Box<BridgeEvent>,
+        bytes: OwnedSemaphorePermit,
+        slot: OwnedSemaphorePermit,
+    },
     Notification {
         harness: String,
         generation: u64,
@@ -78,6 +178,54 @@ pub enum BridgeEvent {
     Drained {
         ack: oneshot::Sender<Result<(), String>>,
     },
+}
+
+impl BridgeEvent {
+    pub(super) fn into_admitted(
+        self,
+    ) -> (Self, Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)>) {
+        match self {
+            Self::Bounded { event, bytes, slot } => (*event, Some((bytes, slot))),
+            event => (event, None),
+        }
+    }
+}
+
+async fn admit_event(
+    event: BridgeEvent,
+    bytes: usize,
+    owned: bool,
+    events: &mpsc::UnboundedSender<BridgeEvent>,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<(), &'static str> {
+    if !owned {
+        return events.send(event).map_err(|_| "bridge event loop closed");
+    }
+    let admission = async {
+        let slot = event_slots()
+            .acquire_owned()
+            .await
+            .map_err(|_| "benchmark event budget closed")?;
+        let lease = event_budget()
+            .acquire_many_owned(frame_units(bytes))
+            .await
+            .map_err(|_| "benchmark event byte budget closed")?;
+        events
+            .send(BridgeEvent::Bounded {
+                event: Box::new(event),
+                bytes: lease,
+                slot,
+            })
+            .map_err(|_| "bridge event loop closed")
+    };
+    if *cancelled.borrow() {
+        return Err("benchmark bridge stopped");
+    }
+    tokio::select! {
+        _ = cancelled.changed() => Err("benchmark bridge stopped"),
+        result = tokio::time::timeout(TRANSPORT_WAIT, admission) =>
+            result.unwrap_or(Err("benchmark event backpressure deadline exceeded")),
+    }
 }
 
 struct PendingRequest {
@@ -115,6 +263,49 @@ fn fail_pending_on_exit(pending: &Pending, alive: &AtomicBool) {
     }
 }
 
+fn transport_failed(
+    pending: &Pending,
+    alive: &AtomicBool,
+    cancelled: &watch::Sender<bool>,
+    reason: &str,
+) {
+    fail_bounded_pending(
+        pending,
+        alive,
+        cancelled,
+        "transport_budget_exceeded",
+        reason,
+    );
+}
+
+fn fail_bounded_pending(
+    pending: &Pending,
+    alive: &AtomicBool,
+    cancelled: &watch::Sender<bool>,
+    kind: &str,
+    reason: &str,
+) {
+    alive.store(false, Ordering::SeqCst);
+    if let Ok(mut pending) = pending.lock() {
+        for (_, request) in pending.drain() {
+            let _ = request.reply.send(Err(protocol::error_with_data(
+                -32000,
+                reason,
+                json!({"kind":kind}),
+            )));
+        }
+    }
+    cancelled.send_replace(true);
+}
+
+fn startup_supervision_issue(line: &str) -> Option<(&'static str, &'static str)> {
+    if line.starts_with("resource_busy:") {
+        Some(("resource_busy","resource_busy: Linux resource reservation expired or was unavailable before provider startup"))
+    } else {
+        None
+    }
+}
+
 /// Hands out [`Bridge::generation`]. Process-wide, so no two bridges of a run
 /// ever share one, whatever harness they belong to.
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -132,7 +323,9 @@ pub struct Bridge {
     executable: Value,
     agent_capabilities: RwLock<Value>,
     zai: Option<Arc<Mutex<super::zai::ConfigAdapter>>>,
-    writer: mpsc::UnboundedSender<String>,
+    writer: BridgeWriter,
+    transport_cancelled: watch::Sender<bool>,
+    startup_failure: Arc<Mutex<Option<Value>>>,
     pending: Arc<Pending>,
     next_id: AtomicU64,
     alive: Arc<AtomicBool>,
@@ -551,21 +744,59 @@ impl Bridge {
         let stdout = child.stdout.take().ok_or("bridge stdout unavailable")?;
         let stderr = child.stderr.take();
 
-        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let bounded = owned.is_some();
+        let starting = Arc::new(AtomicBool::new(true));
+        let startup_failure = Arc::new(Mutex::new(None));
+        let (transport_cancelled, mut writer_cancelled) = watch::channel(false);
         let pending: Arc<Pending> = Arc::new(Mutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
         let zai = (spec.id == "zai-acp")
             .then(|| Arc::new(Mutex::new(super::zai::ConfigAdapter::default())));
 
-        // Writer: serialize every outbound line onto stdin.
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (owned_writer_tx, mut owned_writer_rx) =
+            mpsc::channel::<QueuedFrame>(OWNED_WRITE_SLOTS);
+        let writer = if bounded {
+            BridgeWriter::Owned(owned_writer_tx)
+        } else {
+            BridgeWriter::Chat(writer_tx)
+        };
+        // The bounded writer retains its byte lease through the OS write, and
+        // cancellation interrupts a full pipe instead of waiting on shutdown.
+        let writer_pending = Arc::clone(&pending);
+        let writer_alive = Arc::clone(&alive);
+        let writer_failed = transport_cancelled.clone();
         tokio::spawn(async move {
             let mut stdin = stdin;
-            while let Some(line) = writer_rx.recv().await {
-                if stdin.write_all(line.as_bytes()).await.is_err()
-                    || stdin.write_all(b"\n").await.is_err()
-                    || stdin.flush().await.is_err()
-                {
+            loop {
+                let queued = tokio::select! {
+                    _ = writer_cancelled.changed() => break,
+                    frame = owned_writer_rx.recv(), if bounded => match frame {
+                        Some(frame) => (frame.line, Some(frame._lease)), None => break,
+                    },
+                    line = writer_rx.recv(), if !bounded => match line {
+                        Some(line) => (line, None), None => break,
+                    },
+                };
+                let write = async {
+                    stdin.write_all(queued.0.as_bytes()).await?;
+                    stdin.write_all(b"\n").await?;
+                    stdin.flush().await
+                };
+                let result = tokio::select! {
+                    _ = writer_cancelled.changed() => break,
+                    result = write => result,
+                };
+                if result.is_err() {
+                    if bounded {
+                        transport_failed(
+                            &writer_pending,
+                            &writer_alive,
+                            &writer_failed,
+                            "benchmark stdin write failed",
+                        );
+                    }
                     break;
                 }
             }
@@ -574,11 +805,72 @@ impl Bridge {
         // stderr: keep the bridge's own logging visible in Distill's log.
         if let Some(stderr) = stderr {
             let harness = route_key.to_string();
+            let pending = Arc::clone(&pending);
+            let alive = Arc::clone(&alive);
+            let failed = transport_cancelled.clone();
+            let starting = Arc::clone(&starting);
+            let startup_failure = Arc::clone(&startup_failure);
+            let mut cancelled = failed.subscribe();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr);
                 let mut buf = Vec::new();
-                while let Some(line) = next_line_lossy(&mut reader, &mut buf).await {
-                    log::info!("[{harness}] {line}");
+                let mut total = 0usize;
+                let mut window = Instant::now();
+                let mut window_bytes = 0usize;
+                loop {
+                    let line = tokio::select! {
+                        _ = cancelled.changed() => break,
+                        line = next_frame_lossy(&mut reader, &mut buf, if bounded { OWNED_STDERR_LINE_BYTES } else { CHAT_FRAME_BYTES }) => line,
+                    };
+                    match line {
+                        Ok(Some(line)) if bounded => {
+                            // Only a pre-initialize supervisor refusal can be
+                            // deferred. Never interpret candidate-era stderr as
+                            // permission to replay a paid model submission.
+                            if starting.load(Ordering::SeqCst) {
+                                if let Some((kind, message)) = startup_supervision_issue(&line) {
+                                    if let Ok(mut failure) = startup_failure.lock() {
+                                        *failure = Some(protocol::error_with_data(
+                                            -32000,
+                                            message,
+                                            json!({"kind":kind}),
+                                        ));
+                                    }
+                                    fail_bounded_pending(&pending, &alive, &failed, kind, message);
+                                    break;
+                                }
+                            }
+                            total = total.saturating_add(buf.len());
+                            if window.elapsed() >= Duration::from_secs(1) {
+                                window = Instant::now();
+                                window_bytes = 0;
+                            }
+                            window_bytes = window_bytes.saturating_add(buf.len());
+                            if total > OWNED_STDERR_TOTAL_BYTES || window_bytes > 128 * 1024 {
+                                transport_failed(
+                                    &pending,
+                                    &alive,
+                                    &failed,
+                                    "benchmark stderr budget exceeded",
+                                );
+                                break;
+                            }
+                            // Provider stderr can contain private task material.
+                            // Keep bounded diagnostics without copying it to app logs.
+                            log::debug!("[{harness}] benchmark stderr: {} bytes", line.len());
+                        }
+                        Ok(Some(line)) => log::info!("[{harness}] {line}"),
+                        Ok(None) => break,
+                        Err(_) => {
+                            transport_failed(
+                                &pending,
+                                &alive,
+                                &failed,
+                                "bridge stderr frame exceeds limit or pipe failed",
+                            );
+                            break;
+                        }
+                    }
                 }
             });
         }
@@ -589,10 +881,40 @@ impl Bridge {
             let pending = Arc::clone(&pending);
             let alive = Arc::clone(&alive);
             let zai = zai.clone();
+            let failed = transport_cancelled.clone();
+            let mut cancelled = failed.subscribe();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout);
                 let mut buf = Vec::new();
-                while let Some(line) = next_line_lossy(&mut reader, &mut buf).await {
+                let mut total = 0usize;
+                loop {
+                    let line = tokio::select! {
+                        _ = cancelled.changed() => break,
+                        line = next_frame_lossy(&mut reader, &mut buf, if bounded { OWNED_FRAME_BYTES } else { CHAT_FRAME_BYTES }) => line,
+                    };
+                    let line = match line {
+                        Ok(Some(line)) => line,
+                        Ok(None) => break,
+                        Err(_) => {
+                            transport_failed(
+                                &pending,
+                                &alive,
+                                &failed,
+                                "bridge stdout frame exceeds limit or pipe failed",
+                            );
+                            break;
+                        }
+                    };
+                    total = total.saturating_add(buf.len());
+                    if bounded && total > 128 * 1024 * 1024 {
+                        transport_failed(
+                            &pending,
+                            &alive,
+                            &failed,
+                            "benchmark stdout lifetime budget exceeded",
+                        );
+                        break;
+                    }
                     if line.trim().is_empty() {
                         continue;
                     }
@@ -618,6 +940,9 @@ impl Bridge {
                                 // stdout (grok's `"skills-reload"`, every time
                                 // its skill watcher fires). Nothing of ours is
                                 // waiting on it.
+                                None if bounded => log::debug!(
+                                    "[{harness}] response for an unknown benchmark request id"
+                                ),
                                 None if !id.is_u64() => {
                                     log::debug!(
                                         "[{harness}] response for a foreign request id {id}"
@@ -629,13 +954,22 @@ impl Bridge {
                             }
                         }
                         Some(Message::Request { id, method, params }) => {
-                            let _ = events.send(BridgeEvent::Request {
+                            let event = BridgeEvent::Request {
                                 harness: harness.clone(),
                                 generation,
                                 id,
                                 method,
                                 params,
-                            });
+                            };
+                            if let Err(reason) =
+                                admit_event(event, line.len(), bounded, &events, &mut cancelled)
+                                    .await
+                            {
+                                if reason != "benchmark bridge stopped" {
+                                    transport_failed(&pending, &alive, &failed, reason);
+                                }
+                                break;
+                            }
                         }
                         Some(Message::Notification { method, mut params }) => {
                             if let Some(adapter) = &zai {
@@ -643,13 +977,31 @@ impl Bridge {
                                     adapter.notification(&method, &mut params);
                                 }
                             }
-                            let _ = events.send(BridgeEvent::Notification {
+                            let event = BridgeEvent::Notification {
                                 harness: harness.clone(),
                                 generation,
                                 run_id: received_run(&pending, &params),
                                 method,
                                 params,
-                            });
+                            };
+                            if let Err(reason) =
+                                admit_event(event, line.len(), bounded, &events, &mut cancelled)
+                                    .await
+                            {
+                                if reason != "benchmark bridge stopped" {
+                                    transport_failed(&pending, &alive, &failed, reason);
+                                }
+                                break;
+                            }
+                        }
+                        None if bounded => {
+                            transport_failed(
+                                &pending,
+                                &alive,
+                                &failed,
+                                "invalid benchmark protocol frame",
+                            );
+                            break;
                         }
                         None => log::warn!(
                             "[{harness}] unparseable line on stdout: {}",
@@ -675,7 +1027,9 @@ impl Bridge {
             executable: executable_fingerprint,
             agent_capabilities: RwLock::new(Value::Null),
             zai,
-            writer: writer_tx,
+            writer,
+            transport_cancelled,
+            startup_failure,
             pending,
             next_id: AtomicU64::new(1),
             alive,
@@ -684,6 +1038,20 @@ impl Bridge {
             tree,
             sandbox_id: owned.and_then(|launch| launch.sandbox.as_ref().map(|(id, _)| id.clone())),
             sandbox_stopped: AtomicBool::new(false),
+        });
+        // A weak reference does not keep an idle bridge alive. Failure that
+        // arrived before construction is retained by the watch channel.
+        let weak = Arc::downgrade(&bridge);
+        let mut failed = bridge.transport_cancelled.subscribe();
+        tokio::spawn(async move {
+            if !*failed.borrow() {
+                let _ = failed.changed().await;
+            }
+            if *failed.borrow() {
+                if let Some(bridge) = weak.upgrade() {
+                    bridge.kill();
+                }
+            }
         });
 
         let init = bridge
@@ -711,12 +1079,16 @@ impl Bridge {
                 // Whatever the process is doing, it is not speaking ACP to
                 // us: do not leave it running behind the error.
                 bridge.kill();
+                if bounded && error.pointer("/data/kind").and_then(Value::as_str)==Some("resource_busy") {
+                    return error_text(&error);
+                }
                 format!(
                     "{} bridge failed to initialize: {}",
                     spec.label,
                     error_text(&error)
                 )
             })?;
+        starting.store(false, Ordering::SeqCst);
         if let Ok(mut capabilities) = bridge.agent_capabilities.write() {
             *capabilities = init
                 .get("agentCapabilities")
@@ -819,8 +1191,12 @@ impl Bridge {
     /// Send `method` and wait for its answer, for as long as a request of
     /// that method is allowed to take (see [`request_deadline`]).
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, Value> {
-        self.request_within(method, params, request_deadline(method))
-            .await
+        let deadline = if self.is_sandbox() && method == "initialize" {
+            Some(INITIALIZE_TIMEOUT + Duration::from_secs(300))
+        } else {
+            request_deadline(method)
+        };
+        self.request_within(method, params, deadline).await
     }
 
     /// [`request`](Self::request) with an explicit deadline; `None` waits
@@ -920,6 +1296,11 @@ impl Bridge {
         owned_deadline: Option<tokio::time::Instant>,
     ) -> Result<Value, Value> {
         if !self.is_alive() {
+            if let Ok(failure) = self.startup_failure.lock() {
+                if let Some(failure) = failure.as_ref() {
+                    return Err(failure.clone());
+                }
+            }
             return Err(protocol::internal(format!(
                 "{} bridge is not running",
                 self.harness
@@ -933,12 +1314,16 @@ impl Bridge {
             .as_ref()
             .map(|_| (method.to_string(), protocol::session_id(&params)));
         if !self.register_owned(id, tx, turn, config_context) {
+            if let Ok(failure) = self.startup_failure.lock() {
+                if let Some(failure) = failure.as_ref() {
+                    return Err(failure.clone());
+                }
+            }
             return Err(protocol::internal(format!(
                 "{} bridge is not running",
                 self.harness
             )));
         }
-        let line = protocol::request(json!(id), method, params);
         if owned_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
             self.forget(id);
             return Err(protocol::error_with_data(
@@ -947,12 +1332,29 @@ impl Bridge {
                 json!({"kind":"budget_timeout"}),
             ));
         }
-        if self.writer.send(line).is_err() {
+        if let Err(reason) =
+            self.enqueue(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+        {
             self.forget(id);
-            return Err(protocol::internal(format!(
-                "{} bridge stdin closed",
-                self.harness
-            )));
+            if self.is_sandbox() {
+                transport_failed(
+                    &self.pending,
+                    &self.alive,
+                    &self.transport_cancelled,
+                    reason,
+                );
+                self.kill();
+            }
+            let message = format!("{} {reason}", self.harness);
+            return Err(if self.is_sandbox() {
+                protocol::error_with_data(
+                    -32000,
+                    message,
+                    json!({"kind":"transport_budget_exceeded"}),
+                )
+            } else {
+                protocol::internal(message)
+            });
         }
         // Revocation linearizes against this synchronous native RPC submission,
         // after the receipt claim and every awaited host preparation step.
@@ -1024,17 +1426,47 @@ impl Bridge {
     }
 
     pub fn notify(&self, method: &str, params: Value) {
-        let _ = self.writer.send(protocol::notification(method, params));
+        if let Err(reason) = self.enqueue(json!({"jsonrpc":"2.0","method":method,"params":params}))
+        {
+            if self.is_sandbox() {
+                transport_failed(
+                    &self.pending,
+                    &self.alive,
+                    &self.transport_cancelled,
+                    reason,
+                );
+                self.kill();
+            }
+        }
     }
 
     /// Answer a request the bridge made of its client (permission prompts and
     /// the like), using the bridge's own request id.
     pub fn respond(&self, id: Value, result: Result<Value, Value>) {
-        let line = match result {
-            Ok(result) => protocol::response(id, result),
-            Err(error) => protocol::error_response(id, error),
+        let envelope = match result {
+            Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
+            Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error}),
         };
-        let _ = self.writer.send(line);
+        if let Err(reason) = self.enqueue(envelope) {
+            if self.is_sandbox() {
+                transport_failed(
+                    &self.pending,
+                    &self.alive,
+                    &self.transport_cancelled,
+                    reason,
+                );
+                self.kill();
+            }
+        }
+    }
+
+    fn enqueue(&self, envelope: Value) -> Result<(), &'static str> {
+        let line = if matches!(&self.writer, BridgeWriter::Owned(_)) {
+            bounded_json(&envelope, OWNED_FRAME_BYTES)?
+        } else {
+            envelope.to_string()
+        };
+        self.writer.send(line)
     }
 
     pub fn is_sandbox(&self) -> bool {
@@ -1053,6 +1485,7 @@ impl Bridge {
     }
 
     pub fn kill(&self) {
+        self.transport_cancelled.send_replace(true);
         if !self.sandbox_stopped.swap(true, Ordering::SeqCst) {
             if let Some(id) = &self.sandbox_id {
                 crate::services::benchmark_sandbox::kill_detached(id);
@@ -1093,18 +1526,51 @@ pub fn error_text(error: &Value) -> String {
 /// rather than ending the stream: `lines()` stops at the first such line,
 /// which on stdout cut the bridge off as if it had exited and on stderr
 /// stopped draining the pipe until the bridge blocked writing to it.
+#[cfg(test)]
 async fn next_line_lossy<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
 ) -> Option<String> {
+    next_frame_lossy(reader, buf, CHAT_FRAME_BYTES)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Inspect each borrowed pipe chunk before extending the retained allocation.
+/// A peer that never sends a newline cannot allocate an unbounded line.
+async fn next_frame_lossy<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<Option<String>> {
     buf.clear();
-    match reader.read_until(b'\n', buf).await {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(
-            String::from_utf8_lossy(buf.as_slice())
-                .trim_end_matches(['\r', '\n'])
-                .to_string(),
-        ),
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok((!buf.is_empty()).then(|| {
+                String::from_utf8_lossy(buf)
+                    .trim_end_matches(['\r', '\n'])
+                    .to_string()
+            }));
+        }
+        let end = chunk
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1);
+        let count = end.unwrap_or(chunk.len());
+        if count > cap.saturating_sub(buf.len()) {
+            return Err(std::io::Error::other("protocol frame limit exceeded"));
+        }
+        buf.extend_from_slice(&chunk[..count]);
+        reader.consume(count);
+        if end.is_some() {
+            return Ok(Some(
+                String::from_utf8_lossy(buf)
+                    .trim_end_matches(['\r', '\n'])
+                    .to_string(),
+            ));
+        }
     }
 }
 
@@ -1129,6 +1595,172 @@ pub fn is_installed(spec: &HarnessSpec, env: &SpawnEnv) -> bool {
 pub(super) mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn protocol_frames_stop_before_allocating_oversized_or_unterminated_lines() {
+        for input in [b"123456789\n".as_slice(), b"123456789".as_slice()] {
+            let mut reader = BufReader::with_capacity(3, input);
+            let mut buffer = Vec::new();
+            assert!(next_frame_lossy(&mut reader, &mut buffer, 8).await.is_err());
+            assert!(buffer.len() <= 8);
+        }
+        let mut reader = BufReader::with_capacity(3, b"okay\nnext".as_slice());
+        let mut buffer = Vec::new();
+        assert_eq!(
+            next_frame_lossy(&mut reader, &mut buffer, 8)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("okay")
+        );
+        assert_eq!(
+            next_frame_lossy(&mut reader, &mut buffer, 8)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("next")
+        );
+        assert!(next_frame_lossy(&mut reader, &mut buffer, 8)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn bounded_frames_allow_large_image_protocol_messages() {
+        let message = format!("{{\"image\":\"{}\"}}\n", "a".repeat(3 * 1024 * 1024));
+        let mut reader = BufReader::new(message.as_bytes());
+        let mut buffer = Vec::new();
+        assert!(
+            next_frame_lossy(&mut reader, &mut buffer, OWNED_FRAME_BYTES)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn protocol_serialization_caps_escaped_payloads_before_allocation() {
+        assert!(bounded_json(&json!({"text":"\n".repeat(16)}), 16).is_err());
+        assert_eq!(
+            bounded_json(&json!({"text":"okay"}), 32).unwrap(),
+            "{\"text\":\"okay\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_initialize_resource_refusals_survive_exit_before_request_registration() {
+        let (bridge, _written) = silent_bridge();
+        let (kind, message) =
+            startup_supervision_issue("resource_busy: private startup diagnostics").unwrap();
+        assert!(!message.contains("private startup diagnostics"));
+        assert!(startup_supervision_issue("ordinary log: resource_busy:").is_none());
+        *bridge.startup_failure.lock().unwrap() = Some(protocol::error_with_data(
+            -32000,
+            message,
+            json!({"kind":kind}),
+        ));
+        bridge.alive.store(false, Ordering::SeqCst);
+        let error = bridge.request("initialize", json!({})).await.unwrap_err();
+        assert_eq!(error["data"]["kind"], "resource_busy");
+        assert!(error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("resource_busy:"));
+    }
+
+    #[tokio::test]
+    async fn bounded_outgoing_queue_rejects_overflow_and_returns_byte_leases() {
+        let budget_before = outgoing_budget().available_permits();
+        let (tx, rx) = mpsc::channel(1);
+        let writer = BridgeWriter::Owned(tx);
+        assert!(writer.send("first".into()).is_ok());
+        assert!(writer.send("second".into()).is_err());
+        assert!(writer.send("a".repeat(OWNED_FRAME_BYTES + 1)).is_err());
+        drop(rx);
+        assert_eq!(outgoing_budget().available_permits(), budget_before);
+    }
+
+    #[tokio::test]
+    async fn queued_events_hold_global_admission_and_cancel_without_deadlocking() {
+        let (events, mut received) = mpsc::unbounded_channel();
+        let (cancel, mut cancelled) = watch::channel(false);
+        let slots = event_slots();
+        let held = slots
+            .clone()
+            .acquire_many_owned(OWNED_EVENT_SLOTS as u32)
+            .await
+            .unwrap();
+        let (ack, _rx) = oneshot::channel();
+        cancel.send_replace(true);
+        assert!(admit_event(
+            BridgeEvent::Drained { ack },
+            1,
+            true,
+            &events,
+            &mut cancelled
+        )
+        .await
+        .is_err());
+        assert!(received.try_recv().is_err());
+        drop(held);
+        cancel.send_replace(false);
+        cancelled.borrow_and_update();
+        let (ack, _rx) = oneshot::channel();
+        admit_event(
+            BridgeEvent::Drained { ack },
+            1,
+            true,
+            &events,
+            &mut cancelled,
+        )
+        .await
+        .unwrap();
+        assert_eq!(slots.available_permits(), OWNED_EVENT_SLOTS - 1);
+        let (event, lease) = received.recv().await.unwrap().into_admitted();
+        assert!(matches!(event, BridgeEvent::Drained { .. }));
+        assert_eq!(slots.available_permits(), OWNED_EVENT_SLOTS - 1);
+        drop(lease);
+        assert_eq!(slots.available_permits(), OWNED_EVENT_SLOTS);
+    }
+
+    #[tokio::test]
+    async fn stopped_event_router_releases_global_transport_admission() {
+        let bytes_before = event_budget().available_permits();
+        let slots_before = event_slots().available_permits();
+        let (events, received) = mpsc::unbounded_channel();
+        let (_cancel, mut cancelled) = watch::channel(false);
+        drop(received);
+        let (ack, _rx) = oneshot::channel();
+        assert!(admit_event(
+            BridgeEvent::Drained { ack },
+            2048,
+            true,
+            &events,
+            &mut cancelled
+        )
+        .await
+        .is_err());
+        assert_eq!(event_budget().available_permits(), bytes_before);
+        assert_eq!(event_slots().available_permits(), slots_before);
+    }
+
+    #[tokio::test]
+    async fn transport_failure_fails_waiters_with_explicit_budget_evidence() {
+        let (bridge, _written) = silent_bridge();
+        let (tx, rx) = oneshot::channel();
+        assert!(bridge.register_pending(1, tx));
+        transport_failed(
+            &bridge.pending,
+            &bridge.alive,
+            &bridge.transport_cancelled,
+            "test frame exceeded",
+        );
+        let error = rx.await.unwrap().unwrap_err();
+        assert_eq!(error["data"]["kind"], "transport_budget_exceeded");
+        assert_eq!(pending_count(&bridge), 0);
+        assert!(!bridge.is_alive());
+    }
+
     /// A bridge with no process behind it: whatever is written to it lands
     /// in the returned receiver, and nothing ever answers.
     pub(crate) fn silent_bridge() -> (Bridge, mpsc::UnboundedReceiver<String>) {
@@ -1139,7 +1771,9 @@ pub(super) mod tests {
             executable: Value::Null,
             agent_capabilities: RwLock::new(Value::Null),
             zai: None,
-            writer,
+            writer: BridgeWriter::Chat(writer),
+            transport_cancelled: watch::channel(false).0,
+            startup_failure: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
@@ -1646,7 +2280,9 @@ pub(super) mod tests {
             executable: Value::Null,
             agent_capabilities: RwLock::new(Value::Null),
             zai: None,
-            writer: mpsc::unbounded_channel().0,
+            writer: BridgeWriter::Chat(mpsc::unbounded_channel().0),
+            transport_cancelled: watch::channel(false).0,
+            startup_failure: Arc::new(Mutex::new(None)),
             pending: Arc::clone(&pending),
             next_id: AtomicU64::new(1),
             alive: Arc::clone(&alive),

@@ -7,8 +7,15 @@ set -uo pipefail
 # Admission can be the first command after WSL starts. Join the boot helper's
 # lock and finish initialization before reporting readiness.
 /usr/local/sbin/bench-net >&2 || exit $?
+if [[ -z ${DISTILL_BENCH_CONTROL:-} ]]; then
+  exec /usr/local/sbin/bench-budget control -- /usr/bin/env DISTILL_BENCH_CONTROL=1 /bin/bash "$0" "$@"
+fi
+/usr/local/sbin/bench-budget status || exit $?
 for file in /usr/local/sbin/bench-* /etc/wsl.conf; do
   echo "file $(basename "$file") $(sha256sum "$file" | cut -d' ' -f1)"
+done
+for file in /opt/distill-browser/runtime.json /usr/local/lib/distill/benchmark-browser-worker.mjs; do
+  [[ ! -f $file ]] || echo "file $(basename "$file" | sed 's/^runtime.json$/browser-runtime.json/') $(sha256sum "$file" | cut -d' ' -f1)"
 done
 echo "node $(node --version 2>/dev/null)"
 echo "git $(git --version 2>/dev/null | cut -d' ' -f3)"

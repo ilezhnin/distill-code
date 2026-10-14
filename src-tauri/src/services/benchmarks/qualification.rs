@@ -73,6 +73,8 @@ pub struct Binding {
     pub evaluator_revision: String,
     pub created_at: i64,
     pub record_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_runtime_revision: Option<String>,
     pub status: String,
     pub revoked_at: Option<i64>,
     pub revocation_reason: Option<String>,
@@ -95,6 +97,8 @@ pub struct Record {
     pub created_at: i64,
     pub request: Request,
     pub manifest_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_runtime_revision: Option<String>,
     pub controls: Vec<ControlResult>,
     pub status: String,
     pub finished_at: Option<i64>,
@@ -300,7 +304,11 @@ impl BenchmarkService {
         }
         let record = Record {
             id: uuid::Uuid::new_v4().to_string(), created_at: now(),
-            manifest_hash: hash(&version.manifest)?, request,
+            manifest_hash: hash(&version.manifest)?,
+            evaluator_runtime_revision: if runner::requires_browser_runtime(&version.manifest) {
+                Some(Box::pin(super::worker::ready()).await?)
+            } else { None },
+            request,
             controls: Vec::new(), status: "reserved".into(),
             finished_at: None, failure: None,
             limitations: vec![
@@ -395,7 +403,26 @@ fn in_band(rubric: &RubricCalibration, expected: &str, score: Option<f64>) -> bo
 }
 
 pub(super) fn validate_protocol(record: &Record, version: &BenchmarkVersion) -> Result<()> {
-    if version.manifest.evaluator.kind != "rubric" {
+    let kind = version.manifest.evaluator.kind.as_str();
+    if matches!(kind, "javascript" | "browser") {
+        let runtime = super::worker::runtime_revision();
+        if record.controls.len() != record.request.controls.len()
+            || record.controls.iter().any(|control| {
+                control.evaluation.as_ref().and_then(|evaluation| {
+                    evaluation
+                        .details
+                        .as_ref()?
+                        .get("runtimeRevision")?
+                        .as_str()
+                }) != Some(runtime.as_str())
+            })
+        {
+            return Err(invalid(
+                "Browser qualification belongs to another renderer runtime",
+            ));
+        }
+    }
+    if kind != "rubric" {
         return Ok(());
     }
     if record.request.rubric.is_none()
@@ -414,6 +441,45 @@ pub(super) fn validate_protocol(record: &Record, version: &BenchmarkVersion) -> 
     Ok(())
 }
 
+pub(super) async fn validate_renderer_runtime(
+    record: &Record,
+    version: &BenchmarkVersion,
+) -> Result<()> {
+    if !runner::requires_browser_runtime(&version.manifest) {
+        return Ok(());
+    }
+    let installed = Box::pin(super::worker::ready()).await?;
+    if record.evaluator_runtime_revision.as_deref() != Some(installed.as_str()) {
+        return Err(invalid(
+            "Qualification renderer identity changed after admission",
+        ));
+    }
+    for control in &record.controls {
+        let revision = if record.request.rubric.is_some() {
+            control
+                .judge_evaluations
+                .iter()
+                .find(|evaluation| evaluation.provenance == "render")
+                .and_then(|evaluation| evaluation.details.as_ref())
+                .and_then(|details| details.pointer("/protocol/installedRendererRevision"))
+                .and_then(serde_json::Value::as_str)
+        } else {
+            control
+                .evaluation
+                .as_ref()
+                .and_then(|evaluation| evaluation.details.as_ref())
+                .and_then(|details| details.get("installedRevision"))
+                .and_then(serde_json::Value::as_str)
+        };
+        if revision != Some(installed.as_str()) {
+            return Err(invalid(
+                "Qualification belongs to another installed browser runtime",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn control_agrees(record: &Record, version: &BenchmarkVersion, index: usize) -> Result<bool> {
     let result = &record.controls[index];
     let expected = &record.request.controls[index].expected;
@@ -424,6 +490,17 @@ fn control_agrees(record: &Record, version: &BenchmarkVersion, index: usize) -> 
         return Ok(false);
     }
     let Some(rubric) = &record.request.rubric else {
+        if matches!(
+            version.manifest.evaluator.kind.as_str(),
+            "javascript" | "browser"
+        ) && evaluation.details.as_ref().and_then(|details| {
+            details
+                .get("runtimeRevision")
+                .and_then(serde_json::Value::as_str)
+        }) != Some(super::worker::runtime_revision().as_str())
+        {
+            return Ok(false);
+        }
         return Ok(evaluation.verdict == *expected
             && evaluation.score == Some(if expected == "pass" { 1.0 } else { 0.0 }));
     };
@@ -482,7 +559,13 @@ async fn run_controls(
             judge_evaluations: Vec::new(),
         });
         store.save_qualification_progress(&record).await?;
-        let evaluated = runner::evaluate(&version.manifest, &control.output).await;
+        let evaluated = tokio::select! {
+            result = Box::pin(runner::evaluate(&version.manifest, &control.output)) => result,
+            result = qualification_cancellation(store, &record.id) => {
+                result?;
+                Err(BenchmarkError::new("cancelled", "Qualification was revoked during evaluator admission"))
+            }
+        };
         let evaluated = match evaluated {
             Ok(evaluation)
                 if record.request.rubric.is_some() && evaluation.verdict == "pending_review" =>
@@ -540,9 +623,23 @@ async fn run_controls(
     if store.qualification_stopped(&record.id).await? {
         record.failure = Some("Qualification was revoked before completion".into());
     }
+    if record.failure.is_none() {
+        if let Err(error) = Box::pin(validate_renderer_runtime(&record, version)).await {
+            record.failure = Some(error.message);
+        }
+    }
     store.finish_qualification(&mut record).await?;
     super::notify_changed(store, app).await;
     store.qualification(&record.id).await
+}
+
+async fn qualification_cancellation(store: &Store, id: &str) -> Result<()> {
+    loop {
+        if store.qualification_stopped(id).await? {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 }
 
 impl Store {
@@ -620,10 +717,10 @@ impl Store {
     }
     /// Binding metadata only: inference must not read hidden control answers.
     pub async fn qualification_bindings(&self, version_id: &str) -> Result<Vec<Binding>> {
-        sqlx::query("SELECT id,version_id,content_hash,manifest_hash,evaluator_revision,created_at,record_hash,status,revoked_at,revocation_reason FROM selector_qualifications WHERE version_id=? ORDER BY created_at,id")
+        sqlx::query("SELECT id,version_id,content_hash,manifest_hash,evaluator_revision,created_at,record_hash,json_extract(record_json,'$.evaluatorRuntimeRevision') AS evaluator_runtime_revision,status,revoked_at,revocation_reason FROM selector_qualifications WHERE version_id=? ORDER BY created_at,id")
             .bind(version_id).fetch_all(&self.pool).await?.into_iter().map(|row| Ok(Binding {
                 id:row.try_get("id")?,version_id:row.try_get("version_id")?,content_hash:row.try_get("content_hash")?,manifest_hash:row.try_get("manifest_hash")?,evaluator_revision:row.try_get("evaluator_revision")?,
-                created_at:row.try_get("created_at")?,record_hash:row.try_get("record_hash")?,status:row.try_get("status")?,revoked_at:row.try_get("revoked_at")?,revocation_reason:row.try_get("revocation_reason")?
+                created_at:row.try_get("created_at")?,record_hash:row.try_get("record_hash")?,evaluator_runtime_revision:row.try_get("evaluator_runtime_revision")?,status:row.try_get("status")?,revoked_at:row.try_get("revoked_at")?,revocation_reason:row.try_get("revocation_reason")?
             })).collect()
     }
     pub async fn revoke_qualification(&self, id: &str, reason: &str) -> Result<()> {

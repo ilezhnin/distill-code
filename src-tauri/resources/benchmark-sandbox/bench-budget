@@ -1,0 +1,620 @@
+#!/usr/bin/python3
+"""Root-owned fair admission, hierarchical limits and independent Linux leases.
+
+The scratch filesystem is a fixed-size ext4 loop device, not a sampled du
+estimate. This helper never executes a submitted file while holding root.
+"""
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import select
+import signal
+import subprocess
+import sys
+import time
+
+GIB = 1024 ** 3
+ROOT = Path('/sys/fs/cgroup/distill-bench')
+STATE = Path('/run/distill-bench-budget')
+SCRATCH = Path('/srv/bench')
+IMAGE = Path('/var/lib/distill-bench/scratch.ext4')
+MEMORY = 12 * GIB
+DISK = 8 * GIB
+INODES = 131072
+OUTCOME_TOKEN = None
+READ_BPS = 128 * 1024 ** 2
+WRITE_BPS = 32 * 1024 ** 2
+# Leave one GiB for trusted supervisors, page tables and filesystem bookkeeping.
+ADMISSION_MEMORY = 11 * GIB
+CLASSES = {
+    'text': (2 * GIB, 1, 256, 'light'),
+    'repository': (6 * GIB, 2, 768, 'heavy'),
+    'browser': (2 * GIB, 1, 384, 'heavy'),
+    'check': (4 * GIB, 2, 512, 'heavy'),
+    'pair': (8 * GIB, 2, 768, 'heavy'),
+    'prep': (2 * GIB, 1, 256, 'prep'),
+    'login': (2 * GIB, 1, 256, 'light'),
+    'probe': (2 * GIB, 1, 256, 'light'),
+}
+SCRATCH_RESERVATIONS = {
+    'text': (64 * 1024 ** 2, 4096), 'repository': (2 * GIB, 32768),
+    'browser': (128 * 1024 ** 2, 4096), 'check': (GIB, 16384),
+    'pair': (2 * GIB, 32768), 'prep': (GIB, 32768),
+    'login': (0, 0), 'probe': (128 * 1024 ** 2, 4096),
+}
+
+
+def fail(message):
+    raise RuntimeError('capability_missing: ' + message)
+
+
+def ident(value):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', value):
+        fail('invalid benchmark resource owner')
+    return value
+
+
+def write(path, value):
+    path.write_text(str(value))
+
+
+def protected(path):
+    info = path.lstat()
+    return path.is_dir() and not path.is_symlink() and info.st_uid == 0 and not info.st_mode & 0o022
+
+
+def setup():
+    if os.geteuid() != 0:
+        fail('benchmark admission requires the trusted root broker')
+    controllers = set(Path('/sys/fs/cgroup/cgroup.controllers').read_text().split())
+    if not {'memory', 'cpu', 'pids', 'io'} <= controllers:
+        fail('WSL cgroup v2 memory, CPU, PID and IO controllers are required')
+    write(Path('/sys/fs/cgroup/cgroup.subtree_control'), '+memory +cpu +pids +io')
+    ROOT.mkdir(exist_ok=True)
+    write(ROOT / 'memory.max', MEMORY)
+    write(ROOT / 'memory.high', 11 * GIB)
+    write(ROOT / 'memory.swap.max', 0)
+    write(ROOT / 'cpu.max', '400000 100000')
+    write(ROOT / 'pids.max', 1536)
+    write(ROOT / 'cgroup.subtree_control', '+memory +cpu +pids +io')
+    control = ROOT / 'control'
+    control.mkdir(exist_ok=True)
+    write(control / 'memory.max', 256 * 1024 ** 2)
+    write(control / 'memory.swap.max', 0)
+    write(control / 'pids.max', 128)
+    write(control / 'cpu.max', '50000 100000')
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    (STATE / 'attempts').mkdir(mode=0o700, exist_ok=True)
+    (STATE / 'outcomes').mkdir(mode=0o700, exist_ok=True)
+    for path in (STATE, STATE / 'attempts', SCRATCH):
+        if not protected(path):
+            fail('benchmark scratch and lease parents must be root owned')
+    device = scratch_device()
+    write(ROOT / 'io.max', f'{device} rbps={READ_BPS} wbps={WRITE_BPS}')
+    verify()
+
+
+def verify():
+    expected = {'memory.max': str(MEMORY), 'memory.swap.max': '0',
+                'cpu.max': '400000 100000', 'pids.max': '1536'}
+    for name, value in expected.items():
+        if (ROOT / name).read_text().strip() != value:
+            fail('benchmark aggregate resource limit did not take effect: ' + name)
+    device = scratch_device()
+    limits = [line.split() for line in (ROOT / 'io.max').read_text().splitlines()]
+    row = next((line[1:] for line in limits if line[0] == device), [])
+    settings = dict(item.split('=', 1) for item in row)
+    if settings.get('rbps') != str(READ_BPS) or settings.get('wbps') != str(WRITE_BPS):
+        fail('benchmark scratch IO limit did not take effect')
+
+
+def scratch_device():
+    # The device must be our protected, fixed-size loop image, never the distro
+    # root filesystem. A missing loop/quota implementation fails closed.
+    mounts = subprocess.check_output(['findmnt', '-rn', '-M', str(SCRATCH), '-o', 'FSTYPE,SOURCE,OPTIONS'], text=True).strip().split()
+    if len(mounts) != 3 or mounts[0] != 'ext4' or not {'nodev', 'nosuid'} <= set(mounts[2].split(',')):
+        fail('bounded benchmark scratch is not mounted (run deploy-helpers)')
+    backing = subprocess.check_output(['losetup', '--noheadings', '--raw', '-O', 'BACK-FILE', mounts[1]], text=True).strip()
+    if backing != str(IMAGE) or IMAGE.is_symlink() or IMAGE.stat().st_uid != 0 or IMAGE.stat().st_mode & 0o077 or IMAGE.stat().st_size != DISK:
+        fail('benchmark scratch backing store differs from the fixed disk budget')
+    filesystem = os.statvfs(SCRATCH)
+    if filesystem.f_blocks * filesystem.f_frsize > DISK or filesystem.f_files > INODES:
+        fail('benchmark scratch byte/inode limit differs from policy')
+    if (filesystem.f_bfree - filesystem.f_bavail) * filesystem.f_frsize < 128 * 1024 ** 2:
+        fail('benchmark scratch must retain protected root blocks for credential recovery and cleanup')
+    device = SCRATCH.stat().st_dev
+    return f'{os.major(device)}:{os.minor(device)}'
+
+
+def mount_scratch():
+    """Explicit setup only; retain the original tree as a protected backup."""
+    if subprocess.run(['mountpoint', '-q', str(SCRATCH)]).returncode == 0:
+        return
+    # Migration cannot race an older unbudgeted helper. Refuse live benchmark
+    # groups, and preserve every original byte before changing the mount.
+    for group in ROOT.glob('*'):
+        if group.name != 'control' and group.is_dir() and (group / 'cgroup.procs').read_text().strip():
+            fail('active benchmark processes must drain before scratch migration')
+    IMAGE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not IMAGE.exists():
+        fd = os.open(IMAGE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as image:
+            image.truncate(DISK)
+        # Root-only reserved blocks retain credential evidence and cleanup
+        # receipts even if an unprivileged candidate fills ordinary storage.
+        subprocess.run(['mkfs.ext4', '-q', '-m', '3', '-N', str(INODES), str(IMAGE)], check=True)
+    if IMAGE.is_symlink() or IMAGE.stat().st_uid != 0 or IMAGE.stat().st_mode & 0o077 or IMAGE.stat().st_size != DISK:
+        fail('unsafe existing benchmark scratch image')
+    SCRATCH.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if any(SCRATCH.iterdir()):
+        backup = SCRATCH.with_name('bench-before-budget-' + str(time.time_ns()))
+        SCRATCH.rename(backup)
+        SCRATCH.mkdir(mode=0o700)
+        print('Retained benchmark scratch backup at ' + str(backup), file=sys.stderr)
+    subprocess.run(['mount', '-o', 'loop,nodev,nosuid', str(IMAGE), str(SCRATCH)], check=True)
+    os.chmod(SCRATCH, 0o700)
+    for name in ('work', 'base', 'checks', 'staging', 'probes', 'pairs', 'submissions', 'artifacts', 'auth', 'owners'):
+        (SCRATCH / name).mkdir(mode=0o700, exist_ok=True)
+
+
+def proc_identity(pid):
+    try:
+        # starttime disambiguates Linux PID reuse; the command name may contain spaces.
+        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def live(receipt):
+    if receipt.get('pending'):
+        return receipt['pending_until'] > time.time()
+    return (receipt['deadline'] > time.time() and
+            proc_identity(receipt['pid']) == receipt['start'])
+
+
+def stop(groups):
+    for name in groups:
+        path = ROOT / name
+        if path.exists():
+            write(path / 'cgroup.kill', 1)
+    until = time.monotonic() + 5
+    for name in groups:
+        path = ROOT / name
+        while path.exists() and (path / 'cgroup.procs').read_text().strip() and time.monotonic() < until:
+            time.sleep(0.05)
+        if path.exists():
+            if (path / 'cgroup.procs').read_text().strip():
+                fail('benchmark process tree did not stop')
+            path.rmdir()
+
+
+def locked():
+    handle = open(STATE / 'lock', 'a+')
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    return handle
+
+
+def receipts():
+    result = []
+    for path in STATE.glob('lease-*.json'):
+        value = json.loads(path.read_text())
+        if not live(value):
+            stop(value['groups'])
+            path.unlink(missing_ok=True)
+        else:
+            result.append(value)
+    return result
+
+
+def waiting():
+    queue = []
+    for path in STATE.glob('wait-*.json'):
+        row = json.loads(path.read_text())
+        if live(row):
+            queue.append((row['created'], path.name))
+        else:
+            path.unlink(missing_ok=True)
+    return queue
+
+
+def fits(active, kind):
+    memory, cpu, pids, lane = CLASSES[kind]
+    return (sum(row['memory'] for row in active) + memory <= ADMISSION_MEMORY and
+            sum(row['cpu'] for row in active) + cpu <= 4 and
+            sum(row['pids'] for row in active) + pids <= 1408 and
+            sum(row['lane'] == lane for row in active) < (2 if lane == 'light' else 1))
+
+
+def host_gate(gate, active, memory):
+    try:
+        timestamp, available_ram, commit, disk = map(int, gate.split(','))
+    except (ValueError, AttributeError):
+        fail('fresh Windows headroom evidence is required before benchmark admission')
+    age = time.time() * 1000 - timestamp
+    # WSL/Windows clocks can differ slightly even on the same machine. Permit
+    # one second of future skew, retaining the five-second stale-evidence cap.
+    if not -1000 <= age <= 5000:
+        raise BlockingIOError('resource_busy: Windows headroom evidence expired before execution; no provider process started')
+    current = int((ROOT / 'memory.current').read_text())
+    additional = memory + max(0, sum(row['memory'] for row in active) - current)
+    if available_ram < 12 * GIB + additional or commit < 8 * GIB + additional or disk < 30 * GIB:
+        raise BlockingIOError('resource_busy: Windows headroom cannot cover committed benchmark reservations; no provider process started')
+    # Other WSL distributions share the guest VM. Parent caps alone do not
+    # protect an Ubuntu workload already occupying most guest memory.
+    guest = {line.split(':', 1)[0]: int(line.split()[1]) * 1024
+             for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')}
+    if guest.get('MemAvailable', 0) < 2 * GIB + additional:
+        raise BlockingIOError('resource_busy: shared WSL memory cannot cover benchmark reservations and its 2 GiB floor; no provider process started')
+
+
+def scratch_headroom(active, kind):
+    filesystem = os.statvfs(SCRATCH)
+    needed_bytes, needed_inodes = SCRATCH_RESERVATIONS[kind]
+    needed_bytes += 256 * 1024 ** 2 + sum(row.get('scratch_bytes', 0) for row in active)
+    needed_inodes += 4096 + sum(row.get('scratch_inodes', 0) for row in active)
+    if filesystem.f_bavail * filesystem.f_frsize < needed_bytes or filesystem.f_favail < needed_inodes:
+        raise BlockingIOError('resource_busy: bounded benchmark scratch has insufficient free bytes/inodes for committed phases; no provider process started')
+
+
+def scratch_runtime_floor():
+    filesystem = os.statvfs(SCRATCH)
+    if filesystem.f_bavail * filesystem.f_frsize < 64 * 1024 ** 2 or filesystem.f_favail < 4096:
+        raise RuntimeError('infrastructure_error: bounded benchmark scratch resource floor reached during execution')
+
+
+def make_groups(kind, identifier):
+    memory, cpu, pids, _ = CLASSES[kind]
+    prefix = 'check-' if kind == 'pair' else 'session-' if kind in ('text', 'repository') else kind + '-'
+    groups = [prefix + identifier]
+    if kind == 'pair':
+        groups.append('probe-' + identifier)
+    made = []
+    try:
+        for name in groups:
+            child_group(name, memory // len(groups), cpu // len(groups), pids // len(groups))
+            made.append(name)
+    except BaseException:
+        stop(made)
+        raise
+    return groups
+
+
+def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
+    deadline = deadline_ms / 1000
+    ident(identifier)
+    if kind not in CLASSES or not time.time() < deadline <= time.time() + 86400 + 480 or not 0 <= host_buffers <= GIB + 65536:
+        fail('unsupported benchmark class or reservation deadline')
+    setup()
+    with locked():
+        active = receipts()
+        if not fits(active, kind) or waiting() or sum(row['memory'] for row in active) + CLASSES[kind][0] + host_buffers > ADMISSION_MEMORY:
+            raise BlockingIOError('resource_busy: benchmark resource capacity is queued; no provider process started')
+        host_gate(gate, active, CLASSES[kind][0] + host_buffers)
+        scratch_headroom(active, kind)
+        groups = make_groups(kind, identifier)
+        token = secrets.token_hex(16)
+        memory, cpu, pids, lane = CLASSES[kind]
+        scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
+        row = dict(pending=True, pending_until=time.time() + 60, kind=kind, id=identifier,
+                   groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane)
+        row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
+        (STATE / ('lease-' + token + '.json')).write_text(json.dumps(row))
+        print(json.dumps({'token': token, 'id': identifier, 'class': kind, 'deadlineMs': deadline_ms}))
+
+
+def release(token):
+    if not re.fullmatch('[0-9a-f]{32}', token):
+        fail('invalid benchmark reservation token')
+    with locked():
+        path = STATE / ('lease-' + token + '.json')
+        if path.exists():
+            row = json.loads(path.read_text())
+            if row.get('pending'):
+                stop(row['groups'])
+                path.unlink()
+
+
+def observe(mode, identifier):
+    ident(identifier)
+    if mode not in ('session', 'check', 'probe', 'login', 'browser', 'prep'):
+        fail('invalid sandbox observation mode')
+    name = mode + '-' + identifier
+    events = ROOT / name / 'memory.events'
+    if not events.exists():
+        return
+    counters = dict(line.split() for line in events.read_text().splitlines())
+    if not int(counters.get('oom_kill', 0)):
+        return
+    with locked():
+        for path in STATE.glob('lease-*.json'):
+            row = json.loads(path.read_text())
+            if name in row['groups']:
+                token = path.name[6:-5]
+                (STATE / 'outcomes' / (token + '.json')).write_text(json.dumps({
+                    'token': token, 'infrastructureError': 'infrastructure_error: benchmark process tree reached its memory ceiling'}))
+
+
+def child_group(name, memory, cpu, pids):
+    path = ROOT / name
+    path.mkdir()
+    for key, value in {'memory.max': memory, 'memory.swap.max': 0,
+                       'pids.max': pids, 'cpu.max': f'{cpu * 100000} 100000'}.items():
+        write(path / key, value)
+        if (path / key).read_text().strip() != str(value):
+            fail('benchmark child resource limit did not take effect')
+    write(path / 'memory.oom.group', 1)
+
+
+def joined(mode, identifier, command):
+    token = os.environ.get('DISTILL_BENCH_BUNDLE', '')
+    lease = STATE / ('lease-' + token + '.json')
+    if not re.fullmatch('[0-9a-f]{32}', token) or not lease.is_file():
+        fail('missing owned resource bundle')
+    row = json.loads(lease.read_text())
+    if row['id'] != identifier or not live(row):
+        fail('resource bundle owner expired')
+    group = row['groups'][1 if mode == 'probe' and len(row['groups']) == 2 else 0]
+    write(ROOT / group / 'cgroup.procs', os.getpid())
+    os.execv(command[0], command)
+
+
+def run(kind, identifier, command):
+    global OUTCOME_TOKEN
+    if kind not in CLASSES:
+        fail('unsupported benchmark resource class')
+    setup()
+    write(ROOT / 'control' / 'cgroup.procs', os.getpid())
+    reserved = os.environ.pop('DISTILL_BENCH_RESERVATION', None)
+    token = reserved or secrets.token_hex(16)
+    if not re.fullmatch('[0-9a-f]{32}', token):
+        fail('invalid benchmark resource reservation')
+    ticket = STATE / ('wait-' + token + '.json')
+    started = time.time()
+    host_buffers = int(os.environ.pop('DISTILL_BENCH_HOST_BUFFER_BYTES', '0'))
+    if not 0 <= host_buffers <= 1024 ** 3 + 65536:
+        fail('invalid benchmark host transport reservation')
+    deadline_ms = os.environ.pop('DISTILL_BENCH_DEADLINE_MS', None)
+    deadline = min(started + 86400 + 480, int(deadline_ms) / 1000) if deadline_ms else started + (120 if kind == 'prep' else 3600)
+    if deadline <= started:
+        raise TimeoutError('benchmark deadline expired before resource admission')
+    ticket.write_text(json.dumps({'pid': os.getpid(), 'start': proc_identity(os.getpid()),
+                                  'deadline': min(deadline, started + 300), 'created': time.time_ns()}))
+    lease = STATE / ('lease-' + token + '.json')
+    groups = []
+    owned = False
+    child = None
+    def cancelled(_signal, _frame):
+        raise TimeoutError('benchmark resource owner cancelled')
+    signal.signal(signal.SIGTERM, cancelled)
+    signal.signal(signal.SIGHUP, cancelled)
+    signal.signal(signal.SIGINT, cancelled)
+    try:
+        announced = False
+        if reserved:
+            with locked():
+                if not lease.is_file():
+                    raise BlockingIOError('resource_busy: pending benchmark reservation expired before execution; no provider process started')
+                row = json.loads(lease.read_text())
+                if not row.get('pending') or not live(row) or row['id'] != identifier or row['kind'] != kind:
+                    fail('benchmark resource reservation differs from execution owner/class')
+                # Claiming is not a second admission. The complete reservation
+                # already accounts for pending launchers without a race.
+                groups, deadline = row['groups'], row['deadline']
+                row.update(pending=False, pid=os.getpid(), start=proc_identity(os.getpid()))
+                lease.write_text(json.dumps(row))
+                owned = True
+                OUTCOME_TOKEN = token
+                ticket.unlink(missing_ok=True)
+        while not reserved:
+            if time.time() >= min(deadline, started + 300):
+                raise TimeoutError('resource_busy: benchmark resource queue expired before execution')
+            with locked():
+                active = receipts()
+                queue = waiting()
+                if queue and min(queue)[1] == ticket.name and fits(active, kind) and sum(row['memory'] for row in active) + CLASSES[kind][0] + host_buffers <= ADMISSION_MEMORY:
+                    host_gate(os.environ.get('DISTILL_BENCH_HOST_GATE'), active, CLASSES[kind][0] + host_buffers)
+                    scratch_headroom(active, kind)
+                    memory, cpu, pids, lane = CLASSES[kind]
+                    groups = make_groups(kind, identifier)
+                    row = dict(pid=os.getpid(), start=proc_identity(os.getpid()), deadline=deadline,
+                               id=identifier, groups=groups, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane)
+                    scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
+                    row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
+                    lease.write_text(json.dumps(row))
+                    owned = True
+                    OUTCOME_TOKEN = token
+                    ticket.unlink(missing_ok=True)
+                    break
+            if not announced:
+                print('resource_waiting: benchmark queued for ' + kind + ' capacity', file=sys.stderr, flush=True)
+                announced = True
+            time.sleep(0.2)
+        print('resource_admitted: ' + kind, file=sys.stderr, flush=True)
+        owner_path = SCRATCH / 'owners' / (identifier + '.json')
+        if owner_path.exists():
+            owner_path.write_text(json.dumps({'id': identifier, 'deadline': max(deadline + 300, time.time() + 7200)}))
+        env = dict(os.environ, DISTILL_BENCH_BUNDLE=token)
+        # Supervisors stay in the reserved control group; only actual workers
+        # enter leaves. A paired supervisor must survive killing either child.
+        def enter():
+            if kind != 'pair':
+                write(ROOT / groups[0] / 'cgroup.procs', os.getpid())
+        child = subprocess.Popen(command, env=env, preexec_fn=enter)
+        disconnect = select.poll()
+        if kind in ('text', 'repository'):
+            # Observe HUP without reading a byte from the ACP stream. This
+            # lets Windows crash/disconnect end an ignoring or detached CLI;
+            # inherited stdin is still consumed exclusively by the child.
+            disconnect.register(0, select.POLLHUP | select.POLLERR)
+            disconnect.register(1, select.POLLHUP | select.POLLERR)
+        while True:
+            scratch_runtime_floor()
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError('benchmark owned execution deadline expired')
+            try:
+                code = child.wait(timeout=min(1, remaining))
+                scratch_runtime_floor()
+                for name in groups:
+                    events = ROOT / name / 'memory.events'
+                    if events.exists():
+                        counters = dict(line.split() for line in events.read_text().splitlines())
+                        if int(counters.get('oom_kill', 0)):
+                            raise RuntimeError('infrastructure_error: benchmark process tree reached its memory ceiling')
+                return code
+            except subprocess.TimeoutExpired:
+                if disconnect.poll(0):
+                    raise TimeoutError('benchmark host transport disconnected')
+    finally:
+        ticket.unlink(missing_ok=True)
+        if owned:
+            with locked():
+                stop(groups)
+                lease.unlink(missing_ok=True)
+        if child is not None:
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+
+
+def status():
+    setup()
+    with locked():
+        active = receipts()
+        print('budget memory 12884901888')
+        print('budget cpu 400000/100000')
+        print('budget swap 0')
+        print('budget pids 1536')
+        print('budget disk 8589934592')
+        print('budget inodes 131072')
+        print('budget io 134217728/33554432')
+        print('budget reserved', sum(row['memory'] for row in active))
+        print('budget current', (ROOT / 'memory.current').read_text().strip())
+        filesystem = os.statvfs(SCRATCH)
+        print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
+
+
+def reap():
+    # A detached independent owner watchdog survives Windows app termination.
+    setup()
+    write(ROOT / 'control' / 'cgroup.procs', os.getpid())
+    handle = open(STATE / 'reaper-lock', 'a+')
+    if sys.argv[2:] == ['--daemon']:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        while True:
+            with locked():
+                active = receipts()
+                waiting()
+                for path in (STATE / 'outcomes').glob('*.json'):
+                    if path.stat().st_mtime < time.time() - 3600:
+                        path.unlink(missing_ok=True)
+            expire_scratch({row['id'] for row in active})
+            time.sleep(5)
+    with locked():
+        receipts()
+    return 0
+
+
+def own(identifier):
+    ident(identifier)
+    setup()
+    directory = SCRATCH / 'owners'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if not protected(directory):
+        fail('unsafe benchmark scratch owner directory')
+    path = directory / (identifier + '.json')
+    # A bounded independent retention deadline applies even after app crash.
+    # The credential save helper retains ambiguous refresh evidence before
+    # this owner can be removed; failure deliberately prevents deletion.
+    path.write_text(json.dumps({'id': identifier, 'deadline': time.time() + 7200}))
+
+
+def expire_scratch(active):
+    for path in (SCRATCH / 'owners').glob('*.json'):
+        row = json.loads(path.read_text())
+        identifier = ident(row['id'])
+        if identifier not in active and row['deadline'] < time.time():
+            result = subprocess.run(['/usr/local/sbin/bench-clean', identifier],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=30)
+            if result.returncode == 0:
+                path.unlink(missing_ok=True)
+
+
+def main():
+    if os.geteuid() != 0:
+        fail('benchmark budget broker requires root')
+    if sys.argv[1:] == ['mount-scratch']:
+        mount_scratch()
+        return 0
+    if sys.argv[1:] == ['setup']:
+        setup()
+        subprocess.Popen([__file__, 'reap', '--daemon'], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return 0
+    if sys.argv[1:] == ['status']:
+        status()
+        return 0
+    if len(sys.argv) in (6, 7) and sys.argv[1] == 'reserve':
+        reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) == 7 else 0)
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == 'outcome':
+        token = sys.argv[2]
+        if not re.fullmatch('[0-9a-f]{32}', token):
+            fail('invalid resource outcome token')
+        path = STATE / 'outcomes' / (token + '.json')
+        print(path.read_text() if path.exists() else json.dumps({'token': token, 'infrastructureError': None}))
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == 'check-class':
+        setup()
+        identifier = ident(sys.argv[2])
+        print('pair' if (SCRATCH / 'pairs' / (identifier + '.json')).exists() else 'check')
+        return 0
+    if len(sys.argv) == 4 and sys.argv[1] == 'observe':
+        observe(sys.argv[2], sys.argv[3])
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == 'release':
+        release(sys.argv[2])
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == 'own':
+        own(sys.argv[2])
+        return 0
+    if len(sys.argv) >= 4 and sys.argv[1:3] == ['control', '--']:
+        setup()
+        write(ROOT / 'control' / 'cgroup.procs', os.getpid())
+        os.execv(sys.argv[3], sys.argv[3:])
+    if sys.argv[1:2] == ['reap']:
+        return reap()
+    if len(sys.argv) < 5 or sys.argv[3] != '--':
+        fail('invalid benchmark budget invocation')
+    kind, identifier = sys.argv[1:3]
+    ident(identifier)
+    command = sys.argv[4:]
+    if os.environ.get('DISTILL_BENCH_BUNDLE'):
+        joined(kind, identifier, command)
+    return run(kind, identifier, command)
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        if OUTCOME_TOKEN:
+            try:
+                reason = str(error)
+                if not reason.startswith(('infrastructure_error:', 'benchmark owned execution deadline', 'benchmark host transport')):
+                    reason = 'infrastructure_error: trusted sandbox resource supervision or cleanup failed'
+                (STATE / 'outcomes' / (OUTCOME_TOKEN + '.json')).write_text(json.dumps({
+                    'token': OUTCOME_TOKEN, 'infrastructureError': reason}))
+            except OSError:
+                pass
+        print(str(error), file=sys.stderr)
+        raise SystemExit(70)

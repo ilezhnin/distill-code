@@ -4,9 +4,16 @@
 set -euo pipefail
 id=${1:-}
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-clean: bad id" >&2; exit 64; }
+if [[ -z ${DISTILL_BENCH_CONTROL:-} ]]; then
+  export DISTILL_BENCH_CONTROL=1
+  exec /usr/local/sbin/bench-budget control -- /usr/bin/timeout --kill-after=5s 25s /bin/bash "$0" "$@"
+fi
 /usr/local/sbin/bench-kill session "$id"
 /usr/local/sbin/bench-kill check "$id"
+/usr/local/sbin/bench-kill browser "$id"
+/usr/local/sbin/bench-kill prep "$id"
 /usr/local/sbin/bench-auth save "$id"
 /usr/local/sbin/bench-network "$id" clean
 rm -rf "/srv/bench/work/$id" "/srv/bench/base/$id" "/srv/bench/checks/$id" "/srv/bench/staging/$id" "/srv/bench/auth/$id" "/srv/bench/probes/$id" "/srv/bench/submissions/$id"
 rm -f "/srv/bench/pairs/$id.json"
+rm -f "/srv/bench/owners/$id.json"

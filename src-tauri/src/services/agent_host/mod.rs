@@ -20,6 +20,7 @@ pub mod router;
 mod session_title;
 pub mod sources;
 pub mod store;
+pub(crate) mod text_execution;
 mod zai;
 
 pub use router::AgentHost;

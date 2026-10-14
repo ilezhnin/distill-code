@@ -1,0 +1,8 @@
+# Ubuntu Noble's per-application user namespace allowance, scoped to the pinned
+# root-owned browser. Outer benchmark namespaces/cgroups and Chromium's sandbox
+# remain required; this does not disable the global AppArmor restriction.
+abi <abi/4.0>,
+include <tunables/global>
+profile distill-benchmark-chromium /opt/distill-browser/browsers/chromium-1234/chrome-linux64/chrome flags=(unconfined) {
+  userns,
+}

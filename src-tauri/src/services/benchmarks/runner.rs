@@ -6,7 +6,7 @@ use super::{
     BenchmarkService,
 };
 use crate::services::{
-    agent_host::{execution::*, repository_execution, AgentHost},
+    agent_host::{execution::*, repository_execution, text_execution, AgentHost},
     benchmark_sandbox as sandbox,
 };
 use futures_util::future::BoxFuture;
@@ -209,6 +209,14 @@ pub trait ExecutionBackend: Send + Sync {
     fn readiness<'a>(&'a self, _configuration: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
+    /// Resource waits happen before creating a provider session or spending a
+    /// model turn. Fixture backends do not consume local sandbox resources.
+    fn resource_admission<'a>(
+        &'a self,
+        _configuration: &'a Configuration,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn readiness_for_budget<'a>(
         &'a self,
         configuration: &'a Configuration,
@@ -351,16 +359,22 @@ impl NativeBackend {
         } else {
             None
         };
+        let text_revision = if owner.profile == ExecutionProfile::NativeTextV1 {
+            let status = text_execution::readiness(provider, &owner.account_id)
+                .await
+                .map_err(host_error)?;
+            Some(text_execution::revision(provider, &status))
+        } else {
+            None
+        };
         let inventory_revision = if let Some(revision) = &repository_revision {
             repository_inventory_revision(revision, &inventory, &owner.model_id)
         } else {
-            inventory_fingerprint(
+            text_inventory_revision(
+                text_revision.as_deref().expect("validated text revision"),
                 &inventory,
-                provider,
-                crate::services::managed_acp_tools::native_cli_path(&self.app, &owner.provider_id),
                 &owner.model_id,
             )
-            .await?
         };
         if attempt
             .observed
@@ -393,6 +407,7 @@ impl NativeBackend {
                 execution_profile: native_receipt::profile(&owner).into(),
                 inventory_revision,
                 repository_revision,
+                text_revision,
             },
         )
         .await?;
@@ -544,13 +559,34 @@ pub(super) fn profile_refusal(c: &Configuration) -> Option<String> {
     provider.effort_refusal(c.effort.as_deref())
 }
 
-/// Why a configuration cannot run natively: [`profile_refusal`], or a profile
-/// whose policy probe has not passed on what this build ships, which runs
-/// nothing.
+/// Static policy restrictions. Linux proof and account readiness are checked
+/// asynchronously against the actual sandbox runtime before admission.
 fn native_refusal(c: &Configuration) -> Option<String> {
-    profile_refusal(c).or_else(|| {
-        NativeProvider::for_harness(&c.provider_id).and_then(NativeProvider::admission_issue)
-    })
+    profile_refusal(c)
+}
+
+async fn text_runtime_snapshot(
+    c: &Configuration,
+    budget: Option<u32>,
+) -> Result<(String, sandbox::Status)> {
+    if let Some(reason) = profile_refusal(c) {
+        return Err(BenchmarkError::new("capability_missing", reason));
+    }
+    let provider = NativeProvider::for_harness(&c.provider_id).expect("validated provider");
+    let status = text_execution::readiness(provider, c.account_id.as_deref().unwrap_or_default())
+        .await
+        .map_err(host_error)?;
+    if let Some(timeout) = budget {
+        status
+            .require_account_window(
+                provider.key(),
+                c.account_id.as_deref().unwrap_or_default(),
+                now(),
+                timeout,
+            )
+            .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
+    }
+    Ok((text_execution::revision(provider, &status), status))
 }
 
 async fn repository_runtime(c: &Configuration) -> Result<String> {
@@ -599,7 +635,11 @@ async fn collect_repository(attempt: &mut Attempt, id: &str, cap: u64) -> Result
 /// passed. Without a deadline a timeout is the helper's own control limit,
 /// an infrastructure failure rather than budget exhaustion.
 fn sandbox_setup_error(error: std::io::Error, deadline: Option<u64>) -> BenchmarkError {
-    if deadline.is_some() && error.kind() == std::io::ErrorKind::TimedOut {
+    if error.kind() == std::io::ErrorKind::WouldBlock
+        && error.to_string().starts_with("resource_busy:")
+    {
+        BenchmarkError::new("resource_busy", error.to_string())
+    } else if deadline.is_some() && error.kind() == std::io::ErrorKind::TimedOut {
         BenchmarkError::new("budget_timeout", error.to_string())
     } else {
         error.into()
@@ -610,6 +650,13 @@ fn unsigned_deadline(deadline: i64) -> Result<u64> {
     deadline
         .try_into()
         .map_err(|_| BenchmarkError::new("budget_clock_conflict", "Native deadline is invalid"))
+}
+
+async fn preparation_gate(deadline: Option<u64>) -> Result<tokio::sync::OwnedSemaphorePermit> {
+    let admission_deadline = deadline.unwrap_or((now() as u64).saturating_add(420_000));
+    sandbox::host_preparation(admission_deadline)
+        .await
+        .map_err(|error| sandbox_setup_error(error, deadline))
 }
 
 fn collection_budget(
@@ -894,16 +941,18 @@ struct Seat<'a> {
     account_slots: usize,
 }
 
-/// Concurrent attempts of a configuration, within the shared account limit.
-/// Grok's shared text bridge serves one session; repository attempts each
-/// own a separate bridge and can use the run's requested parallelism.
-pub(super) fn attempts_at_once(request: &RunRequest, configuration: &Configuration) -> u32 {
-    if configuration.execution_profile != "protected_repository"
-        && NativeProvider::for_harness(&configuration.provider_id) == Some(NativeProvider::Grok)
-    {
-        return 1;
-    }
+/// Every sandbox attempt owns an independent bridge. Resource admission and
+/// the account's limits separately constrain requested concurrency.
+pub(super) fn attempts_at_once(request: &RunRequest, _configuration: &Configuration) -> u32 {
     request.parallelism.unwrap_or(1).max(1)
+}
+
+fn resource_waiting(attempt: &Attempt) -> bool {
+    attempt.wait_until.is_some_and(|until| until > now())
+        && attempt
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("Waiting for local resources:"))
 }
 
 /// How many attempts of `run_id` fly at once on an account of `provider_id`:
@@ -1360,6 +1409,7 @@ struct OpenBatch {
     asked: Vec<Configuration>,
     expected: usize,
     rendering: String,
+    rendering_hash: String,
 }
 
 fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
@@ -1379,7 +1429,40 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
         panel,
         expected,
         rendering: marker.artifacts.first()?.path.clone(),
+        rendering_hash: marker.artifacts.first()?.hash.clone(),
     })
+}
+
+async fn saved_rendering(open: &OpenBatch, textual: bool, max_text_bytes: u64) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(&open.rendering).await?;
+    let metadata = file.metadata().await?;
+    let cap = if textual {
+        max_text_bytes
+    } else {
+        2 * 1024 * 1024
+    };
+    if !metadata.is_file() || metadata.len() > cap {
+        return Err(BenchmarkError::new(
+            "evidence_mismatch",
+            "Saved judge evidence exceeds its artifact limit",
+        ));
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() as u64 > cap
+        || fixtures::hash(&bytes) != open.rendering_hash
+        || (!textual && !bytes.starts_with(b"\x89PNG\r\n\x1a\n"))
+    {
+        return Err(BenchmarkError::new(
+            "evidence_mismatch",
+            "Saved judge evidence differs from its sealed artifact",
+        ));
+    }
+    Ok(bytes)
 }
 
 /// The native panel: each judge's evaluation is saved on the attempt as it lands.
@@ -1440,28 +1523,47 @@ impl PanelJudges for NativePanel<'_, '_> {
         judge: &'s Configuration,
     ) -> BoxFuture<'s, Result<JudgeAnswer>> {
         Box::pin(async move {
-            let evaluation = match self
-                .backend
-                .ask_judge(
-                    self.store,
-                    self.attempt,
-                    self.version,
-                    judge,
-                    self.batch,
-                    index,
-                    self.prompt,
-                    self.image,
-                    self.response,
-                    self.criteria,
-                    self.stop,
-                    self.evidence,
-                )
-                .await
-            {
-                Ok(evaluation) => evaluation,
-                // A busy account is a reason to wait, not an abstention.
-                Err(error) if error.code == ACCOUNT_BUSY => return Ok(JudgeAnswer::Busy),
-                Err(error) => judge_abstention(self.version, judge, self.batch, error.message),
+            let admission_started = Instant::now();
+            let evaluation = loop {
+                if self.stop.halted(self.store).await? {
+                    return Ok(JudgeAnswer::Busy);
+                }
+                let result = self
+                    .backend
+                    .ask_judge(
+                        self.store,
+                        self.attempt,
+                        self.version,
+                        judge,
+                        self.batch,
+                        index,
+                        self.prompt,
+                        self.image,
+                        self.response,
+                        self.criteria,
+                        self.stop,
+                        self.evidence,
+                    )
+                    .await;
+                match result {
+                    Ok(evaluation) => break evaluation,
+                    // A busy account is a reason to wait, not an abstention.
+                    Err(error)
+                        if error.code == "resource_busy"
+                            && admission_started.elapsed() < Duration::from_secs(300) =>
+                    {
+                        if self.stop.halted(self.store).await? {
+                            return Ok(JudgeAnswer::Busy);
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    Err(error) if matches!(error.code.as_str(), ACCOUNT_BUSY | "resource_busy") => {
+                        return Ok(JudgeAnswer::Busy);
+                    }
+                    Err(error) => {
+                        break judge_abstention(self.version, judge, self.batch, error.message)
+                    }
+                }
             };
             let vote = if valid_vote(&evaluation) {
                 JudgeAnswer::Vote
@@ -1667,30 +1769,15 @@ impl NativeBackend {
         // A provider with no verified profile is listed but never pinned
         // or admitted.
         let native = NativeProvider::for_harness(provider);
-        let native_cli = crate::services::managed_acp_tools::native_cli_path(&self.app, provider);
-        let identity = match native {
-            Some(native) => Some(runtime_identity(result, native, native_cli.clone()).await?),
-            None => None,
-        };
-        let unavailable = match native {
-            None => Some("Native execution restrictions have not been verified".to_string()),
-            Some(native) => match native.admission_issue() {
-                Some(issue) => Some(issue),
-                None => match runtime_issue(result, native, native_cli).await {
-                    Some(issue) => Some(issue),
-                    // Every Codex thread loads the account's home, and the
-                    // personal skills of the user's own profile.
-                    None if native == NativeProvider::Codex => {
-                        crate::services::provider_accounts::account_home(&self.app, &record)
-                            .and_then(|home| codex_home_preflight(&home))
-                            .and_then(|()| {
-                                codex_user_skills_preflight(codex_user_profile().as_deref())
-                            })
-                            .err()
-                    }
-                    None => None,
-                },
+        let (identity, unavailable) = match native {
+            Some(native) => match text_execution::readiness(native, account).await {
+                Ok(status) => (Some(text_execution::revision(native, &status)), None),
+                Err(error) => (None, Some(host_error(error).message)),
             },
+            None => (
+                None,
+                Some("Linux text execution restrictions have not been verified".into()),
+            ),
         };
         let excluded = native.map_or(&[][..], NativeProvider::excluded_efforts);
         let mut rows: Vec<InventoryModel> = result["models"]
@@ -1723,7 +1810,7 @@ impl NativeBackend {
                         execution_profile: "native_text".into(),
                         inventory_revision: identity
                             .as_ref()
-                            .map(|identity| identity.revision(result, id)),
+                            .map(|identity| text_inventory_revision(identity, result, id)),
                         model_name: (name != id).then(|| name.to_string()),
                     },
                     name: name.into(),
@@ -1970,35 +2057,21 @@ impl NativeBackend {
                 return Err(BenchmarkError::new("selection_changed", "Frozen judge settings, billing or runtime changed; no replacement was selected"));
             }
         }
-        let cwd = evidence
-            .directory(store, attempt)
-            .join(format!("judge-{batch}-{index}"));
-        tokio::fs::create_dir_all(&cwd).await?;
         let timeout = Duration::from_secs(u64::from(JUDGE_TIMEOUT_SECONDS));
-        // A Grok judge's sign-in is renewed as a candidate's is. One the
-        // Grok CLI renews only later defers the batch like a busy account,
-        // rather than costing it this judge's seat; a refusal abstains.
-        if NativeProvider::for_harness(&judge.provider_id) == Some(NativeProvider::Grok) {
-            let gate = self
-                .renew_grok_sign_in(
-                    &host,
-                    &judge.provider_id,
-                    &account,
-                    timeout.as_millis() as u64,
-                )
-                .await?;
-            judge_sign_in(gate)?;
-        }
+        let (_, credential_snapshot) =
+            text_runtime_snapshot(judge, Some(JUDGE_TIMEOUT_SECONDS)).await?;
+        let judge_owner = format!("{}:judge:{batch}:{index}", attempt.id);
+        let _sandbox_cleanup = sandbox::Cleanup(Some(text_execution::attempt_id(&judge_owner)));
         let session = host
             .create_owned_session(
                 OwnedSessionRequest {
-                    owner_id: format!("{}:judge:{batch}:{index}", attempt.id),
+                    owner_id: judge_owner,
                     provider_id: judge.provider_id.clone(),
                     account_id: account,
                     model_id: judge.model_id.clone(),
                     reasoning_effort: judge.effort.clone(),
                     fast_mode: judge.fast_mode,
-                    cwd: cwd.to_string_lossy().into_owned(),
+                    cwd: "/workspace".into(),
                     title: format!("Benchmark judge: {}", version.manifest.name),
                     profile: ExecutionProfile::NativeTextV1,
                 },
@@ -2026,6 +2099,16 @@ impl NativeBackend {
             return Ok(abstention);
         }
         let key = format!("benchmark:{}:judge:{batch}:{index}", attempt.id);
+        credential_snapshot
+            .require_account_window(
+                NativeProvider::for_harness(&judge.provider_id)
+                    .expect("validated judge")
+                    .key(),
+                judge.account_id.as_deref().unwrap_or_default(),
+                now(),
+                JUDGE_TIMEOUT_SECONDS,
+            )
+            .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
         let mut placeholder =
             judge_abstention(version, judge, batch, "Judge turn in flight".into());
         placeholder.details = Some(
@@ -2142,7 +2225,8 @@ impl NativeBackend {
         if !usage_complete {
             let _ = host.cancel_owned_turn(&key).await;
         }
-        let failure = failure.or(turn_failure);
+        let cleanup_failure = host.stop_owned_sandbox(&session.session_id).await.err();
+        let failure = failure.or(turn_failure).or(cleanup_failure);
         let parsed = failure
             .is_none()
             .then(|| judge_score_sheet(&version.manifest, &reply, response, criteria))
@@ -2206,6 +2290,11 @@ impl NativeBackend {
             return Ok(attempt);
         };
         let textual = text_judged(&version.manifest);
+        let installed_renderer = if textual {
+            None
+        } else {
+            Some(super::worker::ready().await?)
+        };
         let (width, height) = judge_viewport(&version.manifest);
         let renderer = judge_renderer(&version.manifest);
         // Nothing is written until the panel can settle the rendering, so a
@@ -2222,10 +2311,35 @@ impl NativeBackend {
             .then(|| open_batch(&attempt.evaluations))
             .flatten()
         {
-            Some(open) => tokio::fs::read(&open.rendering)
-                .await
-                .ok()
-                .map(|png| (open, png)),
+            Some(open)
+                if !textual
+                    && attempt
+                        .evaluations
+                        .iter()
+                        .filter(|evaluation| {
+                            evaluation.provenance == "render"
+                                && evaluation
+                                    .details
+                                    .as_ref()
+                                    .and_then(|details| details["judgeBatchId"].as_str())
+                                    == Some(open.id.as_str())
+                        })
+                        .any(|evaluation| {
+                            evaluation.details.as_ref().and_then(|details| {
+                                details
+                                    .pointer("/protocol/installedRendererRevision")
+                                    .and_then(Value::as_str)
+                            }) != installed_renderer.as_deref()
+                        }) =>
+            {
+                return Err(BenchmarkError::new("selection_changed", "The renderer changed during the saved judge batch; requalify before continuing"));
+            }
+            Some(open) => {
+                let bytes =
+                    saved_rendering(&open, textual, version.manifest.limits.max_artifact_bytes)
+                        .await?;
+                Some((open, bytes))
+            }
             None => None,
         };
         let (batch, judges, expected, votes, png) = match open {
@@ -2269,7 +2383,10 @@ impl NativeBackend {
                 tokio::fs::create_dir_all(&directory).await?;
                 let batch = uuid::Uuid::new_v4().to_string();
                 let expected = panel.len();
-                let protocol = judge_protocol(&version.manifest, &panel);
+                let mut protocol = judge_protocol(&version.manifest, &panel);
+                if let Some(installed) = &installed_renderer {
+                    protocol["installedRendererRevision"] = json!(installed);
+                }
                 let protocol_hash = judge_protocol_hash(&panel, &prompt, &renderer);
                 let extension = if textual { "txt" } else { "png" };
                 let path = directory.join(format!("rendering-{batch}.{extension}"));
@@ -2461,11 +2578,10 @@ impl ExecutionBackend for NativeBackend {
                     .session_record(&session.owned.session_id)
                     .await
                     .map_err(|error| host_error(error.to_string()))?;
-                if tokio::fs::read_dir(&record.cwd)
-                    .await?
-                    .next_entry()
-                    .await?
-                    .is_some()
+                if record.cwd != "/workspace"
+                    || !sandbox::patch(&text_execution::attempt_id(&session.owned.owner_id), 1)
+                        .await?
+                        .is_empty()
                 {
                     return Err(BenchmarkError::new(
                         "selection_changed",
@@ -2552,6 +2668,11 @@ impl ExecutionBackend for NativeBackend {
                 .map(unsigned_deadline)
                 .transpose()?;
             let cwd = if repository {
+                let _preparation = if binding.context_v2.is_none() {
+                    Some(preparation_gate(deadline).await?)
+                } else {
+                    None
+                };
                 let source = binding.request.repository.as_ref().ok_or_else(|| {
                     BenchmarkError::new("validation", "An explicit repository snapshot is required")
                 })?;
@@ -2617,14 +2738,14 @@ impl ExecutionBackend for NativeBackend {
                 }
                 "/workspace".into()
             } else {
-                let cwd = store
-                    .root
-                    .join("task-executions")
-                    .join(&binding.id)
-                    .join("workspace");
-                tokio::fs::create_dir_all(&cwd).await?;
-                cwd.to_string_lossy().into_owned()
+                "/workspace".into()
             };
+            // Inventory must not acquire another text lease after this task
+            // has occupied a persistent bridge: concurrent tasks could hold
+            // every light slot while each waits for an inventory process.
+            let rows = self
+                .inventory(&chosen.provider_id, Some(account), false)
+                .await?;
             let owned = host
                 .create_task_owned_session(
                     OwnedSessionRequest {
@@ -2653,9 +2774,6 @@ impl ExecutionBackend for NativeBackend {
             observed.model_id = owned.selection.model_id.clone().unwrap_or_default();
             observed.effort = owned.selection.reasoning_effort.clone();
             observed.fast_mode = owned.selection.fast_mode;
-            let rows = self
-                .inventory(&chosen.provider_id, Some(account), false)
-                .await?;
             let actual = rows
                 .into_iter()
                 .find(|row| {
@@ -2732,11 +2850,10 @@ impl ExecutionBackend for NativeBackend {
                 ));
             }
             if binding.task.execution_profile == "native_text"
-                && tokio::fs::read_dir(&record.cwd)
-                    .await?
-                    .next_entry()
-                    .await?
-                    .is_some()
+                && (record.cwd != "/workspace"
+                    || !sandbox::patch(&text_execution::attempt_id(&session.owned.owner_id), 1)
+                        .await?
+                        .is_empty())
             {
                 return Err(BenchmarkError::new(
                     "selection_changed",
@@ -2972,8 +3089,22 @@ impl ExecutionBackend for NativeBackend {
         Box::pin(async move {
             if c.execution_profile == "protected_repository" {
                 repository_runtime(c).await?;
+            } else if c.execution_profile == "native_text" {
+                text_runtime_snapshot(c, None).await?;
             }
             Ok(())
+        })
+    }
+    fn resource_admission<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let class = if c.execution_profile == "protected_repository" {
+                sandbox::ResourceClass::Repository
+            } else {
+                sandbox::ResourceClass::Text
+            };
+            sandbox::host_admission_for(class)
+                .await
+                .map_err(|error| host_error(error.to_string()))
         })
     }
     fn readiness_for_budget<'a>(
@@ -2984,6 +3115,8 @@ impl ExecutionBackend for NativeBackend {
         Box::pin(async move {
             if c.execution_profile == "protected_repository" {
                 repository_runtime_for_budget(c, Some(timeout_seconds)).await?;
+            } else if c.execution_profile == "native_text" {
+                text_runtime_snapshot(c, Some(timeout_seconds)).await?;
             }
             Ok(())
         })
@@ -3068,6 +3201,9 @@ impl ExecutionBackend for NativeBackend {
             }
             let run_request = store.run(&attempt.run_id).await?.request;
             run_request.require_dispatch_admission(now())?;
+            if requires_browser_runtime(&version.manifest) {
+                super::worker::ready().await?;
+            }
             let host = self
                 .app
                 .state::<AgentHost>()
@@ -3122,9 +3258,11 @@ impl ExecutionBackend for NativeBackend {
                     "Cumulative repository collection requires a native root lease",
                 ));
             }
-            let mut cleanup = sandbox::Cleanup(
-                repository.then(|| repository_execution::attempt_id(&turn_owner(&attempt))),
-            );
+            let mut cleanup = sandbox::Cleanup(Some(if repository {
+                repository_execution::attempt_id(&turn_owner(&attempt))
+            } else {
+                text_execution::attempt_id(&turn_owner(&attempt))
+            }));
             let inventory = self
                 .run_inventory(
                     &host,
@@ -3133,24 +3271,24 @@ impl ExecutionBackend for NativeBackend {
                     &account,
                 )
                 .await?;
-            let mut credential_snapshot = None;
-            let runtime_revision = if repository {
+            let (runtime_revision, credential_snapshot) = if repository {
                 let (runtime, status) =
                     repository_runtime_snapshot(&attempt.configuration, Some(timeout)).await?;
-                credential_snapshot = Some(status);
-                repository_inventory_revision(&runtime, &inventory, &attempt.configuration.model_id)
-            } else {
-                let native_cli = crate::services::managed_acp_tools::native_cli_path(
-                    &self.app,
-                    &attempt.configuration.provider_id,
-                );
-                inventory_fingerprint(
-                    &inventory,
-                    provider,
-                    native_cli,
-                    &attempt.configuration.model_id,
+                (
+                    repository_inventory_revision(
+                        &runtime,
+                        &inventory,
+                        &attempt.configuration.model_id,
+                    ),
+                    status,
                 )
-                .await?
+            } else {
+                let (runtime, status) =
+                    text_runtime_snapshot(&attempt.configuration, Some(timeout)).await?;
+                (
+                    text_inventory_revision(&runtime, &inventory, &attempt.configuration.model_id),
+                    status,
+                )
             };
             // The pin guards the account the run was planned on. A test the
             // run moved to another account (its usage limit ran out) runs on
@@ -3175,35 +3313,12 @@ impl ExecutionBackend for NativeBackend {
             }
             busy().await?;
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
-            if provider == NativeProvider::Grok && !repository {
-                let gate = self
-                    .renew_grok_sign_in(
-                        &host,
-                        &attempt.configuration.provider_id,
-                        &account,
-                        u64::from(timeout_seconds) * 1000,
-                    )
-                    .await?;
-                // Only this run's Grok cells wait; its other providers go on.
-                match gate {
-                    GrokSignInGate::Ready => {}
-                    GrokSignInGate::WaitUntil(at) => {
-                        hold_provider_until(
-                            &attempt.run_id,
-                            &attempt.configuration.provider_id,
-                            at,
-                        );
-                        return Err(BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON));
-                    }
-                    GrokSignInGate::Busy => {
-                        return Err(BenchmarkError::new(
-                            SIGN_IN_WAIT,
-                            crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
-                        ));
-                    }
-                }
-            }
-            let cwd = if let Some(id) = cleanup.0.as_deref() {
+            let cwd = if let Some(id) = cleanup.0.as_deref().filter(|_| repository) {
+                let _preparation = if artifact_input.is_none() {
+                    Some(preparation_gate(deadline).await?)
+                } else {
+                    None
+                };
                 let snapshot = super::repository::snapshot(&version.manifest)?;
                 let archive = if let Some(input) = &artifact_input {
                     let prepared = super::repository::advance_until(
@@ -3233,14 +3348,7 @@ impl ExecutionBackend for NativeBackend {
                 .map_err(|error| sandbox_setup_error(error, deadline))?;
                 "/workspace".to_owned()
             } else {
-                let cwd = store
-                    .root
-                    .join("runs")
-                    .join(&attempt.run_id)
-                    .join(&attempt.id)
-                    .join("workspace");
-                tokio::fs::create_dir_all(&cwd).await?;
-                cwd.to_string_lossy().into_owned()
+                "/workspace".to_owned()
             };
             run_request.require_dispatch_admission(now())?;
             let session = host
@@ -3304,22 +3412,31 @@ impl ExecutionBackend for NativeBackend {
             }
             store.save_attempt(&attempt).await?;
             let key = dispatch_key(&attempt);
-            if repository && budget.is_none() {
+            if budget.is_none() {
                 // Legacy repository runs start a fresh turn clock after setup.
                 // Recheck here so archive/copy/session time cannot consume the
                 // credential window reserved before preparation.
-                let runtime =
-                    repository_runtime_for_budget(&attempt.configuration, Some(timeout_seconds))
-                        .await?;
-                let revision = repository_inventory_revision(
-                    &runtime,
-                    &inventory,
-                    &attempt.configuration.model_id,
-                );
+                let revision = if repository {
+                    let runtime = repository_runtime_for_budget(
+                        &attempt.configuration,
+                        Some(timeout_seconds),
+                    )
+                    .await?;
+                    repository_inventory_revision(
+                        &runtime,
+                        &inventory,
+                        &attempt.configuration.model_id,
+                    )
+                } else {
+                    let (runtime, _) =
+                        text_runtime_snapshot(&attempt.configuration, Some(timeout_seconds))
+                            .await?;
+                    text_inventory_revision(&runtime, &inventory, &attempt.configuration.model_id)
+                };
                 if observed.inventory_revision.as_deref() != Some(revision.as_str()) {
                     return Err(BenchmarkError::new(
                         "selection_changed",
-                        "Sandbox runtime changed during repository preparation",
+                        "Sandbox runtime changed during preparation",
                     ));
                 }
                 // The session may already hold a private copy of this grant;
@@ -3327,8 +3444,6 @@ impl ExecutionBackend for NativeBackend {
                 // Check after the final awaited probe so its own latency
                 // cannot consume the original credential's cleanup margin.
                 credential_snapshot
-                    .as_ref()
-                    .expect("repository readiness snapshot")
                     .require_account_window(
                         provider.key(),
                         attempt
@@ -3398,14 +3513,17 @@ impl ExecutionBackend for NativeBackend {
                     host.stop_owned_sandbox(&session.session_id)
                         .await
                         .map_err(host_error)?;
-                    finalize_repository(
-                        &mut attempt,
-                        id,
-                        &version.manifest,
-                        artifact_input.as_ref(),
-                        deadline,
-                    )
-                    .await
+                    if repository {
+                        finalize_repository(
+                            &mut attempt,
+                            id,
+                            &version.manifest,
+                            artifact_input.as_ref(),
+                            deadline,
+                        )
+                        .await?;
+                    }
+                    Ok::<_, BenchmarkError>(())
                 }
                 .await;
                 if let Err(error) = collected {
@@ -3437,10 +3555,13 @@ impl ExecutionBackend for NativeBackend {
         mut attempt: Attempt,
     ) -> BoxFuture<'a, Result<Option<Attempt>>> {
         Box::pin(async move {
-            let mut cleanup = sandbox::Cleanup(
-                (attempt.configuration.execution_profile == "protected_repository")
-                    .then(|| repository_execution::attempt_id(&turn_owner(&attempt))),
-            );
+            let mut cleanup = sandbox::Cleanup(Some(
+                if attempt.configuration.execution_profile == "protected_repository" {
+                    repository_execution::attempt_id(&turn_owner(&attempt))
+                } else {
+                    text_execution::attempt_id(&turn_owner(&attempt))
+                },
+            ));
             if let Some(id) = cleanup.0.as_deref() {
                 sandbox::kill("session", id).await?;
             }
@@ -3545,7 +3666,9 @@ impl ExecutionBackend for NativeBackend {
                     .into(),
             );
             attempt.reason = status.error.map(|v| v.to_string());
-            if capture.answer_capped && cleanup.0.is_none() {
+            if capture.answer_capped
+                && attempt.configuration.execution_profile != "protected_repository"
+            {
                 attempt.outcome = Some("budget_reached".into());
                 attempt.reason = Some(RECOVERED_ANSWER_CAP_REASON.into());
             }
@@ -3582,15 +3705,24 @@ impl ExecutionBackend for NativeBackend {
             }
             let mut artifact_error = None;
             if let Some(id) = cleanup.0.as_deref() {
-                match finalize_repository(
-                    &mut attempt,
-                    id,
-                    &version.manifest,
-                    artifact_input.as_ref(),
-                    deadline,
-                )
-                .await
-                {
+                let collected = async {
+                    host.stop_owned_sandbox(&status.session_id)
+                        .await
+                        .map_err(host_error)?;
+                    if attempt.configuration.execution_profile == "protected_repository" {
+                        finalize_repository(
+                            &mut attempt,
+                            id,
+                            &version.manifest,
+                            artifact_input.as_ref(),
+                            deadline,
+                        )
+                        .await?;
+                    }
+                    Ok::<_, BenchmarkError>(())
+                }
+                .await;
+                match collected {
                     Ok(()) => {}
                     Err(error) => {
                         repository_collection_failure(&mut attempt, &error);
@@ -4412,6 +4544,15 @@ fn repository_inventory_revision(runtime: &str, inventory: &Value, model: &str) 
         .revision(inventory, model)
 }
 
+fn text_inventory_revision(runtime: &str, inventory: &Value, model: &str) -> String {
+    RuntimeIdentity::PerModel(
+        Sha256::new()
+            .chain_update(b"isolated-linux-text-inventory-v1\0")
+            .chain_update(runtime.as_bytes()),
+    )
+    .revision(inventory, model)
+}
+
 impl RuntimeIdentity {
     /// The revision of a configuration on `model_id`.
     fn revision(&self, inventory: &Value, model_id: &str) -> String {
@@ -4839,6 +4980,11 @@ fn markup_body<'a>(output: &'a str, format: Option<&str>) -> Option<&'a str> {
 
 const JUDGE_RENDERER: &str = "chromium-1024x768-v1";
 
+pub(super) fn requires_browser_runtime(draft: &BenchmarkDraft) -> bool {
+    matches!(draft.evaluator.kind.as_str(), "javascript" | "browser")
+        || (draft.evaluator.kind == "rubric" && !text_judged(draft))
+}
+
 pub(crate) fn text_judged(draft: &BenchmarkDraft) -> bool {
     draft.evaluator.kind == "rubric" && draft.environment["judgeInput"] == "text"
 }
@@ -4856,11 +5002,12 @@ fn judge_renderer(draft: &BenchmarkDraft) -> String {
         return "text-evidence-v1".into();
     }
     let (width, height) = judge_viewport(draft);
-    if (width, height) == (1024, 768) {
-        JUDGE_RENDERER.into()
+    let viewport = if (width, height) == (1024, 768) {
+        JUDGE_RENDERER.to_owned()
     } else {
         format!("chromium-{width}x{height}-v1")
-    }
+    };
+    format!("{viewport}:linux:{}", super::worker::runtime_revision())
 }
 
 pub(crate) fn validate_judge_input(draft: &BenchmarkDraft) -> Vec<String> {
@@ -5415,7 +5562,9 @@ impl BenchmarkService {
                 // Cells held for their provider still wait for it; the run
                 // completes only once none is pending.
                 let held = run.attempts.iter().any(|a| {
-                    a.phase == "pending" && provider_held(&run.id, &a.configuration.provider_id)
+                    a.phase == "pending"
+                        && (provider_held(&run.id, &a.configuration.provider_id)
+                            || resource_waiting(a))
                 });
                 if flying == 0 && waiting.is_none() && !held {
                     self.store.set_run_state(&run.id, "completed").await?;
@@ -5523,6 +5672,17 @@ impl BenchmarkService {
         tried: &mut std::collections::HashSet<String>,
         waiting_accounts: &mut std::collections::BTreeSet<String>,
     ) -> Result<bool> {
+        if let Err(error) = self.backend.resource_admission(&a.configuration).await {
+            if error.code == "resource_busy" {
+                let reason = format!("Waiting for local resources: {}", error.message);
+                if a.reason.as_deref() != Some(reason.as_str()) {
+                    a.reason = Some(reason);
+                    self.store.save_attempt(&a).await?;
+                }
+                return Ok(false);
+            }
+            return Err(error);
+        }
         // An account whose limit ran out under this run hands its tests to
         // another account of the provider that has room.
         if !run.request.automatic_retry()
@@ -5994,6 +6154,24 @@ impl BenchmarkService {
             }
             Err(error) => {
                 let mut failed = self.store.attempt(&a.id).await?;
+                if error.code == "resource_busy"
+                    && failed.phase == "preparing"
+                    && failed.session_id.is_none()
+                    && failed.host_run_id.is_none()
+                    && failed.workflow_steps.is_empty()
+                    && run.request.require_dispatch_admission(now()).is_ok()
+                {
+                    // This is unstarted admission, including research runs
+                    // that forbid replay. No paid execution is retried.
+                    requeue(
+                        &mut failed,
+                        format!("Waiting for local resources: {}", error.message),
+                    );
+                    failed.wait_until = Some(now() + 2_000);
+                    self.store.save_attempt(&failed).await?;
+                    self.changed().await;
+                    return Ok(());
+                }
                 let retry_allowed = run.request.automatic_retry()
                     && run.request.require_dispatch_admission(now()).is_ok();
                 if retry_allowed && error.code == "account_busy" {
@@ -6139,7 +6317,9 @@ impl BenchmarkService {
         let mut versions: std::collections::HashMap<String, BenchmarkVersion> =
             std::collections::HashMap::new();
         for pending in run.attempts.iter().filter(|a| {
-            a.phase == "pending" && !provider_held(&run.id, &a.configuration.provider_id)
+            a.phase == "pending"
+                && !provider_held(&run.id, &a.configuration.provider_id)
+                && !resource_waiting(a)
         }) {
             if !versions.contains_key(&pending.version_id) {
                 let version = self.store.version(&pending.version_id).await?;
@@ -6379,6 +6559,10 @@ pub struct FakeBackend {
     accepted_quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     inventory_delay_ms: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    resource_busy: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    resource_refusals: std::sync::atomic::AtomicU64,
     /// Sessions whose provider refuses the requested model before dispatch.
     pub refused_selections: std::sync::atomic::AtomicU64,
     /// Sessions the host refuses to open before any provider call (a sign-in
@@ -6404,6 +6588,18 @@ pub struct FakeBackend {
     pub spent_accounts: std::sync::Mutex<Vec<String>>,
 }
 impl ExecutionBackend for FakeBackend {
+    fn resource_admission<'a>(&'a self, _: &'a Configuration) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            #[cfg(test)]
+            if self.resource_busy.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(BenchmarkError::new(
+                    "resource_busy",
+                    "Invented host pressure",
+                ));
+            }
+            Ok(())
+        })
+    }
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
     }
@@ -6501,6 +6697,13 @@ impl ExecutionBackend for FakeBackend {
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                     .is_ok()
             };
+            #[cfg(test)]
+            if take(&self.resource_refusals) {
+                return Err(BenchmarkError::new(
+                    "resource_busy",
+                    "Invented admission race",
+                ));
+            }
             if take(&self.capability_refusals) {
                 return Err(BenchmarkError::new(
                     "capability_missing",
@@ -7235,11 +7438,23 @@ mod tests {
     #[test]
     fn judge_viewports_are_published_constraints_and_default_protocols_stay_compatible() {
         let mut draft = creative();
-        assert_eq!(judge_renderer(&draft), JUDGE_RENDERER);
+        assert_eq!(
+            judge_renderer(&draft),
+            format!(
+                "{JUDGE_RENDERER}:linux:{}",
+                super::super::worker::runtime_revision()
+            )
+        );
         draft.environment["judgeViewport"] = json!({"width": 1280, "height": 800});
         assert!(validate_judge_input(&draft).is_empty());
         assert_eq!(judge_viewport(&draft), (1280, 800));
-        assert_eq!(judge_renderer(&draft), "chromium-1280x800-v1");
+        assert_eq!(
+            judge_renderer(&draft),
+            format!(
+                "chromium-1280x800-v1:linux:{}",
+                super::super::worker::runtime_revision()
+            )
+        );
         for invalid in [
             json!({"width": 10, "height": 800}),
             json!({"width": 1280}),
@@ -7417,6 +7632,38 @@ mod tests {
             parallelism: Some(1),
             ..request(s).await
         }
+    }
+    #[tokio::test]
+    async fn resource_waits_preserve_unstarted_no_replay_cells_without_paid_calls() {
+        let (_dir, service, backend) = setup().await;
+        let mut request = serial_request(&service).await;
+        request.repetitions = 1;
+        request.max_executions = 1;
+        request.execution_limits = Some(RunExecutionLimits {
+            retry_policy: RunRetryPolicy::None,
+            dispatch_not_after_ms: None,
+        });
+        backend.resource_busy.store(true, Ordering::SeqCst);
+        let run = service.start_run(request).await.unwrap();
+        service.tick().await.unwrap();
+        let waiting = service.store.run(&run.id).await.unwrap();
+        assert_eq!(waiting.state, "running");
+        assert_eq!(waiting.attempts[0].phase, "pending");
+        assert!(waiting.attempts[0].session_id.is_none());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        backend.resource_busy.store(false, Ordering::SeqCst);
+        backend.resource_refusals.store(1, Ordering::SeqCst);
+        service.tick().await.unwrap();
+        let waiting = service.store.run(&run.id).await.unwrap();
+        assert_eq!(waiting.attempts[0].phase, "pending");
+        assert!(waiting.attempts[0].wait_until.is_some());
+        assert!(waiting.attempts[0].started_at.is_none());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        service.tick().await.unwrap();
+        service.tick().await.unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(service.store.run(&run.id).await.unwrap().attempts.len(), 1);
     }
     #[tokio::test]
     async fn durable_matrix_and_idempotent_start_do_not_duplicate() {
@@ -8131,7 +8378,7 @@ mod tests {
         assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 4);
     }
     #[tokio::test]
-    async fn a_bridge_that_serves_one_session_flies_one_attempt_at_a_time() {
+    async fn independent_grok_text_bridges_fill_the_requested_parallelism() {
         let (_dir, s, backend) = setup().await;
         let run = s
             .start_run(deep_request(&s, "grok-acp").await)
@@ -8139,7 +8386,7 @@ mod tests {
             .unwrap();
         drain(&s, &run.id).await;
         assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
-        assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 4);
     }
     #[tokio::test]
     async fn independent_grok_repository_bridges_fill_the_shared_account_slots() {
@@ -10883,6 +11130,27 @@ mod tests {
         evaluations.push(evaluation("judge", Some(&panel[2]), Some(0.5)));
         assert!(open_batch(&evaluations).is_none());
         assert!(open_batch(&evaluations[..1]).is_none());
+    }
+
+    #[tokio::test]
+    async fn saved_judge_evidence_refuses_changed_or_oversized_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("rendering.txt");
+        let bytes = b"invented evidence";
+        tokio::fs::write(&path, bytes).await.unwrap();
+        let open = OpenBatch {
+            id: "invented-batch".into(),
+            panel: Vec::new(),
+            asked: Vec::new(),
+            expected: 0,
+            rendering: path.to_string_lossy().into_owned(),
+            rendering_hash: fixtures::hash(bytes),
+        };
+        assert_eq!(saved_rendering(&open, true, 64).await.unwrap(), bytes);
+        assert!(saved_rendering(&open, true, 4).await.is_err());
+        tokio::fs::write(&path, b"changed evidence").await.unwrap();
+        assert!(saved_rendering(&open, true, 64).await.is_err());
+        assert!(saved_rendering(&open, false, 64).await.is_err());
     }
     #[tokio::test]
     async fn evaluating_again_keeps_budget_failures_exclusions_and_human_overrides() {

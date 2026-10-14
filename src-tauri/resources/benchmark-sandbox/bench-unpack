@@ -1,0 +1,52 @@
+#!/usr/bin/python3
+"""Extract bounded data-only tar input into a new, root-owned staging tree."""
+import os
+from pathlib import Path
+import shutil
+import sys
+import tarfile
+
+LIMIT = 512 * 1024 ** 2
+
+def main():
+    if os.geteuid() != 0 or len(sys.argv) != 2:
+        raise ValueError('trusted unpack arguments required')
+    root = Path(sys.argv[1])
+    if root.is_symlink() or not root.is_dir() or root.stat().st_uid != 0:
+        raise ValueError('unsafe benchmark staging parent')
+    seen = set()
+    total = 0
+    with tarfile.open(fileobj=sys.stdin.buffer, mode='r|') as archive:
+        for entry in archive:
+            parts = entry.name.split('/')
+            if entry.isdir() and parts[-1] == '':
+                parts.pop()
+            if (not parts or any(part in ('', '.', '..') or '\\' in part or '\0' in part for part in parts)
+                    or parts[0].startswith('/') or len(parts) > 64 or len(entry.name) > 4096
+                    or not (entry.isfile() or entry.isdir()) or entry.name in seen):
+                raise ValueError('unsafe benchmark archive entry')
+            seen.add(entry.name)
+            total += entry.size
+            if len(seen) > 32768 or total > LIMIT or entry.size < 0 or entry.size > 256 * 1024 ** 2:
+                raise ValueError('benchmark archive exceeds its byte or inode budget')
+            destination = root
+            for part in parts[:-1]:
+                destination /= part
+                destination.mkdir(mode=0o700, exist_ok=True)
+                if destination.is_symlink() or not destination.is_dir():
+                    raise ValueError('obstructed benchmark staging path')
+            destination /= parts[-1]
+            if entry.isdir():
+                destination.mkdir(mode=0o700, exist_ok=True)
+            else:
+                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o755 if entry.mode & 0o111 else 0o644)
+                with os.fdopen(fd, 'wb') as output, archive.extractfile(entry) as source:
+                    shutil.copyfileobj(source, output, length=65536)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, tarfile.TarError):
+        print('capability_missing: unsafe or over-budget benchmark archive', file=sys.stderr)
+        sys.exit(70)

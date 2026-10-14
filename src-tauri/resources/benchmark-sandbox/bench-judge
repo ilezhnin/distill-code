@@ -177,6 +177,10 @@ def main():
         return 64
     command = sys.argv[4:]
     metadata = Path('/srv/bench/pairs') / (identifier + '.json')
+    os.environ['DISTILL_BENCH_DEADLINE_MS'] = str(int(__import__('time').time() * 1000) + (seconds + 5) * 1000)
+    if not os.environ.get('DISTILL_BENCH_BUNDLE'):
+        resource_class = 'pair' if metadata.exists() else 'check'
+        os.execv('/usr/local/sbin/bench-budget', ['bench-budget', resource_class, identifier, '--', __file__, *sys.argv[1:]])
     if not metadata.exists():
         os.execv('/usr/local/sbin/bench-run', ['bench-run', 'check', identifier, '--', *command])
     if metadata.is_symlink() or metadata.stat().st_size > 65536:
@@ -186,14 +190,6 @@ def main():
             or not all(isinstance(arg, str) and '\0' not in arg for arg in probe_command)
             or not probe_command[0].strip() or sum(map(len, probe_command)) > 32768):
         return 65
-    subprocess.run(['/usr/local/sbin/bench-net'], check=True)
-    # Cancellation of check-ID must also stop this supervisor. bench-kill
-    # check kills probe-ID first, including any detached probe descendants.
-    cgroup = Path('/sys/fs/cgroup/distill-bench') / ('check-' + identifier)
-    cgroup.mkdir(exist_ok=True)
-    (cgroup / 'memory.max').write_text(str(8 * 1024**3))
-    (cgroup / 'pids.max').write_text('2048')
-    (cgroup / 'cgroup.procs').write_text(str(os.getpid()))
     judge_socket, probe_socket = socket.socketpair()
     artifact_socket, artifact_client = socket.socketpair()
     artifact_root = os.open('/srv/bench/probes/' + identifier,
@@ -237,8 +233,8 @@ def main():
         subprocess.run(['/usr/local/sbin/bench-kill', 'probe', identifier], check=True)
         if probe is not None:
             probe.wait(timeout=10)
-        # The caller always kills check-ID. Do not kill our own cgroup before
-        # it receives the check's exit status, including on timeout.
+        # The budget supervisor atomically owns both leaves and releases only
+        # after killing/reaping both, including if Windows exits unexpectedly.
 
 if __name__ == '__main__':
     raise SystemExit(main())

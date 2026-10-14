@@ -1,37 +1,143 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 
-const require = createRequire(import.meta.url);
-const worker = resolve("src-tauri/resources/benchmark-browser-worker.mjs");
-const modulePath = require.resolve("playwright-core");
-const browser =
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+// Live renderer regression tests require explicit opt-in and provisioned
+// Linux pins. No test automatically installs software or launches Windows Edge.
+const test = (name, run) =>
+  nodeTest(
+    name,
+    { skip: process.env.DISTILL_BENCH_BROWSER_TESTS !== "1" },
+    run,
+  );
 const evidence = resolve("../benchmark-qa/browser");
-await mkdir(evidence, { recursive: true });
+if (process.env.DISTILL_BENCH_BROWSER_TESTS === "1")
+  await mkdir(evidence, { recursive: true });
+
+const headroom = String.raw`
+$ErrorActionPreference='Stop'
+$os=Get-CimInstance Win32_OperatingSystem
+$memory=Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+$distro=Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' | Get-ItemProperty | Where-Object DistributionName -eq 'distill-bench'
+if (@($distro).Count -ne 1) { throw 'Sandbox registration is missing or ambiguous' }
+$basePath=$distro.BasePath
+if ($basePath.StartsWith('\\?\')) { $basePath=$basePath.Substring(4) }
+$volume=[System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($basePath))
+$ram=[uint64]$os.FreePhysicalMemory*1024
+$commit=[uint64]$memory.CommitLimit-[uint64]$memory.CommittedBytes
+$disk=[uint64]$volume.AvailableFreeSpace
+Write-Output "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$ram,$commit,$disk"
+`;
+
+async function reserveBrowser(id) {
+  assert.equal(
+    process.platform,
+    "win32",
+    "Live broker tests require real Windows headroom",
+  );
+  const deadline = Date.now() + 440000;
+  const waitUntil = Date.now() + 300000;
+  while (Date.now() < waitUntil) {
+    const sampled = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", headroom],
+      { encoding: "utf8", windowsHide: true, timeout: 15000, maxBuffer: 4096 },
+    );
+    assert.equal(sampled.status, 0, sampled.stderr);
+    const gate = sampled.stdout.trim();
+    assert.match(gate, /^\d+,\d+,\d+,\d+$/u);
+    const reserved = spawnSync(
+      "wsl.exe",
+      [
+        "-d",
+        "distill-bench",
+        "-u",
+        "root",
+        "--exec",
+        "/usr/local/sbin/bench-budget",
+        "reserve",
+        "browser",
+        id,
+        String(deadline),
+        gate,
+        String(8 * 1024 * 1024 + 128 * 1024),
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 15000, maxBuffer: 4096 },
+    );
+    if (reserved.status === 0) {
+      const value = JSON.parse(reserved.stdout);
+      assert.equal(value.id, id);
+      assert.equal(value.class, "browser");
+      assert.match(value.token, /^[0-9a-f]{32}$/u);
+      return value.token;
+    }
+    assert.match(reserved.stderr ?? "", /resource_busy:/u);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error("Browser capacity remained busy before any worker started");
+}
 
 async function evaluate(kind, output, spec, image, expectedExitCode = 0) {
-  const child = spawn(process.execPath, [worker, modulePath, browser], {
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const id = `browser-test-${randomUUID()}`;
+  const reservation = await reserveBrowser(id);
+  const child = spawn(
+    "wsl.exe",
+    [
+      "-d",
+      "distill-bench",
+      "-u",
+      "root",
+      "--exec",
+      "/usr/bin/env",
+      `DISTILL_BENCH_RESERVATION=${reservation}`,
+      "/usr/local/sbin/bench-browser",
+      "evaluate",
+      id,
+      "20",
+    ],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
   let text = "";
   let errors = "";
   let expired = false;
   const timeout = setTimeout(() => {
     expired = true;
-    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-  }, 20000);
+    spawnSync(
+      "wsl.exe",
+      [
+        "-d",
+        "distill-bench",
+        "-u",
+        "root",
+        "--exec",
+        "/usr/local/sbin/bench-clean",
+        id,
+      ],
+      {
+        windowsHide: true,
+        stdio: "ignore",
+      },
+    );
+    child.kill();
+  }, 440000);
   child.stdout.on("data", (chunk) => {
+    assert.ok(
+      Buffer.byteLength(text) + chunk.length <= 4 * 1024 * 1024,
+      "Bounded browser envelope",
+    );
     text += chunk;
   });
   child.stderr.on("data", (chunk) => {
+    assert.ok(
+      Buffer.byteLength(errors) + chunk.length <= 65536,
+      "Bounded browser diagnostics",
+    );
     errors += chunk;
   });
   child.stdin.end(
@@ -39,18 +145,41 @@ async function evaluate(kind, output, spec, image, expectedExitCode = 0) {
       kind,
       output,
       spec,
-      screenshotPath: image
-        ? join(evidence, `${image}-${Date.now()}.png`)
-        : null,
     }),
   );
   const code = await new Promise((resolve, reject) => {
     child.on("error", reject);
     child.on("close", resolve);
-  }).finally(() => clearTimeout(timeout));
-  assert.equal(expired, false, "Worker did not finish within 20 seconds");
+  }).finally(() => {
+    clearTimeout(timeout);
+    spawnSync(
+      "wsl.exe",
+      [
+        "-d",
+        "distill-bench",
+        "-u",
+        "root",
+        "--exec",
+        "/usr/local/sbin/bench-budget",
+        "release",
+        reservation,
+      ],
+      { windowsHide: true, stdio: "ignore", timeout: 10000 },
+    );
+  });
+  assert.equal(
+    expired,
+    false,
+    "Worker did not finish within admission and execution budgets",
+  );
   assert.equal(code, expectedExitCode, `${text}\n${errors}`);
-  return JSON.parse(text);
+  const envelope = JSON.parse(text);
+  if (image && envelope.screenshot)
+    await writeFile(
+      join(evidence, `${image}-${Date.now()}.png`),
+      Buffer.from(envelope.screenshot, "base64"),
+    );
+  return envelope.result ?? envelope;
 }
 
 test("protected function assertions distinguish correct and incorrect repairs", async () => {
@@ -91,6 +220,19 @@ test("candidate cannot access evaluator, filesystem, IPC or network", async () =
   });
   assert.equal(result.pass, true);
   assert.equal(result.boundary.network, false);
+});
+
+test("candidate navigation cannot turn protected Linux files into an artifact", async () => {
+  const result = await evaluate(
+    "browser",
+    '<script>location.href="file:///workspace/request.json"</script><output>Fixture</output>',
+    { steps: [{ action: "expectText", selector: "output", value: "Fixture" }] },
+  );
+  // Chromium/route policy can reject the navigation before it occurs. If the
+  // frame changes, the independent controller closes it and refuses its image.
+  if (result.candidatePolicyViolation)
+    assert.equal(result.candidatePolicyViolation, "artifact_navigation");
+  else assert.equal(result.boundary.node, "undefined");
 });
 
 test("actual form interactions and independent screenshots", async () => {
@@ -598,10 +740,7 @@ test("browser timing options reject malformed and out-of-range limits", async ()
       undefined,
       1,
     );
-    assert.match(
-      result.error,
-      /Invalid (interaction time budget|browser time budget|failure policy)/,
-    );
+    assert.match(result.error, /Isolated browser broker failed/);
   }
 });
 
@@ -629,7 +768,7 @@ test("browser capacity accepts its inclusive bounds and rejects excess steps", a
     undefined,
     1,
   );
-  assert.match(rejected.error, /Expected 1-200 protected interactions/);
+  assert.match(rejected.error, /Isolated browser broker failed/);
 });
 
 test("accessible assertions use computed text and preserve equivalent markup", async () => {
@@ -850,7 +989,7 @@ test("reflected error relations support unnamed targets without changing the DOM
   );
 });
 
-test("failed interaction completes even when Edge profile cleanup is denied", async () => {
+test("failed interaction completes with bounded disposable Linux profile cleanup", async () => {
   const result = await evaluate(
     "browser",
     '<form><label>Name<input id="name" required></label><button id="submit" disabled>Save</button><output id="result"></output></form>',

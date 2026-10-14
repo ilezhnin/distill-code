@@ -6,6 +6,10 @@
 # bench-patch reads the answer whatever the candidate did to its own .git.
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo "bench-copy: root required" >&2; exit 77; }
+if [[ -z ${DISTILL_BENCH_BUNDLE:-} ]]; then
+  [[ $# != 2 ]] || export DISTILL_BENCH_DEADLINE_MS=$2
+  exec /usr/local/sbin/bench-budget prep "${1:-}" -- /bin/bash "$0" "$@"
+fi
 # The deadline supervisor owns a separate Linux process group, including the
 # tar/cp/Git children. Killing wsl.exe alone does not stop those processes.
 if [[ ${1:-} != --worker && $# == 2 ]]; then
@@ -39,6 +43,7 @@ else
   id=${1:-}
 fi
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-copy: bad id" >&2; exit 64; }
+/usr/local/sbin/bench-budget own "$id"
 work=/srv/bench/work/$id
 base=/srv/bench/base/$id
 protected_parent() {
@@ -76,7 +81,7 @@ made_base=1
 mkdir -m 700 -- "$work"
 made_work=1
 chmod 700 "$base" "$work"
-tar -x -C "$base" --no-same-owner --no-same-permissions
+/usr/local/sbin/bench-unpack "$base"
 cp -a "$base/." "$work/"
 # Both start as the same single commit, made here before the candidate owns
 # anything, so no configuration of its runs as root.

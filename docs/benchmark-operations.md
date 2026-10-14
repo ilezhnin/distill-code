@@ -50,12 +50,15 @@ and benchmark capabilities; do not copy a model name, effort list or runtime
 revision from another machine. A provider being available for ordinary chat does
 not establish that its benchmark execution profile is ready.
 
-Protected repository tasks require the dedicated WSL distribution. With WSL
+All benchmark candidates, model inventory probes, judges, repository checks,
+JavaScript checks and browser rendering require the dedicated WSL distribution.
+Ordinary chats keep their existing provider runtime. With WSL
 available and no benchmark sessions running, provision the helpers from the same
 checkout as the application, then verify them:
 
 ```powershell
 node scripts/benchmark-sandbox.mjs
+node scripts/benchmark-browser-ready.mjs
 node scripts/benchmark-sandbox.mjs status
 node scripts/benchmark-sandbox.mjs selftest
 ```
@@ -67,6 +70,58 @@ before measurement, not during a run. Sign in to the selected account through
 from the application and the provider's normal login flow. Never put credentials
 in a task, command transcript intended for publication, or source file.
 
+For an existing distribution, update helpers without downloading dependencies
+or restarting other WSL distributions:
+
+```powershell
+node scripts/benchmark-sandbox.mjs deploy-helpers
+node scripts/benchmark-browser-ready.mjs
+node scripts/benchmark-linux-text-policy-probe.mjs codex
+node scripts/benchmark-linux-text-policy-probe.mjs claude
+node scripts/benchmark-linux-text-policy-probe.mjs grok
+node scripts/benchmark-linux-text-policy-probe.mjs kimi
+```
+
+Run qualification for the providers you use after installing their pinned Linux
+tools. These explicit policy controls use synthetic credentials and local
+loopback endpoints. They produce protected receipts bound to the Linux tools,
+adapters and execution policy. Missing or changed receipts refuse benchmark
+admission. Browser checks additionally require the pinned Linux renderer from
+provisioning and its explicit readiness command. This command performs an
+invented interaction and PNG capture under the real Chromium sandbox before
+issuing its receipt. Kernel or confinement changes invalidate readiness.
+Windows browser installations cannot satisfy this requirement.
+
+Every owned execution has its own home and workspace, bounded mount, process,
+network and IPC namespaces, and no access to Windows drives, personal skills or
+ordinary chat configuration. The native-text profile still forbids tools;
+placing it in Linux does not grant repository permissions. The controller only
+stages declared task inputs and the selected provider's credential material.
+Provider inference sends those inputs to its endpoint under the account's
+existing data-use policy.
+
+The distribution shares one aggregate resource budget across all benchmark
+jobs: 12 GiB memory, four CPU equivalents, 1536 processes, and an 8 GiB scratch
+filesystem with 131072 inodes. Scratch I/O is capped at 128 MiB/s reads and
+32 MiB/s writes. At most two light jobs, one heavy job and one preparation job
+can be admitted when their combined reservation fits. A repository job reserves
+6 GiB; a text or browser job reserves 2 GiB. Cleanup retains its own capacity.
+No additional virtual machine is created per test.
+
+Before admission, the controller also preserves at least 12 GiB of Windows
+available memory, 8 GiB of commit headroom and 30 GiB free on the registered
+sandbox volume. Resource pressure keeps unstarted candidate work waiting. It
+does not consume a model call or permit replay of an already submitted answer.
+Evaluator admission waits on the captured answer; a runtime resource failure
+is inconclusive infrastructure evidence, not a model score. The application
+does not change global `.wslconfig` or the resources of other distributions.
+
+Helper updates retain a backup of old helpers and any previous scratch tree.
+Keep those local recovery copies until the update is verified. Runtime changes
+require fresh inventory selection and compatible qualification. Linux renderer
+identity includes installed browser libraries and fonts, so previous Windows
+rendering results do not qualify the new renderer.
+
 Before dispatch, verify sandbox readiness, the exact account's authentication,
 quota and billing mode, and the provider/model/effort acknowledgement. Windows
 and sandbox authentication are separate runtime checks even for the same
@@ -75,7 +130,7 @@ have drained. Choose a dispatch deadline that leaves a complete attempt budget
 before a known authentication deadline.
 
 Sandbox status reports redacted local credential health separately from its
-runtime identity. Claude/Grok protected repository admission requires an OAuth
+runtime identity. Claude/Grok benchmark admission requires an OAuth
 expiry that covers the complete attempt plus five minutes for cleanup, and checks again
 before execution. Missing or invalid OAuth metadata refuses admission. A local
 expiry does not prove remote acceptance or refreshability; non-expiring key

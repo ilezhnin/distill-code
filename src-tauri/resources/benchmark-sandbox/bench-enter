@@ -24,13 +24,35 @@ while [[ $1 != -- ]]; do
   shift
 done
 shift
+# unshare already cloned the mount namespace. Change only its existing root
+# VFS mount flags; overmounting / would make current_chrooted() reject the
+# nested user namespace needed by Chromium's actual sandbox.
+if [[ -n $dir ]]; then
+  mount -o remount,bind,ro /
+fi
 ip link set lo up 2>/dev/null || true
-mount -t tmpfs -o mode=755 none /mnt
+mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none /mnt
 for hidden in /tmp/.X11-unix /run/WSL /run/netns; do
-  if [[ -d $hidden ]]; then mount -t tmpfs -o mode=755 none "$hidden"; fi
+  if [[ -d $hidden ]]; then mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none "$hidden"; fi
 done
-mount -t tmpfs -o mode=1777 none /tmp
-mount -t tmpfs -o mode=1777 none /dev/shm
+mount -t tmpfs -o mode=1777,size=256M,nr_inodes=16384 none /tmp
+mount -t tmpfs -o mode=1777,size=128M,nr_inodes=8192 none /var/tmp
+# Private minimal devices exclude WSL GPU, block devices and host sockets.
+mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts -o newinstance,ptmxmode=0666,mode=0620 none /dev/pts
+ln -s pts/ptmx /dev/ptmx
+for entry in 'null 1 3' 'zero 1 5' 'full 1 7' 'random 1 8' 'urandom 1 9' 'tty 5 0'; do
+  read -r name major minor <<<"$entry"
+  mknod -m 666 "/dev/$name" c "$major" "$minor"
+done
+ln -s /proc/self/fd /dev/fd
+ln -s /proc/self/fd/0 /dev/stdin
+ln -s /proc/self/fd/1 /dev/stdout
+ln -s /proc/self/fd/2 /dev/stderr
+mount -t tmpfs -o mode=1777,size=128M,nr_inodes=4096 none /dev/shm
+mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none /sys
+mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none /run
 # A session sees a private copy of its selected sandbox sign-in, never
 # shared CLI state or other accounts. Login alone uses the persistent home.
 if [[ -n $dir ]]; then
@@ -41,7 +63,7 @@ if [[ -n $dir ]]; then
     install -d -m 700 -o candidate -g candidate /tmp/provider
     mount --bind "$account_home" /tmp/provider
   fi
-  mount -t tmpfs -o mode=755 none /home
+  mount -t tmpfs -o mode=755,size=128M,nr_inodes=8192 none /home
   install -d -m 700 -o "$user" -g "$user" "/home/$user"
 fi
 if [[ -n $instructions ]]; then
@@ -68,7 +90,7 @@ if [[ $user == candidate && -n $dir && ( -e /workspace/.codex || -e /workspace/.
   exit 65
 fi
 # Every other attempt's copy, every pristine base and every check.
-mount -t tmpfs -o mode=700 none /srv/bench
+mount -t tmpfs -o mode=700,size=1M,nr_inodes=256 none /srv/bench
 cd "$cwd"
 exec setpriv --reuid "$user" --regid "$user" --init-groups --no-new-privs \
   --inh-caps=-all --bounding-set=-all \

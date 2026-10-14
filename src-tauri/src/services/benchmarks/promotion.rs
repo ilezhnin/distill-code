@@ -848,6 +848,7 @@ impl Store {
                 .ok_or_else(|| invalid("Qualification binding disappeared"))?;
             let version = self.version(&binding.version_id).await?;
             qualification::validate_protocol(&record, &version)?;
+            Box::pin(qualification::validate_renderer_runtime(&record, &version)).await?;
             // Training versions qualify before their first native admission,
             // the earliest one when class fits share a version; held-out
             // cases qualify before the campaign was reserved.
@@ -1162,6 +1163,7 @@ impl Store {
         }
         // Inference reads no fit snapshot, controls, evaluators or run outcomes.
         // Full evidence validation happened when this certificate was issued.
+        let mut installed_renderer = None;
         for frozen in &state.certificate.qualifications {
             let current = self
                 .qualification_bindings(&frozen.version_id)
@@ -1176,8 +1178,19 @@ impl Store {
                 || current.content_hash != frozen.content_hash
                 || current.evaluator_revision != frozen.evaluator_revision
                 || current.created_at != frozen.created_at
+                || current.evaluator_runtime_revision != frozen.evaluator_runtime_revision
             {
                 return Err(invalid("Promotion qualification authority changed"));
+            }
+            if let Some(revision) = current.evaluator_runtime_revision.as_deref() {
+                if installed_renderer.is_none() {
+                    installed_renderer = Some(Box::pin(super::worker::ready()).await?);
+                }
+                if installed_renderer.as_deref() != Some(revision) {
+                    return Err(invalid(
+                        "Promoted renderer runtime changed; requalify before dispatch",
+                    ));
+                }
             }
         }
         let model = self.selector_model(&state.certificate.model_id).await?;

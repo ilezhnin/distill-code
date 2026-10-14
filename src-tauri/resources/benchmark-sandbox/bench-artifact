@@ -296,6 +296,10 @@ def main():
 
 
 if __name__ == '__main__':
+    if len(sys.argv) in (2, 3) and not os.environ.get('DISTILL_BENCH_BUNDLE'):
+        if len(sys.argv) == 3:
+            os.environ['DISTILL_BENCH_DEADLINE_MS'] = sys.argv[2]
+        os.execv('/usr/local/sbin/bench-budget', ['bench-budget', 'prep', sys.argv[1], '--', __file__, *sys.argv[1:]])
     try:
         main()
     except Exception as error:

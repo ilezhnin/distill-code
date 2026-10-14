@@ -7,6 +7,7 @@ use crate::services::agent_host::{
     },
     repository_execution,
     store::SessionStore,
+    text_execution,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +42,7 @@ pub(crate) struct VerifiedRuntime {
     pub execution_profile: String,
     pub inventory_revision: String,
     pub repository_revision: Option<String>,
+    pub text_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +64,8 @@ pub(crate) struct NativeExecutionReceipt {
     pub fast_mode: Option<bool>,
     pub inventory_revision: String,
     pub repository_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_revision: Option<String>,
     pub owner_request: OwnedSessionRequest,
     pub user_message_id: String,
     pub terminal_dispatch_hash: String,
@@ -141,9 +145,21 @@ impl NativeExecutionReceipt {
                         "Native text receipt contains a repository policy revision",
                     ));
                 }
-                provider.policy_hash(owner)
+                match self.text_revision.as_deref() {
+                    Some(revision) if digest_valid(revision) => {
+                        text_execution::policy_hash(owner, revision)
+                    }
+                    Some(_) => return Err(invalid("Native text runtime revision is invalid")),
+                    // Historical Windows receipts keep their original policy identity.
+                    None => provider.policy_hash(owner),
+                }
             }
             ExecutionProfile::ProtectedRepositoryV1 => {
+                if self.text_revision.is_some() {
+                    return Err(invalid(
+                        "Repository receipt contains a text runtime revision",
+                    ));
+                }
                 let revision = self
                     .repository_revision
                     .as_deref()
@@ -233,6 +249,18 @@ pub(crate) async fn attest(
         .map_err(fail)?
         .ok_or_else(|| invalid("Native host dispatch is absent"))?;
     let (selection, stop, elapsed) = terminal(&dispatch)?;
+    if let Some(revision) = runtime.text_revision.as_deref() {
+        if record.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .pointer("/_meta/executionPolicy/textRevision")
+                .and_then(serde_json::Value::as_str)
+        }) != Some(revision)
+        {
+            return Err(invalid(
+                "Text runtime differs from the host's committed policy snapshot",
+            ));
+        }
+    }
     if purpose.as_deref() != Some("benchmark")
         || owner.owner_id != owner_id
         || record.id != session_id
@@ -274,6 +302,7 @@ pub(crate) async fn attest(
         fast_mode: selection.fast_mode,
         inventory_revision: runtime.inventory_revision.clone(),
         repository_revision: runtime.repository_revision.clone(),
+        text_revision: runtime.text_revision.clone(),
         owner_request: owner,
         user_message_id: dispatch.user_message_id.clone(),
         terminal_dispatch_hash: dispatch_hash(&dispatch)?,
@@ -378,6 +407,7 @@ mod tests {
             model_id: owner.model_id,
             inventory_revision: fixtures::hash(b"invented-fixture-runtime-domain"),
             repository_revision,
+            text_revision: None,
         };
         (root, store, runtime)
     }
@@ -424,6 +454,38 @@ mod tests {
             assert!(changed.validate_policy_metadata().is_err());
         }
     }
+    #[tokio::test]
+    async fn linux_text_identity_is_bound_to_policy_and_committed_host_snapshot() {
+        let (_root, store, mut runtime) =
+            fixture(ExecutionProfile::NativeTextV1, "benchmark", false).await;
+        let mut value = receipt(&store, &runtime).await.unwrap();
+        let revision = fixtures::hash(b"invented-linux-text-runtime");
+        value.text_revision = Some(revision.clone());
+        value.owner_request.cwd = "/workspace".into();
+        value.policy_hash = text_execution::policy_hash(&value.owner_request, &revision).unwrap();
+        value.validate_policy_metadata().unwrap();
+        let mut changed = value.clone();
+        changed.text_revision = Some(fixtures::hash(b"another-linux-runtime"));
+        assert!(changed.validate_policy_metadata().is_err());
+        runtime.text_revision = Some(revision.clone());
+        assert!(receipt(&store, &runtime).await.is_err());
+        store
+            .set_snapshot(
+                "invented-session",
+                &json!({"_meta":{"executionPolicy":{"textRevision":"different"}}}),
+            )
+            .await
+            .unwrap();
+        assert!(receipt(&store, &runtime).await.is_err());
+        // Historical metadata remains readable without silently adding a new identity.
+        runtime.text_revision = None;
+        let historical = receipt(&store, &runtime).await.unwrap();
+        assert!(serde_json::to_value(historical)
+            .unwrap()
+            .get("textRevision")
+            .is_none());
+    }
+
     #[tokio::test]
     async fn native_receipt_refuses_unknown_wrong_owner_and_intent_only_runtime() {
         let (_root, store, runtime) =

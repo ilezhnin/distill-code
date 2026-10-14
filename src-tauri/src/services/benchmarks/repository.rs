@@ -232,6 +232,9 @@ async fn transform_artifact(
     max_bytes: usize,
     deadline_ms: u64,
 ) -> Result<PreparedArtifact> {
+    let _preparation = sandbox::host_preparation(deadline_ms)
+        .await
+        .map_err(sandbox_error)?;
     let remaining = |deadline: u64| -> Result<Duration> {
         deadline
             .checked_sub(super::store::now() as u64)
@@ -848,7 +851,16 @@ fn evaluation(
 }
 
 fn sandbox_error(error: std::io::Error) -> BenchmarkError {
-    BenchmarkError::new("evaluation_error", format!("Repository sandbox: {error}"))
+    BenchmarkError::new(
+        if error.kind() == std::io::ErrorKind::WouldBlock
+            && error.to_string().starts_with("resource_busy:")
+        {
+            "resource_busy"
+        } else {
+            "infrastructure_failure"
+        },
+        format!("Repository sandbox: {error}"),
+    )
 }
 
 fn append_file(builder: &mut tar::Builder<Vec<u8>>, path: &str, bytes: &[u8]) -> Result<()> {
@@ -908,6 +920,10 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
         .await
         .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
     let check = hidden_check(&manifest.evaluator)?;
+    let preparation =
+        sandbox::host_preparation((super::store::now() as u64).saturating_add(420_000))
+            .await
+            .map_err(sandbox_error)?;
     let snapshot = archive(&snapshot(manifest)?).await?;
     let package = check_archive(&snapshot, patch, &check)?;
     let id = format!("check-{}", uuid::Uuid::new_v4());
@@ -919,6 +935,7 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
         let prepared = sandbox::prepare_check(&id, &package)
             .await
             .map_err(sandbox_error)?;
+        drop(preparation);
         if prepared.code == Some(2) {
             return Ok(evaluation(
                 manifest,
@@ -930,6 +947,9 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
         }
         match sandbox::check(&id, &check.command, check.timeout_seconds).await {
             Ok(output) => {
+                if let Some(reason) = output.infrastructure_error() {
+                    return Err(BenchmarkError::new("infrastructure_failure", reason));
+                }
                 // A missing executable is an evaluator defect, not a model failure.
                 if matches!(output.code, Some(126 | 127)) {
                     return Err(BenchmarkError::new("evaluation_error", output.reason()));

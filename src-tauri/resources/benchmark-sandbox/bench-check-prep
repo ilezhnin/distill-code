@@ -7,6 +7,10 @@
 set -euo pipefail
 id=${1:-}
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-check-prep: bad id" >&2; exit 64; }
+if [[ -z ${DISTILL_BENCH_BUNDLE:-} ]]; then
+  exec /usr/local/sbin/bench-budget prep "$id" -- /bin/bash "$0" "$@"
+fi
+/usr/local/sbin/bench-budget own "$id"
 dir=/srv/bench/checks/$id
 staging=/srv/bench/staging/$id
 probe=/srv/bench/probes/$id
@@ -16,12 +20,15 @@ submission=/srv/bench/submissions/$id
 mkdir -p "$staging" "$dir"
 chmod 700 "$staging" "$dir"
 trap 'rm -rf "$staging"' EXIT
-tar -x -C "$staging" --no-same-owner --no-same-permissions
+/usr/local/sbin/bench-unpack "$staging"
 cp -a "$staging/snapshot/." "$dir/"
 # The snapshot's single commit is made here, before the checker owns
 # anything; the answer is applied as the checker, inside its own run.
-git=(git -c user.name=Distill -c user.email=bench@distill.invalid -c commit.gpgsign=false
-  -c core.autocrlf=false -c init.defaultBranch=main -C "$dir")
+for name in ${!GIT_@}; do unset "$name"; done
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TEMPLATE_DIR= GIT_ATTR_NOSYSTEM=1
+git=(/usr/bin/git -c user.name=Distill -c user.email=bench@distill.invalid -c commit.gpgsign=false
+  -c core.autocrlf=false -c init.defaultBranch=main -c core.hooksPath=/dev/null
+  -c core.attributesFile=/dev/null -c core.fsmonitor=false -C "$dir")
 "${git[@]}" init -q
 "${git[@]}" add -A
 "${git[@]}" commit -q --allow-empty -m snapshot

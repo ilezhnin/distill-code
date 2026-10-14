@@ -1,5 +1,6 @@
 //! Typed, durable execution contract for application-owned benchmark sessions.
-//! The native text profile disables tools; it is not a filesystem sandbox.
+//! The native text profile disables tools. Owned launches additionally use the
+//! Linux isolation implemented by text_execution; location grants no tools.
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -1242,29 +1243,12 @@ pub(super) fn validate_request(request: &OwnedSessionRequest) -> Result<NativePr
             return Err(format!("validation: invalid {name}"));
         }
     }
-    if request.profile == ExecutionProfile::ProtectedRepositoryV1 {
-        crate::services::benchmark_sandbox::valid_id(&request.account_id)
-            .map_err(|error| format!("validation: {error}"))?;
-        if request.cwd != "/workspace" {
-            return Err("validation: repository workspace must be /workspace".into());
-        }
-        return Ok(provider);
-    }
-    if !Path::new(&request.cwd).is_absolute() {
-        return Err("validation: benchmark workspace must be absolute".into());
-    }
-    // codex-acp trusts the session's folder, and a trusted project's
-    // `.codex/config.toml` adds MCP servers and hooks the policy cannot
-    // remove; its `.agents/skills` are injected when the task names them.
-    // The runner's workspaces start empty; anything else is refused.
-    if provider == NativeProvider::Codex
-        && [".codex", ".agents"]
-            .iter()
-            .any(|entry| Path::new(&request.cwd).join(entry).exists())
-    {
-        return Err(
-            "capability_missing: the benchmark workspace has its own Codex configuration".into(),
-        );
+    crate::services::benchmark_sandbox::valid_id(&request.account_id)
+        .map_err(|error| format!("validation: {error}"))?;
+    // Both owned profiles are Linux. Never inspect a Windows folder or its
+    // personal configuration to decide whether an isolated text task may run.
+    if request.cwd != "/workspace" {
+        return Err("validation: isolated benchmark workspace must be /workspace".into());
     }
     Ok(provider)
 }
@@ -1372,7 +1356,7 @@ mod tests {
             model_id: "exact-model".into(),
             reasoning_effort: Some("high".into()),
             fast_mode: Some(false),
-            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            cwd: "/workspace".into(),
             title: "Benchmark: case [1]".into(),
             profile: ExecutionProfile::NativeTextV1,
         }
@@ -1720,9 +1704,7 @@ mod tests {
 
     #[test]
     fn codex_rejects_ultra_effort() {
-        let workspace = tempfile::tempdir().unwrap();
         let mut ultra = request("codex-acp");
-        ultra.cwd = workspace.path().to_string_lossy().into_owned();
         assert_eq!(validate_request(&ultra), Ok(NativeProvider::Codex));
         ultra.reasoning_effort = Some("ultra".into());
         assert_eq!(
@@ -1735,24 +1717,20 @@ mod tests {
     }
 
     #[test]
-    fn codex_workspace_with_its_own_configuration_is_refused() {
-        let workspace = tempfile::tempdir().unwrap();
-        let mut codex = request("codex-acp");
-        codex.cwd = workspace.path().to_string_lossy().into_owned();
-        let refused: Result<NativeProvider, String> = Err(
-            "capability_missing: the benchmark workspace has its own Codex configuration".into(),
-        );
-        // Project skills are injected when the task names them.
-        std::fs::create_dir_all(workspace.path().join(".agents").join("skills")).unwrap();
-        assert_eq!(validate_request(&codex), refused);
-        std::fs::remove_dir_all(workspace.path().join(".agents")).unwrap();
-        assert_eq!(validate_request(&codex), Ok(NativeProvider::Codex));
-        std::fs::create_dir(workspace.path().join(".codex")).unwrap();
-        assert_eq!(validate_request(&codex), refused);
-        // Claude reads no Codex project layer.
-        let mut claude = codex.clone();
-        claude.provider_id = "claude-acp".into();
-        assert_eq!(validate_request(&claude), Ok(NativeProvider::Claude));
+    fn owned_text_never_accepts_a_host_workspace_or_unsafe_account_path() {
+        for &provider in NativeProvider::ALL {
+            let mut owned = request(provider.harness_id());
+            assert_eq!(validate_request(&owned), Ok(provider));
+            owned.cwd = "C:/Users/invented/private".into();
+            assert!(validate_request(&owned)
+                .unwrap_err()
+                .starts_with("validation:"));
+            owned.cwd = "/workspace".into();
+            owned.account_id = "../another-account".into();
+            assert!(validate_request(&owned)
+                .unwrap_err()
+                .starts_with("validation:"));
+        }
     }
 
     #[test]
@@ -2071,6 +2049,7 @@ mod tests {
         }
         let mut repository = request("claude-acp");
         repository.profile = ExecutionProfile::ProtectedRepositoryV1;
+        repository.cwd = "C:/invented-repository".into();
         assert!(validate_request(&repository)
             .unwrap_err()
             .starts_with("validation:"));

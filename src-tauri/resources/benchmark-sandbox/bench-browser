@@ -1,0 +1,249 @@
+#!/usr/bin/python3
+"""Bounded trusted browser controller broker; candidate code stays in Chromium."""
+import base64
+import hashlib
+import json
+import os
+import pathlib
+import pwd
+import re
+import selectors
+import signal
+import stat
+import subprocess
+import sys
+import time
+
+RUNTIME = pathlib.Path('/opt/distill-browser')
+WORKER = pathlib.Path('/usr/local/lib/distill/benchmark-browser-worker.mjs')
+MAX_REQUEST = 4 * 1024 * 1024
+MAX_RESPONSE = 262144
+MAX_SCREENSHOT = 2 * 1024 * 1024
+MAX_DIAGNOSTICS = 65536
+LAUNCH_POLICY = ('bench-browser','bench-budget','bench-run','bench-run-inner','bench-enter')
+LAUNCH_PROOF = {'schemaVersion':1,'fixture':'public-button-and-png-v1','chromiumSandbox':True}
+
+def read_regular(path, cap):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > cap:
+            raise ValueError('Browser artifact is not a bounded regular file')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            data = stream.read(cap + 1)
+        if len(data) > cap:
+            raise ValueError('Browser artifact exceeded cap')
+        return data
+    finally:
+        os.close(fd)
+
+def validate_request(raw):
+    if len(raw) > MAX_REQUEST:
+        raise ValueError('Browser request exceeds limit')
+    request = json.loads(raw)
+    if not isinstance(request, dict) or request.get('kind') not in ('render','browser','javascript'):
+        raise ValueError('Unsupported browser request')
+    if not isinstance(request.get('output'), str) or len(request['output'].encode()) > MAX_SCREENSHOT:
+        raise ValueError('Candidate artifact exceeds cap')
+    if not isinstance(request.get('spec'), dict):
+        raise ValueError('Protected specification must be an object')
+    # Host/user supplied paths cannot select Linux files to read or overwrite.
+    request['screenshotPath'] = '/workspace/preview.png' if request['kind'] != 'javascript' else None
+    request['progressPath'] = '/workspace/candidate-started'
+    return request
+
+def renderer_files(spec):
+    browser = RUNTIME / 'browsers' / ('chromium-' + spec['chromiumRevision']) / 'chrome-linux64' / 'chrome'
+    paths = [WORKER, RUNTIME/'runtime.json', RUNTIME/'fonts.conf', browser]
+    paths.extend(pathlib.Path('/usr/local/sbin')/name for name in LAUNCH_POLICY)
+    apparmor = pathlib.Path('/etc/apparmor.d/distill-benchmark-chromium')
+    if apparmor.exists():
+        paths.append(apparmor)
+    for directory in (RUNTIME/'node_modules/playwright-core', RUNTIME/'fonts'):
+        paths.extend(sorted(path for path in directory.rglob('*') if path.is_file()))
+    # Browser resources/libraries and actual dynamic dependencies affect rendering.
+    paths.extend(sorted(path for path in browser.parent.rglob('*') if path.is_file() and path != browser))
+    libraries = subprocess.run(['ldd',str(browser)], check=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, timeout=10).stdout.decode()
+    paths.extend(pathlib.Path(path) for path in re.findall(r'(/[\w./+_-]+)', libraries) if pathlib.Path(path).is_file())
+    return browser, sorted(set(paths))
+
+def kernel_policy():
+    paths = ('/proc/sys/user/max_user_namespaces',
+             '/proc/sys/kernel/unprivileged_userns_clone',
+             '/proc/sys/kernel/apparmor_restrict_unprivileged_userns')
+    return {'release':os.uname().release,
+            'settings':{path:pathlib.Path(path).read_text().strip()
+                        if pathlib.Path(path).exists() else None for path in paths}}
+
+def status(provision_id=None):
+    spec = json.loads(read_regular(RUNTIME/'runtime.json', 8192))
+    browser, paths = renderer_files(spec)
+    package = json.loads(read_regular(RUNTIME/'node_modules/playwright-core/package.json', 65536))
+    browsers = json.loads(read_regular(RUNTIME/'node_modules/playwright-core/browsers.json', 65536))
+    pin = next(item for item in browsers['browsers'] if item['name'] == 'chromium')
+    if package['version'] != spec['playwrightVersion'] or pin['revision'] != spec['chromiumRevision'] or pin['browserVersion'] != spec['chromiumVersion']:
+        raise ValueError('Pinned Chromium/Playwright runtime is unavailable')
+    files = {}
+    for path in paths:
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            for block in iter(lambda: stream.read(1048576), b''):
+                digest.update(block)
+        info = path.stat()
+        files[str(path)] = {'sha256':digest.hexdigest(),'mode':stat.S_IMODE(info.st_mode),
+                            'uid':info.st_uid,'gid':info.st_gid}
+    manifest = {'spec':spec,'files':files,'kernelPolicy':kernel_policy(),
+                'launchProof':LAUNCH_PROOF}
+    receipt = RUNTIME/'receipt.json'
+    if provision_id is None and json.loads(read_regular(receipt,1048576)) != manifest:
+        raise ValueError('Browser runtime files changed; reprovision and requalify')
+    revision = hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    expected = hashlib.sha256(WORKER.read_bytes()+b'\0'+read_regular(RUNTIME/'runtime.json',8192)).hexdigest()
+    identity = {'revision':revision,'expectedRevision':expected,'runtime':spec,'browserPath':str(browser)}
+    if provision_id is not None:
+        fixture = validate_request(json.dumps({'kind':'browser',
+            'output':'<!doctype html><button id="go">Go</button><output id="value">0</output>'
+                     '<script>document.querySelector("#go").onclick=()=>{document.querySelector("#value").textContent="1";};</script>',
+            'spec':{'steps':[{'action':'click','selector':'#go'},
+                             {'action':'expectText','selector':'#value','value':'1'}]}}).encode())
+        proof = evaluate(provision_id,20,identity,fixture)
+        png = base64.b64decode(proof.get('screenshot') or '',validate=True)
+        if proof.get('result',{}).get('pass') is not True or not png.startswith(b'\x89PNG\r\n\x1a\n'):
+            raise ValueError('Sandboxed Chromium launch proof failed')
+        # The receipt is never issued from pins alone. Its trusted launch proof
+        # binds the exact confinement helpers, kernel settings and renderer tree.
+        temporary = RUNTIME/'receipt.new'
+        temporary.write_text(json.dumps(manifest,sort_keys=True))
+        os.chmod(temporary,0o644)
+        os.replace(temporary,receipt)
+    return identity
+
+def stop(id):
+    subprocess.run(['/usr/local/sbin/bench-kill','browser',id],check=True,
+                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
+
+def supervise(child, seconds):
+    output = bytearray()
+    diagnostics = 0
+    with selectors.DefaultSelector() as selector:
+        selector.register(child.stdout,selectors.EVENT_READ,'stdout')
+        selector.register(child.stderr,selectors.EVENT_READ,'stderr')
+        deadline = time.monotonic()+seconds
+        while selector.get_map():
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Browser evaluator exceeded its time budget')
+            for key,_ in selector.select(min(0.1,max(0,deadline-time.monotonic()))):
+                block = os.read(key.fd,8192)
+                if not block:
+                    selector.unregister(key.fileobj)
+                elif key.data == 'stdout':
+                    if len(output)+len(block) > MAX_RESPONSE:
+                        raise ValueError('Browser evaluator response exceeded cap')
+                    output.extend(block)
+                else:
+                    diagnostics += len(block)
+                    if diagnostics > MAX_DIAGNOSTICS:
+                        raise ValueError('Browser evaluator diagnostics exceeded cap')
+        child.wait(timeout=max(0.1,deadline-time.monotonic()))
+    return json.loads(output)
+
+def evaluate(id, seconds, identity=None, request=None):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',id) or not 1 <= seconds <= 1200:
+        raise ValueError('Invalid browser execution budget or ID')
+    if request is None:
+        request = validate_request(sys.stdin.buffer.read(MAX_REQUEST+1))
+    if identity is None:
+        identity = status()
+    directory = pathlib.Path('/srv/bench/checks')/id
+    account = pwd.getpwnam('checker')
+    directory.mkdir(mode=0o700)
+    os.chown(directory,account.pw_uid,account.pw_gid)
+    subprocess.run(['/usr/local/sbin/bench-budget','own',id],check=True,
+                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+    input_path = directory/'request.json'
+    input_path.write_bytes(json.dumps(request).encode())
+    os.chown(input_path,account.pw_uid,account.pw_gid)
+    os.chmod(input_path,0o400)
+    child = None
+    response = None
+    failure = None
+    try:
+        with input_path.open('rb') as stream:
+            child = subprocess.Popen(['/usr/local/sbin/bench-run','browser',id,
+                'FONTCONFIG_FILE=/opt/distill-browser/fonts.conf',
+                'FONTCONFIG_PATH=/opt/distill-browser', '--','/usr/local/bin/node',str(WORKER),
+                str(RUNTIME/'node_modules/playwright-core/index.mjs'),identity['browserPath']],
+                stdin=stream,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            try:
+                result = supervise(child,seconds)
+                if child.returncode or not isinstance(result,dict) or 'error' in result:
+                    raise ValueError('Isolated browser evaluator failed')
+                if result.get('browserVersion') != identity['runtime']['chromiumVersion']:
+                    raise ValueError('Chromium reported a different pinned version')
+                screenshot = None
+                if request['screenshotPath'] and not result.get('candidatePolicyViolation'):
+                    screenshot = base64.b64encode(read_regular(directory/'preview.png',MAX_SCREENSHOT)).decode()
+                response = {'result':result,'screenshot':screenshot,
+                            'runtimeRevision':identity['expectedRevision'],
+                            'installedRevision':identity['revision'],'runtime':identity['runtime']}
+            except TimeoutError:
+                response = {'error':'Browser evaluation exceeded its time budget',
+                            'candidateTimedOut':(directory/'candidate-started').is_file(),
+                            'runtimeRevision':identity['expectedRevision'],
+                            'installedRevision':identity['revision'],'runtime':identity['runtime']}
+    except BaseException as error:
+        failure = error
+    finally:
+        # Kill the complete cgroup before deleting workspace; do not infer that
+        # killing the root broker or WSL launcher stopped Linux grandchildren.
+        try:
+            # Only this small trusted broker leaves the worker group for final
+            # cleanup. The reserved control group remains capped; Chromium and
+            # its descendants stay in the leaf that stop() kills completely.
+            pathlib.Path('/sys/fs/cgroup/distill-bench/control/cgroup.procs').write_text(str(os.getpid()))
+            stop(id)
+            if child:
+                child.wait(timeout=5)
+            subprocess.run(['/usr/local/sbin/bench-clean',id],check=True,
+                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+        except BaseException as error:
+            failure = error
+    if failure:
+        raise failure
+    return response
+
+def main():
+    if os.geteuid() != 0:
+        raise ValueError('Trusted browser broker requires root')
+    def interrupted(*_):
+        raise InterruptedError('Browser broker cancelled')
+    signal.signal(signal.SIGTERM,interrupted)
+    signal.signal(signal.SIGINT,interrupted)
+    if len(sys.argv) == 2 and sys.argv[1] == 'status':
+        return status()
+    provision = len(sys.argv) == 3 and sys.argv[1] == 'provision-receipt'
+    if provision or (len(sys.argv) == 4 and sys.argv[1] == 'evaluate'):
+        id = sys.argv[2]
+        seconds = '20' if provision else sys.argv[3]
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',id) or not 1 <= int(seconds) <= 1200:
+            raise ValueError('Invalid browser execution budget or ID')
+        # Root staging, renderer verification and browser execution share one
+        # admission lease. The child bench-run joins this same owned bundle.
+        os.environ['DISTILL_BENCH_DEADLINE_MS'] = str(int((time.time()+int(seconds)+420)*1000))
+        os.execv('/usr/local/sbin/bench-budget', ['/usr/local/sbin/bench-budget',
+            'browser',id,'--',__file__,'admitted-proof' if provision else 'admitted',id,seconds])
+    if len(sys.argv) != 4 or sys.argv[1] not in ('admitted','admitted-proof') or not os.environ.get('DISTILL_BENCH_BUNDLE'):
+        raise ValueError('Usage: bench-browser evaluate ID SECONDS | status')
+    group = '/distill-bench/browser-' + sys.argv[2]
+    if not any(line.split(':',2)[-1].strip() == group for line in pathlib.Path('/proc/self/cgroup').read_text().splitlines()):
+        raise ValueError('Browser broker is not in its admitted workload group')
+    return status(sys.argv[2]) if sys.argv[1] == 'admitted-proof' else evaluate(sys.argv[2],int(sys.argv[3]))
+
+if __name__ == '__main__':
+    try:
+        print(json.dumps(main(),separators=(',',':')))
+    except BaseException:
+        # Never echo a private specification or candidate content in diagnostics.
+        print(json.dumps({'error':'Isolated browser broker failed; inspect readiness and limits'}))
+        sys.exit(1)

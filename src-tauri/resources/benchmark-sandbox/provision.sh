@@ -13,10 +13,10 @@ src=/tmp/distill-provision
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v iptables >/dev/null || ! command -v git >/dev/null; then
   apt-get update -qq
-  apt-get install -y -qq --no-install-recommends git iptables ca-certificates curl xz-utils python3 >/dev/null
+  apt-get install -y -qq --no-install-recommends git iptables ca-certificates curl xz-utils python3 e2fsprogs util-linux >/dev/null
 fi
-for script in bench-auth bench-net bench-network bench-run bench-enter bench-copy bench-patch bench-artifact bench-check-prep \
-  bench-kill bench-clean bench-status bench-login bench-judge; do
+for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy bench-patch bench-artifact bench-check-prep \
+  bench-kill bench-clean bench-status bench-login bench-judge bench-unpack bench-browser; do
   install -o root -g root -m 755 "$src/$script" "/usr/local/sbin/$script"
 done
 install -o root -g root -m 644 "$src/wsl.conf" /etc/wsl.conf
@@ -36,6 +36,7 @@ install -d -o root -g root -m 700 /srv/bench /srv/bench/work /srv/bench/base \
   /srv/bench/checks /srv/bench/staging /srv/bench/probes /srv/bench/pairs /srv/bench/submissions /srv/bench/artifacts
 install -d -o root -g root -m 755 /workspace
 install -d -o root -g root -m 755 /submission
+/usr/local/sbin/bench-budget mount-scratch
 /usr/local/sbin/bench-net
 
 # Provider tools, readable by everyone, writable by root only.
@@ -94,5 +95,6 @@ for dir in "$tools"/*/; do
     done
   } >"$dir/manifest"
 done
+bash "$src/browser-provision" "$src"
 rm -rf "$src"
-echo "provisioned"
+echo "Installed; browser readiness requires a host provision-receipt with fresh resource admission"

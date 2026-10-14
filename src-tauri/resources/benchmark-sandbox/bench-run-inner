@@ -1,0 +1,25 @@
+#!/bin/bash
+# Trusted, already admitted half of bench-run. This is never a candidate API.
+set -euo pipefail
+[[ $EUID == 0 && -n ${DISTILL_BENCH_BUNDLE:-} ]] || exit 77
+mode=$1 id=$2 user=$3 dir=$4 net=$5
+shift 5
+vars=()
+while [[ ${1:-} != -- ]]; do vars+=("$1"); shift; done
+shift
+for variable in "${vars[@]}"; do
+  if [[ $variable == DISTILL_BENCH_ACCOUNT_HOME=* ]]; then
+    [[ $mode == session ]] || exit 64
+    /usr/local/sbin/bench-auth prepare "$id" "${variable#*=}"
+  fi
+done
+if [[ $net == session ]]; then
+  namespace=$(/usr/local/sbin/bench-network "$id")
+  network=(ip netns exec "$namespace")
+elif [[ $net == bench ]]; then
+  network=(ip netns exec bench)
+else
+  network=(unshare --net)
+fi
+exec "${network[@]}" unshare --mount --pid --ipc --fork --mount-proc --kill-child --propagation private \
+  /usr/local/sbin/bench-enter "$user" "$dir" "${vars[@]}" -- "$@"

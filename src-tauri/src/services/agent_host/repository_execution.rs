@@ -30,9 +30,13 @@ pub(crate) async fn readiness(
     provider: NativeProvider,
     account: &str,
 ) -> Result<sandbox::Status, String> {
-    let status = sandbox::ready()
-        .await
-        .map_err(|error| format!("capability_missing: {error}"))?;
+    let status = sandbox::ready().await.map_err(|error| {
+        let message = error.to_string();
+        match message.find("resource_busy:") {
+            Some(start) => message[start..].to_owned(),
+            None => format!("capability_missing: {message}"),
+        }
+    })?;
     status
         .require_account(provider.key(), account)
         .map_err(|error| format!("capability_missing: {error}"))?;

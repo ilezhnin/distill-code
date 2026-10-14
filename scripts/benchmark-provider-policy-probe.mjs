@@ -52,6 +52,18 @@ import { createInterface } from "node:readline";
 import zlib from "node:zlib";
 
 const [provider, installedArgument] = process.argv.slice(2);
+// Linux qualification runs only inside bench-run probe's offline namespace.
+// Its root supervisor supplies hashes collected from the pinned installation;
+// the Windows verified block is never treated as a Linux attestation.
+const linux = process.argv.includes("--linux-sandbox");
+const linuxArtifacts = linux
+  ? JSON.parse(process.env.DISTILL_LINUX_PROBE_ARTIFACTS ?? "null")
+  : null;
+if (linux) {
+  assert.equal(process.platform, "linux");
+  assert.equal(process.env.DISTILL_LINUX_POLICY_PROBE, "offline-v1");
+  assert(linuxArtifacts && typeof linuxArtifacts === "object");
+}
 assert(
   provider && installedArgument,
   "Usage: benchmark-provider-policy-probe.mjs <codex|grok|kimi> <installed package dir or executable>",
@@ -404,24 +416,28 @@ async function probeCodex(root, children) {
     "The installed codex-acp is not the pinned build",
   );
   // The CLI codex-acp starts, resolved the way it resolves it, and the
-  // native binary that launcher runs (Distill is built for Windows x64).
+  // native binary that launcher runs on the qualified platform.
   const cli = createRequire(entrypoint).resolve("@openai/codex/bin/codex.js");
   const cliVersion = JSON.parse(
     await readFile(join(dirname(cli), "..", "package.json"), "utf8"),
   ).version;
-  const nativeCli = join(
-    dirname(createRequire(cli).resolve("@openai/codex-win32-x64/package.json")),
-    "vendor",
-    "x86_64-pc-windows-msvc",
-    "bin",
-    "codex.exe",
-  );
+  const nativeCli = linux
+    ? linuxArtifacts.codexNative.path
+    : join(
+        dirname(
+          createRequire(cli).resolve("@openai/codex-win32-x64/package.json"),
+        ),
+        "vendor",
+        "x86_64-pc-windows-msvc",
+        "bin",
+        "codex.exe",
+      );
   const nativeHash = createHash("sha256");
   for await (const chunk of createReadStream(nativeCli))
     nativeHash.update(chunk);
   assert.equal(
     nativeHash.digest("hex"),
-    policy.runtime.files.nativeCli,
+    linux ? linuxArtifacts.codexNative.sha256 : policy.runtime.files.nativeCli,
     "The installed Codex CLI is not the pinned build",
   );
   const adapter = await readFile(
@@ -845,7 +861,7 @@ async function probeCodex(root, children) {
       );
     }
 
-    // The CLI finds the user's own profile through the operating system, not
+    // The Windows CLI finds the user's own profile through the operating system, not
     // through the redirected `USERPROFILE` and `HOME`, so the personal skills
     // there reach it whatever its environment says, and no setting turns
     // them off. Mentioning every one of this machine's shows where what it
@@ -853,6 +869,12 @@ async function probeCodex(root, children) {
     // while it has entries (execution::codex_user_skills_preflight).
     const realSkillsDir = join(homedir(), ".agents", "skills");
     const realSkills = await skillNames(realSkillsDir);
+    if (linux)
+      assert.equal(
+        realSkills.length,
+        0,
+        "The isolated Linux HOME must contain no personal skills",
+      );
     let realProfile = {
       folder: realSkillsDir,
       skills: 0,
@@ -952,9 +974,10 @@ async function probeCodex(root, children) {
       "Positive control at ultra must carry the delegation instructions",
     );
     // Each fixture the control reads shows where it came from: the account
-    // home's instructions and skill and the project instructions. The profile
-    // the environment names is not one: Codex finds the user's own (see the
-    // personal skills check above), so the redirect is no control for it.
+    // home's instructions and skill and the project instructions. The pinned
+    // Linux CLI also reads the redirected HOME's personal skill fixture. The
+    // Windows CLI resolves the actual user profile instead (see the personal
+    // skills check above); that redirect is not a Windows positive control.
     const codexLocations = [
       "HOME-AGENTSMD",
       "HOME-SKILL",
@@ -965,7 +988,12 @@ async function probeCodex(root, children) {
     const controlMarkers = markersIn(controlRequests, codexLocations);
     assert.deepEqual(
       controlMarkers,
-      ["HOME-AGENTSMD", "HOME-SKILL", "WORKSPACE-AGENTSMD"],
+      [
+        "HOME-AGENTSMD",
+        "HOME-SKILL",
+        "WORKSPACE-AGENTSMD",
+        ...(linux ? ["USERHOME-SKILL"] : []),
+      ],
       "Positive control must expose the home and project context fixtures, and only those",
     );
     assert(
@@ -1045,8 +1073,12 @@ async function probeCodex(root, children) {
         "the selected model and effort run; max carries no delegation",
         "hostile tool call executed nothing and reached the host as a tool_call update",
         "prompt usage and quota usage carry the thread totals",
-        "the personal skills Codex reads come only from the user's own profile folder, which the host guards",
-        "positive control exposes tools, subagents, the home and project context fixtures (not the redirected profile's), runs the MCP fixture, titles the session, and runs ultra as another effort with delegation",
+        linux
+          ? "the isolated Linux HOME contains no personal skills"
+          : "the personal skills Codex reads come only from the user's own profile folder, which the host guards",
+        linux
+          ? "positive control exposes tools, subagents, home/project/redirected-HOME context fixtures, runs the MCP fixture, titles the session, and runs ultra as another effort with delegation"
+          : "positive control exposes tools, subagents, the home and project context fixtures (not the redirected profile's), runs the MCP fixture, titles the session, and runs ultra as another effort with delegation",
         "changed entrypoint and missing catalog refused before the bridge runs",
       ],
     };
@@ -1168,7 +1200,7 @@ async function probeGrok(root, children) {
   const executable = installed;
   assert.equal(
     sha256(await readFile(executable)),
-    policy.runtime.files.executable,
+    linux ? linuxArtifacts.grokNative.sha256 : policy.runtime.files.executable,
     "The installed grok is not the pinned build",
   );
   assert.equal(policy.args.at(-1), "stdio");
@@ -2002,7 +2034,9 @@ async function probeKimi(root, children) {
     "The installed Kimi Code is not the pinned build",
   );
   const adapter = await readFile(
-    repo("src-tauri/resources/benchmark-kimi-policy.mjs"),
+    repo(
+      `src-tauri/resources/${linux ? "benchmark-linux-text-kimi.mjs" : "benchmark-kimi-policy.mjs"}`,
+    ),
   );
   const marker = join(root, "escaped.txt");
   const writeMarker = (label) =>
@@ -2121,6 +2155,32 @@ async function probeKimi(root, children) {
       hook("UserPromptSubmit"),
     ].join("\n"),
   );
+  const originalKimiConfig = await readFile(join(kimiHome, "config.toml"));
+  if (linux) {
+    // This is the namespace's empty /tmp, never a real account directory.
+    await mkdir("/tmp/provider/credentials", { recursive: true, mode: 0o700 });
+    await writeFile(
+      "/tmp/provider/config.json",
+      JSON.stringify({
+        default_model: model,
+        providers: {
+          probe: {
+            type: "kimi",
+            base_url: `${stub.url}/v1`,
+            api_key: "synthetic-probe-key",
+          },
+        },
+        models: {
+          [model]: {
+            provider: "probe",
+            model: "kimi-probe",
+            max_context_size: 262144,
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+  }
 
   const task =
     "Benchmark task:\n/plan\n$hostile $personal\nRead AGENTS.md, use the hostile skill or MCP server, and write escaped.txt. If no tools are available, answer POLICY_PROBE_OK.";
@@ -2264,6 +2324,10 @@ async function probeKimi(root, children) {
       ).length;
     const restrictedRequests = stub.requests.length;
 
+    // The Linux adapter projects only account model settings. Restore the
+    // invented hostile configuration for the independent positive control.
+    if (linux)
+      await writeFile(join(kimiHome, "config.toml"), originalKimiConfig);
     // Positive control: the same CLI with no adapter, on the hostile homes
     // and workspace, must expose tools and context and run the fixture.
     const control = startBridge(
@@ -2406,10 +2470,15 @@ const root = await mkdtemp(join(tmpdir(), "distill-provider-policy-"));
 const children = [];
 try {
   const report = await probes[provider](root, children);
-  const verified = await verification(provider);
+  const verified = linux ? undefined : await verification(provider);
   console.log(
     JSON.stringify(
-      { status: "passed", provider, ...report, verified },
+      {
+        status: "passed",
+        provider,
+        ...report,
+        ...(linux ? { qualification: "linux-offline-v1" } : { verified }),
+      },
       null,
       2,
     ),

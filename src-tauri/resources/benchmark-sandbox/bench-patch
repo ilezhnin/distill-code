@@ -8,6 +8,9 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo "bench-patch: root required" >&2; exit 77; }
 id=${1:-}
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-patch: bad id" >&2; exit 64; }
+if [[ -z ${DISTILL_BENCH_BUNDLE:-} ]]; then
+  exec /usr/local/sbin/bench-budget prep "$id" -- /bin/bash "$0" "$@"
+fi
 work=/srv/bench/work/$id
 base=/srv/bench/base/$id
 for parent in /srv /srv/bench /srv/bench/work /srv/bench/base "$base" "$base/.git"; do
