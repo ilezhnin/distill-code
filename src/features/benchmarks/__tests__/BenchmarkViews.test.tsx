@@ -1124,6 +1124,7 @@ describe("benchmark authoring and saved evidence", () => {
         configuration: { ...configuration, id: "d", modelId: "delta" },
         points: 900,
         status: "preliminary",
+        axes: [codingAxis(900)],
         scored: 1,
         planned: 4,
       }),
@@ -1143,8 +1144,8 @@ describe("benchmark authoring and saved evidence", () => {
           const cells = within(row).getAllByRole("cell");
           return `${cells[0].textContent} ${cells[1].querySelector(".font-medium")?.textContent}`;
         });
-    // Every model is listed; a row without a rank follows the ranked ones.
-    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
+    // Scores determine display order; preliminary rows still have no rank.
+    expect(order()).toEqual(["1 alpha", "1 gamma", "– delta", "3 beta"]);
     const profile = within(screen.getAllByRole("row")[1]).getByRole("img");
     expect(profile).toHaveAccessibleName("Algorithms and clean code: 200");
     expect(
@@ -1158,14 +1159,14 @@ describe("benchmark authoring and saved evidence", () => {
     await userEvent.click(
       screen.getByRole("tab", { name: "Algorithms and clean code" }),
     );
-    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
+    expect(order()).toEqual(["1 beta", "– delta", "2 alpha", "3 gamma"]);
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
     await userEvent.click(screen.getByRole("button", { name: "Overall" }));
-    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
+    expect(order()).toEqual(["1 alpha", "1 gamma", "– delta", "3 beta"]);
     await userEvent.click(
       screen.getByRole("button", { name: "Algorithms and clean code" }),
     );
-    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
+    expect(order()).toEqual(["1 beta", "– delta", "2 alpha", "3 gamma"]);
     expect(
       screen.getByRole("button", { name: "Algorithms and clean code" }),
     ).toHaveAttribute("aria-pressed", "true");

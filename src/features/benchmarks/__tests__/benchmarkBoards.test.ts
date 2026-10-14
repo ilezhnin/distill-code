@@ -183,12 +183,47 @@ describe("leaderboard boards", () => {
     ).toEqual([
       ["alpha", 1],
       ["gamma", 1],
-      ["beta", 3],
       ["delta", null],
+      ["beta", 3],
     ]);
     // The unranked row keeps its points and bar, just no place.
-    expect(ranked[3].points).toBe(900);
-    expect(ranked[3].share).toBe(90);
+    expect(ranked[2].points).toBe(900);
+    expect(ranked[2].share).toBe(90);
+  });
+
+  it("sorts preliminary class scores with zero before missing scores without assigning ranks", () => {
+    const scores = [null, 992, 921, 897, 980, 590, 0];
+    const incomplete = scores.map((points, index) =>
+      leaderboardRow({
+        configuration: { ...configuration, modelId: `model-${index}` },
+        status: "preliminary",
+        points: index * 100,
+        axes: [
+          {
+            id: "algorithms",
+            quality: 0,
+            points,
+            passed: 0,
+            scored: 1,
+            planned: 2,
+          },
+        ],
+      }),
+    );
+    const ordered = rankRows(incomplete, boardsFor(cohort)[1]);
+    expect(ordered.map((entry) => entry.points)).toEqual([
+      992,
+      980,
+      921,
+      897,
+      590,
+      0,
+      null,
+    ]);
+    expect(ordered.every((entry) => entry.rank === null)).toBe(true);
+    expect(ordered.at(-2)?.share).toBe(0);
+    expect(ordered.at(-1)?.share).toBeNull();
+    expect(incomplete.map((row) => row.axes[0].points)).toEqual(scores);
   });
 
   it("orders a class board by its own points and leaves missing ones unranked", () => {

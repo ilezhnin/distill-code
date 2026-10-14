@@ -129,29 +129,32 @@ export function configurationKey(configuration: Configuration): string {
 }
 
 /**
- * Only comparable rows receive a rank; incomplete and excluded rows keep their
- * points but sink below the ranked rows in their original order.
+ * Display every row by this board's points, with missing scores last.
+ * Only comparable rows receive a rank; preliminary scores never earn a place.
  */
 export function rankRows(rows: LeaderboardRow[], board: Board): RankedRow[] {
-  const entries = rows.map((row) => ({ row, points: board.points(row) }));
-  const ranked = entries
-    .filter(
-      (entry): entry is { row: LeaderboardRow; points: number } =>
-        entry.row.status === "comparable" && entry.points != null,
-    )
-    .sort((a, b) => b.points - a.points);
-  const rest = entries.filter((entry) => !ranked.includes(entry as never));
+  const entries = rows
+    .map((row) => ({ row, points: board.points(row) }))
+    .sort((a, b) => {
+      if (a.points == null) return b.points == null ? 0 : 1;
+      if (b.points == null) return -1;
+      return b.points - a.points;
+    });
+  let comparableCount = 0;
+  let previousPoints: number | null = null;
   let rank = 0;
-  return [
-    ...ranked.map((entry, index) => {
-      if (index === 0 || entry.points !== ranked[index - 1].points)
-        rank = index + 1;
-      return { ...entry, rank, share: entry.points / 10 };
-    }),
-    ...rest.map((entry) => ({
+  return entries.map((entry) => {
+    const comparable =
+      entry.row.status === "comparable" && entry.points != null;
+    if (comparable) {
+      comparableCount += 1;
+      if (entry.points !== previousPoints) rank = comparableCount;
+      previousPoints = entry.points;
+    }
+    return {
       ...entry,
-      rank: null,
+      rank: comparable ? rank : null,
       share: entry.points == null ? null : entry.points / 10,
-    })),
-  ];
+    };
+  });
 }
