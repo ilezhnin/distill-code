@@ -699,6 +699,19 @@ describe("useChatSessionController", () => {
           target: expect.objectContaining({ modelId: "gpt-4o" }),
           runSettings: { effort: "high", fast: false },
         }),
+        // Automatic selection also keeps the inventory's default settings.
+        // The accepted preference orders fallback; it does not limit the pool.
+        {
+          target: {
+            harnessId: "claude-acp",
+            modelProviderId: "claude-acp",
+            modelId: "gpt-4o",
+            modelName: "GPT-4o",
+          },
+        },
+      ],
+      priorIds: [
+        JSON.stringify(["claude-acp", "claude-acp", "gpt-4o", "high", false]),
       ],
     });
     act(() => result.current.handleDraftChange("A later unsent task"));
