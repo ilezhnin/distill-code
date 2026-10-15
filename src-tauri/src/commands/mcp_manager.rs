@@ -104,6 +104,8 @@ pub async fn read_local_mcp_configuration(
     .map_err(|_| "Cannot read MCP configuration".to_string())?
 }
 
+// The parameters are the command's IPC contract with the renderer.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_local_mcp_configuration(
     app: tauri::AppHandle,
@@ -156,16 +158,10 @@ pub async fn update_local_mcp_configuration(
         }
         // Grok's inherited entries are toggled in Grok's own settings, never
         // by disabling the same server for its original provider.
-        if enabled.is_some()
-            && (id.starts_with("grok-inherited:") || located.harness == McpHarnessId::ClaudeCode)
-        {
-            return toggle_inherited(
-                &root,
-                &id,
-                &located.config_key,
-                enabled.unwrap(),
-                &workspace_paths,
-            );
+        if let Some(enabled) = enabled.filter(|_| {
+            id.starts_with("grok-inherited:") || located.harness == McpHarnessId::ClaudeCode
+        }) {
+            return toggle_inherited(&root, &id, &located.config_key, enabled, &workspace_paths);
         }
         if let Some(enabled) = enabled.filter(|_| located.harness == McpHarnessId::Gemini) {
             let path = dirs::home_dir()
