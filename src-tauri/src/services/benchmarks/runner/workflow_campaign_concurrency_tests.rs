@@ -381,7 +381,7 @@ async fn concurrent_campaign_refills_while_slow_children_fly_and_drains_all_on_p
         .control_workflow_campaign(&frozen.plan.id, "resume")
         .await
         .unwrap();
-    assert_eq!(finish(&service, &frozen.plan.id).await.state, "completed");
+    complete(&service, &frozen.plan.id).await;
     let all = children(&service, &frozen).await;
     assert_eq!(all.len(), 120);
     assert!(all.iter().all(|r| r.attempts.len() == 1));
@@ -541,7 +541,7 @@ async fn concurrent_campaign_slot_timeout_seals_first_evidence_without_dispatch_
         .control_workflow_campaign(&frozen.plan.id, "resume")
         .await
         .unwrap();
-    assert_eq!(finish(&service, &frozen.plan.id).await.state, "completed");
+    complete(&service, &frozen.plan.id).await;
     service.tick().await.unwrap();
     for original in &expired {
         assert_eq!(
@@ -945,7 +945,7 @@ async fn concurrent_campaign_restart_preserves_uncertain_first_attempts_and_unto
         .control_workflow_campaign(&frozen.plan.id, "resume")
         .await
         .unwrap();
-    assert_eq!(finish(&reopened, &frozen.plan.id).await.state, "completed");
+    complete(&reopened, &frozen.plan.id).await;
     for (id, original) in failed {
         assert_eq!(
             serde_json::to_value(reopened.store.run(&id).await.unwrap().attempts).unwrap(),

@@ -294,6 +294,14 @@ async fn finish(service: &Arc<BenchmarkService>, id: &str) -> Campaign {
     panic!("campaign failed to settle")
 }
 
+/// Settles a campaign that must complete. A pause reports its recorded
+/// reason, so a failure on a loaded runner names its cause.
+async fn complete(service: &Arc<BenchmarkService>, id: &str) -> Campaign {
+    let campaign = finish(service, id).await;
+    assert_eq!(campaign.state, "completed", "{:?}", campaign.state_reason);
+    campaign
+}
+
 #[tokio::test]
 async fn campaign_freezes_no_retry_limits_into_each_native_root() {
     let dir = tempfile::tempdir().unwrap();
@@ -629,7 +637,7 @@ async fn a_mixed_role_campaign_uses_each_step_class_model_over_whole_trajectorie
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
         .unwrap();
-    assert_eq!(finish(&service, &frozen.plan.id).await.state, "completed");
+    complete(&service, &frozen.plan.id).await;
     // 96 training calls, then two steps for each of 120 trajectories.
     assert_eq!(backend.calls.load(Ordering::SeqCst), 96 + 240);
     let report = service
@@ -733,7 +741,7 @@ async fn campaign_preserves_refusal_and_requires_explicit_resume_after_restart()
         .control_workflow_campaign(&frozen.plan.id, "resume")
         .await
         .unwrap();
-    assert_eq!(finish(&reopened, &frozen.plan.id).await.state, "completed");
+    complete(&reopened, &frozen.plan.id).await;
     assert_eq!(backend.calls.load(Ordering::SeqCst), 286);
     assert!(reopened
         .store

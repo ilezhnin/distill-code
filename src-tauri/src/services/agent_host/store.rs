@@ -433,7 +433,12 @@ impl SessionStore {
             // A successful save must survive a power loss. Streaming writes
             // are batched by the host, so each batch pays for one WAL sync.
             .synchronous(SqliteSynchronous::Full)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            // Parallel benchmark sessions and streaming chats share one writer.
+            // A slow WAL sync must delay a session insert, not fail it as
+            // "database is locked" after the 5 s default. Matches the
+            // benchmark store.
+            .busy_timeout(std::time::Duration::from_secs(10));
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(options)
