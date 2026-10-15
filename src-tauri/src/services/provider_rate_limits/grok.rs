@@ -93,32 +93,6 @@ pub fn benchmark_sign_in_margin_ms(turn_limit_ms: u64) -> i64 {
         .max(BENCHMARK_SIGN_IN_MARGIN_MS)
 }
 
-/// The user's Grok sign-in as a benchmark process may use it: the auth
-/// document reduced to the fields a session runs on (see
-/// [`benchmark_sign_in_document`]), and when the session Grok picks from it
-/// expires. Without a refresh token that process can use the session but
-/// never rotate it, so the user's own Grok keeps the only refreshable copy.
-/// `None` when there is no session (Grok then signs in with `XAI_API_KEY`, if
-/// the user has one). Read into memory; nothing is written.
-pub fn benchmark_auth_document() -> Result<Option<(String, Option<i64>)>, String> {
-    match fs::read_to_string(grok_auth_path()) {
-        Ok(raw) => benchmark_auth_from(&raw),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err("Grok auth file cannot be read".into()),
-    }
-}
-
-fn benchmark_auth_from(raw: &str) -> Result<Option<(String, Option<i64>)>, String> {
-    match parse_grok_auth_session(raw) {
-        GrokAuthReadResult::Missing => Ok(None),
-        GrokAuthReadResult::Error(error) => Err(error),
-        GrokAuthReadResult::Ok(session) => Ok(Some((
-            benchmark_sign_in_document(raw)?,
-            session.expires_at_ms,
-        ))),
-    }
-}
-
 /// Whether a session expiring at `expires_at_ms` is too close to expiry, at
 /// `now`, for a benchmark process to start or run a turn of up to
 /// `turn_limit_ms` on it.
@@ -128,21 +102,6 @@ pub fn benchmark_sign_in_expiring(
     turn_limit_ms: u64,
 ) -> bool {
     expires_at_ms.is_some_and(|expires| expires - now < benchmark_sign_in_margin_ms(turn_limit_ms))
-}
-
-/// When the user's Grok sign-in expires, read the way
-/// [`benchmark_auth_document`] reads the session, and nothing else of it.
-/// `None` without a session or without an expiry.
-pub fn benchmark_sign_in_expiry() -> Result<Option<i64>, String> {
-    match fs::read_to_string(grok_auth_path()) {
-        Ok(raw) => match parse_grok_auth_session(&raw) {
-            GrokAuthReadResult::Missing => Ok(None),
-            GrokAuthReadResult::Error(error) => Err(error),
-            GrokAuthReadResult::Ok(session) => Ok(session.expires_at_ms),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err("Grok auth file cannot be read".into()),
-    }
 }
 
 /// The Grok CLI's setting for how many seconds before expiry it counts a
@@ -157,10 +116,6 @@ const RENEWAL_WINDOW_ENV: &str = "GROK_AUTH_EARLY_INVALIDATION_SECS";
 /// window.
 const CHAT_BRIDGE_RENEWAL_WINDOW_MS: i64 =
     BENCHMARK_SIGN_IN_TURN_CAP_MS + BENCHMARK_SIGN_IN_SLACK_MS;
-
-/// How far into the CLI's renewal window a waiting run starts again, so the
-/// CLI already counts the sign-in as due when the run lists its models.
-const RENEWAL_WINDOW_SLACK_MS: i64 = 30 * 1000;
 
 /// How long before expiry the Grok CLI the user's chats run renews its
 /// sign-in: from then on it counts the session as expired and renews it, in
@@ -191,82 +146,6 @@ pub fn chat_bridge_renewal_env() -> (String, String) {
 /// sign-in that is due: a renewal, and the bridge that replaces this one,
 /// wait for that turn to end.
 pub const BENCHMARK_BRIDGE_BUSY: &str = "another Grok test still runs on the sign-in that is due for renewal; this test starts when it finishes";
-
-/// What a benchmark turn of up to `turn_limit_ms` needs, at `now`, of a
-/// sign-in that expires at `expires_at_ms`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BenchmarkSignIn {
-    /// It outlasts the turn, or there is no session to outlast it.
-    Ready,
-    /// The CLI counts it as due: any request the CLI makes renews it first,
-    /// so one model listing on the user's chat bridge renews it.
-    Renew,
-    /// Nothing the CLI does renews it before this time, inside its renewal
-    /// window.
-    WaitUntil(i64),
-}
-
-/// See [`BenchmarkSignIn`]; `renewal_window_ms` is
-/// [`cli_renewal_window_ms`].
-pub fn benchmark_sign_in_step(
-    expires_at_ms: Option<i64>,
-    now: i64,
-    turn_limit_ms: u64,
-    renewal_window_ms: i64,
-) -> BenchmarkSignIn {
-    let Some(expires) = expires_at_ms else {
-        return BenchmarkSignIn::Ready;
-    };
-    if !benchmark_sign_in_expiring(Some(expires), now, turn_limit_ms) {
-        return BenchmarkSignIn::Ready;
-    }
-    let renews_from = expires.saturating_sub(renewal_window_ms);
-    if now >= renews_from {
-        BenchmarkSignIn::Renew
-    } else {
-        BenchmarkSignIn::WaitUntil(renews_from.saturating_add(RENEWAL_WINDOW_SLACK_MS))
-    }
-}
-
-/// The fields of a sign-in entry a benchmark process gets: the access token
-/// (`key`), how and when it was issued, when it expires and whose it is. The
-/// pinned Grok runs a session on exactly these (the policy probe signs in
-/// with nothing else).
-const BENCHMARK_SIGN_IN_FIELDS: &[&str] = &[
-    "key",
-    "auth_mode",
-    "create_time",
-    "expires_at",
-    "user_id",
-    "email",
-];
-
-/// The auth document `raw` with each sign-in entry reduced to
-/// [`BENCHMARK_SIGN_IN_FIELDS`] holding plain values. Everything else stays
-/// with the user's own Grok: refresh, ID and other session tokens under any
-/// name, nested objects, and anything that is not an entry.
-pub fn benchmark_sign_in_document(raw: &str) -> Result<String, String> {
-    let invalid = || "Grok auth file is invalid".to_string();
-    let document: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
-    let entries = document.as_object().ok_or_else(invalid)?;
-    let kept: serde_json::Map<String, Value> = entries
-        .iter()
-        .filter_map(|(issuer, entry)| {
-            let fields = entry
-                .as_object()?
-                .iter()
-                .filter(|(field, value)| {
-                    BENCHMARK_SIGN_IN_FIELDS.contains(&field.as_str())
-                        && !value.is_object()
-                        && !value.is_array()
-                })
-                .map(|(field, value)| (field.clone(), value.clone()))
-                .collect();
-            Some((issuer.clone(), Value::Object(fields)))
-        })
-        .collect();
-    serde_json::to_string(&Value::Object(kept)).map_err(|error| error.to_string())
-}
 
 /// Whether the auth file holds a session Grok will accept without signing in
 /// again. The Grok agent check decides from this with the same issuer
@@ -626,71 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn grok_auth_document_drops_refresh_tokens() {
-        let raw = r#"{
-            "https://auth.x.ai::scope": {
-                "key": "fabricated-access",
-                "auth_mode": "oidc",
-                "create_time": "2026-10-01T00:00:00Z",
-                "user_id": "fabricated-user",
-                "refresh_token": "fabricated-refresh",
-                "id_token": "fabricated-id-token",
-                "session_token": "fabricated-session-token",
-                "access_token": "fabricated-second-access",
-                "email": "dev@example.com",
-                "expires_at": "2030-01-01T00:00:00Z",
-                "source": {"refreshToken": "nested-refresh", "issuer": "https://auth.x.ai"},
-                "history": [{"refresh_token": "listed-refresh", "kept": 1}]
-            },
-            "version": 2
-        }"#;
-        let stripped = benchmark_sign_in_document(raw).unwrap();
-        // Only the fields a session runs on are handed over: no other token
-        // under any name, and nothing nested.
-        for gone in [
-            "refresh",
-            "id-token",
-            "session-token",
-            "second-access",
-            "source",
-            "history",
-            "version",
-        ] {
-            assert!(!stripped.contains(gone), "{gone}: {stripped}");
-        }
-        let document: Value = serde_json::from_str(&stripped).unwrap();
-        let entry = document["https://auth.x.ai::scope"].as_object().unwrap();
-        let mut fields: Vec<&str> = entry.keys().map(String::as_str).collect();
-        fields.sort_unstable();
-        assert_eq!(
-            fields,
-            [
-                "auth_mode",
-                "create_time",
-                "email",
-                "expires_at",
-                "key",
-                "user_id"
-            ]
-        );
-        assert_eq!(entry["key"], "fabricated-access");
-        assert_eq!(entry["email"], "dev@example.com");
-        assert!(benchmark_sign_in_document("not json").is_err());
-        assert!(benchmark_sign_in_document("[]").is_err());
-
-        // The session Grok would use, with its expiry; no session is not an
-        // error, an unreadable document is.
-        let (document, expires) = benchmark_auth_from(raw).unwrap().unwrap();
-        assert_eq!(document, stripped);
-        assert_eq!(
-            expires,
-            parse_reset_timestamp(&Value::String("2030-01-01T00:00:00Z".into()))
-        );
-        assert_eq!(benchmark_auth_from("{}").unwrap(), None);
-        assert!(benchmark_auth_from("[").is_err());
-    }
-
-    #[test]
     fn a_benchmark_sign_in_must_outlive_the_margin() {
         let now = 1_000_000_000;
         let ten_minutes = 10 * 60 * 1000;
@@ -734,64 +548,10 @@ mod tests {
     /// asks for, so a sign-in too short for any turn is renewed at once
     /// instead of waited for.
     #[test]
-    fn a_sign_in_too_short_for_a_turn_is_inside_the_chat_bridge_window() {
-        let now = 1_000_000_000;
-        let window = CHAT_BRIDGE_RENEWAL_WINDOW_MS;
-        assert_eq!(window, benchmark_sign_in_margin_ms(u64::MAX));
-        for turn in [0, 10 * 60 * 1000, 4 * 60 * 60 * 1000] {
-            let margin = benchmark_sign_in_margin_ms(turn);
-            assert_eq!(
-                benchmark_sign_in_step(Some(now + margin - 1), now, turn, window),
-                BenchmarkSignIn::Renew,
-                "{turn}"
-            );
-            assert_eq!(
-                benchmark_sign_in_step(Some(now + margin), now, turn, window),
-                BenchmarkSignIn::Ready,
-                "{turn}"
-            );
-        }
-    }
-
-    /// The Grok CLI renews a sign-in before any request once it is within
-    /// its renewal window (five minutes where the user's environment keeps
-    /// Grok's own), never earlier, while a benchmark turn needs fifteen
-    /// minutes or more left. Measured on the pinned 1.0.40 against a
-    /// loopback stub: a sign-in ten minutes from expiry was used as it was
-    /// through a start and a session; three minutes from expiry, every
-    /// request renewed it first.
-    #[test]
-    fn a_sign_in_is_renewed_inside_the_cli_window_and_waited_for_before_it() {
-        let now = 1_000_000_000;
-        let minute = 60 * 1000;
-        let window = 5 * minute;
-        let turn = 10 * 60 * 1000;
+    fn the_chat_bridge_window_covers_the_longest_turn_margin() {
         assert_eq!(
-            benchmark_sign_in_step(None, now, turn, window),
-            BenchmarkSignIn::Ready
-        );
-        assert_eq!(
-            benchmark_sign_in_step(Some(now + 20 * minute), now, turn, window),
-            BenchmarkSignIn::Ready
-        );
-        // Ten minutes left: too little for the turn, too much for the CLI to
-        // renew it yet; the run waits until half a minute into its window.
-        assert_eq!(
-            benchmark_sign_in_step(Some(now + 10 * minute), now, turn, window),
-            BenchmarkSignIn::WaitUntil(now + 5 * minute + RENEWAL_WINDOW_SLACK_MS)
-        );
-        // Inside the window, or past expiry, a listing renews it.
-        for left in [5 * minute, 3 * minute, 0, -minute] {
-            assert_eq!(
-                benchmark_sign_in_step(Some(now + left), now, turn, window),
-                BenchmarkSignIn::Renew,
-                "{left}"
-            );
-        }
-        // A user who turned the early renewal off: the CLI renews at expiry.
-        assert_eq!(
-            benchmark_sign_in_step(Some(now + 10 * minute), now, turn, 0),
-            BenchmarkSignIn::WaitUntil(now + 10 * minute + RENEWAL_WINDOW_SLACK_MS)
+            CHAT_BRIDGE_RENEWAL_WINDOW_MS,
+            benchmark_sign_in_margin_ms(u64::MAX)
         );
     }
 

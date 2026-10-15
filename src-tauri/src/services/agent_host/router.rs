@@ -137,8 +137,8 @@ struct OwnedBridge<'a> {
     turn_limit_ms: u64,
 }
 
-/// Where owned bridges of every provider run from, under the Distill root
-/// `root` (see [`execution::prepare_owned_runtime`]).
+/// Where owned bridges of every provider kept their runtime files, under the
+/// Distill root `root`.
 fn owned_runtime_root(root: &std::path::Path) -> PathBuf {
     root.join("benchmarks").join("runtime")
 }
@@ -1554,14 +1554,6 @@ impl Inner {
         Ok(None)
     }
 
-    /// The Distill root and the runtime directory under it that owned bridges
-    /// of `harness_id` run from (see [`execution::prepare_owned_runtime`]).
-    fn owned_runtime_dir(&self, harness_id: &str) -> Result<(PathBuf, PathBuf), String> {
-        let root = crate::services::distill_root::app_root(&self.app)?;
-        let dir = owned_runtime_root(&root).join(harness_id);
-        Ok((root, dir))
-    }
-
     /// Drops what the host kept for the owned bridge of `generation` on
     /// `route_key` once it is stopped or gone: the expiry of the sign-in it
     /// ran on, and any copy of that sign-in its CLI left in the runtime
@@ -1595,32 +1587,6 @@ impl Inner {
     /// stopped itself is no longer in the map when it exits.
     fn exit_ends_route(live: Option<u64>, exited: u64) -> bool {
         live.is_none_or(|generation| generation == exited)
-    }
-
-    /// The user's Grok session for an owned bridge to run on, as
-    /// [`grok::benchmark_auth_document`] gives it; `None` when Grok signs in
-    /// with `XAI_API_KEY` instead. A session that would not outlast a turn of
-    /// `turn_limit_ms` and its slack is refused: the owned process cannot
-    /// refresh it.
-    fn owned_grok_sign_in(turn_limit_ms: u64) -> Result<Option<(String, Option<i64>)>, Value> {
-        let sign_in = grok::benchmark_auth_document().map_err(|error| {
-            protocol::internal(format!(
-                "capability_missing: the Grok sign-in cannot be read: {error}"
-            ))
-        })?;
-        if sign_in.as_ref().is_some_and(|(_, expiry)| {
-            grok::benchmark_sign_in_expiring(
-                *expiry,
-                chrono::Utc::now().timestamp_millis(),
-                turn_limit_ms,
-            )
-        }) {
-            return Err(protocol::internal(format!(
-                "capability_missing: the Grok sign-in expires within {} minutes; open a Grok chat so the Grok CLI refreshes it",
-                grok::benchmark_sign_in_margin_ms(turn_limit_ms).saturating_add(59_999) / 60_000
-            )));
-        }
-        Ok(sign_in)
     }
 
     /// Every [`BRIDGE_REAP_INTERVAL`], shut down the bridges nothing is using.
@@ -7274,21 +7240,6 @@ impl Inner {
             cache.insert(cache_key, (std::time::Instant::now(), inventory.clone()));
         }
         Ok(inventory)
-    }
-
-    /// Whether a benchmark bridge of `provider`'s `account` has a turn in
-    /// flight. That turn runs on the sign-in the bridge was started with, so
-    /// a renewal waits for it.
-    pub async fn benchmark_bridge_busy(&self, provider: &str, account: &str) -> bool {
-        let prefix = format!(
-            "{}{BENCHMARK_ROUTE}",
-            account_route_key(provider, Some(account))
-        );
-        self.bridges
-            .lock()
-            .await
-            .iter()
-            .any(|(route, bridge)| route.starts_with(&prefix) && bridge.in_flight() > 0)
     }
 
     /// The executable that would answer [`Self::benchmark_inventory`] for

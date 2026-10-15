@@ -13,7 +13,6 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
 
-use super::execution::{NativeProvider, RuntimePaths};
 use super::harness::HarnessSpec;
 use super::protocol::{self, Message};
 use crate::services::path_env::resolve_executable;
@@ -529,76 +528,6 @@ fn missing_bridge(spec: &HarnessSpec) -> String {
         "The {} bridge (`{}`) is not installed. Set it up from Settings → AI providers.",
         spec.label, spec.command
     )
-}
-
-/// Builds the launch for `provider` from what `spec.command` resolves to on
-/// `env`'s PATH, verifying the pinned runtime first. `managed_node` is
-/// Distill's Node runtime and `native_cli` the managed native CLI the bridge
-/// drives, for a profile that needs them. Reads and hashes the runtime, so
-/// call it off the async workers.
-pub(super) fn owned_launch(
-    provider: NativeProvider,
-    spec: &HarnessSpec,
-    env: &SpawnEnv,
-    managed_node: Option<&Path>,
-    native_cli: Option<&Path>,
-) -> Result<OwnedLaunch, String> {
-    // Refused before anything starts, like every other missing runtime.
-    let executable = resolve_executable(
-        spec.command,
-        &env.prepend_dirs,
-        env_key::get(&env.shell_env, "PATH"),
-    )
-    .ok_or_else(|| format!("capability_missing: {}", missing_bridge(spec)))?;
-    // The rest run a node entrypoint with the adapter preloaded: the managed
-    // launcher's own, or Kimi's npm package under Distill's Node.
-    let (node, entrypoint) = match provider {
-        NativeProvider::Claude | NativeProvider::Codex => managed_launcher(spec.id, &executable)
-            .ok_or_else(|| {
-                format!(
-                    "capability_missing: benchmark execution requires the managed {} launcher",
-                    spec.label
-                )
-            })?,
-        NativeProvider::Kimi => {
-            let entrypoint = super::execution::kimi_entrypoint(&executable)?;
-            let node = managed_node.filter(|node| node.is_file()).ok_or(
-                "capability_missing: benchmark execution requires the managed Node runtime",
-            )?;
-            (node.to_path_buf(), entrypoint)
-        }
-        // The native CLI chats run, verified byte for byte, with the
-        // profile's own arguments.
-        NativeProvider::Grok => {
-            let executable = super::execution::grok_binary(&executable);
-            provider.verify_runtime(&RuntimePaths {
-                entrypoint: &executable,
-                native_cli: None,
-            })?;
-            return Ok(OwnedLaunch {
-                program: executable.clone(),
-                args: provider.launch_args().to_vec(),
-                fingerprint_target: executable,
-                sandbox: None,
-            });
-        }
-    };
-    let runtime = RuntimePaths {
-        entrypoint: &entrypoint,
-        native_cli,
-    };
-    let mut args = vec![
-        "--import".to_string(),
-        super::execution::native_preload_argument(provider, &runtime)?,
-        entrypoint.to_string_lossy().into_owned(),
-    ];
-    args.extend(spec.args.iter().map(|arg| (*arg).to_string()));
-    Ok(OwnedLaunch {
-        program: node,
-        args,
-        fingerprint_target: entrypoint,
-        sandbox: None,
-    })
 }
 
 /// Installs `env` on a bridge `command`. An `owned` launch starts from a
@@ -2005,96 +1934,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn grok_launch_runs_only_the_verified_binary_with_the_profile_arguments() {
-        let bin = tempfile::tempdir().expect("temp dir");
-        let executable = bin
-            .path()
-            .join(if cfg!(windows) { "grok.exe" } else { "grok" });
-        std::fs::write(&executable, "another grok build").unwrap();
-        let spec = super::super::harness::harness("grok-acp").unwrap();
-        let env = SpawnEnv {
-            shell_env: HashMap::from([(
-                "PATH".to_string(),
-                bin.path().to_string_lossy().into_owned(),
-            )]),
-            prepend_dirs: Vec::new(),
-            extra_env: Vec::new(),
-            remove_env: Vec::new(),
-        };
-        let refused = owned_launch(NativeProvider::Grok, spec, &env, None, None).err();
-        assert_eq!(
-            refused.as_deref(),
-            Some("capability_missing: installed Grok runtime changed; benchmark profile requires verification")
-        );
-        let missing = SpawnEnv {
-            shell_env: HashMap::new(),
-            ..env
-        };
-        assert!(
-            owned_launch(NativeProvider::Grok, spec, &missing, None, None)
-                .err()
-                .is_some_and(|error| error.contains("is not installed"))
-        );
-        // What the verified build is started with.
-        assert_eq!(
-            NativeProvider::Grok.launch_args(),
-            ["agent", "--no-leader", "stdio"]
-        );
-        assert_eq!(spec.args, ["agent", "stdio"]);
-    }
-
-    #[test]
-    fn kimi_launch_runs_the_npm_package_under_the_managed_node() {
-        let prefix = tempfile::tempdir().expect("temp dir");
-        let shim = prefix
-            .path()
-            .join(if cfg!(windows) { "kimi.cmd" } else { "kimi" });
-        std::fs::write(&shim, "@ECHO off\r\n").unwrap();
-        let spec = super::super::harness::harness("kimi-acp").unwrap();
-        let env = SpawnEnv {
-            shell_env: HashMap::from([(
-                "PATH".to_string(),
-                prefix.path().to_string_lossy().into_owned(),
-            )]),
-            prepend_dirs: Vec::new(),
-            extra_env: Vec::new(),
-            remove_env: Vec::new(),
-        };
-        let node = prefix.path().join("node.exe");
-        std::fs::write(&node, "node").unwrap();
-        let launch = |managed_node: Option<&Path>| {
-            owned_launch(NativeProvider::Kimi, spec, &env, managed_node, None).err()
-        };
-        // A shim with no package beside it is not an install the profile knows.
-        assert_eq!(
-            launch(Some(&node)).as_deref(),
-            Some("capability_missing: Kimi Code is not a recognized npm install")
-        );
-        let dist = prefix
-            .path()
-            .join("node_modules")
-            .join("@moonshot-ai")
-            .join("kimi-code")
-            .join("dist");
-        std::fs::create_dir_all(&dist).unwrap();
-        std::fs::write(dist.join("main.mjs"), "another kimi build").unwrap();
-        assert_eq!(
-            launch(None).as_deref(),
-            Some("capability_missing: benchmark execution requires the managed Node runtime")
-        );
-        assert_eq!(
-            launch(Some(&prefix.path().join("missing-node.exe"))).as_deref(),
-            Some("capability_missing: benchmark execution requires the managed Node runtime")
-        );
-        // The bundle is verified before anything starts.
-        assert_eq!(
-            launch(Some(&node)).as_deref(),
-            Some("capability_missing: installed Kimi Code runtime changed; benchmark profile requires verification")
-        );
-        assert_eq!(spec.args, ["acp"]);
-    }
-
-    #[test]
     fn only_a_harness_we_installed_has_its_launcher_rewritten() {
         let packages = tempfile::tempdir().expect("temp dir");
         let shim_dir = packages.path().join("bin");
@@ -2219,7 +2058,7 @@ pub(super) mod tests {
             &manifest,
             serde_json::to_vec(&json!({
                 "schemaVersion":1,"kind":"invented-native-text","entrypoint":entrypoint,
-                "sha256":super::super::execution::file_digest(&entrypoint).unwrap()
+                "sha256":super::super::execution::digest(std::fs::read(&entrypoint).unwrap())
             }))
             .unwrap(),
         )
@@ -2237,18 +2076,6 @@ pub(super) mod tests {
             fingerprint_of("claude-acp", &shim)["path"],
             entrypoint.to_string_lossy().as_ref()
         );
-        let spec = super::super::harness::harness("claude-acp").unwrap();
-        let env = SpawnEnv {
-            shell_env: HashMap::new(),
-            prepend_dirs: vec![root.clone()],
-            extra_env: Vec::new(),
-            remove_env: Vec::new(),
-        };
-        let launch = owned_launch(NativeProvider::Claude, spec, &env, None, None).unwrap();
-        assert_eq!(launch.program, node);
-        assert_eq!(launch.fingerprint_target, entrypoint);
-        assert_eq!(launch.args[0], "--import");
-        assert!(launch.args[1].starts_with("data:text/javascript;base64,"));
         let other = root.join("other.mjs");
         std::fs::copy(&entrypoint, &other).unwrap();
         let body = std::fs::read_to_string(&shim).unwrap();
@@ -2258,16 +2085,14 @@ pub(super) mod tests {
         )
         .unwrap();
         assert!(managed_launcher("claude-acp", &shim).is_none());
-        assert!(owned_launch(NativeProvider::Claude, spec, &env, None, None).is_err());
         std::fs::write(&shim, body).unwrap();
-        // Missing/changed attestation cannot preserve entrypoint provenance or
-        // acquire an owned launch, even while a cached inventory exists.
+        // Missing/changed attestation cannot preserve entrypoint provenance,
+        // even while a cached inventory exists.
         std::fs::write(&entrypoint, "changed fixture").unwrap();
         assert_eq!(
             fingerprint_of("claude-acp", &shim)["path"],
             shim.to_string_lossy().as_ref()
         );
-        assert!(owned_launch(NativeProvider::Claude, spec, &env, None, None).is_err());
     }
 
     #[tokio::test]

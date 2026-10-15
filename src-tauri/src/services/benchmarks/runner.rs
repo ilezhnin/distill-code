@@ -868,18 +868,6 @@ fn judge_abstention(
     }
 }
 
-/// A judge's Grok sign-in as its panel takes it: one the Grok CLI renews only
-/// later answers like a busy account, so the batch waits for it and records
-/// nothing, instead of losing the seat to an abstention.
-fn judge_sign_in(gate: GrokSignInGate) -> Result<()> {
-    match gate {
-        GrokSignInGate::Ready => Ok(()),
-        GrokSignInGate::WaitUntil(_) | GrokSignInGate::Busy => {
-            Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGE_SIGN_IN_WAIT))
-        }
-    }
-}
-
 fn valid_vote(evaluation: &Evaluation) -> bool {
     evaluation.provenance == "judge"
         && evaluation
@@ -1167,7 +1155,7 @@ fn quota_recovered(run_id: &str, provider_id: &str) {
 }
 
 /// The error code of a Grok turn held back, before any session, until the
-/// Grok CLI renews the user's sign-in (see [`grok_sign_in_gate`]). The run's
+/// Grok CLI renews the user's sign-in. The run's
 /// cells of that provider wait on their own, as for a quota wait, while its
 /// other providers' cells go on.
 const SIGN_IN_WAIT: &str = "sign_in_wait";
@@ -1180,10 +1168,6 @@ const SIGN_IN_WAIT_REASON: &str = "The Grok sign-in expires too soon for this te
 /// How soon a Grok turn that waits for another to leave the sign-in asks
 /// again.
 const SIGN_IN_RETRY_MS: i64 = 15 * 1000;
-/// A due Grok sign-in that a listing on the chat bridge did not renew.
-const GROK_NOT_RENEWED: &str = "the Grok sign-in expires before this turn could end and the Grok CLI did not renew it; open a Grok chat to sign in again";
-/// Why a judge whose Grok sign-in waits for the Grok CLI defers its batch.
-const JUDGE_SIGN_IN_WAIT: &str = "the judge's Grok sign-in waits for the Grok CLI to renew it";
 
 /// One provider's cells of a run, held until a time the runner knows: a Grok
 /// sign-in the Grok CLI renews only later holds the run's Grok cells, and
@@ -1585,174 +1569,6 @@ impl PanelJudges for NativePanel<'_, '_> {
     }
 }
 
-/// What a Grok session may do about the user's sign-in now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GrokSignInGate {
-    /// The sign-in outlasts the turn: open the session.
-    Ready,
-    /// Nothing the Grok CLI does renews it before this time; the turn waits
-    /// for it, holding only what needs the sign-in.
-    WaitUntil(i64),
-    /// It is due, and a benchmark turn still runs on it: the renewal, and
-    /// this turn, wait for that one to end.
-    Busy,
-}
-
-/// The user's Grok sign-in as [`grok_sign_in_gate`] sees it: its expiry, and
-/// a request on the user's own chat bridge, which the Grok CLI precedes with
-/// a renewal once the sign-in is due.
-trait GrokSignInSource: Sync {
-    fn expiry(&self) -> std::result::Result<Option<i64>, String>;
-    /// Whether a benchmark turn is running on the sign-in now.
-    fn busy(&self) -> BoxFuture<'_, bool>;
-    fn list(&self) -> BoxFuture<'_, Result<()>>;
-}
-
-/// The chat bridge the user's Grok chats run: the user's real `GROK_HOME`,
-/// as `benchmark_get_inventory` lists it.
-struct ChatBridgeSignIn<'a> {
-    host: &'a Arc<crate::services::agent_host::router::Inner>,
-    provider_id: &'a str,
-    account: &'a str,
-}
-
-impl GrokSignInSource for ChatBridgeSignIn<'_> {
-    fn expiry(&self) -> std::result::Result<Option<i64>, String> {
-        crate::services::provider_rate_limits::grok::benchmark_sign_in_expiry()
-    }
-    fn busy(&self) -> BoxFuture<'_, bool> {
-        Box::pin(
-            self.host
-                .benchmark_bridge_busy(self.provider_id, self.account),
-        )
-    }
-    fn list(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move {
-            log::info!(
-                "[benchmarks] the Grok sign-in is due; listing models on the chat bridge so the Grok CLI renews it"
-            );
-            self.host
-                .benchmark_inventory(self.provider_id, self.account, true)
-                .await
-                .map(|_| ())
-                .map_err(host_error)
-        })
-    }
-}
-
-/// How long a sign-in the Grok CLI renewed lasted, as last seen in this
-/// process, when it fell short of the turn that asked for it. In memory: a
-/// restart measures it again with the next renewal.
-static GROK_RENEWED_LIFETIME: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
-
-/// Why a Grok turn of `turn_limit_ms` is refused when the sign-in the Grok
-/// CLI renews does not outlast it. The same words every time for the same
-/// limit, so a resumed run settles the cell instead of asking again.
-fn grok_renewal_too_short(turn_limit_ms: u64) -> String {
-    let minutes =
-        crate::services::provider_rate_limits::grok::benchmark_sign_in_margin_ms(turn_limit_ms)
-            / 60_000;
-    format!(
-        "the Grok CLI renewed its sign-in, but a renewed sign-in expires before the {minutes} minutes a turn of this time limit needs; run Grok with a shorter time limit"
-    )
-}
-
-/// A Grok session runs on the user's own sign-in, which the owned process
-/// cannot renew: benchmarks hold no refresh token. The Grok CLI the user's
-/// chats run renews it, in its own home, before any request it makes once the
-/// sign-in is within `renewal_window_ms` of expiry
-/// ([`grok::cli_renewal_window_ms`]). So a sign-in that would not outlast a
-/// turn of `turn_limit_ms` is renewed the way a chat renews it: one listing on
-/// the chat bridge, then the expiry is read again every `poll` for up to ten
-/// reads. The chat bridge is started with a window as long as the longest
-/// turn's margin ([`grok::chat_bridge_renewal_env`]), so that listing follows
-/// at once. Only a user whose environment narrows the window has turns wait
-/// for it ([`GrokSignInGate::WaitUntil`]) instead of asking the operator,
-/// unless a renewal was already seen to fall short of this turn, which
-/// waiting would only repeat. A due sign-in that another benchmark turn still
-/// runs on is not renewed under it ([`GrokSignInGate::Busy`]). A renewal that
-/// fell short is refused for
-/// what it is, with its lifetime kept in `renewed_lifetime`, and a due
-/// sign-in the listing did not move is refused as not renewed: both for the
-/// operator.
-///
-/// [`grok::cli_renewal_window_ms`]: crate::services::provider_rate_limits::grok::cli_renewal_window_ms
-/// [`grok::chat_bridge_renewal_env`]: crate::services::provider_rate_limits::grok::chat_bridge_renewal_env
-async fn grok_sign_in_gate(
-    source: &impl GrokSignInSource,
-    turn_limit_ms: u64,
-    renewal_window_ms: i64,
-    renewed_lifetime: &std::sync::Mutex<Option<i64>>,
-    poll: Duration,
-) -> Result<GrokSignInGate> {
-    use crate::services::provider_rate_limits::grok::{self, BenchmarkSignIn};
-    let read = || {
-        source.expiry().map_err(|error| {
-            BenchmarkError::new(
-                "capability_missing",
-                format!("the Grok sign-in cannot be read: {error}"),
-            )
-        })
-    };
-    let step =
-        |expiry| grok::benchmark_sign_in_step(expiry, now(), turn_limit_ms, renewal_window_ms);
-    let remember = |lifetime: Option<i64>| {
-        *renewed_lifetime
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = lifetime;
-    };
-    let before = read()?;
-    match step(before) {
-        BenchmarkSignIn::Ready => return Ok(GrokSignInGate::Ready),
-        BenchmarkSignIn::WaitUntil(at) => {
-            let known = *renewed_lifetime
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if known
-                .is_some_and(|lifetime| lifetime < grok::benchmark_sign_in_margin_ms(turn_limit_ms))
-            {
-                return Err(BenchmarkError::new(
-                    "capability_missing",
-                    grok_renewal_too_short(turn_limit_ms),
-                ));
-            }
-            return Ok(GrokSignInGate::WaitUntil(at));
-        }
-        BenchmarkSignIn::Renew => {}
-    }
-    // A turn in flight keeps the sign-in it started on. It also keeps its
-    // bridge, which no later turn may use, so nothing is lost by waiting.
-    if source.busy().await {
-        return Ok(GrokSignInGate::Busy);
-    }
-    source.list().await?;
-    // The CLI renews before the request that needs the session and writes
-    // its home's auth file under a lock; allow it a few seconds.
-    for read_count in 0..10 {
-        if read_count > 0 {
-            tokio::time::sleep(poll).await;
-        }
-        let after = read()?;
-        if step(after) == BenchmarkSignIn::Ready {
-            log::info!("[benchmarks] the Grok CLI renewed its sign-in");
-            remember(None);
-            return Ok(GrokSignInGate::Ready);
-        }
-        // Renewed, but for less than the turn needs: no wait or listing
-        // makes it longer.
-        if let (Some(before), Some(after)) = (before, after) {
-            if after > before {
-                remember(Some(after - now()));
-                return Err(BenchmarkError::new(
-                    "capability_missing",
-                    grok_renewal_too_short(turn_limit_ms),
-                ));
-            }
-        }
-    }
-    Err(BenchmarkError::new("capability_missing", GROK_NOT_RENEWED))
-}
-
 impl NativeBackend {
     /// `result`, the host inventory of `provider` on `account`, as the rows a
     /// configuration is chosen from: each pinned to its runtime identity, and
@@ -1870,30 +1686,6 @@ impl NativeBackend {
         self.inventories
             .keep(run, provider, account, inventory.clone());
         Ok(inventory)
-    }
-
-    /// [`grok_sign_in_gate`] for a Grok session of up to `turn_limit_ms` on
-    /// `account`, renewing through the user's own chat bridge: a candidate
-    /// turn and a judge turn alike.
-    async fn renew_grok_sign_in(
-        &self,
-        host: &Arc<crate::services::agent_host::router::Inner>,
-        provider_id: &str,
-        account: &str,
-        turn_limit_ms: u64,
-    ) -> Result<GrokSignInGate> {
-        grok_sign_in_gate(
-            &ChatBridgeSignIn {
-                host,
-                provider_id,
-                account,
-            },
-            turn_limit_ms,
-            crate::services::provider_rate_limits::grok::cli_renewal_window_ms(),
-            &GROK_RENEWED_LIFETIME,
-            Duration::from_millis(500),
-        )
-        .await
     }
 
     /// The panel for one rendering from every enabled account's available models.
@@ -4525,212 +4317,45 @@ fn consume_usage(data: &Value, usage: &mut TokenUsage) {
     }
     usage.schema = "provider_turn_usage_v1".into();
 }
-/// The runtime identity the configurations of one inventory are pinned to.
-enum RuntimeIdentity {
-    /// Claude: one revision for every row, the way its configurations were
-    /// first pinned.
-    Shared(String),
-    /// A profile configured by the policy resource: the runtime, which each
-    /// row completes with its own model, so a change to another row of the
-    /// vendor's list leaves a configuration's revision alone.
-    PerModel(Sha256),
-}
-
 /// Reuse the account's model catalog, but pin the WSL runtime rather than the
 /// Windows executable that listed it. Renamed aliases
 /// invalidate the selected configuration as they do for native text.
 fn repository_inventory_revision(runtime: &str, inventory: &Value, model: &str) -> String {
-    RuntimeIdentity::PerModel(Sha256::new().chain_update(runtime.as_bytes()))
-        .revision(inventory, model)
+    model_revision(
+        Sha256::new().chain_update(runtime.as_bytes()),
+        inventory,
+        model,
+    )
 }
 
 fn text_inventory_revision(runtime: &str, inventory: &Value, model: &str) -> String {
-    RuntimeIdentity::PerModel(
+    model_revision(
         Sha256::new()
             .chain_update(b"isolated-linux-text-inventory-v1\0")
             .chain_update(runtime.as_bytes()),
+        inventory,
+        model,
     )
-    .revision(inventory, model)
 }
 
-impl RuntimeIdentity {
-    /// The revision of a configuration on `model_id`.
-    fn revision(&self, inventory: &Value, model_id: &str) -> String {
-        match self {
-            Self::Shared(revision) => {
-                fixtures::hash(format!("committed-entry-v2\0{revision}").as_bytes())
-            }
-            Self::PerModel(runtime) => {
-                let mut hash = runtime.clone();
-                hash.update(b"committed-entry-v2\0");
-                match model_row_identity(inventory, model_id) {
-                    Some(row) => {
-                        hash.update(b"model\0");
-                        hash.update(row.as_bytes());
-                    }
-                    None => {
-                        hash.update(b"unlisted\0");
-                        hash.update(model_id.as_bytes());
-                    }
-                }
-                hex::encode(hash.finalize())
-            }
+/// The revision of a configuration on `model_id` pinned to `runtime`, which
+/// each row completes with its own model, so a change to another row of the
+/// vendor's list leaves a configuration's revision alone.
+fn model_revision(mut hash: Sha256, inventory: &Value, model_id: &str) -> String {
+    hash.update(b"committed-entry-v2\0");
+    match model_row_identity(inventory, model_id) {
+        Some(row) => {
+            hash.update(b"model\0");
+            hash.update(row.as_bytes());
+        }
+        None => {
+            hash.update(b"unlisted\0");
+            hash.update(model_id.as_bytes());
         }
     }
+    hex::encode(hash.finalize())
 }
 
-/// The runtime identity of `inventory` under `provider`'s profile.
-/// `native_cli` is the managed native CLI, for a profile that pins it.
-async fn runtime_identity(
-    inventory: &Value,
-    provider: NativeProvider,
-    native_cli: Option<std::path::PathBuf>,
-) -> Result<RuntimeIdentity> {
-    #[cfg(feature = "app-test-driver")]
-    if provider == NativeProvider::Claude {
-        let entrypoint = inventory_entrypoint(inventory)?;
-        if let Some(fixture) = crate::services::agent_host::execution_fixture::verified(&entrypoint)
-            .map_err(host_error)?
-        {
-            let revision = fixtures::hash(
-                format!(
-                    "{fixture}\0{NATIVE_TEXT_POLICY_REVISION}\0{NATIVE_TEXT_ADAPTER}\0{}",
-                    serde_json::to_string(&model_identity(inventory))?
-                )
-                .as_bytes(),
-            );
-            return Ok(RuntimeIdentity::Shared(revision));
-        }
-    }
-    Ok(match provider {
-        NativeProvider::Claude => {
-            RuntimeIdentity::Shared(claude_inventory_fingerprint(inventory).await?)
-        }
-        NativeProvider::Codex | NativeProvider::Grok | NativeProvider::Kimi => {
-            RuntimeIdentity::PerModel(
-                configured_runtime_hash(inventory, provider, native_cli).await?,
-            )
-        }
-    })
-}
-
-/// The runtime identity a configuration on `model_id` is pinned to.
-async fn inventory_fingerprint(
-    inventory: &Value,
-    provider: NativeProvider,
-    native_cli: Option<std::path::PathBuf>,
-    model_id: &str,
-) -> Result<String> {
-    Ok(runtime_identity(inventory, provider, native_cli)
-        .await?
-        .revision(inventory, model_id))
-}
-/// The entrypoint an inventory's executable fingerprint names.
-fn inventory_entrypoint(inventory: &Value) -> Result<std::path::PathBuf> {
-    inventory
-        .pointer("/executable/path")
-        .and_then(Value::as_str)
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| {
-            BenchmarkError::new(
-                "capability_missing",
-                "Host inventory has no executable provenance",
-            )
-        })
-}
-/// The file `provider`'s entrypoint pin describes behind `executable`, the
-/// file an inventory names: that file itself, except for Kimi, whose chat
-/// bridge runs the npm shim of the package entrypoint the profile pins.
-fn pinned_entrypoint(
-    provider: NativeProvider,
-    executable: std::path::PathBuf,
-) -> std::result::Result<std::path::PathBuf, String> {
-    match provider {
-        NativeProvider::Kimi => kimi_entrypoint(&executable),
-        NativeProvider::Grok => Ok(grok_binary(&executable)),
-        _ => Ok(executable),
-    }
-}
-/// Why `provider`'s pinned runtime behind `inventory` cannot run, if it
-/// cannot. Hashing a native CLI the first time takes a moment, so it runs off
-/// the async workers.
-async fn runtime_issue(
-    inventory: &Value,
-    provider: NativeProvider,
-    native_cli: Option<std::path::PathBuf>,
-) -> Option<String> {
-    let Ok(executable) = inventory_entrypoint(inventory) else {
-        return Some("Native executable provenance is missing".into());
-    };
-    let entrypoint = match pinned_entrypoint(provider, executable) {
-        Ok(entrypoint) => entrypoint,
-        Err(issue) => return Some(issue),
-    };
-    tokio::task::spawn_blocking(move || {
-        provider
-            .verify_runtime(&RuntimePaths {
-                entrypoint: &entrypoint,
-                native_cli: native_cli.as_deref(),
-            })
-            .err()
-    })
-    .await
-    .unwrap_or_else(|error| Some(error.to_string()))
-}
-/// The runtime half of a profile configured by the policy resource: the
-/// digest of each pinned file as it is now, the managed bridge's own lock
-/// entry, the policy and the adapter. [`RuntimeIdentity::revision`] adds the
-/// configured model with its name, so an alias whose name changes is a new
-/// runtime.
-async fn configured_runtime_hash(
-    inventory: &Value,
-    provider: NativeProvider,
-    native_cli: Option<std::path::PathBuf>,
-) -> Result<Sha256> {
-    let executable = inventory_entrypoint(inventory)?;
-    // An install the profile does not recognize is pinned to what it is; its
-    // rows say why it cannot run.
-    let entrypoint = pinned_entrypoint(provider, executable.clone()).unwrap_or(executable);
-    let digests = tokio::task::spawn_blocking(move || {
-        provider.pinned_digests(&RuntimePaths {
-            entrypoint: &entrypoint,
-            native_cli: native_cli.as_deref(),
-        })
-    })
-    .await
-    .map_err(|error| BenchmarkError::new("infrastructure_failure", error.to_string()))?;
-    let mut hash = Sha256::new();
-    hash.update(b"distill-native-runtime-v1\0");
-    for (role, digest) in digests {
-        hash.update(role.as_bytes());
-        hash.update(b"\0");
-        hash.update(digest.as_deref().unwrap_or("unavailable").as_bytes());
-        hash.update(b"\0");
-    }
-    if crate::services::managed_acp_tools::is_managed(provider.harness_id()) {
-        if let Some(entry) = managed_lock_entry(provider.harness_id()) {
-            hash.update(entry.as_bytes());
-        }
-    }
-    hash.update(provider.policy_revision().as_bytes());
-    hash.update(provider.policy_bytes());
-    if let Some(adapter) = provider.adapter() {
-        hash.update(adapter.as_bytes());
-    }
-    Ok(hash)
-}
-/// A managed bridge's own entry in `acp-tools.lock.json` (package, version,
-/// native executables and npm lock), canonical. Another bridge's pin bump
-/// leaves it as it is.
-fn managed_lock_entry(harness_id: &str) -> Option<String> {
-    static LOCK: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
-        serde_json::from_slice(include_bytes!("../../../../acp-tools.lock.json"))
-            .unwrap_or(Value::Null)
-    });
-    LOCK.get("tools")
-        .and_then(|tools| tools.get(harness_id))
-        .map(canonical_json)
-}
 /// The effort levels a bridge row offers that the profile does not refuse.
 /// The CLI's "default" names no level, so it is never offered: a model whose
 /// only entry is "default" has no effort control here and runs unset.
@@ -4745,55 +4370,6 @@ fn offered_efforts(row: &Value, excluded: &[String]) -> Vec<String> {
         .filter(|effort| !excluded.iter().any(|refused| refused == effort))
         .map(str::to_owned)
         .collect()
-}
-/// The launcher entrypoint, the bridge lock, the policy and adapter, and the
-/// model set. Existing Claude configurations are pinned to exactly this.
-async fn claude_inventory_fingerprint(inventory: &Value) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    use tokio::io::AsyncReadExt;
-    let path = inventory
-        .pointer("/executable/path")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            BenchmarkError::new(
-                "capability_missing",
-                "Host inventory has no executable provenance",
-            )
-        })?;
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 65536];
-    loop {
-        let read = file.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-    }
-    hash.update(include_bytes!("../../../../acp-tools.lock.json"));
-    hash.update(NATIVE_TEXT_POLICY_REVISION.as_bytes());
-    hash.update(NATIVE_TEXT_ADAPTER.as_bytes());
-    hash.update(serde_json::to_vec(&model_identity(inventory))?);
-    Ok(hex::encode(hash.finalize()))
-}
-/// The installed model set. Effort and fast-mode details are learned lazily by
-/// the host probe, so they are not part of the runtime identity; the acknowledged
-/// selection check guards the actual effort and fast mode of every attempt.
-fn model_identity(inventory: &Value) -> Vec<String> {
-    let mut ids: Vec<String> = inventory["models"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            row.get("modelId")
-                .or_else(|| row.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect();
-    ids.sort();
-    ids.dedup();
-    ids
 }
 /// The row of `model_id` in an inventory as `id` and display name, for
 /// profiles configured by the policy resource; `None` when it is not listed.
@@ -8891,168 +8467,6 @@ mod tests {
             .all(|a| a.outcome.as_deref() == Some("pass")));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 4);
     }
-    /// The user's Grok sign-in as a test sets it: the expiry it reads, and
-    /// the one a listing leaves (`None`: the listing changes nothing).
-    struct TestSignIn {
-        expiry: std::sync::Mutex<Option<i64>>,
-        renewed: Option<i64>,
-        listings: std::sync::atomic::AtomicU64,
-        /// Whether a benchmark turn still runs on it.
-        busy: bool,
-    }
-    impl TestSignIn {
-        fn new(expiry: i64, renewed: Option<i64>) -> Self {
-            Self {
-                expiry: std::sync::Mutex::new(Some(expiry)),
-                renewed,
-                listings: Default::default(),
-                busy: false,
-            }
-        }
-    }
-    impl GrokSignInSource for TestSignIn {
-        fn expiry(&self) -> std::result::Result<Option<i64>, String> {
-            Ok(*self.expiry.lock().unwrap())
-        }
-        fn busy(&self) -> BoxFuture<'_, bool> {
-            Box::pin(async move { self.busy })
-        }
-        fn list(&self) -> BoxFuture<'_, Result<()>> {
-            Box::pin(async move {
-                self.listings.fetch_add(1, Ordering::SeqCst);
-                if let Some(renewed) = self.renewed {
-                    *self.expiry.lock().unwrap() = Some(renewed);
-                }
-                Ok(())
-            })
-        }
-    }
-    const MINUTE: i64 = 60_000;
-    /// A turn of `minutes` needs five more of sign-in, and never less than
-    /// fifteen; the Grok CLI renews in the last five.
-    async fn gate_for(
-        source: &TestSignIn,
-        lifetime: &std::sync::Mutex<Option<i64>>,
-        minutes: i64,
-    ) -> Result<GrokSignInGate> {
-        grok_sign_in_gate(
-            source,
-            (minutes * MINUTE) as u64,
-            5 * MINUTE,
-            lifetime,
-            Duration::from_millis(1),
-        )
-        .await
-    }
-    /// A ten-minute turn, which needs fifteen minutes of sign-in.
-    async fn gate(
-        source: &TestSignIn,
-        lifetime: &std::sync::Mutex<Option<i64>>,
-    ) -> Result<GrokSignInGate> {
-        gate_for(source, lifetime, 10).await
-    }
-    #[tokio::test]
-    async fn a_due_grok_sign_in_is_renewed_through_one_listing() {
-        let lifetime = std::sync::Mutex::new(None);
-        // Outlasts the turn: nothing is listed.
-        let fresh = TestSignIn::new(now() + 60 * MINUTE, None);
-        assert_eq!(
-            gate(&fresh, &lifetime).await.unwrap(),
-            GrokSignInGate::Ready
-        );
-        assert_eq!(fresh.listings.load(Ordering::SeqCst), 0);
-        // Before the CLI's window: wait for it, without listing.
-        let early = TestSignIn::new(now() + 10 * MINUTE, None);
-        assert!(matches!(
-            gate(&early, &lifetime).await.unwrap(),
-            GrokSignInGate::WaitUntil(_)
-        ));
-        assert_eq!(early.listings.load(Ordering::SeqCst), 0);
-        // Inside it: one listing, and the renewed sign-in runs the turn.
-        let due = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 60 * MINUTE));
-        assert_eq!(gate(&due, &lifetime).await.unwrap(), GrokSignInGate::Ready);
-        assert_eq!(due.listings.load(Ordering::SeqCst), 1);
-        // A listing that renewed nothing is refused as not renewed.
-        let stuck = TestSignIn::new(now() + 3 * MINUTE, None);
-        let error = gate(&stuck, &lifetime).await.unwrap_err();
-        assert_eq!(error.code, "capability_missing");
-        assert_eq!(error.message, GROK_NOT_RENEWED);
-        assert_eq!(*lifetime.lock().unwrap(), None);
-        // Due while another turn still runs on it: not renewed under that turn.
-        let mut shared = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 60 * MINUTE));
-        shared.busy = true;
-        assert_eq!(
-            gate(&shared, &lifetime).await.unwrap(),
-            GrokSignInGate::Busy
-        );
-        assert_eq!(shared.listings.load(Ordering::SeqCst), 0);
-    }
-    /// With the window the chat bridge is started with, a sign-in too short
-    /// for a turn of any time limit is renewed at once, never waited for.
-    #[tokio::test]
-    async fn a_sign_in_too_short_for_a_turn_is_renewed_at_once() {
-        let lifetime = std::sync::Mutex::new(None);
-        let window = crate::services::provider_rate_limits::grok::cli_renewal_window_ms();
-        // Run 32d04afb: fifteen minutes left for a turn of up to four hours.
-        let short = TestSignIn::new(now() + 15 * MINUTE, Some(now() + 360 * MINUTE));
-        let gate = grok_sign_in_gate(
-            &short,
-            (240 * MINUTE) as u64,
-            window,
-            &lifetime,
-            Duration::from_millis(1),
-        )
-        .await
-        .unwrap();
-        assert_eq!(gate, GrokSignInGate::Ready);
-        assert_eq!(short.listings.load(Ordering::SeqCst), 1);
-    }
-    /// The CLI renewed the sign-in, but for eighteen minutes, short of the
-    /// twenty a fifteen-minute turn needs: refused for that, not as "did not
-    /// renew it"; and with that seen, a later wait for the window is refused
-    /// at once, the same way, since it would end the same.
-    #[tokio::test]
-    async fn a_renewal_shorter_than_the_turn_is_refused_for_that_and_not_waited_for() {
-        let lifetime = std::sync::Mutex::new(None);
-        let short = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 18 * MINUTE));
-        let error = gate_for(&short, &lifetime, 15).await.unwrap_err();
-        assert_eq!(error.code, "capability_missing");
-        assert_ne!(error.message, GROK_NOT_RENEWED);
-        assert_eq!(error.message, grok_renewal_too_short(15 * MINUTE as u64));
-        assert!(error.message.contains("20 minutes"), "{}", error.message);
-        assert_eq!(short.listings.load(Ordering::SeqCst), 1);
-        let seen = lifetime.lock().unwrap().unwrap();
-        assert!((17 * MINUTE..=18 * MINUTE).contains(&seen), "{seen}");
-        // The renewed sign-in, sixteen minutes on: no wait for the window.
-        let renewed = TestSignIn::new(now() + 16 * MINUTE, None);
-        let again = gate_for(&renewed, &lifetime, 15).await.unwrap_err();
-        assert_eq!(again.message, error.message);
-        assert_eq!(renewed.listings.load(Ordering::SeqCst), 0);
-        // A ten-minute turn, which such a renewal outlasts, still waits.
-        let ripening = TestSignIn::new(now() + 12 * MINUTE, None);
-        assert!(matches!(
-            gate(&ripening, &lifetime).await,
-            Ok(GrokSignInGate::WaitUntil(_))
-        ));
-        // A renewal that outlasts the turn forgets the short one.
-        let long = TestSignIn::new(now() + 3 * MINUTE, Some(now() + 60 * MINUTE));
-        assert_eq!(
-            gate_for(&long, &lifetime, 15).await.unwrap(),
-            GrokSignInGate::Ready
-        );
-        assert_eq!(*lifetime.lock().unwrap(), None);
-    }
-    /// A Grok judge whose sign-in the CLI renews only later answers like a
-    /// busy account, so the panel defers the batch instead of recording an
-    /// abstention that costs the seat.
-    #[test]
-    fn a_judge_waiting_for_its_grok_sign_in_defers_the_batch() {
-        assert!(judge_sign_in(GrokSignInGate::Ready).is_ok());
-        let deferred = judge_sign_in(GrokSignInGate::WaitUntil(now() + MINUTE)).unwrap_err();
-        assert_eq!(deferred.code, ACCOUNT_BUSY);
-        let shared = judge_sign_in(GrokSignInGate::Busy).unwrap_err();
-        assert_eq!(shared.code, ACCOUNT_BUSY);
-    }
     /// One Grok answer chunk as the host stores it, with Grok's per-chunk
     /// telemetry and the host's stamp.
     fn telemetry_chunk(kind: &str, text: &str, n: usize) -> Value {
@@ -9403,148 +8817,6 @@ mod tests {
             assert!(!judge_provider_allowed(provider), "{provider}");
         }
     }
-    /// Today's formula, inline: a configuration pinned before provider
-    /// profiles existed must keep matching its runtime.
-    #[tokio::test]
-    async fn claude_inventory_fingerprint_binds_committed_entry_recipe() {
-        let directory = tempfile::tempdir().unwrap();
-        let entrypoint = directory.path().join("index.js");
-        tokio::fs::write(&entrypoint, "launcher entrypoint")
-            .await
-            .unwrap();
-        let inventory = json!({"executable":{"path":entrypoint.to_string_lossy()},"models":[{"modelId":"sonnet"},{"id":"opus","name":"Opus 5.5"},{"modelId":"sonnet"}]});
-        let mut hash = Sha256::new();
-        hash.update(b"launcher entrypoint");
-        hash.update(include_bytes!("../../../../acp-tools.lock.json"));
-        hash.update(b"distill-native-text-policy-v2");
-        hash.update(NATIVE_TEXT_ADAPTER.as_bytes());
-        hash.update(serde_json::to_vec(&json!(["opus", "sonnet"])).unwrap());
-        let legacy = hex::encode(hash.finalize());
-        let expected = fixtures::hash(format!("committed-entry-v2\0{legacy}").as_bytes());
-        assert_ne!(expected, legacy);
-        // One revision for every row, as Claude configurations were pinned.
-        for model in ["sonnet", "opus", "unlisted"] {
-            assert_eq!(
-                inventory_fingerprint(&inventory, NativeProvider::Claude, None, model)
-                    .await
-                    .unwrap(),
-                expected
-            );
-        }
-    }
-    #[tokio::test]
-    async fn codex_fingerprint_follows_pinned_files_and_model_names() {
-        let directory = tempfile::tempdir().unwrap();
-        let entrypoint = directory.path().join("index.js");
-        let native = directory.path().join("codex.exe");
-        tokio::fs::write(&entrypoint, "bridge").await.unwrap();
-        tokio::fs::write(&native, "cli").await.unwrap();
-        let path = entrypoint.to_string_lossy();
-        let inventory = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol"}]});
-        let codex = NativeProvider::Codex;
-        let fingerprint = |inventory: Value, native: Option<std::path::PathBuf>| async move {
-            inventory_fingerprint(&inventory, codex, native, "gpt-6-sol")
-                .await
-                .unwrap()
-        };
-        let first = fingerprint(inventory.clone(), Some(native.clone())).await;
-        assert_eq!(
-            first,
-            fingerprint(inventory.clone(), Some(native.clone())).await
-        );
-        assert_ne!(first, fingerprint(inventory.clone(), None).await);
-        assert_ne!(
-            first,
-            inventory_fingerprint(
-                &inventory,
-                NativeProvider::Claude,
-                Some(native.clone()),
-                "gpt-6-sol"
-            )
-            .await
-            .unwrap()
-        );
-        // A moving alias: same id, another name.
-        let renamed = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol Preview"}]});
-        assert_ne!(first, fingerprint(renamed, Some(native.clone())).await);
-        // The vendor's list growing, or another row changing, leaves this
-        // configuration's runtime alone; its own row leaving the list does not.
-        let grown = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol"},
-            {"modelId":"gpt-6-luna","name":"GPT-6-Luna Preview"}]});
-        assert_eq!(
-            first,
-            fingerprint(grown.clone(), Some(native.clone())).await
-        );
-        let other = inventory_fingerprint(&grown, codex, Some(native.clone()), "gpt-6-luna")
-            .await
-            .unwrap();
-        assert_ne!(first, other);
-        let without = json!({"executable":{"path":path},"models":[{"modelId":"gpt-6-luna","name":"GPT-6-Luna"}]});
-        assert_ne!(first, fingerprint(without, Some(native.clone())).await);
-        // Only the bridge's own lock entry counts: a Claude bridge pin bump is
-        // not a Codex runtime change.
-        let lock = managed_lock_entry("codex-acp").unwrap();
-        assert!(lock.contains("@agentclientprotocol/codex-acp"));
-        assert!(!lock.contains("claude-agent-acp"));
-        assert_eq!(managed_lock_entry("grok-acp"), None);
-        tokio::fs::write(&native, "updated cli").await.unwrap();
-        assert_ne!(
-            first,
-            fingerprint(inventory.clone(), Some(native.clone())).await
-        );
-        // The runtime differs from the pins, so the rows say why.
-        let issue = runtime_issue(&inventory, codex, Some(native))
-            .await
-            .unwrap();
-        assert!(issue.contains("installed Codex runtime changed"), "{issue}");
-        assert_eq!(
-            runtime_issue(&json!({"models":[]}), codex, None)
-                .await
-                .as_deref(),
-            Some("Native executable provenance is missing")
-        );
-    }
-    /// What a Codex configuration's revision is made of, in order: the
-    /// pinned files as installed, codex-acp's own lock entry, the policy and
-    /// adapter, the committed native clock/public-report entry recipe, and
-    /// the configuration's own model with its name. Old evidence retains its
-    /// old revision and cannot acquire the new entry semantics by relabeling.
-    #[tokio::test]
-    async fn codex_revision_is_its_own_pins_lock_entry_policy_and_model() {
-        let directory = tempfile::tempdir().unwrap();
-        let entrypoint = directory.path().join("index.js");
-        let native = directory.path().join("codex.exe");
-        tokio::fs::write(&entrypoint, "bridge").await.unwrap();
-        tokio::fs::write(&native, "cli").await.unwrap();
-        let inventory = json!({"executable":{"path":entrypoint.to_string_lossy()},
-            "models":[{"modelId":"gpt-6-sol","name":"GPT-6-Sol"},{"modelId":"gpt-6-luna","name":"GPT-6-Luna"}]});
-        let codex = NativeProvider::Codex;
-        let mut hash = Sha256::new();
-        hash.update(b"distill-native-runtime-v1\0");
-        for (role, content) in [("entrypoint", "bridge"), ("nativeCli", "cli")] {
-            hash.update(role.as_bytes());
-            hash.update(b"\0");
-            hash.update(hex::encode(Sha256::digest(content)).as_bytes());
-            hash.update(b"\0");
-        }
-        if crate::services::managed_acp_tools::is_managed("codex-acp") {
-            hash.update(managed_lock_entry("codex-acp").unwrap().as_bytes());
-        }
-        hash.update(codex.policy_revision().as_bytes());
-        hash.update(codex.policy_bytes());
-        hash.update(codex.adapter().unwrap().as_bytes());
-        let mut legacy = hash.clone();
-        legacy.update(b"model\0");
-        legacy.update("gpt-6-sol\u{1f}GPT-6-Sol".as_bytes());
-        hash.update(b"committed-entry-v2\0");
-        hash.update(b"model\0");
-        hash.update("gpt-6-sol\u{1f}GPT-6-Sol".as_bytes());
-        let revision = inventory_fingerprint(&inventory, codex, Some(native), "gpt-6-sol")
-            .await
-            .unwrap();
-        assert_eq!(revision, hex::encode(hash.finalize()));
-        assert_ne!(revision, hex::encode(legacy.finalize()));
-    }
     #[test]
     fn codex_inventory_drops_ultra() {
         let excluded = NativeProvider::Codex.excluded_efforts();
@@ -9673,59 +8945,6 @@ mod tests {
         consume_terminal_result(&two, &mut auxiliary);
         assert_eq!(auxiliary.usage.schema, "provider_turn_with_auxiliary_v2");
         assert_eq!(auxiliary.usage.input, Some(912));
-    }
-    #[tokio::test]
-    async fn kimi_fingerprint_follows_the_bundle_behind_the_shim() {
-        let prefix = tempfile::tempdir().unwrap();
-        let shim = prefix.path().join("kimi.cmd");
-        tokio::fs::write(&shim, "@ECHO off").await.unwrap();
-        // The chat bridge's inventory names the shim.
-        let inventory = json!({"executable":{"path":shim.to_string_lossy()},
-            "models":[{"modelId":"kimi-code/kimi-for-coding","name":"K2.8 Preview"}]});
-        let kimi = NativeProvider::Kimi;
-        let fingerprint = |inventory: Value| async move {
-            inventory_fingerprint(&inventory, kimi, None, "kimi-code/kimi-for-coding")
-                .await
-                .unwrap()
-        };
-        // Without the package beside it the rows say why, and the listing
-        // still has a revision.
-        assert_eq!(
-            runtime_issue(&inventory, kimi, None).await.as_deref(),
-            Some("capability_missing: Kimi Code is not a recognized npm install")
-        );
-        let unrecognized = fingerprint(inventory.clone()).await;
-        let dist = prefix
-            .path()
-            .join("node_modules")
-            .join("@moonshot-ai")
-            .join("kimi-code")
-            .join("dist");
-        tokio::fs::create_dir_all(&dist).await.unwrap();
-        tokio::fs::write(dist.join("main.mjs"), "kimi build")
-            .await
-            .unwrap();
-        let first = fingerprint(inventory.clone()).await;
-        assert_ne!(first, unrecognized);
-        // The shim is not what is pinned; the bundle is.
-        tokio::fs::write(&shim, "@ECHO on").await.unwrap();
-        assert_eq!(first, fingerprint(inventory.clone()).await);
-        tokio::fs::write(dist.join("main.mjs"), "updated kimi build")
-            .await
-            .unwrap();
-        assert_ne!(first, fingerprint(inventory.clone()).await);
-        let issue = runtime_issue(&inventory, kimi, None).await.unwrap();
-        assert!(
-            issue.contains("installed Kimi Code runtime changed"),
-            "{issue}"
-        );
-        // A moving alias: the same id under a new name is a new runtime.
-        let renamed = json!({"executable":{"path":shim.to_string_lossy()},
-            "models":[{"modelId":"kimi-code/kimi-for-coding","name":"K2.9 Preview"}]});
-        assert_ne!(
-            fingerprint(inventory.clone()).await,
-            fingerprint(renamed).await
-        );
     }
     #[test]
     fn grok_ticks_become_cost_only_when_complete() {
@@ -10163,48 +9382,6 @@ mod tests {
         let prompt = prompt_with_fixtures(&draft).unwrap();
         assert!(prompt.contains("visible fixture"));
         assert!(!prompt.contains(&draft.evaluator.known_good));
-    }
-    #[tokio::test]
-    async fn runtime_identity_ignores_lazily_learned_efforts_but_not_the_model_set() {
-        let directory = tempfile::tempdir().unwrap();
-        for provider in NativeProvider::ALL.iter().copied() {
-            // Grok's runtime is its native binary; any other name is the npm
-            // shim, which stands for the binary in the Grok home.
-            let name = match provider {
-                NativeProvider::Grok if cfg!(windows) => "grok.exe",
-                NativeProvider::Grok => "grok",
-                _ => "bridge.js",
-            };
-            let executable = directory.path().join(name);
-            let path = executable.to_string_lossy().into_owned();
-            let before = json!({"executable":{"path":path},"models":[{"modelId":"sonnet","reasoningEfforts":[]},{"modelId":"opus","reasoningEfforts":["low"]}]});
-            let learned = json!({"executable":{"path":path},"models":[{"modelId":"opus","reasoningEfforts":["low","high"],"supportsFast":true},{"modelId":"sonnet","reasoningEfforts":["low"]}]});
-            let grown = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus"},{"modelId":"haiku"}]});
-            let renamed = json!({"executable":{"path":path},"models":[{"modelId":"sonnet"},{"modelId":"opus","name":"Opus Next"}]});
-            tokio::fs::write(&executable, "bridge").await.unwrap();
-            let fingerprint = |inventory: &Value| {
-                let inventory = inventory.clone();
-                async move {
-                    inventory_fingerprint(&inventory, provider, None, "opus")
-                        .await
-                        .unwrap()
-                }
-            };
-            let first = fingerprint(&before).await;
-            assert_eq!(first, fingerprint(&learned).await, "{provider:?}");
-            // Claude's configurations were pinned to the whole model set;
-            // the others to their own model and its name.
-            if provider == NativeProvider::Claude {
-                assert_ne!(first, fingerprint(&grown).await, "{provider:?}");
-            } else {
-                assert_eq!(first, fingerprint(&grown).await, "{provider:?}");
-                assert_ne!(first, fingerprint(&renamed).await, "{provider:?}");
-            }
-            tokio::fs::write(&executable, "updated bridge")
-                .await
-                .unwrap();
-            assert_ne!(first, fingerprint(&before).await, "{provider:?}");
-        }
     }
     #[test]
     fn exact_selection_accepts_only_unspecified_native_defaults() {

@@ -1,10 +1,50 @@
 //! Explicit, isolated app-driver runtime fixture. It never attests production.
-use super::execution::{digest, file_digest};
+use super::execution::digest;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{LazyLock, Mutex, OnceLock},
+    time::SystemTime,
 };
+
+type FileVersion = (u64, Option<SystemTime>, Option<SystemTime>);
+
+/// The sha256 of a file, computed once per version of it. A replaced file
+/// changes its size, modification or creation time; npm stamps one fixed
+/// modification time on every file it unpacks, so the creation time is what
+/// tells two installs apart.
+fn file_digest(path: &Path) -> Result<String, String> {
+    static CACHE: LazyLock<Mutex<HashMap<PathBuf, (FileVersion, String)>>> =
+        LazyLock::new(Mutex::default);
+    let version = |metadata: std::fs::Metadata| -> FileVersion {
+        (
+            metadata.len(),
+            metadata.modified().ok(),
+            metadata.created().ok(),
+        )
+    };
+    let before = version(std::fs::metadata(path).map_err(|error| error.to_string())?);
+    if let Some((cached, digest)) = CACHE.lock().ok().and_then(|cache| cache.get(path).cloned()) {
+        if cached == before {
+            return Ok(digest);
+        }
+    }
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash).map_err(|error| error.to_string())?;
+    let digest = hex::encode(hash.finalize());
+    // A file replaced while it was read is hashed again on the next call.
+    if let Ok(metadata) = file.metadata() {
+        if version(metadata) == before {
+            if let Ok(mut cache) = CACHE.lock() {
+                cache.insert(path.to_path_buf(), (before, digest.clone()));
+            }
+        }
+    }
+    Ok(digest)
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -139,5 +179,18 @@ mod tests {
         std::fs::write(&other, "invented").unwrap();
         write(&other, file_digest(&other).unwrap());
         assert!(validate(root.path(), &manifest).is_err());
+    }
+
+    #[test]
+    fn a_file_digest_follows_the_file_it_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runtime.bin");
+        std::fs::write(&path, "first build").unwrap();
+        let first = file_digest(&path).unwrap();
+        assert_eq!(first, digest("first build"));
+        assert_eq!(file_digest(&path).unwrap(), first);
+        std::fs::write(&path, "second, longer build").unwrap();
+        assert_eq!(file_digest(&path).unwrap(), digest("second, longer build"));
+        assert!(file_digest(&directory.path().join("missing")).is_err());
     }
 }

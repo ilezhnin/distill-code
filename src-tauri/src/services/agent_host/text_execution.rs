@@ -336,10 +336,6 @@ mod tests {
             policy_hash(&request, "linux-one").unwrap(),
             policy_hash(&request, "linux-two").unwrap()
         );
-        assert_ne!(
-            profile_key(&request.owner_id),
-            NativeProvider::Codex.profile_key()
-        );
         let environment = environment(NativeProvider::Codex);
         let config: Value = serde_json::from_str(
             &environment
