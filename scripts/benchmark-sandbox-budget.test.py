@@ -24,6 +24,7 @@ budget = importlib.machinery.SourceFileLoader('benchmark_budget_fixture', str(so
 unpack = importlib.machinery.SourceFileLoader('benchmark_unpack_fixture', str(source.with_name('bench-unpack'))).load_module()
 production_scratch_headroom = budget.scratch_headroom
 production_os = budget.os
+MIB = 1024 ** 2
 
 
 class BudgetTests(unittest.TestCase):
@@ -32,32 +33,180 @@ class BudgetTests(unittest.TestCase):
         root = Path(self.temporary.name)
         budget.STATE = root / 'leases'
         budget.ROOT = root / 'groups'
+        budget.LANES = root / 'heavy-lanes'
         budget.STATE.mkdir()
         budget.ROOT.mkdir()
         (budget.ROOT / 'memory.current').write_text('0')
         budget.setup = lambda: None
         budget.scratch_headroom = production_scratch_headroom
+        # The original single-lane policy unless a test widens it. Production
+        # reads the root-owned setting file; tests set the value directly.
+        self.lanes = 1
+        self.headroom = (28, 20)
+        budget.heavy_lanes = lambda: self.lanes
+        self.applied = []
+        budget.apply_limits = self.applied.append
         self.pool = types.SimpleNamespace(f_bavail=8*budget.GIB//4096, f_frsize=4096, f_favail=131072)
         budget.os = types.SimpleNamespace(**vars(production_os))
         budget.os.statvfs = lambda _path: self.pool
+        budget.os.getloadavg = lambda: (1.5, 0.75, 0.25)
+        budget.os.cpu_count = lambda: 16
         budget.Path = lambda value: root / 'guest-meminfo' if value == '/proc/meminfo' else Path(value)
         (root / 'guest-meminfo').write_text('MemAvailable: 33554432 kB\n')
         self.lock = threading.Lock()
         budget.locked = lambda: self.lock
-        budget.child_group = lambda name, *args: (budget.ROOT / name).mkdir()
+        self.groups = []
+        def child_group(name, *limits):
+            self.groups.append((name, limits))
+            (budget.ROOT / name).mkdir()
+        budget.child_group = child_group
         budget.stop = lambda groups: [shutil.rmtree(budget.ROOT / name, ignore_errors=True) for name in groups]
 
     def tearDown(self):
         self.temporary.cleanup()
 
-    def gate(self, ram=28, commit=20, disk=57, age=0):
+    def gate(self, ram=None, commit=None, disk=57, age=0):
+        ram = self.headroom[0] if ram is None else ram
+        commit = self.headroom[1] if commit is None else commit
         return f'{int(time.time() * 1000)-age},{ram*budget.GIB},{commit*budget.GIB},{disk*budget.GIB}'
 
-    def reserve(self, kind, identifier, gate=None):
+    def widen(self, lanes):
+        # Lane capacity tests run on a host whose Windows headroom covers
+        # every unstarted reservation; the headroom rule has its own tests.
+        self.lanes = lanes
+        self.headroom = (60, 60)
+
+    def admit(self, kind, identifier, gate=None):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             budget.reserve(kind, identifier, int(time.time()*1000)+60000, gate or self.gate())
-        return json.loads(output.getvalue())['token']
+        return json.loads(output.getvalue())
+
+    def reserve(self, kind, identifier, gate=None):
+        return self.admit(kind, identifier, gate)['token']
+
+    def test_each_added_lane_adds_one_repository_envelope(self):
+        single, three = budget.limits(1), budget.limits(3)
+        self.assertEqual((single['admission'], single['memory'], single['cpu'], single['pids']),
+                         (11 * budget.GIB, 12 * budget.GIB, 4, 1408))
+        self.assertEqual((single['read'], single['write']), (320 * MIB, 80 * MIB))
+        self.assertEqual((three['admission'], three['memory'], three['cpu'], three['pids']),
+                         (23 * budget.GIB, 24 * budget.GIB, 8, 2944))
+        self.assertEqual((three['read'], three['write']), (576 * MIB, 144 * MIB))
+        # Supervisors get their own half CPU above what jobs can reserve.
+        self.assertEqual(budget.cpu_max(three), '850000 100000')
+
+    def test_two_lanes_run_two_repositories_and_queue_a_third(self):
+        self.widen(2)
+        self.reserve('repository', 'fictional-first')
+        self.reserve('repository', 'fictional-second')
+        self.reserve('text', 'fictional-light')
+        with self.assertRaises(BlockingIOError):
+            self.reserve('repository', 'fictional-third')
+        with self.assertRaises(BlockingIOError):
+            self.reserve('check', 'fictional-check')
+
+    def test_three_lanes_hold_three_repositories_beside_two_light_jobs(self):
+        self.widen(3)
+        for name in ('fictional-a', 'fictional-b', 'fictional-c'):
+            self.reserve('repository', name)
+        self.reserve('text', 'fictional-light-a')
+        self.reserve('text', 'fictional-light-b')
+        active = budget.receipts()
+        self.assertEqual(sum(row['memory'] for row in active), 22 * budget.GIB)
+        self.assertEqual(sum(row['cpu'] for row in active), 8)
+        # Preparation would take a CPU or memory some admitted job was promised.
+        with self.assertRaises(BlockingIOError):
+            self.reserve('prep', 'fictional-prep')
+
+    def test_windows_headroom_covers_every_unstarted_reservation_at_three_lanes(self):
+        self.lanes = 3
+        gate = self.gate(ram=29, commit=40)
+        self.reserve('repository', 'fictional-a', gate)
+        self.reserve('repository', 'fictional-b', gate)
+        # Nothing has started using memory yet: the third job needs the 12 GiB
+        # desktop floor plus its own 6 GiB plus both earlier 6 GiB promises.
+        with self.assertRaisesRegex(BlockingIOError, 'available RAM .* 12 GiB desktop floor'):
+            self.reserve('repository', 'fictional-c', self.gate(ram=29, commit=40))
+        # Once both run, their memory already left Windows' available RAM.
+        (budget.ROOT / 'memory.current').write_text(str(12 * budget.GIB))
+        self.reserve('repository', 'fictional-c', self.gate(ram=18, commit=40))
+        with self.assertRaisesRegex(BlockingIOError, 'available RAM'):
+            self.reserve('text', 'fictional-light', self.gate(ram=18, commit=40))
+        # Commit headroom follows the same rule with its 8 GiB floor, and
+        # the wait names which floor holds it.
+        with self.assertRaisesRegex(BlockingIOError, 'commit headroom .* 8 GiB floor'):
+            self.reserve('text', 'fictional-light', self.gate(ram=28, commit=9))
+        with self.assertRaisesRegex(BlockingIOError, 'less than 30 GiB free'):
+            self.reserve('text', 'fictional-light', self.gate(ram=28, commit=40, disk=29))
+
+    def test_admission_records_the_lane_setting_and_competing_load(self):
+        self.lanes = 2
+        self.reserve('text', 'fictional-light')
+        self.reserve('repository', 'fictional-earlier')
+        (budget.ROOT / 'memory.current').write_text(str(3 * budget.GIB))
+        record = self.admit('repository', 'fictional-measured')['admission']
+        self.assertEqual(record, {
+            'heavyLanes': 2, 'lane': 'heavy', 'competing': {'text': 1, 'repository': 1},
+            'competingHeavy': 1, 'reservedMemory': 8 * budget.GIB, 'reservedCpu': 3,
+            'memoryCurrent': 3 * budget.GIB, 'guestLoad': [1.5, 0.75, 0.25], 'guestCpus': 16,
+            'hostAvailableRam': 28 * budget.GIB, 'hostAvailableCommit': 20 * budget.GIB,
+            'guestMemAvailable': 32 * budget.GIB})
+
+    def test_every_job_gets_its_own_io_ceiling_and_a_pair_splits_it(self):
+        self.widen(2)
+        self.reserve('repository', 'fictional-repository')
+        self.reserve('text', 'fictional-text')
+        self.reserve('pair', 'fictional-pair')
+        self.assertEqual(self.groups, [
+            ('session-fictional-repository', (6 * budget.GIB, 2, 768, 128 * MIB, 32 * MIB)),
+            ('session-fictional-text', (2 * budget.GIB, 1, 256, 32 * MIB, 8 * MIB)),
+            ('check-fictional-pair', (4 * budget.GIB, 1, 384, 64 * MIB, 16 * MIB)),
+            ('probe-fictional-pair', (4 * budget.GIB, 1, 384, 64 * MIB, 16 * MIB))])
+        two = budget.limits(2)
+        self.assertEqual((two['read'], two['write']), (2 * 128 * MIB + 128 * MIB + 2 * 32 * MIB,
+                                                       2 * 32 * MIB + 32 * MIB + 2 * 8 * MIB))
+
+    def test_lane_setting_accepts_only_one_to_three(self):
+        for text, lanes in (('1', 1), ('2\n', 2), ('3\n', 3)):
+            self.assertEqual(budget.lanes_from(text), lanes)
+        for text in ('0', '4', '', 'two', ' 2', '2\n\n', '-1'):
+            with self.assertRaisesRegex(RuntimeError, 'capability_missing:'):
+                budget.lanes_from(text)
+
+    def test_lane_change_waits_until_admitted_jobs_fit_the_new_budget(self):
+        self.widen(3)
+        tokens = [self.reserve('repository', name) for name in ('fictional-a', 'fictional-b', 'fictional-c')]
+        quiet = io.StringIO()
+        with self.assertRaisesRegex(BlockingIOError, 'resource_busy:'):
+            with contextlib.redirect_stdout(quiet):
+                budget.set_heavy_lanes('1')
+        self.assertFalse(budget.LANES.exists())
+        self.assertEqual(self.applied, [])
+        for token in tokens[1:]:
+            budget.release(token)
+        with contextlib.redirect_stdout(quiet):
+            budget.set_heavy_lanes('1')
+        self.assertEqual(budget.LANES.read_text(), '1\n')
+        self.assertEqual(self.applied, [budget.limits(1)])
+        # Raising never waits: every admitted job fits a larger budget.
+        with contextlib.redirect_stdout(quiet):
+            budget.set_heavy_lanes('3')
+        self.assertEqual(budget.LANES.read_text(), '3\n')
+        with self.assertRaisesRegex(RuntimeError, 'capability_missing:'):
+            budget.set_heavy_lanes('5')
+
+    def test_status_reports_the_setting_and_its_scaled_budget(self):
+        self.lanes = 2
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            budget.status()
+        lines = output.getvalue().splitlines()
+        for line in ('budget heavy-lanes 2', 'budget memory 19327352832', 'budget cpu 650000/100000',
+                     'budget swap 0', 'budget pids 2304', 'budget disk 8589934592', 'budget inodes 131072',
+                     'budget io 469762048/117440512',
+                     'budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608'):
+            self.assertIn(line, lines)
 
     def test_parallel_light_calls_and_one_heavy_share_aggregate_not_serialized(self):
         first = self.reserve('text', 'fictional-one')

@@ -146,16 +146,16 @@ export function runSelftest(resources) {
   };
   try {
     const status = successful("/usr/local/sbin/bench-budget", ["status"]);
+    // Rust readiness pins the exact aggregate each heavy-lane setting scales to.
     pass(
-      "aggregate limits and hard scratch",
-      [
-        "budget memory 12884901888",
-        "budget cpu 400000/100000",
-        "budget swap 0",
-        "budget disk 8589934592",
-        "budget inodes 131072",
-        "budget io 134217728/33554432",
-      ].every((line) => status.includes(line)),
+      "aggregate limits, per-job IO and hard scratch",
+      /^budget heavy-lanes [1-3]$/m.test(status) &&
+        [
+          "budget swap 0",
+          "budget disk 8589934592",
+          "budget inodes 131072",
+          "budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608",
+        ].every((line) => status.includes(line)),
     );
     const outerIpc = root("import os;print(os.readlink('/proc/self/ns/ipc'))");
     work(

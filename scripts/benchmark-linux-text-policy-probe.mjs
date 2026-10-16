@@ -234,15 +234,16 @@ async function inputs(provider) {
     identity[name] = hash;
     expected.push(`file ${name} ${hash}`);
   }
-  // The source policy is both revisioned and checked live by Rust admission.
+  // The source policy is both revisioned and checked live by Rust admission,
+  // which also pins the aggregate each heavy-lane setting scales to.
   const budgetBlock = host.match(
-    /fn parse_status[\s\S]*?for line in \[([\s\S]*?)\]\s*\{/,
+    /const FIXED_BUDGET:[^=]*=\s*\[([\s\S]*?)\];/,
   )?.[1];
   assert(budgetBlock, "Sandbox admission policy not found");
   const budgets = [...budgetBlock.matchAll(/"(budget [^"]+)"/g)].map(
     (match) => match[1],
   );
-  assert(budgets.length >= 6);
+  assert(budgets.length >= 4);
   expected.push("netns up", ...budgets);
   return { fingerprint, revision: digest(canonical(identity)), expected };
 }
@@ -259,6 +260,10 @@ function checkStatus(status, expected) {
       lines.has(line),
       `Sandbox differs from source; provision first (${line.split(" ").slice(0, 2).join(" ")})`,
     );
+  assert(
+    [...lines].some((line) => /^budget heavy-lanes [1-3]$/.test(line)),
+    "Sandbox differs from source; provision first (budget heavy-lanes)",
+  );
 }
 
 const PREPARE = `

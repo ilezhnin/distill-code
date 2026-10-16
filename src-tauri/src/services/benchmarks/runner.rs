@@ -758,6 +758,15 @@ async fn finalize_repository(
     Ok(())
 }
 
+/// Seal the heavy-lane setting and competing load the candidate session was
+/// admitted under with the attempt, so speed comparisons can account for it.
+fn record_sandbox_admission(attempt: &mut Attempt, evidence: &mut Value, sandbox_id: Option<&str>) {
+    if let Some(admission) = sandbox_id.and_then(sandbox::take_session_admission) {
+        evidence["sandboxAdmission"] = json!(admission);
+        attempt.sandbox_admission = Some(admission);
+    }
+}
+
 fn repository_collection_failure(attempt: &mut Attempt, error: &BenchmarkError) {
     if attempt
         .outcome
@@ -3332,6 +3341,7 @@ impl ExecutionBackend for NativeBackend {
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
             }
+            record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             store.save_attempt(&attempt).await?;
             if let Some(id) = cleanup.0.as_deref() {
@@ -3531,6 +3541,7 @@ impl ExecutionBackend for NativeBackend {
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
             }
+            record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             // Persist the patch before removing its only working copy. Recovery
             // can repeat cleanup if the process exits between these operations.
@@ -6753,6 +6764,33 @@ mod tests {
         assert!(document.contains("<body><svg xmlns='x'><rect/></svg></body>"));
         assert!(super::render_document("I cannot draw.", Some("svg")).is_none());
     }
+    #[test]
+    fn the_session_admission_is_sealed_with_its_attempt_once() {
+        let row = judge_row("sonnet");
+        let mut attempt =
+            super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        let admission: sandbox::Admission = serde_json::from_value(json!({
+            "heavyLanes": 3, "lane": "heavy", "competing": {"repository": 2},
+            "competingHeavy": 2, "reservedMemory": 12_u64 << 30, "reservedCpu": 4,
+            "memoryCurrent": 9_u64 << 30, "guestLoad": [4.0, 3.5, 2.0], "guestCpus": 16,
+            "guestMemAvailable": 20_u64 << 30, "hostAvailableRam": 30_u64 << 30,
+            "hostAvailableCommit": 18_u64 << 30, "hostCpuBusy": 0.5,
+        }))
+        .unwrap();
+        sandbox::record_session_admission("invented-sealed-sandbox", admission.clone());
+        let mut evidence = json!({"turnEvents": []});
+        record_sandbox_admission(&mut attempt, &mut evidence, Some("invented-sealed-sandbox"));
+        assert_eq!(attempt.sandbox_admission.as_ref(), Some(&admission));
+        assert_eq!(evidence["sandboxAdmission"]["heavyLanes"], 3);
+        assert_eq!(evidence["sandboxAdmission"]["competingHeavy"], 2);
+        assert_eq!(evidence["sandboxAdmission"]["hostCpuBusy"], 0.5);
+        // The record belongs to one attempt; a later seal finds nothing.
+        let mut later = super::super::pending_attempt("invented-run", "invented-version", &row, 1);
+        let mut empty = json!({});
+        record_sandbox_admission(&mut later, &mut empty, Some("invented-sealed-sandbox"));
+        assert!(later.sandbox_admission.is_none());
+        assert!(empty.get("sandboxAdmission").is_none());
+    }
     fn judge_row(model: &str) -> Configuration {
         Configuration {
             id: format!("claude-acp:account:{model}"),
@@ -8079,6 +8117,7 @@ mod tests {
             resolved_model: None,
             repository_result: None,
             collection_context: None,
+            sandbox_admission: None,
         };
         let version = |id: &str| BenchmarkVersion {
             id: id.into(),

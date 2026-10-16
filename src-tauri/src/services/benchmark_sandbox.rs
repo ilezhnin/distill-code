@@ -62,8 +62,97 @@ fn resource_hash(bytes: &[u8]) -> String {
 }
 
 pub(crate) const RESOURCE_POLICY: &str =
-    "aggregate-linux-v1-memory12-cpu4-disk8-inodes131072-read128-write32";
+    "heavy-lanes-linux-v2-lane-memory6-cpu2-pids768-job-read128-write32-light-read32-write8-disk8-inodes131072";
 const GIB: u64 = 1024 * 1024 * 1024;
+const MIB: u64 = 1024 * 1024;
+
+/// Budget lines the broker reports under every heavy-lane setting, including
+/// each job's own scratch IO ceiling (read/write bytes per second).
+const FIXED_BUDGET: [&str; 4] = [
+    "budget swap 0",
+    "budget disk 8589934592",
+    "budget inodes 131072",
+    "budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608",
+];
+
+/// The aggregate the broker must report for `lanes` concurrent heavy jobs:
+/// the single-lane policy plus one repository job (6 GiB, two CPUs, 768
+/// processes and its IO ceiling) per added lane. Admission reserves at most
+/// 1 GiB less memory, and leaves supervisors their own half CPU and 128
+/// processes, so jobs never compete with them for a promised share.
+fn lane_budget(lanes: u64) -> [String; 4] {
+    let extra = lanes - 1;
+    let memory = 12 * GIB + extra * 6 * GIB;
+    let cpu = (4 + extra * 2) * 100_000 + 50_000;
+    let pids = 1408 + extra * 768 + 128;
+    // Every heavy lane, one preparation and two light jobs at their ceilings.
+    let read = (lanes * 128 + 128 + 2 * 32) * MIB;
+    let write = (lanes * 32 + 32 + 2 * 8) * MIB;
+    [
+        format!("budget memory {memory}"),
+        format!("budget cpu {cpu}/100000"),
+        format!("budget pids {pids}"),
+        format!("budget io {read}/{write}"),
+    ]
+}
+
+/// The heavy-lane setting and the competing load the Linux broker admitted a
+/// candidate session under. The attempt keeps it, so a speed comparison can
+/// tell a run that had the sandbox to itself from one that shared it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Admission {
+    /// Heavy jobs (repository, browser, check, pair) the sandbox runs at once.
+    pub heavy_lanes: u32,
+    /// This job's lane: heavy, light or prep.
+    pub lane: String,
+    /// Jobs already admitted, by resource class, and how many were heavy.
+    pub competing: BTreeMap<String, u32>,
+    pub competing_heavy: u32,
+    /// Memory (bytes) and CPUs those jobs had reserved.
+    pub reserved_memory: u64,
+    pub reserved_cpu: u32,
+    /// Memory the benchmark cgroup actually used at admission.
+    pub memory_current: u64,
+    /// The WSL guest's 1, 5 and 15 minute load averages, CPUs and free memory.
+    pub guest_load: [f64; 3],
+    pub guest_cpus: u32,
+    pub guest_mem_available: u64,
+    /// Windows available RAM and commit headroom from the admission gate.
+    pub host_available_ram: u64,
+    pub host_available_commit: u64,
+    /// Busy share of all Windows CPUs over a quarter second before admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_cpu_busy: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_cpus: Option<u32>,
+}
+
+type PendingAdmissions = BTreeMap<String, (std::time::Instant, Admission)>;
+static SESSION_ADMISSIONS: OnceLock<std::sync::Mutex<PendingAdmissions>> = OnceLock::new();
+
+fn session_admissions() -> std::sync::MutexGuard<'static, PendingAdmissions> {
+    SESSION_ADMISSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn record_session_admission(id: &str, admission: Admission) {
+    let mut admissions = session_admissions();
+    // An attempt that ends before sealing evidence leaves its record behind;
+    // none outlives the longest deadline the broker admits (24 h + 8 min).
+    admissions.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(26 * 3600));
+    admissions.insert(id.to_owned(), (std::time::Instant::now(), admission));
+}
+
+/// The admission of the candidate session in sandbox `id`, handed out once.
+/// Absent after an app restart: the record lives only in this process.
+pub(crate) fn take_session_admission(id: &str) -> Option<Admission> {
+    session_admissions()
+        .remove(id)
+        .map(|(_, admission)| admission)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ResourceClass {
@@ -184,6 +273,7 @@ pub(crate) fn host_gate() -> io::Result<String> {
 pub(crate) struct Reservation {
     pub token: String,
     class: ResourceClass,
+    admission: Admission,
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
@@ -209,12 +299,24 @@ impl Drop for Reservation {
     }
 }
 
+/// Reserve a candidate session's process tree. Its admission record, with a
+/// Windows CPU sample taken just before, waits for the attempt's evidence.
 pub(crate) async fn reserve(
     class: ResourceClass,
     id: &str,
     deadline_ms: u64,
 ) -> io::Result<Reservation> {
-    reserve_with_buffers(class, id, deadline_ms, 0).await
+    let host_cpu_busy = tokio::task::spawn_blocking(host_cpu_busy)
+        .await
+        .ok()
+        .flatten();
+    let mut reservation = reserve_with_buffers(class, id, deadline_ms, 0).await?;
+    reservation.admission.host_cpu_busy = host_cpu_busy;
+    reservation.admission.host_cpus = std::thread::available_parallelism()
+        .ok()
+        .and_then(|count| u32::try_from(count.get()).ok());
+    record_session_admission(id, reservation.admission.clone());
+    Ok(reservation)
 }
 
 async fn reserve_with_buffers(
@@ -262,9 +364,12 @@ async fn reserve_with_buffers(
             "capability_missing: sandbox resource reservation owner differs",
         ));
     }
+    let admission = serde_json::from_value(value["admission"].clone())
+        .map_err(|_| io::Error::other("capability_missing: malformed sandbox admission record"))?;
     Ok(Reservation {
         token: token.to_owned(),
         class,
+        admission,
     })
 }
 
@@ -273,6 +378,45 @@ fn host_headroom() -> io::Result<HostHeadroom> {
     Err(io::Error::other(
         "capability_missing: the benchmark host headroom service requires Windows",
     ))
+}
+
+#[cfg(not(windows))]
+fn host_cpu_busy() -> Option<f64> {
+    None
+}
+
+/// Busy share of all Windows CPUs over a quarter second; idle time is part
+/// of the kernel time GetSystemTimes reports.
+#[cfg(windows)]
+fn host_cpu_busy() -> Option<f64> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetSystemTimes(idle: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime) -> i32;
+    }
+    let sample = || {
+        let (mut idle, mut kernel, mut user) = (
+            FileTime::default(),
+            FileTime::default(),
+            FileTime::default(),
+        );
+        if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+            return None;
+        }
+        let ticks = |time: &FileTime| (u64::from(time.high) << 32) | u64::from(time.low);
+        Some((ticks(&idle), ticks(&kernel) + ticks(&user)))
+    };
+    let (idle_before, total_before) = sample()?;
+    std::thread::sleep(Duration::from_millis(250));
+    let (idle_after, total_after) = sample()?;
+    let total = total_after.checked_sub(total_before)?;
+    let idle = idle_after.checked_sub(idle_before)?.min(total);
+    (total > 0).then(|| ((total - idle) as f64 / total as f64 * 1000.0).round() / 1000.0)
 }
 
 #[cfg(windows)]
@@ -926,15 +1070,28 @@ fn parse_status(text: &str) -> io::Result<Status> {
         .map(|line| line.split_whitespace().collect())
         .collect();
     let mut identity = BTreeMap::new();
-    for line in [
-        "budget memory 12884901888",
-        "budget cpu 400000/100000",
-        "budget swap 0",
-        "budget pids 1536",
-        "budget disk 8589934592",
-        "budget inodes 131072",
-        "budget io 134217728/33554432",
-    ] {
+    // The heavy-lane setting is operator state, not runtime identity: each
+    // job's share is the same under every setting, and every attempt records
+    // the setting and competing load it was admitted under.
+    let lanes: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("budget heavy-lanes "))
+        .collect();
+    let lanes = match lanes.as_slice() {
+        [value] => value
+            .parse::<u64>()
+            .ok()
+            .filter(|lanes| (1..=3).contains(lanes)),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        io::Error::other("capability_missing: the sandbox reports no valid heavy-lane setting")
+    })?;
+    let scaled = lane_budget(lanes);
+    for line in FIXED_BUDGET
+        .into_iter()
+        .chain(scaled.iter().map(String::as_str))
+    {
         if !text.lines().any(|observed| observed == line) {
             return Err(io::Error::other(
                 "capability_missing: required aggregate benchmark containment is missing",
@@ -1417,19 +1574,89 @@ mod tests {
         .unwrap();
         lines.extend(pins.iter().map(|(key, value)| format!("{key} {value}")));
         lines.push("netns up".into());
-        lines.extend(
+        lines.extend(budget(2));
+        lines.join("\n")
+    }
+
+    fn budget(lanes: u64) -> Vec<String> {
+        let mut lines = vec![format!("budget heavy-lanes {lanes}")];
+        lines.extend(FIXED_BUDGET.map(str::to_owned));
+        lines.extend(lane_budget(lanes));
+        lines
+    }
+
+    #[test]
+    fn each_heavy_lane_adds_one_repository_envelope_to_the_pinned_aggregate() {
+        assert_eq!(
+            lane_budget(1),
             [
                 "budget memory 12884901888",
-                "budget cpu 400000/100000",
-                "budget swap 0",
+                "budget cpu 450000/100000",
                 "budget pids 1536",
-                "budget disk 8589934592",
-                "budget inodes 131072",
-                "budget io 134217728/33554432",
+                "budget io 335544320/83886080",
             ]
-            .map(str::to_owned),
         );
-        lines.join("\n")
+        assert_eq!(
+            lane_budget(3),
+            [
+                "budget memory 25769803776",
+                "budget cpu 850000/100000",
+                "budget pids 3072",
+                "budget io 603979776/150994944",
+            ]
+        );
+    }
+
+    #[test]
+    fn readiness_accepts_any_valid_lane_setting_without_changing_runtime_identity() {
+        let base = status();
+        let revision = parse_status(&base).unwrap().revision;
+        for lanes in 1..=3 {
+            let changed = base.replace(&budget(2).join("\n"), &budget(lanes).join("\n"));
+            assert_eq!(parse_status(&changed).unwrap().revision, revision);
+        }
+        let two = budget(2).join("\n");
+        for invalid in [
+            two.replace("budget heavy-lanes 2", "budget heavy-lanes 0"),
+            two.replace("budget heavy-lanes 2", "budget heavy-lanes 4"),
+            two.replace("budget heavy-lanes 2", "budget heavy-lanes two"),
+            // A setting whose aggregate the broker did not actually apply.
+            two.replace("budget heavy-lanes 2", "budget heavy-lanes 3"),
+            two.replace(
+                "budget heavy-lanes 2",
+                "budget heavy-lanes 2\nbudget heavy-lanes 3",
+            ),
+            two.replace("budget heavy-lanes 2\n", ""),
+            two.replace("light 33554432/8388608", "light 134217728/33554432"),
+        ] {
+            assert!(
+                parse_status(&base.replace(&two, &invalid)).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_admission_record_is_parsed_and_handed_out_once() {
+        // The shape bench-budget prints beside a reservation token.
+        let printed = serde_json::json!({
+            "heavyLanes": 2, "lane": "heavy", "competing": {"text": 1, "repository": 1},
+            "competingHeavy": 1, "reservedMemory": 8 * GIB, "reservedCpu": 3,
+            "memoryCurrent": 3 * GIB, "guestLoad": [1.5, 0.75, 0.25], "guestCpus": 16,
+            "hostAvailableRam": 28 * GIB, "hostAvailableCommit": 20 * GIB,
+            "guestMemAvailable": 32 * GIB,
+        });
+        let mut admission: Admission = serde_json::from_value(printed.clone()).unwrap();
+        assert_eq!(admission.competing_heavy, 1);
+        assert_eq!(serde_json::to_value(&admission).unwrap(), printed);
+        let mut incomplete = printed;
+        incomplete.as_object_mut().unwrap().remove("heavyLanes");
+        assert!(serde_json::from_value::<Admission>(incomplete).is_err());
+        admission.host_cpu_busy = Some(0.42);
+        record_session_admission("invented-sandbox", admission.clone());
+        assert_eq!(take_session_admission("invented-sandbox"), Some(admission));
+        assert_eq!(take_session_admission("invented-sandbox"), None);
+        assert_eq!(take_session_admission("another-invented-sandbox"), None);
     }
     #[test]
     fn only_an_expired_native_deadline_is_a_budget_timeout() {

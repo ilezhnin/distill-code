@@ -100,17 +100,61 @@ stages declared task inputs and the selected provider's credential material.
 Provider inference sends those inputs to its endpoint under the account's
 existing data-use policy.
 
-The distribution shares one aggregate resource budget across all benchmark
-jobs: 12 GiB memory, four CPU equivalents, 1536 processes, and an 8 GiB scratch
-filesystem with 131072 inodes. Scratch I/O is capped at 128 MiB/s reads and
-32 MiB/s writes. At most two light jobs, one heavy job and one preparation job
-can be admitted when their combined reservation fits. A repository job reserves
-6 GiB; a text or browser job reserves 2 GiB. Cleanup retains its own capacity.
-No additional virtual machine is created per test.
+Benchmark jobs share an 8 GiB scratch filesystem with 131072 inodes and run in
+three lanes: up to two light jobs, one preparation job and a configurable
+number of heavy jobs. Every job has its own memory, CPU, process and scratch I/O
+ceiling:
+
+| Job | Lane | Memory | CPUs | Processes | Scratch read/write |
+| --- | --- | --- | --- | --- | --- |
+| Repository session | heavy | 6 GiB | 2 | 768 | 128/32 MiB/s |
+| Repository check | heavy | 4 GiB | 2 | 512 | 128/32 MiB/s |
+| Paired check, split over its two halves | heavy | 8 GiB | 2 | 768 | 128/32 MiB/s |
+| Browser rendering | heavy | 2 GiB | 1 | 384 | 128/32 MiB/s |
+| Preparation | preparation | 2 GiB | 1 | 256 | 128/32 MiB/s |
+| Text session, sign-in or model probe | light | 2 GiB | 1 | 256 | 32/8 MiB/s |
+
+The heavy-lane setting admits 1, 2 or 3 heavy jobs at once; a distribution
+without a setting uses 2. Each lane past the first adds one repository job's
+memory, CPUs and processes to the aggregate budget:
+
+| Heavy lanes | Admitted memory | CPUs | Processes | Scratch read/write |
+| --- | --- | --- | --- | --- |
+| 1 | 11 GiB | 4 | 1408 | 320/80 MiB/s |
+| 2 | 17 GiB | 6 | 2176 | 448/112 MiB/s |
+| 3 | 23 GiB | 8 | 2944 | 576/144 MiB/s |
+
+Admission never reserves more than this budget. The memory ceiling sits 1 GiB
+above it, and trusted supervisors keep their own half CPU and 128 processes, so
+jobs inside the sandbox do not throttle each other: a job admitted next to
+others keeps the ceiling it would have alone. The host disk, Windows and other
+WSL distributions are outside that guarantee; each attempt records their load
+at admission (see [Freeze and run](#4-freeze-and-run-the-measurement-matrix)).
+Cleanup retains its own capacity. No additional virtual machine is created per
+test.
+
+Change the setting from the repository root, for example to three:
+
+```powershell
+node scripts/benchmark-sandbox.mjs heavy-lanes 3
+```
+
+Raising applies at once. Lowering is refused, and nothing changes, until the
+jobs already admitted fit the smaller budget. The setting lives in the
+distribution, and `node scripts/benchmark-sandbox.mjs status` reports it as
+`budget heavy-lanes`. It is not part of the sandbox runtime identity, so
+changing it keeps selected inventories valid. Provisioning and helper updates
+keep an existing setting.
 
 Before admission, the controller also preserves at least 12 GiB of Windows
 available memory, 8 GiB of commit headroom and 30 GiB free on the registered
-sandbox volume. Resource pressure keeps unstarted candidate work waiting. It
+sandbox volume. Each memory floor must also cover every reservation that is not
+yet in use: a new job needs its own reservation plus the unused part of earlier
+ones. Commit headroom is the commit limit (physical memory plus page file) minus
+committed memory. With a small page file it can keep a second repository job
+waiting even when the Linux budget has room; the wait names that cause. A
+larger page file raises the commit limit without lowering the RAM floor.
+Resource pressure keeps unstarted candidate work waiting. It
 does not consume a model call or permit replay of an already submitted answer.
 Evaluator admission waits on the captured answer; a runtime resource failure
 is inconclusive infrastructure evidence, not a model score. The application
@@ -251,10 +295,22 @@ Ordinary runs support `parallelism: 4`. This is a per-configuration limit within
 shared limits of four active attempts per account and twelve across the app.
 Two reasoning settings on one account share those four slots. Independent
 repository bridges can fill the account slots; a shared single-session text
-bridge or quota recovery can impose a smaller bound. Inspect actual active
+bridge or quota recovery can impose a smaller bound. Repository attempts also
+wait for a sandbox heavy lane, so no more of them run at once than the
+heavy-lane setting allows. Inspect actual active
 attempts and the reason for a lower count, not just the request value. An existing
 ordinary run can be adjusted through `benchmark_set_run_parallelism`; record the
 amendment and preserve its original attempt identities.
+
+Each attempt records the conditions its candidate session was admitted under,
+as `sandboxAdmission` on the attempt and in its sealed evidence: the heavy-lane
+setting, the jobs already running by class and the memory and CPUs they
+reserved, the sandbox's memory in use, the WSL guest's load averages, CPUs and
+free memory, Windows available RAM and commit headroom, and a quarter-second
+sample of Windows CPU use. It describes the moment of admission; a job admitted
+later does not change it. Attempts recorded before this field existed, and
+attempts recovered after an application restart, do not have it. Compare speed
+across attempts with similar admission conditions, or account for them.
 
 Observe the existing run with `benchmark_get_run`, attempt evidence and events.
 Check requested versus acknowledged provider, model and reasoning settings.
@@ -403,7 +459,8 @@ Freeze and review the concurrency contract before preregistration, and check
 that the installed backend supports it. No recipe changes accounts, replaces
 an attempt or retries a provider call.
 
-Record the runtime and competing load when interpreting speed. Whole-workflow
+Record the runtime and competing load when interpreting speed; each step's
+`sandboxAdmission` holds the load at its admission. Whole-workflow
 wall time starts at admission for v3 and v4 and includes preparation and every
 dependent step. Queue time before admission is excluded; v4 also excludes the
 recorded waits for a worker slot between admission and each step. In v2, wall

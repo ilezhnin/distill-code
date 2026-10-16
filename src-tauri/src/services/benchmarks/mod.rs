@@ -140,6 +140,7 @@ fn pending_attempt(
         resolved_model: None,
         repository_result: None,
         collection_context: None,
+        sandbox_admission: None,
     }
 }
 

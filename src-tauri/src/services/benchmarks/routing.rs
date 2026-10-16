@@ -812,6 +812,7 @@ mod tests {
                         resolved_model: None,
                         repository_result: None,
                         collection_context: None,
+                        sandbox_admission: None,
                     });
                 }
             }

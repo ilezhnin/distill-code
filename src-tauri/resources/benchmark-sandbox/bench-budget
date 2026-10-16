@@ -12,23 +12,32 @@ import re
 import secrets
 import select
 import signal
+import stat
 import subprocess
 import sys
 import time
 
 GIB = 1024 ** 3
+MIB = 1024 ** 2
 ROOT = Path('/sys/fs/cgroup/distill-bench')
 STATE = Path('/run/distill-bench-budget')
 SCRATCH = Path('/srv/bench')
 IMAGE = Path('/var/lib/distill-bench/scratch.ext4')
-MEMORY = 12 * GIB
+LANES = Path('/var/lib/distill-bench/heavy-lanes')
 DISK = 8 * GIB
 INODES = 131072
 OUTCOME_TOKEN = None
-READ_BPS = 128 * 1024 ** 2
-WRITE_BPS = 32 * 1024 ** 2
-# Leave one GiB for trusted supervisors, page tables and filesystem bookkeeping.
-ADMISSION_MEMORY = 11 * GIB
+DEVICE = None
+# How many heavy jobs (repository, browser, check, pair) run at once. The
+# operator sets 1-3 with `bench-budget heavy-lanes N`; an absent file means 2.
+DEFAULT_HEAVY_LANES = 2
+# Each lane past the first adds one repository job's memory, CPUs and
+# processes to the aggregate, so a job keeps the share it would have alone.
+LANE = (6 * GIB, 2, 768)
+# Every job's own scratch IO ceiling (read, write bytes per second). The
+# aggregate is the sum over what admission holds at once: every heavy lane,
+# one preparation and two light jobs.
+JOB_IO = {'heavy': (128 * MIB, 32 * MIB), 'prep': (128 * MIB, 32 * MIB), 'light': (32 * MIB, 8 * MIB)}
 CLASSES = {
     'text': (2 * GIB, 1, 256, 'light'),
     'repository': (6 * GIB, 2, 768, 'heavy'),
@@ -66,7 +75,43 @@ def protected(path):
     return path.is_dir() and not path.is_symlink() and info.st_uid == 0 and not info.st_mode & 0o022
 
 
+def lanes_from(text):
+    if not re.fullmatch(r'[1-3]\n?', text):
+        fail('the benchmark heavy-lane setting must be 1, 2 or 3')
+    return int(text)
+
+
+def heavy_lanes():
+    try:
+        info = LANES.lstat()
+    except FileNotFoundError:
+        return DEFAULT_HEAVY_LANES
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        fail('the benchmark heavy-lane setting must be a root-owned regular file')
+    return lanes_from(LANES.read_text())
+
+
+def limits(lanes):
+    """The aggregate budget for `lanes` heavy lanes; one lane is the original policy."""
+    memory, cpu, pids = LANE
+    extra = lanes - 1
+    # Admission leaves one GiB of the memory ceiling to trusted supervisors,
+    # page tables and filesystem bookkeeping.
+    admission = 11 * GIB + extra * memory
+    read = lanes * JOB_IO['heavy'][0] + JOB_IO['prep'][0] + 2 * JOB_IO['light'][0]
+    written = lanes * JOB_IO['heavy'][1] + JOB_IO['prep'][1] + 2 * JOB_IO['light'][1]
+    return dict(lanes=lanes, admission=admission, memory=admission + GIB, cpu=4 + extra * cpu,
+                pids=1408 + extra * pids, read=read, write=written)
+
+
+def cpu_max(budget):
+    # Jobs can reserve every CPU in the budget; the control group's own half
+    # CPU comes on top, so supervisors never take a share a job was promised.
+    return f"{budget['cpu'] * 100000 + 50000} 100000"
+
+
 def setup():
+    global DEVICE
     if os.geteuid() != 0:
         fail('benchmark admission requires the trusted root broker')
     controllers = set(Path('/sys/fs/cgroup/cgroup.controllers').read_text().split())
@@ -74,11 +119,7 @@ def setup():
         fail('WSL cgroup v2 memory, CPU, PID and IO controllers are required')
     write(Path('/sys/fs/cgroup/cgroup.subtree_control'), '+memory +cpu +pids +io')
     ROOT.mkdir(exist_ok=True)
-    write(ROOT / 'memory.max', MEMORY)
-    write(ROOT / 'memory.high', 11 * GIB)
     write(ROOT / 'memory.swap.max', 0)
-    write(ROOT / 'cpu.max', '400000 100000')
-    write(ROOT / 'pids.max', 1536)
     write(ROOT / 'cgroup.subtree_control', '+memory +cpu +pids +io')
     control = ROOT / 'control'
     control.mkdir(exist_ok=True)
@@ -92,23 +133,36 @@ def setup():
     for path in (STATE, STATE / 'attempts', SCRATCH):
         if not protected(path):
             fail('benchmark scratch and lease parents must be root owned')
-    device = scratch_device()
-    write(ROOT / 'io.max', f'{device} rbps={READ_BPS} wbps={WRITE_BPS}')
-    verify()
+    DEVICE = scratch_device()
+    # A concurrent heavy-lane change writes its setting under this lock, so
+    # the aggregate never lags behind the setting admission reads.
+    with locked():
+        apply_limits(limits(heavy_lanes()))
 
 
-def verify():
-    expected = {'memory.max': str(MEMORY), 'memory.swap.max': '0',
-                'cpu.max': '400000 100000', 'pids.max': '1536'}
+def apply_limits(budget):
+    write(ROOT / 'memory.max', budget['memory'])
+    write(ROOT / 'memory.high', budget['admission'])
+    write(ROOT / 'cpu.max', cpu_max(budget))
+    write(ROOT / 'pids.max', budget['pids'] + 128)
+    write(ROOT / 'io.max', f"{DEVICE} rbps={budget['read']} wbps={budget['write']}")
+    expected = {'memory.max': str(budget['memory']), 'memory.swap.max': '0',
+                'cpu.max': cpu_max(budget), 'pids.max': str(budget['pids'] + 128)}
     for name, value in expected.items():
         if (ROOT / name).read_text().strip() != value:
             fail('benchmark aggregate resource limit did not take effect: ' + name)
-    device = scratch_device()
-    limits = [line.split() for line in (ROOT / 'io.max').read_text().splitlines()]
-    row = next((line[1:] for line in limits if line[0] == device), [])
-    settings = dict(item.split('=', 1) for item in row)
-    if settings.get('rbps') != str(READ_BPS) or settings.get('wbps') != str(WRITE_BPS):
+    if io_limit(ROOT) != (str(budget['read']), str(budget['write'])):
         fail('benchmark scratch IO limit did not take effect')
+
+
+def io_limit(group):
+    """The (rbps, wbps) a group's io.max sets on the scratch device."""
+    for line in (group / 'io.max').read_text().splitlines():
+        device, *settings = line.split()
+        if device == DEVICE:
+            values = dict(item.split('=', 1) for item in settings)
+            return values.get('rbps'), values.get('wbps')
+    return None, None
 
 
 def scratch_device():
@@ -220,12 +274,29 @@ def waiting():
     return queue
 
 
-def fits(active, kind):
+def fits(active, kind, host_buffers=0):
     memory, cpu, pids, lane = CLASSES[kind]
-    return (sum(row['memory'] for row in active) + memory <= ADMISSION_MEMORY and
-            sum(row['cpu'] for row in active) + cpu <= 4 and
-            sum(row['pids'] for row in active) + pids <= 1408 and
-            sum(row['lane'] == lane for row in active) < (2 if lane == 'light' else 1))
+    budget = limits(heavy_lanes())
+    room = {'light': 2, 'heavy': budget['lanes'], 'prep': 1}[lane]
+    return (sum(row['memory'] for row in active) + memory + host_buffers <= budget['admission'] and
+            sum(row['cpu'] for row in active) + cpu <= budget['cpu'] and
+            sum(row['pids'] for row in active) + pids <= budget['pids'] and
+            sum(row['lane'] == lane for row in active) < room)
+
+
+def admission(active, kind, observed):
+    """The heavy-lane setting and the competing load this job was admitted under."""
+    competing = {}
+    for row in active:
+        key = row.get('kind', row['lane'])
+        competing[key] = competing.get(key, 0) + 1
+    return dict(heavyLanes=heavy_lanes(), lane=CLASSES[kind][3], competing=competing,
+                competingHeavy=sum(row['lane'] == 'heavy' for row in active),
+                reservedMemory=sum(row['memory'] for row in active),
+                reservedCpu=sum(row['cpu'] for row in active),
+                memoryCurrent=int((ROOT / 'memory.current').read_text()),
+                guestLoad=[round(value, 2) for value in os.getloadavg()],
+                guestCpus=os.cpu_count(), **observed)
 
 
 def host_gate(gate, active, memory):
@@ -240,14 +311,20 @@ def host_gate(gate, active, memory):
         raise BlockingIOError('resource_busy: Windows headroom evidence expired before execution; no provider process started')
     current = int((ROOT / 'memory.current').read_text())
     additional = memory + max(0, sum(row['memory'] for row in active) - current)
-    if available_ram < 12 * GIB + additional or commit < 8 * GIB + additional or disk < 30 * GIB:
-        raise BlockingIOError('resource_busy: Windows headroom cannot cover committed benchmark reservations; no provider process started')
+    if available_ram < 12 * GIB + additional:
+        raise BlockingIOError('resource_busy: Windows available RAM cannot cover benchmark reservations and its 12 GiB desktop floor; no provider process started')
+    if commit < 8 * GIB + additional:
+        raise BlockingIOError('resource_busy: Windows commit headroom cannot cover benchmark reservations and its 8 GiB floor; no provider process started')
+    if disk < 30 * GIB:
+        raise BlockingIOError('resource_busy: the registered sandbox volume has less than 30 GiB free; no provider process started')
     # Other WSL distributions share the guest VM. Parent caps alone do not
     # protect an Ubuntu workload already occupying most guest memory.
     guest = {line.split(':', 1)[0]: int(line.split()[1]) * 1024
              for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')}
     if guest.get('MemAvailable', 0) < 2 * GIB + additional:
         raise BlockingIOError('resource_busy: shared WSL memory cannot cover benchmark reservations and its 2 GiB floor; no provider process started')
+    return dict(hostAvailableRam=available_ram, hostAvailableCommit=commit,
+                guestMemAvailable=guest['MemAvailable'])
 
 
 def scratch_headroom(active, kind):
@@ -266,7 +343,8 @@ def scratch_runtime_floor():
 
 
 def make_groups(kind, identifier):
-    memory, cpu, pids, _ = CLASSES[kind]
+    memory, cpu, pids, lane = CLASSES[kind]
+    read, written = JOB_IO[lane]
     prefix = 'check-' if kind == 'pair' else 'session-' if kind in ('text', 'repository') else kind + '-'
     groups = [prefix + identifier]
     if kind == 'pair':
@@ -274,7 +352,9 @@ def make_groups(kind, identifier):
     made = []
     try:
         for name in groups:
-            child_group(name, memory // len(groups), cpu // len(groups), pids // len(groups))
+            # A pair's two leaves split its envelope, like its memory and CPUs.
+            share = len(groups)
+            child_group(name, memory // share, cpu // share, pids // share, read // share, written // share)
             made.append(name)
     except BaseException:
         stop(made)
@@ -290,10 +370,11 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
     setup()
     with locked():
         active = receipts()
-        if not fits(active, kind) or waiting() or sum(row['memory'] for row in active) + CLASSES[kind][0] + host_buffers > ADMISSION_MEMORY:
+        if not fits(active, kind, host_buffers) or waiting():
             raise BlockingIOError('resource_busy: benchmark resource capacity is queued; no provider process started')
-        host_gate(gate, active, CLASSES[kind][0] + host_buffers)
+        observed = host_gate(gate, active, CLASSES[kind][0] + host_buffers)
         scratch_headroom(active, kind)
+        record = admission(active, kind, observed)
         groups = make_groups(kind, identifier)
         token = secrets.token_hex(16)
         memory, cpu, pids, lane = CLASSES[kind]
@@ -302,7 +383,8 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
                    groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane)
         row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
         (STATE / ('lease-' + token + '.json')).write_text(json.dumps(row))
-        print(json.dumps({'token': token, 'id': identifier, 'class': kind, 'deadlineMs': deadline_ms}))
+        print(json.dumps({'token': token, 'id': identifier, 'class': kind, 'deadlineMs': deadline_ms,
+                          'admission': record}))
 
 
 def release(token):
@@ -337,15 +419,24 @@ def observe(mode, identifier):
                     'token': token, 'infrastructureError': 'infrastructure_error: benchmark process tree reached its memory ceiling'}))
 
 
-def child_group(name, memory, cpu, pids):
+def child_group(name, memory, cpu, pids, read, written):
+    if DEVICE is None:
+        fail('benchmark scratch device is unknown')
     path = ROOT / name
     path.mkdir()
-    for key, value in {'memory.max': memory, 'memory.swap.max': 0,
-                       'pids.max': pids, 'cpu.max': f'{cpu * 100000} 100000'}.items():
-        write(path / key, value)
-        if (path / key).read_text().strip() != str(value):
-            fail('benchmark child resource limit did not take effect')
-    write(path / 'memory.oom.group', 1)
+    try:
+        for key, value in {'memory.max': memory, 'memory.swap.max': 0,
+                           'pids.max': pids, 'cpu.max': f'{cpu * 100000} 100000'}.items():
+            write(path / key, value)
+            if (path / key).read_text().strip() != str(value):
+                fail('benchmark child resource limit did not take effect')
+        write(path / 'io.max', f'{DEVICE} rbps={read} wbps={written}')
+        if io_limit(path) != (str(read), str(written)):
+            fail('benchmark child IO limit did not take effect')
+        write(path / 'memory.oom.group', 1)
+    except BaseException:
+        path.rmdir()
+        raise
 
 
 def joined(mode, identifier, command):
@@ -414,12 +505,12 @@ def run(kind, identifier, command):
             with locked():
                 active = receipts()
                 queue = waiting()
-                if queue and min(queue)[1] == ticket.name and fits(active, kind) and sum(row['memory'] for row in active) + CLASSES[kind][0] + host_buffers <= ADMISSION_MEMORY:
+                if queue and min(queue)[1] == ticket.name and fits(active, kind, host_buffers):
                     host_gate(os.environ.get('DISTILL_BENCH_HOST_GATE'), active, CLASSES[kind][0] + host_buffers)
                     scratch_headroom(active, kind)
                     memory, cpu, pids, lane = CLASSES[kind]
                     groups = make_groups(kind, identifier)
-                    row = dict(pid=os.getpid(), start=proc_identity(os.getpid()), deadline=deadline,
+                    row = dict(pid=os.getpid(), start=proc_identity(os.getpid()), deadline=deadline, kind=kind,
                                id=identifier, groups=groups, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane)
                     scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
                     row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
@@ -486,17 +577,41 @@ def status():
     setup()
     with locked():
         active = receipts()
-        print('budget memory 12884901888')
-        print('budget cpu 400000/100000')
+        budget = limits(heavy_lanes())
+        print('budget heavy-lanes', budget['lanes'])
+        print('budget memory', budget['memory'])
+        print('budget cpu', cpu_max(budget).replace(' ', '/'))
         print('budget swap 0')
-        print('budget pids 1536')
-        print('budget disk 8589934592')
-        print('budget inodes 131072')
-        print('budget io 134217728/33554432')
+        print('budget pids', budget['pids'] + 128)
+        print('budget disk', DISK)
+        print('budget inodes', INODES)
+        print(f"budget io {budget['read']}/{budget['write']}")
+        print('budget job-io', ' '.join(f'{lane} {read}/{written}' for lane, (read, written) in JOB_IO.items()))
         print('budget reserved', sum(row['memory'] for row in active))
         print('budget current', (ROOT / 'memory.current').read_text().strip())
         filesystem = os.statvfs(SCRATCH)
         print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
+
+
+def set_heavy_lanes(text):
+    """Change the heavy-lane setting once the jobs already admitted fit the new budget."""
+    lanes = lanes_from(text)
+    setup()
+    with locked():
+        budget = limits(lanes)
+        active = receipts()
+        if (sum(row['memory'] for row in active) > budget['admission'] or
+                sum(row['cpu'] for row in active) > budget['cpu'] or
+                sum(row['pids'] for row in active) > budget['pids'] or
+                sum(row['lane'] == 'heavy' for row in active) > lanes):
+            raise BlockingIOError('resource_busy: admitted benchmark jobs exceed the requested heavy-lane budget; let them finish first')
+        LANES.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staged = LANES.with_name(LANES.name + '.new')
+        staged.write_text(f'{lanes}\n')
+        os.chmod(staged, 0o644)
+        os.replace(staged, LANES)
+        apply_limits(budget)
+    status()
 
 
 def reap():
@@ -562,6 +677,9 @@ def main():
         return 0
     if sys.argv[1:] == ['status']:
         status()
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == 'heavy-lanes':
+        set_heavy_lanes(sys.argv[2])
         return 0
     if len(sys.argv) in (6, 7) and sys.argv[1] == 'reserve':
         reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) == 7 else 0)

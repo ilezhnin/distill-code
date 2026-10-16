@@ -6,6 +6,7 @@
 //   node scripts/benchmark-sandbox.mjs status     print bench-status
 //   node scripts/benchmark-sandbox.mjs selftest   check the confinement from inside
 //   node scripts/benchmark-sandbox.mjs deploy-helpers  network-free helper update
+//   node scripts/benchmark-sandbox.mjs heavy-lanes N   heavy jobs at once (1-3)
 //
 // Provider sign-in happens inside the sandbox, by hand, once per account:
 //   wsl -d distill-bench -u root bench-login claude|codex|grok|kimi <account-id>
@@ -199,9 +200,30 @@ function selftest() {
   runSelftest(resources);
 }
 
-const [command] = process.argv.slice(2);
+// The broker refuses a lower setting while admitted jobs exceed its budget.
+function heavyLanes(value) {
+  if (!/^[1-3]$/.test(value ?? ""))
+    throw new Error("heavy-lanes takes the number of heavy jobs: 1, 2 or 3");
+  const result = wsl([
+    "-d",
+    DISTRO,
+    "-u",
+    "root",
+    "--exec",
+    "/usr/local/sbin/bench-budget",
+    "heavy-lanes",
+    value,
+  ]);
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  if (result.status !== 0)
+    throw new Error(`bench-budget heavy-lanes exited ${result.status}`);
+}
+
+const [command, argument] = process.argv.slice(2);
 if (!command) provision();
 else if (command === "status") status();
 else if (command === "selftest") selftest();
 else if (command === "deploy-helpers") deployHelpers();
+else if (command === "heavy-lanes") heavyLanes(argument);
 else throw new Error(`unknown command ${command}`);

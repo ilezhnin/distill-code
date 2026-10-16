@@ -553,6 +553,11 @@ pub struct Attempt {
     /// Native initial repository input frozen before a standalone turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_context: Option<super::runner::collection_context::Context>,
+    /// The sandbox heavy-lane setting and competing load when the candidate
+    /// session was admitted, also sealed in the evidence. Absent on attempts
+    /// recorded before it was kept or recovered after an app restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_admission: Option<crate::services::benchmark_sandbox::Admission>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
