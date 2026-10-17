@@ -453,6 +453,47 @@ pub(super) async fn saved_steps(store: &Store, root_id: &str) -> Result<Vec<Save
     Ok(steps)
 }
 
+/// Deletes the prepared steps of a root-pinned workflow that no provider saw,
+/// with the native clocks its root and steps froze, so the root's next
+/// admission prepares and times them afresh. A step the store shows a
+/// provider saw keeps everything, and the answer is false.
+pub(super) async fn discard_unstarted(store: &Store, root: &Attempt) -> Result<bool> {
+    let mut tx = store.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let steps: Vec<String> =
+        sqlx::query_scalar("SELECT data_json FROM workflow_steps WHERE root_attempt_id=?")
+            .bind(&root.id)
+            .fetch_all(&mut *tx)
+            .await?;
+    for step in &steps {
+        let step: Attempt = serde_json::from_str(step)?;
+        if super::runner::reached_provider(&step)
+            || step.evidence_hash.is_some()
+            || step.outcome.as_deref() == Some("completed")
+        {
+            return Ok(false);
+        }
+    }
+    sqlx::query("DELETE FROM workflow_steps WHERE root_attempt_id=?")
+        .bind(&root.id)
+        .execute(&mut *tx)
+        .await?;
+    // The keys `execute` and `prepare_step` reserve for this root, and no
+    // other binding that names it.
+    let step_keys = format!("workflow:{}:", root.id);
+    sqlx::query("DELETE FROM task_budget_bindings WHERE root_id=? AND (request_key=? OR substr(request_key,1,length(?))=?)")
+        .bind(&root.id)
+        .bind(format!("workflow-root:{}", root.id))
+        .bind(&step_keys)
+        .bind(&step_keys)
+        .execute(&mut *tx)
+        .await?;
+    if !steps.is_empty() {
+        event(&mut tx, &root.run_id, "workflow_steps_discarded").await?;
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+
 /// Recovery uses the same immutable pre-dispatch input record as collection.
 /// Original version metadata alone cannot reconstruct a cumulative child.
 pub(super) async fn effective_version_for_attempt(
@@ -1517,6 +1558,9 @@ pub fn execute(
                 aggregate(&mut root, &steps);
                 service.store.save_attempt(&root).await?;
             }
+            let untouched = steps[..index]
+                .iter()
+                .all(|step| !super::runner::reached_provider(&step.attempt));
             let saved = &mut steps[index];
             saved.attempt.phase = "preparing".into();
             saved.attempt.started_at = Some(now());
@@ -1545,6 +1589,27 @@ pub fn execute(
                         cancel.clone(),
                     )
                     .await
+            };
+            // The local broker refused the first step a provider would have
+            // seen: the workflow has not started, under any retry policy. The
+            // step goes back unstarted and the runner returns the root to the
+            // queue. A research trajectory keeps its committed record below.
+            let result = match result {
+                Err(error)
+                    if untouched
+                        && error.code == "resource_busy"
+                        && root.configuration.execution_profile != "workflow_policy" =>
+                {
+                    let current = service.store.attempt(&saved.attempt.id).await?;
+                    if current.phase == "preparing" && !super::runner::reached_provider(&current) {
+                        saved.attempt = current;
+                        super::runner::requeue(&mut saved.attempt, error.message.clone());
+                        service.store.save_attempt(&saved.attempt).await?;
+                        return Err(error);
+                    }
+                    Err(error)
+                }
+                result => result,
             };
             match result {
                 Ok(mut completed) => {

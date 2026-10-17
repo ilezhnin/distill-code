@@ -1389,6 +1389,30 @@ pub(super) fn returns_to_queue(code: &str, phase: &str) -> bool {
         || (phase == "preparing" && matches!(code, "selection_changed" | "capability_missing"))
 }
 
+/// Whether `attempt`, as saved, shows that a provider saw any of its try: a
+/// session, a dispatched turn, an acknowledged selection.
+pub(super) fn reached_provider(attempt: &Attempt) -> bool {
+    attempt.session_id.is_some() || attempt.host_run_id.is_some() || attempt.observed.is_some()
+}
+
+/// Whether `error` refused `attempt`, still saved as in preparation, before
+/// any provider process started, so the try counts for nothing and the cell
+/// waits in the queue. Only the trusted pre-spawn path reports
+/// `resource_busy`: the local broker queued the admission, its window closed
+/// in the queue, or the host gate's evidence expired. Nothing of the
+/// attempt, nor of any workflow step it carries, may have reached a provider.
+/// An attempt leaves preparation only once its session exists, so this holds
+/// at every stage before the prompt: workflow step, bridge start, admission.
+pub(super) fn never_started(attempt: &Attempt, error: &BenchmarkError) -> bool {
+    error.code == "resource_busy"
+        && attempt.phase == "preparing"
+        && !reached_provider(attempt)
+        && attempt
+            .workflow_steps
+            .iter()
+            .all(|step| step.session_id.is_none() && step.host_run_id.is_none())
+}
+
 /// Whether `code` holds its run until a time it already knows, rather than
 /// asking the operator.
 fn is_wait(code: &str) -> bool {
@@ -5900,19 +5924,19 @@ impl BenchmarkService {
             }
             Err(error) => {
                 let mut failed = self.store.attempt(&a.id).await?;
-                if error.code == "resource_busy"
-                    && failed.phase == "preparing"
-                    && failed.session_id.is_none()
-                    && failed.host_run_id.is_none()
-                    && failed.workflow_steps.is_empty()
+                if never_started(&failed, &error)
                     && run.request.require_dispatch_admission(now()).is_ok()
+                    && self.forget_unstarted_try(&failed, &version).await?
                 {
-                    // This is unstarted admission, including research runs
-                    // that forbid replay. No paid execution is retried.
+                    // This is unstarted admission at whatever stage it was
+                    // refused, under every retry policy, including research
+                    // runs that forbid replay. No paid execution is retried,
+                    // and the cell is neither an attempt nor a failure.
                     requeue(
                         &mut failed,
                         format!("Waiting for local resources: {}", error.message),
                     );
+                    failed.workflow_steps.clear();
                     failed.wait_until = Some(now() + 2_000);
                     self.store.save_attempt(&failed).await?;
                     self.changed().await;
@@ -6034,6 +6058,24 @@ impl BenchmarkService {
             }
         }
         Ok(())
+    }
+    /// Discards what a try no provider saw left behind, so the cell's next
+    /// admission is its first: a root-pinned workflow's prepared steps and
+    /// the clocks they froze. False when something must stay: a research
+    /// workflow's committed step decisions, or a step the store shows a
+    /// provider saw.
+    async fn forget_unstarted_try(
+        &self,
+        attempt: &Attempt,
+        version: &BenchmarkVersion,
+    ) -> Result<bool> {
+        if version.manifest.workflow.is_none() {
+            return Ok(true);
+        }
+        if attempt.configuration.execution_profile == "workflow_policy" {
+            return Ok(attempt.workflow_steps.is_empty());
+        }
+        super::workflow::discard_unstarted(&self.store, attempt).await
     }
     /// Another enabled account of `configuration`'s provider whose limit has
     /// not run out under `run_id`, the default first.
@@ -6317,6 +6359,10 @@ pub struct FakeBackend {
     resource_busy: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     resource_refusals: std::sync::atomic::AtomicU64,
+    /// Once this many turns ran (zero: never), the next one is refused for
+    /// local resources, once.
+    #[cfg(test)]
+    resource_refusal_after: std::sync::atomic::AtomicU64,
     /// Sessions whose provider refuses the requested model before dispatch.
     pub refused_selections: std::sync::atomic::AtomicU64,
     /// Sessions the host refuses to open before any provider call (a sign-in
@@ -6458,6 +6504,17 @@ impl ExecutionBackend for FakeBackend {
                     "Invented admission race",
                 ));
             }
+            #[cfg(test)]
+            {
+                let after = self.resource_refusal_after.load(Ordering::SeqCst);
+                if after > 0 && self.calls.load(Ordering::SeqCst) >= after {
+                    self.resource_refusal_after.store(0, Ordering::SeqCst);
+                    return Err(BenchmarkError::new(
+                        "resource_busy",
+                        "Invented admission race after a provider turn",
+                    ));
+                }
+            }
             if take(&self.capability_refusals) {
                 return Err(BenchmarkError::new(
                     "capability_missing",
@@ -6580,6 +6637,9 @@ mod reconciliation_tests;
 
 #[cfg(test)]
 mod execution_limits_tests;
+
+#[cfg(test)]
+mod unstarted_admission_tests;
 
 #[cfg(test)]
 mod collection_context_tests;

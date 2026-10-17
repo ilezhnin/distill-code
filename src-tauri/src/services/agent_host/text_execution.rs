@@ -362,5 +362,14 @@ mod tests {
             admission_error("Sandbox command: resource_busy: queued"),
             "resource_busy: queued"
         );
+        // A preparation lease whose window closed in the queue stays a busy
+        // refusal, never a missing capability.
+        assert_eq!(
+            admission_error(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "resource_busy: benchmark preparation queue expired before worker startup",
+            )),
+            "resource_busy: benchmark preparation queue expired before worker startup"
+        );
     }
 }

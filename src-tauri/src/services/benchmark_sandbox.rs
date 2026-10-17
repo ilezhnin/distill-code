@@ -1016,31 +1016,58 @@ pub(crate) async fn invoke_bounded(
     let deadline = now.saturating_add(timeout.as_millis().min(u64::MAX as u128) as u64);
     let admission_deadline = deadline.min(now.saturating_add(300_000));
     let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
-    let lease = loop {
-        match reserve_with_buffers(class, id, deadline, host_buffers).await {
-            Ok(lease) => break lease,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                let remaining =
-                    remaining_ms(admission_deadline).map_err(|_| {
-                        io::Error::new(io::ErrorKind::WouldBlock,
-                    "resource_busy: benchmark preparation queue expired before worker startup")
-                    })?;
-                tokio::time::sleep(Duration::from_millis(remaining.min(1000))).await;
-            }
-            Err(error) => return Err(error),
-        }
-    };
+    let lease = admit(admission_deadline, || {
+        reserve_with_buffers(class, id, deadline, host_buffers)
+    })
+    .await?;
     // A child is launched exactly once. Only failed pre-execution admissions
     // are retried; captured input is retained without paid-model replay.
+    let remaining = remaining_ms(deadline).map_err(|_| admission_queue_expired())?;
     invoke_reserved_bounded(
         &lease,
         program,
         args,
         input,
         cap,
-        Duration::from_millis(remaining_ms(deadline)?),
+        Duration::from_millis(remaining),
     )
     .await
+}
+
+/// A lease whose admission window closed before its helper started. No
+/// helper and no provider process ran, so the caller may wait and ask again.
+fn admission_queue_expired() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "resource_busy: benchmark preparation queue expired before worker startup",
+    )
+}
+
+/// Asks `reserve` for a lease, once a second while the Linux broker answers
+/// busy, until `admission_deadline`. A window that closes in the queue is the
+/// queue's refusal, whichever check sees it first: the broker's last busy
+/// answer, or the deadline check before the next ask.
+async fn admit<L, F>(admission_deadline: u64, mut reserve: impl FnMut() -> F) -> io::Result<L>
+where
+    F: std::future::Future<Output = io::Result<L>>,
+{
+    loop {
+        match reserve().await {
+            Ok(lease) => return Ok(lease),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let remaining =
+                    remaining_ms(admission_deadline).map_err(|_| admission_queue_expired())?;
+                tokio::time::sleep(Duration::from_millis(remaining.min(1000))).await;
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::TimedOut
+                    && remaining_ms(admission_deadline).is_err() =>
+            {
+                return Err(admission_queue_expired())
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 async fn invoke(
@@ -1885,6 +1912,68 @@ mod tests {
         let (tail, truncated) = read_tail(bytes.as_slice(), 100).await.unwrap();
         assert_eq!(tail, vec![b'x'; 100]);
         assert!(truncated);
+    }
+
+    /// A lease that waits in a busy queue until its window closes is refused
+    /// as busy, never as an expired native deadline, however the closing is
+    /// seen; a deadline that fires while the window is still open stays one.
+    #[tokio::test]
+    async fn a_lease_window_closing_in_the_queue_is_a_busy_refusal() {
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let busy = |reason: &str| io::Error::new(io::ErrorKind::WouldBlock, reason.to_owned());
+        let queued =
+            "resource_busy: benchmark resource capacity is queued; no provider process started";
+        // The broker answers busy until the window closes, and the deadline
+        // check before the next ask sees it close, as on 2026-10-16 behind an
+        // interactive sign-in that held the light lane.
+        let window = now() + 60;
+        let refused = admit::<(), _>(window, || async move {
+            remaining_ms(window)?;
+            Err(busy(queued))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        assert!(refused.to_string().starts_with("resource_busy:"));
+        // Each way the closing is seen, deterministically: the deadline check
+        // ("Native sandbox deadline expired"), and the broker's busy answer,
+        // including the expired Windows headroom evidence of the host gate.
+        let closed = now() - 1;
+        for reason in [
+            remaining_ms(closed).unwrap_err(),
+            busy(queued),
+            busy("resource_busy: Windows headroom evidence expired before execution; no provider process started"),
+        ] {
+            let mut reason = Some(reason);
+            let refused = admit::<(), _>(closed, || {
+                let reason = reason.take().expect("asked once");
+                async move { Err(reason) }
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+            assert_eq!(
+                refused.to_string(),
+                "resource_busy: benchmark preparation queue expired before worker startup"
+            );
+        }
+        // A helper's own time limit inside an open window is not the queue's.
+        let refused = admit::<(), _>(now() + 60_000, || async {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Sandbox operation exceeded its time limit",
+            ))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::TimedOut);
+        let granted = admit(now() + 60_000, || async { Ok(7) }).await.unwrap();
+        assert_eq!(granted, 7);
     }
 
     #[tokio::test]
