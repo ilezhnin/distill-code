@@ -10,13 +10,18 @@ set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Every benchmark run, network and status calls this. Once this boot has
 # finished setup (the marker names the boot; /run empties at every WSL start)
-# and the namespace and control group still stand, there is nothing to do:
-# return without starting a process.
+# and the namespace, its veth, the control group and the reaper bench-budget
+# setup starts still stand, there is nothing to do: return without starting a
+# process.
 ready=/run/distill-bench-net.ready
-if [ -f "$ready" ] && [ -e /run/netns/bench ] && [ -d /sys/fs/cgroup/distill-bench/control ]; then
+if [ -f "$ready" ] && [ -e /run/netns/bench ] && [ -e /sys/class/net/bench0 ] \
+  && [ -d /sys/fs/cgroup/distill-bench/control ] && [ -f /run/distill-bench-reaper.pid ]; then
   read -r boot </proc/sys/kernel/random/boot_id
   read -r marked <"$ready" || marked=
-  [ "$marked" != "$boot" ] || exit 0
+  read -r reaper </run/distill-bench-reaper.pid || reaper=
+  if [ "$marked" = "$boot" ] && [ -n "$reaper" ] && [ -d "/proc/$reaper" ]; then
+    exit 0
+  fi
 fi
 mkdir -p /run/lock
 exec 9>/run/lock/distill-bench-net

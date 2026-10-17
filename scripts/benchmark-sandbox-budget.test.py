@@ -344,6 +344,41 @@ class BudgetTests(unittest.TestCase):
         self.assertFalse(budget.populated(exiting))
         shutil.rmtree(exiting)
 
+    def test_the_reaper_survives_a_failed_pass_and_names_itself(self):
+        # Once the sandbox is up, bench-net restarts the reaper only after its
+        # pid is gone, so one failed pass must not end it.
+        (budget.ROOT / 'control').mkdir()
+        passes = []
+
+        class Stop(Exception):
+            pass
+
+        def reap_pass():
+            passes.append('pass')
+            if len(passes) == 1:
+                raise ValueError('a ticket read while it is written')
+
+        def sleep(_seconds):
+            if len(passes) >= 3:
+                raise Stop
+
+        production = (budget.reap_pass, budget.time, budget.fcntl, budget.REAPER_PID, sys.argv)
+
+        def restore():
+            budget.reap_pass, budget.time, budget.fcntl, budget.REAPER_PID, sys.argv = production
+            vars(budget).pop('open', None)
+        self.addCleanup(restore)
+        budget.reap_pass = reap_pass
+        budget.time = types.SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=sleep)
+        budget.fcntl = types.SimpleNamespace(flock=lambda *_: None, LOCK_EX=2, LOCK_NB=4)
+        budget.REAPER_PID = budget.STATE / 'reaper.pid'
+        budget.open = lambda *_args, **_options: io.StringIO()
+        sys.argv = ['bench-budget', 'reap', '--daemon']
+        with self.assertRaises(Stop):
+            budget.reap()
+        self.assertEqual(len(passes), 3)
+        self.assertEqual(budget.REAPER_PID.read_text(), f'{budget.os.getpid()}\n')
+
     def test_cgroup_settings_are_written_only_when_they_differ(self):
         path = budget.ROOT / 'cpu.max'
         path.write_text('100000 100000\n')

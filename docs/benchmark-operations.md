@@ -271,7 +271,10 @@ sealed after each turn, and each step of a sign-in renewal, always observe the
 sandbox again, so the checks after a renewal read the renewed grant; those that
 ask while one such observation runs share the next one. Copying a Z.ai key into
 the sandbox drops the shared observation. The supervisors' own CPU (status,
-cleanup and admission work) is one CPU of its own, outside the jobs' share.
+cleanup and admission work) is one CPU of its own, outside the jobs' share. A
+watchdog in the sandbox reaps expired jobs and samples their CPU use every five
+seconds. A failed pass does not stop it, and the next job, network or status
+call starts it again if it is gone.
 
 Helper updates retain a backup of old helpers and any previous scratch tree.
 Keep those local recovery copies until the update is verified. Runtime changes
