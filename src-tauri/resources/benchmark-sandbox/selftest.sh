@@ -76,7 +76,7 @@ exit 3"
 check "a miss leaves no copy" "$(ls /srv/bench/work /srv/bench/base | grep -c selftest-c)" 0
 check "an archive without its tree is refused" "$(/usr/local/sbin/bench-copy selftest-c "$deadline" "$fake" - </tmp/selftest.tar 2>&1 >/dev/null | grep -c 'does not hold its published tree')" 1
 check "a refused archive leaves nothing" "$(ls -A /srv/bench/work /srv/bench/cache | grep -c "selftest-c\|$fake")" 0
-check "an archive holding its tree is cached" "$(/usr/local/sbin/bench-copy selftest-c "$deadline" "$tree" - </tmp/selftest.tar)" "copied selftest-c"
+check "an archive holding its tree is cached" "$(/usr/local/sbin/bench-copy selftest-c "$deadline" "$tree" - </tmp/selftest.tar | tr '\n' ' ')" "cached $tree copied selftest-c "
 check "snapshot cache is root only and read only" "$(stat -c '%u %a' /srv/bench/cache "/srv/bench/cache/$tree.tar" | tr '\n' ' ')" "0 700 0 400 "
 check "cached copy" "$(/usr/local/sbin/bench-copy selftest-d "$deadline" "$tree" </dev/null)" "copied selftest-d"
 check "cached copy is the snapshot's tree" "$(git --git-dir=/srv/bench/base/selftest-d/.git rev-parse 'HEAD^{tree}') $(stat -c %U /srv/bench/work/selftest-d)" "$tree candidate"

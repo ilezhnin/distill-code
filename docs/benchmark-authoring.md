@@ -259,6 +259,10 @@ validation rejects malformed cases and indices missing from any case before
 publication starts reference execution.
 
 Repository tasks use immutable public snapshots and an isolated workspace.
+The workspace holds exactly the files of the snapshot's tree, so the tree must
+survive `git archive` unchanged. `text` and `text=auto` keep committed line
+endings; `export-ignore`, `eol=crlf` and `ident` would change the files, and
+publication refuses a snapshot whose archive does not hold its tree.
 Protected evaluator code and expected observations remain outside the candidate's
 view. Where submitted code must run, the trusted checker and candidate process
 communicate through the supported isolated probe boundary. Candidate stdout or

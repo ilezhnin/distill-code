@@ -1704,7 +1704,8 @@ async fn copy_until_inner(
 /// cached copy of it, or, given its `archive`, that archive once bench-copy
 /// found it holds `tree`; the sandbox then keeps it for the attempts and
 /// checks after. `Ok(false)` without an archive: the cache holds no copy
-/// and nothing was written, so the caller sends the archive.
+/// and nothing was written, so the caller sends the archive. Ask without an
+/// archive only for a tree [`snapshot_cached`] knows.
 pub(crate) async fn copy_tree(
     id: &str,
     tree: &str,
@@ -1726,10 +1727,49 @@ pub(crate) async fn copy_tree(
         .await
         .map_err(|error| deadline_outcome(error, deadline_ms))?;
     if archive.is_none() && not_cached(&out, tree) {
+        learn_cache(tree, false);
         return Ok(false);
     }
-    out.require_success("copy")?;
+    let out = out.require_success("copy")?;
+    learn_cache(tree, archive.is_none() || kept(&out, tree));
     Ok(true)
+}
+
+/// Published trees the sandbox's snapshot cache held when this process last
+/// copied or checked them. Only these are asked for from the cache; any
+/// other goes with its archive at once. A lease that finds nothing would be
+/// recorded as an empty preparation and pull the learned preparation peaks
+/// down, so it stays for entries the sandbox evicted since.
+static CACHED_TREES: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    OnceLock::new();
+
+fn cached_trees() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    CACHED_TREES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether the sandbox's snapshot cache held `tree` at its last use here.
+pub(crate) fn snapshot_cached(tree: &str) -> bool {
+    cached_trees().contains(tree)
+}
+
+fn learn_cache(tree: &str, held: bool) {
+    if held {
+        cached_trees().insert(tree.to_owned());
+    } else {
+        cached_trees().remove(tree);
+    }
+}
+
+/// Whether a helper that was sent the archive of `tree` kept it: bench-unpack
+/// says so when it does, and keeps nothing while scratch room is short.
+fn kept(out: &Output, tree: &str) -> bool {
+    let line = format!("cached {tree}");
+    out.stdout
+        .split(|byte| *byte == b'\n')
+        .any(|candidate| candidate == line.as_bytes())
 }
 
 fn valid_tree(tree: &str) -> io::Result<()> {
@@ -1952,13 +1992,15 @@ fn require_patch(out: Output) -> io::Result<Output> {
 }
 
 /// Prepares check `id` on the published `tree`. The package carries the
-/// snapshot (snapshot.tar) only when the sandbox's cache lacks it; for one
-/// without it, `Ok(None)` says the cache holds no copy and nothing was
-/// prepared, so the caller sends the snapshot.
+/// snapshot (snapshot.tar, `sent`) only when the sandbox's cache lacks it;
+/// for one without it, `Ok(None)` says the cache holds no copy and nothing
+/// was prepared, so the caller sends the snapshot. Ask without the snapshot
+/// only for a tree [`snapshot_cached`] knows.
 pub(crate) async fn prepare_check(
     id: &str,
     tree: &str,
     package: &[u8],
+    sent: bool,
 ) -> io::Result<Option<Output>> {
     valid_id(id)?;
     valid_tree(tree)?;
@@ -1973,8 +2015,13 @@ pub(crate) async fn prepare_check(
     // Preparing applies the answer in a checker cgroup, too.
     kill("check", id).await?;
     let out = result?;
-    if not_cached(&out, tree) {
+    if !sent && not_cached(&out, tree) {
+        learn_cache(tree, false);
         return Ok(None);
+    }
+    // An answer that does not apply (exit 2) still found the snapshot placed.
+    if out.code == Some(2) || out.success() {
+        learn_cache(tree, !sent || kept(&out, tree));
     }
     if out.code == Some(2) {
         return Ok(Some(out));
@@ -2308,6 +2355,32 @@ mod tests {
             ),
             tree
         ));
+    }
+
+    #[test]
+    fn the_cache_is_asked_only_for_trees_the_sandbox_said_it_kept() {
+        // Invented trees of this test alone: the record is process-wide.
+        let tree = format!("{}1", "c".repeat(39));
+        let other = format!("{}2", "c".repeat(39));
+        let answer = |stdout: &str| Output {
+            code: Some(0),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            truncated: false,
+            infrastructure: None,
+        };
+        assert!(!snapshot_cached(&tree));
+        // A sent archive counts only when bench-unpack says it kept it.
+        let stored = answer(&format!("cached {tree}\ncopied attempt\n"));
+        assert!(kept(&stored, &tree));
+        assert!(!kept(&stored, &other));
+        assert!(!kept(&answer("copied attempt\n"), &tree));
+        assert!(!kept(&answer(&format!("cached {tree}x\n")), &tree));
+        learn_cache(&tree, kept(&stored, &tree));
+        assert!(snapshot_cached(&tree) && !snapshot_cached(&other));
+        // A miss forgets it again, so the next use sends the archive.
+        learn_cache(&tree, false);
+        assert!(!snapshot_cached(&tree));
     }
 
     #[test]

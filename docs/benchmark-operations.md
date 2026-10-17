@@ -121,9 +121,11 @@ per published tree, named by the tree's id, which no run can see (sessions,
 checks and probes have `/srv/bench` hidden). An archive is kept only once
 its files hold that tree, and each use checks the tree again; an entry that
 fails the check, or that anyone but root could have changed, is removed and
-counts as absent. When the cache lacks a tree, the controller archives the
-snapshot on Windows and sends it, as every attempt did before, and the
-sandbox keeps it for the attempts and checks after. A later workflow step
+counts as absent. The controller asks the cache only for trees it found
+there before since the application started; for any other tree, or when the
+cache no longer has it, the controller archives the snapshot on Windows and
+sends it, as every attempt did before, and the sandbox keeps it for the
+attempts and checks after. A later workflow step
 starts from its predecessor's archive instead. Entries unused for seven days
 go, and beyond 256 MiB or 512 entries the least recently used go first; an
 archive is kept only while 3 GiB of scratch stay free. Removing

@@ -709,7 +709,19 @@ async fn source_git(snapshot: &Snapshot, args: &[&str]) -> Result<Vec<u8>> {
 /// avoids Git's global PAX comment carrying the source commit identity.
 pub async fn archive(snapshot: &Snapshot) -> Result<Vec<u8>> {
     verify(snapshot).await?;
-    let archive = source_git(snapshot, &["archive", "--format=tar", &snapshot.tree]).await?;
+    // Line endings stay as committed. Git for Windows would write CRLF for
+    // `text` files by default, and the archive would no longer hold the tree.
+    let archive = source_git(
+        snapshot,
+        &[
+            "-c",
+            "core.eol=lf",
+            "archive",
+            "--format=tar",
+            &snapshot.tree,
+        ],
+    )
+    .await?;
     if archive.len() > MAX_SNAPSHOT_BYTES {
         return Err(BenchmarkError::new(
             "validation",
@@ -945,27 +957,45 @@ async fn prepare_check(
     patch: &str,
     check: &HiddenCheck,
 ) -> Result<sandbox::Output> {
-    let package = check_archive(None, patch, check)?;
-    if let Some(prepared) = sandbox::prepare_check(id, &snapshot.tree, &package)
-        .await
-        .map_err(sandbox_error)?
-    {
-        return Ok(prepared);
+    if sandbox::snapshot_cached(&snapshot.tree) {
+        let package = check_archive(None, patch, check)?;
+        if let Some(prepared) = sandbox::prepare_check(id, &snapshot.tree, &package, false)
+            .await
+            .map_err(sandbox_error)?
+        {
+            return Ok(prepared);
+        }
     }
     let _preparation =
         sandbox::host_preparation((super::store::now() as u64).saturating_add(420_000))
             .await
             .map_err(sandbox_error)?;
     let package = check_archive(Some(&archive(snapshot).await?), patch, check)?;
-    sandbox::prepare_check(id, &snapshot.tree, &package)
+    sandbox::prepare_check(id, &snapshot.tree, &package, true)
         .await
-        .map_err(sandbox_error)?
+        .map_err(snapshot_refusal)?
         .ok_or_else(|| {
             BenchmarkError::new(
                 "infrastructure_failure",
                 "Repository sandbox did not take the check's snapshot",
             )
         })
+}
+
+/// A snapshot whose archive does not hold its tree cannot run at all: `git
+/// archive` left files out or converted them. Publication reports that as
+/// the task's own defect, not as a failure of the sandbox.
+fn snapshot_refusal(error: std::io::Error) -> BenchmarkError {
+    if error
+        .to_string()
+        .contains("does not hold its published tree")
+    {
+        return BenchmarkError::new(
+            "validation",
+            "The snapshot's archive does not hold its published tree: remove export-ignore, export-subst and line-ending (text, eol) attributes from the snapshot",
+        );
+    }
+    sandbox_error(error)
 }
 
 /// Publication must run even an empty known-bad answer against the real
@@ -1320,6 +1350,52 @@ else:
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_text_attribute_does_not_change_the_archived_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("source");
+        tokio::fs::create_dir_all(&repo).await.unwrap();
+        git(&repo, &["init", "-q"], None).await.unwrap();
+        tokio::fs::write(repo.join(".gitattributes"), "* text=auto\n")
+            .await
+            .unwrap();
+        tokio::fs::write(repo.join("invented.txt"), "one\ntwo\n")
+            .await
+            .unwrap();
+        git(&repo, &["add", "-A"], None).await.unwrap();
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        let mut commit = identity.to_vec();
+        commit.extend(["commit", "-q", "-m", "invented"]);
+        git(&repo, &commit, None).await.unwrap();
+        let id = |name: &'static str| {
+            let repo = repo.clone();
+            async move {
+                String::from_utf8(git(&repo, &["rev-parse", name], None).await.unwrap())
+                    .unwrap()
+                    .trim()
+                    .to_owned()
+            }
+        };
+        let snapshot = Snapshot {
+            path: repo.clone(),
+            commit: id("HEAD").await,
+            tree: id("HEAD^{tree}").await,
+        };
+        let archive = archive(&snapshot).await.unwrap();
+        let mut found = None;
+        for entry in tar::Archive::new(archive.as_slice()).entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if entry.path().unwrap().to_string_lossy() == "invented.txt" {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+                found = Some(bytes);
+            }
+        }
+        // The committed blob, LF only: the sandbox checks the archive's
+        // files against the published tree.
+        assert_eq!(found.as_deref(), Some(b"one\ntwo\n".as_slice()));
     }
 
     #[test]

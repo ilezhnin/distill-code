@@ -1,6 +1,7 @@
 """Invented-snapshot regressions for bench-unpack's snapshot cache; no WSL or
 provider. Runs on Windows with ownership and mode shims, and with real root
 ownership and modes as root on Linux (`sudo python3 -I <this file>`)."""
+import contextlib
 import importlib.machinery
 import io
 import os
@@ -103,8 +104,10 @@ class CacheTests(unittest.TestCase):
         argv, standard_input = sys.argv, sys.stdin
         sys.argv = ['bench-unpack', *map(str, arguments)]
         sys.stdin = SimpleNamespace(buffer=io.BytesIO(stdin))
+        self.printed = io.StringIO()
         try:
-            return unpack.main()
+            with contextlib.redirect_stdout(self.printed):
+                return unpack.main()
         finally:
             sys.argv, sys.stdin = argv, standard_input
 
@@ -158,6 +161,7 @@ class CacheTests(unittest.TestCase):
         tree, data = git_tree(self.root, SNAPSHOT)
         target = self.directory('base')
         self.assertEqual(self.run_main('--tree', tree, target, stdin=data), 0)
+        self.assertEqual(self.printed.getvalue().splitlines(), ['cached ' + tree])
         self.assertEqual(self.files(target), self.files_of(SNAPSHOT))
         self.assertEqual(self.entry(tree).read_bytes(), data)
         self.assertTrue(self.read_only(self.entry(tree)))
@@ -270,11 +274,13 @@ class CacheTests(unittest.TestCase):
 
     def test_a_store_keeps_nothing_when_scratch_room_is_short_or_the_archive_large(self):
         tree, data = git_tree(self.root, SNAPSHOT)
-        self.free = unpack.CACHE_FLOOR + len(data) - 1
+        self.free = unpack.CACHE_FLOOR - 1
         target = self.directory('base')
         self.assertEqual(self.run_main('--tree', tree, target, stdin=data), 0)
         self.assertEqual(self.files(target), self.files_of(SNAPSHOT))
         self.assertEqual(list(unpack.CACHE.iterdir()), [])
+        # Nothing kept, nothing claimed: the host sends this archive again.
+        self.assertEqual(self.printed.getvalue(), '')
         self.free = 8 * 1024 ** 3
         largest, unpack.CACHE_LARGEST = unpack.CACHE_LARGEST, len(data) - 1
         try:

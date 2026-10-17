@@ -111,13 +111,13 @@ export function runSelftest(resources) {
     process.stdout.write(`PASS ${name}\n`);
   };
   const root = (code) => successful("python3", ["-c", code]).trim();
-  const reserve = (kind) => {
+  const reserve = (kind, owner = id) => {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       const reply = call("/usr/local/sbin/bench-budget", [
         "reserve",
         kind,
-        id,
+        owner,
         String(deadline),
         gate(),
       ]);
@@ -134,9 +134,10 @@ export function runSelftest(resources) {
       "resource_busy: operator controls could not acquire a slot before their deadline",
     );
   };
-  const work = (program, args, kind, input) => {
-    const token = reserve(kind);
-    const result = successful(
+  // A helper under its own lease, answering whatever its exit status.
+  const leased = (program, args, kind, input, owner = id) => {
+    const token = reserve(kind, owner);
+    const result = call(
       "/usr/bin/env",
       [`DISTILL_BENCH_RESERVATION=${token}`, program, ...args],
       input,
@@ -147,6 +148,12 @@ export function runSelftest(resources) {
     if (outcome.infrastructureError)
       throw new Error(outcome.infrastructureError);
     return result;
+  };
+  const work = (program, args, kind, input, owner = id) => {
+    const result = leased(program, args, kind, input, owner);
+    if (result.status !== 0)
+      throw new Error(`${program}: ${result.stderr.trim()}`);
+    return result.stdout;
   };
   try {
     // A freshly started distribution may still be running its boot command;
@@ -250,6 +257,156 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
           `from pathlib import Path;print(Path('/sys/fs/cgroup/distill-bench/session-${id}').exists())`,
         ) === "False",
     );
+    // Snapshot cache: an archive is kept only once it holds its tree, a copy
+    // or a check from it is that snapshot, and no run ever sees the cache.
+    const snapshot = tar([["file.txt", "one\n"]]);
+    const tree = root(
+      `import subprocess;print(subprocess.check_output(['git','--git-dir=/srv/bench/base/${id}/.git','rev-parse','HEAD^{tree}'],text=True).strip())`,
+    );
+    const fake = "7".repeat(40);
+    const entry = (name) => `/srv/bench/cache/${name}.tar`;
+    const owned = (suffix) => `${id}-${suffix}`;
+    const exists = (path) =>
+      root(`import os;print(os.path.lexists('${path}'))`) === "True";
+    const leftover = (suffix) =>
+      root(
+        `import os;print(sum(os.path.lexists('/srv/bench/'+d+'/${owned(suffix)}') for d in ('work','base','checks','staging')))`,
+      ) !== "0";
+    const copy = (suffix, name, input) =>
+      leased(
+        "/usr/local/sbin/bench-copy",
+        [
+          owned(suffix),
+          String(Date.now() + 60_000),
+          name,
+          ...(input ? ["-"] : []),
+        ],
+        "prep",
+        input,
+        owned(suffix),
+      );
+    const plant = (age) =>
+      root(
+        `import os,shutil,time;shutil.copyfile('${entry(tree)}','${entry(fake)}');os.chmod('${entry(fake)}',0o400);t=time.time()-${age};os.utime('${entry(fake)}',(t,t))`,
+      );
+    const scrub = () =>
+      root(
+        `import pathlib;[pathlib.Path(p).unlink(missing_ok=True) for p in ('${entry(tree)}','${entry(fake)}')]`,
+      );
+    const suffixes = [
+      "miss",
+      "wrong",
+      "stored",
+      "hit",
+      "damaged",
+      "evict",
+      "check-miss",
+    ];
+    scrub();
+    try {
+      const miss = copy("miss", tree);
+      pass(
+        "an uncached snapshot is a miss that writes nothing",
+        miss.status === 3 &&
+          miss.stdout === `not cached ${tree}\n` &&
+          !leftover("miss"),
+      );
+      const wrong = copy("wrong", fake, snapshot);
+      pass(
+        "an archive without its tree is refused and never kept",
+        wrong.status === 70 &&
+          wrong.stderr.includes("does not hold its published tree") &&
+          !leftover("wrong") &&
+          !exists(entry(fake)),
+      );
+      const stored = copy("stored", tree, snapshot);
+      pass(
+        "an archive holding its tree is cached, root only and read only",
+        stored.status === 0 &&
+          root(
+            `import os;d=os.stat('/srv/bench/cache');f=os.stat('${entry(tree)}');print(d.st_uid,oct(d.st_mode&0o777),f.st_uid,oct(f.st_mode&0o777),f.st_nlink)`,
+          ) === "0 0o700 0 0o400 1",
+      );
+      const hit = copy("hit", tree);
+      pass(
+        "a cached copy holds the snapshot's tree and is the candidate's",
+        hit.status === 0 &&
+          root(
+            `import os,subprocess;print(subprocess.check_output(['git','--git-dir=/srv/bench/base/${owned("hit")}/.git','rev-parse','HEAD^{tree}'],text=True).strip(),os.stat('/srv/bench/work/${owned("hit")}').st_uid==os.stat('/srv/bench/work/${id}').st_uid)`,
+          ) === `${tree} True`,
+      );
+      pass(
+        "a session cannot see the snapshot cache",
+        work(
+          "/usr/local/sbin/bench-run",
+          [
+            "session",
+            owned("hit"),
+            "DISTILL_BENCH_RESOURCE_CLASS=text",
+            "--",
+            "sh",
+            "-c",
+            "ls -A /srv/bench; test -e /srv/bench/cache && echo seen",
+          ],
+          "text",
+          undefined,
+          owned("hit"),
+        ).trim() === "",
+      );
+      plant(0);
+      const damaged = copy("damaged", fake);
+      pass(
+        "a cache entry without its tree is removed, never used",
+        damaged.status === 3 && !leftover("damaged") && !exists(entry(fake)),
+      );
+      plant(30 * 86400);
+      const evicting = copy("evict", tree, snapshot);
+      pass(
+        "unused cache entries are evicted",
+        evicting.status === 0 && !exists(entry(fake)),
+      );
+      const checkPackage = tar([
+        ["answer.patch", patch],
+        [
+          "hidden/check.py",
+          "from pathlib import Path\nassert Path('file.txt').read_text() == 'two\\n'\nassert not Path('/srv/bench/cache').exists()\n",
+        ],
+      ]);
+      work(
+        "/usr/local/sbin/bench-check-prep",
+        [owned("hit"), tree],
+        "prep",
+        checkPackage,
+        owned("hit"),
+      );
+      pass(
+        "a check prepared from the cache sees the answer, not the cache",
+        work(
+          "/usr/local/sbin/bench-judge",
+          [owned("hit"), "10", "--", "python3", "check.py"],
+          "check",
+          undefined,
+          owned("hit"),
+        ).trim() === "",
+      );
+      const uncached = leased(
+        "/usr/local/sbin/bench-check-prep",
+        [owned("check-miss"), fake],
+        "prep",
+        checkPackage,
+        owned("check-miss"),
+      );
+      pass(
+        "an uncached check is a miss that leaves nothing",
+        uncached.status === 3 &&
+          uncached.stdout === `not cached ${fake}\n` &&
+          !leftover("check-miss"),
+      );
+    } finally {
+      for (const suffix of suffixes)
+        successful("/usr/local/sbin/bench-clean", [owned(suffix)]);
+      scrub();
+    }
     // Existing invented artifact boundary tests run in reserved control memory
     // and the bounded scratch filesystem, never against real accounts/tasks.
     root(

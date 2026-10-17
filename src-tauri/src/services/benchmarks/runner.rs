@@ -910,9 +910,9 @@ async fn preparation_gate(deadline: Option<u64>) -> Result<tokio::sync::OwnedSem
 }
 
 /// Builds workspace `id` from the published, already verified `snapshot`:
-/// the sandbox's cached copy of its tree when it holds one. Otherwise the
-/// snapshot is archived here, under the host preparation gate, and sent,
-/// and the sandbox keeps it for the attempts and checks after.
+/// the sandbox's cached copy of its tree when it held one at its last use.
+/// Otherwise the snapshot is archived here, under the host preparation gate,
+/// and sent, and the sandbox keeps it for the attempts and checks after.
 ///
 /// Boxed: an attempt awaits it under many layers on a runtime worker stack.
 fn copy_snapshot<'a>(
@@ -922,9 +922,10 @@ fn copy_snapshot<'a>(
 ) -> BoxFuture<'a, Result<()>> {
     Box::pin(async move {
         let setup_error = |error| sandbox_setup_error(error, deadline);
-        if sandbox::copy_tree(id, &snapshot.tree, None, deadline)
-            .await
-            .map_err(setup_error)?
+        if sandbox::snapshot_cached(&snapshot.tree)
+            && sandbox::copy_tree(id, &snapshot.tree, None, deadline)
+                .await
+                .map_err(setup_error)?
         {
             return Ok(());
         }

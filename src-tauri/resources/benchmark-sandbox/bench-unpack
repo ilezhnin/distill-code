@@ -4,7 +4,8 @@
 bench-unpack DIR < archive
 bench-unpack --tree TREE DIR < snapshot.tar
     Also check that the archive holds TREE, Git's id of its files and their
-    executable bits, then keep the archive in the snapshot cache.
+    executable bits, then keep the archive in the snapshot cache and print
+    "cached TREE" (not when scratch room is short or the archive large).
 bench-unpack --cached TREE DIR
     Extract the cache's copy of TREE, checked against TREE first. Exits 3,
     having written nothing, when the cache holds no intact copy.
@@ -197,12 +198,15 @@ def store(tree, root):
             if unpack(output, root, algorithm) != tree:
                 raise ValueError('benchmark snapshot archive does not hold its published tree')
             free = os.statvfs(cache)
-            keep = size <= CACHE_LARGEST and free.f_bavail * free.f_frsize - size >= CACHE_FLOOR
+            # The spool is written already, so the free space excludes it.
+            keep = size <= CACHE_LARGEST and free.f_bavail * free.f_frsize >= CACHE_FLOOR
             if keep:
                 os.fsync(output.fileno())
         if keep:
             os.chmod(spool, 0o400)
             os.replace(spool, cache / (tree + '.tar'))
+            # The host asks the cache next time only for what this says it kept.
+            print('cached ' + tree, flush=True)
     finally:
         spool.unlink(missing_ok=True)
     evict(cache)

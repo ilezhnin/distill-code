@@ -132,7 +132,10 @@ if entries:
     subprocess.run(git + ['update-index', '-z', '--index-info'], check=True,
                    input=b''.join(mode + b' ' + blob + b'\t' + path + b'\0' for (path, mode), blob in zip(entries, blobs)))
 PY
-if [[ -n $tree && $(/usr/bin/git "${git_commit[@]}" -C "$base" write-tree) != "$tree" ]]; then
+# The copies stay SHA-1 repositories, as before the cache, whatever the
+# published object format. Git checks a SHA-1 tree once more here; a SHA-256
+# tree was checked by bench-unpack, which hashed the same files with it.
+if [[ ${#tree} == 40 && $(/usr/bin/git "${git_commit[@]}" -C "$base" write-tree) != "$tree" ]]; then
   echo "bench-copy: the snapshot does not hold tree $tree" >&2
   exit 65
 fi
