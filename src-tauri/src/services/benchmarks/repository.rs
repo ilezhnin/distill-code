@@ -13,6 +13,7 @@
 
 use super::{fixtures, types::*};
 use crate::services::benchmark_sandbox as sandbox;
+use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -609,75 +610,85 @@ pub fn is_repository_case(manifest: &BenchmarkDraft) -> bool {
 
 /// A git command in `dir`, with no window, no prompt, no line ending
 /// conversion and no hooks, failing after two minutes.
-async fn git(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
-    let mut command = tokio::process::Command::new("git");
-    command
-        .args([
-            "-c",
-            "core.autocrlf=false",
-            "-c",
-            "core.hooksPath=",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    crate::services::process::apply_no_window_async(&mut command);
-    let mut child = command.spawn()?;
-    let tree = crate::services::process::ProcessTree::contain(&child);
-    let stdin = child.stdin.take();
-    let stdout = child.stdout.take().expect("piped git stdout");
-    let stderr = child.stderr.take().expect("piped git stderr");
-    let run = async {
-        let (written, out, err, status) = tokio::join!(
-            async {
-                if let (Some(bytes), Some(mut stdin)) = (input, stdin) {
-                    stdin.write_all(bytes).await?;
-                    stdin.shutdown().await?;
-                }
-                Ok::<_, std::io::Error>(())
-            },
-            sandbox::read_tail(stdout, MAX_SNAPSHOT_BYTES),
-            sandbox::read_tail(stderr, 8192),
-            child.wait()
-        );
-        let status = status?;
-        if status.success() {
-            written?;
+///
+/// Boxed like the sandbox's own process calls: its streams would otherwise
+/// sit inline in every repository step that awaits it, and an unoptimized
+/// build gives each awaiting poll a stack slot for them.
+fn git<'a>(
+    dir: &'a Path,
+    args: &'a [&'a str],
+    input: Option<&'a [u8]>,
+) -> BoxFuture<'a, Result<Vec<u8>>> {
+    Box::pin(async move {
+        let mut command = tokio::process::Command::new("git");
+        command
+            .args([
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.hooksPath=",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        crate::services::process::apply_no_window_async(&mut command);
+        let mut child = command.spawn()?;
+        let tree = crate::services::process::ProcessTree::contain(&child);
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().expect("piped git stdout");
+        let stderr = child.stderr.take().expect("piped git stderr");
+        let run = async {
+            let (written, out, err, status) = tokio::join!(
+                async {
+                    if let (Some(bytes), Some(mut stdin)) = (input, stdin) {
+                        stdin.write_all(bytes).await?;
+                        stdin.shutdown().await?;
+                    }
+                    Ok::<_, std::io::Error>(())
+                },
+                sandbox::read_tail(stdout, MAX_SNAPSHOT_BYTES),
+                sandbox::read_tail(stderr, 8192),
+                child.wait()
+            );
+            let status = status?;
+            if status.success() {
+                written?;
+            }
+            Ok::<_, BenchmarkError>((status, out?, err?.0))
+        };
+        let output = tokio::time::timeout(Duration::from_secs(120), run)
+            .await
+            .map_err(|_| BenchmarkError::new("infrastructure_failure", "git did not finish"))??;
+        drop(tree);
+        let (status, (stdout, truncated), stderr) = output;
+        if !status.success() {
+            return Err(BenchmarkError::new(
+                "infrastructure_failure",
+                format!(
+                    "git {} failed: {}",
+                    args.first().unwrap_or(&""),
+                    String::from_utf8_lossy(&stderr).trim()
+                ),
+            ));
         }
-        Ok::<_, BenchmarkError>((status, out?, err?.0))
-    };
-    let output = tokio::time::timeout(Duration::from_secs(120), run)
-        .await
-        .map_err(|_| BenchmarkError::new("infrastructure_failure", "git did not finish"))??;
-    drop(tree);
-    let (status, (stdout, truncated), stderr) = output;
-    if !status.success() {
-        return Err(BenchmarkError::new(
-            "infrastructure_failure",
-            format!(
-                "git {} failed: {}",
-                args.first().unwrap_or(&""),
-                String::from_utf8_lossy(&stderr).trim()
-            ),
-        ));
-    }
-    if truncated {
-        return Err(BenchmarkError::new(
-            "validation",
-            "Repository snapshot exceeds 256 MiB",
-        ));
-    }
-    Ok(stdout)
+        if truncated {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Repository snapshot exceeds 256 MiB",
+            ));
+        }
+        Ok(stdout)
+    })
 }
 
 /// A git command against the snapshot's repository: a working repository

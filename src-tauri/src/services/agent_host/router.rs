@@ -2,6 +2,7 @@
 //! renderer, routed onto one bridge process per harness, with sessions,
 //! history, and settings persisted in SQLite.
 
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -1314,199 +1315,207 @@ impl Inner {
 
     /// The bridge for `harness_id` and `account_id`, or with `profile` a
     /// separate host-owned benchmark bridge.
-    async fn ensure_execution_bridge(
-        &self,
-        harness_id: &str,
-        account_id: Option<&str>,
-        profile: Option<OwnedBridge<'_>>,
-    ) -> Result<Arc<Bridge>, Value> {
-        let spec: &HarnessSpec = harness::harness(harness_id)
-            .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
-        let base_key = account_route_key(harness_id, account_id);
-        let route_key = profile.map_or_else(
-            || base_key.clone(),
-            |owned| format!("{base_key}{BENCHMARK_ROUTE}{}", owned.profile_key),
-        );
-        let turn_limit_ms = profile.map_or(0, |owned| owned.turn_limit_ms);
-        let validation_id = account_validation_id(harness_id, account_id)?;
-        if let Some(id) = validation_id {
-            provider_accounts::resolve_account(&self.app, harness_id, Some(id))
-                .map_err(invalid_params)?;
-        }
-        if let Some(bridge) = self.reusable_bridge(&route_key, turn_limit_ms).await? {
-            bridge.touch();
-            return Ok(bridge);
-        }
-        // Spawning waits on a managed install and on the bridge's
-        // `initialize` answer. Serialize that per harness instead of holding
-        // the shared bridge map, which every session route, cancel and
-        // permission answer needs in the meantime.
-        let spawn_lock = Arc::clone(
-            self.spawn_locks
-                .lock()
-                .await
-                .entry(base_key.clone())
-                .or_default(),
-        );
-        let _spawning = spawn_lock.lock().await;
-        // A credential mutation can begin while this caller was waiting.
-        // Revalidate inside the same lock used when retiring this process.
-        let account = validation_id
-            .map(|id| {
-                provider_accounts::resolve_account(&self.app, harness_id, Some(id))
-                    .map_err(invalid_params)
-            })
-            .transpose()?;
-        if let Some(bridge) = self.reusable_bridge(&route_key, turn_limit_ms).await? {
-            bridge.touch();
-            return Ok(bridge);
-        }
-        // Every owned execution is Linux. Ordinary chats alone continue into
-        // the native launcher below; no unavailable sandbox falls back to it.
-        if let Some(owned) = profile {
-            let (request, revision) = (owned.request, owned.revision);
-            let repository = request.profile == ExecutionProfile::ProtectedRepositoryV1;
-            let current = if repository {
-                repository_execution::readiness(owned.provider, &request.account_id).await
-            } else {
-                text_execution::readiness(owned.provider, &request.account_id).await
-            }
-            .map_err(protocol::internal)?;
-            let current_revision = if repository {
-                repository_execution::revision(owned.provider, &current)
-            } else {
-                text_execution::revision(owned.provider, &current)
-            };
-            if current_revision != revision {
-                return Err(protocol::internal(
-                    "capability_missing: sandbox runtime changed during admission",
-                ));
-            }
-            current
-                .require_account_window(
-                    owned.provider.key(),
-                    &request.account_id,
-                    chrono::Utc::now().timestamp_millis(),
-                    u32::try_from(owned.turn_limit_ms.div_ceil(1000)).unwrap_or(u32::MAX),
-                )
-                .map_err(|error| protocol::internal(format!("capability_missing: {error}")))?;
-            if !repository {
-                text_execution::prepare(&request.owner_id)
-                    .await
-                    .map_err(protocol::internal)?;
-            }
-            let env = super::harness_env::build_owned_spawn_env(&self.app, &[]).await;
-            let mut launch = if repository {
-                repository_execution::launch(request, owned.provider, revision.to_owned())
-            } else {
-                text_execution::launch(request, owned.provider, revision.to_owned())
-            };
-            let deadline =
-                chrono::Utc::now().timestamp_millis().max(0) as u64 + owned.turn_limit_ms + 480_000;
-            let class = if repository {
-                crate::services::benchmark_sandbox::ResourceClass::Repository
-            } else {
-                crate::services::benchmark_sandbox::ResourceClass::Text
-            };
-            let id = &launch.sandbox.as_ref().expect("owned Linux identity").0;
-            // A refused reservation starts no provider process or paid turn.
-            // Drop releases an unclaimed token; the Linux supervisor owns it
-            // once bench-run starts, including host exit and cancellation.
-            let reservation = crate::services::benchmark_sandbox::reserve(class, id, deadline)
-                .await
-                .map_err(|error| {
-                    let message = error.to_string();
-                    // Only this trusted pre-spawn broker can establish that
-                    // no provider process started. Never apply this rewrite
-                    // to an arbitrary provider/bridge error after spawn.
-                    let reason = message
-                        .find("resource_busy:")
-                        .map_or(message.as_str(), |start| &message[start..]);
-                    protocol::internal(reason)
-                })?;
-            let separator = launch
-                .args
-                .iter()
-                .position(|arg| arg == "--")
-                .expect("isolated launch command separator");
-            launch
-                .args
-                .insert(separator, format!("DISTILL_BENCH_DEADLINE_MS={deadline}"));
-            launch.args.insert(
-                separator,
-                format!("DISTILL_BENCH_RESERVATION={}", reservation.token),
+    ///
+    /// Boxed: its sandbox admission and process start would otherwise sit
+    /// inline in every awaiting future, and an unoptimized build gives each
+    /// awaiting poll a stack slot that size. A benchmark attempt reaches this
+    /// under the runner's own deep futures on a 2 MiB worker stack.
+    fn ensure_execution_bridge<'a>(
+        &'a self,
+        harness_id: &'a str,
+        account_id: Option<&'a str>,
+        profile: Option<OwnedBridge<'a>>,
+    ) -> BoxFuture<'a, Result<Arc<Bridge>, Value>> {
+        Box::pin(async move {
+            let spec: &HarnessSpec = harness::harness(harness_id)
+                .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
+            let base_key = account_route_key(harness_id, account_id);
+            let route_key = profile.map_or_else(
+                || base_key.clone(),
+                |owned| format!("{base_key}{BENCHMARK_ROUTE}{}", owned.profile_key),
             );
-            let spawned = Bridge::spawn_scoped(
-                spec,
-                &env,
-                self.events_tx.clone(),
-                &route_key,
-                Some(&launch),
-            )
-            .await;
-            let bridge = match spawned {
-                Ok(bridge) => bridge,
-                Err(error) => {
-                    if let Some((id, _)) = &launch.sandbox {
-                        let _ = crate::services::benchmark_sandbox::clean(id).await;
-                    }
-                    return Err(protocol::internal(error));
+            let turn_limit_ms = profile.map_or(0, |owned| owned.turn_limit_ms);
+            let validation_id = account_validation_id(harness_id, account_id)?;
+            if let Some(id) = validation_id {
+                provider_accounts::resolve_account(&self.app, harness_id, Some(id))
+                    .map_err(invalid_params)?;
+            }
+            if let Some(bridge) = self.reusable_bridge(&route_key, turn_limit_ms).await? {
+                bridge.touch();
+                return Ok(bridge);
+            }
+            // Spawning waits on a managed install and on the bridge's
+            // `initialize` answer. Serialize that per harness instead of holding
+            // the shared bridge map, which every session route, cancel and
+            // permission answer needs in the meantime.
+            let spawn_lock = Arc::clone(
+                self.spawn_locks
+                    .lock()
+                    .await
+                    .entry(base_key.clone())
+                    .or_default(),
+            );
+            let _spawning = spawn_lock.lock().await;
+            // A credential mutation can begin while this caller was waiting.
+            // Revalidate inside the same lock used when retiring this process.
+            let account = validation_id
+                .map(|id| {
+                    provider_accounts::resolve_account(&self.app, harness_id, Some(id))
+                        .map_err(invalid_params)
+                })
+                .transpose()?;
+            if let Some(bridge) = self.reusable_bridge(&route_key, turn_limit_ms).await? {
+                bridge.touch();
+                return Ok(bridge);
+            }
+            // Every owned execution is Linux. Ordinary chats alone continue into
+            // the native launcher below; no unavailable sandbox falls back to it.
+            if let Some(owned) = profile {
+                let (request, revision) = (owned.request, owned.revision);
+                let repository = request.profile == ExecutionProfile::ProtectedRepositoryV1;
+                let current = if repository {
+                    repository_execution::readiness(owned.provider, &request.account_id).await
+                } else {
+                    text_execution::readiness(owned.provider, &request.account_id).await
                 }
+                .map_err(protocol::internal)?;
+                let current_revision = if repository {
+                    repository_execution::revision(owned.provider, &current)
+                } else {
+                    text_execution::revision(owned.provider, &current)
+                };
+                if current_revision != revision {
+                    return Err(protocol::internal(
+                        "capability_missing: sandbox runtime changed during admission",
+                    ));
+                }
+                current
+                    .require_account_window(
+                        owned.provider.key(),
+                        &request.account_id,
+                        chrono::Utc::now().timestamp_millis(),
+                        u32::try_from(owned.turn_limit_ms.div_ceil(1000)).unwrap_or(u32::MAX),
+                    )
+                    .map_err(|error| protocol::internal(format!("capability_missing: {error}")))?;
+                if !repository {
+                    text_execution::prepare(&request.owner_id)
+                        .await
+                        .map_err(protocol::internal)?;
+                }
+                let env = super::harness_env::build_owned_spawn_env(&self.app, &[]).await;
+                let mut launch = if repository {
+                    repository_execution::launch(request, owned.provider, revision.to_owned())
+                } else {
+                    text_execution::launch(request, owned.provider, revision.to_owned())
+                };
+                let deadline = chrono::Utc::now().timestamp_millis().max(0) as u64
+                    + owned.turn_limit_ms
+                    + 480_000;
+                let class = if repository {
+                    crate::services::benchmark_sandbox::ResourceClass::Repository
+                } else {
+                    crate::services::benchmark_sandbox::ResourceClass::Text
+                };
+                let id = &launch.sandbox.as_ref().expect("owned Linux identity").0;
+                // A refused reservation starts no provider process or paid turn.
+                // Drop releases an unclaimed token; the Linux supervisor owns it
+                // once bench-run starts, including host exit and cancellation.
+                let reservation = crate::services::benchmark_sandbox::reserve(class, id, deadline)
+                    .await
+                    .map_err(|error| {
+                        let message = error.to_string();
+                        // Only this trusted pre-spawn broker can establish that
+                        // no provider process started. Never apply this rewrite
+                        // to an arbitrary provider/bridge error after spawn.
+                        let reason = message
+                            .find("resource_busy:")
+                            .map_or(message.as_str(), |start| &message[start..]);
+                        protocol::internal(reason)
+                    })?;
+                let separator = launch
+                    .args
+                    .iter()
+                    .position(|arg| arg == "--")
+                    .expect("isolated launch command separator");
+                launch
+                    .args
+                    .insert(separator, format!("DISTILL_BENCH_DEADLINE_MS={deadline}"));
+                launch.args.insert(
+                    separator,
+                    format!("DISTILL_BENCH_RESERVATION={}", reservation.token),
+                );
+                let spawned = Bridge::spawn_scoped(
+                    spec,
+                    &env,
+                    self.events_tx.clone(),
+                    &route_key,
+                    Some(&launch),
+                )
+                .await;
+                let bridge = match spawned {
+                    Ok(bridge) => bridge,
+                    Err(error) => {
+                        if let Some((id, _)) = &launch.sandbox {
+                            let _ = crate::services::benchmark_sandbox::clean(id).await;
+                        }
+                        return Err(protocol::internal(error));
+                    }
+                };
+                self.bridges
+                    .lock()
+                    .await
+                    .insert(route_key, Arc::clone(&bridge));
+                return Ok(bridge);
+            }
+            let mut env = (*self.spawn_env().await).clone();
+            if harness_id == NativeProvider::Grok.harness_id() {
+                env.extra_env.push(grok::chat_bridge_renewal_env());
+            }
+            if let Some(account) = account.as_ref() {
+                let base = env.shell_env.into_iter().collect();
+                env.shell_env = provider_accounts::scoped_env(&self.app, account, base)
+                    .map_err(protocol::internal)?
+                    .into_iter()
+                    .collect();
+                env.remove_env = provider_accounts::MANAGED_AUTH_ENV_KEYS
+                    .iter()
+                    .map(|key| (*key).to_string())
+                    .collect();
+            }
+            // Startup reconciliation and the first model picker race. Waiting
+            // only for an install already in flight could start yesterday's
+            // bridge before reconciliation got the lock, keeping it for the
+            // entire app lifetime. Verify this build's pin before first spawn.
+            if managed_acp_tools::is_managed(harness_id) {
+                let on_line = |line: &str| log::info!("[agent-host {harness_id}] {line}");
+                if let Err(error) =
+                    managed_acp_tools::install_managed_tool(&self.app, harness_id, &on_line).await
+                {
+                    log::warn!(
+                    "[agent-host] {harness_id} update failed; trying the installed bridge: {error}"
+                );
+                }
+            }
+            // A managed bridge is installed transactionally into app data; wait
+            // out any install in flight so the process is never started from a
+            // tree that is being swapped underneath it.
+            let _install = if managed_acp_tools::is_managed(harness_id) {
+                Some(managed_acp_tools::install_lock().lock().await)
+            } else {
+                None
             };
+            let bridge = Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route_key, None)
+                .await
+                .map_err(protocol::internal)?;
+            if let Ok(mut expiries) = self.owned_sign_in_expiry.lock() {
+                expiries.remove(&route_key);
+            }
             self.bridges
                 .lock()
                 .await
                 .insert(route_key, Arc::clone(&bridge));
-            return Ok(bridge);
-        }
-        let mut env = (*self.spawn_env().await).clone();
-        if harness_id == NativeProvider::Grok.harness_id() {
-            env.extra_env.push(grok::chat_bridge_renewal_env());
-        }
-        if let Some(account) = account.as_ref() {
-            let base = env.shell_env.into_iter().collect();
-            env.shell_env = provider_accounts::scoped_env(&self.app, account, base)
-                .map_err(protocol::internal)?
-                .into_iter()
-                .collect();
-            env.remove_env = provider_accounts::MANAGED_AUTH_ENV_KEYS
-                .iter()
-                .map(|key| (*key).to_string())
-                .collect();
-        }
-        // Startup reconciliation and the first model picker race. Waiting
-        // only for an install already in flight could start yesterday's
-        // bridge before reconciliation got the lock, keeping it for the
-        // entire app lifetime. Verify this build's pin before first spawn.
-        if managed_acp_tools::is_managed(harness_id) {
-            let on_line = |line: &str| log::info!("[agent-host {harness_id}] {line}");
-            if let Err(error) =
-                managed_acp_tools::install_managed_tool(&self.app, harness_id, &on_line).await
-            {
-                log::warn!(
-                    "[agent-host] {harness_id} update failed; trying the installed bridge: {error}"
-                );
-            }
-        }
-        // A managed bridge is installed transactionally into app data; wait
-        // out any install in flight so the process is never started from a
-        // tree that is being swapped underneath it.
-        let _install = if managed_acp_tools::is_managed(harness_id) {
-            Some(managed_acp_tools::install_lock().lock().await)
-        } else {
-            None
-        };
-        let bridge = Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route_key, None)
-            .await
-            .map_err(protocol::internal)?;
-        if let Ok(mut expiries) = self.owned_sign_in_expiry.lock() {
-            expiries.remove(&route_key);
-        }
-        self.bridges
-            .lock()
-            .await
-            .insert(route_key, Arc::clone(&bridge));
-        Ok(bridge)
+            Ok(bridge)
+        })
     }
 
     /// The live bridge on `route_key`, unless it is an owned bridge whose
@@ -6147,90 +6156,94 @@ impl Inner {
             .await
     }
 
-    async fn create_owned_session_for_purpose(
-        self: &Arc<Self>,
+    /// Boxed for the same stack reason as [`Self::ensure_execution_bridge`].
+    fn create_owned_session_for_purpose<'a>(
+        self: &'a Arc<Self>,
         mut request: OwnedSessionRequest,
         turn_limit_ms: u64,
-        purpose: &str,
-    ) -> Result<OwnedSession, String> {
-        let provider = execution::validate_request(&request)?;
-        if turn_limit_ms == 0 || turn_limit_ms > MAX_OWNED_TURN_MS {
-            return Err(
-                "validation: owned execution requires a turn limit from 1 ms to 24 hours".into(),
-            );
-        }
-        // The owned workspace is a Linux mount, never a Windows task folder.
-        request.cwd = "/workspace".into();
-        // Fail closed: a profile the policy probe has not passed on what this
-        // build ships never starts.
-        let repository_revision = if request.profile == ExecutionProfile::ProtectedRepositoryV1 {
-            let status = repository_execution::readiness(provider, &request.account_id).await?;
-            Some(repository_execution::revision(provider, &status))
-        } else {
-            None
-        };
-        let text_revision = if repository_revision.is_none() {
-            let status = text_execution::readiness(provider, &request.account_id).await?;
-            Some(text_execution::revision(provider, &status))
-        } else {
-            None
-        };
-        let policy_hash = match &repository_revision {
-            Some(revision) => repository_execution::policy_hash(&request, revision)?,
-            None => text_execution::policy_hash(
-                &request,
-                text_revision.as_deref().expect("text revision"),
-            )?,
-        };
-        let lock = self
-            .owned_lock(&format!("owner:{}", request.owner_id))
-            .await;
-        let _guard = lock.lock().await;
-        let existing_id = self.store.owned_session_id(&request.owner_id).await?;
-        if let Some(id) = existing_id.as_ref() {
-            if self.store.owned_session_purpose(id).await?.as_deref() != Some(purpose) {
-                return Err("validation: owner purpose changed".into());
+        purpose: &'a str,
+    ) -> BoxFuture<'a, Result<OwnedSession, String>> {
+        Box::pin(async move {
+            let provider = execution::validate_request(&request)?;
+            if turn_limit_ms == 0 || turn_limit_ms > MAX_OWNED_TURN_MS {
+                return Err(
+                    "validation: owned execution requires a turn limit from 1 ms to 24 hours"
+                        .into(),
+                );
             }
-            let (_, existing_hash) = self
-                .store
-                .execution_owner(id)
-                .await?
-                .ok_or("evidence_missing: owner")?;
-            if existing_hash != policy_hash {
-                return Err("validation: owner already exists with another policy".into());
-            }
-            let record = self.session_record(id).await.map_err(|e| error_text(&e))?;
-            if self.attached_route(id).await.is_some()
-                || self.store.session_has_execution_dispatch(id).await?
+            // The owned workspace is a Linux mount, never a Windows task folder.
+            request.cwd = "/workspace".into();
+            // Fail closed: a profile the policy probe has not passed on what this
+            // build ships never starts.
+            let repository_revision = if request.profile == ExecutionProfile::ProtectedRepositoryV1
             {
-                return Ok(Self::owned_session_result(&request, &record, existing_hash));
+                let status = repository_execution::readiness(provider, &request.account_id).await?;
+                Some(repository_execution::revision(provider, &status))
+            } else {
+                None
+            };
+            let text_revision = if repository_revision.is_none() {
+                let status = text_execution::readiness(provider, &request.account_id).await?;
+                Some(text_execution::revision(provider, &status))
+            } else {
+                None
+            };
+            let policy_hash = match &repository_revision {
+                Some(revision) => repository_execution::policy_hash(&request, revision)?,
+                None => text_execution::policy_hash(
+                    &request,
+                    text_revision.as_deref().expect("text revision"),
+                )?,
+            };
+            let lock = self
+                .owned_lock(&format!("owner:{}", request.owner_id))
+                .await;
+            let _guard = lock.lock().await;
+            let existing_id = self.store.owned_session_id(&request.owner_id).await?;
+            if let Some(id) = existing_id.as_ref() {
+                if self.store.owned_session_purpose(id).await?.as_deref() != Some(purpose) {
+                    return Err("validation: owner purpose changed".into());
+                }
+                let (_, existing_hash) = self
+                    .store
+                    .execution_owner(id)
+                    .await?
+                    .ok_or("evidence_missing: owner")?;
+                if existing_hash != policy_hash {
+                    return Err("validation: owner already exists with another policy".into());
+                }
+                let record = self.session_record(id).await.map_err(|e| error_text(&e))?;
+                if self.attached_route(id).await.is_some()
+                    || self.store.session_has_execution_dispatch(id).await?
+                {
+                    return Ok(Self::owned_session_result(&request, &record, existing_hash));
+                }
             }
-        }
-        if self.shutdown_prepared.load(Ordering::SeqCst) {
-            return Err("Distill is closing".into());
-        }
-        let account = provider_accounts::resolve_account(
-            &self.app,
-            &request.provider_id,
-            Some(&request.account_id),
-        )?;
-        let profile_key = if repository_revision.is_some() {
-            repository_execution::profile_key(&request.owner_id)
-        } else {
-            text_execution::profile_key(&request.owner_id)
-        };
-        let sandbox_id = if repository_revision.is_some() {
-            repository_execution::attempt_id(&request.owner_id)
-        } else {
-            text_execution::attempt_id(&request.owner_id)
-        };
-        let mut setup_cleanup =
-            crate::services::benchmark_sandbox::Cleanup(Some(sandbox_id.clone()));
-        let setup_route = format!(
-            "{}{BENCHMARK_ROUTE}{profile_key}",
-            account_route_key(&request.provider_id, Some(&request.account_id))
-        );
-        let result = async {
+            if self.shutdown_prepared.load(Ordering::SeqCst) {
+                return Err("Distill is closing".into());
+            }
+            let account = provider_accounts::resolve_account(
+                &self.app,
+                &request.provider_id,
+                Some(&request.account_id),
+            )?;
+            let profile_key = if repository_revision.is_some() {
+                repository_execution::profile_key(&request.owner_id)
+            } else {
+                text_execution::profile_key(&request.owner_id)
+            };
+            let sandbox_id = if repository_revision.is_some() {
+                repository_execution::attempt_id(&request.owner_id)
+            } else {
+                text_execution::attempt_id(&request.owner_id)
+            };
+            let mut setup_cleanup =
+                crate::services::benchmark_sandbox::Cleanup(Some(sandbox_id.clone()));
+            let setup_route = format!(
+                "{}{BENCHMARK_ROUTE}{profile_key}",
+                account_route_key(&request.provider_id, Some(&request.account_id))
+            );
+            let result = async {
         let bridge = self
             .ensure_execution_bridge(
                 &request.provider_id,
@@ -6392,17 +6405,18 @@ impl Inner {
         }
         Ok(result)
         }.await;
-        if result.is_err() {
-            if let Some(bridge) = self.bridges.lock().await.remove(&setup_route) {
-                bridge.kill();
+            if result.is_err() {
+                if let Some(bridge) = self.bridges.lock().await.remove(&setup_route) {
+                    bridge.kill();
+                }
+                if let Err(error) = crate::services::benchmark_sandbox::clean(&sandbox_id).await {
+                    log::warn!("[agent-host] owned setup cleanup failed: {error}");
+                    return result;
+                }
             }
-            if let Err(error) = crate::services::benchmark_sandbox::clean(&sandbox_id).await {
-                log::warn!("[agent-host] owned setup cleanup failed: {error}");
-                return result;
-            }
-        }
-        setup_cleanup.0 = None;
-        result
+            setup_cleanup.0 = None;
+            result
+        })
     }
 
     fn owned_session_result(
@@ -7115,144 +7129,148 @@ impl Inner {
                 .snapshot(provider, account),
         })
     }
-    pub async fn benchmark_inventory(
-        self: &Arc<Self>,
-        provider: &str,
-        account: &str,
+    /// Boxed for the same stack reason as [`Self::ensure_execution_bridge`]:
+    /// a benchmark attempt checks its inventory deep inside the runner.
+    pub fn benchmark_inventory<'a>(
+        self: &'a Arc<Self>,
+        provider: &'a str,
+        account: &'a str,
         refresh: bool,
-    ) -> Result<Value, String> {
-        let native = NativeProvider::for_harness(provider)
-            .ok_or("capability_missing: provider has no isolated benchmark runtime")?;
-        let status = text_execution::readiness(native, account).await?;
-        let revision = text_execution::revision(native, &status);
-        let cache_key = format!(
-            "{}\u{1f}{revision}",
-            account_route_key(provider, Some(account))
-        );
-        let inventory_lock = self.owned_lock(&format!("inventory:{cache_key}")).await;
-        let _inventory_guard = inventory_lock.lock().await;
-        {
-            let mut cache = TEXT_INVENTORY
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            cache.retain(|_, (observed, _)| observed.elapsed() < TEXT_INVENTORY_TTL);
-            if !refresh {
-                if let Some((_, inventory)) = cache.get(&cache_key) {
-                    return Ok(inventory.clone());
+    ) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async move {
+            let native = NativeProvider::for_harness(provider)
+                .ok_or("capability_missing: provider has no isolated benchmark runtime")?;
+            let status = text_execution::readiness(native, account).await?;
+            let revision = text_execution::revision(native, &status);
+            let cache_key = format!(
+                "{}\u{1f}{revision}",
+                account_route_key(provider, Some(account))
+            );
+            let inventory_lock = self.owned_lock(&format!("inventory:{cache_key}")).await;
+            let _inventory_guard = inventory_lock.lock().await;
+            {
+                let mut cache = TEXT_INVENTORY
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                cache.retain(|_, (observed, _)| observed.elapsed() < TEXT_INVENTORY_TTL);
+                if !refresh {
+                    if let Some((_, inventory)) = cache.get(&cache_key) {
+                        return Ok(inventory.clone());
+                    }
                 }
             }
-        }
-        let request = OwnedSessionRequest {
-            owner_id: format!("inventory:{}", uuid::Uuid::new_v4()),
-            provider_id: provider.into(),
-            account_id: account.into(),
-            model_id: String::new(),
-            reasoning_effort: None,
-            fast_mode: None,
-            cwd: "/workspace".into(),
-            title: "Benchmark model inventory".into(),
-            profile: ExecutionProfile::NativeTextV1,
-        };
-        let id = text_execution::attempt_id(&request.owner_id);
-        let profile_key = text_execution::profile_key(&request.owner_id);
-        let route_key = format!(
-            "{}{BENCHMARK_ROUTE}{profile_key}",
-            account_route_key(provider, Some(account))
-        );
-        let mut cleanup = crate::services::benchmark_sandbox::Cleanup(Some(id.clone()));
-        let result = async {
-            let bridge = self
-                .ensure_execution_bridge(
-                    provider,
-                    Some(account),
-                    Some(OwnedBridge {
-                        profile_key: &profile_key,
-                        request: &request,
-                        revision: &revision,
-                        provider: native,
-                        turn_limit_ms: 120_000,
-                    }),
-                )
-                .await
-                .map_err(|error| error_text(&error))?;
-            let mut meta = native.session_meta("");
-            if let Some(options) = meta
-                .pointer_mut("/claudeCode/options")
-                .and_then(Value::as_object_mut)
-            {
-                options.remove("model");
-            }
-            let opened = bridge
-                .request(
-                    "session/new",
-                    json!({"cwd":"/workspace","mcpServers":[],"_meta":meta}),
-                )
-                .await
-                .map_err(|error| error_text(&error))?;
-            let probe_session = protocol::session_id(&opened)
-                .ok_or("capability_missing: Linux model probe returned no session")?;
-            if let Some(mode) = native.permission_mode() {
-                bridge
-                    .request(
-                        "session/set_mode",
-                        json!({"sessionId":probe_session,"modeId":mode}),
+            let request = OwnedSessionRequest {
+                owner_id: format!("inventory:{}", uuid::Uuid::new_v4()),
+                provider_id: provider.into(),
+                account_id: account.into(),
+                model_id: String::new(),
+                reasoning_effort: None,
+                fast_mode: None,
+                cwd: "/workspace".into(),
+                title: "Benchmark model inventory".into(),
+                profile: ExecutionProfile::NativeTextV1,
+            };
+            let id = text_execution::attempt_id(&request.owner_id);
+            let profile_key = text_execution::profile_key(&request.owner_id);
+            let route_key = format!(
+                "{}{BENCHMARK_ROUTE}{profile_key}",
+                account_route_key(provider, Some(account))
+            );
+            let mut cleanup = crate::services::benchmark_sandbox::Cleanup(Some(id.clone()));
+            let result = async {
+                let bridge = self
+                    .ensure_execution_bridge(
+                        provider,
+                        Some(account),
+                        Some(OwnedBridge {
+                            profile_key: &profile_key,
+                            request: &request,
+                            revision: &revision,
+                            provider: native,
+                            turn_limit_ms: 120_000,
+                        }),
                     )
                     .await
                     .map_err(|error| error_text(&error))?;
-            }
-            let select = |config_id: String, model_id: String| {
-                let bridge = Arc::clone(&bridge);
-                let session = probe_session.clone();
-                async move {
+                let mut meta = native.session_meta("");
+                if let Some(options) = meta
+                    .pointer_mut("/claudeCode/options")
+                    .and_then(Value::as_object_mut)
+                {
+                    options.remove("model");
+                }
+                let opened = bridge
+                    .request(
+                        "session/new",
+                        json!({"cwd":"/workspace","mcpServers":[],"_meta":meta}),
+                    )
+                    .await
+                    .map_err(|error| error_text(&error))?;
+                let probe_session = protocol::session_id(&opened)
+                    .ok_or("capability_missing: Linux model probe returned no session")?;
+                if let Some(mode) = native.permission_mode() {
                     bridge
                         .request(
-                            "session/set_config_option",
-                            json!({"sessionId":session,"configId":config_id,"value":model_id}),
+                            "session/set_mode",
+                            json!({"sessionId":probe_session,"modeId":mode}),
                         )
                         .await
+                        .map_err(|error| error_text(&error))?;
                 }
-            };
-            let close = || {
-                let bridge = Arc::clone(&bridge);
-                let session = probe_session.clone();
-                async move {
-                    bridge.close_session(&session).await;
-                }
-            };
-            let models = Self::probe_model_rows(&opened, select, close).await;
-            bridge.stop_sandbox().await?;
-            Ok::<_, String>((
-                models,
-                json!({"sandbox":"distill-bench","revision":revision}),
-            ))
-        }
-        .await;
-        if let Some(bridge) = self.bridges.lock().await.remove(&route_key) {
-            bridge.kill();
-        }
-        crate::services::benchmark_sandbox::clean(&id)
-            .await
-            .map_err(|error| error.to_string())?;
-        cleanup.0 = None;
-        let (models, executable) = result?;
-        let inventory = json!({"models":models,"executable":executable,"providerId":provider,"accountId":account,"observedAt":now_iso()});
-        // At most 8 MiB of serialized inventory across all local accounts.
-        if serde_json::to_vec(&inventory).is_ok_and(|bytes| bytes.len() <= 512 * 1024) {
-            let mut cache = TEXT_INVENTORY
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if cache.len() >= 16 {
-                let oldest = cache
-                    .iter()
-                    .min_by_key(|(_, (observed, _))| *observed)
-                    .map(|(key, _)| key.clone());
-                if let Some(oldest) = oldest {
-                    cache.remove(&oldest);
-                }
+                let select = |config_id: String, model_id: String| {
+                    let bridge = Arc::clone(&bridge);
+                    let session = probe_session.clone();
+                    async move {
+                        bridge
+                            .request(
+                                "session/set_config_option",
+                                json!({"sessionId":session,"configId":config_id,"value":model_id}),
+                            )
+                            .await
+                    }
+                };
+                let close = || {
+                    let bridge = Arc::clone(&bridge);
+                    let session = probe_session.clone();
+                    async move {
+                        bridge.close_session(&session).await;
+                    }
+                };
+                let models = Self::probe_model_rows(&opened, select, close).await;
+                bridge.stop_sandbox().await?;
+                Ok::<_, String>((
+                    models,
+                    json!({"sandbox":"distill-bench","revision":revision}),
+                ))
             }
-            cache.insert(cache_key, (std::time::Instant::now(), inventory.clone()));
-        }
-        Ok(inventory)
+            .await;
+            if let Some(bridge) = self.bridges.lock().await.remove(&route_key) {
+                bridge.kill();
+            }
+            crate::services::benchmark_sandbox::clean(&id)
+                .await
+                .map_err(|error| error.to_string())?;
+            cleanup.0 = None;
+            let (models, executable) = result?;
+            let inventory = json!({"models":models,"executable":executable,"providerId":provider,"accountId":account,"observedAt":now_iso()});
+            // At most 8 MiB of serialized inventory across all local accounts.
+            if serde_json::to_vec(&inventory).is_ok_and(|bytes| bytes.len() <= 512 * 1024) {
+                let mut cache = TEXT_INVENTORY
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if cache.len() >= 16 {
+                    let oldest = cache
+                        .iter()
+                        .min_by_key(|(_, (observed, _))| *observed)
+                        .map(|(key, _)| key.clone());
+                    if let Some(oldest) = oldest {
+                        cache.remove(&oldest);
+                    }
+                }
+                cache.insert(cache_key, (std::time::Instant::now(), inventory.clone()));
+            }
+            Ok(inventory)
+        })
     }
 
     /// The executable that would answer [`Self::benchmark_inventory`] for

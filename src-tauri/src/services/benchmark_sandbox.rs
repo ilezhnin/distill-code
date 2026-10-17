@@ -1,6 +1,7 @@
 //! Host transport for the dedicated repository-benchmark WSL distribution.
 //! No candidate or check command is ever launched on Windows.
 
+use futures_util::future::BoxFuture;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -828,99 +829,106 @@ pub(crate) async fn read_tail(
     Ok((tail.into_iter().collect(), truncated))
 }
 
-async fn invoke_raw(
-    program: &str,
-    args: &[&str],
-    input: Option<&[u8]>,
+/// Every sandbox operation ends here, so its process and stream state is
+/// boxed once instead of being carried inline by every future that awaits
+/// one. An unoptimized build gives each awaiting poll a stack slot for the
+/// whole awaited future, and a benchmark attempt awaits sandbox calls under
+/// many such layers on a 2 MiB runtime worker stack.
+fn invoke_raw<'a>(
+    program: &'a str,
+    args: &'a [&'a str],
+    input: Option<&'a [u8]>,
     cap: usize,
     timeout: Duration,
-    reservation: Option<&Reservation>,
-) -> io::Result<Output> {
-    const MAX_TRANSPORT: usize = 512 * 1024 * 1024;
-    if cap > MAX_TRANSPORT || input.is_some_and(|bytes| bytes.len() > MAX_TRANSPORT) {
-        return Err(io::Error::new(
-            io::ErrorKind::FileTooLarge,
-            "Sandbox transport exceeds its byte budget",
-        ));
-    }
-    // Ring collection and its returned Vec can coexist briefly. Count the
-    // future host allocation in addition to the Linux process-tree class.
-    let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
-    // Cleanup/status remain available when RAM is low. Workload-bearing
-    // operations must pass the dynamic host guard before entering Linux.
-    if program != "/usr/local/sbin/bench-budget"
-        && !matches!(
-            program,
-            "/usr/local/sbin/bench-kill"
-                | "/usr/local/sbin/bench-clean"
-                | "/usr/local/sbin/bench-status"
-        )
-    {
-        let class = reservation.map(|lease| lease.class).unwrap_or_else(|| {
-            if program == "/usr/local/sbin/bench-judge" {
-                ResourceClass::PairedCheck
-            } else if program == "/usr/local/sbin/bench-browser" {
-                ResourceClass::Browser
-            } else {
-                ResourceClass::Preparation
-            }
-        });
-        tokio::task::spawn_blocking(move || {
-            check_headroom(&host_headroom()?, class.memory() + host_buffers as u64)
-        })
-        .await
-        .map_err(io::Error::other)??;
-    }
-    let mut cmd = command_with_host_buffers(program, args, host_buffers, reservation);
-    if input.is_some() {
-        cmd.stdin(Stdio::piped());
-    }
-    let mut child = cmd.spawn()?;
-    let tree = super::process::ProcessTree::contain(&child);
-    let stdin = child.stdin.take();
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let run = async {
-        let (write, out, err, status) = tokio::join!(
-            async {
-                if let (Some(mut stream), Some(bytes)) = (stdin, input) {
-                    stream.write_all(bytes).await?;
-                    stream.shutdown().await?;
+    reservation: Option<&'a Reservation>,
+) -> BoxFuture<'a, io::Result<Output>> {
+    Box::pin(async move {
+        const MAX_TRANSPORT: usize = 512 * 1024 * 1024;
+        if cap > MAX_TRANSPORT || input.is_some_and(|bytes| bytes.len() > MAX_TRANSPORT) {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "Sandbox transport exceeds its byte budget",
+            ));
+        }
+        // Ring collection and its returned Vec can coexist briefly. Count the
+        // future host allocation in addition to the Linux process-tree class.
+        let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
+        // Cleanup/status remain available when RAM is low. Workload-bearing
+        // operations must pass the dynamic host guard before entering Linux.
+        if program != "/usr/local/sbin/bench-budget"
+            && !matches!(
+                program,
+                "/usr/local/sbin/bench-kill"
+                    | "/usr/local/sbin/bench-clean"
+                    | "/usr/local/sbin/bench-status"
+            )
+        {
+            let class = reservation.map(|lease| lease.class).unwrap_or_else(|| {
+                if program == "/usr/local/sbin/bench-judge" {
+                    ResourceClass::PairedCheck
+                } else if program == "/usr/local/sbin/bench-browser" {
+                    ResourceClass::Browser
+                } else {
+                    ResourceClass::Preparation
                 }
-                Ok::<_, io::Error>(())
-            },
-            read_tail(stdout, cap),
-            read_tail(stderr, TAIL_BYTES),
-            child.wait()
-        );
-        let status = status?;
-        // Prefer the helper's diagnostic over a broken pipe on rejected input.
-        if status.success() {
-            write?;
+            });
+            tokio::task::spawn_blocking(move || {
+                check_headroom(&host_headroom()?, class.memory() + host_buffers as u64)
+            })
+            .await
+            .map_err(io::Error::other)??;
         }
-        let (stdout, truncated) = out?;
-        let (stderr, _) = err?;
-        Ok(Output {
-            code: status.code(),
-            stdout,
-            stderr,
-            truncated,
-            infrastructure: None,
-        })
-    };
-    match tokio::time::timeout(timeout, run).await {
-        Ok(result) => result,
-        Err(_) => {
-            if let Some(tree) = tree {
-                tree.kill();
+        let mut cmd = command_with_host_buffers(program, args, host_buffers, reservation);
+        if input.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+        let mut child = cmd.spawn()?;
+        let tree = super::process::ProcessTree::contain(&child);
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let run = async {
+            let (write, out, err, status) = tokio::join!(
+                async {
+                    if let (Some(mut stream), Some(bytes)) = (stdin, input) {
+                        stream.write_all(bytes).await?;
+                        stream.shutdown().await?;
+                    }
+                    Ok::<_, io::Error>(())
+                },
+                read_tail(stdout, cap),
+                read_tail(stderr, TAIL_BYTES),
+                child.wait()
+            );
+            let status = status?;
+            // Prefer the helper's diagnostic over a broken pipe on rejected input.
+            if status.success() {
+                write?;
             }
-            let _ = child.kill().await;
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Sandbox operation exceeded its time limit",
-            ))
+            let (stdout, truncated) = out?;
+            let (stderr, _) = err?;
+            Ok(Output {
+                code: status.code(),
+                stdout,
+                stderr,
+                truncated,
+                infrastructure: None,
+            })
+        };
+        match tokio::time::timeout(timeout, run).await {
+            Ok(result) => result,
+            Err(_) => {
+                if let Some(tree) = tree {
+                    tree.kill();
+                }
+                let _ = child.kill().await;
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Sandbox operation exceeded its time limit",
+                ))
+            }
         }
-    }
+    })
 }
 
 fn helper_phase<'a>(program: &str, args: &'a [&str]) -> Option<(ResourceClass, &'a str)> {
