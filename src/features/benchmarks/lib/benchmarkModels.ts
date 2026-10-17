@@ -7,11 +7,16 @@ import type {
 import { activeRuns, stalledRuns } from "./benchmarkActivity";
 import { onMovingAlias, rowKey } from "./benchmarkBoards";
 
-/** Model navigation is independent of every execution setting. */
+/**
+ * A model row: provider, model, effort and fast mode, matching the service's
+ * model key. Account, billing, execution profile and runtime never split it.
+ */
 export function modelKey(configuration: Configuration): string {
   return JSON.stringify([
     configuration.providerId,
     configuration.modelId,
+    configuration.effort || "default",
+    configuration.fastMode ?? false,
     ...(onMovingAlias(configuration) ? [configuration.modelName ?? null] : []),
   ]);
 }

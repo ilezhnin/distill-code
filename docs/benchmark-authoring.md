@@ -337,11 +337,14 @@ keeps leaving them out, including when it resumes or grows. Missing
 measurements, infrastructure failures and unsupported configurations are explicit
 states, not automatic failures or free execution. Preserve every planned outcome.
 
-The leaderboard lists each provider/model identity once. Accounts, execution
-profiles, effort, fast mode, billing and runtime revisions belong to its run
-evidence and never create another model. A moving vendor alias retains the
-reported model generation. The model page shows one score and history across
-all its tests. Each test contributes its newest scored cell, retaining one
+The leaderboard lists each combination of provider, model, effort and fast
+mode once, and every row names its effort and fast mode: they are what a
+selection chooses, so each is scored only from its own cells. Accounts,
+execution profiles, billing and runtime revisions belong to its run evidence
+and never create another row. An omitted effort is the default and an omitted
+fast mode is off. A moving vendor alias retains the reported model generation.
+The model page shows one score and history for that row across all its tests.
+Each test contributes its newest scored cell, retaining one
 run's configuration and repetitions together. Repeated tests count once,
 infrastructure errors do not erase measured results, and scores are never
 selected for being higher. Execution conditions remain in individual evidence.

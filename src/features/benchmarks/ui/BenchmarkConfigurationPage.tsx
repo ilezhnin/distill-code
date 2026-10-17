@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { IconPlayerPlay } from "@tabler/icons-react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Spinner } from "@/shared/ui/spinner";
@@ -25,6 +26,7 @@ import {
 import { reportModels, modelKey, modelActivity } from "../lib/benchmarkModels";
 import { rowOpenRun } from "../lib/benchmarkActivity";
 import { catchUpCases } from "../lib/benchmarkCatchUp";
+import { explicitEffort } from "../lib/benchmarkEffort";
 import { historyMeasurements } from "../lib/benchmarkHistory";
 import {
   boardDescription,
@@ -249,6 +251,7 @@ export function BenchmarkConfigurationPage({
     fact?.displayName ?? modelDisplayName(shownRow.configuration, modelName);
   const vendor =
     fact?.vendor ?? providerVendor(shownRow.configuration.providerId);
+  const effort = explicitEffort(shownRow.configuration.effort);
   const specs: [string, string][] = [
     [t("configuration.apiModelId"), shownRow.configuration.modelId],
     // What the id ran as, by the attempts' own usage: an alias names its
@@ -296,9 +299,15 @@ export function BenchmarkConfigurationPage({
             {getProviderIcon(shownRow.configuration.providerId, "size-6")}
           </span>
           <div className="min-w-0">
-            <h2 className="font-display text-2xl font-medium tracking-tight">
-              {name}
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-display text-2xl font-medium tracking-tight">
+                {name}
+              </h2>
+              {effort ? <Badge variant="outline">{effort}</Badge> : null}
+              {shownRow.configuration.fastMode ? (
+                <Badge variant="outline">{t("fastMode")}</Badge>
+              ) : null}
+            </div>
             <p className="text-sm text-muted-foreground">{vendor}</p>
           </div>
         </div>

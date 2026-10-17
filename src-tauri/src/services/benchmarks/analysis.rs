@@ -357,11 +357,19 @@ pub(super) fn leaderboard_key(configuration: &Configuration) -> String {
     .unwrap_or_default()
 }
 
-/// Model identity never includes account, settings, execution profile or runtime.
+/// A model row's identity: provider, model, effort and fast mode, the settings
+/// a selection chooses. Account, billing, execution profile and runtime never
+/// split it.
 fn model_key(configuration: &Configuration) -> String {
     let mut identity = vec![
         serde_json::json!(configuration.provider_id),
         serde_json::json!(configuration.model_id),
+        serde_json::json!(configuration
+            .effort
+            .as_deref()
+            .filter(|effort| !effort.is_empty())
+            .unwrap_or("default")),
+        serde_json::json!(configuration.fast_mode.unwrap_or(false)),
     ];
     if on_moving_alias(configuration) {
         identity.push(serde_json::json!(configuration.model_name));
@@ -1164,7 +1172,7 @@ fn leaderboard_from_attempts(
 }
 
 /// Model scores count a test once. Its newest scored run/configuration supplies
-/// the entire cell; settings never split a model or pool its repetitions.
+/// the entire cell; billing, profiles and runtime never pool its repetitions.
 fn model_cell_attempts<'a>(
     by_run: &BTreeMap<&str, Vec<&'a Attempt>>,
     runs: &BTreeMap<&str, &BenchmarkRun>,
@@ -2467,8 +2475,6 @@ pub(super) mod tests {
         for a in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
             a.configuration.id = "repository".into();
             a.configuration.execution_profile = "protected_repository".into();
-            a.configuration.effort = Some("max".into());
-            a.configuration.fast_mode = Some(true);
             a.configuration.billing_mode = "api".into();
             a.configuration.account_id = Some("another-account".into());
             a.configuration.inventory_revision = Some("another-runtime".into());
@@ -2500,6 +2506,66 @@ pub(super) mod tests {
         assert_eq!(report.models[0].row.result_attempt_ids.len(), 6);
     }
 
+    /// Effort and fast mode are what a selection chooses: each combination
+    /// is its own model row, scored only from its own cells.
+    #[test]
+    fn effort_and_fast_mode_are_separate_model_rows() {
+        let mut data = dataset();
+        data.attempts
+            .retain(|a| a.run_id == "before" || a.version_id == "v0");
+        for a in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
+            a.configuration.effort = Some("max".into());
+            a.observed = Some(a.configuration.clone());
+            a.started_at = Some(5);
+            a.finished_at = Some(6);
+        }
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.models.len(), 2);
+        let effort = |model: &LeaderboardModel| model.row.configuration.effort.clone();
+        let max = report
+            .models
+            .iter()
+            .find(|model| effort(model).as_deref() == Some("max"))
+            .unwrap();
+        assert_eq!(max.row.scored, 1);
+        assert_eq!(max.row.result_attempt_ids, ["after-v0"]);
+        let other = report
+            .models
+            .iter()
+            .find(|model| effort(model).as_deref() != Some("max"))
+            .unwrap();
+        assert_eq!(other.row.scored, 6);
+        assert!(other.row.result_attempt_ids.contains(&"before-v0".into()));
+        assert_ne!(max.key, other.key);
+        // The renderer builds the same key (benchmarkModels.ts, modelKey).
+        let mut pinned = other.row.configuration.clone();
+        pinned.provider_id = "claude-acp".into();
+        pinned.model_id = "model-1".into();
+        pinned.effort = None;
+        pinned.fast_mode = None;
+        pinned.model_name = None;
+        assert_eq!(
+            model_key(&pinned),
+            r#"["claude-acp","model-1","default",false]"#
+        );
+        let history = model_history(&data, &max.row.configuration);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].run_id, "after");
+
+        for a in data.attempts.iter_mut().filter(|a| a.run_id == "after") {
+            a.configuration.effort = None;
+            a.configuration.fast_mode = Some(true);
+            a.observed = Some(a.configuration.clone());
+        }
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.models.len(), 2);
+        assert!(report
+            .models
+            .iter()
+            .any(|model| model.row.configuration.fast_mode == Some(true)
+                && model.row.result_attempt_ids == ["after-v0"]));
+    }
+
     #[test]
     fn model_cells_never_combine_repetitions_from_different_settings() {
         let mut data = dataset();
@@ -2507,11 +2573,11 @@ pub(super) mod tests {
         data.attempts.retain(|a| a.run_id == "before");
         let mut second = data.attempts[0].clone();
         second.id = "second-setting".into();
-        second.configuration.effort = Some("max".into());
+        second.configuration.billing_mode = "api".into();
         second.observed = Some(second.configuration.clone());
         data.attempts.push(second.clone());
         second.id = "third-setting".into();
-        second.configuration.fast_mode = Some(true);
+        second.configuration.inventory_revision = Some("another-runtime".into());
         second.observed = Some(second.configuration.clone());
         data.attempts.push(second);
         let report = leaderboard(&data, &ResultQuery::default());
@@ -2540,6 +2606,8 @@ pub(super) mod tests {
         }
         let report = leaderboard(&data, &ResultQuery::default());
         assert_eq!(report.rows.len(), 1);
+        // An omitted effort is "default" and an omitted fast mode is off.
+        assert_eq!(report.models.len(), 1);
         assert_eq!(report.rows[0].scored, 6);
         assert_eq!(report.rows[0].points, Some(0));
         assert_eq!(

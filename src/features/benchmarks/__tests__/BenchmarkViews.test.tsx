@@ -534,10 +534,19 @@ describe("benchmark authoring and saved evidence", () => {
     ).not.toBeInTheDocument();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
-  it("shows one model across configurations in both leaderboard views", async () => {
+  it("shows a row per effort and fast mode, with profiles under one row, in both views", async () => {
     const measured = leaderboardRow({ scored: 8, complete: 8, points: 640 });
     const variants = [
       measured,
+      leaderboardRow({
+        configuration: {
+          ...configuration,
+          executionProfile: "protected_repository",
+        },
+        scored: 0,
+        complete: 0,
+        points: null,
+      }),
       ...["protected_repository", "isolated_ui"].map((executionProfile) =>
         leaderboardRow({
           configuration: {
@@ -560,14 +569,22 @@ describe("benchmark authoring and saved evidence", () => {
         onOpen={open}
       />,
     );
-    expect(screen.getAllByRole("row")).toHaveLength(2);
-    const row = screen.getByRole("row", { name: /model-1/ });
+    expect(screen.getAllByRole("row")).toHaveLength(3);
+    const high = screen.getByRole("button", { name: "Open model-1 · high" });
+    const row = high.closest("tr")!;
     expect(row).toHaveTextContent("640");
     expect(row).not.toHaveTextContent("runtime");
-    expect(within(row).queryByText("high")).not.toBeInTheDocument();
+    expect(within(row).getByText("high")).toBeInTheDocument();
+    const fast = screen
+      .getByRole("button", { name: "Open model-1 · max · fast" })
+      .closest("tr")!;
+    expect(within(fast).getByText("max")).toBeInTheDocument();
+    expect(within(fast).getByText("fast")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
-    expect(screen.getAllByRole("row")).toHaveLength(2);
-    await userEvent.click(screen.getByRole("button", { name: "Open model-1" }));
+    expect(screen.getAllByRole("row")).toHaveLength(3);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open model-1 · high" }),
+    );
     expect(open).toHaveBeenCalledWith(modelKey(configuration));
   });
 
@@ -665,7 +682,7 @@ describe("benchmark authoring and saved evidence", () => {
     expect(screen.queryByText(/scored ·/)).not.toBeInTheDocument();
     expect(screen.queryByText(/configurations shown/)).not.toBeInTheDocument();
     await userEvent.click(
-      within(row).getByRole("button", { name: "Open model-1" }),
+      within(row).getByRole("button", { name: "Open model-1 · high" }),
     );
     expect(open).toHaveBeenCalledWith(modelKey(unfinished.configuration));
     cleanup();
@@ -1197,8 +1214,8 @@ describe("benchmark authoring and saved evidence", () => {
         .map((cell) => cell.textContent),
     ).toEqual([
       "1",
-      // The vendor icon carries its own title text.
-      "ClaudebetaAnthropic",
+      // The vendor icon carries its own title text; the effort follows the name.
+      "ClaudebetahighAnthropic",
       "500",
       "1000",
       "–",
@@ -2039,8 +2056,8 @@ describe("model filter", () => {
     expect(screen.queryByText("All runs")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Models" }));
     const list = await screen.findByRole("listbox");
-    await userEvent.click(within(list).getByText("alpha"));
-    await userEvent.click(within(list).getByText("gamma"));
+    await userEvent.click(within(list).getByText("alpha · high"));
+    await userEvent.click(within(list).getByText("gamma · high"));
     expect(names()).toEqual(["alpha", "gamma"]);
     expect(screen.getByRole("button", { name: "Models" })).toHaveTextContent(
       "2",

@@ -690,7 +690,6 @@ export function ModelIdentity({
   name,
   vendor,
   showRuntime = false,
-  showSettings = true,
   wrap = true,
   mark,
   children,
@@ -699,8 +698,6 @@ export function ModelIdentity({
   name: string;
   vendor: string;
   showRuntime?: boolean;
-  /** Settings belong to the model details, not the grouped leaderboard. */
-  showSettings?: boolean;
   /** Tables can keep the name and configuration together and scroll instead. */
   wrap?: boolean;
   /** A warning beside the name, such as a run of this model that stopped. */
@@ -723,10 +720,8 @@ export function ModelIdentity({
         >
           <span className="font-medium">{name}</span>
           {mark}
-          {showSettings && effort ? (
-            <Badge variant="outline">{effort}</Badge>
-          ) : null}
-          {showSettings && configuration.fastMode ? (
+          {effort ? <Badge variant="outline">{effort}</Badge> : null}
+          {configuration.fastMode ? (
             <Badge variant="outline">{t("fastMode")}</Badge>
           ) : null}
           {showRuntime && configuration.inventoryRevision ? (

@@ -26,6 +26,7 @@ import {
   type BoardId,
   type RankedRow,
 } from "../lib/benchmarkBoards";
+import { explicitEffort } from "../lib/benchmarkEffort";
 import { reportModels, modelActivity, modelKey } from "../lib/benchmarkModels";
 import {
   boardDescription,
@@ -132,6 +133,15 @@ export function LeaderboardView({
     );
   const vendorOf = (row: LeaderboardRow) =>
     factOf(row)?.vendor ?? providerVendor(row.configuration.providerId);
+  // Rows of one model differ by effort and fast mode only.
+  const labelOf = (row: LeaderboardRow) =>
+    [
+      nameOf(row),
+      explicitEffort(row.configuration.effort),
+      row.configuration.fastMode ? t("fastMode") : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
   const visible = useMemo(
     () =>
       chosen.size === 0
@@ -206,7 +216,6 @@ export function LeaderboardView({
           name={nameOf(entry.row)}
           vendor={vendorOf(entry.row)}
           wrap={false}
-          showSettings={false}
           mark={
             attention.length > 0 ? (
               <AttentionMark
@@ -254,7 +263,7 @@ export function LeaderboardView({
         type="button"
         variant="ghost"
         size="icon-xs"
-        aria-label={t("leaderboard.open", { model: nameOf(entry.row) })}
+        aria-label={t("leaderboard.open", { model: labelOf(entry.row) })}
         onClick={(event) => {
           event.stopPropagation();
           onOpen(modelKey(entry.row.configuration));
@@ -290,7 +299,7 @@ export function LeaderboardView({
             <ModelFilter
               options={rows.map((entry) => ({
                 key: modelKey(entry.configuration),
-                name: nameOf(entry),
+                name: labelOf(entry),
                 vendor: vendorOf(entry),
                 terms: `${entry.configuration.modelId} ${entry.configuration.providerId}`,
               }))}

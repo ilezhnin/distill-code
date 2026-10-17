@@ -9,16 +9,16 @@ import {
 import { configuration, leaderboardRow, runSummary } from "./fixtures";
 
 describe("leaderboard model identities", () => {
-  it("keeps profiles, effort, fast mode, billing, accounts and runtimes under one model", () => {
+  it("keeps profiles, billing, accounts and runtimes under one model", () => {
     const measured = leaderboardRow({ scored: 8, complete: 8, points: 600 });
     const rows = [
       measured,
       ...[
         { executionProfile: "protected_repository" },
-        { effort: "max" },
-        { fastMode: true },
         { billingMode: "api" },
         { accountId: "second-account", inventoryRevision: "new-runtime" },
+        // An omitted fast mode is off.
+        { fastMode: null },
       ].map((settings) =>
         leaderboardRow({
           configuration: { ...configuration, ...settings },
@@ -31,7 +31,7 @@ describe("leaderboard model identities", () => {
     ];
     const [model] = leaderboardModels(rows);
     expect(leaderboardModels(rows)).toHaveLength(1);
-    expect(model.configurations).toHaveLength(6);
+    expect(model.configurations).toHaveLength(5);
     expect(model.row).toBe(measured);
     expect(new Set(rows.map((row) => modelKey(row.configuration))).size).toBe(
       1,
@@ -39,16 +39,42 @@ describe("leaderboard model identities", () => {
     expect(rows[0].scored).toBe(8);
   });
 
+  it("gives every effort and fast mode its own row", () => {
+    const rows = [
+      leaderboardRow(),
+      leaderboardRow({ configuration: { ...configuration, effort: "max" } }),
+      leaderboardRow({ configuration: { ...configuration, fastMode: true } }),
+      leaderboardRow({
+        configuration: { ...configuration, effort: "max", fastMode: true },
+      }),
+    ];
+    const models = leaderboardModels(rows);
+    expect(models).toHaveLength(4);
+    expect(models.map((model) => model.configurations)).toEqual(
+      rows.map((row) => [row]),
+    );
+    // An omitted effort is the default, as in the service's model key.
+    expect(modelKey({ ...configuration, effort: null })).toBe(
+      modelKey({ ...configuration, effort: "default" }),
+    );
+    expect(modelKey({ ...configuration, effort: null })).toBe(
+      '["claude-acp","model-1","default",false]',
+    );
+  });
+
   it("chooses coverage then recency, never the highest score", () => {
     const old = leaderboardRow({ scored: 8, measuredAt: 1, points: 1000 });
     const recent = leaderboardRow({
-      configuration: { ...configuration, effort: "max" },
+      configuration: { ...configuration, billingMode: "api" },
       scored: 8,
       measuredAt: 2,
       points: 200,
     });
     const narrow = leaderboardRow({
-      configuration: { ...configuration, effort: "low" },
+      configuration: {
+        ...configuration,
+        executionProfile: "protected_repository",
+      },
       scored: 2,
       measuredAt: 3,
       points: 1000,
