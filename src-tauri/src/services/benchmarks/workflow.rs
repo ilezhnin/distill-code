@@ -1591,13 +1591,17 @@ pub fn execute(
                     .await
             };
             // The local broker refused the first step a provider would have
-            // seen: the workflow has not started, under any retry policy. The
-            // step goes back unstarted and the runner returns the root to the
-            // queue. A research trajectory keeps its committed record below.
+            // seen, or a sandbox sign-in renewal held it back: the workflow
+            // has not started, under any retry policy. The step goes back
+            // unstarted and the runner returns the root to the queue. A
+            // research trajectory keeps its committed record below.
             let result = match result {
                 Err(error)
                     if untouched
-                        && error.code == "resource_busy"
+                        && matches!(
+                            error.code.as_str(),
+                            "resource_busy" | super::runner::SIGN_IN_WAIT
+                        )
                         && root.configuration.execution_profile != "workflow_policy" =>
                 {
                     let current = service.store.attempt(&saved.attempt.id).await?;

@@ -142,9 +142,24 @@ pub fn chat_bridge_renewal_env() -> (String, String) {
     )
 }
 
+/// What a sign-in renewal session in the benchmark sandbox starts the Grok CLI
+/// with, for a sandbox sign-in that expires at `expires_at_ms`, at `now`: a
+/// renewal window a minute longer than what is left of it. The CLI then
+/// counts that sign-in as due and renews it before its first request, the
+/// model listing of the session it opens, while the six-hour sign-in it gets
+/// back is not due again within that session. A benchmark session never gets
+/// the variable: admission keeps every one out of the CLI's own five-minute
+/// window, so no session renews a grant another session still holds.
+pub fn sandbox_renewal_env(expires_at_ms: i64, now: i64) -> (String, String) {
+    let left_ms = expires_at_ms.saturating_sub(now).max(0);
+    let seconds = left_ms.saturating_add(999) / 1000 + 60;
+    (RENEWAL_WINDOW_ENV.into(), seconds.to_string())
+}
+
 /// Why a Grok turn waits while a benchmark bridge still runs a turn on the
 /// sign-in that is due: a renewal, and the bridge that replaces this one,
-/// wait for that turn to end.
+/// wait for that turn to end. In the sandbox the same holds for every
+/// session of the account: it runs on a copy of the sign-in being renewed.
 pub const BENCHMARK_BRIDGE_BUSY: &str = "another Grok test still runs on the sign-in that is due for renewal; this test starts when it finishes";
 
 /// Whether the auth file holds a session Grok will accept without signing in
@@ -520,6 +535,24 @@ mod tests {
             ten_minutes
         ));
         assert!(benchmark_sign_in_expiring(Some(now - 1), now, 0));
+    }
+
+    /// A renewal session's window always covers what is left of the sandbox
+    /// sign-in, so the CLI renews it at once; an expired one is due anyway.
+    /// The six-hour sign-in it gets back is outside the window again.
+    #[test]
+    fn a_sandbox_renewal_counts_the_whole_remaining_sign_in_as_due() {
+        let now = 1_800_000_000_000;
+        let hour = 3_600_000;
+        assert_eq!(
+            sandbox_renewal_env(now + hour, now),
+            (RENEWAL_WINDOW_ENV.to_string(), "3660".to_string())
+        );
+        assert_eq!(sandbox_renewal_env(now + hour + 1, now).1, "3661");
+        assert_eq!(sandbox_renewal_env(now - hour, now).1, "60");
+        assert_eq!(sandbox_renewal_env(now, now).1, "60");
+        let window: i64 = sandbox_renewal_env(now + 4 * hour, now).1.parse().unwrap();
+        assert!(window * 1000 > 4 * hour && window * 1000 < 6 * hour);
     }
 
     /// A run may allow hours per turn; the sign-in must outlast up to an hour

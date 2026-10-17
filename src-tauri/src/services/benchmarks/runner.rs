@@ -751,10 +751,6 @@ async fn text_runtime_snapshot(
     Ok((text_execution::revision(provider, &status), status))
 }
 
-async fn repository_runtime(c: &Configuration) -> Result<String> {
-    repository_runtime_for_budget(c, None).await
-}
-
 async fn repository_runtime_for_budget(c: &Configuration, budget: Option<u32>) -> Result<String> {
     repository_runtime_snapshot(c, budget)
         .await
@@ -784,6 +780,58 @@ async fn repository_runtime_snapshot(
             .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
     }
     Ok((repository_execution::revision(provider, &status), status))
+}
+
+/// How much longer than an attempt and its cleanup margin a renewed sandbox
+/// sign-in must last: the checks between the renewal and admission.
+const RENEWAL_SLACK_MS: i64 = 60_000;
+
+/// Runs `admit`, an attempt's sandbox runtime and credential checks, which
+/// start no provider turn. When it refuses `c`'s account, or a renewal of the
+/// account's sandbox sign-in waits, the sign-in is renewed first and `admit`
+/// runs again (see `Inner::renew_sandbox_sign_in`). `budget` is the attempt's
+/// time limit in seconds, none for planning; the renewed sign-in must outlast
+/// it and the cleanup margin. With `drain`, an attempt whose own limit the
+/// sign-in still covers waits for a waiting renewal too. The admission rule
+/// stays `admit`'s own: a renewal never admits what it refuses.
+fn with_sign_in_renewal<'a, T, F, Fut>(
+    host: &'a Arc<crate::services::agent_host::router::Inner>,
+    c: &'a Configuration,
+    budget: Option<u32>,
+    drain: bool,
+    mut admit: F,
+) -> BoxFuture<'a, Result<T>>
+where
+    T: Send + 'a,
+    F: FnMut() -> Fut + Send + 'a,
+    Fut: std::future::Future<Output = Result<T>> + Send + 'a,
+{
+    Box::pin(async move {
+        if !NativeProvider::for_harness(&c.provider_id).is_some_and(text_execution::renews_sign_in)
+        {
+            return admit().await;
+        }
+        let account = c.account_id.as_deref().unwrap_or_default();
+        if !(drain && host.sandbox_sign_in_renewal_due(&c.provider_id, account)) {
+            match admit().await {
+                Err(error) if error.code == "capability_missing" => {}
+                admitted => return admitted,
+            }
+        }
+        let until = match budget {
+            Some(seconds) => sandbox::admission_deadline(now(), seconds)
+                .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?,
+            None => now(),
+        };
+        host.renew_sandbox_sign_in(
+            &c.provider_id,
+            account,
+            until.saturating_add(RENEWAL_SLACK_MS),
+        )
+        .await
+        .map_err(host_error)?;
+        admit().await
+    })
 }
 
 /// A repository answer comes from the stopped working copy, never the agent's
@@ -1329,7 +1377,7 @@ fn quota_recovered(run_id: &str, provider_id: &str) {
 /// Grok CLI renews the user's sign-in. The run's
 /// cells of that provider wait on their own, as for a quota wait, while its
 /// other providers' cells go on.
-const SIGN_IN_WAIT: &str = "sign_in_wait";
+pub(super) const SIGN_IN_WAIT: &str = "sign_in_wait";
 /// A sign-in too short for the turn that the Grok CLI renews only later: the
 /// user's environment keeps its renewal window narrower than a turn needs
 /// (see [`grok::cli_renewal_window_ms`]).
@@ -1430,12 +1478,14 @@ pub(super) fn reached_provider(attempt: &Attempt) -> bool {
 /// any provider process started, so the try counts for nothing and the cell
 /// waits in the queue. Only the trusted pre-spawn path reports
 /// `resource_busy`: the local broker queued the admission, its window closed
-/// in the queue, or the host gate's evidence expired. Nothing of the
-/// attempt, nor of any workflow step it carries, may have reached a provider.
-/// An attempt leaves preparation only once its session exists, so this holds
-/// at every stage before the prompt: workflow step, bridge start, admission.
+/// in the queue, or the host gate's evidence expired. A sandbox sign-in
+/// renewal's `sign_in_wait` comes before any session of the try as well.
+/// Nothing of the attempt, nor of any workflow step it carries, may have
+/// reached a provider. An attempt leaves preparation only once its session
+/// exists, so this holds at every stage before the prompt: workflow step,
+/// bridge start, admission.
 pub(super) fn never_started(attempt: &Attempt, error: &BenchmarkError) -> bool {
-    error.code == "resource_busy"
+    matches!(error.code.as_str(), "resource_busy" | SIGN_IN_WAIT)
         && attempt.phase == "preparing"
         && !reached_provider(attempt)
         && attempt
@@ -1736,7 +1786,14 @@ impl PanelJudges for NativePanel<'_, '_> {
                         }
                         tokio::time::sleep(Duration::from_secs(2)).await;
                     }
-                    Err(error) if matches!(error.code.as_str(), ACCOUNT_BUSY | "resource_busy") => {
+                    // So is a judge account whose sandbox sign-in renewal
+                    // waits for its running sessions.
+                    Err(error)
+                        if matches!(
+                            error.code.as_str(),
+                            ACCOUNT_BUSY | "resource_busy" | SIGN_IN_WAIT
+                        ) =>
+                    {
                         return Ok(JudgeAnswer::Busy);
                     }
                     Err(error) => {
@@ -2033,8 +2090,10 @@ impl NativeBackend {
                     "Frozen judge account has no remaining usage",
                 ));
             }
-            let offered = self
-                .inventory(&judge.provider_id, Some(&account), true)
+            let offered =
+                with_sign_in_renewal(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
+                    self.inventory(&judge.provider_id, Some(&account), true)
+                })
                 .await?;
             if !offered
                 .iter()
@@ -2045,7 +2104,10 @@ impl NativeBackend {
         }
         let timeout = Duration::from_secs(u64::from(JUDGE_TIMEOUT_SECONDS));
         let (_, credential_snapshot) =
-            text_runtime_snapshot(judge, Some(JUDGE_TIMEOUT_SECONDS)).await?;
+            with_sign_in_renewal(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
+                text_runtime_snapshot(judge, Some(JUDGE_TIMEOUT_SECONDS))
+            })
+            .await?;
         let judge_owner = format!("{}:judge:{batch}:{index}", attempt.id);
         let _sandbox_cleanup = sandbox::Cleanup(Some(text_execution::attempt_id(&judge_owner)));
         let session = host
@@ -2259,6 +2321,78 @@ impl NativeBackend {
 }
 
 impl NativeBackend {
+    /// Whether the sandbox can run `c`, for an attempt of `budget` seconds
+    /// (planning: none); a sandbox sign-in whose CLI can renew it is renewed
+    /// first when it is what refuses (see [`with_sign_in_renewal`]).
+    fn sandbox_readiness<'a>(
+        &'a self,
+        c: &'a Configuration,
+        budget: Option<u32>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let repository = match c.execution_profile.as_str() {
+                "protected_repository" => true,
+                "native_text" => false,
+                _ => return Ok(()),
+            };
+            let check = move || async move {
+                if repository {
+                    repository_runtime_for_budget(c, budget).await?;
+                } else {
+                    text_runtime_snapshot(c, budget).await?;
+                }
+                Ok::<_, BenchmarkError>(())
+            };
+            if !NativeProvider::for_harness(&c.provider_id)
+                .is_some_and(text_execution::renews_sign_in)
+            {
+                return check().await;
+            }
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            with_sign_in_renewal(&host, c, budget, false, check).await
+        })
+    }
+
+    /// The model inventory, runtime revision and sandbox credential snapshot
+    /// an attempt of `timeout` seconds on `c` in `run` is admitted with.
+    ///
+    /// Boxed: it runs under the runner's deep attempt futures (see
+    /// `Inner::ensure_execution_bridge`).
+    fn admitted_runtime<'a>(
+        &'a self,
+        host: &'a Arc<crate::services::agent_host::router::Inner>,
+        run: &'a str,
+        c: &'a Configuration,
+        account: &'a str,
+        timeout: u32,
+        repository: bool,
+    ) -> BoxFuture<'a, Result<(Value, String, sandbox::Status)>> {
+        Box::pin(async move {
+            let inventory = self
+                .run_inventory(host, run, &c.provider_id, account)
+                .await?;
+            let (revision, status) = if repository {
+                let (runtime, status) = repository_runtime_snapshot(c, Some(timeout)).await?;
+                (
+                    repository_inventory_revision(&runtime, &inventory, &c.model_id),
+                    status,
+                )
+            } else {
+                let (runtime, status) = text_runtime_snapshot(c, Some(timeout)).await?;
+                (
+                    text_inventory_revision(&runtime, &inventory, &c.model_id),
+                    status,
+                )
+            };
+            Ok((inventory, revision, status))
+        })
+    }
+
     async fn judge_response(
         &self,
         store: &Store,
@@ -3089,14 +3223,7 @@ impl ExecutionBackend for NativeBackend {
         None
     }
     fn readiness<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if c.execution_profile == "protected_repository" {
-                repository_runtime(c).await?;
-            } else if c.execution_profile == "native_text" {
-                text_runtime_snapshot(c, None).await?;
-            }
-            Ok(())
-        })
+        self.sandbox_readiness(c, None)
     }
     fn resource_admission<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -3115,14 +3242,7 @@ impl ExecutionBackend for NativeBackend {
         c: &'a Configuration,
         timeout_seconds: u32,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if c.execution_profile == "protected_repository" {
-                repository_runtime_for_budget(c, Some(timeout_seconds)).await?;
-            } else if c.execution_profile == "native_text" {
-                text_runtime_snapshot(c, Some(timeout_seconds)).await?;
-            }
-            Ok(())
-        })
+        self.sandbox_readiness(c, Some(timeout_seconds))
     }
     fn activity<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<AccountActivity>> {
         Box::pin(async move {
@@ -3278,33 +3398,31 @@ impl ExecutionBackend for NativeBackend {
             } else {
                 text_execution::attempt_id(&turn_owner(&attempt))
             }));
-            let inventory = self
-                .run_inventory(
-                    &host,
-                    &attempt.run_id,
-                    &attempt.configuration.provider_id,
-                    &account,
-                )
-                .await?;
-            let (runtime_revision, credential_snapshot) = if repository {
-                let (runtime, status) =
-                    repository_runtime_snapshot(&attempt.configuration, Some(timeout)).await?;
-                (
-                    repository_inventory_revision(
-                        &runtime,
-                        &inventory,
-                        &attempt.configuration.model_id,
-                    ),
-                    status,
-                )
-            } else {
-                let (runtime, status) =
-                    text_runtime_snapshot(&attempt.configuration, Some(timeout)).await?;
-                (
-                    text_inventory_revision(&runtime, &inventory, &attempt.configuration.model_id),
-                    status,
-                )
-            };
+            // A later step of a workflow already running finishes on the grant
+            // its workflow was admitted with; only new work waits for a
+            // renewal that drains the account.
+            let continues = version
+                .manifest
+                .entry_state
+                .as_ref()
+                .is_some_and(|entry| entry.parent_step_id.is_some());
+            let (inventory, runtime_revision, credential_snapshot) = with_sign_in_renewal(
+                &host,
+                &attempt.configuration,
+                Some(timeout),
+                !continues,
+                || {
+                    self.admitted_runtime(
+                        &host,
+                        &attempt.run_id,
+                        &attempt.configuration,
+                        &account,
+                        timeout,
+                        repository,
+                    )
+                },
+            )
+            .await?;
             // The pin guards the account the run was planned on. A test the
             // run moved to another account (its usage limit ran out) runs on
             // that account's runtime, which lists that account's models, and
@@ -6009,12 +6127,27 @@ impl BenchmarkService {
                     // refused, under every retry policy, including research
                     // runs that forbid replay. No paid execution is retried,
                     // and the cell is neither an attempt nor a failure.
-                    requeue(
-                        &mut failed,
-                        format!("Waiting for local resources: {}", error.message),
-                    );
+                    if error.code == SIGN_IN_WAIT {
+                        requeue(&mut failed, error.message.clone());
+                        // A renewal the backend knows the time of already
+                        // holds the provider's cells. One that waits for the
+                        // account's running sessions names no time: ask
+                        // again shortly.
+                        let provider = &a.configuration.provider_id;
+                        match provider_hold(&run.id, provider) {
+                            Some(until) => failed.wait_until = Some(until),
+                            None => {
+                                hold_provider_until(&run.id, provider, now() + SIGN_IN_RETRY_MS)
+                            }
+                        }
+                    } else {
+                        requeue(
+                            &mut failed,
+                            format!("Waiting for local resources: {}", error.message),
+                        );
+                        failed.wait_until = Some(now() + 2_000);
+                    }
                     failed.workflow_steps.clear();
-                    failed.wait_until = Some(now() + 2_000);
                     self.store.save_attempt(&failed).await?;
                     self.changed().await;
                     return Ok(());
@@ -6462,6 +6595,10 @@ pub struct FakeBackend {
     pub(super) evaluation_refusals: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     pub(super) evaluations: std::sync::atomic::AtomicU64,
+    /// Once this many turns ran (zero: never), the next one waits, once, for
+    /// a sandbox sign-in renewal that other sessions hold up.
+    #[cfg(test)]
+    busy_sign_in_after: std::sync::atomic::AtomicU64,
     /// Sessions whose provider refuses the requested model before dispatch.
     pub refused_selections: std::sync::atomic::AtomicU64,
     /// Sessions the host refuses to open before any provider call (a sign-in
@@ -6637,6 +6774,14 @@ impl ExecutionBackend for FakeBackend {
                         "Invented admission race after a provider turn",
                     ));
                 }
+                let after = self.busy_sign_in_after.load(Ordering::SeqCst);
+                if after > 0 && self.calls.load(Ordering::SeqCst) >= after {
+                    self.busy_sign_in_after.store(0, Ordering::SeqCst);
+                    return Err(BenchmarkError::new(
+                        SIGN_IN_WAIT,
+                        crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
+                    ));
+                }
             }
             if take(&self.capability_refusals) {
                 return Err(BenchmarkError::new(
@@ -6766,6 +6911,9 @@ mod unstarted_admission_tests;
 
 #[cfg(test)]
 mod evaluation_wait_tests;
+
+#[cfg(test)]
+mod sign_in_renewal_tests;
 
 #[cfg(test)]
 mod collection_context_tests;

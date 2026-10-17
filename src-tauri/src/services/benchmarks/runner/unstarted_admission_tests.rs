@@ -16,7 +16,10 @@ const UNSTARTED: [&str; 3] = [
 
 /// A one-cell run of a two-step workflow on the native wall clock, like the
 /// v4 cases the live run lost.
-async fn workflow_request(service: &BenchmarkService, retry_policy: RunRetryPolicy) -> RunRequest {
+pub(super) async fn workflow_request(
+    service: &BenchmarkService,
+    retry_policy: RunRetryPolicy,
+) -> RunRequest {
     let mut draft = seed_definitions().remove(0);
     draft.split = "train".into();
     draft.environment["nativeBudgetRecipe"] = json!(super::super::artifact_context::CLOCK_RECIPE);

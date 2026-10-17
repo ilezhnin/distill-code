@@ -89,18 +89,63 @@ pub(crate) async fn readiness(
     provider: NativeProvider,
     account: &str,
 ) -> Result<sandbox::Status, String> {
-    let mut status = sandbox::ready().await.map_err(admission_error)?;
+    let status = sandbox::ready().await.map_err(admission_error)?;
     status
         .require_account(provider.key(), account)
         .map_err(|e| format!("capability_missing: {e}"))?;
     let artifacts = require_proof(provider, &status).await?;
+    Ok(with_artifacts(status, &artifacts))
+}
+
+/// What a sign-in renewal session starts on: the runtime [`readiness`] proves,
+/// for an account whose sandbox OAuth grant its CLI can renew, still current
+/// or already expired, with that grant's expiry. A renewal makes no model
+/// call, and every session after it passes the unchanged admission window.
+pub(crate) async fn renewal_readiness(
+    provider: NativeProvider,
+    account: &str,
+) -> Result<(sandbox::Status, i64), String> {
+    let status = sandbox::ready().await.map_err(admission_error)?;
+    let expiry = status.oauth_expiry(provider.key(), account).ok_or_else(|| {
+        format!(
+            "capability_missing: The {} account {account} has no sandbox sign-in to renew; run bench-login in {}",
+            provider.key(),
+            sandbox::DISTRIBUTION
+        )
+    })?;
+    let artifacts = require_proof(provider, &status).await?;
+    Ok((with_artifacts(status, &artifacts), expiry))
+}
+
+/// Whether `provider`'s CLI can renew its sandbox sign-in early, in a
+/// renewal session (see [`renewal_env`]).
+pub(crate) fn renews_sign_in(provider: NativeProvider) -> bool {
+    renewal_env(provider, 0, 0).is_some()
+}
+
+/// What starts `provider`'s CLI so that it renews the sandbox sign-in that
+/// expires at `expires_at_ms` before its first request, at `now`. Only Grok
+/// has such a setting. The Claude CLI renews only in the last five minutes of
+/// a sign-in, a window admission keeps every session out of; Codex and Kimi
+/// renew inside their sessions, and admission checks no expiry of theirs.
+pub(crate) fn renewal_env(
+    provider: NativeProvider,
+    expires_at_ms: i64,
+    now: i64,
+) -> Option<(String, String)> {
+    (provider == NativeProvider::Grok).then(|| {
+        crate::services::provider_rate_limits::grok::sandbox_renewal_env(expires_at_ms, now)
+    })
+}
+
+fn with_artifacts(mut status: sandbox::Status, artifacts: &Value) -> sandbox::Status {
     // The baseline manifest can pin a JS launcher while the process uses an
     // ELF executable below it. Preserve that executable identity in every
     // model inventory and durable receipt, not only in the proof gate.
     status.revision = execution::digest(execution::canonical_json(&json!({
         "sandbox": status.revision, "nativeArtifacts": artifacts,
     })));
-    Ok(status)
+    status
 }
 
 pub(crate) async fn require_proof(
@@ -283,6 +328,28 @@ pub(super) fn launch(
     }
 }
 
+/// [`launch`] for a sign-in renewal session: the same process, policy and
+/// private copy of the account's sign-in, with `renewal` (from
+/// [`renewal_env`]) in its environment. bench-clean saves the grant its CLI
+/// renewed back to the account once the session is stopped.
+pub(super) fn renewal_launch(
+    request: &OwnedSessionRequest,
+    provider: NativeProvider,
+    revision: String,
+    renewal: (String, String),
+) -> OwnedLaunch {
+    let mut launch = launch(request, provider, revision);
+    let separator = launch
+        .args
+        .iter()
+        .position(|arg| arg == "--")
+        .expect("isolated launch command separator");
+    launch
+        .args
+        .insert(separator, format!("{}={}", renewal.0, renewal.1));
+    launch
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::execution::ExecutionProfile;
@@ -321,6 +388,50 @@ mod tests {
             assert_ne!(profile_key("invented-owner"), profile_key("another-owner"));
             assert_eq!(policy_fingerprint(provider).len(), 64);
         }
+    }
+
+    /// A renewal session starts the same process on the same private copy of
+    /// the account's sign-in, adding only the Grok CLI's renewal window; no
+    /// benchmark session ever starts with that window.
+    #[test]
+    fn only_a_grok_renewal_session_starts_with_the_renewal_window() {
+        let request = |provider: NativeProvider| OwnedSessionRequest {
+            owner_id: "renewal:invented-owner".into(),
+            provider_id: provider.harness_id().into(),
+            account_id: "invented-account".into(),
+            model_id: String::new(),
+            reasoning_effort: None,
+            fast_mode: None,
+            cwd: "/workspace".into(),
+            title: "Synthetic renewal".into(),
+            profile: ExecutionProfile::NativeTextV1,
+        };
+        for &provider in NativeProvider::ALL {
+            let plain = launch(&request(provider), provider, "revision".into());
+            assert!(!plain
+                .args
+                .iter()
+                .any(|arg| arg.starts_with("GROK_AUTH_EARLY_INVALIDATION_SECS=")));
+            assert_eq!(renews_sign_in(provider), provider == NativeProvider::Grok);
+        }
+        let now = 1_800_000_000_000;
+        let renewal = renewal_env(NativeProvider::Grok, now + 3_600_000, now).unwrap();
+        let grok = request(NativeProvider::Grok);
+        let renewing = renewal_launch(&grok, NativeProvider::Grok, "revision".into(), renewal);
+        let plain = launch(&grok, NativeProvider::Grok, "revision".into());
+        let separator = renewing.args.iter().position(|arg| arg == "--").unwrap();
+        assert_eq!(
+            renewing.args[separator - 1],
+            "GROK_AUTH_EARLY_INVALIDATION_SECS=3660"
+        );
+        let mut without = renewing.args.clone();
+        without.remove(separator - 1);
+        assert_eq!(without, plain.args);
+        assert_eq!(renewing.sandbox.unwrap().0, plain.sandbox.unwrap().0);
+        assert!(without.contains(
+            &"DISTILL_BENCH_ACCOUNT_HOME=/home/candidate/accounts/invented-account/grok".into()
+        ));
+        assert!(without.contains(&"GROK_AUTH_PATH=/tmp/provider/auth.json".into()));
     }
 
     /// OpenCode runs as its own executable with the account's sandbox home,

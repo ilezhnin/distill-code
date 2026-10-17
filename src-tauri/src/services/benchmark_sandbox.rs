@@ -699,10 +699,7 @@ impl Status {
             // existing account/usage policy remains responsible for admission.
             return Ok(());
         }
-        let deadline = now_ms
-            .checked_add(i64::from(timeout_seconds) * 1000)
-            .and_then(|value| value.checked_add(300_000))
-            .ok_or_else(|| io::Error::other("Invalid credential admission window"))?;
+        let deadline = admission_deadline(now_ms, timeout_seconds)?;
         if health.mode != "oauth"
             || health.state != "current"
             || health.expires_at_ms.is_none_or(|expiry| expiry <= deadline)
@@ -713,6 +710,30 @@ impl Status {
         }
         Ok(())
     }
+
+    /// When the sandbox OAuth grant of `account` expires, for a grant whose
+    /// structure and expiry bench-auth reads, current or already expired:
+    /// one the provider's CLI can renew with the refresh token it keeps.
+    /// None for every other credential: an API key, a missing or unreadable
+    /// grant, or one whose expiry is unknown.
+    pub fn oauth_expiry(&self, provider: &str, account: &str) -> Option<i64> {
+        let health = self
+            .account_health
+            .get(&(provider.to_owned(), account.to_owned()))?;
+        if health.mode != "oauth" || !matches!(health.state.as_str(), "current" | "expired") {
+            return None;
+        }
+        health.expires_at_ms
+    }
+}
+
+/// The latest moment an attempt admitted at `now_ms` may still hold its
+/// sandbox credentials: its time limit and the five-minute cleanup margin.
+pub(crate) fn admission_deadline(now_ms: i64, timeout_seconds: u32) -> io::Result<i64> {
+    now_ms
+        .checked_add(i64::from(timeout_seconds) * 1000)
+        .and_then(|value| value.checked_add(300_000))
+        .ok_or_else(|| io::Error::other("Invalid credential admission window"))
 }
 
 pub(crate) fn valid_id(id: &str) -> io::Result<()> {
@@ -1869,6 +1890,50 @@ mod tests {
         assert!(ready
             .require_account_window("claude", "account-1", i64::MAX, 600)
             .is_err());
+    }
+
+    /// What a renewal may act on: a grant bench-auth reads, even an expired
+    /// one, whose refresh token the CLI still holds. The admission window
+    /// itself stays the one `require_account_window` computes.
+    #[test]
+    fn only_a_readable_oauth_grant_has_an_expiry_its_cli_can_renew() {
+        let base = status();
+        let health = |line: &str| {
+            parse_status(&format!(
+                "{base}\naccount grok account-1 no\naccount-health grok account-1 {line}"
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            health("oauth current 1800000900000").oauth_expiry("grok", "account-1"),
+            Some(1_800_000_900_000)
+        );
+        assert_eq!(
+            health("oauth expired 1700000000000").oauth_expiry("grok", "account-1"),
+            Some(1_700_000_000_000)
+        );
+        for line in [
+            "oauth unknown -",
+            "oauth current -",
+            "oauth missing -",
+            "oauth invalid -",
+            "unbounded unknown -",
+            "unknown invalid -",
+        ] {
+            assert_eq!(
+                health(line).oauth_expiry("grok", "account-1"),
+                None,
+                "{line}"
+            );
+        }
+        let signed = health("oauth current 1800000900000");
+        assert_eq!(signed.oauth_expiry("grok", "account-2"), None);
+        assert_eq!(signed.oauth_expiry("claude", "account-1"), None);
+        assert_eq!(
+            admission_deadline(1_800_000_000_000, 600).unwrap(),
+            1_800_000_000_000 + 600_000 + 300_000
+        );
+        assert!(admission_deadline(i64::MAX, 600).is_err());
     }
 
     #[test]

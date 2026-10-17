@@ -30,6 +30,7 @@ use super::harness_env::build_spawn_env;
 use super::legacy_import;
 use super::protocol::{self, invalid_params, now_iso, Message};
 use super::repository_execution;
+use super::sandbox_sign_in::{SignInRenewals, Step};
 use super::session_title;
 use super::sources::SourceRoots;
 use super::store::{ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo};
@@ -136,7 +137,16 @@ struct OwnedBridge<'a> {
     revision: &'a str,
     provider: NativeProvider,
     turn_limit_ms: u64,
+    /// For a sandbox sign-in renewal session alone: when the grant it renews
+    /// expires (see [`Inner::renew_sandbox_sign_in`]).
+    renewal: Option<i64>,
 }
+
+/// How long a sandbox sign-in renewal session may take: opening one session.
+const RENEWAL_TURN_MS: u64 = 120_000;
+/// Why a test waits while the renewal of its sandbox sign-in waits for a free
+/// sandbox lane.
+const RENEWAL_LANE_BUSY: &str = "the Grok sign-in this test needs is renewed once a sandbox lane is free; this test starts then";
 
 /// Where owned bridges of every provider kept their runtime files, under the
 /// Distill root `root`.
@@ -731,6 +741,8 @@ pub struct Inner {
     /// with the generation of that bridge, for a provider whose sign-in the
     /// bridge cannot refresh (Grok).
     owned_sign_in_expiry: StdMutex<HashMap<String, (u64, i64)>>,
+    /// Renewals of the sandbox sign-in benchmark sessions copy, by account.
+    sign_in_renewals: SignInRenewals,
 }
 
 /// Tauri-managed handle; the host starts lazily on the first URL request.
@@ -931,6 +943,7 @@ impl Inner {
             owned_locks: Mutex::new(HashMap::new()),
             activity_generations: StdMutex::new(ActivityGenerations::default()),
             owned_sign_in_expiry: StdMutex::new(HashMap::new()),
+            sign_in_renewals: SignInRenewals::default(),
         });
 
         tokio::spawn(Arc::clone(&inner).accept_loop(listener, token));
@@ -1344,6 +1357,16 @@ impl Inner {
                 bridge.touch();
                 return Ok(bridge);
             }
+            // A benchmark session starts on a copy of its account's sandbox
+            // sign-in: never while that sign-in is being renewed, and a
+            // renewal waits until this start has its copy. Taken before the
+            // spawn lock, in the order a renewal takes both.
+            let _renewal_gate = match profile {
+                Some(owned) if owned.renewal.is_none() => {
+                    Some(self.sign_in_renewals.gate(&base_key).read_owned().await)
+                }
+                _ => None,
+            };
             // Spawning waits on a managed install and on the bridge's
             // `initialize` answer. Serialize that per harness instead of holding
             // the shared bridge map, which every session route, cancel and
@@ -1375,6 +1398,10 @@ impl Inner {
                 let repository = request.profile == ExecutionProfile::ProtectedRepositoryV1;
                 let current = if repository {
                     repository_execution::readiness(owned.provider, &request.account_id).await
+                } else if owned.renewal.is_some() {
+                    text_execution::renewal_readiness(owned.provider, &request.account_id)
+                        .await
+                        .map(|(status, _)| status)
                 } else {
                     text_execution::readiness(owned.provider, &request.account_id).await
                 }
@@ -1389,14 +1416,20 @@ impl Inner {
                         "capability_missing: sandbox runtime changed during admission",
                     ));
                 }
-                current
-                    .require_account_window(
-                        owned.provider.key(),
-                        &request.account_id,
-                        chrono::Utc::now().timestamp_millis(),
-                        u32::try_from(owned.turn_limit_ms.div_ceil(1000)).unwrap_or(u32::MAX),
-                    )
-                    .map_err(|error| protocol::internal(format!("capability_missing: {error}")))?;
+                // A renewal session makes no model call: it needs a grant its
+                // CLI can renew, not one that lasts.
+                if owned.renewal.is_none() {
+                    current
+                        .require_account_window(
+                            owned.provider.key(),
+                            &request.account_id,
+                            chrono::Utc::now().timestamp_millis(),
+                            u32::try_from(owned.turn_limit_ms.div_ceil(1000)).unwrap_or(u32::MAX),
+                        )
+                        .map_err(|error| {
+                            protocol::internal(format!("capability_missing: {error}"))
+                        })?;
+                }
                 if !repository {
                     text_execution::prepare(&request.owner_id)
                         .await
@@ -1405,6 +1438,23 @@ impl Inner {
                 let env = super::harness_env::build_owned_spawn_env(&self.app, &[]).await;
                 let mut launch = if repository {
                     repository_execution::launch(request, owned.provider, revision.to_owned())
+                } else if let Some(expiry) = owned.renewal {
+                    let renewal = text_execution::renewal_env(
+                        owned.provider,
+                        expiry,
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .ok_or_else(|| {
+                        protocol::internal(
+                            "capability_missing: this provider's CLI cannot renew its sandbox sign-in",
+                        )
+                    })?;
+                    text_execution::renewal_launch(
+                        request,
+                        owned.provider,
+                        revision.to_owned(),
+                        renewal,
+                    )
                 } else {
                     text_execution::launch(request, owned.provider, revision.to_owned())
                 };
@@ -6254,6 +6304,7 @@ impl Inner {
                     revision: repository_revision.as_deref().or(text_revision.as_deref()).expect("isolated revision"),
                     provider,
                     turn_limit_ms,
+                    renewal: None,
                 }),
             )
             .await
@@ -7129,6 +7180,170 @@ impl Inner {
                 .snapshot(provider, account),
         })
     }
+    /// Whether a renewal of the sandbox sign-in of `provider`'s `account`
+    /// waits for sessions of the account to end; new tests wait with it.
+    pub fn sandbox_sign_in_renewal_due(&self, provider: &str, account: &str) -> bool {
+        self.sign_in_renewals
+            .is_due(&account_route_key(provider, Some(account)))
+    }
+
+    /// Renews the sandbox sign-in of `provider`'s `account` when it expires
+    /// by `until_ms` and the provider's CLI can renew it early
+    /// ([`text_execution::renewal_env`]), or when an earlier renewal of it
+    /// waits. Nothing for any other provider or credential: the caller's own
+    /// checks decide those. Every benchmark session of the account runs on a
+    /// copy of the grant a renewal replaces, so a renewal runs only while
+    /// none is alive; until then this is `sign_in_wait`, and new tests of the
+    /// account wait too, so it drains. The caller's admission check then
+    /// reads the renewed grant, under the unchanged rule; a grant the CLI did
+    /// not renew is `capability_missing`, for a new bench-login.
+    ///
+    /// Boxed for the same stack reason as [`Self::ensure_execution_bridge`].
+    pub fn renew_sandbox_sign_in<'a>(
+        self: &'a Arc<Self>,
+        provider: &'a str,
+        account: &'a str,
+        until_ms: i64,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let Some(native) = NativeProvider::for_harness(provider)
+                .filter(|n| text_execution::renews_sign_in(*n))
+            else {
+                return Ok(());
+            };
+            let key = account_route_key(provider, Some(account));
+            let gate = self.sign_in_renewals.gate(&key);
+            let _renewing = gate.write().await;
+            let (status, expiry) = match text_execution::renewal_readiness(native, account).await {
+                Ok(ready) => ready,
+                // No grant its CLI can renew; the caller's checks say why.
+                Err(error) if error.starts_with("capability_missing:") => {
+                    self.sign_in_renewals.settle(&key);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            let live = self.live_benchmark_bridges(&key).await;
+            match self.sign_in_renewals.step(&key, expiry, until_ms, live) {
+                Step::Covered => return Ok(()),
+                Step::Wait => return Err(format!("sign_in_wait: {}", grok::BENCHMARK_BRIDGE_BUSY)),
+                Step::Renew => {}
+            }
+            log::info!("[agent-host] renewing the sandbox {provider} sign-in of {account}");
+            match self
+                .sandbox_renewal_session(native, account, &status, expiry)
+                .await
+            {
+                Ok(()) => self.sign_in_renewals.settle(&key),
+                // No sandbox lane was free and nothing started: it runs
+                // with a later admission of the account, which waits for it
+                // as for running sessions.
+                Err(error) if error.starts_with("resource_busy:") => {
+                    self.sign_in_renewals.defer(&key, expiry);
+                    return Err(format!("sign_in_wait: {RENEWAL_LANE_BUSY}"));
+                }
+                Err(error) => {
+                    self.sign_in_renewals.settle(&key);
+                    return Err(format!(
+                        "capability_missing: The sandbox {provider} sign-in of {account} was not renewed: {error}"
+                    ));
+                }
+            }
+            let (_, after) = text_execution::renewal_readiness(native, account).await?;
+            if after <= expiry {
+                return Err(format!(
+                    "capability_missing: The {} CLI in {} did not renew the sign-in of account {account}; run bench-login for it in the sandbox",
+                    native.key(),
+                    crate::services::benchmark_sandbox::DISTRIBUTION
+                ));
+            }
+            log::info!("[agent-host] sandbox {provider} sign-in of {account} renewed");
+            Ok(())
+        })
+    }
+
+    /// How many benchmark bridges of the account `account_key` names are
+    /// alive: each runs on a copy of the account's sandbox sign-in.
+    async fn live_benchmark_bridges(&self, account_key: &str) -> usize {
+        let prefix = format!("{account_key}{BENCHMARK_ROUTE}");
+        self.bridges
+            .lock()
+            .await
+            .iter()
+            .filter(|(route, bridge)| route.starts_with(&prefix) && bridge.is_alive())
+            .count()
+    }
+
+    /// One sign-in renewal: an owned text bridge on `account` whose CLI starts
+    /// with its renewal window, the session it opens (its model listing is
+    /// the request before which the CLI renews the grant), and its stop. No
+    /// model is called. bench-clean then saves the renewed grant to the
+    /// account, under bench-auth's rules for a refreshed OAuth file.
+    async fn sandbox_renewal_session(
+        self: &Arc<Self>,
+        native: NativeProvider,
+        account: &str,
+        status: &crate::services::benchmark_sandbox::Status,
+        expiry: i64,
+    ) -> Result<(), String> {
+        let request = OwnedSessionRequest {
+            owner_id: format!("renewal:{}", uuid::Uuid::new_v4()),
+            provider_id: native.harness_id().into(),
+            account_id: account.into(),
+            model_id: String::new(),
+            reasoning_effort: None,
+            fast_mode: None,
+            cwd: "/workspace".into(),
+            title: "Benchmark sign-in renewal".into(),
+            profile: ExecutionProfile::NativeTextV1,
+        };
+        let revision = text_execution::revision(native, status);
+        let id = text_execution::attempt_id(&request.owner_id);
+        let profile_key = text_execution::profile_key(&request.owner_id);
+        let route_key = format!(
+            "{}{BENCHMARK_ROUTE}{profile_key}",
+            account_route_key(native.harness_id(), Some(account))
+        );
+        let mut cleanup = crate::services::benchmark_sandbox::Cleanup(Some(id.clone()));
+        let result = async {
+            let bridge = self
+                .ensure_execution_bridge(
+                    native.harness_id(),
+                    Some(account),
+                    Some(OwnedBridge {
+                        profile_key: &profile_key,
+                        request: &request,
+                        revision: &revision,
+                        provider: native,
+                        turn_limit_ms: RENEWAL_TURN_MS,
+                        renewal: Some(expiry),
+                    }),
+                )
+                .await
+                .map_err(|error| error_text(&error))?;
+            let opened = bridge
+                .request(
+                    "session/new",
+                    json!({"cwd":"/workspace","mcpServers":[],"_meta":native.session_meta("")}),
+                )
+                .await
+                .map_err(|error| error_text(&error))?;
+            if let Some(session) = protocol::session_id(&opened) {
+                bridge.close_session(&session).await;
+            }
+            bridge.stop_sandbox().await
+        }
+        .await;
+        if let Some(bridge) = self.bridges.lock().await.remove(&route_key) {
+            bridge.kill();
+        }
+        crate::services::benchmark_sandbox::clean(&id)
+            .await
+            .map_err(|error| error.to_string())?;
+        cleanup.0 = None;
+        result
+    }
+
     /// Boxed for the same stack reason as [`Self::ensure_execution_bridge`]:
     /// a benchmark attempt checks its inventory deep inside the runner.
     pub fn benchmark_inventory<'a>(
@@ -7140,7 +7355,35 @@ impl Inner {
         Box::pin(async move {
             let native = NativeProvider::for_harness(provider)
                 .ok_or("capability_missing: provider has no isolated benchmark runtime")?;
-            let status = text_execution::readiness(native, account).await?;
+            // The listing runs on the account's sandbox sign-in: one too short
+            // for its session below, expired, or whose renewal waits, is
+            // renewed first when its CLI can renew it.
+            let until = crate::services::benchmark_sandbox::admission_deadline(
+                chrono::Utc::now().timestamp_millis(),
+                120,
+            )
+            .map_err(|error| error.to_string())?;
+            let status = match text_execution::readiness(native, account).await {
+                Ok(status)
+                    if !self.sandbox_sign_in_renewal_due(provider, account)
+                        && status
+                            .oauth_expiry(native.key(), account)
+                            .is_none_or(|expiry| expiry > until) =>
+                {
+                    status
+                }
+                Err(error)
+                    if !error.starts_with("capability_missing:")
+                        || !text_execution::renews_sign_in(native) =>
+                {
+                    return Err(error)
+                }
+                _ if text_execution::renews_sign_in(native) => {
+                    self.renew_sandbox_sign_in(provider, account, until).await?;
+                    text_execution::readiness(native, account).await?
+                }
+                ready => ready?,
+            };
             let revision = text_execution::revision(native, &status);
             let cache_key = format!(
                 "{}\u{1f}{revision}",
@@ -7188,6 +7431,7 @@ impl Inner {
                             revision: &revision,
                             provider: native,
                             turn_limit_ms: 120_000,
+                            renewal: None,
                         }),
                     )
                     .await

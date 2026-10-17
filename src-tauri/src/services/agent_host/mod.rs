@@ -17,6 +17,7 @@ pub mod protocol;
 mod replay;
 pub(crate) mod repository_execution;
 pub mod router;
+mod sandbox_sign_in;
 mod session_title;
 pub mod sources;
 pub mod store;

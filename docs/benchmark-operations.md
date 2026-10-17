@@ -193,6 +193,26 @@ expiry does not prove remote acceptance or refreshability; non-expiring key
 accounts make no expiry claim and retain their existing usage-policy checks.
 Providers without an expiry adapter retain their existing account checks.
 
+Distill renews a sandbox Grok sign-in itself when an attempt, judge turn or
+model listing needs it to last longer than it does, or when it has expired.
+Every session of the account runs on a private copy of that sign-in, so the
+renewal waits until none of them is alive. Meanwhile the account's new tests
+return to the queue ("Waits for a running Grok test") as unstarted
+admissions, under every retry policy, while later steps of workflows already
+running finish on the sign-in they were admitted with. A later step whose own
+limit needs the renewal waits only under automatic retry; a run without it
+stops for the operator, as for any refused later step. The renewal then starts
+one short session on the account, whose Grok CLI begins with
+`GROK_AUTH_EARLY_INVALIDATION_SECS` past the sign-in's remaining lifetime and
+renews it before its model listing; no model is called. Stopping that session
+saves the renewed grant to the account with bench-auth's rules for a
+refreshed OAuth file. Admission then reads the renewed grant under the
+unchanged rule. If the CLI does not renew it, the run stops with the reason,
+and the account needs `bench-login` again. The Claude CLI renews a sign-in
+only in its last five minutes and has no such setting, so a sandbox Claude
+sign-in still needs `bench-login` once it no longer covers an attempt. Codex
+and Kimi renew inside their own sessions and have no expiry check here.
+
 `benchmark_get_capabilities` reports supported execution profiles and reasons
 for refusals. Resolve the reported prerequisite; do not substitute a different
 account, execution profile or provider to make a frozen run proceed.

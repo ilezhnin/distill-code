@@ -153,6 +153,28 @@ class CredentialTests(unittest.TestCase):
                     self.save(second + suffix)
                     self.assertEqual(json.loads(target.read_text()), document(300, "newer"))
 
+    def test_a_renewal_session_saves_the_renewed_grok_grant_and_nothing_else(self):
+        # The host's renewal session starts on the account's expired grant;
+        # the Grok CLI writes the renewed one into the private copy.
+        now = int(time.time())
+        account, target = self.account("grok", grok(now - 600, "expired"))
+        self.prepare(account, target, "renewal", grok(now + 21600, "renewed"))
+        (scope["ROOT"] / "renewal" / "home" / "session.log").write_text("invented", encoding="utf-8")
+        self.save("renewal")
+        self.assertEqual(json.loads(target.read_text()), grok(now + 21600, "renewed"))
+        self.assertFalse((account / "session.log").exists())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["account_status"](str(account))
+        self.assertEqual(output.getvalue().splitlines(), [
+            "account grok invented-account yes",
+            f"account-health grok invented-account oauth current {(now + 21600) * 1000}",
+        ])
+        # A session whose CLI did not renew leaves the account as it was.
+        self.prepare(account, target, "unrenewed", grok(now + 21600, "renewed"))
+        self.save("unrenewed")
+        self.assertEqual(json.loads(target.read_text()), grok(now + 21600, "renewed"))
+
     def test_equal_expiry_conflicts_preserve_stored_and_candidate_grants(self):
         for provider, document in (("claude", claude), ("grok", grok)):
             account, target = self.account(provider, document(100, "original"))
