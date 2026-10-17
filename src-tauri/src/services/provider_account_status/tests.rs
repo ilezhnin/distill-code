@@ -49,6 +49,7 @@ fn status(id: &str, used: f64, reset: i64) -> ProviderAccountStatus {
         resets_at: Some(reset),
         window_minutes: Some(300),
         model_id: None,
+        covered_by_credits: false,
     });
     status
 }
@@ -834,4 +835,114 @@ fn repository_claude_usage_recognizes_auth_and_model_specific_quota() {
         claude::repository_status(&target, &Value::Null, &usage).state,
         AccountState::NeedsAuth
     );
+}
+
+fn on_credits(id: &str, reset: i64) -> ProviderAccountStatus {
+    let mut status = status(id, 100.0, reset);
+    status.state = AccountState::Ready;
+    status.on_credits = true;
+    status.limits[0].covered_by_credits = true;
+    status
+}
+
+fn ready(id: &str, credits: bool) -> (AccountSelection, bool) {
+    (
+        AccountSelection::Ready {
+            account_id: id.into(),
+        },
+        credits,
+    )
+}
+
+#[test]
+fn plan_usage_on_a_spare_goes_before_credits_on_the_current_account() {
+    let accounts = [account("a"), account("b")];
+    let statuses = [on_credits("a", 5000), status("b", 20.0, 5000)];
+    assert_eq!(
+        choose(&accounts, &statuses, "a", true, None, true, 1000).unwrap(),
+        ready("b", false)
+    );
+    // With every spare spent too, the current account goes on on credits.
+    let statuses = [on_credits("a", 5000), status("b", 100.0, 6000)];
+    assert_eq!(
+        choose(&accounts, &statuses, "a", true, None, true, 1000).unwrap(),
+        ready("a", true)
+    );
+    // A spare's credits serve only when the current account has none.
+    let statuses = [status("a", 100.0, 5000), on_credits("b", 6000)];
+    assert_eq!(
+        choose(&accounts, &statuses, "a", true, None, true, 1000).unwrap(),
+        ready("b", true)
+    );
+    // Credit-free routing never uses them, and the wait names the plan reset.
+    assert_eq!(
+        choose(&accounts, &statuses, "a", true, None, false, 1000)
+            .unwrap()
+            .0,
+        AccountSelection::Wait {
+            account_id: "a".into(),
+            next_reset: Some(5000),
+            reset_tokens_available: false
+        }
+    );
+}
+
+#[test]
+fn a_turn_that_may_not_use_credits_waits_for_plan_usage_to_reset() {
+    let accounts = [account("a")];
+    let statuses = [on_credits("a", 5000)];
+    assert_eq!(
+        choose(&accounts, &statuses, "a", false, None, true, 1000).unwrap(),
+        ready("a", true)
+    );
+    assert_eq!(
+        choose_account(&accounts, &statuses, "a", false, None, 1000).unwrap(),
+        ready("a", true).0
+    );
+    assert_eq!(
+        choose(&accounts, &statuses, "a", false, None, false, 1000)
+            .unwrap()
+            .0,
+        AccountSelection::Wait {
+            account_id: "a".into(),
+            next_reset: Some(5000),
+            reset_tokens_available: false
+        }
+    );
+    // The dispatch fast path admits plan usage only; credits go through
+    // selection, where a spare with plan usage left can still win.
+    assert!(!current_status_ready(&statuses[0], None, 2000));
+    assert!(credits_only(&statuses[0], None, 1000).0);
+}
+
+#[tokio::test]
+async fn a_provider_refusal_outranks_the_credits_it_last_reported() {
+    let state = AccountStatusCache::default();
+    let target = account("a");
+    state
+        .cache
+        .lock()
+        .await
+        .insert("a".into(), on_credits("a", now_ms() + 60_000));
+    state.record_limited(&target).await;
+    let refused = state.cache.lock().await.get("a").cloned().unwrap();
+    assert_eq!(refused.state, AccountState::Limited);
+    assert!(!refused.on_credits);
+    assert!(matches!(
+        choose(&[target], &[refused], "a", false, None, true, now_ms())
+            .unwrap()
+            .0,
+        AccountSelection::Wait { .. }
+    ));
+}
+
+#[test]
+fn a_failed_refresh_keeps_the_credits_state_it_had() {
+    let old = on_credits("a", 5000);
+    let mut failed = ProviderAccountStatus::empty("a", "codex-acp", 2000);
+    failed.state = AccountState::Error;
+    let merged = merge_refresh(Some(&old), failed);
+    assert!(merged.on_credits);
+    assert_eq!(merged.state, AccountState::Error);
+    assert!(merged.limits[0].covered_by_credits);
 }

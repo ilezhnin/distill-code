@@ -571,6 +571,7 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
                         .or_else(|| window.get("resetsAt"))
                         .and_then(timestamp),
                     model_id,
+                    covered_by_credits: false,
                 });
             }
         }
@@ -599,6 +600,7 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
                 model_id: model
                     .or_else(|| surface.filter(|name| !name.eq_ignore_ascii_case("claude code")))
                     .map(str::to_ascii_lowercase),
+                covered_by_credits: false,
             });
         }
     }
@@ -630,6 +632,7 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
                     remaining: Some((100.0 - used).clamp(0.0, 100.0)),
                     resets_at: timestamp(&window["resets_at"]),
                     model_id: Some(model.to_ascii_lowercase()),
+                    covered_by_credits: false,
                 });
             }
         }
@@ -790,6 +793,7 @@ mod tests {
             resets_at: None,
             window_minutes: Some(300),
             model_id: None,
+            covered_by_credits: false,
         });
         let mut fresh = ProviderAccountStatus::empty("a", "claude-acp", 2000);
         fresh.account_label = Some("a@example.test".into());

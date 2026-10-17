@@ -236,6 +236,9 @@ struct TurnIds {
     message_id: String,
     assistant_message_id: String,
     owned_deadline: Option<tokio::time::Instant>,
+    /// Whether the turn may run on purchased credits once plan usage is
+    /// spent: always for the operator's own turns, by request for owned ones.
+    allow_credits: bool,
 }
 
 fn owned_turn_deadline(timeout_ms: u64, absolute_ms: Option<i64>) -> tokio::time::Instant {
@@ -268,6 +271,7 @@ impl TurnIds {
             message_id: uuid::Uuid::new_v4().to_string(),
             assistant_message_id: uuid::Uuid::new_v4().to_string(),
             owned_deadline: None,
+            allow_credits: true,
         }
     }
 
@@ -5226,7 +5230,10 @@ impl Inner {
                 // Manual routing still parks a proven unaccepted prompt.
                 // Otherwise the renderer drops its queue entry while the host
                 // has already withdrawn that same prompt from history.
-                let selected_wait = self.route_account_for_dispatch(&record).await.err();
+                let selected_wait = self
+                    .route_account_for_dispatch(&record, ids.allow_credits)
+                    .await
+                    .err();
                 if let Some(wait) = Self::rejected_quota_wait(error, selected_wait) {
                     return Err(wait);
                 }
@@ -5334,6 +5341,7 @@ impl Inner {
     async fn route_account_for_dispatch(
         self: &Arc<Self>,
         record: &SessionRecord,
+        credits: bool,
     ) -> Result<(), Value> {
         if !provider_accounts::supports_managed_accounts(&record.harness) {
             return Ok(());
@@ -5360,6 +5368,7 @@ impl Inner {
                     &record.harness,
                     account_id,
                     record.model_id.as_deref(),
+                    credits,
                 )
                 .await
             } else if unavailable.is_empty() {
@@ -5369,6 +5378,7 @@ impl Inner {
                     Some(account_id),
                     automatic,
                     record.model_id.as_deref(),
+                    credits,
                 )
                 .await
             } else {
@@ -5378,6 +5388,7 @@ impl Inner {
                     Some(account_id),
                     automatic,
                     record.model_id.as_deref(),
+                    credits,
                     &unavailable,
                 )
                 .await
@@ -5428,7 +5439,7 @@ impl Inner {
                 "A prompt is already running for this session",
             ));
         }
-        self.route_account_for_dispatch(&record).await?;
+        self.route_account_for_dispatch(&record, true).await?;
         let current = self.session_record(session_id).await?;
         Ok(
             json!({"sessionId":session_id,"accountId":current.account_id,"providerId":current.harness}),
@@ -5474,7 +5485,8 @@ impl Inner {
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let mut record = self.session_record(&session_id).await?;
         if self.active_run_id(&session_id).await.is_none() {
-            self.route_account_for_dispatch(&record).await?;
+            self.route_account_for_dispatch(&record, ids.allow_credits)
+                .await?;
             record = self.session_record(&session_id).await?;
         }
         let account_runtime = self.dispatch_account_runtime(&session_id).await?;
@@ -6674,6 +6686,7 @@ impl Inner {
         // projected once onto the monotonic clock; setup never restores time.
         let monotonic_deadline = owned_turn_deadline(request.timeout_ms, deadline_at_ms);
         ids.owned_deadline = deadline_at_ms.map(|_| monotonic_deadline);
+        ids.allow_credits = request.allow_credits;
         let dispatch = ExecutionDispatch {
             request_key: request.request_key.clone(),
             session_id: request.session_id.clone(),
@@ -8367,6 +8380,7 @@ mod tests {
             message_id: "user-1".to_string(),
             assistant_message_id: "reply-1".to_string(),
             owned_deadline: None,
+            allow_credits: true,
         }
     }
 

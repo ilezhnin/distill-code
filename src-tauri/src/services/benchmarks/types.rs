@@ -582,6 +582,24 @@ pub struct Attempt {
     /// recorded before it was kept or recovered after an app restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_admission: Option<crate::services::benchmark_sandbox::Admission>,
+    /// Purchased credits the turn drew on, also sealed in the evidence.
+    /// Absent where plan usage paid for the whole turn, and on attempts
+    /// recorded before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_use: Option<CreditUse>,
+}
+/// A turn its account's purchased credits paid for, from the start or once
+/// plan usage ran out during it. The balances are the provider's own samples
+/// before and after the turn; other turns on the account at the same time show
+/// in them too.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditUse {
+    pub account_id: String,
+    /// Plan usage was already spent when the turn was sent.
+    pub from_start: bool,
+    pub balance_before: Option<f64>,
+    pub balance_after: Option<f64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

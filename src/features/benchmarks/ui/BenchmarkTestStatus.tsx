@@ -211,6 +211,11 @@ function waitingLabel(
   stopped: boolean,
   timed: boolean,
 ): string {
+  // Plan usage ran out and benchmark tests may not go on with credits.
+  if (/benchmark credits/i.test(reason)) {
+    if (stopped) return "modelRun.stoppedCredits";
+    return timed ? "modelRun.waitingCreditsUntil" : "modelRun.waitingCredits";
+  }
   if (/usage limit|quota/i.test(reason)) {
     if (stopped) return "modelRun.stoppedQuota";
     return timed ? "modelRun.waitingQuotaUntil" : "modelRun.waitingQuota";

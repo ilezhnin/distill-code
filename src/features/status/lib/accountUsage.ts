@@ -35,6 +35,8 @@ export function accountUsageFor(
     provider: account.providerId,
     accountId: account.id,
     accountLimited: configured && status?.state === "limited",
+    onCredits:
+      configured && status?.state === "ready" && status.onCredits === true,
     usageRetryAt: status?.usageRetryAt,
     configured,
     session: null,

@@ -307,6 +307,8 @@ function attentionCause(
   if (!attention) return t("attention.unknown");
   if (attention.outcome === "dispatch_uncertain")
     return t("attention.restarted");
+  if (/benchmark credits/i.test(attention.reason))
+    return t("attention.credits");
   if (/usage limit|quota/i.test(attention.reason)) return t("attention.quota");
   if (/sign-in/i.test(attention.reason)) return t("attention.signIn");
   // A raw bridge error reads better by its kind than by its JSON.

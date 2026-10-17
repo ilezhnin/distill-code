@@ -254,20 +254,56 @@ pub(super) fn map_usage(
             credits,
         })
     });
-    status.state = if status.limits.iter().any(|window| {
+    let spent = |window: &AccountLimitWindow| {
         window.model_id.is_none() && window.used_percent.is_some_and(|used| used >= 100.0)
-    }) {
+    };
+    // Spent plan windows the account's credits cover leave it usable, as
+    // they do in the Codex app; a spending allowance blocks regardless.
+    status.state = if status
+        .limits
+        .iter()
+        .any(|window| spent(window) && !window.covered_by_credits)
+    {
         AccountState::Limited
     } else if status.limits.is_empty() {
         AccountState::Unknown
     } else {
         AccountState::Ready
     };
+    status.on_credits = status.state == AccountState::Ready && status.limits.iter().any(spent);
     status
+}
+
+/// Whether a bucket's credits keep its account usable past spent plan
+/// windows: the server's own verdict first, then the balance. A balance of
+/// zero is no credit, whatever else the snapshot says.
+fn credits_available(credits: &Value) -> bool {
+    if credits["hasCredits"] == false {
+        return false;
+    }
+    if credits["unlimited"] == true {
+        return true;
+    }
+    match credit_balance(credits) {
+        Some(balance) => balance > 0.0,
+        None => credits["hasCredits"] == true,
+    }
+}
+
+/// The credit balance as a number; Codex reports it as decimal text.
+fn credit_balance(credits: &Value) -> Option<f64> {
+    credits["balance"]
+        .as_str()
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .or_else(|| credits["balance"].as_f64())
+        .filter(|balance| balance.is_finite())
 }
 
 fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
     let label = bucket["limitName"].as_str().unwrap_or(id);
+    let credits = bucket.get("credits").filter(|value| !value.is_null());
+    // Credits reach only the plan windows of the bucket that reports them.
+    let covered = credits.is_some_and(credits_available);
     for (key, fallback) in [("primary", "Session"), ("secondary", "Weekly")] {
         let Some(window) = bucket.get(key).filter(|value| !value.is_null()) else {
             continue;
@@ -295,6 +331,7 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
                 .as_str()
                 .map(str::to_owned)
                 .or_else(|| (id != "codex").then(|| id.to_owned())),
+            covered_by_credits: covered,
         });
     }
     if let Some(limit) = bucket
@@ -313,6 +350,7 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
             resets_at: timestamp(&limit["resetsAt"]),
             window_minutes: None,
             model_id: None,
+            covered_by_credits: false,
         });
     }
     let reached_type = bucket["rateLimitReachedType"].as_str();
@@ -333,6 +371,7 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
             resets_at: None,
             window_minutes: None,
             model_id: None,
+            covered_by_credits: false,
         });
     }
     if reached_type == Some("rate_limit_reached")
@@ -352,13 +391,15 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
                 .as_str()
                 .map(str::to_owned)
                 .or_else(|| (id != "codex").then(|| id.to_owned())),
+            // The plan allowance ran out without a window saying so.
+            covered_by_credits: covered,
         });
     }
     if let Some(plan) = bucket["planType"].as_str().and_then(plan_label) {
         // Usage is a fresh server response; account/read may reflect an older token.
         status.subscription = Some(plan);
     }
-    if let Some(credits) = bucket.get("credits").filter(|value| !value.is_null()) {
+    if let Some(credits) = credits {
         status.credits = Some(vec![CreditBalance {
             id: "credits".into(),
             label: "Credits".into(),
@@ -442,6 +483,139 @@ mod tests {
         assert_eq!(status.limits.len(), 2);
         assert_eq!(status.limits[1].resets_at, None);
         assert_eq!(status.limits[1].model_id, None);
+    }
+
+    fn spent_plan(credits: Value) -> ProviderAccountStatus {
+        map_usage(
+            "one",
+            &json!({"account":{"type":"chatgpt"}}),
+            &json!({"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1900000000},
+                "secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1900500000},
+                "credits":credits}}),
+            0,
+        )
+    }
+
+    #[test]
+    fn spent_plan_windows_with_credits_left_run_on_credits() {
+        for credits in [
+            json!({"hasCredits":true,"unlimited":false,"balance":"39500.25"}),
+            json!({"hasCredits":true,"unlimited":true,"balance":null}),
+            json!({"hasCredits":true,"unlimited":false,"balance":null}),
+            json!({"unlimited":false,"balance":12}),
+        ] {
+            let status = spent_plan(credits.clone());
+            assert_eq!(status.state, AccountState::Ready, "{credits}");
+            assert!(status.on_credits, "{credits}");
+            assert!(status.limits.iter().all(|window| window.covered_by_credits));
+            assert!(super::super::exhausted(&status, None, 0).0);
+            assert!(!super::super::blocked(&status, None, true, 0).0);
+        }
+        let status = spent_plan(json!({"hasCredits":true,"unlimited":false,"balance":"39500.25"}));
+        assert_eq!(
+            status.credits.as_ref().unwrap()[0].balance.as_deref(),
+            Some("39500.25")
+        );
+        assert_eq!(super::super::plan_credit_balance(&status), Some(39500.25));
+        assert_eq!(
+            super::super::credits_only(&status, None, 0),
+            (true, Some(1_900_500_000_000))
+        );
+        // Other providers' balances never stand for plan usage.
+        let mut other = status.clone();
+        other.provider_id = "claude-acp".into();
+        assert_eq!(super::super::plan_credit_balance(&other), None);
+    }
+
+    #[test]
+    fn no_credits_left_keeps_a_spent_plan_limited() {
+        for credits in [
+            json!({"hasCredits":true,"unlimited":false,"balance":"0"}),
+            json!({"hasCredits":false,"unlimited":false,"balance":"250"}),
+            json!({"hasCredits":false,"unlimited":true,"balance":null}),
+            json!({"hasCredits":false,"unlimited":false,"balance":null}),
+            Value::Null,
+        ] {
+            let status = spent_plan(credits.clone());
+            assert_eq!(status.state, AccountState::Limited, "{credits}");
+            assert!(!status.on_credits, "{credits}");
+            assert!(super::super::blocked(&status, None, true, 0).0);
+            assert!(!super::super::credits_only(&status, None, 0).0);
+        }
+    }
+
+    #[test]
+    fn plan_usage_left_is_not_running_on_credits() {
+        let status = map_usage(
+            "one",
+            &json!({"account":{"type":"chatgpt"}}),
+            &json!({"rateLimits":{"primary":{"usedPercent":40},
+                "credits":{"hasCredits":true,"unlimited":false,"balance":"500"}}}),
+            0,
+        );
+        assert_eq!(status.state, AccountState::Ready);
+        assert!(!status.on_credits);
+        assert!(!super::super::credits_only(&status, None, 0).0);
+    }
+
+    #[test]
+    fn a_spending_allowance_blocks_whatever_credits_remain() {
+        let credits = json!({"hasCredits":true,"unlimited":false,"balance":"40000"});
+        for bucket in [
+            json!({"primary":{"usedPercent":100},"spendControlReached":true,"credits":credits}),
+            json!({"primary":{"usedPercent":20},"individualLimit":{"limit":"50","used":"50",
+                "remainingPercent":0,"resetsAt":1900000000},"credits":credits}),
+            json!({"primary":{"usedPercent":100},
+                "rateLimitReachedType":"workspace_member_credits_depleted","credits":credits}),
+        ] {
+            let status = map_usage(
+                "one",
+                &json!({"account":{"type":"chatgpt"}}),
+                &json!({"rateLimits":bucket}),
+                0,
+            );
+            assert_eq!(status.state, AccountState::Limited, "{bucket}");
+            assert!(!status.on_credits);
+            assert!(super::super::blocked(&status, None, true, 0).0);
+        }
+    }
+
+    #[test]
+    fn a_reached_plan_without_a_spent_window_runs_on_credits() {
+        let status = map_usage(
+            "one",
+            &json!({"account":{"type":"chatgpt"}}),
+            &json!({"rateLimits":{"primary":{"usedPercent":97},"rateLimitReachedType":"rate_limit_reached",
+                "credits":{"hasCredits":true,"unlimited":false,"balance":"10"}}}),
+            0,
+        );
+        assert_eq!(status.state, AccountState::Ready);
+        assert!(status.on_credits);
+        assert!(status
+            .limits
+            .iter()
+            .any(|window| window.id == "codex:blocked" && window.covered_by_credits));
+    }
+
+    #[test]
+    fn credits_cover_only_the_bucket_that_reports_them() {
+        let status = map_usage(
+            "one",
+            &json!({"account":{"type":"chatgpt"}}),
+            &json!({"rateLimitsByLimitId":{
+                "codex":{"primary":{"usedPercent":100},
+                    "credits":{"hasCredits":true,"unlimited":false,"balance":"80"}},
+                "opaque":{"normalModelSlug":"gpt-6-astra","primary":{"usedPercent":100},"credits":null}}}),
+            0,
+        );
+        assert_eq!(status.state, AccountState::Ready);
+        assert!(status.on_credits);
+        assert!(!super::super::blocked(&status, Some("gpt-6"), true, 0).0);
+        assert!(super::super::blocked(&status, Some("gpt-6-astra"), true, 0).0);
+        assert_eq!(
+            status.credits.as_ref().unwrap()[0].balance.as_deref(),
+            Some("80")
+        );
     }
 
     #[test]

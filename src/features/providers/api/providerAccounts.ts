@@ -33,6 +33,8 @@ export interface ProviderAccountLimit {
   resetsAt: number | null;
   windowMinutes?: number | null;
   modelId: string | null;
+  /** The account's credits keep it usable once this plan window is spent. */
+  coveredByCredits?: boolean;
 }
 
 export interface ProviderAccountResetCredit {
@@ -59,6 +61,8 @@ export interface ProviderAccountStatus {
     credits?: ProviderAccountResetCredit[] | null;
   } | null;
   credits: ProviderCreditBalance[] | null;
+  /** Plan usage is spent and the account runs on its credits. */
+  onCredits?: boolean;
   lastUpdatedAt: number;
   lastAttemptAt: number;
   stale: boolean;

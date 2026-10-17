@@ -590,6 +590,7 @@
     "subscription": "Plan: {{value}}",
     "notReported": "Not reported",
     "stale": "Out of date",
+    "onCredits": "Running on credits",
     "usagePaused": "Usage updates paused",
     "usageRetryIn": "The provider paused usage requests. Retry in {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Waiting for the next usage update.",
@@ -679,6 +680,15 @@
       "label": "Time limit per test",
       "description": "Stops a test that never finishes. A model's speed is measured on its own board.",
       "unit": "min"
+    },
+    "creditLimit": {
+      "label": "Credits benchmarks may spend",
+      "description": "Once an account's plan usage is spent, tests go on with its purchased credits up to this total. Empty: credits are off and tests wait for plan usage to reset.",
+      "placeholder": "Off",
+      "unit": "credits",
+      "spent": "Spent so far: {{spent}}",
+      "spentOfLimit": "Spent so far: {{spent}} of {{limit}}",
+      "unavailable": "Spending could not be read, so tests do not use credits."
     }
   },
   "mcpManager": {

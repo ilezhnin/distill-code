@@ -494,6 +494,10 @@ pub struct OwnedTurnRequest {
     /// Images sent after the text, base64 with their media type.
     #[serde(default)]
     pub images: Vec<OwnedTurnImage>,
+    /// Whether the turn may run on the account's purchased credits once its
+    /// plan usage is spent. Off unless the owner of the turn allows it.
+    #[serde(default)]
+    pub allow_credits: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

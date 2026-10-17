@@ -148,6 +148,8 @@ impl AccountStatusCache {
             ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms())
         });
         status.state = AccountState::Limited;
+        // A refusal outranks a credit balance the last sample reported.
+        status.on_credits = false;
         status.last_attempt_at = now_ms();
         status.last_updated_at = now_ms();
         status.error = Some("The provider reported an exhausted usage allowance".into());
@@ -243,13 +245,70 @@ pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
 }
 
 /// Whether the last known status of `account_id` has a usage window spent
-/// now; false while nothing is known. Reads the cache only.
-pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str) -> bool {
+/// now, counting a plan window its credits cover as spent unless `credits`
+/// may be used; false while nothing is known. Reads the cache only.
+pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str, credits: bool) -> bool {
     let state = app.state::<ProviderAccountStatusState>();
     let cache = state.native.cache.lock().await;
     cache
         .get(account_id)
-        .is_some_and(|status| exhausted(status, None, now_ms()).0)
+        .is_some_and(|status| blocked(status, None, credits, now_ms()).0)
+}
+
+/// Whether a turn of `model_id` on `status` can run only on the account's
+/// credits: plan usage is spent and its credits cover it. Also gives when plan
+/// usage resets, where every spent window names it.
+pub(crate) fn credits_only(
+    status: &ProviderAccountStatus,
+    model_id: Option<&str>,
+    now: i64,
+) -> (bool, Option<i64>) {
+    let (spent, reset) = exhausted(status, model_id, now);
+    (spent && !blocked(status, model_id, true, now).0, reset)
+}
+
+/// Whether purchased credits can keep `provider_id`'s accounts usable past
+/// spent plan windows. Only Codex credits do.
+pub(crate) fn plan_credits_supported(provider_id: &str) -> bool {
+    provider_id == "codex-acp"
+}
+
+/// The purchased credit balance that can cover spent plan windows, as the
+/// provider last reported it.
+pub(crate) fn plan_credit_balance(status: &ProviderAccountStatus) -> Option<f64> {
+    if !plan_credits_supported(&status.provider_id) {
+        return None;
+    }
+    status
+        .credits
+        .as_ref()?
+        .iter()
+        .find(|credit| credit.id == "credits")?
+        .balance
+        .as_deref()?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|balance| balance.is_finite())
+}
+
+/// The status of `account_id` dispatch decides on: the cached one while it
+/// is fresh, else a new provider sample.
+pub(crate) async fn account_status(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<ProviderAccountStatus, String> {
+    let account = provider_accounts::account(app, account_id)?;
+    Ok(refresh_account(app, &account, false).await)
+}
+
+/// A new provider sample of `account_id`, taken after a turn on it ended.
+pub(crate) async fn account_status_after_turn(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<ProviderAccountStatus, String> {
+    invalidate(app, account_id).await;
+    account_status(app, account_id).await
 }
 
 pub async fn fetch_snapshot(
@@ -342,6 +401,7 @@ fn merge_refresh(
             status.limits = old.limits.clone();
             status.reset_tokens = old.reset_tokens.clone();
             status.credits = old.credits.clone();
+            status.on_credits = old.on_credits;
             status.last_updated_at = old.last_updated_at;
             if old.state == AccountState::Limited {
                 status.state = AccountState::Limited;
@@ -394,12 +454,15 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
 
 /// Selection never calls a credit redemption endpoint. A wait is a real wait,
 /// including when the selected account has earned reset credits available.
+/// `credits` lets a turn draw on purchased credits once plan usage is spent;
+/// plan usage on any eligible account still goes first.
 pub async fn select_account(
     app: &AppHandle,
     provider_id: &str,
     current_account_id: Option<&str>,
     auto_switch: bool,
     model_id: Option<&str>,
+    credits: bool,
 ) -> Result<AccountSelection, String> {
     select_account_excluding(
         app,
@@ -407,6 +470,7 @@ pub async fn select_account(
         current_account_id,
         auto_switch,
         model_id,
+        credits,
         &HashSet::new(),
     )
     .await
@@ -418,6 +482,7 @@ pub async fn select_account_excluding(
     current_account_id: Option<&str>,
     auto_switch: bool,
     model_id: Option<&str>,
+    credits: bool,
     excluded: &HashSet<String>,
 ) -> Result<AccountSelection, String> {
     let registry = provider_accounts::snapshot(app)?;
@@ -437,17 +502,20 @@ pub async fn select_account_excluding(
     }
     let current_status = refresh_account(app, &current, false).await;
     let mut statuses = vec![current_status.clone()];
-    let selection = choose_account(
+    let selection = choose(
         &registry.accounts,
         &statuses,
         &current.id,
         false,
         model_id,
+        credits,
         now_ms(),
     );
-    if !auto_switch || matches!(selection, Ok(AccountSelection::Ready { .. })) {
+    // Credits on the current account wait until the spares are known: one
+    // with plan usage left runs the turn instead.
+    if !auto_switch || matches!(selection, Ok((AccountSelection::Ready { .. }, false))) {
         let _ = emit_cached_snapshot(app).await;
-        return selection;
+        return selection.map(|(selection, _)| selection);
     }
     let current_api = api_billed(&current, Some(&current_status));
     let candidates: Vec<_> = registry
@@ -472,12 +540,13 @@ pub async fn select_account_excluding(
             }
         }
     }
-    if let Ok(ready @ AccountSelection::Ready { .. }) = choose_account(
+    if let Ok((ready @ AccountSelection::Ready { .. }, false)) = choose(
         &registry.accounts,
         &statuses,
         &current.id,
         true,
         model_id,
+        credits,
         now_ms(),
     ) {
         let _ = emit_cached_snapshot(app).await;
@@ -492,12 +561,13 @@ pub async fn select_account_excluding(
     while let Some(status) = pending.next().await {
         statuses.retain(|old| old.account_id != status.account_id);
         statuses.push(status);
-        if let Ok(ready @ AccountSelection::Ready { .. }) = choose_account(
+        if let Ok((ready @ AccountSelection::Ready { .. }, false)) = choose(
             &registry.accounts,
             &statuses,
             &current.id,
             true,
             model_id,
+            credits,
             now_ms(),
         ) {
             let _ = emit_cached_snapshot(app).await;
@@ -505,14 +575,16 @@ pub async fn select_account_excluding(
         }
     }
     let _ = emit_cached_snapshot(app).await;
-    choose_account(
+    choose(
         &registry.accounts,
         &statuses,
         &current.id,
         true,
         model_id,
+        credits,
         now_ms(),
     )
+    .map(|(selection, _)| selection)
 }
 
 /// Owned repository sessions keep their frozen account and use its WSL status.
@@ -522,6 +594,7 @@ pub(crate) async fn select_repository_account(
     provider_id: &str,
     account_id: &str,
     model_id: Option<&str>,
+    credits: bool,
 ) -> Result<AccountSelection, String> {
     let account = provider_accounts::resolve_account(app, provider_id, Some(account_id))?;
     let state = app.state::<ProviderAccountStatusState>();
@@ -539,7 +612,16 @@ pub(crate) async fn select_repository_account(
             }
         })
         .await;
-    choose_account(&[account], &[status], account_id, false, model_id, now_ms())
+    choose(
+        &[account],
+        &[status],
+        account_id,
+        false,
+        model_id,
+        credits,
+        now_ms(),
+    )
+    .map(|(selection, _)| selection)
 }
 
 fn api_billed(account: &ProviderAccount, status: Option<&ProviderAccountStatus>) -> bool {
@@ -582,16 +664,30 @@ fn applies(window: &AccountLimitWindow, model_id: Option<&str>) -> bool {
     })
 }
 
+/// Whether `status` has plan usage spent for `model_id`, and when it resets.
 fn exhausted(
     status: &ProviderAccountStatus,
     model_id: Option<&str>,
+    now: i64,
+) -> (bool, Option<i64>) {
+    blocked(status, model_id, false, now)
+}
+
+/// Whether a turn of `model_id` cannot run on `status`, and when that ends.
+/// With `credits`, a spent window the account's credits cover does not block.
+fn blocked(
+    status: &ProviderAccountStatus,
+    model_id: Option<&str>,
+    credits: bool,
     now: i64,
 ) -> (bool, Option<i64>) {
     let windows: Vec<_> = status
         .limits
         .iter()
         .filter(|window| {
-            applies(window, model_id) && window.used_percent.is_some_and(|used| used >= 100.0)
+            applies(window, model_id)
+                && window.used_percent.is_some_and(|used| used >= 100.0)
+                && !(credits && window.covered_by_credits)
         })
         .collect();
     if windows.is_empty() {
@@ -610,6 +706,8 @@ fn exhausted(
     (true, next_reset)
 }
 
+/// [`choose`] for a turn that may draw on credits.
+#[cfg(test)]
 pub(crate) fn choose_account(
     accounts: &[ProviderAccount],
     statuses: &[ProviderAccountStatus],
@@ -618,6 +716,30 @@ pub(crate) fn choose_account(
     model_id: Option<&str>,
     now: i64,
 ) -> Result<AccountSelection, String> {
+    choose(
+        accounts,
+        statuses,
+        current_id,
+        auto_switch,
+        model_id,
+        true,
+        now,
+    )
+    .map(|(selection, _)| selection)
+}
+
+/// The account a turn runs on, and whether it runs on that account's
+/// credits: plan usage on the current account, then on a spare, and only
+/// then, when `credits` allows it, credits on the current account or a spare.
+fn choose(
+    accounts: &[ProviderAccount],
+    statuses: &[ProviderAccountStatus],
+    current_id: &str,
+    auto_switch: bool,
+    model_id: Option<&str>,
+    credits: bool,
+    now: i64,
+) -> Result<(AccountSelection, bool), String> {
     let current = accounts
         .iter()
         .find(|account| account.id == current_id)
@@ -627,17 +749,25 @@ pub(crate) fn choose_account(
     }
     let find_status = |id: &str| statuses.iter().find(|status| status.account_id == id);
     let current_status = find_status(current_id);
-    let current_blocked = current_status.is_some_and(|status| exhausted(status, model_id, now).0);
+    let current_blocked = |credits: bool| {
+        current_status.is_some_and(|status| blocked(status, model_id, credits, now).0)
+    };
     let current_auth_missing = current_status.is_some_and(|status| {
         matches!(
             status.state,
             AccountState::NeedsAuth | AccountState::Disabled
         )
     });
-    if !current_blocked && !current_auth_missing {
-        return Ok(AccountSelection::Ready {
-            account_id: current_id.into(),
-        });
+    let ready = |account_id: &str, on_credits: bool| {
+        Ok((
+            AccountSelection::Ready {
+                account_id: account_id.into(),
+            },
+            on_credits,
+        ))
+    };
+    if !current_auth_missing && !current_blocked(false) {
+        return ready(current_id, false);
     }
     let same_billing = |account: &ProviderAccount| {
         api_billed(account, find_status(&account.id)) == api_billed(current, current_status)
@@ -651,25 +781,36 @@ pub(crate) fn choose_account(
                 && (account.id == current_id || (auto_switch && account.auto_switch))
         })
         .collect();
-    if auto_switch {
-        for candidate in &candidates {
-            if let Some(status) = find_status(&candidate.id)
-                .filter(|status| !status.stale && status.state == AccountState::Ready)
-            {
-                if !exhausted(status, model_id, now).0 {
-                    return Ok(AccountSelection::Ready {
-                        account_id: candidate.id.clone(),
-                    });
-                }
-            }
+    let spare = |credits: bool| {
+        candidates
+            .iter()
+            .filter(|_| auto_switch)
+            .find(|candidate| {
+                find_status(&candidate.id).is_some_and(|status| {
+                    !status.stale
+                        && status.state == AccountState::Ready
+                        && !blocked(status, model_id, credits, now).0
+                })
+            })
+            .map(|candidate| candidate.id.as_str())
+    };
+    if let Some(account_id) = spare(false) {
+        return ready(account_id, false);
+    }
+    if credits {
+        if !current_auth_missing && !current_blocked(true) {
+            return ready(current_id, true);
+        }
+        if let Some(account_id) = spare(true) {
+            return ready(account_id, true);
         }
     }
     let mut waits: Vec<_> = candidates
         .iter()
         .filter_map(|account| {
             let status = find_status(&account.id)?;
-            let (blocked, reset) = exhausted(status, model_id, now);
-            blocked.then_some((account, status, reset))
+            let (spent, reset) = blocked(status, model_id, credits, now);
+            spent.then_some((account, status, reset))
         })
         .collect();
     waits.sort_by_key(|(_, _, reset)| reset.unwrap_or(i64::MAX));
@@ -681,11 +822,14 @@ pub(crate) fn choose_account(
                     .as_ref()
                     .is_some_and(|tokens| tokens.available > 0)
         });
-        return Ok(AccountSelection::Wait {
-            account_id: account.id.clone(),
-            next_reset: *next_reset,
-            reset_tokens_available,
-        });
+        return Ok((
+            AccountSelection::Wait {
+                account_id: account.id.clone(),
+                next_reset: *next_reset,
+                reset_tokens_available,
+            },
+            false,
+        ));
     }
     Err("No authenticated account is available for this provider".into())
 }

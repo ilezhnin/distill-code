@@ -313,6 +313,23 @@ later does not change it. Attempts recorded before this field existed, and
 attempts recovered after an application restart, do not have it. Compare speed
 across attempts with similar admission conditions, or account for them.
 
+Benchmark turns do not draw on purchased Codex credits unless the owner sets
+Credits benchmarks may spend in Settings > Benchmarks (`creditLimit` in
+`benchmarks/settings.json`, empty for off). Without a limit, or once it is
+reached, a test whose account's plan usage is spent waits for plan usage to
+reset like any usage limit, and its waiting row says credits are not allowed.
+Spending is measured from the balance Codex reports and kept in
+`benchmarks/credit-spend.json`: every drop between two samples of an account
+taken within 30 minutes counts, including other use of the account meanwhile,
+and a purchase never offsets it. The limit stops new turns on credits; turns
+already running finish, so spending can pass the limit by what they use. A
+turn whose account runs out of plan usage while it runs may go on on credits
+on the provider's side, whatever the setting. An attempt paid with credits, from its start or
+from the point its plan usage ran out, records `creditUse` (account, whether
+from the start, and the balance before and after) on the attempt, in its
+sealed evidence and in exports. The balances include other turns on the
+account at the same time.
+
 Observe the existing run with `benchmark_get_run`, attempt evidence and events.
 Check requested versus acknowledged provider, model and reasoning settings.
 Report successful, unsuccessful, infrastructure-error, cancelled and unmeasured

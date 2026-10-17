@@ -191,6 +191,7 @@ pub(super) fn map_usage(
             resets_at: reset,
             window_minutes: minutes,
             model_id: None,
+            covered_by_credits: false,
         });
     }
     if status.limits.is_empty() {

@@ -241,7 +241,7 @@ impl OfflineWorkers {
 }
 
 impl ExecutionBackend for OfflineWorkers {
-    fn accounts<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+    fn accounts<'a>(&'a self, _: &'a str, _: bool) -> BoxFuture<'a, Result<Vec<String>>> {
         Box::pin(async { Ok(vec!["invented-owned-account".into()]) })
     }
     fn prepare_owned_task<'a>(

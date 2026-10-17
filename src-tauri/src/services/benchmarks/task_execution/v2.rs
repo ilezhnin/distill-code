@@ -584,7 +584,7 @@ impl BenchmarkService {
         let mut base = BTreeMap::new();
         let mut choices = BTreeMap::new();
         for provider in &consent.provider_ids {
-            for account in self.backend.accounts(provider).await? {
+            for account in self.backend.accounts(provider, true).await? {
                 let rows = self
                     .backend
                     .inventory(provider, Some(&account), false)

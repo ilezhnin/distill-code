@@ -23,6 +23,10 @@ pub struct AccountLimitWindow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_minutes: Option<u32>,
     pub model_id: Option<String>,
+    /// The account's credits keep it usable once this plan window is spent,
+    /// as the provider's own app does. A spending allowance never is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub covered_by_credits: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -58,6 +62,9 @@ pub struct ProviderAccountStatus {
     pub limits: Vec<AccountLimitWindow>,
     pub reset_tokens: Option<ResetTokens>,
     pub credits: Option<Vec<CreditBalance>>,
+    /// Plan usage is spent and the account runs on its credits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_credits: bool,
     pub last_updated_at: i64,
     pub last_attempt_at: i64,
     pub stale: bool,
@@ -78,6 +85,7 @@ impl ProviderAccountStatus {
             limits: Vec::new(),
             reset_tokens: None,
             credits: None,
+            on_credits: false,
             last_updated_at: now,
             last_attempt_at: now,
             stale: false,

@@ -633,6 +633,17 @@ pub async fn benchmark_get_home_advantage(
     })
     .await
 }
+/// The credit limit set for benchmark turns and the credits they spent. Read
+/// from the files alone, so Settings does not start the benchmark service.
+#[tauri::command]
+pub async fn benchmark_get_credit_spend(
+    app: AppHandle,
+) -> Result<benchmarks::credits::CreditSpend> {
+    let root = crate::services::distill_root::app_root(&app)
+        .map_err(|error| BenchmarkError::new("storage_unavailable", error))?
+        .join("benchmarks");
+    benchmarks::credits::spend(&root).await
+}
 #[tauri::command]
 pub async fn benchmark_get_case_stats(app: AppHandle) -> Result<Vec<CaseStats>> {
     let s = service(&app).await?;

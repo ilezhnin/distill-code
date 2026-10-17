@@ -37,6 +37,8 @@ export interface ProviderRateLimits {
   provider: AgentPlatformId;
   accountId?: string;
   accountLimited?: boolean;
+  /** Plan usage is spent and the account runs on its credits. */
+  onCredits?: boolean;
   usageRetryAt?: number | null;
   session: RateLimitWindow | null;
   weekly: RateLimitWindow | null;

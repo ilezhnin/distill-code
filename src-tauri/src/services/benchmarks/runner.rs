@@ -298,8 +298,14 @@ pub trait ExecutionBackend: Send + Sync {
         })
     }
     /// The enabled accounts of `provider` a turn may run on, its default
-    /// first; none for a provider with only the CLI's own sign-in.
-    fn accounts<'a>(&'a self, _provider: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+    /// first; none for a provider with only the CLI's own sign-in. With
+    /// `credits`, an account whose plan usage is spent but whose purchased
+    /// credits cover it still has room.
+    fn accounts<'a>(
+        &'a self,
+        _provider: &'a str,
+        _credits: bool,
+    ) -> BoxFuture<'a, Result<Vec<String>>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 }
@@ -308,7 +314,132 @@ pub struct NativeBackend {
     inventories: RunInventories,
 }
 
+/// What a candidate turn may do with its account's purchased credits,
+/// decided just before it is sent.
+struct CreditTurn {
+    /// The turn may run on credits once plan usage is spent.
+    allow: bool,
+    /// Plan usage was already spent: the turn runs on credits from its start.
+    from_start: bool,
+    /// The credit balance before the turn, where the provider reports one.
+    balance: Option<f64>,
+}
+
+/// A turn whose plan usage is spent, refused before any provider call
+/// because it may not run on credits: it waits for plan usage to reset like
+/// any usage limit, with `reason` on the test.
+fn credit_wait(account: &str, plan_reset: Option<i64>, reason: &str) -> BenchmarkError {
+    BenchmarkError::new(
+        QUOTA_WAIT,
+        json!({"code":-32010,"message":reason,"data":{"kind":QUOTA_WAIT,"type":QUOTA_WAIT,
+            "accountId":account,"nextReset":plan_reset,"resetTokensAvailable":false,
+            "dispatchStarted":false,"promptNotAccepted":true}})
+        .to_string(),
+    )
+}
+
 impl NativeBackend {
+    /// Whether a candidate turn on `configuration` may draw on its account's
+    /// credits once plan usage is spent: only within the owner's benchmark
+    /// credit limit, and only where the provider reports the balance that
+    /// measures it. A turn whose plan usage is spent already, and that may
+    /// not, waits for plan usage to reset.
+    async fn credit_turn(
+        &self,
+        root: &std::path::Path,
+        configuration: &Configuration,
+    ) -> Result<CreditTurn> {
+        use crate::services::provider_account_status as accounts;
+        let mut turn = CreditTurn {
+            allow: false,
+            from_start: false,
+            balance: None,
+        };
+        let Some(account) = configuration
+            .account_id
+            .as_deref()
+            .filter(|_| accounts::plan_credits_supported(&configuration.provider_id))
+        else {
+            return Ok(turn);
+        };
+        let Ok(status) = accounts::account_status(&self.app, account).await else {
+            return Ok(turn);
+        };
+        turn.balance = accounts::plan_credit_balance(&status);
+        if let Some(balance) = turn.balance {
+            if let Err(error) =
+                super::credits::observe(root, account, balance, status.last_updated_at).await
+            {
+                log::warn!("[benchmarks] {}", error.message);
+            }
+        }
+        let spend = super::credits::spend(root).await;
+        turn.allow = turn.balance.is_some()
+            && spend
+                .as_ref()
+                .is_ok_and(super::credits::CreditSpend::allows);
+        let (from_start, plan_reset) =
+            accounts::credits_only(&status, Some(&configuration.model_id), now());
+        turn.from_start = from_start;
+        if from_start && !turn.allow {
+            let reason = match (&spend, turn.balance) {
+                (Err(error), _) => error.message.clone(),
+                (Ok(_), None) => super::credits::UNMEASURED.to_owned(),
+                (Ok(spend), Some(_)) => spend.refusal(),
+            };
+            return Err(credit_wait(account, plan_reset, &reason));
+        }
+        Ok(turn)
+    }
+
+    /// Records the credits a finished candidate turn drew on, from a provider
+    /// sample taken after it, with the attempt and in its evidence: a turn
+    /// sent on credits, or one that ran out of plan usage on the way.
+    async fn record_credit_use(
+        &self,
+        root: &std::path::Path,
+        attempt: &mut Attempt,
+        evidence: &mut Value,
+        turn: &CreditTurn,
+    ) {
+        use crate::services::provider_account_status as accounts;
+        let Some(account) = attempt.configuration.account_id.clone() else {
+            return;
+        };
+        if turn.balance.is_none() {
+            return;
+        }
+        let after = accounts::account_status_after_turn(&self.app, &account)
+            .await
+            .ok();
+        let balance_after = after.as_ref().and_then(accounts::plan_credit_balance);
+        if let (Some(status), Some(balance)) = (&after, balance_after) {
+            if let Err(error) =
+                super::credits::observe(root, &account, balance, status.last_updated_at).await
+            {
+                log::warn!("[benchmarks] {}", error.message);
+            }
+        }
+        let ended_on_credits = after.as_ref().is_some_and(|status| {
+            accounts::credits_only(status, Some(&attempt.configuration.model_id), now()).0
+        });
+        let spent = turn
+            .balance
+            .zip(balance_after)
+            .is_some_and(|(before, after)| after < before);
+        if !(turn.from_start || ended_on_credits || spent) {
+            return;
+        }
+        let credit_use = CreditUse {
+            account_id: account,
+            from_start: turn.from_start,
+            balance_before: turn.balance,
+            balance_after,
+        };
+        evidence["creditUse"] = json!(credit_use);
+        attempt.credit_use = Some(credit_use);
+    }
+
     async fn native_execution_receipt(
         &self,
         host: &Arc<crate::services::agent_host::router::Inner>,
@@ -1724,10 +1855,14 @@ impl NativeBackend {
             .filter(|account| account.enabled && judge_provider_allowed(&account.provider_id))
         {
             // A judge on an account whose limit is spent could only abstain
-            // and leave the panel incomplete.
+            // and leave the panel incomplete. Judges never draw on credits.
             if exhausted(&attempt.run_id, &account.id)
-                || crate::services::provider_account_status::usage_spent(&self.app, &account.id)
-                    .await
+                || crate::services::provider_account_status::usage_spent(
+                    &self.app,
+                    &account.id,
+                    false,
+                )
+                .await
             {
                 continue;
             }
@@ -1842,7 +1977,9 @@ impl NativeBackend {
                     "Frozen judge is no longer eligible",
                 ));
             }
-            if crate::services::provider_account_status::usage_spent(&self.app, &account).await {
+            if crate::services::provider_account_status::usage_spent(&self.app, &account, false)
+                .await
+            {
                 return Err(BenchmarkError::new(
                     "quota_exhausted",
                     "Frozen judge account has no remaining usage",
@@ -1949,6 +2086,7 @@ impl NativeBackend {
                 policy_hash: session.policy_hash,
                 timeout_ms: timeout.as_millis() as u64,
                 images: image.cloned().into_iter().collect(),
+                allow_credits: false,
             })
             .await;
         let started = Instant::now();
@@ -2685,6 +2823,9 @@ impl ExecutionBackend for NativeBackend {
                     policy_hash: session.owned.policy_hash.clone(),
                     timeout_ms: binding.remaining_ms()?,
                     images: vec![],
+                    // An application task is the operator's own work and,
+                    // like a chat, may run on credits.
+                    allow_credits: true,
                 },
                 crate::services::agent_host::executor_receipts::ExecutorLink {
                     decision_key: binding.request.request_key.clone(),
@@ -2935,7 +3076,11 @@ impl ExecutionBackend for NativeBackend {
                 .map_err(host_error)
         })
     }
-    fn accounts<'a>(&'a self, provider: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+    fn accounts<'a>(
+        &'a self,
+        provider: &'a str,
+        credits: bool,
+    ) -> BoxFuture<'a, Result<Vec<String>>> {
         Box::pin(async move {
             let snapshot = crate::services::provider_accounts::snapshot(&self.app)
                 .map_err(|error| BenchmarkError::new("infrastructure_failure", error))?;
@@ -2947,8 +3092,12 @@ impl ExecutionBackend for NativeBackend {
                 .filter(|account| account.provider_id == provider && account.enabled)
             {
                 // An account whose last status shows a spent limit has no room.
-                if !crate::services::provider_account_status::usage_spent(&self.app, &account.id)
-                    .await
+                if !crate::services::provider_account_status::usage_spent(
+                    &self.app,
+                    &account.id,
+                    credits,
+                )
+                .await
                 {
                     accounts.push(account.id.clone());
                 }
@@ -3042,6 +3191,10 @@ impl ExecutionBackend for NativeBackend {
                 }
             };
             busy().await?;
+            // A turn whose plan usage is spent waits here, before any setup,
+            // unless it may run on credits.
+            self.credit_turn(&store.root, &attempt.configuration)
+                .await?;
             let version =
                 collection_context::prepare(store, &mut attempt, version, timeout).await?;
             let repository = super::repository::is_repository_case(&version.manifest);
@@ -3259,6 +3412,9 @@ impl ExecutionBackend for NativeBackend {
                         BenchmarkError::new("capability_missing", error.to_string())
                     })?;
             }
+            let credit = self
+                .credit_turn(&store.root, &attempt.configuration)
+                .await?;
             let started = Instant::now();
             let request = OwnedTurnRequest {
                 session_id: session.session_id.clone(),
@@ -3267,6 +3423,7 @@ impl ExecutionBackend for NativeBackend {
                 policy_hash: session.policy_hash,
                 timeout_ms: turn_timeout_ms(timeout_seconds, budget.as_ref())?,
                 images: Vec::new(),
+                allow_credits: credit.allow,
             };
             run_request.require_dispatch_admission(now())?;
             let dispatch = match deadline {
@@ -3341,6 +3498,8 @@ impl ExecutionBackend for NativeBackend {
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
             }
+            self.record_credit_use(&store.root, &mut attempt, &mut evidence, &credit)
+                .await;
             record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             store.save_attempt(&attempt).await?;
@@ -5880,8 +6039,11 @@ impl BenchmarkService {
     /// not run out under `run_id`, the default first.
     async fn room_elsewhere(&self, run_id: &str, configuration: &Configuration) -> Option<String> {
         let current = configuration.account_id.as_deref();
+        let credits = super::credits::spend(&self.store.root)
+            .await
+            .is_ok_and(|spend| spend.allows());
         self.backend
-            .accounts(&configuration.provider_id)
+            .accounts(&configuration.provider_id, credits)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -6195,7 +6357,7 @@ impl ExecutionBackend for FakeBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
     }
-    fn accounts<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+    fn accounts<'a>(&'a self, _: &'a str, _: bool) -> BoxFuture<'a, Result<Vec<String>>> {
         Box::pin(async move {
             Ok(self
                 .accounts_of
@@ -8124,6 +8286,7 @@ mod tests {
             repository_result: None,
             collection_context: None,
             sandbox_admission: None,
+            credit_use: None,
         };
         let version = |id: &str| BenchmarkVersion {
             id: id.into(),

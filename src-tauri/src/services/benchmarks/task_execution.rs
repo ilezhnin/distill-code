@@ -707,7 +707,8 @@ impl BenchmarkService {
             .collect();
         let mut candidates = BTreeMap::new();
         for provider in providers {
-            let accounts = self.backend.accounts(provider).await?;
+            // Application tasks are the operator's own work: credits count.
+            let accounts = self.backend.accounts(provider, true).await?;
             for account in accounts {
                 for row in self
                     .backend

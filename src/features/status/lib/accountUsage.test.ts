@@ -86,6 +86,37 @@ describe("account usage projection", () => {
     ).toBe("at-limit");
   });
 
+  it("keeps an account on credits usable and says so", () => {
+    const spent = [
+      {
+        id: "codex:primary",
+        label: "Session",
+        usedPercent: 100,
+        remaining: 0,
+        resetsAt: 20,
+        modelId: null,
+        windowMinutes: 300,
+        coveredByCredits: true,
+      },
+    ];
+    const [usage] = project({ limits: spent, onCredits: true });
+    expect(usage.onCredits).toBe(true);
+    expect(usage.accountLimited).toBe(false);
+    expect(getProviderUsageStatusKind(usage)).not.toBe("limited");
+    // Usable, but ranked after platforms with plan usage left.
+    expect(platformLimitState([usage], "claude-acp")).toBe("near-limit");
+    // A refusal from the provider outranks the credits it reported.
+    const [refused] = project({
+      limits: spent,
+      onCredits: true,
+      state: "limited",
+    });
+    expect(refused.onCredits).toBe(false);
+    expect(platformLimitState([refused], "claude-acp")).toBe("at-limit");
+    const [none] = project({ limits: spent });
+    expect(platformLimitState([none], "claude-acp")).toBe("at-limit");
+  });
+
   it("clears windows after authorization is lost", () => {
     const [usage] = project({ state: "needs_auth" });
     expect(usage.session).toBeNull();

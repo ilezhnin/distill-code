@@ -104,6 +104,18 @@ another available account for the same provider and billing mode; a subscription
 chat does not automatically become a paid API chat. An API chat can switch to
 another API account in its provider group.
 
+**Purchased Codex credits keep an account usable**, as in the Codex app. A
+spent plan window of a bucket whose credits snapshot reports credits (the
+server's `hasCredits`, an unlimited flag, or a balance above zero) does not
+block, and the account shows Running on credits. A spending allowance
+(`spendControlReached`, a spent `individualLimit`, a credits-depleted or
+workspace usage block) still blocks, and a zero balance leaves the account
+limited. Plan usage goes first: the current account's, then a spare's with
+automatic switching, and only then credits. Chats and application tasks may
+run on credits. Benchmark turns may only within the credit limit set in
+Settings > Benchmarks; judges never do. A provider refusal outranks the
+credit balance it last reported.
+
 When every eligible account is exhausted, the message stays queued. Distill
 waits for the earliest time at which an account's blocking windows have all
 reset. Unknown reset times are polled again. A manual account change or fresh

@@ -141,6 +141,7 @@ describe("attentionLabel", () => {
     ({
       "attention.restarted": "restarted",
       "attention.quota": "quota",
+      "attention.credits": "credits",
       "attention.signIn": "sign in",
       "attention.failed": `failed: ${options?.reason}`,
       "attention.unknown": "unknown",
@@ -164,6 +165,16 @@ describe("attentionLabel", () => {
         },
       }),
     ).toBe("quota");
+    // Credits benchmarks may not spend are named apart from a plain limit.
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: null,
+          reason:
+            'A test did not finish: the usage limit ran out and does not reset in time for the run to wait. {"code":-32010,"message":"Plan usage is spent, and benchmark credits are off: set a credit limit in Settings > Benchmarks"}',
+        },
+      }),
+    ).toBe("credits");
     expect(
       attentionLabel(t, {
         attention: { outcome: null, reason: "Grok sign-in expired" },

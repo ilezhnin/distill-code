@@ -829,6 +829,7 @@ mod tests {
                         repository_result: None,
                         collection_context: None,
                         sandbox_admission: None,
+                        credit_use: None,
                     });
                 }
             }

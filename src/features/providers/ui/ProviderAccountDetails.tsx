@@ -101,6 +101,9 @@ export function ProviderUsageDetails({
             value: usage.planType ?? t("accounts.notReported"),
           })}
         </span>
+        {usage.onCredits ? (
+          <Badge variant="secondary">{t("accounts.onCredits")}</Badge>
+        ) : null}
         {stale ? <Badge variant="outline">{t("accounts.stale")}</Badge> : null}
       </div>
       {getUsageSections(usage).length ? (

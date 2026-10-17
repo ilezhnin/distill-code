@@ -229,6 +229,8 @@ export function platformLimitState(
       Math.max(highest, clampUsedPercent(section.window.usedPercent)),
     0,
   );
-  if (tightest >= 100) return "at-limit";
+  // Spent plan usage the account's credits cover leaves it usable; ranking
+  // still prefers a platform with plan usage left.
+  if (tightest >= 100) return entry.onCredits ? "near-limit" : "at-limit";
   return tightest >= nearLimit ? "near-limit" : "clear";
 }

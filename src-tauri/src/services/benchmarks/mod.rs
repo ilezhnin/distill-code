@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod artifact_context;
 pub mod campaigns;
 pub mod catalog;
+pub mod credits;
 pub mod effort;
 pub mod evaluation;
 pub mod evidence;
@@ -145,6 +146,7 @@ fn pending_attempt(
         repository_result: None,
         collection_context: None,
         sandbox_admission: None,
+        credit_use: None,
     }
 }
 

@@ -247,6 +247,11 @@ export const benchmarkApi = {
   getCaseStats: () => invoke<CaseStats[]>("benchmark_get_case_stats"),
   getHomeAdvantage: (cutoffAt: number | null = null) =>
     invoke<HomeAdvantageReport>("benchmark_get_home_advantage", { cutoffAt }),
+  /** The credit limit set for benchmark tests and what they spent so far. */
+  getCreditSpend: () =>
+    invoke<{ limit: number | null; spent: number }>(
+      "benchmark_get_credit_spend",
+    ),
   getHistory: (configuration: Configuration, model = false) =>
     invoke<HistorySnapshot[]>("benchmark_get_history", {
       configuration,

@@ -88,6 +88,7 @@ fn observation(
             "judge":e.judge.as_ref().map(|c|public_configuration(c,salt)),
             "judgeBatchId":e.details.as_ref().and_then(|d|d.get("judgeBatchId")),
             "protocolHash":e.details.as_ref().and_then(|d|d.get("protocolHash"))})).collect::<Vec<_>>()),
+        "creditUse":attempt.and_then(|a|a.credit_use.as_ref()),
         "subscriptionCharge":null,"subscriptionChargeReason":"See batch-level quota evidence; never allocated by token share"})
 }
 

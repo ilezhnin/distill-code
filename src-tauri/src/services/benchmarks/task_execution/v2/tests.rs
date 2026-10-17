@@ -27,7 +27,7 @@ impl ExecutionBackend for NativeFixture {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
     }
-    fn accounts<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
+    fn accounts<'a>(&'a self, _: &'a str, _: bool) -> BoxFuture<'a, Result<Vec<String>>> {
         Box::pin(async { Ok(vec!["invented-account".into()]) })
     }
     fn inventory<'a>(

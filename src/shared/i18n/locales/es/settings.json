@@ -590,6 +590,7 @@
     "subscription": "Plan: {{value}}",
     "notReported": "Sin datos",
     "stale": "Desactualizado",
+    "onCredits": "Usando créditos",
     "usagePaused": "Actualizaciones de uso en pausa",
     "usageRetryIn": "El proveedor ha pausado las consultas de uso. Reintento en {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Esperando la próxima actualización de uso.",
@@ -679,6 +680,15 @@
       "label": "Tiempo máximo por prueba",
       "description": "Detiene una prueba que nunca termina. La velocidad de un modelo se mide en su propio tablero.",
       "unit": "min"
+    },
+    "creditLimit": {
+      "label": "Créditos que pueden gastar los benchmarks",
+      "description": "Cuando se agota el uso del plan de una cuenta, las pruebas siguen con sus créditos comprados hasta este total. Vacío: los créditos están desactivados y las pruebas esperan a que se restablezca el uso del plan.",
+      "placeholder": "Desactivado",
+      "unit": "créditos",
+      "spent": "Gastado hasta ahora: {{spent}}",
+      "spentOfLimit": "Gastado hasta ahora: {{spent}} de {{limit}}",
+      "unavailable": "No se pudo leer el gasto, así que las pruebas no usan créditos."
     }
   },
   "mcpManager": {

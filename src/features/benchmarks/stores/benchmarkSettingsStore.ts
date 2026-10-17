@@ -25,6 +25,12 @@ export const MAX_TIME_LIMIT_MINUTES = 24 * 60;
 
 export interface BenchmarkSettings {
   timeLimitMinutes: number;
+  /**
+   * The most purchased credits benchmark tests may spend once an account's
+   * plan usage is spent; null keeps credits off. The backend reads it before
+   * every test and measures the spending.
+   */
+  creditLimit: number | null;
 }
 
 export function clampTimeLimitMinutes(minutes: number): number {
@@ -32,16 +38,24 @@ export function clampTimeLimitMinutes(minutes: number): number {
   return Math.min(MAX_TIME_LIMIT_MINUTES, Math.max(1, Math.round(minutes)));
 }
 
+/** A credit limit as stored: a whole number of credits, or off. */
+export function normalizeCreditLimit(limit: unknown): number | null {
+  return typeof limit === "number" && Number.isFinite(limit) && limit >= 0
+    ? Math.round(limit)
+    : null;
+}
+
 export function parseBenchmarkSettings(raw: unknown): BenchmarkSettings {
-  const value =
+  const stored =
     raw && typeof raw === "object"
-      ? (raw as { timeLimitMinutes?: unknown }).timeLimitMinutes
-      : undefined;
+      ? (raw as { timeLimitMinutes?: unknown; creditLimit?: unknown })
+      : {};
   return {
     timeLimitMinutes:
-      typeof value === "number"
-        ? clampTimeLimitMinutes(value)
+      typeof stored.timeLimitMinutes === "number"
+        ? clampTimeLimitMinutes(stored.timeLimitMinutes)
         : DEFAULT_TIME_LIMIT_MINUTES,
+    creditLimit: normalizeCreditLimit(stored.creditLimit),
   };
 }
 
@@ -57,16 +71,28 @@ interface BenchmarkSettingsState {
   /** False until the stored document has been read. Writes wait for it. */
   hydrated: boolean;
   setTimeLimitMinutes: (minutes: number) => void;
+  setCreditLimit: (limit: number | null) => void;
 }
 
 export const useBenchmarkSettingsStore = create<BenchmarkSettingsState>(
   (set, get) => ({
-    settings: { timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES },
+    settings: {
+      timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES,
+      creditLimit: null,
+    },
     hydrated: false,
     setTimeLimitMinutes: (minutes) => {
       const settings = {
         ...get().settings,
         timeLimitMinutes: clampTimeLimitMinutes(minutes),
+      };
+      set({ settings });
+      if (get().hydrated) document.write(settings);
+    },
+    setCreditLimit: (limit) => {
+      const settings = {
+        ...get().settings,
+        creditLimit: normalizeCreditLimit(limit),
       };
       set({ settings });
       if (get().hydrated) document.write(settings);
