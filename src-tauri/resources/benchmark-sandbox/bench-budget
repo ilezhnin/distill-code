@@ -3,7 +3,29 @@
 
 The scratch filesystem is a fixed-size ext4 loop device, not a sampled du
 estimate. This helper never executes a submitted file while holding root.
+
+Admission is dynamic (policy dynamic-v1): the next job starts while what the
+sandbox measures leaves room for it, not up to a fixed number of lanes.
+- Memory: every admitted job claims the larger of what it uses now and what
+  jobs of its class needed before (the 95th percentile of their recorded
+  peaks plus a quarter; the class ceiling until eight are recorded). The
+  claims and the new job's must fit the admission line, and an attempt must
+  also leave room for one check and one preparation. While a check or a
+  preparation waits for memory, no attempt starts; while a check waits for
+  CPUs, no CPU-heavy attempt starts. Neither starves behind attempts.
+- CPU: the CPU ceilings of CPU-heavy jobs (repository sessions, checks,
+  paired checks, browser checks) must fit the physical cores the host is not
+  using itself, and an attempt must leave one check's two CPUs, so a check
+  or a timed browser run always has its CPUs. Light jobs need the measured
+  load below the line. Checks that waited for CPU tighten the line.
+- Scratch: the filesystem's free space must cover the new job's
+  reservation, half a GiB, and the reservations of jobs admitted in the last
+  two minutes; an older job's use already shows in the free space.
+- Windows RAM, commit and the sandbox volume keep their floors, counting
+  claims not yet in use, and the guest keeps 2 GiB free.
+Every job keeps its own ceilings; admission never changes them.
 """
+import math
 import fcntl
 import json
 import os
@@ -23,20 +45,43 @@ ROOT = Path('/sys/fs/cgroup/distill-bench')
 STATE = Path('/run/distill-bench-budget')
 SCRATCH = Path('/srv/bench')
 IMAGE = Path('/var/lib/distill-bench/scratch.ext4')
-LANES = Path('/var/lib/distill-bench/heavy-lanes')
+HEAVY_CAP = Path('/var/lib/distill-bench/heavy-cap')
+PEAKS = Path('/var/lib/distill-bench/admission-peaks.json')
 DISK = 8 * GIB
 INODES = 131072
 OUTCOME_TOKEN = None
 DEVICE = None
-# How many heavy jobs (repository, browser, check, pair) run at once. The
-# operator sets 1-3 with `bench-budget heavy-lanes N`; an absent file means 2.
-DEFAULT_HEAVY_LANES = 2
-# Each lane past the first adds one repository job's memory, CPUs and
-# processes to the aggregate, so a job keeps the share it would have alone.
-LANE = (6 * GIB, 2, 768)
-# Every job's own scratch IO ceiling (read, write bytes per second). The
-# aggregate is the sum over what admission holds at once: every heavy lane,
-# one preparation and two light jobs.
+POLICY = 'dynamic-v1'
+# The aggregate every admitted job shares. Admission leaves one GiB of the
+# memory ceiling to trusted supervisors, page tables and filesystem
+# bookkeeping; supervisors also keep their own half CPU and 128 processes.
+ADMISSION_MEMORY = 23 * GIB
+AGGREGATE_CPU = 14
+AGGREGATE_PIDS = 4096
+AGGREGATE_IO = (1024 * MIB, 256 * MIB)
+# An attempt leaves room for one check: its CPUs (a check's or a pair's two)
+# and its memory plus one preparation's. A check or preparation refused for
+# room holds new attempts back for this long, and asks again within it.
+CHECK_CPUS = 2
+PRIORITY_HOLD = 10
+# Light jobs start while the measured load stays below this share of the
+# guest's CPUs and, where Linux reports it, CPU pressure below this share.
+LIGHT_LOAD = 0.75
+LIGHT_PRESSURE = 0.25
+# Recorded per class: peaks kept, and how many before they replace the
+# ceiling. The expectation is the 95th percentile with a quarter on top.
+PEAK_RING = 32
+PEAK_SAMPLES = 8
+# Checks whose share of time spent waiting for a CPU exceeds this tighten the
+# CPU line by one check while the recent median stays above it.
+STALL_LINE = 0.10
+STALL_RING = 20
+# A job's scratch reservation counts until it has run this long; after that
+# its actual use shows in the filesystem's free space. Admission keeps this
+# much free on top.
+SCRATCH_SETTLE = 120
+SCRATCH_MARGIN = 512 * MIB
+# Every job's own scratch IO ceiling (read, write bytes per second).
 JOB_IO = {'heavy': (128 * MIB, 32 * MIB), 'prep': (128 * MIB, 32 * MIB), 'light': (32 * MIB, 8 * MIB)}
 CLASSES = {
     'text': (2 * GIB, 1, 256, 'light'),
@@ -48,6 +93,9 @@ CLASSES = {
     'login': (2 * GIB, 1, 256, 'light'),
     'probe': (2 * GIB, 1, 256, 'light'),
 }
+CPU_HEAVY = ('repository', 'browser', 'check', 'pair')
+ATTEMPTS = ('text', 'repository')
+SENSITIVE = ('browser', 'check', 'pair')
 SCRATCH_RESERVATIONS = {
     'text': (64 * 1024 ** 2, 4096), 'repository': (2 * GIB, 32768),
     'browser': (128 * 1024 ** 2, 4096), 'check': (GIB, 16384),
@@ -75,39 +123,27 @@ def protected(path):
     return path.is_dir() and not path.is_symlink() and info.st_uid == 0 and not info.st_mode & 0o022
 
 
-def lanes_from(text):
-    if not re.fullmatch(r'[1-3]\n?', text):
-        fail('the benchmark heavy-lane setting must be 1, 2 or 3')
-    return int(text)
+def heavy_cap_from(text):
+    if not re.fullmatch(r'([1-8]|off)\n?', text):
+        fail('the benchmark heavy-job cap must be 1 to 8 or off')
+    value = text.strip()
+    return None if value == 'off' else int(value)
 
 
-def heavy_lanes():
+def heavy_cap():
+    """The operator's optional cap on CPU-heavy jobs at once; None when absent."""
     try:
-        info = LANES.lstat()
+        info = HEAVY_CAP.lstat()
     except FileNotFoundError:
-        return DEFAULT_HEAVY_LANES
+        return None
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-        fail('the benchmark heavy-lane setting must be a root-owned regular file')
-    return lanes_from(LANES.read_text())
+        fail('the benchmark heavy-job cap must be a root-owned regular file')
+    return heavy_cap_from(HEAVY_CAP.read_text())
 
 
-def limits(lanes):
-    """The aggregate budget for `lanes` heavy lanes; one lane is the original policy."""
-    memory, cpu, pids = LANE
-    extra = lanes - 1
-    # Admission leaves one GiB of the memory ceiling to trusted supervisors,
-    # page tables and filesystem bookkeeping.
-    admission = 11 * GIB + extra * memory
-    read = lanes * JOB_IO['heavy'][0] + JOB_IO['prep'][0] + 2 * JOB_IO['light'][0]
-    written = lanes * JOB_IO['heavy'][1] + JOB_IO['prep'][1] + 2 * JOB_IO['light'][1]
-    return dict(lanes=lanes, admission=admission, memory=admission + GIB, cpu=4 + extra * cpu,
-                pids=1408 + extra * pids, read=read, write=written)
-
-
-def cpu_max(budget):
-    # Jobs can reserve every CPU in the budget; the control group's own half
-    # CPU comes on top, so supervisors never take a share a job was promised.
-    return f"{budget['cpu'] * 100000 + 50000} 100000"
+def cpu_max():
+    # The control group's own half CPU comes on top of the jobs' share.
+    return f"{AGGREGATE_CPU * 100000 + 50000} 100000"
 
 
 def setup():
@@ -134,24 +170,22 @@ def setup():
         if not protected(path):
             fail('benchmark scratch and lease parents must be root owned')
     DEVICE = scratch_device()
-    # A concurrent heavy-lane change writes its setting under this lock, so
-    # the aggregate never lags behind the setting admission reads.
     with locked():
-        apply_limits(limits(heavy_lanes()))
+        apply_limits()
 
 
-def apply_limits(budget):
-    write(ROOT / 'memory.max', budget['memory'])
-    write(ROOT / 'memory.high', budget['admission'])
-    write(ROOT / 'cpu.max', cpu_max(budget))
-    write(ROOT / 'pids.max', budget['pids'] + 128)
-    write(ROOT / 'io.max', f"{DEVICE} rbps={budget['read']} wbps={budget['write']}")
-    expected = {'memory.max': str(budget['memory']), 'memory.swap.max': '0',
-                'cpu.max': cpu_max(budget), 'pids.max': str(budget['pids'] + 128)}
+def apply_limits():
+    write(ROOT / 'memory.max', ADMISSION_MEMORY + GIB)
+    write(ROOT / 'memory.high', ADMISSION_MEMORY)
+    write(ROOT / 'cpu.max', cpu_max())
+    write(ROOT / 'pids.max', AGGREGATE_PIDS + 128)
+    write(ROOT / 'io.max', f"{DEVICE} rbps={AGGREGATE_IO[0]} wbps={AGGREGATE_IO[1]}")
+    expected = {'memory.max': str(ADMISSION_MEMORY + GIB), 'memory.swap.max': '0',
+                'cpu.max': cpu_max(), 'pids.max': str(AGGREGATE_PIDS + 128)}
     for name, value in expected.items():
         if (ROOT / name).read_text().strip() != value:
             fail('benchmark aggregate resource limit did not take effect: ' + name)
-    if io_limit(ROOT) != (str(budget['read']), str(budget['write'])):
+    if io_limit(ROOT) != tuple(map(str, AGGREGATE_IO)):
         fail('benchmark scratch IO limit did not take effect')
 
 
@@ -274,34 +308,254 @@ def waiting():
     return queue
 
 
-def fits(active, kind, host_buffers=0):
+def read_number(path, pattern=None):
+    """An integer from a cgroup or proc file, None where Linux has none."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    if pattern is None:
+        return int(text.split()[0]) if text.split() and text.split()[0].isdigit() else None
+    found = re.search(pattern, text)
+    return int(found.group(1)) if found else None
+
+
+def leaf_memory(row):
+    """What a job's leaves use now; zero before its process tree started."""
+    total = 0
+    for name in row['groups']:
+        total += read_number(ROOT / name / 'memory.current') or 0
+    return total
+
+
+def peaks():
+    try:
+        saved = json.loads(PEAKS.read_text())
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def expected_memory(kind, recorded):
+    """What a job of `kind` is expected to need: its ceiling until enough of
+    its class are recorded, then their 95th percentile plus a quarter."""
+    ceiling = CLASSES[kind][0]
+    seen = sorted(value for value in recorded.get(kind, []) if isinstance(value, int) and value > 0)
+    if len(seen) < PEAK_SAMPLES:
+        return ceiling
+    p95 = seen[min(len(seen) - 1, math.ceil(0.95 * len(seen)) - 1)]
+    return min(ceiling, max(256 * MIB, p95 + p95 // 4))
+
+
+def claim(row, recorded):
+    return max(leaf_memory(row), expected_memory(row['kind'], recorded)) + row.get('host_buffers', 0)
+
+
+def record_peak(kind, groups):
+    """Keep the peak memory of a finished job for its class's expectation."""
+    peak = sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)
+    if peak <= 0:
+        return
+    recorded = peaks()
+    ring = [value for value in recorded.get(kind, []) if isinstance(value, int)][-(PEAK_RING - 1):]
+    recorded[kind] = ring + [peak]
+    PEAKS.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staged = PEAKS.with_name(PEAKS.name + '.new')
+    staged.write_text(json.dumps(recorded))
+    os.chmod(staged, 0o600)
+    os.replace(staged, PEAKS)
+
+
+def stall_total(groups):
+    """Microseconds a job's leaves had runnable tasks waiting for a CPU."""
+    totals = [read_number(ROOT / name / 'cpu.pressure', r'some [^\n]*total=(\d+)') for name in groups]
+    return None if any(value is None for value in totals) else sum(totals)
+
+
+def record_stall(kind, groups, started, before):
+    """Keep a finished check's share of time spent waiting for a CPU."""
+    after = stall_total(groups)
+    elapsed = time.time() - started
+    if kind not in SENSITIVE or before is None or after is None or elapsed < 1:
+        return
+    path = STATE / 'stalls.json'
+    try:
+        ring = json.loads(path.read_text())
+    except (OSError, ValueError):
+        ring = []
+    ring = [value for value in ring if isinstance(value, (int, float))][-(STALL_RING - 1):]
+    ring.append(round(max(0, after - before) / 1e6 / elapsed, 4))
+    path.write_text(json.dumps(ring))
+
+
+def recent_stall():
+    try:
+        ring = [value for value in json.loads((STATE / 'stalls.json').read_text()) if isinstance(value, (int, float))]
+    except (OSError, ValueError):
+        return None
+    recent = sorted(ring[-10:])
+    return recent[len(recent) // 2] if recent else None
+
+
+def cpu_samples():
+    try:
+        ring = json.loads((STATE / 'cpu.json').read_text())
+    except (OSError, ValueError):
+        return []
+    now = time.time()
+    return [sample for sample in ring if isinstance(sample, list) and len(sample) == 2
+            and isinstance(sample[0], (int, float)) and isinstance(sample[1], int) and now - 60 < sample[0] <= now + 1]
+
+
+def sample_cpu():
+    """Keep the aggregate's CPU use: at every admission decision and, from
+    the reaper, every few seconds; at most one sample a second."""
+    usage = read_number(ROOT / 'cpu.stat', r'usage_usec (\d+)')
+    if usage is None:
+        return
+    ring = cpu_samples()
+    now = time.time()
+    if not ring or now - ring[-1][0] >= 1:
+        ring = (ring + [[now, usage]])[-16:]
+        (STATE / 'cpu.json').write_text(json.dumps(ring))
+
+
+def sandbox_cores():
+    """CPUs the benchmark jobs used over the last few sampled seconds, None
+    without a recent sample and one at least three seconds older."""
+    ring = cpu_samples()
+    if not ring or time.time() - ring[-1][0] > 20:
+        return None
+    at, used = ring[-1]
+    older = [sample for sample in ring if at - sample[0] >= 3]
+    if not older or used < older[-1][1]:
+        return None
+    before, used_before = older[-1]
+    return (used - used_before) / 1e6 / (at - before)
+
+
+def guest_pressure():
+    """The guest's share of time with CPU-starved tasks, over ten seconds."""
+    try:
+        found = re.search(r'some avg10=([0-9.]+)', Path('/proc/pressure/cpu').read_text())
+    except OSError:
+        return None
+    return float(found.group(1)) / 100 if found else None
+
+
+def cpu_line(host_cores, measured):
+    """Physical cores the host leaves the CPU-heavy jobs: the guest's CPUs as
+    cores (two threads each) less what the host itself runs outside the
+    sandbox, less one check while checks have been waiting for CPU."""
+    cpus = os.cpu_count() or 2
+    physical = max(CHECK_CPUS, cpus // 2)
+    outside = 0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0))
+    stalled = recent_stall()
+    tightening = CHECK_CPUS if stalled is not None and stalled > STALL_LINE else 0
+    return max(CHECK_CPUS, physical - math.ceil(outside) - tightening)
+
+
+def priority_waiting(kind):
+    """Whether a check or preparation was refused, moments ago, the room an
+    attempt of `kind` would take: memory holds every attempt, CPUs only the
+    CPU-heavy ones."""
+    try:
+        held = json.loads((STATE / 'priority.json').read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(held, dict):
+        return False
+    now = time.time()
+    return (held.get('memory', 0) > now or
+            (kind in CPU_HEAVY and held.get('cpu', 0) > now))
+
+
+def decide(active, kind, gate, host_buffers=0):
+    """Admit `kind` beside `active` or raise BlockingIOError naming the line
+    that holds it. Returns the measurements it decided on. A check or
+    preparation it refuses holds new attempts back (see PRIORITY_HOLD)."""
+    try:
+        return admit_measured(active, kind, gate, host_buffers)
+    except BlockingIOError as busy:
+        reason = str(busy)
+        if kind not in ATTEMPTS and 'Windows headroom evidence expired' not in reason and 'operator caps' not in reason:
+            resource = 'cpu' if 'CPU' in reason else 'memory'
+            path = STATE / 'priority.json'
+            try:
+                held = json.loads(path.read_text())
+            except (OSError, ValueError):
+                held = {}
+            held = held if isinstance(held, dict) else {}
+            held[resource] = time.time() + PRIORITY_HOLD
+            path.write_text(json.dumps(held))
+        raise
+
+
+def admit_measured(active, kind, gate, host_buffers):
     memory, cpu, pids, lane = CLASSES[kind]
-    budget = limits(heavy_lanes())
-    room = {'light': 2, 'heavy': budget['lanes'], 'prep': 1}[lane]
-    return (sum(row['memory'] for row in active) + memory + host_buffers <= budget['admission'] and
-            sum(row['cpu'] for row in active) + cpu <= budget['cpu'] and
-            sum(row['pids'] for row in active) + pids <= budget['pids'] and
-            sum(row['lane'] == lane for row in active) < room)
+    if kind in ATTEMPTS and priority_waiting(kind):
+        raise BlockingIOError('resource_busy: a check or preparation waits for room first; no provider process started')
+    sample_cpu()
+    recorded = peaks()
+    claims = sum(claim(row, recorded) for row in active)
+    unused = sum(max(0, claim(row, recorded) - leaf_memory(row)) for row in active)
+    needed = expected_memory(kind, recorded) + host_buffers
+    if kind in ATTEMPTS:
+        needed_room = needed + expected_memory('check', recorded) + expected_memory('prep', recorded)
+    else:
+        needed_room = needed
+    if claims + needed_room > ADMISSION_MEMORY:
+        raise BlockingIOError('resource_busy: sandbox memory the running jobs claim leaves no room for this job; no provider process started')
+    if (read_number(ROOT / 'pids.current') or 0) + pids > AGGREGATE_PIDS:
+        raise BlockingIOError('resource_busy: sandbox process budget leaves no room for this job; no provider process started')
+    observed = host_gate(gate, unused, needed)
+    measured = sandbox_cores()
+    host_cores = observed.get('hostCpuBusy')
+    host_cores = None if host_cores is None else host_cores * (os.cpu_count() or 1)
+    line = cpu_line(host_cores, measured)
+    heavy = [row for row in active if row['kind'] in CPU_HEAVY]
+    ceilings = sum(row['cpu'] for row in heavy)
+    pressure = guest_pressure()
+    if kind in CPU_HEAVY:
+        cap = heavy_cap()
+        if cap is not None and len(heavy) >= cap:
+            raise BlockingIOError('resource_busy: the operator caps CPU-heavy benchmark jobs at ' + str(cap) + '; no provider process started')
+        reserve = CHECK_CPUS if kind in ATTEMPTS else 0
+        if ceilings + cpu + reserve > line:
+            raise BlockingIOError('resource_busy: CPU cores the host leaves free cannot cover this job beside the running checks and sessions; no provider process started')
+    else:
+        busy = (measured if measured is not None else ceilings) + (0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0)))
+        if busy + cpu > LIGHT_LOAD * (os.cpu_count() or 1) or (pressure is not None and pressure > LIGHT_PRESSURE):
+            raise BlockingIOError('resource_busy: measured CPU load is above the light-job admission line; no provider process started')
+    observed.update(expectedMemory=needed, claimedMemory=claims, cpuLine=line, heavyCpus=ceilings,
+                    sandboxCpu=None if measured is None else round(measured, 3),
+                    cpuPressure=pressure, checkStall=recent_stall())
+    return observed
 
 
 def admission(active, kind, observed):
-    """The heavy-lane setting and the competing load this job was admitted under."""
+    """The policy and the competing load this job was admitted under."""
     competing = {}
     for row in active:
         key = row.get('kind', row['lane'])
         competing[key] = competing.get(key, 0) + 1
-    return dict(heavyLanes=heavy_lanes(), lane=CLASSES[kind][3], competing=competing,
-                competingHeavy=sum(row['lane'] == 'heavy' for row in active),
-                reservedMemory=sum(row['memory'] for row in active),
-                reservedCpu=sum(row['cpu'] for row in active),
+    return dict(policy=POLICY, heavyCap=heavy_cap(), lane=CLASSES[kind][3],
+                competing=competing,
+                competingHeavy=sum(row['kind'] in CPU_HEAVY for row in active),
+                reservedMemory=observed.pop('claimedMemory'),
+                reservedCpu=observed.pop('heavyCpus'),
                 memoryCurrent=int((ROOT / 'memory.current').read_text()),
                 guestLoad=[round(value, 2) for value in os.getloadavg()],
                 guestCpus=os.cpu_count(), **observed)
 
 
-def host_gate(gate, active, memory):
+def host_gate(gate, unused, memory):
+    """Check the Windows floors and the guest's against this job's need and
+    the claims of earlier jobs not yet in use. The host's evidence names its
+    available RAM, commit headroom, sandbox volume free space and, as a
+    share of its CPUs in thousandths, how busy it is."""
     try:
-        timestamp, available_ram, commit, disk = map(int, gate.split(','))
+        timestamp, available_ram, commit, disk, busy = map(int, gate.split(','))
     except (ValueError, AttributeError):
         fail('fresh Windows headroom evidence is required before benchmark admission')
     age = time.time() * 1000 - timestamp
@@ -309,8 +563,7 @@ def host_gate(gate, active, memory):
     # one second of future skew, retaining the five-second stale-evidence cap.
     if not -1000 <= age <= 5000:
         raise BlockingIOError('resource_busy: Windows headroom evidence expired before execution; no provider process started')
-    current = int((ROOT / 'memory.current').read_text())
-    additional = memory + max(0, sum(row['memory'] for row in active) - current)
+    additional = memory + unused
     if available_ram < 12 * GIB + additional:
         raise BlockingIOError('resource_busy: Windows available RAM cannot cover benchmark reservations and its 12 GiB desktop floor; no provider process started')
     if commit < 8 * GIB + additional:
@@ -324,14 +577,18 @@ def host_gate(gate, active, memory):
     if guest.get('MemAvailable', 0) < 2 * GIB + additional:
         raise BlockingIOError('resource_busy: shared WSL memory cannot cover benchmark reservations and its 2 GiB floor; no provider process started')
     return dict(hostAvailableRam=available_ram, hostAvailableCommit=commit,
-                guestMemAvailable=guest['MemAvailable'])
+                guestMemAvailable=guest['MemAvailable'],
+                hostCpuBusy=None if not 0 <= busy <= 1000 else busy / 1000)
 
 
 def scratch_headroom(active, kind):
     filesystem = os.statvfs(SCRATCH)
     needed_bytes, needed_inodes = SCRATCH_RESERVATIONS[kind]
-    needed_bytes += 256 * 1024 ** 2 + sum(row.get('scratch_bytes', 0) for row in active)
-    needed_inodes += 4096 + sum(row.get('scratch_inodes', 0) for row in active)
+    # Jobs admitted in the last moments may not have written yet; older ones
+    # already show in the free space (rows without an admission time count).
+    young = [row for row in active if time.time() - row.get('admitted', 0) < SCRATCH_SETTLE]
+    needed_bytes += SCRATCH_MARGIN + sum(row.get('scratch_bytes', 0) for row in young)
+    needed_inodes += 4096 + sum(row.get('scratch_inodes', 0) for row in young)
     if filesystem.f_bavail * filesystem.f_frsize < needed_bytes or filesystem.f_favail < needed_inodes:
         raise BlockingIOError('resource_busy: bounded benchmark scratch has insufficient free bytes/inodes for committed phases; no provider process started')
 
@@ -370,9 +627,9 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
     setup()
     with locked():
         active = receipts()
-        if not fits(active, kind, host_buffers) or waiting():
+        if waiting():
             raise BlockingIOError('resource_busy: benchmark resource capacity is queued; no provider process started')
-        observed = host_gate(gate, active, CLASSES[kind][0] + host_buffers)
+        observed = decide(active, kind, gate, host_buffers)
         scratch_headroom(active, kind)
         record = admission(active, kind, observed)
         groups = make_groups(kind, identifier)
@@ -380,7 +637,8 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
         memory, cpu, pids, lane = CLASSES[kind]
         scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
         row = dict(pending=True, pending_until=time.time() + 60, kind=kind, id=identifier,
-                   groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane)
+                   groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane,
+                   host_buffers=host_buffers, admitted=time.time())
         row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
         (STATE / ('lease-' + token + '.json')).write_text(json.dumps(row))
         print(json.dumps({'token': token, 'id': identifier, 'class': kind, 'deadlineMs': deadline_ms,
@@ -505,13 +763,23 @@ def run(kind, identifier, command):
             with locked():
                 active = receipts()
                 queue = waiting()
-                if queue and min(queue)[1] == ticket.name and fits(active, kind, host_buffers):
-                    host_gate(os.environ.get('DISTILL_BENCH_HOST_GATE'), active, CLASSES[kind][0] + host_buffers)
+                admitted = False
+                if queue and min(queue)[1] == ticket.name:
+                    try:
+                        decide(active, kind, os.environ.get('DISTILL_BENCH_HOST_GATE'), host_buffers)
+                        admitted = True
+                    except BlockingIOError as busy:
+                        # Room may still open in the queue; stale Windows
+                        # evidence cannot, so the host asks again with new.
+                        if 'Windows headroom evidence expired' in str(busy):
+                            raise
+                if admitted:
                     scratch_headroom(active, kind)
                     memory, cpu, pids, lane = CLASSES[kind]
                     groups = make_groups(kind, identifier)
                     row = dict(pid=os.getpid(), start=proc_identity(os.getpid()), deadline=deadline, kind=kind,
-                               id=identifier, groups=groups, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane)
+                               id=identifier, groups=groups, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane,
+                               host_buffers=host_buffers, admitted=time.time())
                     scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
                     row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
                     lease.write_text(json.dumps(row))
@@ -524,6 +792,8 @@ def run(kind, identifier, command):
                 announced = True
             time.sleep(0.2)
         print('resource_admitted: ' + kind, file=sys.stderr, flush=True)
+        admitted_at = time.time()
+        stalled_before = stall_total(groups)
         owner_path = SCRATCH / 'owners' / (identifier + '.json')
         if owner_path.exists():
             owner_path.write_text(json.dumps({'id': identifier, 'deadline': max(deadline + 300, time.time() + 7200)}))
@@ -563,6 +833,14 @@ def run(kind, identifier, command):
         ticket.unlink(missing_ok=True)
         if owned:
             with locked():
+                # What this job needed and how long it waited for CPUs teach
+                # admission before its leaves go.
+                try:
+                    if groups and 'admitted_at' in locals():
+                        record_peak(kind, groups)
+                        record_stall(kind, groups, admitted_at, stalled_before)
+                except (OSError, ValueError):
+                    pass
                 stop(groups)
                 lease.unlink(missing_ok=True)
         if child is not None:
@@ -577,40 +855,39 @@ def status():
     setup()
     with locked():
         active = receipts()
-        budget = limits(heavy_lanes())
-        print('budget heavy-lanes', budget['lanes'])
-        print('budget memory', budget['memory'])
-        print('budget cpu', cpu_max(budget).replace(' ', '/'))
+        recorded = peaks()
+        cap = heavy_cap()
+        print('budget admission', POLICY)
+        print('budget heavy-cap', 'off' if cap is None else cap)
+        print('budget memory', ADMISSION_MEMORY + GIB)
+        print('budget cpu', cpu_max().replace(' ', '/'))
         print('budget swap 0')
-        print('budget pids', budget['pids'] + 128)
+        print('budget pids', AGGREGATE_PIDS + 128)
         print('budget disk', DISK)
         print('budget inodes', INODES)
-        print(f"budget io {budget['read']}/{budget['write']}")
+        print(f"budget io {AGGREGATE_IO[0]}/{AGGREGATE_IO[1]}")
         print('budget job-io', ' '.join(f'{lane} {read}/{written}' for lane, (read, written) in JOB_IO.items()))
-        print('budget reserved', sum(row['memory'] for row in active))
+        print('budget reserved', sum(claim(row, recorded) for row in active))
         print('budget current', (ROOT / 'memory.current').read_text().strip())
+        print('budget expected', ' '.join(f'{kind} {expected_memory(kind, recorded)}' for kind in CLASSES))
         filesystem = os.statvfs(SCRATCH)
         print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
 
 
-def set_heavy_lanes(text):
-    """Change the heavy-lane setting once the jobs already admitted fit the new budget."""
-    lanes = lanes_from(text)
+def set_heavy_cap(text):
+    """Cap CPU-heavy jobs at once, or lift the cap. A lower cap waits for
+    nothing: jobs already admitted finish, and new ones wait for it."""
+    cap = heavy_cap_from(text)
     setup()
     with locked():
-        budget = limits(lanes)
-        active = receipts()
-        if (sum(row['memory'] for row in active) > budget['admission'] or
-                sum(row['cpu'] for row in active) > budget['cpu'] or
-                sum(row['pids'] for row in active) > budget['pids'] or
-                sum(row['lane'] == 'heavy' for row in active) > lanes):
-            raise BlockingIOError('resource_busy: admitted benchmark jobs exceed the requested heavy-lane budget; let them finish first')
-        LANES.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        staged = LANES.with_name(LANES.name + '.new')
-        staged.write_text(f'{lanes}\n')
-        os.chmod(staged, 0o644)
-        os.replace(staged, LANES)
-        apply_limits(budget)
+        if cap is None:
+            HEAVY_CAP.unlink(missing_ok=True)
+        else:
+            HEAVY_CAP.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            staged = HEAVY_CAP.with_name(HEAVY_CAP.name + '.new')
+            staged.write_text(f'{cap}\n')
+            os.chmod(staged, 0o644)
+            os.replace(staged, HEAVY_CAP)
     status()
 
 
@@ -628,6 +905,7 @@ def reap():
             with locked():
                 active = receipts()
                 waiting()
+                sample_cpu()
                 for path in (STATE / 'outcomes').glob('*.json'):
                     if path.stat().st_mtime < time.time() - 3600:
                         path.unlink(missing_ok=True)
@@ -678,8 +956,8 @@ def main():
     if sys.argv[1:] == ['status']:
         status()
         return 0
-    if len(sys.argv) == 3 and sys.argv[1] == 'heavy-lanes':
-        set_heavy_lanes(sys.argv[2])
+    if len(sys.argv) == 3 and sys.argv[1] == 'heavy-cap':
+        set_heavy_cap(sys.argv[2])
         return 0
     if len(sys.argv) in (6, 7) and sys.argv[1] == 'reserve':
         reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) == 7 else 0)

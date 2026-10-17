@@ -80,5 +80,17 @@ class BrokerBounds(unittest.TestCase):
             with patch.object(broker.selectors,'DefaultSelector',Selector),patch.object(broker.os,'read',side_effect=lambda *_:next(chunks)):
                 with self.assertRaises(ValueError):broker.supervise(child,1)
 
+    def test_renderer_digests_come_from_one_complete_bench_digest_pass(self):
+        files=[Path('/opt/distill-browser/a b'),Path('/opt/distill-browser/c')]
+        answer=lambda lines:types.SimpleNamespace(stdout=''.join(line+'\n' for line in lines).encode())
+        digest=lambda value,path:f'{value} {path}'
+        with patch.object(broker.subprocess,'run',return_value=answer([digest('a'*64,path) for path in files])) as run:
+            self.assertEqual(broker.digests(files),{str(path):'a'*64 for path in files})
+        self.assertEqual(run.call_args.args[0],['/usr/local/sbin/bench-digest','browser',*map(str,files)])
+        for bad in [[digest('a'*64,files[0])],[digest('-',files[0]),digest('a'*64,files[1])],
+                    [digest('a'*64,files[1]),digest('a'*64,files[0])],[digest('A'*64,files[0]),digest('a'*64,files[1])]]:
+            with patch.object(broker.subprocess,'run',return_value=answer(bad)):
+                with self.assertRaises(ValueError):broker.digests(files)
+
 if __name__=='__main__':
     unittest.main()

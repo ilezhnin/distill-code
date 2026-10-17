@@ -30,6 +30,7 @@ const FILES: &[(&str, &[u8])] = resources![
     "bench-check-prep",
     "bench-clean",
     "bench-copy",
+    "bench-digest",
     "bench-enter",
     "bench-judge",
     "bench-kill",
@@ -63,56 +64,65 @@ fn resource_hash(bytes: &[u8]) -> String {
 }
 
 pub(crate) const RESOURCE_POLICY: &str =
-    "heavy-lanes-linux-v2-lane-memory6-cpu2-pids768-job-read128-write32-light-read32-write8-disk8-inodes131072";
+    "dynamic-v1-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8-inodes131072";
 const GIB: u64 = 1024 * 1024 * 1024;
-const MIB: u64 = 1024 * 1024;
 
-/// Budget lines the broker reports under every heavy-lane setting, including
-/// each job's own scratch IO ceiling (read/write bytes per second).
-const FIXED_BUDGET: [&str; 4] = [
+/// Budget lines the broker reports: the aggregate every admitted job shares
+/// (memory, CPUs and processes with the supervisors' own share on top) and
+/// each job's own scratch IO ceiling (read/write bytes per second). Under the
+/// dynamic policy no line depends on how many jobs run; admission measures
+/// that instead (see bench-budget).
+const FIXED_BUDGET: [&str; 9] = [
+    "budget admission dynamic-v1",
+    "budget memory 25769803776",
+    "budget cpu 1450000/100000",
+    "budget pids 4224",
+    "budget io 1073741824/268435456",
     "budget swap 0",
     "budget disk 8589934592",
     "budget inodes 131072",
     "budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608",
 ];
 
-/// The aggregate the broker must report for `lanes` concurrent heavy jobs:
-/// the single-lane policy plus one repository job (6 GiB, two CPUs, 768
-/// processes and its IO ceiling) per added lane. Admission reserves at most
-/// 1 GiB less memory, and leaves supervisors their own half CPU and 128
-/// processes, so jobs never compete with them for a promised share.
-fn lane_budget(lanes: u64) -> [String; 4] {
-    let extra = lanes - 1;
-    let memory = 12 * GIB + extra * 6 * GIB;
-    let cpu = (4 + extra * 2) * 100_000 + 50_000;
-    let pids = 1408 + extra * 768 + 128;
-    // Every heavy lane, one preparation and two light jobs at their ceilings.
-    let read = (lanes * 128 + 128 + 2 * 32) * MIB;
-    let write = (lanes * 32 + 32 + 2 * 8) * MIB;
-    [
-        format!("budget memory {memory}"),
-        format!("budget cpu {cpu}/100000"),
-        format!("budget pids {pids}"),
-        format!("budget io {read}/{write}"),
-    ]
-}
-
-/// The heavy-lane setting and the competing load the Linux broker admitted a
+/// The policy and the competing load the Linux broker admitted a
 /// candidate session under. The attempt keeps it, so a speed comparison can
 /// tell a run that had the sandbox to itself from one that shared it.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Admission {
-    /// Heavy jobs (repository, browser, check, pair) the sandbox runs at once.
-    pub heavy_lanes: u32,
+    /// The admission policy: `dynamic-v1`, or absent for the fixed heavy
+    /// lanes before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    /// Heavy jobs (repository, browser, check, pair) the fixed policy ran at
+    /// once; absent under the dynamic one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heavy_lanes: Option<u32>,
+    /// The operator's cap on CPU-heavy jobs, where one was set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heavy_cap: Option<u32>,
     /// This job's lane: heavy, light or prep.
     pub lane: String,
     /// Jobs already admitted, by resource class, and how many were heavy.
     pub competing: BTreeMap<String, u32>,
     pub competing_heavy: u32,
-    /// Memory (bytes) and CPUs those jobs had reserved.
+    /// Memory (bytes) those jobs claimed (their reservations under the fixed
+    /// policy), and the CPU ceilings of the CPU-heavy ones.
     pub reserved_memory: u64,
     pub reserved_cpu: u32,
+    /// What this job was expected to need, the cores the CPU-heavy jobs could
+    /// have, the CPUs the benchmark jobs used over the last sampled seconds,
+    /// the guest's CPU pressure and how long recent checks waited for CPUs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_memory: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_cpu: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_pressure: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_stall: Option<f64>,
     /// Memory the benchmark cgroup actually used at admission.
     pub memory_current: u64,
     /// The WSL guest's 1, 5 and 15 minute load averages, CPUs and free memory.
@@ -122,7 +132,7 @@ pub struct Admission {
     /// Windows available RAM and commit headroom from the admission gate.
     pub host_available_ram: u64,
     pub host_available_commit: u64,
-    /// Busy share of all Windows CPUs over a quarter second before admission.
+    /// Busy share of all Windows CPUs over the second before admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_cpu_busy: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,13 +238,16 @@ static HOST_PREPARATION: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new()
 /// Acquire before allocating a snapshot/package, and retain through its final
 /// import/export. Invocation deliberately does not acquire this gate again.
 ///
-/// One permit matches the Linux broker's single preparation room: every
-/// holder goes on to a `prep` lease there, so a second permit would only move
-/// its wait into that queue while holding another host buffer reservation.
+/// The Linux broker admits preparations by measured room rather than one at a
+/// time, so the host lets a few prepare at once; each permit still passes
+/// the Windows headroom check for its own buffers below.
+pub(crate) const HOST_PREPARATIONS: usize = 3;
+
 pub(crate) async fn host_preparation(
     deadline_ms: u64,
 ) -> io::Result<tokio::sync::OwnedSemaphorePermit> {
-    let gate = HOST_PREPARATION.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)));
+    let gate =
+        HOST_PREPARATION.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(HOST_PREPARATIONS)));
     let permit = queue_for_preparation(gate, deadline_ms).await?;
     // Max input512MiB + ring/output overlap1GiB, in addition to Linux prep2GiB.
     tokio::task::spawn_blocking(|| {
@@ -269,6 +282,9 @@ async fn queue_for_preparation(
     .map_err(io::Error::other)
 }
 
+/// Fresh Windows evidence for the broker: the time, available RAM, commit
+/// headroom, the sandbox volume's free space, and how busy the host's CPUs
+/// were over the last second in thousandths (1001 while unknown).
 pub(crate) fn host_gate() -> io::Result<String> {
     let headroom = host_headroom()?;
     let now = std::time::SystemTime::now()
@@ -276,8 +292,11 @@ pub(crate) fn host_gate() -> io::Result<String> {
         .map_err(io::Error::other)?
         .as_millis();
     Ok(format!(
-        "{now},{},{},{}",
-        headroom.available_ram, headroom.available_commit, headroom.sandbox_volume_free
+        "{now},{},{},{},{}",
+        headroom.available_ram,
+        headroom.available_commit,
+        headroom.sandbox_volume_free,
+        host_cpu_permille().unwrap_or(1001)
     ))
 }
 
@@ -312,19 +331,15 @@ impl Drop for Reservation {
     }
 }
 
-/// Reserve a candidate session's process tree. Its admission record, with a
-/// Windows CPU sample taken just before, waits for the attempt's evidence.
+/// Reserve a candidate session's process tree. Its admission record, with
+/// the Windows CPU share the broker decided on, waits for the attempt's
+/// evidence.
 pub(crate) async fn reserve(
     class: ResourceClass,
     id: &str,
     deadline_ms: u64,
 ) -> io::Result<Reservation> {
-    let host_cpu_busy = tokio::task::spawn_blocking(host_cpu_busy)
-        .await
-        .ok()
-        .flatten();
     let mut reservation = reserve_with_buffers(class, id, deadline_ms, 0).await?;
-    reservation.admission.host_cpu_busy = host_cpu_busy;
     reservation.admission.host_cpus = std::thread::available_parallelism()
         .ok()
         .and_then(|count| u32::try_from(count.get()).ok());
@@ -393,15 +408,38 @@ fn host_headroom() -> io::Result<HostHeadroom> {
     ))
 }
 
+/// Busy share of all Windows CPUs over one second, in thousandths, from a
+/// thread that samples once a second for every admission's evidence; None in
+/// the first second, and where Windows reports nothing.
+fn host_cpu_permille() -> Option<u32> {
+    static LATEST: OnceLock<Arc<std::sync::atomic::AtomicU32>> = OnceLock::new();
+    let latest = LATEST.get_or_init(|| {
+        let latest = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+        let writer = Arc::clone(&latest);
+        let started = std::thread::Builder::new()
+            .name("benchmark-host-cpu".into())
+            .spawn(move || loop {
+                let busy = host_cpu_busy_over(Duration::from_secs(1)).unwrap_or(u32::MAX);
+                writer.store(busy, std::sync::atomic::Ordering::Relaxed);
+            });
+        if started.is_err() {
+            log::warn!("[benchmarks] cannot sample Windows CPU use for sandbox admission");
+        }
+        latest
+    });
+    Some(latest.load(std::sync::atomic::Ordering::Relaxed)).filter(|busy| *busy <= 1000)
+}
+
 #[cfg(not(windows))]
-fn host_cpu_busy() -> Option<f64> {
+fn host_cpu_busy_over(window: Duration) -> Option<u32> {
+    std::thread::sleep(window);
     None
 }
 
-/// Busy share of all Windows CPUs over a quarter second; idle time is part
-/// of the kernel time GetSystemTimes reports.
+/// Busy share of all Windows CPUs over `window`, in thousandths; idle time
+/// is part of the kernel time GetSystemTimes reports.
 #[cfg(windows)]
-fn host_cpu_busy() -> Option<f64> {
+fn host_cpu_busy_over(window: Duration) -> Option<u32> {
     #[repr(C)]
     #[derive(Default)]
     struct FileTime {
@@ -424,12 +462,15 @@ fn host_cpu_busy() -> Option<f64> {
         let ticks = |time: &FileTime| (u64::from(time.high) << 32) | u64::from(time.low);
         Some((ticks(&idle), ticks(&kernel) + ticks(&user)))
     };
-    let (idle_before, total_before) = sample()?;
-    std::thread::sleep(Duration::from_millis(250));
+    let Some((idle_before, total_before)) = sample() else {
+        std::thread::sleep(window);
+        return None;
+    };
+    std::thread::sleep(window);
     let (idle_after, total_after) = sample()?;
     let total = total_after.checked_sub(total_before)?;
     let idle = idle_after.checked_sub(idle_before)?.min(total);
-    (total > 0).then(|| ((total - idle) as f64 / total as f64 * 1000.0).round() / 1000.0)
+    (total > 0).then(|| ((total - idle) as f64 / total as f64 * 1000.0).round() as u32)
 }
 
 #[cfg(windows)]
@@ -638,14 +679,14 @@ fn registered_sandbox_path() -> io::Result<String> {
     ))
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Status {
     pub revision: String,
     accounts: Vec<(String, String)>,
     account_health: BTreeMap<(String, String), AccountHealth>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct AccountHealth {
     mode: String,
     state: String,
@@ -1022,30 +1063,10 @@ pub(crate) async fn invoke_bounded(
             "Sandbox transport exceeds its byte budget",
         ));
     }
-    let Some((mut class, id)) = helper_phase(program, args) else {
+    let Some((class, id)) = leased_class(program, args).await? else {
         return invoke_raw(program, args, input, cap, timeout, None).await;
     };
-    if program == "/usr/local/sbin/bench-judge" {
-        let response = invoke_raw(
-            "/usr/local/sbin/bench-budget",
-            &["check-class", id],
-            None,
-            64,
-            Duration::from_secs(5),
-            None,
-        )
-        .await?
-        .require_success("check classification")?;
-        class = match response.stdout.as_slice() {
-            b"check\n" => ResourceClass::Check,
-            b"pair\n" => ResourceClass::PairedCheck,
-            _ => return Err(io::Error::other("Sandbox check classification is invalid")),
-        };
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_millis() as u64;
+    let now = now_ms()?;
     let deadline = now.saturating_add(timeout.as_millis().min(u64::MAX as u128) as u64);
     let admission_deadline = deadline.min(now.saturating_add(300_000));
     let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
@@ -1066,6 +1087,107 @@ pub(crate) async fn invoke_bounded(
     )
     .await
 }
+
+/// The lease class and owner a workload helper runs under; a check asks the
+/// broker whether it is paired. None for a control helper.
+async fn leased_class<'a>(
+    program: &str,
+    args: &'a [&'a str],
+) -> io::Result<Option<(ResourceClass, &'a str)>> {
+    let Some((class, id)) = helper_phase(program, args) else {
+        return Ok(None);
+    };
+    if program != "/usr/local/sbin/bench-judge" {
+        return Ok(Some((class, id)));
+    }
+    let response = invoke_raw(
+        "/usr/local/sbin/bench-budget",
+        &["check-class", id],
+        None,
+        64,
+        Duration::from_secs(5),
+        None,
+    )
+    .await?
+    .require_success("check classification")?;
+    let class = match response.stdout.as_slice() {
+        b"check\n" => ResourceClass::Check,
+        b"pair\n" => ResourceClass::PairedCheck,
+        _ => return Err(io::Error::other("Sandbox check classification is invalid")),
+    };
+    Ok(Some((class, id)))
+}
+
+fn now_ms() -> io::Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_millis() as u64)
+}
+
+/// Runs a workload helper under a lease of `class` for `id`, like
+/// [`invoke_bounded`], except that waiting for room never shortens the run:
+/// admission asks once a second until `admit_until_ms`, and the helper then
+/// gets all of `run`, cut only to what is left before the caller's native
+/// `deadline_ms`. A window that closes in the queue is the queue's refusal
+/// (`resource_busy`): nothing started, and the caller may ask again.
+#[allow(clippy::too_many_arguments)]
+async fn invoke_once_admitted(
+    (class, id): (ResourceClass, &str),
+    program: &str,
+    args: &[&str],
+    input: Option<&[u8]>,
+    cap: usize,
+    run: Duration,
+    admit_until_ms: u64,
+    deadline_ms: Option<u64>,
+) -> io::Result<Output> {
+    if cap > 512 * 1024 * 1024 || input.is_some_and(|bytes| bytes.len() > 512 * 1024 * 1024) {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "Sandbox transport exceeds its byte budget",
+        ));
+    }
+    let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
+    let lease = admit(
+        admission_window(admit_until_ms, deadline_ms),
+        move || async move {
+            let until = now_ms()?.saturating_add(run_after_admission(run, deadline_ms)?);
+            reserve_with_buffers(class, id, until, host_buffers).await
+        },
+    )
+    .await?;
+    let run = run_after_admission(run, deadline_ms).map_err(|_| admission_queue_expired())?;
+    invoke_reserved_bounded(
+        &lease,
+        program,
+        args,
+        input,
+        cap,
+        Duration::from_millis(run),
+    )
+    .await
+}
+
+/// The run time a helper admitted now gets: all of `run`, cut to what is left
+/// before the caller's native `deadline_ms`; an expired deadline is TimedOut.
+fn run_after_admission(run: Duration, deadline_ms: Option<u64>) -> io::Result<u64> {
+    let run = run.as_millis().min(u64::MAX as u128) as u64;
+    match deadline_ms {
+        Some(deadline) => Ok(run.min(remaining_ms(deadline)?)),
+        None => Ok(run),
+    }
+}
+
+/// Until when admission asks: the caller's window, never past its native
+/// deadline.
+fn admission_window(admit_until_ms: u64, deadline_ms: Option<u64>) -> u64 {
+    deadline_ms.map_or(admit_until_ms, |deadline| admit_until_ms.min(deadline))
+}
+
+/// How long a post-turn collection or a check may wait for sandbox room
+/// without a native deadline of its own. Its answer is already sealed.
+const COLLECTION_ADMISSION: Duration = Duration::from_secs(30 * 60);
 
 /// A lease whose admission window closed before its helper started. No
 /// helper and no provider process ran, so the caller may wait and ask again.
@@ -1113,10 +1235,95 @@ async fn invoke(
     invoke_bounded(program, args, input, cap, timeout).await
 }
 
+/// How long one sandbox observation answers the readiness checks after it.
+/// An attempt checks readiness at each step of its preparation and again
+/// for its receipt, and attempts on other lanes check side by side. Each
+/// check used to start its own `bench-status`, which reads every pinned
+/// executable inside the half-CPU control group: about six seconds, eight
+/// times an attempt. Within this window the checks share the last
+/// observation. Helper updates refuse while any job runs, and every native
+/// receipt observes again after its turn ([`observe_now`]), as does a
+/// sign-in renewal; a key copied into the sandbox drops the observation.
+pub(crate) const OBSERVATION_REUSE: Duration = Duration::from_secs(10);
+
+/// What the sandbox reported, shared by the checks within a reuse window of
+/// the observation. One observation runs at a time per key, and the checks
+/// that arrive meanwhile wait for it instead of starting their own. A failed
+/// observation is never kept: the next check observes again.
+pub(crate) struct Recent<K, T> {
+    reuse: Duration,
+    slots: std::sync::Mutex<BTreeMap<K, Observed<T>>>,
+}
+
+/// One key's last observation and when it was made, locked while observing.
+type Observed<T> = Arc<tokio::sync::Mutex<Option<(std::time::Instant, T)>>>;
+
+impl<K: Ord + Clone, T: Clone> Recent<K, T> {
+    pub(crate) const fn new(reuse: Duration) -> Self {
+        Self {
+            reuse,
+            slots: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// The value observed for `key` within the reuse window, else (or when
+    /// `fresh`) a new observation, which later checks then share.
+    pub(crate) async fn get<E, F, O>(&self, key: K, fresh: bool, observe: O) -> Result<T, E>
+    where
+        O: FnOnce() -> F,
+        F: std::future::Future<Output = Result<T, E>>,
+    {
+        let slot = {
+            let mut slots = self
+                .slots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Keys are runtime revisions; old ones go once nothing holds them.
+            if slots.len() >= 32 {
+                slots.retain(|_, slot| Arc::strong_count(slot) > 1);
+            }
+            Arc::clone(slots.entry(key).or_default())
+        };
+        let mut held = slot.lock().await;
+        if let Some((at, value)) = held.as_ref() {
+            if !fresh && at.elapsed() < self.reuse {
+                return Ok(value.clone());
+            }
+        }
+        // Boxed: readiness is awaited deep inside an attempt's preparation.
+        let value = Box::pin(observe()).await?;
+        *held = Some((std::time::Instant::now(), value.clone()));
+        Ok(value)
+    }
+
+    /// Drops every kept observation, so the next check observes again: for
+    /// an action of the app's own that changed what the sandbox reports.
+    pub(crate) fn forget(&self) {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}
+
+static STATUS: Recent<(), Status> = Recent::new(OBSERVATION_REUSE);
+
 /// Runtime identity is independent of credentials. Status separately exposes
 /// redacted local health and expiry, never tokens or credential contents.
+/// A check within [`OBSERVATION_REUSE`] of the last observation shares it.
 pub(crate) async fn ready() -> io::Result<Status> {
     host_admission().await?;
+    STATUS.get((), false, observe_status).await
+}
+
+/// A new observation, never an earlier one: the runtime as it is after a
+/// turn, for the receipt sealed with that turn's evidence.
+pub(crate) async fn observe_now() -> io::Result<Status> {
+    host_admission().await?;
+    STATUS.get((), true, observe_status).await
+}
+
+async fn observe_status() -> io::Result<Status> {
     let out = invoke(
         "/usr/local/sbin/bench-status",
         &[],
@@ -1138,28 +1345,21 @@ fn parse_status(text: &str) -> io::Result<Status> {
         .map(|line| line.split_whitespace().collect())
         .collect();
     let mut identity = BTreeMap::new();
-    // The heavy-lane setting is operator state, not runtime identity: each
-    // job's share is the same under every setting, and every attempt records
-    // the setting and competing load it was admitted under.
-    let lanes: Vec<&str> = text
+    // Admission policy and aggregate are runtime identity (they are pinned
+    // below); the operator's cap on CPU-heavy jobs and the jobs running are
+    // operator state. Every attempt records what it was admitted under.
+    let caps: Vec<&str> = text
         .lines()
-        .filter_map(|line| line.strip_prefix("budget heavy-lanes "))
+        .filter_map(|line| line.strip_prefix("budget heavy-cap "))
         .collect();
-    let lanes = match lanes.as_slice() {
-        [value] => value
-            .parse::<u64>()
-            .ok()
-            .filter(|lanes| (1..=3).contains(lanes)),
-        _ => None,
+    let valid_cap =
+        |cap: &str| cap == "off" || cap.parse::<u8>().is_ok_and(|cap| (1..=8).contains(&cap));
+    if !matches!(caps.as_slice(), [cap] if valid_cap(cap)) {
+        return Err(io::Error::other(
+            "capability_missing: the sandbox reports no valid heavy-job cap",
+        ));
     }
-    .ok_or_else(|| {
-        io::Error::other("capability_missing: the sandbox reports no valid heavy-lane setting")
-    })?;
-    let scaled = lane_budget(lanes);
-    for line in FIXED_BUDGET
-        .into_iter()
-        .chain(scaled.iter().map(String::as_str))
-    {
+    for line in FIXED_BUDGET {
         if !text.lines().any(|observed| observed == line) {
             return Err(io::Error::other(
                 "capability_missing: required aggregate benchmark containment is missing",
@@ -1287,6 +1487,8 @@ pub(crate) async fn store_api_key(account: &str, key: &str) -> io::Result<()> {
     )
     .await?
     .require_success("Z.ai key copy")?;
+    // The account is signed in from now on, not after the reuse window.
+    STATUS.forget();
     Ok(())
 }
 
@@ -1335,14 +1537,18 @@ pub(crate) async fn copy_until(id: &str, archive: &[u8], deadline_ms: u64) -> io
 
 async fn copy_until_inner(id: &str, archive: &[u8], deadline_ms: u64) -> io::Result<()> {
     valid_id(id)?;
-    let remaining = remaining_ms(deadline_ms)?.min(120_000);
+    remaining_ms(deadline_ms)?;
     let deadline = deadline_ms.to_string();
-    let out = invoke(
+    // A later step's workspace waits for room inside its own deadline.
+    let out = invoke_once_admitted(
+        (ResourceClass::Preparation, id),
         "/usr/local/sbin/bench-copy",
         &[id, &deadline],
         Some(archive),
         TAIL_BYTES,
-        Duration::from_millis(remaining) + Duration::from_secs(5),
+        Duration::from_secs(125),
+        deadline_ms,
+        Some(deadline_ms),
     )
     .await?;
     if out.code == Some(124) {
@@ -1386,14 +1592,35 @@ async fn invoke_until_inner(
 ) -> io::Result<Output> {
     let remaining = remaining_ms(deadline_ms)?.min(120_000);
     let deadline = deadline_ms.to_string();
-    let out = invoke(
-        "/usr/bin/python3",
-        &["-c", DEADLINE_WORKER, program, id, &deadline],
-        None,
-        cap,
-        Duration::from_millis(remaining) + Duration::from_secs(5),
-    )
-    .await?;
+    let args: [&str; 5] = ["-c", DEADLINE_WORKER, program, id, &deadline];
+    // A workload helper (a patch) holds its lease before the worker starts,
+    // waiting for room inside the native deadline: its turn already ended,
+    // and Windows headroom that is short for a moment must not lose it.
+    let out = match helper_phase(program, &[id]) {
+        Some((class, _)) => {
+            invoke_once_admitted(
+                (class, id),
+                "/usr/bin/python3",
+                &args,
+                None,
+                cap,
+                Duration::from_secs(125),
+                deadline_ms,
+                Some(deadline_ms),
+            )
+            .await?
+        }
+        None => {
+            invoke(
+                "/usr/bin/python3",
+                &args,
+                None,
+                cap,
+                Duration::from_millis(remaining) + Duration::from_secs(5),
+            )
+            .await?
+        }
+    };
     if out.code == Some(124) {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -1430,16 +1657,19 @@ async fn artifact_inner(id: &str, package: &[u8], deadline_ms: u64) -> io::Resul
             "Artifact package exceeds its byte limit",
         ));
     }
-    let remaining_ms = remaining_ms(deadline_ms)?.min(110_000);
+    remaining_ms(deadline_ms)?;
     let deadline = deadline_ms.to_string();
-    let out = invoke(
+    let out = invoke_once_admitted(
+        (ResourceClass::Preparation, id),
         "/usr/local/sbin/bench-artifact",
         &[id, &deadline],
         Some(package),
         MAX_PACKAGE,
         // The worker expires itself at the root deadline and kills/reaps Git.
         // This bounded grace lets that cleanup finish before the host gives up.
-        Duration::from_millis(remaining_ms) + Duration::from_secs(5),
+        Duration::from_secs(115),
+        deadline_ms,
+        Some(deadline_ms),
     )
     .await?;
     let reason = String::from_utf8_lossy(&out.stderr);
@@ -1468,12 +1698,15 @@ async fn artifact_inner(id: &str, package: &[u8], deadline_ms: u64) -> io::Resul
 
 pub(crate) async fn patch(id: &str, max_bytes: usize) -> io::Result<Vec<u8>> {
     valid_id(id)?;
-    let out = invoke(
+    let out = invoke_once_admitted(
+        (ResourceClass::Preparation, id),
         "/usr/local/sbin/bench-patch",
         &[id],
         None,
         max_bytes,
         CONTROL_TIMEOUT,
+        now_ms()?.saturating_add(COLLECTION_ADMISSION.as_millis() as u64),
+        None,
     )
     .await?;
     let out = require_patch(out)?;
@@ -1548,13 +1781,25 @@ pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result
     let seconds_arg = seconds.to_string();
     let mut args = vec![id, &seconds_arg, "--"];
     args.extend(argv.iter().map(String::as_str));
-    let result = invoke(
-        "/usr/local/sbin/bench-judge",
-        &args,
-        None,
-        TAIL_BYTES,
-        Duration::from_secs(seconds),
-    )
+    // The check's own limit runs from its start inside the sandbox. A wait
+    // for room before it must not cut that limit short and turn a slow
+    // queue into a failed check; bench-judge stops the check itself.
+    let result = async {
+        let phase = leased_class("/usr/local/sbin/bench-judge", &args)
+            .await?
+            .ok_or_else(|| io::Error::other("Sandbox check has no lease class"))?;
+        invoke_once_admitted(
+            phase,
+            "/usr/local/sbin/bench-judge",
+            &args,
+            None,
+            TAIL_BYTES,
+            Duration::from_secs(seconds) + Duration::from_secs(30),
+            now_ms()?.saturating_add(300_000),
+            None,
+        )
+        .await
+    }
     .await;
     // Windows Job Objects do not kill Linux children. Also remove detached
     // children after an ordinary exit; they must not outlive an evaluation.
@@ -1676,66 +1921,73 @@ mod tests {
         .unwrap();
         lines.extend(pins.iter().map(|(key, value)| format!("{key} {value}")));
         lines.push("netns up".into());
-        lines.extend(budget(2));
+        lines.extend(budget("off"));
         lines.join("\n")
     }
 
-    fn budget(lanes: u64) -> Vec<String> {
-        let mut lines = vec![format!("budget heavy-lanes {lanes}")];
+    fn budget(cap: &str) -> Vec<String> {
+        let mut lines = vec![format!("budget heavy-cap {cap}")];
         lines.extend(FIXED_BUDGET.map(str::to_owned));
-        lines.extend(lane_budget(lanes));
         lines
     }
 
     #[test]
-    fn each_heavy_lane_adds_one_repository_envelope_to_the_pinned_aggregate() {
-        assert_eq!(
-            lane_budget(1),
-            [
-                "budget memory 12884901888",
-                "budget cpu 450000/100000",
-                "budget pids 1536",
-                "budget io 335544320/83886080",
-            ]
-        );
-        assert_eq!(
-            lane_budget(3),
-            [
-                "budget memory 25769803776",
-                "budget cpu 850000/100000",
-                "budget pids 3072",
-                "budget io 603979776/150994944",
-            ]
-        );
-    }
-
-    #[test]
-    fn readiness_accepts_any_valid_lane_setting_without_changing_runtime_identity() {
+    fn readiness_pins_the_dynamic_policy_but_not_the_operators_cap() {
         let base = status();
         let revision = parse_status(&base).unwrap().revision;
-        for lanes in 1..=3 {
-            let changed = base.replace(&budget(2).join("\n"), &budget(lanes).join("\n"));
-            assert_eq!(parse_status(&changed).unwrap().revision, revision);
+        for cap in ["off", "1", "2", "8"] {
+            let changed = base.replace(&budget("off").join("\n"), &budget(cap).join("\n"));
+            assert_eq!(parse_status(&changed).unwrap().revision, revision, "{cap}");
         }
-        let two = budget(2).join("\n");
+        let off = budget("off").join("\n");
         for invalid in [
-            two.replace("budget heavy-lanes 2", "budget heavy-lanes 0"),
-            two.replace("budget heavy-lanes 2", "budget heavy-lanes 4"),
-            two.replace("budget heavy-lanes 2", "budget heavy-lanes two"),
-            // A setting whose aggregate the broker did not actually apply.
-            two.replace("budget heavy-lanes 2", "budget heavy-lanes 3"),
-            two.replace(
-                "budget heavy-lanes 2",
-                "budget heavy-lanes 2\nbudget heavy-lanes 3",
+            off.replace("budget heavy-cap off", "budget heavy-cap 0"),
+            off.replace("budget heavy-cap off", "budget heavy-cap 9"),
+            off.replace("budget heavy-cap off", "budget heavy-cap two"),
+            off.replace(
+                "budget heavy-cap off",
+                "budget heavy-cap off\nbudget heavy-cap 2",
             ),
-            two.replace("budget heavy-lanes 2\n", ""),
-            two.replace("light 33554432/8388608", "light 134217728/33554432"),
+            off.replace("budget heavy-cap off\n", ""),
+            // The fixed policy's aggregate, or another policy, is not this one.
+            off.replace("budget admission dynamic-v1\n", ""),
+            off.replace("budget admission dynamic-v1", "budget admission dynamic-v2"),
+            off.replace("budget memory 25769803776", "budget memory 19327352832"),
+            off.replace("budget cpu 1450000/100000", "budget cpu 650000/100000"),
+            off.replace("light 33554432/8388608", "light 134217728/33554432"),
         ] {
             assert!(
-                parse_status(&base.replace(&two, &invalid)).is_err(),
+                parse_status(&base.replace(&off, &invalid)).is_err(),
                 "{invalid}"
             );
         }
+        // A status from the fixed heavy lanes is not the dynamic policy.
+        let fixed = base.replace(&off, "budget heavy-lanes 2\nbudget memory 19327352832");
+        assert!(parse_status(&fixed).is_err());
+    }
+
+    #[test]
+    fn a_dynamic_admission_record_keeps_what_admission_measured() {
+        // The shape bench-budget prints beside a dynamic reservation token.
+        let printed = serde_json::json!({
+            "policy": "dynamic-v1", "heavyCap": null, "lane": "light",
+            "competing": {"repository": 2}, "competingHeavy": 2,
+            "reservedMemory": 5 * GIB, "reservedCpu": 4, "memoryCurrent": 3 * GIB,
+            "guestLoad": [0.8, 0.9, 0.7], "guestCpus": 16,
+            "hostAvailableRam": 28 * GIB, "hostAvailableCommit": 20 * GIB,
+            "guestMemAvailable": 25 * GIB, "hostCpuBusy": 0.18,
+            "expectedMemory": 655360000, "cpuLine": 6, "sandboxCpu": 1.25,
+            "cpuPressure": 0.02, "checkStall": null,
+        });
+        let admission: Admission = serde_json::from_value(printed).unwrap();
+        assert_eq!(admission.policy.as_deref(), Some("dynamic-v1"));
+        assert_eq!(admission.heavy_lanes, None);
+        assert_eq!(admission.cpu_line, Some(6));
+        assert_eq!(admission.sandbox_cpu, Some(1.25));
+        assert_eq!(admission.host_cpu_busy, Some(0.18));
+        // Absent measurements stay absent in the sealed record.
+        let sealed = serde_json::to_value(&admission).unwrap();
+        assert!(sealed.get("checkStall").is_none() && sealed.get("heavyLanes").is_none());
     }
 
     #[test]
@@ -1751,8 +2003,9 @@ mod tests {
         let mut admission: Admission = serde_json::from_value(printed.clone()).unwrap();
         assert_eq!(admission.competing_heavy, 1);
         assert_eq!(serde_json::to_value(&admission).unwrap(), printed);
+        assert_eq!(admission.heavy_lanes, Some(2));
         let mut incomplete = printed;
-        incomplete.as_object_mut().unwrap().remove("heavyLanes");
+        incomplete.as_object_mut().unwrap().remove("lane");
         assert!(serde_json::from_value::<Admission>(incomplete).is_err());
         admission.host_cpu_busy = Some(0.42);
         record_session_admission("invented-sandbox", admission.clone());
@@ -2067,6 +2320,100 @@ mod tests {
             assert!(!error.contains("secret-value"));
         }
     }
+    /// Readiness checks within the reuse window share one observation, and
+    /// checks that arrive while it runs wait for it; a receipt's fresh check,
+    /// an expired window or a failure observes again.
+    #[tokio::test]
+    async fn recent_observations_are_shared_within_their_window_and_never_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let recent: Arc<Recent<(), usize>> = Arc::new(Recent::new(Duration::from_millis(200)));
+        let observed = Arc::new(AtomicUsize::new(0));
+        let observe = |observed: Arc<AtomicUsize>| {
+            move || async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                Ok::<_, io::Error>(observed.fetch_add(1, Ordering::SeqCst) + 1)
+            }
+        };
+        let concurrent: Vec<_> = (0..4)
+            .map(|_| {
+                let (recent, observed) = (recent.clone(), observed.clone());
+                tokio::spawn(async move { recent.get((), false, observe(observed)).await })
+            })
+            .collect();
+        for check in concurrent {
+            assert_eq!(check.await.unwrap().unwrap(), 1);
+        }
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            recent
+                .get((), false, observe(observed.clone()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            recent
+                .get((), true, observe(observed.clone()))
+                .await
+                .unwrap(),
+            2
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            recent
+                .get((), false, observe(observed.clone()))
+                .await
+                .unwrap(),
+            3
+        );
+        let failed: Recent<(), usize> = Recent::new(Duration::from_secs(60));
+        assert!(failed
+            .get((), false, || async {
+                Err::<usize, _>(io::Error::other("refused"))
+            })
+            .await
+            .is_err());
+        assert_eq!(
+            failed
+                .get((), false, || async { Ok::<_, io::Error>(7) })
+                .await
+                .unwrap(),
+            7
+        );
+        // A forgotten observation is observed again.
+        failed.forget();
+        assert_eq!(
+            failed
+                .get((), false, || async { Ok::<_, io::Error>(8) })
+                .await
+                .unwrap(),
+            8
+        );
+        // Each key is its own observation.
+        let keyed: Recent<&str, &str> = Recent::new(Duration::from_secs(60));
+        assert_eq!(
+            keyed
+                .get("a", false, || async { Ok::<_, io::Error>("a") })
+                .await
+                .unwrap(),
+            "a"
+        );
+        assert_eq!(
+            keyed
+                .get("b", false, || async { Ok::<_, io::Error>("b") })
+                .await
+                .unwrap(),
+            "b"
+        );
+        assert_eq!(
+            keyed
+                .get("a", false, || async { Ok::<_, io::Error>("x") })
+                .await
+                .unwrap(),
+            "a"
+        );
+    }
+
     #[tokio::test]
     async fn output_is_drained_and_only_a_bounded_tail_is_kept() {
         let bytes = vec![b'x'; 100_000];
@@ -2166,6 +2513,65 @@ mod tests {
         assert_eq!(refused.kind(), io::ErrorKind::TimedOut);
         let granted = admit(now() + 60_000, || async { Ok(7) }).await.unwrap();
         assert_eq!(granted, 7);
+    }
+
+    /// A collection, check or later step that waits for room keeps its whole
+    /// run time once admitted; only its native deadline cuts it, and a
+    /// deadline that passes in the queue is the queue's refusal (unscored),
+    /// as a Grok step met on 2026-10-17 when a host build took the commit
+    /// headroom between its two steps.
+    #[tokio::test]
+    async fn waiting_for_room_never_shortens_a_helpers_run_and_never_outlives_its_deadline() {
+        let now = now_ms().unwrap();
+        assert_eq!(
+            run_after_admission(Duration::from_secs(125), None).unwrap(),
+            125_000
+        );
+        let near = run_after_admission(Duration::from_secs(125), Some(now + 60_000)).unwrap();
+        assert!((55_000..=60_000).contains(&near), "{near}");
+        assert_eq!(
+            run_after_admission(Duration::from_secs(125), Some(now - 1))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(admission_window(now + 1_800_000, None), now + 1_800_000);
+        assert_eq!(
+            admission_window(now + 1_800_000, Some(now + 60_000)),
+            now + 60_000
+        );
+        // Busy until the window closes: refused as busy, never as a timeout
+        // of the candidate's budget.
+        let window = admission_window(now + 1_800_000, Some(now + 80));
+        let refused = admit::<(), _>(window, || async {
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "resource_busy: Windows commit headroom cannot cover benchmark reservations and its 8 GiB floor; no provider process started",
+            ))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        assert!(refused.to_string().starts_with("resource_busy:"));
+        // Room that opens inside the window admits the helper.
+        let mut asked = 0;
+        let admitted = admit(now_ms().unwrap() + 60_000, || {
+            asked += 1;
+            let busy = asked < 3;
+            async move {
+                if busy {
+                    Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "resource_busy: queued",
+                    ))
+                } else {
+                    Ok("lease")
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!((admitted, asked), ("lease", 3));
     }
 
     #[tokio::test]

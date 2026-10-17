@@ -161,7 +161,8 @@ $ram=[uint64]$os.FreePhysicalMemory*1024
 $commit=[uint64]$memory.CommitLimit-[uint64]$memory.CommittedBytes
 $disk=[uint64]$volume.AvailableFreeSpace
 if ($ram -lt 14GB -or $commit -lt 10GB -or $disk -lt 30GB) { throw 'resource_busy: Windows headroom is below policy qualification floor' }
-Write-Output "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$ram,$commit,$disk"
+# The fifth field is the host CPU share in thousandths; 1001 = not sampled.
+Write-Output "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$ram,$commit,$disk,1001"
 `;
 
 async function gated(program, args = [], options = {}) {
@@ -263,8 +264,8 @@ function checkStatus(status, expected) {
       `Sandbox differs from source; provision first (${line.split(" ").slice(0, 2).join(" ")})`,
     );
   assert(
-    [...lines].some((line) => /^budget heavy-lanes [1-3]$/.test(line)),
-    "Sandbox differs from source; provision first (budget heavy-lanes)",
+    [...lines].some((line) => /^budget heavy-cap (off|[1-8])$/.test(line)),
+    "Sandbox differs from source; provision first (budget heavy-cap)",
   );
 }
 
@@ -402,9 +403,9 @@ async function selfTest() {
   );
   assert.equal(new Set(values.map((value) => value.fingerprint)).size, 5);
   assert.equal(new Set(values.map((value) => value.revision)).size, 1);
-  // A sandbox reports its heavy-lane setting besides the pinned lines.
+  // A sandbox reports the operator's heavy-job cap besides the pinned lines.
   checkStatus(
-    [...values[0].expected, "budget heavy-lanes 2"].join("\n"),
+    [...values[0].expected, "budget heavy-cap off"].join("\n"),
     values[0].expected,
   );
   assert.throws(() => checkStatus("", values[0].expected));

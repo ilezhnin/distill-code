@@ -101,11 +101,16 @@ pub(crate) async fn readiness(
 /// for an account whose sandbox OAuth grant its CLI can renew, still current
 /// or already expired, with that grant's expiry. A renewal makes no model
 /// call, and every session after it passes the unchanged admission window.
+///
+/// It always observes the sandbox afresh, never sharing an earlier
+/// observation: the expiry it reads after a renewal session must be the
+/// grant that session saved, and the readiness checks after it then share
+/// this observation.
 pub(crate) async fn renewal_readiness(
     provider: NativeProvider,
     account: &str,
 ) -> Result<(sandbox::Status, i64), String> {
-    let status = sandbox::ready().await.map_err(admission_error)?;
+    let status = sandbox::observe_now().await.map_err(admission_error)?;
     let expiry = status.oauth_expiry(provider.key(), account).ok_or_else(|| {
         format!(
             "capability_missing: The {} account {account} has no sandbox sign-in to renew; run bench-login in {}",
@@ -148,10 +153,24 @@ fn with_artifacts(mut status: sandbox::Status, artifacts: &Value) -> sandbox::St
     status
 }
 
+/// Verified proofs by provider and sandbox revision. The revision covers
+/// every executable a proof attests, so the checks of one preparation share
+/// one verification within the same window as the sandbox status itself.
+static PROOFS: sandbox::Recent<(&'static str, String), Value> =
+    sandbox::Recent::new(sandbox::OBSERVATION_REUSE);
+
 pub(crate) async fn require_proof(
     provider: NativeProvider,
     status: &sandbox::Status,
 ) -> Result<Value, String> {
+    PROOFS
+        .get((provider.key(), status.revision.clone()), false, || {
+            verify_proof(provider, status)
+        })
+        .await
+}
+
+async fn verify_proof(provider: NativeProvider, status: &sandbox::Status) -> Result<Value, String> {
     let fingerprint = policy_fingerprint(provider);
     let output = sandbox::invoke_bounded(
         "/usr/local/sbin/bench-budget",

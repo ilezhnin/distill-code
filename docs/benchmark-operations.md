@@ -113,65 +113,98 @@ stages declared task inputs and the selected provider's credential material.
 Provider inference sends those inputs to its endpoint under the account's
 existing data-use policy.
 
-Benchmark jobs share an 8 GiB scratch filesystem with 131072 inodes and run in
-three lanes: up to two light jobs, one preparation job and a configurable
-number of heavy jobs. Every job has its own memory, CPU, process and scratch I/O
-ceiling:
+Benchmark jobs share an 8 GiB scratch filesystem with 131072 inodes. Every job
+has its own memory, CPU, process and scratch I/O ceiling, and admission never
+changes it:
 
-| Job | Lane | Memory | CPUs | Processes | Scratch read/write |
+| Job | Kind | Memory | CPUs | Processes | Scratch read/write |
 | --- | --- | --- | --- | --- | --- |
-| Repository session | heavy | 6 GiB | 2 | 768 | 128/32 MiB/s |
-| Repository check | heavy | 4 GiB | 2 | 512 | 128/32 MiB/s |
-| Paired check, split over its two halves | heavy | 8 GiB | 2 | 768 | 128/32 MiB/s |
-| Browser rendering | heavy | 2 GiB | 1 | 384 | 128/32 MiB/s |
+| Repository session | CPU-heavy attempt | 6 GiB | 2 | 768 | 128/32 MiB/s |
+| Repository check | CPU-heavy check | 4 GiB | 2 | 512 | 128/32 MiB/s |
+| Paired check, split over its two halves | CPU-heavy check | 8 GiB | 2 | 768 | 128/32 MiB/s |
+| Browser check or rendering | CPU-heavy check | 2 GiB | 1 | 384 | 128/32 MiB/s |
 | Preparation | preparation | 2 GiB | 1 | 256 | 128/32 MiB/s |
-| Text session, sign-in or model probe | light | 2 GiB | 1 | 256 | 32/8 MiB/s |
+| Text session | light attempt | 2 GiB | 1 | 256 | 32/8 MiB/s |
+| Sign-in or model probe | light | 2 GiB | 1 | 256 | 32/8 MiB/s |
 
-The heavy-lane setting admits 1, 2 or 3 heavy jobs at once; a distribution
-without a setting uses 2. Each lane past the first adds one repository job's
-memory, CPUs and processes to the aggregate budget:
+Admission is dynamic: no number of lanes is fixed. The next job starts while
+what the sandbox measures leaves room for it, and waits, naming the line that
+holds it, while it does not:
 
-| Heavy lanes | Admitted memory | CPUs | Processes | Scratch read/write |
-| --- | --- | --- | --- | --- |
-| 1 | 11 GiB | 4 | 1408 | 320/80 MiB/s |
-| 2 | 17 GiB | 6 | 2176 | 448/112 MiB/s |
-| 3 | 23 GiB | 8 | 2944 | 576/144 MiB/s |
+- Memory. Every admitted job claims the larger of what its process tree uses
+  now and what jobs of its kind needed before: the 95th percentile of their
+  recorded peaks plus a quarter, never above the ceiling and, until eight are
+  recorded, the ceiling itself. The claims and the new job's must fit 23 GiB,
+  and an attempt must also leave room for one check and one preparation.
+- CPU. The CPU ceilings of CPU-heavy jobs must fit the physical cores (half the
+  guest's CPUs) less what the host itself runs outside the sandbox, and an
+  attempt must also leave one check's two CPUs. A check or a timed browser run
+  therefore always has its CPUs on cores no other CPU-heavy job was promised.
+  Light jobs and preparations need the measured load below three quarters of
+  the guest's CPUs and, where Linux reports it, CPU pressure below a quarter.
+  While recent checks spent more than a tenth of their time waiting for a CPU,
+  the line drops by one check.
+- Priority. While a check or a preparation waits for memory, no attempt
+  starts; while a check waits for CPUs, no CPU-heavy attempt starts. Neither
+  starves behind attempts.
+- Scratch. The filesystem's free space must cover the new job's scratch
+  reservation, half a GiB, and the reservations of jobs admitted in the last
+  two minutes; an older job's use already shows in the free space. A job that
+  fills the scratch while it runs ends as unscored infrastructure failure.
+- Windows and the guest. The controller preserves at least 12 GiB of Windows
+  available memory, 8 GiB of commit headroom and 30 GiB free on the registered
+  sandbox volume, and 2 GiB free in the WSL guest. Each memory floor must also
+  cover the claims of earlier jobs not yet in use. Commit headroom is the commit
+  limit (physical memory plus page file) minus committed memory; with a small
+  page file it can keep a job waiting even when the sandbox has room, and the
+  wait names that cause. A larger page file raises the commit limit without
+  lowering the RAM floor. Admission evidence also carries how busy the host's
+  CPUs were over the last second.
 
-Admission never reserves more than this budget. The memory ceiling sits 1 GiB
-above it, and trusted supervisors keep their own half CPU and 128 processes, so
-jobs inside the sandbox do not throttle each other: a job admitted next to
-others keeps the ceiling it would have alone. The host disk, Windows and other
-WSL distributions are outside that guarantee; each attempt records their load
-at admission (see [Freeze and run](#4-freeze-and-run-the-measurement-matrix)).
+All jobs share an aggregate of 24 GiB, 14.5 CPUs, 4224 processes and
+1024/256 MiB/s of scratch I/O, of which trusted supervisors keep their own
+half CPU, 128 processes and one GiB. The host disk, Windows and other WSL
+distributions are outside these limits; each attempt records the measurements
+it was admitted under (see [Freeze and run](#4-freeze-and-run-the-measurement-matrix)).
 Cleanup retains its own capacity. No additional virtual machine is created per
 test.
 
-Change the setting from the repository root, for example to three:
+The operator may cap CPU-heavy jobs at once, for example to one while
+CPU-sensitive planning labs run:
 
 ```powershell
-node scripts/benchmark-sandbox.mjs heavy-lanes 3
+node scripts/benchmark-sandbox.mjs heavy-cap 1
+node scripts/benchmark-sandbox.mjs heavy-cap off
 ```
 
-Raising applies at once. Lowering is refused, and nothing changes, until the
-jobs already admitted fit the smaller budget. The setting lives in the
-distribution, and `node scripts/benchmark-sandbox.mjs status` reports it as
-`budget heavy-lanes`. It is not part of the sandbox runtime identity, so
-changing it keeps selected inventories valid. Provisioning and helper updates
-keep an existing setting.
+A cap applies to jobs admitted after it; running jobs finish. `status` reports
+it as `budget heavy-cap`. It is not part of the sandbox runtime identity, so
+changing it keeps selected inventories valid. The fixed heavy-lane setting of
+earlier builds is no longer read.
 
-Before admission, the controller also preserves at least 12 GiB of Windows
-available memory, 8 GiB of commit headroom and 30 GiB free on the registered
-sandbox volume. Each memory floor must also cover every reservation that is not
-yet in use: a new job needs its own reservation plus the unused part of earlier
-ones. Commit headroom is the commit limit (physical memory plus page file) minus
-committed memory. With a small page file it can keep a second repository job
-waiting even when the Linux budget has room; the wait names that cause. A
-larger page file raises the commit limit without lowering the RAM floor.
-Resource pressure keeps unstarted candidate work waiting. It
-does not consume a model call or permit replay of an already submitted answer.
-Evaluator admission waits on the captured answer; a runtime resource failure
-is inconclusive infrastructure evidence, not a model score. The application
-does not change global `.wslconfig` or the resources of other distributions.
+Resource pressure keeps unstarted candidate work waiting. It does not consume a
+model call or permit replay of an already submitted answer. Work that belongs
+to a turn already sent waits for room as well: its answer's collection, a
+later workflow step's workspace and the transitions between steps wait inside
+their own native deadline, and a collection without one waits up to thirty
+minutes. A check's own time limit starts once it is admitted, so waiting for
+room never shortens it. Only a deadline that passes while waiting ends the
+attempt, as unscored infrastructure failure. Evaluator admission waits on the
+captured answer; a runtime resource failure is inconclusive infrastructure
+evidence, not a model score. The application does not change global
+`.wslconfig` or the resources of other distributions.
+
+Readiness reports the digest of every sandbox helper, pinned executable and
+provider entrypoint, and the renderer status reports the digest of every
+renderer file. Both read a file again only when its identity changed: its
+resolved path, device, inode, size, modify and change times, owner, mode or
+link count. The recorded digests live in a root-only directory under `/run`,
+which empties at every WSL start; a damaged or unprotected record is read as
+absent. One sandbox observation answers the readiness checks that follow it
+within ten seconds, and checks that arrive while it runs share it. The receipt
+sealed after each turn, and each step of a sign-in renewal, always observe the
+sandbox again, so the checks after a renewal read the renewed grant; copying a
+Z.ai key into the sandbox drops the shared observation.
 
 Helper updates retain a backup of old helpers and any previous scratch tree.
 Keep those local recovery copies until the update is verified. Runtime changes
@@ -326,23 +359,40 @@ before `benchmark_start_run`. Save the exact request, request key, returned run
 ID and planned attempt IDs privately before doing further work.
 
 Ordinary runs support `parallelism: 4`. This is a per-configuration limit within
-shared limits of four active attempts per account and twelve across the app.
-Two reasoning settings on one account share those four slots. Independent
-repository bridges can fill the account slots; a shared single-session text
-bridge or quota recovery can impose a smaller bound. Repository attempts also
-wait for a sandbox heavy lane, so no more of them run at once than the
-heavy-lane setting allows. Inspect actual active
-attempts and the reason for a lower count, not just the request value. An existing
-ordinary run can be adjusted through `benchmark_set_run_parallelism`; record the
-amendment and preserve its original attempt identities.
+each account's pace and sixteen attempts across the app. An account's pace
+starts at four turns at once. A rate-limit answer to a sent prompt (HTTP 429,
+"rate limit", "too many requests", "overloaded") halves it, and so does a level
+of concurrency whose turns stream clearly slower (below three quarters of the
+tokens per second) than turns with fewer beside them. It grows by one per
+stretch of clean turns, up to eight, and never sooner than ten minutes after it
+last changed or was first used. Every configuration on the account shares its pace, so two runs of one
+configuration at four reach eight together. Quota recovery imposes one turn
+until a turn lands. The pace lives in the running app and starts again after a
+restart. Sandbox admission (see [Prepare the runtime](#1-prepare-the-runtime))
+can keep further attempts waiting. Inspect actual active attempts and the
+reason for a lower count, not just the request value. An existing ordinary run
+can be adjusted through `benchmark_set_run_parallelism`; record the amendment
+and preserve its original attempt identities.
+
+Parallelism counts turns. Once a text turn's answer is sealed and its sandbox
+removed, its objective check no longer holds the configuration's slot or the
+account's: the next attempt prepares and runs while the check finishes. A
+configuration keeps at most as many such checks waiting as its parallelism;
+past that, a finished turn keeps its slot until its verdict. Repository turns
+and judged renderings keep their slot until the verdict, so the next session
+of a repository configuration never runs beside its predecessor's check.
 
 Each attempt records the conditions its candidate session was admitted under,
-as `sandboxAdmission` on the attempt and in its sealed evidence: the heavy-lane
-setting, the jobs already running by class and the memory and CPUs they
-reserved, the sandbox's memory in use, the WSL guest's load averages, CPUs and
-free memory, Windows available RAM and commit headroom, and a quarter-second
-sample of Windows CPU use. It describes the moment of admission; a job admitted
-later does not change it. Attempts recorded before this field existed, and
+as `sandboxAdmission` on the attempt and in its sealed evidence: the admission
+policy and any operator cap, the jobs already running by class, the memory
+they claimed and the CPU ceilings of the CPU-heavy ones, what this job was
+expected to need, the CPU line, the CPUs the sandbox used over the last sampled
+seconds and the guest's CPU pressure, how long recent checks waited for CPUs,
+the sandbox's memory in use, the WSL guest's load averages, CPUs and free
+memory, Windows available RAM and commit headroom, and Windows CPU use over the
+last second. It describes the moment of admission; a job admitted later does
+not change it. Each attempt also records, as `accountLoad`, how many turns its
+account had in flight when it was admitted and the pace then. Attempts recorded before this field existed, and
 attempts recovered after an application restart, do not have it. Compare speed
 across attempts with similar admission conditions, or account for them.
 

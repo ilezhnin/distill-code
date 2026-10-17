@@ -160,6 +160,15 @@ pub async fn ready() -> Result<String> {
     Ok(installed.to_owned())
 }
 
+static RENDERER: sandbox::Recent<(), String> = sandbox::Recent::new(sandbox::OBSERVATION_REUSE);
+
+/// [`ready`] for an attempt about to prepare: attempts that prepare side by
+/// side share one renderer observation within the sandbox's reuse window.
+/// Qualification and promotion compare renderers with their own checks.
+pub async fn ready_for_attempt() -> Result<String> {
+    RENDERER.get((), false, ready).await
+}
+
 fn bounded_request(value: &Value) -> Result<Vec<u8>> {
     struct Request {
         bytes: Vec<u8>,

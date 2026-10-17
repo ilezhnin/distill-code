@@ -29,7 +29,8 @@ $volume=[System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($basePath))
 $ram=[uint64]$os.FreePhysicalMemory*1024
 $commit=[uint64]$memory.CommitLimit-[uint64]$memory.CommittedBytes
 $disk=[uint64]$volume.AvailableFreeSpace
-Write-Output "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$ram,$commit,$disk"
+# The fifth field is the host CPU share in thousandths; 1001 = not sampled.
+Write-Output "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$ram,$commit,$disk,1001"
 `;
 
 async function reserveBrowser(id) {
@@ -48,7 +49,7 @@ async function reserveBrowser(id) {
     );
     assert.equal(sampled.status, 0, sampled.stderr);
     const gate = sampled.stdout.trim();
-    assert.match(gate, /^\d+,\d+,\d+,\d+$/u);
+    assert.match(gate, /^\d+,\d+,\d+,\d+,\d+$/u);
     const reserved = spawnSync(
       "wsl.exe",
       [

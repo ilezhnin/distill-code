@@ -671,6 +671,19 @@ pub struct Attempt {
     /// recorded before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credit_use: Option<CreditUse>,
+    /// Turns its account had in flight when this attempt was admitted, this
+    /// one included, and the most the account's pace allowed then. Absent on
+    /// attempts recorded before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_load: Option<AccountLoad>,
+}
+/// How busy an attempt's account was when the attempt was admitted (see
+/// `Attempt::account_load`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountLoad {
+    pub turns: u32,
+    pub limit: u32,
 }
 /// A turn its account's purchased credits paid for, from the start or once
 /// plan usage ran out during it. The balances are the provider's own samples

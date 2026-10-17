@@ -13,7 +13,7 @@ for group in /sys/fs/cgroup/distill-bench/*/; do
 done
 # Validate every source before publishing any helper. Old code is backed up
 # for recovery; selected credentials and refresh evidence are not copied out.
-for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy \
+for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy bench-digest \
   bench-patch bench-artifact bench-check-prep bench-kill bench-clean bench-status bench-login bench-judge \
   bench-unpack bench-browser; do
   [[ -f $src/$script && ! -L $src/$script ]] || exit 66
@@ -26,7 +26,7 @@ done
 backup=/var/lib/distill-bench/helper-backups/$(date +%s%N)
 install -d -m 700 "$backup"
 for file in /usr/local/sbin/bench-*; do [[ ! -f $file ]] || cp -p "$file" "$backup/"; done
-for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy \
+for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy bench-digest \
   bench-patch bench-artifact bench-check-prep bench-kill bench-clean bench-status bench-login bench-judge \
   bench-unpack bench-browser; do
   install -o root -g root -m 755 "$src/$script" "/usr/local/sbin/$script.new"

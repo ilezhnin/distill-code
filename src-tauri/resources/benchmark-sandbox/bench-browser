@@ -68,6 +68,22 @@ def renderer_files(spec):
     paths.extend(pathlib.Path(path) for path in re.findall(r'(/[\w./+_-]+)', libraries) if pathlib.Path(path).is_file())
     return browser, sorted(set(paths))
 
+def digests(paths):
+    # One bench-digest pass: a renderer file whose identity is unchanged since
+    # the last status is not read again (see that helper).
+    names = [str(path) for path in paths]
+    output = subprocess.run(['/usr/local/sbin/bench-digest','browser',*names],check=True,
+                            stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=300).stdout.decode()
+    sums = {}
+    for line, name in zip(output.splitlines(), names):
+        value, _, named = line.partition(' ')
+        if named != name or not re.fullmatch('[0-9a-f]{64}', value):
+            raise ValueError('Browser runtime file digest is unavailable')
+        sums[name] = value
+    if len(sums) != len(names):
+        raise ValueError('Browser runtime file digest is unavailable')
+    return sums
+
 def kernel_policy():
     paths = ('/proc/sys/user/max_user_namespaces',
              '/proc/sys/kernel/unprivileged_userns_clone',
@@ -85,13 +101,10 @@ def status(provision_id=None):
     if package['version'] != spec['playwrightVersion'] or pin['revision'] != spec['chromiumRevision'] or pin['browserVersion'] != spec['chromiumVersion']:
         raise ValueError('Pinned Chromium/Playwright runtime is unavailable')
     files = {}
+    sums = digests(paths)
     for path in paths:
-        digest = hashlib.sha256()
-        with path.open('rb') as stream:
-            for block in iter(lambda: stream.read(1048576), b''):
-                digest.update(block)
         info = path.stat()
-        files[str(path)] = {'sha256':digest.hexdigest(),'mode':stat.S_IMODE(info.st_mode),
+        files[str(path)] = {'sha256':sums[str(path)],'mode':stat.S_IMODE(info.st_mode),
                             'uid':info.st_uid,'gid':info.st_gid}
     manifest = {'spec':spec,'files':files,'kernelPolicy':kernel_policy(),
                 'launchProof':LAUNCH_PROOF}

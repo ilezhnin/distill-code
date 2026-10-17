@@ -29,7 +29,7 @@ if ((${#only[@]} == 0)); then
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends git iptables ca-certificates curl xz-utils python3 e2fsprogs util-linux >/dev/null
   fi
-  for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy bench-patch bench-artifact bench-check-prep \
+  for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy bench-digest bench-patch bench-artifact bench-check-prep \
     bench-kill bench-clean bench-status bench-login bench-judge bench-unpack bench-browser; do
     install -o root -g root -m 755 "$src/$script" "/usr/local/sbin/$script"
   done

@@ -27,7 +27,8 @@ if(-not $distribution.BasePath){throw 'Benchmark distribution is not registered'
 [uint64]$available=0;[uint64]$total=0;[uint64]$free=0
 if(-not [BenchmarkHostMetadata]::GetDiskFreeSpaceEx($distribution.BasePath,[ref]$available,[ref]$total,[ref]$free)){throw 'Sandbox volume metadata unavailable'}
 $commit=($performance.CommitLimit.ToUInt64()-$performance.CommitTotal.ToUInt64())*$performance.PageSize.ToUInt64()
-Write-Output ([string]::Join(',',@([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(),$memory.Available,$commit,$available)))
+# The fifth field is the host CPU share in thousandths; 1001 = not sampled.
+Write-Output ([string]::Join(',',@([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(),$memory.Available,$commit,$available,1001)))
 `;
 
 function call(program, args = [], input) {
@@ -146,11 +147,16 @@ export function runSelftest(resources) {
   };
   try {
     const status = successful("/usr/local/sbin/bench-budget", ["status"]);
-    // Rust readiness pins the exact aggregate each heavy-lane setting scales to.
+    // Rust readiness pins the dynamic policy and its fixed aggregate.
     pass(
       "aggregate limits, per-job IO and hard scratch",
-      /^budget heavy-lanes [1-3]$/m.test(status) &&
+      /^budget heavy-cap (off|[1-8])$/m.test(status) &&
         [
+          "budget admission dynamic-v1",
+          "budget memory 25769803776",
+          "budget cpu 1450000/100000",
+          "budget pids 4224",
+          "budget io 1073741824/268435456",
           "budget swap 0",
           "budget disk 8589934592",
           "budget inodes 131072",

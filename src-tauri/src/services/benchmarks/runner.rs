@@ -19,6 +19,7 @@ use std::{
 use tauri::Manager;
 use tokio::sync::watch;
 
+mod account_pace;
 pub mod collection_context;
 pub(crate) mod native_receipt;
 
@@ -509,6 +510,16 @@ impl NativeBackend {
                 "native_receipt_conflict",
                 "Native receipt provider is unsupported",
             )
+        })?;
+        // The receipt attests the runtime as it is after the turn, so it
+        // observes the sandbox again instead of sharing an observation made
+        // before the turn ended; the checks below then use this one.
+        sandbox::observe_now().await.map_err(|error| {
+            let message = error.to_string();
+            host_error(match message.find("resource_busy:") {
+                Some(start) => message[start..].to_owned(),
+                None => format!("capability_missing: {message}"),
+            })
         })?;
         let inventory = self
             .run_inventory(host, &attempt.run_id, &owner.provider_id, &owner.account_id)
@@ -1098,9 +1109,11 @@ const PANEL_INCOMPLETE: &str =
     "The judge panel is incomplete; every judge must return a valid score sheet";
 /// The error code a judge whose account turned busy answers with.
 const ACCOUNT_BUSY: &str = "account_busy";
-/// Attempts in flight at once on one account, and across the app.
+/// Attempts in flight at once on one account before its pace adapts (see
+/// [`account_pace`]), and across the app. The sandbox admits what fits; this
+/// only bounds how many attempts the app prepares at once.
 pub(super) const ACCOUNT_SLOTS: usize = 4;
-const TOTAL_SLOTS: usize = 12;
+const TOTAL_SLOTS: usize = 16;
 /// Attempts of one configuration a new run flies at once, recorded in its
 /// request. A stream's tokens per second do not depend on how many we send;
 /// what parallelism spends is the account's rate limit, which the runner
@@ -1118,6 +1131,12 @@ pub struct Flight {
     /// Held for the whole workflow, including preparation between steps.
     pub workers: Vec<WorkerReservation>,
     pub cancel: watch::Sender<bool>,
+    /// A finished turn whose sealed answer is being checked. It holds neither
+    /// its lane nor its account any more (see `release_turn_seat`), only its
+    /// place among the run's and the app's flights.
+    pub checking: bool,
+    /// How many attempts its lane flies at once, as claimed.
+    pub lane_slots: usize,
 }
 
 #[derive(Clone)]
@@ -1129,11 +1148,12 @@ pub struct WorkerReservation {
 }
 impl Flight {
     fn uses_account(&self, account: &str) -> bool {
-        !account.is_empty()
+        !self.checking
+            && !account.is_empty()
             && (self.account == account || self.workers.iter().any(|w| w.account == account))
     }
     fn uses_lane(&self, lane: &str) -> bool {
-        self.lane == lane || self.workers.iter().any(|w| w.lane == lane)
+        !self.checking && (self.lane == lane || self.workers.iter().any(|w| w.lane == lane))
     }
 }
 
@@ -1154,6 +1174,20 @@ pub(super) fn attempts_at_once(request: &RunRequest, _configuration: &Configurat
     request.parallelism.unwrap_or(1).max(1)
 }
 
+/// Whether a finished turn's check may run after its seat is handed on: an
+/// objectively checked text answer, sealed with its sandbox cleaned, whose
+/// check needs neither the lane nor the account. A repository turn keeps its
+/// seat, so the next session of its configuration never shares the machine
+/// with a check that may be timed, and a judged rendering keeps it, so its
+/// panel finds the accounts as before.
+fn checks_without_its_seat(attempt: &Attempt, version: &BenchmarkVersion) -> bool {
+    attempt.configuration.execution_profile == "native_text"
+        && attempt.outcome.as_deref() == Some("completed")
+        && attempt.evidence_hash.is_some()
+        && version.manifest.workflow.is_none()
+        && version.manifest.evaluator.kind != "rubric"
+}
+
 fn resource_waiting(attempt: &Attempt) -> bool {
     attempt.wait_until.is_some_and(|until| until > now())
         && attempt
@@ -1162,11 +1196,47 @@ fn resource_waiting(attempt: &Attempt) -> bool {
             .is_some_and(|reason| reason.starts_with("Waiting for local resources:"))
 }
 
-/// How many attempts of `run_id` fly at once on an account of `provider_id`:
-/// one while the run waits out that provider's usage limit, so a single turn
-/// finds out whether the limit reset, else [`ACCOUNT_SLOTS`].
-fn account_slots(run_id: &str, provider_id: &str) -> usize {
-    account_slots_within(run_id, provider_id, ACCOUNT_SLOTS)
+/// How many attempts of `run_id` fly at once on `account` (its provider and
+/// id, as a seat names it): one while the run waits out that provider's usage
+/// limit, so a single turn finds out whether the limit reset, else what the
+/// account's pace allows (see [`account_pace`]).
+fn account_slots(run_id: &str, provider_id: &str, account: &str) -> usize {
+    account_slots_within(run_id, provider_id, account_pace::limit(account))
+}
+
+/// The key an account's pace is kept under: the store it measures for (each
+/// test service has its own) and the account as a seat names it.
+fn pace_key(store: &Store, account: &str) -> String {
+    format!("{}\u{1e}{account}", store.root.display())
+}
+
+/// What a finished turn tells its account's pace: a rate-limit answer to a
+/// sent prompt, or a clean turn's speed at the concurrency it was admitted
+/// at. Turns that never reached the provider tell it nothing.
+fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
+    if account.is_empty() || !reached_provider(attempt) {
+        return;
+    }
+    let throttled = error
+        .map(|error| account_pace::throttle_signal(&error.message))
+        .unwrap_or_else(|| {
+            attempt.outcome.as_deref() != Some("completed")
+                && attempt
+                    .reason
+                    .as_deref()
+                    .is_some_and(account_pace::throttle_signal)
+        });
+    if throttled {
+        account_pace::record_throttle(account, now());
+    } else if error.is_none() && attempt.outcome.as_deref() == Some("completed") {
+        let turns = attempt.account_load.as_ref().map_or(1, |load| load.turns);
+        let speed = account_pace::speed(
+            attempt.usage.output,
+            attempt.usage.reasoning,
+            attempt.native_execution_ms,
+        );
+        account_pace::record_turn(account, turns, speed, now());
+    }
 }
 /// [`account_slots`] under a campaign's own frozen per-account bound.
 pub(super) fn account_slots_within(run_id: &str, provider_id: &str, configured: usize) -> usize {
@@ -3333,7 +3403,7 @@ impl ExecutionBackend for NativeBackend {
             let run_request = store.run(&attempt.run_id).await?.request;
             run_request.require_dispatch_admission(now())?;
             if requires_browser_runtime(&version.manifest) {
-                super::worker::ready().await?;
+                super::worker::ready_for_attempt().await?;
             }
             let host = self
                 .app
@@ -5620,12 +5690,40 @@ impl BenchmarkService {
                 account: seat.account.to_owned(),
                 workers,
                 cancel,
+                checking: false,
+                lane_slots: seat.lane_slots,
             },
         );
         Some(signal)
     }
     async fn release(&self, id: &str) {
         self.active.lock().await.remove(id);
+    }
+    /// Hands the lane and account of a finished turn to the next attempt of
+    /// its configuration while its sealed answer is checked, so the run's
+    /// checks no longer stand between its turns. A lane keeps at most as many
+    /// checks waiting this way as it flies turns; past that, the turn keeps
+    /// its seat until its verdict. True when the seat was handed on.
+    async fn release_turn_seat(&self, id: &str) -> bool {
+        let mut active = self.active.lock().await;
+        let Some((lane, slots)) = active
+            .get(id)
+            .filter(|flight| !flight.checking && flight.workers.is_empty())
+            .map(|flight| (flight.lane.clone(), flight.lane_slots))
+        else {
+            return false;
+        };
+        let checking = active
+            .values()
+            .filter(|flight| flight.checking && flight.lane == lane)
+            .count();
+        if checking >= slots {
+            return false;
+        }
+        if let Some(flight) = active.get_mut(id) {
+            flight.checking = true;
+        }
+        true
     }
     /// Starts `a` if its configuration, account and the app have a free slot.
     async fn start(
@@ -5706,7 +5804,7 @@ impl BenchmarkService {
             lane: &lane,
             lane_slots: attempts_at_once(&run.request, &a.configuration) as usize,
             account: &account,
-            account_slots: account_slots(&run.id, provider),
+            account_slots: account_slots(&run.id, provider, &pace_key(&self.store, &account)),
         };
         // A v3 root holds every worker its policy may select for the whole
         // trajectory. A v4 root holds none here: each step takes its decided
@@ -5769,6 +5867,24 @@ impl BenchmarkService {
             waiting_accounts.extend(accounts);
             return Ok(false);
         };
+        if !account.is_empty() {
+            let turns = self
+                .active
+                .lock()
+                .await
+                .values()
+                .filter(|flight| flight.uses_account(&account))
+                .count();
+            a.account_load = Some(AccountLoad {
+                turns: u32::try_from(turns).unwrap_or(u32::MAX),
+                limit: u32::try_from(account_slots(
+                    &run.id,
+                    provider,
+                    &pace_key(&self.store, &account),
+                ))
+                .unwrap_or(u32::MAX),
+            });
+        }
         if let Err(error) =
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest).await
         {
@@ -6088,7 +6204,8 @@ impl BenchmarkService {
             )
             .await
         } else {
-            self.backend
+            let executed = self
+                .backend
                 .execute(
                     &self.store,
                     a.clone(),
@@ -6096,7 +6213,30 @@ impl BenchmarkService {
                     run.request.timeout_seconds,
                     cancel_rx.clone(),
                 )
-                .await
+                .await;
+            if executed
+                .as_ref()
+                .is_ok_and(|done| checks_without_its_seat(done, &version))
+                && self.release_turn_seat(&a.id).await
+            {
+                // The next attempt prepares while this answer is checked.
+                self.wake.notify_one();
+            }
+            let account = format!(
+                "{}\u{1f}{}",
+                a.configuration.provider_id,
+                a.configuration.account_id.as_deref().unwrap_or_default()
+            );
+            let paced = pace_key(&self.store, &account);
+            match &executed {
+                Ok(done) => pace_turn(&paced, done, None),
+                Err(error) => {
+                    if let Ok(saved) = self.store.attempt(&a.id).await {
+                        pace_turn(&paced, &saved, Some(error));
+                    }
+                }
+            }
+            executed
         };
         // The cancel signal stays live through judging.
         let result = match result {
@@ -6599,6 +6739,19 @@ pub struct FakeBackend {
     /// a sandbox sign-in renewal that other sessions hold up.
     #[cfg(test)]
     busy_sign_in_after: std::sync::atomic::AtomicU64,
+    /// How long each evaluation takes, and, while `hold_evaluations` is set,
+    /// evaluations wait after entering until a test grants a permit.
+    #[cfg(test)]
+    pub(super) evaluation_ms: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pub(super) hold_evaluations: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    pub(super) evaluations_entered: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pub(super) evaluation_permits: std::sync::atomic::AtomicU64,
+    /// How long a turn takes when set (default 300 ms).
+    #[cfg(test)]
+    pub(super) turn_ms: std::sync::atomic::AtomicU64,
     /// Sessions whose provider refuses the requested model before dispatch.
     pub refused_selections: std::sync::atomic::AtomicU64,
     /// Sessions the host refuses to open before any provider call (a sign-in
@@ -6660,6 +6813,19 @@ impl ExecutionBackend for FakeBackend {
                     "resource_busy: benchmark preparation queue expired before worker startup",
                 ));
             }
+            self.evaluations_entered.fetch_add(1, Ordering::SeqCst);
+            while self.hold_evaluations.load(Ordering::SeqCst)
+                && self
+                    .evaluation_permits
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(
+                self.evaluation_ms.load(Ordering::SeqCst),
+            ))
+            .await;
             evaluate(draft, output).await
         })
     }
@@ -6856,7 +7022,14 @@ impl ExecutionBackend for FakeBackend {
                     }
                 }
             } else {
-                tokio::select! {_=tokio::time::sleep(Duration::from_millis(300))=>{},_=cancel.changed()=>{}}
+                #[cfg(not(test))]
+                let turn = Duration::from_millis(300);
+                #[cfg(test)]
+                let turn = Duration::from_millis(match self.turn_ms.load(Ordering::SeqCst) {
+                    0 => 300,
+                    ms => ms,
+                });
+                tokio::select! {_=tokio::time::sleep(turn)=>{},_=cancel.changed()=>{}}
             }
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             if *cancel.borrow() {
@@ -6917,6 +7090,9 @@ mod sign_in_renewal_tests;
 
 #[cfg(test)]
 mod collection_context_tests;
+
+#[cfg(test)]
+mod turn_seat_tests;
 
 #[cfg(test)]
 mod tests {
@@ -7294,6 +7470,36 @@ mod tests {
         record_sandbox_admission(&mut later, &mut empty, Some("invented-sealed-sandbox"));
         assert!(later.sandbox_admission.is_none());
         assert!(empty.get("sandboxAdmission").is_none());
+    }
+    /// A sealed turn whose answer could not be collected before its deadline
+    /// because the sandbox had no room is unscored infrastructure, never the
+    /// model's timeout; a deadline the answer itself ran out keeps its score.
+    #[test]
+    fn collection_that_found_no_room_before_its_deadline_is_unscored() {
+        let row = judge_row("sonnet");
+        let mut attempt =
+            super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        attempt.outcome = Some("completed".into());
+        repository_collection_failure(
+            &mut attempt,
+            &sandbox_setup_error(
+                std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "resource_busy: benchmark preparation queue expired before worker startup",
+                ),
+                Some(1),
+            ),
+        );
+        assert_eq!(attempt.outcome.as_deref(), Some("infrastructure_failure"));
+        attempt.phase = "terminal".into();
+        assert!(!super::super::analysis::is_measured(&attempt));
+        let mut timed = super::super::pending_attempt("invented-run", "invented-version", &row, 1);
+        timed.outcome = Some("completed".into());
+        repository_collection_failure(
+            &mut timed,
+            &BenchmarkError::new("budget_timeout", "Native sandbox deadline expired"),
+        );
+        assert_eq!(timed.outcome.as_deref(), Some("budget_timeout"));
     }
     fn judge_row(model: &str) -> Configuration {
         Configuration {
@@ -8648,6 +8854,7 @@ mod tests {
             repository_result: None,
             collection_context: None,
             sandbox_admission: None,
+            account_load: None,
             credit_use: None,
         };
         let version = |id: &str| BenchmarkVersion {
@@ -8709,17 +8916,21 @@ mod tests {
     #[test]
     fn a_quota_wait_leaves_one_flight_on_the_account_until_a_turn_lands() {
         let (run, provider) = ("quota-slots-run", "kimi-acp");
-        assert_eq!(account_slots(run, provider), ACCOUNT_SLOTS);
+        let account = "kimi-acp\u{1f}quota-slots-account";
+        assert_eq!(account_slots(run, provider, account), ACCOUNT_SLOTS);
         let error = json!({"data":{"kind":QUOTA_WAIT,"nextReset":now() + 60_000}}).to_string();
         assert!(matches!(
             quota_plan(run, provider, &error, now()),
             QuotaPlan::WaitUntil(_)
         ));
-        assert_eq!(account_slots(run, provider), 1);
+        assert_eq!(account_slots(run, provider, account), 1);
         // Another run on the provider flies as before.
-        assert_eq!(account_slots("another-run", provider), ACCOUNT_SLOTS);
+        assert_eq!(
+            account_slots("another-run", provider, account),
+            ACCOUNT_SLOTS
+        );
         quota_recovered(run, provider);
-        assert_eq!(account_slots(run, provider), ACCOUNT_SLOTS);
+        assert_eq!(account_slots(run, provider, account), ACCOUNT_SLOTS);
     }
     #[tokio::test]
     async fn parallelism_outside_the_slots_is_refused() {

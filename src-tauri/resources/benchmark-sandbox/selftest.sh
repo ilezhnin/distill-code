@@ -411,5 +411,22 @@ check "public session after Z.ai still public" "$(run session selftest-b -- curl
 /usr/local/sbin/bench-clean selftest-b
 rm -rf "$auth_account"
 rm -rf /tmp/selftest-file /tmp/selftest.tar /tmp/selftest-check /tmp/selftest-check.tar
+# Readiness digests: a pass from the record reports exactly what a cold pass
+# reads, the record is root's alone, and a changed file is read again.
+identity_lines() { /usr/local/sbin/bench-status 2>/dev/null | grep -E '^(file|binary|tool) '; }
+rm -f /run/distill-bench-digests/status.json
+cold=$(identity_lines)
+warm=$(identity_lines)
+check "status names the pinned node digest" "$(grep -cE '^binary /usr/local/bin/node [0-9a-f]{64}$' <<<"$cold")" 1
+check "recorded status digests equal a cold pass" "$([[ -n $cold && $warm == "$cold" ]] && echo same)" same
+check "digest record is root only" "$(stat -c '%u %a' /run/distill-bench-digests /run/distill-bench-digests/status.json | tr '\n' ' ')" "0 700 0 600 "
+digest_probe=$(mktemp /root/selftest-digest.XXXXXX)
+printf one >"$digest_probe"
+first=$(/usr/local/sbin/bench-digest status "$digest_probe" | cut -d' ' -f1)
+printf two >"$digest_probe"
+second=$(/usr/local/sbin/bench-digest status "$digest_probe" | cut -d' ' -f1)
+check "a changed file is read again" "$([[ $first != "$second" && $second == "$(sha256sum "$digest_probe" | cut -d' ' -f1)" ]] && echo read)" read
+rm -f "$digest_probe"
+/usr/local/sbin/bench-status >/dev/null 2>&1
 check "clean leaves nothing" "$(ls /srv/bench/work /srv/bench/base /srv/bench/checks /srv/bench/auth | grep -c selftest)" 0
 exit $failed

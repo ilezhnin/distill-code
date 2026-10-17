@@ -11,32 +11,54 @@ if [[ -z ${DISTILL_BENCH_CONTROL:-} ]]; then
   exec /usr/local/sbin/bench-budget control -- /usr/bin/env DISTILL_BENCH_CONTROL=1 /bin/bash "$0" "$@"
 fi
 /usr/local/sbin/bench-budget status || exit $?
-for file in /usr/local/sbin/bench-* /etc/wsl.conf; do
-  echo "file $(basename "$file") $(sha256sum "$file" | cut -d' ' -f1)"
-done
+helpers=(/usr/local/sbin/bench-* /etc/wsl.conf)
+browser=()
 for file in /opt/distill-browser/runtime.json /usr/local/lib/distill/benchmark-browser-worker.mjs; do
-  [[ ! -f $file ]] || echo "file $(basename "$file" | sed 's/^runtime.json$/browser-runtime.json/') $(sha256sum "$file" | cut -d' ' -f1)"
+  [[ ! -f $file ]] || browser+=("$file")
+done
+binaries=(/usr/local/bin/node /usr/bin/git /opt/distill-tools/bin/*)
+# Executables a tool keeps on its own sessions' PATH alone (Z.ai's ripgrep).
+for binary in /opt/distill-tools/zai/bin/*; do
+  [[ -f $binary ]] && binaries+=("$binary")
+done
+# Rehash the installed entrypoint of every tool file, not its
+# provisioning-time receipt.
+tools=()
+for manifest in /opt/distill-tools/*/manifest; do
+  [[ -f $manifest ]] || continue
+  while read -r tool kind name recorded; do
+    [[ $kind == file ]] || continue
+    launcher=/opt/distill-tools/bin/$name
+    tools+=("$(sed -n 's/^exec \(.*\) "\$@"$/\1/p' "$launcher" 2>/dev/null | awk '{print $NF}')")
+  done <"$manifest"
+done
+# One pass over every digest below. bench-digest reads a file again only
+# when its identity changed since the last pass (see that helper).
+declare -A digest=()
+while read -r sum path; do
+  [[ -n $path && $sum != - ]] && digest[$path]=$sum
+done < <(/usr/local/sbin/bench-digest status "${helpers[@]}" "${browser[@]}" "${binaries[@]}" "${tools[@]}")
+# The digest of a path, empty where it has none (as sha256sum printed none).
+digest_of() { [[ -n ${1:-} ]] && echo "${digest[$1]:-}"; }
+for file in "${helpers[@]}"; do
+  echo "file $(basename "$file") $(digest_of "$file")"
+done
+for file in "${browser[@]}"; do
+  echo "file $(basename "$file" | sed 's/^runtime.json$/browser-runtime.json/') $(digest_of "$file")"
 done
 echo "node $(node --version 2>/dev/null)"
 echo "git $(git --version 2>/dev/null | cut -d' ' -f3)"
-for binary in /usr/local/bin/node /usr/bin/git /opt/distill-tools/bin/*; do
-  echo "binary $binary $(sha256sum "$binary" 2>/dev/null | cut -d' ' -f1)"
-done
-# Executables a tool keeps on its own sessions' PATH alone (Z.ai's ripgrep).
-for binary in /opt/distill-tools/zai/bin/*; do
-  [[ -f $binary ]] || continue
-  echo "binary $binary $(sha256sum "$binary" 2>/dev/null | cut -d' ' -f1)"
+for binary in "${binaries[@]}"; do
+  echo "binary $binary $(digest_of "$binary")"
 done
 echo "netns $(if ip netns exec bench ip -4 route show default 2>/dev/null | grep -q 10.231.0.1; then echo up; else echo down; fi)"
 for manifest in /opt/distill-tools/*/manifest; do
   [[ -f $manifest ]] || continue
   while read -r tool kind name recorded; do
     if [[ $kind == file ]]; then
-      # Rehash the installed entrypoint, not its provisioning-time receipt.
       launcher=/opt/distill-tools/bin/$name
       target=$(sed -n 's/^exec \(.*\) "\$@"$/\1/p' "$launcher" | awk '{print $NF}')
-      digest=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1)
-      echo "tool $tool file $name $digest"
+      echo "tool $tool file $name $(digest_of "$target")"
     else
       echo "tool $tool $kind $name"
     fi

@@ -6,7 +6,8 @@
 //   node scripts/benchmark-sandbox.mjs status     print bench-status
 //   node scripts/benchmark-sandbox.mjs selftest   check the confinement from inside
 //   node scripts/benchmark-sandbox.mjs deploy-helpers  network-free helper update
-//   node scripts/benchmark-sandbox.mjs heavy-lanes N   heavy jobs at once (1-3)
+//   node scripts/benchmark-sandbox.mjs heavy-cap N|off  cap CPU-heavy jobs at once
+//                                     (1-8); admission is dynamic without it
 //   node scripts/benchmark-sandbox.mjs install-tool ID...  only those provider
 //                                     tools (downloads them; helpers, users and
 //                                     the browser stay as they are)
@@ -221,10 +222,8 @@ function selftest() {
   runSelftest(resources);
 }
 
-// The broker refuses a lower setting while admitted jobs exceed its budget.
-function heavyLanes(value) {
-  if (!/^[1-3]$/.test(value ?? ""))
-    throw new Error("heavy-lanes takes the number of heavy jobs: 1, 2 or 3");
+function setting(name, value, valid, help) {
+  if (!valid.test(value ?? "")) throw new Error(help);
   const result = wsl([
     "-d",
     DISTRO,
@@ -232,13 +231,13 @@ function heavyLanes(value) {
     "root",
     "--exec",
     "/usr/local/sbin/bench-budget",
-    "heavy-lanes",
+    name,
     value,
   ]);
   process.stdout.write(result.stdout);
   process.stderr.write(result.stderr);
   if (result.status !== 0)
-    throw new Error(`bench-budget heavy-lanes exited ${result.status}`);
+    throw new Error(`bench-budget ${name} exited ${result.status}`);
 }
 
 const [command, argument, ...rest] = process.argv.slice(2);
@@ -249,5 +248,11 @@ else if (command === "install-tool") {
 } else if (command === "status") status();
 else if (command === "selftest") selftest();
 else if (command === "deploy-helpers") deployHelpers();
-else if (command === "heavy-lanes") heavyLanes(argument);
+else if (command === "heavy-cap")
+  setting(
+    "heavy-cap",
+    argument,
+    /^([1-8]|off)$/,
+    "heavy-cap takes the most CPU-heavy jobs at once (1-8) or off",
+  );
 else throw new Error(`unknown command ${command}`);
