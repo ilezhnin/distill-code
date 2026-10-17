@@ -61,6 +61,10 @@ PEAKS = Path('/var/lib/distill-bench/admission-peaks.json')
 DISK = 8 * GIB
 INODES = 131072
 OUTCOME_TOKEN = None
+# The host's framing for this run's outcome receipt, printed as the last
+# stderr line; taken out of the environment before anything starts, so no
+# process of the run can learn it or print the line.
+OUTCOME_NONCE = None
 DEVICE = None
 POLICY = 'dynamic-v2'
 # The aggregate every admitted job shares. Admission leaves one GiB of the
@@ -1090,6 +1094,10 @@ def run(kind, identifier, command):
     setup()
     write(ROOT / 'control' / 'cgroup.procs', os.getpid())
     reserved = os.environ.pop('DISTILL_BENCH_RESERVATION', None)
+    global OUTCOME_NONCE
+    nonce = os.environ.pop('DISTILL_BENCH_OUTCOME_NONCE', None)
+    if nonce and re.fullmatch('[0-9a-f]{32}', nonce):
+        OUTCOME_NONCE = nonce
     token = reserved or secrets.token_hex(16)
     if not re.fullmatch('[0-9a-f]{32}', token):
         fail('invalid benchmark resource reservation')
@@ -1476,8 +1484,7 @@ def main():
         token = sys.argv[2]
         if not re.fullmatch('[0-9a-f]{32}', token):
             fail('invalid resource outcome token')
-        path = STATE / 'outcomes' / (token + '.json')
-        print(path.read_text() if path.exists() else json.dumps({'token': token, 'infrastructureError': None}))
+        print(json.dumps(outcome_receipt(token)))
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == 'check-class':
         setup()
@@ -1509,9 +1516,28 @@ def main():
     return run(kind, identifier, command)
 
 
+def outcome_receipt(token):
+    """What `bench-budget outcome TOKEN` prints: the receipt, or none."""
+    path = STATE / 'outcomes' / (token + '.json')
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return {'token': token, 'infrastructureError': None}
+
+
+def print_outcome():
+    """The run's receipt as the last stderr line, framed by the host's nonce,
+    so the host needs no second call for it."""
+    if OUTCOME_TOKEN and OUTCOME_NONCE:
+        try:
+            print(OUTCOME_NONCE, 'outcome', json.dumps(outcome_receipt(OUTCOME_TOKEN)), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+
+
 if __name__ == '__main__':
     try:
-        raise SystemExit(main())
+        code = main()
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         if OUTCOME_TOKEN:
             try:
@@ -1523,4 +1549,7 @@ if __name__ == '__main__':
             except OSError:
                 pass
         print(str(error), file=sys.stderr)
+        print_outcome()
         raise SystemExit(70)
+    print_outcome()
+    raise SystemExit(code)

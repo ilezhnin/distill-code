@@ -1026,6 +1026,32 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'capability_missing:'):
             self.reserve('text', 'fictional-legacy', legacy)
 
+    def test_a_leased_run_prints_its_outcome_last_framed_by_the_host_nonce(self):
+        # The host passes a nonce with a leased call; the run's supervisor
+        # prints its receipt as the last stderr line, so the host needs no
+        # second wsl.exe start for it. Without a nonce nothing is printed.
+        production = (budget.OUTCOME_TOKEN, budget.OUTCOME_NONCE)
+        self.addCleanup(lambda: setattr(budget, 'OUTCOME_TOKEN', production[0])
+                        or setattr(budget, 'OUTCOME_NONCE', production[1]))
+        token, nonce = 'a' * 32, 'b' * 32
+        (budget.STATE / 'outcomes').mkdir(parents=True, exist_ok=True)
+        budget.OUTCOME_TOKEN, budget.OUTCOME_NONCE = token, None
+        quiet = io.StringIO()
+        with contextlib.redirect_stderr(quiet):
+            budget.print_outcome()
+        self.assertEqual(quiet.getvalue(), '')
+        budget.OUTCOME_NONCE = nonce
+        for written, expected in ((None, None), ('infrastructure_error: invented', 'infrastructure_error: invented')):
+            if written:
+                (budget.STATE / 'outcomes' / (token + '.json')).write_text(
+                    json.dumps({'token': token, 'infrastructureError': written}))
+            printed = io.StringIO()
+            with contextlib.redirect_stderr(printed):
+                budget.print_outcome()
+            line = printed.getvalue().splitlines()[-1]
+            self.assertTrue(line.startswith(nonce + ' outcome '))
+            self.assertEqual(json.loads(line[len(nonce) + 9:]), {'token': token, 'infrastructureError': expected})
+
     def test_a_drifted_wsl_clock_admits_within_a_minute_and_names_the_clock(self):
         # WSL2's clock can fall behind Windows after sleep until it is
         # resynchronised: evidence up to a minute off still admits, with its

@@ -327,9 +327,25 @@ pub(crate) struct Reservation {
     pub token: String,
     class: ResourceClass,
     admission: Admission,
+    /// Framing for the run's outcome receipt on its stderr (see
+    /// [`take_outcome_trailer`]); only the run's root supervisor sees it.
+    nonce: String,
+    /// Set once a process that claims the lease was started: bench-budget
+    /// run then removes the lease itself, and dropping this one starts no
+    /// release. A lease nothing claimed is released, and expires regardless.
+    claimed: std::sync::atomic::AtomicBool,
+}
+impl Reservation {
+    pub(crate) fn mark_claimed(&self) {
+        self.claimed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
+        if self.claimed.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let mut command = std::process::Command::new("wsl.exe");
         command
             .args([
@@ -480,6 +496,8 @@ async fn reserve_with_buffers_for(
         token: token.to_owned(),
         class,
         admission,
+        nonce: uuid::Uuid::new_v4().simple().to_string(),
+        claimed: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -890,6 +908,7 @@ fn command_with_host_buffers(
     cmd.arg(format!("DISTILL_BENCH_HOST_BUFFER_BYTES={host_buffers}"));
     if let Some(reservation) = reservation {
         cmd.arg(format!("DISTILL_BENCH_RESERVATION={}", reservation.token));
+        cmd.arg(format!("DISTILL_BENCH_OUTCOME_NONCE={}", reservation.nonce));
     }
     cmd.arg(program)
         .args(args)
@@ -1039,6 +1058,9 @@ fn invoke_raw<'a>(
             cmd.stdin(Stdio::piped());
         }
         let mut child = cmd.spawn()?;
+        if let Some(reservation) = reservation {
+            reservation.mark_claimed();
+        }
         let tree = super::process::ProcessTree::contain(&child);
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("piped stdout");
@@ -1112,17 +1134,24 @@ pub(crate) async fn invoke_reserved_bounded(
     timeout: Duration,
 ) -> io::Result<Output> {
     let mut out = invoke_raw(program, args, input, cap, timeout, Some(reservation)).await?;
-    let receipt = invoke_raw(
-        "/usr/local/sbin/bench-budget",
-        &["outcome", &reservation.token],
-        None,
-        4096,
-        Duration::from_secs(5),
-        None,
-    )
-    .await?
-    .require_success("resource outcome")?;
-    let value: serde_json::Value = serde_json::from_slice(&receipt.stdout)?;
+    // The run's supervisor prints its receipt as the last stderr line; a
+    // helper from an earlier build, or a run cut short, needs the call.
+    let value: serde_json::Value = match take_outcome_trailer(&mut out.stderr, &reservation.nonce) {
+        Some(value) => value,
+        None => {
+            let receipt = invoke_raw(
+                "/usr/local/sbin/bench-budget",
+                &["outcome", &reservation.token],
+                None,
+                4096,
+                Duration::from_secs(5),
+                None,
+            )
+            .await?
+            .require_success("resource outcome")?;
+            serde_json::from_slice(&receipt.stdout)?
+        }
+    };
     if let Some(reason) = value["infrastructureError"].as_str() {
         if value["token"] != reservation.token {
             return Err(io::Error::other("Sandbox resource outcome owner differs"));
@@ -1130,6 +1159,21 @@ pub(crate) async fn invoke_reserved_bounded(
         out.infrastructure = Some(reason.to_owned());
     }
     Ok(out)
+}
+
+/// The outcome receipt a leased run's supervisor printed last on stderr as
+/// `NONCE outcome JSON`, removed from `stderr`. Only that supervisor knows
+/// the nonce (it takes it out of the environment before starting anything),
+/// so nothing the run starts can print the line.
+fn take_outcome_trailer(stderr: &mut Vec<u8>, nonce: &str) -> Option<serde_json::Value> {
+    let marker = format!("{nonce} outcome ");
+    let text = std::str::from_utf8(stderr).ok()?;
+    let trimmed = text.trim_end_matches(['\n', '\r']);
+    let start = trimmed.rfind('\n').map_or(0, |at| at + 1);
+    let json = trimmed[start..].strip_prefix(marker.as_str())?;
+    let value = serde_json::from_str(json).ok()?;
+    stderr.truncate(start);
+    Some(value)
 }
 
 pub(crate) async fn invoke_bounded(
@@ -2099,6 +2143,32 @@ mod tests {
         lines.push("netns up".into());
         lines.extend(budget("off"));
         lines.join("\n")
+    }
+
+    #[test]
+    fn a_leased_run_s_outcome_comes_from_its_framed_last_stderr_line() {
+        let nonce = "b".repeat(32);
+        let token = "a".repeat(32);
+        let mut stderr = format!(
+            "resource_admitted: prep\ncopied invented\n{nonce} outcome {{\"token\": \"{token}\", \"infrastructureError\": null}}\n"
+        )
+        .into_bytes();
+        let value = take_outcome_trailer(&mut stderr, &nonce).unwrap();
+        assert_eq!(value["token"], token);
+        assert!(value["infrastructureError"].is_null());
+        assert_eq!(stderr, b"resource_admitted: prep\ncopied invented\n");
+        // A line with another nonce, or not the last one, is not the receipt:
+        // the separate outcome call decides then.
+        let forged = "c".repeat(32);
+        for text in [
+            format!("{forged} outcome {{\"token\": \"{token}\", \"infrastructureError\": \"x\"}}\n"),
+            format!("{nonce} outcome {{\"token\": \"{token}\", \"infrastructureError\": null}}\nlater\n"),
+            "no receipt at all\n".to_owned(),
+        ] {
+            let mut stderr = text.clone().into_bytes();
+            assert!(take_outcome_trailer(&mut stderr, &nonce).is_none(), "{text}");
+            assert_eq!(stderr, text.into_bytes());
+        }
     }
 
     fn budget(cap: &str) -> Vec<String> {

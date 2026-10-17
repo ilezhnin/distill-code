@@ -1508,7 +1508,11 @@ impl Inner {
                 )
                 .await;
                 let bridge = match spawned {
-                    Ok(bridge) => bridge,
+                    Ok(bridge) => {
+                        // The session's bench-run owns the lease now.
+                        reservation.mark_claimed();
+                        bridge
+                    }
                     Err(error) => {
                         if let Some((id, _)) = &launch.sandbox {
                             let _ = crate::services::benchmark_sandbox::clean(id).await;
