@@ -114,46 +114,64 @@ Provider inference sends those inputs to its endpoint under the account's
 existing data-use policy.
 
 Benchmark jobs share an 8 GiB scratch filesystem with 131072 inodes. Every job
-has its own memory, CPU, process and scratch I/O ceiling, and admission never
-changes it:
+keeps its own memory, CPU, process and scratch I/O ceiling, and admission never
+changes it; the aggregate is shared by measured use. The CPU weight decides
+who gets a CPU first when jobs want more than there is:
 
-| Job | Kind | Memory | CPUs | Processes | Scratch read/write |
-| --- | --- | --- | --- | --- | --- |
-| Repository session | CPU-heavy attempt | 6 GiB | 2 | 768 | 128/32 MiB/s |
-| Repository check | CPU-heavy check | 4 GiB | 2 | 512 | 128/32 MiB/s |
-| Paired check, split over its two halves | CPU-heavy check | 8 GiB | 2 | 768 | 128/32 MiB/s |
-| Browser check or rendering | CPU-heavy check | 2 GiB | 1 | 384 | 128/32 MiB/s |
-| Preparation | preparation | 2 GiB | 1 | 256 | 128/32 MiB/s |
-| Text session | light attempt | 2 GiB | 1 | 256 | 32/8 MiB/s |
-| Sign-in or model probe | light | 2 GiB | 1 | 256 | 32/8 MiB/s |
+| Job | Kind | Memory | CPUs | Processes | Scratch read/write | CPU weight |
+| --- | --- | --- | --- | --- | --- | --- |
+| Repository session | CPU-heavy attempt | 6 GiB | 2 | 768 | 128/32 MiB/s | 100 |
+| Repository check | CPU-heavy, timed | 4 GiB | 2 | 512 | 128/32 MiB/s | 10000 |
+| Paired check, split over its two halves | CPU-heavy, timed | 8 GiB | 2 | 768 | 128/32 MiB/s | 10000 |
+| Browser check or rendering | CPU-heavy, timed | 2 GiB | 1 | 384 | 128/32 MiB/s | 10000 |
+| Preparation | preparation | 2 GiB | 1 | 256 | 128/32 MiB/s | 300 |
+| Text session | light attempt | 2 GiB | 1 | 256 | 32/8 MiB/s | 100 |
+| Sign-in or model probe | light | 2 GiB | 1 | 256 | 32/8 MiB/s | 100 |
 
-Admission is dynamic: no number of lanes is fixed. The next job starts while
-what the sandbox measures leaves room for it, and waits, naming the line that
-holds it, while it does not:
+Admission is dynamic (policy dynamic-v2): no number of lanes is fixed. The next
+job starts while what the sandbox measures leaves room for it, and waits,
+naming the line that holds it, while it does not:
 
 - Memory. Every admitted job claims the larger of what its process tree uses
   now and what jobs of its kind needed before: the 95th percentile of their
   recorded peaks plus a quarter, never above the ceiling and, until eight are
   recorded, the ceiling itself. The claims and the new job's must fit 23 GiB,
   and an attempt must also leave room for one check and one preparation.
-- CPU. The CPU ceilings of CPU-heavy jobs must fit the physical cores (half the
-  guest's CPUs) less what the host itself runs outside the sandbox, and an
-  attempt must also leave one check's two CPUs. A check or a timed browser run
-  therefore always has its CPUs on cores no other CPU-heavy job was promised.
-  Light jobs and preparations need the measured load below three quarters of
-  the guest's CPUs and, where Linux reports it, CPU pressure below a quarter.
-  While recent checks spent more than a tenth of their time waiting for a CPU,
-  the line drops by one check.
+- CPU. A repository session spends most of its time waiting for the remote
+  model, so it is admitted by what the sandbox measures: the CPUs the jobs used
+  over the last seconds, a burst allowance for every running session and the
+  new one, the ceilings of the running timed jobs (checks, paired checks,
+  browser runs) and one check's two CPUs must fit the guest's logical CPUs
+  less what the host runs outside the sandbox and one CPU for the
+  supervisors. The allowance is half a core until eight sessions finished,
+  then the 95th percentile of their average use, between a quarter core and
+  the session's ceiling. New sessions also wait while the guest's CPU pressure
+  over ten seconds exceeds a tenth or recent checks spent more than a tenth of
+  their time waiting for a CPU, and at most eight run at once. A timed job
+  starts while its ceiling, the other timed jobs' ceilings and the sessions'
+  allowances fit the same CPUs; with its CPU weight it takes a CPU before any
+  session that bursts beside it. The ceiling rule of earlier builds still
+  admits whatever it admitted: every CPU-heavy job by its ceiling within the
+  physical cores (half the guest's CPUs) less the host's own use, an attempt
+  leaving one check's two CPUs, the line dropping by one check while checks
+  waited for CPUs. Light jobs and preparations need the measured load below
+  three quarters of the guest's CPUs and, where Linux reports it, CPU pressure
+  below a quarter. Every finished job records its CPU seconds, average cores,
+  memory peak and wall time; `bench-budget usage` lists the latest.
 - Priority. While a check or a preparation waits for memory, no attempt
   starts; while a check waits for CPUs, no CPU-heavy attempt starts. Neither
-  starves behind attempts. While a repository attempt waits for memory that
-  the running text sessions claim, no new text attempt starts, so the smaller
-  text claims cannot keep refilling the room it needs. A sign-in or probe
-  queued without a reservation holds attempts back, never checks or
-  preparations.
+  starves behind attempts. A check the operator's cap refuses holds new
+  repository sessions the same way, so it takes the next place a session
+  frees. While a repository attempt waits for memory that the running text
+  sessions claim, no new text attempt starts, so the smaller text claims
+  cannot keep refilling the room it needs; and once repository peaks are
+  learned, a text attempt leaves room for one more repository claim while a
+  repository job ran in the last five minutes. A sign-in or probe queued
+  without a reservation holds attempts back, never checks or preparations.
 - Scratch. The filesystem's free space must cover the new job's scratch
-  reservation, half a GiB, and the reservations of jobs admitted in the last
-  two minutes; an older job's use already shows in the free space. A job that
+  reservation (1 GiB and 16384 inodes for a repository session), half a GiB,
+  and the reservations of jobs admitted in the last two minutes; an older
+  job's use already shows in the free space. A job that
   fills the scratch while it runs ends as unscored infrastructure failure.
 - Windows and the guest. The controller preserves at least 12 GiB of Windows
   available memory, 8 GiB of commit headroom and 30 GiB free on the registered
@@ -181,8 +199,9 @@ it was admitted under (see [Freeze and run](#4-freeze-and-run-the-measurement-ma
 Cleanup retains its own capacity. No additional virtual machine is created per
 test.
 
-The operator may cap CPU-heavy jobs at once, for example to one while
-CPU-sensitive planning labs run:
+The operator may cap CPU-heavy jobs at once (sessions and timed jobs
+together), for example to six for the first wave on a new admission policy or
+to one while CPU-sensitive planning labs run:
 
 ```powershell
 node scripts/benchmark-sandbox.mjs heavy-cap 1
@@ -392,27 +411,34 @@ reason for a lower count, not just the request value. An existing ordinary run
 can be adjusted through `benchmark_set_run_parallelism`; record the amendment
 and preserve its original attempt identities.
 
-Parallelism counts turns. Once a text turn's answer is sealed and its sandbox
-removed, its objective check no longer holds the configuration's slot or the
-account's: the next attempt prepares and runs while the check finishes. A
-configuration keeps at most as many such checks waiting as its parallelism;
-past that, a finished turn keeps its slot until its verdict. Repository turns
-and judged renderings keep their slot until the verdict, so the next session
-of a repository configuration never runs beside its predecessor's check.
+Parallelism counts turns. Once a text or repository turn's answer is sealed
+and its sandbox removed, its objective check no longer holds the
+configuration's slot or the account's: the next attempt prepares and runs
+while the check finishes, as its own sandbox job whose CPU weight puts it
+ahead of the sessions beside it. A configuration keeps at most as many such
+checks waiting as its parallelism; past that, a finished turn keeps its slot
+until its verdict. Planning labs, whose checks time planners on budgets of
+seconds, and judged renderings keep their slot until the verdict; run planning
+labs under `heavy-cap 1`, so nothing CPU-heavy runs beside their checks.
 
 Each attempt records the conditions its candidate session was admitted under,
 as `sandboxAdmission` on the attempt and in its sealed evidence: the admission
 policy and any operator cap, the jobs already running by class, the memory
 they claimed and the CPU ceilings of the CPU-heavy ones, what this job was
-expected to need, the CPU line, the CPUs the sandbox used over the last sampled
-seconds and the guest's CPU pressure, how long recent checks waited for CPUs,
+expected to need, the CPU line, the logical CPUs left for the jobs, the
+repository sessions running and the burst allowance counted for each, which
+rule admitted it (by ceilings or by measured use), the CPUs the sandbox used
+over the last sampled seconds and the guest's CPU pressure, how long recent
+checks waited for CPUs,
 the sandbox's memory in use, the WSL guest's load averages, CPUs and free
 memory, Windows available RAM and commit headroom, and Windows CPU use over the
 last second. It describes the moment of admission; a job admitted later does
 not change it. Each attempt also records, as `accountLoad`, how many turns its
-account had in flight when it was admitted and the pace then. Attempts recorded before this field existed, and
-attempts recovered after an application restart, do not have it. Compare speed
-across attempts with similar admission conditions, or account for them.
+account had in flight when it was admitted and the pace then. Attempts recorded
+before these fields existed, and attempts recovered after an application
+restart, do not have them. Compare speed across attempts admitted under
+similar conditions (the policy, the rule, the sessions running and the
+competing jobs), or stratify by them.
 
 Benchmark turns do not draw on purchased Codex credits unless the owner sets
 Credits benchmarks may spend in Settings > Benchmarks (`creditLimit` in

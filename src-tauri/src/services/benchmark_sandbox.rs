@@ -64,7 +64,7 @@ fn resource_hash(bytes: &[u8]) -> String {
 }
 
 pub(crate) const RESOURCE_POLICY: &str =
-    "dynamic-v1-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8-inodes131072";
+    "dynamic-v2-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8-inodes131072-weights10000-300-100";
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Budget lines the broker reports: the aggregate every admitted job shares
@@ -73,7 +73,7 @@ const GIB: u64 = 1024 * 1024 * 1024;
 /// dynamic policy no line depends on how many jobs run; admission measures
 /// that instead (see bench-budget).
 const FIXED_BUDGET: [&str; 9] = [
-    "budget admission dynamic-v1",
+    "budget admission dynamic-v2",
     "budget memory 25769803776",
     "budget cpu 1450000/100000",
     "budget pids 4224",
@@ -90,8 +90,9 @@ const FIXED_BUDGET: [&str; 9] = [
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Admission {
-    /// The admission policy: `dynamic-v1`, or absent for the fixed heavy
-    /// lanes before it.
+    /// The admission policy (`dynamic-v2`: repository sessions by measured
+    /// use; `dynamic-v1`: every CPU-heavy job by its ceiling), or absent for
+    /// the fixed heavy lanes before them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
     /// Heavy jobs (repository, browser, check, pair) the fixed policy ran at
@@ -123,6 +124,19 @@ pub struct Admission {
     pub cpu_pressure: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_stall: Option<f64>,
+    /// Logical CPUs the host left the benchmark jobs, the burst allowance
+    /// counted per repository session, the repository sessions running, and
+    /// which rule admitted a CPU-heavy job: `ceilings` (every CPU-heavy job
+    /// by its ceiling, as before) or `measured` (by the sandbox's measured
+    /// use).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_capacity: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_burst: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_sessions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_by: Option<String>,
     /// Memory the benchmark cgroup actually used at admission.
     pub memory_current: u64,
     /// The WSL guest's 1, 5 and 15 minute load averages, CPUs and free memory.
@@ -1950,8 +1964,8 @@ mod tests {
             ),
             off.replace("budget heavy-cap off\n", ""),
             // The fixed policy's aggregate, or another policy, is not this one.
-            off.replace("budget admission dynamic-v1\n", ""),
-            off.replace("budget admission dynamic-v1", "budget admission dynamic-v2"),
+            off.replace("budget admission dynamic-v2\n", ""),
+            off.replace("budget admission dynamic-v2", "budget admission dynamic-v1"),
             off.replace("budget memory 25769803776", "budget memory 19327352832"),
             off.replace("budget cpu 1450000/100000", "budget cpu 650000/100000"),
             off.replace("light 33554432/8388608", "light 134217728/33554432"),
@@ -1970,17 +1984,28 @@ mod tests {
     fn a_dynamic_admission_record_keeps_what_admission_measured() {
         // The shape bench-budget prints beside a dynamic reservation token.
         let printed = serde_json::json!({
-            "policy": "dynamic-v1", "heavyCap": null, "lane": "light",
+            "policy": "dynamic-v2", "heavyCap": null, "lane": "light",
             "competing": {"repository": 2}, "competingHeavy": 2,
             "reservedMemory": 5 * GIB, "reservedCpu": 4, "memoryCurrent": 3 * GIB,
             "guestLoad": [0.8, 0.9, 0.7], "guestCpus": 16,
             "hostAvailableRam": 28 * GIB, "hostAvailableCommit": 20 * GIB,
             "guestMemAvailable": 25 * GIB, "hostCpuBusy": 0.18,
             "expectedMemory": 655360000, "cpuLine": 6, "sandboxCpu": 1.25,
-            "cpuPressure": 0.02, "checkStall": null,
+            "cpuPressure": 0.02, "checkStall": null, "cpuCapacity": 11,
+            "sessionBurst": 0.5, "repositorySessions": 2, "admittedBy": null,
         });
         let admission: Admission = serde_json::from_value(printed).unwrap();
-        assert_eq!(admission.policy.as_deref(), Some("dynamic-v1"));
+        assert_eq!(admission.policy.as_deref(), Some("dynamic-v2"));
+        assert_eq!(
+            (
+                admission.cpu_capacity,
+                admission.session_burst,
+                admission.repository_sessions
+            ),
+            (Some(11), Some(0.5), Some(2))
+        );
+        // A light job is admitted by neither CPU-heavy rule.
+        assert_eq!(admission.admitted_by, None);
         assert_eq!(admission.heavy_lanes, None);
         assert_eq!(admission.cpu_line, Some(6));
         assert_eq!(admission.sandbox_cpu, Some(1.25));

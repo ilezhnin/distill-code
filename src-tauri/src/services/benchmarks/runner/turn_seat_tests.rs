@@ -1,8 +1,8 @@
-//! A text turn hands its lane and account to the next attempt of its
-//! configuration once its answer is sealed, so the run's checks no longer
-//! stand between its turns. Turns of one lane never overlap, a lane keeps at
-//! most as many checks waiting this way as it flies turns, and a repository
-//! turn keeps its seat until its verdict.
+//! A text or repository turn hands its lane and account to the next attempt
+//! of its configuration once its answer is sealed, so the run's checks no
+//! longer stand between its turns. Turns of one lane never overlap, a lane
+//! keeps at most as many checks waiting this way as it flies turns, and a
+//! planning lab's turn keeps its seat until its verdict.
 use super::tests::{serial_request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
@@ -21,6 +21,26 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
 async fn serial_cells(service: &BenchmarkService, cells: u32, profile: &str) -> RunRequest {
     let mut request = serial_request(service).await;
     request.request_key = format!("turn-seat-{profile}-{cells}");
+    cells_of(&mut request, cells, profile);
+    request
+}
+
+/// The same cells of an invented planning lab.
+async fn planning_cells(service: &BenchmarkService, cells: u32, profile: &str) -> RunRequest {
+    let mut draft = seed_definitions().remove(0);
+    draft.split = "train".into();
+    draft.name = "Invented planning lab".into();
+    draft.work_class_id = "planning".into();
+    let definition = service.store.save_draft(None, None, draft).await.unwrap();
+    let version = service.store.publish(&definition.id, 1).await.unwrap();
+    let mut request = serial_request(service).await;
+    request.request_key = format!("turn-seat-planning-{profile}-{cells}");
+    request.version_ids = vec![version.id];
+    cells_of(&mut request, cells, profile);
+    request
+}
+
+fn cells_of(request: &mut RunRequest, cells: u32, profile: &str) {
     request.repetitions = cells;
     request.max_executions = cells;
     request.execution_limits = Some(RunExecutionLimits {
@@ -34,7 +54,6 @@ async fn serial_cells(service: &BenchmarkService, cells: u32, profile: &str) -> 
         // for readiness alone.
         configuration.inventory_revision = None;
     }
-    request
 }
 
 /// Ticks until the run completes. A pass ends with its last flight, before
@@ -61,10 +80,19 @@ fn verdict_at(attempt: &Attempt) -> i64 {
 
 #[tokio::test]
 async fn a_text_lane_turns_while_its_previous_answer_is_checked() {
+    lane_turns_while_its_previous_answer_is_checked("native_text").await;
+}
+
+#[tokio::test]
+async fn a_repository_lane_turns_while_its_previous_answer_is_checked() {
+    lane_turns_while_its_previous_answer_is_checked("protected_repository").await;
+}
+
+async fn lane_turns_while_its_previous_answer_is_checked(profile: &str) {
     let (dir, service, backend) = setup().await;
     backend.hold_evaluations.store(true, Ordering::SeqCst);
     let run = service
-        .start_run(serial_cells(&service, 3, "native_text").await)
+        .start_run(serial_cells(&service, 3, profile).await)
         .await
         .unwrap();
     let ticking = tokio::spawn({
@@ -103,11 +131,11 @@ async fn a_text_lane_turns_while_its_previous_answer_is_checked() {
 }
 
 #[tokio::test]
-async fn a_repository_turn_keeps_its_seat_until_its_verdict() {
+async fn a_planning_lab_keeps_its_seat_until_its_verdict() {
     let (dir, service, backend) = setup().await;
     backend.hold_evaluations.store(true, Ordering::SeqCst);
     let run = service
-        .start_run(serial_cells(&service, 2, "protected_repository").await)
+        .start_run(planning_cells(&service, 2, "protected_repository").await)
         .await
         .unwrap();
     let ticking = tokio::spawn({
@@ -153,28 +181,36 @@ async fn only_sealed_objective_text_answers_are_checked_without_their_seat() {
     unsealed.evidence_hash = None;
     assert!(!checks_without_its_seat(&unsealed, &version));
     answer.configuration.execution_profile = "protected_repository".into();
+    assert!(checks_without_its_seat(&answer, &version));
+    answer.configuration.execution_profile = "isolated_ui".into();
     assert!(!checks_without_its_seat(&answer, &version));
     answer.configuration.execution_profile = "native_text".into();
+    let mut planning = version.clone();
+    planning.manifest.work_class_id = "planning".into();
+    assert!(!checks_without_its_seat(&answer, &planning));
     version.manifest.evaluator.kind = "rubric".into();
     assert!(!checks_without_its_seat(&answer, &version));
     dir.close().await;
 }
 
 /// The harness behind the throughput note: the same serial run of one
-/// configuration with a check shorter than a turn, once on a text lane that
-/// hands its seat on and once on a repository lane that keeps it. Prints
-/// both wall times (run with --nocapture to read them).
+/// repository configuration with a check shorter than a turn, once as a
+/// planning lab that keeps its seat and once as a lab that hands it on.
+/// Prints both wall times (run with --nocapture to read them).
 #[tokio::test]
-async fn handing_the_seat_on_takes_the_checks_off_a_text_lanes_path() {
+async fn handing_the_seat_on_takes_the_checks_off_a_lanes_path() {
     let mut walls = Vec::new();
-    for profile in ["protected_repository", "native_text"] {
+    for planning in [true, false] {
         let (dir, service, backend) = setup().await;
         backend.turn_ms.store(200, Ordering::SeqCst);
         backend.evaluation_ms.store(150, Ordering::SeqCst);
-        let run = service
-            .start_run(serial_cells(&service, 6, profile).await)
-            .await
-            .unwrap();
+        let profile = "protected_repository";
+        let request = if planning {
+            planning_cells(&service, 6, profile).await
+        } else {
+            serial_cells(&service, 6, profile).await
+        };
+        let run = service.start_run(request).await.unwrap();
         let started = Instant::now();
         while service.store.run(&run.id).await.unwrap().state != "completed" {
             service.tick().await.unwrap();
@@ -183,7 +219,12 @@ async fn handing_the_seat_on_takes_the_checks_off_a_text_lanes_path() {
         assert_eq!(backend.calls.load(Ordering::SeqCst), 6);
         assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 1);
         eprintln!(
-            "[turn-seat harness] {profile}: 6 cells, turn 200 ms, check 150 ms -> {} ms",
+            "[turn-seat harness] {}: 6 cells, turn 200 ms, check 150 ms -> {} ms",
+            if planning {
+                "keeps its seat"
+            } else {
+                "hands it on"
+            },
             wall.as_millis()
         );
         walls.push(wall);

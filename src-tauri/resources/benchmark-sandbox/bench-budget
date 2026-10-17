@@ -4,7 +4,7 @@
 The scratch filesystem is a fixed-size ext4 loop device, not a sampled du
 estimate. This helper never executes a submitted file while holding root.
 
-Admission is dynamic (policy dynamic-v1): the next job starts while what the
+Admission is dynamic (policy dynamic-v2): the next job starts while what the
 sandbox measures leaves room for it, not up to a fixed number of lanes.
 - Memory: every admitted job claims the larger of what it uses now and what
   jobs of its class needed before (the 95th percentile of their recorded
@@ -13,17 +13,26 @@ sandbox measures leaves room for it, not up to a fixed number of lanes.
   also leave room for one check and one preparation. While a check or a
   preparation waits for memory, no attempt starts; while a check waits for
   CPUs, no CPU-heavy attempt starts. Neither starves behind attempts.
-- CPU: the CPU ceilings of CPU-heavy jobs (repository sessions, checks,
-  paired checks, browser checks) must fit the physical cores the host is not
-  using itself, and an attempt must leave one check's two CPUs, so a check
-  or a timed browser run always has its CPUs. Light jobs need the measured
-  load below the line. Checks that waited for CPU tighten the line.
+- CPU: a CPU-heavy job (repository session, check, paired check, browser
+  check) starts while the ceilings of the running ones and its own fit the
+  physical cores the host is not using itself, an attempt leaving one
+  check's two CPUs (checks that waited for CPU tighten this line), as before;
+  or by measured use: a repository session while the sandbox's measured use,
+  a burst allowance for each running session and the new one, the timed
+  jobs' ceilings and one check's reserve fit the logical CPUs the host leaves
+  free less the supervisors' (at most eight sessions, none while CPU pressure
+  or check stalls exceed a tenth); a timed job while its ceiling, the other
+  timed jobs' and the sessions' allowances fit them. Timed jobs carry
+  cpu.weight 10000 against the sessions' 100, so they take the CPU first.
+  Light jobs need the measured load below the light line.
 - Scratch: the filesystem's free space must cover the new job's
   reservation, half a GiB, and the reservations of jobs admitted in the last
   two minutes; an older job's use already shows in the free space.
 - Windows RAM, commit and the sandbox volume keep their floors, counting
   claims not yet in use, and the guest keeps 2 GiB free.
-Every job keeps its own ceilings; admission never changes them.
+Every job keeps its own ceilings; admission never changes them. The
+aggregate is shared by measured use, and every admission records what it
+measured; every finished job records its CPU seconds and memory peak.
 """
 import math
 import fcntl
@@ -51,7 +60,7 @@ DISK = 8 * GIB
 INODES = 131072
 OUTCOME_TOKEN = None
 DEVICE = None
-POLICY = 'dynamic-v1'
+POLICY = 'dynamic-v2'
 # The aggregate every admitted job shares. Admission leaves one GiB of the
 # memory ceiling to trusted supervisors, page tables and filesystem
 # bookkeeping; supervisors also keep their own half CPU and 128 processes.
@@ -76,6 +85,32 @@ PEAK_SAMPLES = 8
 # CPU line by one check while the recent median stays above it.
 STALL_LINE = 0.10
 STALL_RING = 20
+# Repository sessions spend most of their time waiting for the remote model,
+# so they are admitted by what the sandbox measures rather than by their
+# 2-CPU ceilings (see admit_measured): the measured use, a burst allowance
+# per running session and the new one, the ceilings of the timed jobs and
+# one check's reserve must fit the logical CPUs the host leaves free, less
+# the supervisors' own CPU. The allowance is half a core until eight
+# sessions are recorded, then their 95th percentile of average use, never
+# below a quarter core nor above a session's ceiling. New sessions also wait
+# while the guest's CPU pressure or the recent check stalls exceed a tenth,
+# and never more than eight run at once.
+SUPERVISOR_CPUS = 1
+SESSION_BURST = 0.5
+SESSION_BURST_FLOOR = 0.25
+SESSION_PRESSURE = 0.10
+REPOSITORY_SESSIONS = 8
+# While a repository job ran in the last five minutes, a text attempt leaves
+# room for one learned repository claim, so text sessions at their account's
+# full pace cannot keep a repository run out.
+REPOSITORY_ACTIVE = 300
+# cgroup v2 cpu.weight by class: timed jobs (checks, pairs, browser runs)
+# take the CPU first when sessions burst; preparations come next.
+WEIGHTS = {'check': 10000, 'pair': 10000, 'browser': 10000, 'prep': 300}
+DEFAULT_WEIGHT = 100
+# What each finished job used, newest last, for calibration.
+USAGE = Path('/var/lib/distill-bench/job-usage.jsonl')
+USAGE_LINES = 2000
 # A job's scratch reservation counts until it has run this long; after that
 # its actual use shows in the filesystem's free space. Admission keeps this
 # much free on top.
@@ -97,7 +132,7 @@ CPU_HEAVY = ('repository', 'browser', 'check', 'pair')
 ATTEMPTS = ('text', 'repository')
 SENSITIVE = ('browser', 'check', 'pair')
 SCRATCH_RESERVATIONS = {
-    'text': (64 * 1024 ** 2, 4096), 'repository': (2 * GIB, 32768),
+    'text': (64 * 1024 ** 2, 4096), 'repository': (GIB, 16384),
     'browser': (128 * 1024 ** 2, 4096), 'check': (GIB, 16384),
     'pair': (2 * GIB, 32768), 'prep': (GIB, 32768),
     'login': (0, 0), 'probe': (128 * 1024 ** 2, 4096),
@@ -351,6 +386,15 @@ def claim(row, recorded):
     return max(leaf_memory(row), expected_memory(row['kind'], recorded)) + row.get('host_buffers', 0)
 
 
+def replace_private(path, text):
+    """Write a root-only state file whole, never half."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staged = path.with_name(path.name + '.new')
+    staged.write_text(text)
+    os.chmod(staged, 0o600)
+    os.replace(staged, path)
+
+
 def record_peak(kind, groups):
     """Keep the peak memory of a finished job for its class's expectation."""
     peak = sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)
@@ -359,11 +403,47 @@ def record_peak(kind, groups):
     recorded = peaks()
     ring = [value for value in recorded.get(kind, []) if isinstance(value, int)][-(PEAK_RING - 1):]
     recorded[kind] = ring + [peak]
-    PEAKS.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    staged = PEAKS.with_name(PEAKS.name + '.new')
-    staged.write_text(json.dumps(recorded))
-    os.chmod(staged, 0o600)
-    os.replace(staged, PEAKS)
+    replace_private(PEAKS, json.dumps(recorded))
+
+
+def record_usage(kind, identifier, groups, admitted_at):
+    """Keep what a finished job used: CPU seconds, average cores over its
+    run, memory peak and wall time. The class's average cores teach the
+    repository sessions' burst allowance (session_burst)."""
+    wall = time.time() - admitted_at
+    usage = [read_number(ROOT / name / 'cpu.stat', r'usage_usec (\d+)') for name in groups]
+    if wall < 1 or not usage or any(value is None for value in usage):
+        return
+    seconds = sum(usage) / 1e6
+    cores = round(seconds / wall, 4)
+    recorded = peaks()
+    key = 'cpu-' + kind
+    ring = [value for value in recorded.get(key, []) if isinstance(value, (int, float))][-(PEAK_RING - 1):]
+    recorded[key] = ring + [cores]
+    replace_private(PEAKS, json.dumps(recorded))
+    entry = json.dumps({'at': round(time.time(), 1), 'kind': kind, 'id': identifier, 'wallSeconds': round(wall, 1),
+                        'cpuSeconds': round(seconds, 2), 'cores': cores,
+                        'memoryPeak': sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)})
+    try:
+        kept = USAGE.read_text().splitlines()[-(USAGE_LINES - 1):]
+    except OSError:
+        kept = []
+    replace_private(USAGE, '\n'.join(kept + [entry]) + '\n')
+
+
+def session_burst(recorded):
+    """The CPUs a new repository session is expected to add at once (see
+    SESSION_BURST)."""
+    seen = sorted(value for value in recorded.get('cpu-repository', [])
+                  if isinstance(value, (int, float)) and value >= 0)
+    if len(seen) < PEAK_SAMPLES:
+        return SESSION_BURST
+    p95 = seen[min(len(seen) - 1, math.ceil(0.95 * len(seen)) - 1)]
+    return min(float(CLASSES['repository'][1]), max(SESSION_BURST_FLOOR, p95))
+
+
+def learned(kind, recorded):
+    return sum(isinstance(value, int) and value > 0 for value in recorded.get(kind, [])) >= PEAK_SAMPLES
 
 
 def stall_total(groups):
@@ -443,16 +523,37 @@ def guest_pressure():
     return float(found.group(1)) / 100 if found else None
 
 
+def cpu_capacity(host_cores, measured):
+    """Logical CPUs the host leaves the benchmark jobs, less the supervisors'
+    own: the line repository sessions are admitted against by measured use."""
+    cpus = os.cpu_count() or 2
+    outside = 0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0))
+    return cpus - math.ceil(outside) - SUPERVISOR_CPUS
+
+
 def cpu_line(host_cores, measured):
-    """Physical cores the host leaves the CPU-heavy jobs: the guest's CPUs as
-    cores (two threads each) less what the host itself runs outside the
-    sandbox, less one check while checks have been waiting for CPU."""
+    """Physical cores the host leaves the CPU-heavy jobs counted by their
+    ceilings: the guest's CPUs as cores (two threads each) less what the host
+    itself runs outside the sandbox, less one check while checks have been
+    waiting for CPU. Whatever this admits, admission never refuses."""
     cpus = os.cpu_count() or 2
     physical = max(CHECK_CPUS, cpus // 2)
     outside = 0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0))
     stalled = recent_stall()
     tightening = CHECK_CPUS if stalled is not None and stalled > STALL_LINE else 0
     return max(CHECK_CPUS, physical - math.ceil(outside) - tightening)
+
+
+def repository_active(active):
+    """Whether a repository job runs or was admitted or refused in the last
+    REPOSITORY_ACTIVE seconds."""
+    if any(row['kind'] == 'repository' for row in active):
+        return True
+    try:
+        held = json.loads((STATE / 'priority.json').read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(held, dict) and held.get('repository-active', 0) > time.time()
 
 
 def priority_waiting(kind):
@@ -499,13 +600,18 @@ def decide(active, kind, gate, host_buffers=0):
         observed = admit_measured(active, kind, gate, host_buffers)
     except BlockingIOError as busy:
         reason = str(busy)
-        if kind not in ATTEMPTS and 'Windows headroom evidence expired' not in reason and 'operator caps' not in reason:
+        # A check the operator's cap refuses also holds sessions back, so it
+        # takes the next freed place instead of a new session.
+        if kind not in ATTEMPTS and 'Windows headroom evidence expired' not in reason:
             hold('cpu' if 'CPU' in reason else 'memory', time.time() + PRIORITY_HOLD)
         elif getattr(busy, 'text_would_free', False):
             # Text sessions need less room and refill every few minutes, so
             # a repository attempt's larger claim would never fit beside them.
             hold('repository', time.time() + PRIORITY_HOLD)
         raise
+    finally:
+        if kind == 'repository':
+            hold('repository-active', time.time() + REPOSITORY_ACTIVE)
     if kind == 'repository':
         hold('repository')
     return observed
@@ -525,6 +631,8 @@ def admit_measured(active, kind, gate, host_buffers):
         needed_room = needed + expected_memory('check', recorded) + expected_memory('prep', recorded)
     else:
         needed_room = needed
+    if kind == 'text' and learned('repository', recorded) and repository_active(active):
+        needed_room += expected_memory('repository', recorded)
     if claims + needed_room > ADMISSION_MEMORY:
         busy = BlockingIOError('resource_busy: sandbox memory the running jobs claim leaves no room for this job; no provider process started')
         # Whether the text sessions' leaving would make the room a refused
@@ -540,15 +648,33 @@ def admit_measured(active, kind, gate, host_buffers):
     host_cores = observed.get('hostCpuBusy')
     host_cores = None if host_cores is None else host_cores * (os.cpu_count() or 1)
     line = cpu_line(host_cores, measured)
+    capacity = cpu_capacity(host_cores, measured)
     heavy = [row for row in active if row['kind'] in CPU_HEAVY]
     ceilings = sum(row['cpu'] for row in heavy)
+    timed = sum(row['cpu'] for row in active if row['kind'] in SENSITIVE)
+    sessions = sum(row['kind'] == 'repository' for row in active)
+    burst = session_burst(recorded)
     pressure = guest_pressure()
+    stalled = recent_stall()
+    admitted_by = None
     if kind in CPU_HEAVY:
         cap = heavy_cap()
         if cap is not None and len(heavy) >= cap:
             raise BlockingIOError('resource_busy: the operator caps CPU-heavy benchmark jobs at ' + str(cap) + '; no provider process started')
         reserve = CHECK_CPUS if kind in ATTEMPTS else 0
-        if ceilings + cpu + reserve > line:
+        if ceilings + cpu + reserve <= line:
+            admitted_by = 'ceilings'
+        elif kind == 'repository':
+            if sessions >= REPOSITORY_SESSIONS:
+                raise BlockingIOError('resource_busy: the sandbox runs its most repository sessions at once; no provider process started')
+            if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
+                raise BlockingIOError('resource_busy: CPU pressure in the sandbox holds new repository sessions; no provider process started')
+            used = measured if measured is not None else ceilings
+            if used + burst * (sessions + 1) + timed + CHECK_CPUS <= capacity:
+                admitted_by = 'measured'
+        elif timed + cpu + burst * sessions <= capacity:
+            admitted_by = 'measured'
+        if admitted_by is None:
             raise BlockingIOError('resource_busy: CPU cores the host leaves free cannot cover this job beside the running checks and sessions; no provider process started')
     else:
         busy = (measured if measured is not None else ceilings) + (0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0)))
@@ -556,7 +682,8 @@ def admit_measured(active, kind, gate, host_buffers):
             raise BlockingIOError('resource_busy: measured CPU load is above the light-job admission line; no provider process started')
     observed.update(expectedMemory=needed, claimedMemory=claims, cpuLine=line, heavyCpus=ceilings,
                     sandboxCpu=None if measured is None else round(measured, 3),
-                    cpuPressure=pressure, checkStall=recent_stall())
+                    cpuPressure=pressure, checkStall=stalled, cpuCapacity=capacity,
+                    sessionBurst=round(burst, 3), repositorySessions=sessions, admittedBy=admitted_by)
     return observed
 
 
@@ -638,7 +765,8 @@ def make_groups(kind, identifier):
         for name in groups:
             # A pair's two leaves split its envelope, like its memory and CPUs.
             share = len(groups)
-            child_group(name, memory // share, cpu // share, pids // share, read // share, written // share)
+            child_group(name, memory // share, cpu // share, pids // share, read // share, written // share,
+                        WEIGHTS.get(kind, DEFAULT_WEIGHT))
             made.append(name)
     except BaseException:
         stop(made)
@@ -706,14 +834,14 @@ def observe(mode, identifier):
                     'token': token, 'infrastructureError': 'infrastructure_error: benchmark process tree reached its memory ceiling'}))
 
 
-def child_group(name, memory, cpu, pids, read, written):
+def child_group(name, memory, cpu, pids, read, written, weight):
     if DEVICE is None:
         fail('benchmark scratch device is unknown')
     path = ROOT / name
     path.mkdir()
     try:
-        for key, value in {'memory.max': memory, 'memory.swap.max': 0,
-                           'pids.max': pids, 'cpu.max': f'{cpu * 100000} 100000'}.items():
+        for key, value in {'memory.max': memory, 'memory.swap.max': 0, 'pids.max': pids,
+                           'cpu.max': f'{cpu * 100000} 100000', 'cpu.weight': weight}.items():
             write(path / key, value)
             if (path / key).read_text().strip() != str(value):
                 fail('benchmark child resource limit did not take effect')
@@ -867,6 +995,7 @@ def run(kind, identifier, command):
                 try:
                     if groups and 'admitted_at' in locals():
                         record_peak(kind, groups)
+                        record_usage(kind, identifier, groups, admitted_at)
                         record_stall(kind, groups, admitted_at, stalled_before)
                 except (OSError, ValueError):
                     pass
@@ -899,6 +1028,7 @@ def status():
         print('budget reserved', sum(claim(row, recorded) for row in active))
         print('budget current', (ROOT / 'memory.current').read_text().strip())
         print('budget expected', ' '.join(f'{kind} {expected_memory(kind, recorded)}' for kind in CLASSES))
+        print('budget session-burst', session_burst(recorded))
         filesystem = os.statvfs(SCRATCH)
         print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
 
@@ -987,6 +1117,15 @@ def main():
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == 'heavy-cap':
         set_heavy_cap(sys.argv[2])
+        return 0
+    if len(sys.argv) in (2, 3) and sys.argv[1] == 'usage':
+        # What the most recent finished jobs used (newest last), for calibration.
+        count = int(sys.argv[2]) if len(sys.argv) == 3 and sys.argv[2].isdigit() else 200
+        try:
+            for line in USAGE.read_text().splitlines()[-count:]:
+                print(line)
+        except OSError:
+            pass
         return 0
     if len(sys.argv) in (6, 7) and sys.argv[1] == 'reserve':
         reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) == 7 else 0)

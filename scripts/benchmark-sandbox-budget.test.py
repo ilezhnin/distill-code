@@ -43,6 +43,9 @@ class BudgetTests(unittest.TestCase):
                 return types.SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0)
         budget.HEAVY_CAP = RootOwned(root / 'heavy-cap')
         budget.PEAKS = root / 'peaks.json'
+        budget.USAGE = root / 'job-usage.jsonl'
+        production_cores = budget.sandbox_cores
+        self.addCleanup(setattr, budget, 'sandbox_cores', production_cores)
         budget.STATE.mkdir()
         budget.ROOT.mkdir()
         (budget.ROOT / 'memory.current').write_text('0')
@@ -87,6 +90,18 @@ class BudgetTests(unittest.TestCase):
     def learn(self, **peaks):
         budget.PEAKS.write_text(json.dumps({kind: [value] * budget.PEAK_SAMPLES for kind, value in peaks.items()}))
 
+    def measure(self, cores):
+        # What the benchmark jobs use now, as the CPU samples would show it.
+        budget.sandbox_cores = lambda: cores
+
+    def settle(self):
+        # Every running job was admitted long enough ago that its scratch use
+        # shows in the free space instead of its reservation.
+        for path in budget.STATE.glob('lease-*.json'):
+            row = json.loads(path.read_text())
+            row['admitted'] = time.time() - 300
+            path.write_text(json.dumps(row))
+
     def admit(self, kind, identifier, gate=None):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -101,7 +116,7 @@ class BudgetTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             budget.status()
         lines = output.getvalue().splitlines()
-        for line in ('budget admission dynamic-v1', 'budget heavy-cap off', 'budget memory 25769803776',
+        for line in ('budget admission dynamic-v2', 'budget heavy-cap off', 'budget memory 25769803776',
                      'budget cpu 1450000/100000', 'budget swap 0', 'budget pids 4224',
                      'budget disk 8589934592', 'budget inodes 131072', 'budget io 1073741824/268435456',
                      'budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608'):
@@ -139,41 +154,148 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(BlockingIOError, 'measured CPU load'):
             self.reserve('text', 'fictional-text-over-load')
 
-    def test_cpu_heavy_jobs_keep_a_check_its_cpus_on_the_cores_the_host_leaves(self):
+    def test_sessions_using_their_cpus_still_get_todays_ceiling_rule(self):
         self.roomy()
         self.learn(repository=budget.GIB, check=budget.GIB, browser=512 * MIB)
-        # Eight cores (sixteen threads): three repository sessions leave one
-        # check's two CPUs, and the check then still gets in.
+        # Sessions busy with twelve CPUs leave the measured rule no room;
+        # the ceiling rule of earlier builds still admits three on eight
+        # cores (sixteen threads), leaving one check's two CPUs.
+        self.measure(12.0)
         for name in ('fictional-a', 'fictional-b', 'fictional-c'):
-            self.reserve('repository', name)
+            self.assertEqual(self.admit('repository', name)['admission']['admittedBy'], 'ceilings')
         with self.assertRaisesRegex(BlockingIOError, 'CPU cores the host leaves free'):
             self.reserve('repository', 'fictional-d')
-        self.reserve('check', 'fictional-check')
-        with self.assertRaisesRegex(BlockingIOError, 'CPU cores'):
-            self.reserve('browser', 'fictional-browser')
-        # A host busy with four cores of its own leaves room for one session.
+        # A check still fits today's line; past it, timed jobs count their
+        # ceilings against the logical CPUs and the sessions' allowances, and
+        # the weights give them the CPU first.
+        self.assertEqual(self.admit('check', 'fictional-check')['admission']['admittedBy'], 'ceilings')
+        self.assertEqual(self.admit('browser', 'fictional-browser')['admission']['admittedBy'], 'measured')
         for row in budget.receipts():
             budget.release(next(path.name[6:-5] for path in budget.STATE.glob('lease-*.json')
                                 if json.loads(path.read_text())['id'] == row['id']))
-        # (The refused browser check held CPU-heavy attempts for a moment.)
-        (budget.STATE / 'priority.json').unlink()
+        # A host busy with four CPUs of its own and no sample yet: the
+        # sessions' ceilings stand in for their use. 11 logical CPUs are left.
+        self.measure(None)
         self.busy = 250
-        self.reserve('repository', 'fictional-busy-host')
+        admitted = [self.admit('repository', f'fictional-busy-{n}')['admission'] for n in range(4)]
+        self.assertEqual([record['admittedBy'] for record in admitted],
+                         ['ceilings', 'measured', 'measured', 'measured'])
+        self.assertEqual(admitted[0]['cpuCapacity'], 11)
         with self.assertRaisesRegex(BlockingIOError, 'CPU cores'):
-            self.reserve('repository', 'fictional-second-on-busy-host')
-        # A browser check still finds its CPU beside it.
+            self.reserve('repository', 'fictional-busy-4')
+        # A browser check still finds its CPU beside them.
         self.reserve('browser', 'fictional-browser')
+
+    def test_repository_sessions_are_admitted_by_measured_use_up_to_eight(self):
+        self.roomy()
+        self.learn(repository=budget.GIB, check=budget.GIB, prep=256 * MIB)
+        self.measure(1.0)
+        records = []
+        for n in range(budget.REPOSITORY_SESSIONS):
+            records.append(self.admit('repository', f'fictional-{n}')['admission'])
+            self.settle()
+        self.assertEqual([record['admittedBy'] for record in records], ['ceilings'] * 3 + ['measured'] * 5)
+        self.assertEqual(records[-1]['repositorySessions'], 7)
+        self.assertEqual(records[-1]['sessionBurst'], 0.5)
+        with self.assertRaisesRegex(BlockingIOError, 'most repository sessions'):
+            self.reserve('repository', 'fictional-ninth')
+        # Checks beside them: each takes its two CPUs from the logical line
+        # the sessions' allowances leave (15 - 8 x 0.5 = 11: five checks).
+        for n in range(5):
+            self.reserve('check', f'fictional-check-{n}')
+        with self.assertRaisesRegex(BlockingIOError, 'CPU cores'):
+            self.reserve('check', 'fictional-check-5')
+
+    def test_cpu_pressure_and_check_stalls_hold_new_sessions_above_the_ceiling_rule(self):
+        self.roomy()
+        self.learn(repository=budget.GIB, check=budget.GIB, prep=256 * MIB)
+        self.measure(1.0)
+        pressure = budget.Path('/proc/pressure/cpu')
+        pressure.write_text('some avg10=15.00 avg60=1.00 avg300=1.00 total=9\n')
+        for name in ('fictional-a', 'fictional-b', 'fictional-c'):
+            self.reserve('repository', name)
+        with self.assertRaisesRegex(BlockingIOError, 'CPU pressure in the sandbox'):
+            self.reserve('repository', 'fictional-d')
+        pressure.write_text('some avg10=5.00 avg60=1.00 avg300=1.00 total=9\n')
+        self.assertEqual(self.admit('repository', 'fictional-d')['admission']['admittedBy'], 'measured')
+        # Checks that waited for CPUs hold new sessions too.
+        (budget.STATE / 'stalls.json').write_text(json.dumps([0.3] * 10))
+        with self.assertRaisesRegex(BlockingIOError, 'CPU pressure in the sandbox'):
+            self.reserve('repository', 'fictional-e')
+
+    def test_timed_jobs_weigh_a_hundred_times_a_session(self):
+        self.roomy()
+        self.learn(repository=budget.GIB, text=512 * MIB, check=budget.GIB, pair=budget.GIB,
+                   browser=512 * MIB, prep=256 * MIB)
+        for kind in ('repository', 'text', 'check', 'pair', 'browser', 'prep'):
+            self.reserve(kind, f'fictional-{kind}')
+        weights = {name: limits[-1] for name, limits in self.groups}
+        self.assertEqual(weights, {
+            'session-fictional-repository': 100, 'session-fictional-text': 100,
+            'check-fictional-check': 10000, 'check-fictional-pair': 10000, 'probe-fictional-pair': 10000,
+            'browser-fictional-browser': 10000, 'prep-fictional-prep': 300})
+
+    def test_finished_jobs_record_their_cpu_seconds_and_teach_the_session_burst(self):
+        leaf = budget.ROOT / 'session-fictional'
+        leaf.mkdir()
+        (leaf / 'memory.peak').write_text(str(700 * MIB))
+        (leaf / 'cpu.stat').write_text('usage_usec 30000000\nuser_usec 20000000\n')
+        budget.record_usage('repository', 'fictional', ['session-fictional'], time.time() - 100)
+        entry = json.loads(budget.USAGE.read_text().splitlines()[-1])
+        self.assertEqual((entry['kind'], entry['id'], entry['cpuSeconds'], entry['memoryPeak']),
+                         ('repository', 'fictional', 30.0, 700 * MIB))
+        self.assertAlmostEqual(entry['cores'], 0.3, places=2)
+        # Until eight sessions are recorded the allowance is half a core.
+        self.assertEqual(budget.session_burst(budget.peaks()), budget.SESSION_BURST)
+        for _ in range(budget.PEAK_SAMPLES):
+            budget.record_usage('repository', 'fictional', ['session-fictional'], time.time() - 100)
+        self.assertAlmostEqual(budget.session_burst(budget.peaks()), 0.3, places=2)
+        # Never below a quarter core, never above a session's ceiling.
+        for cores, burst in ((0.05, budget.SESSION_BURST_FLOOR), (3.5, 2.0)):
+            budget.PEAKS.write_text(json.dumps({'cpu-repository': [cores] * budget.PEAK_SAMPLES}))
+            self.assertEqual(budget.session_burst(budget.peaks()), burst)
+        # Memory expectations ignore the CPU ring, and the log stays bounded.
+        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 6 * budget.GIB)
+        budget.USAGE.write_text('{}\n' * (budget.USAGE_LINES + 50))
+        budget.record_usage('text', 'fictional', ['session-fictional'], time.time() - 100)
+        self.assertEqual(len(budget.USAGE.read_text().splitlines()), budget.USAGE_LINES)
+
+    def test_text_leaves_a_learned_repository_claim_while_repository_runs(self):
+        self.roomy()
+        self.learn(text=budget.GIB, repository=2 * budget.GIB, check=budget.GIB, prep=256 * MIB)
+        repository = self.reserve('repository', 'fictional-repository')
+
+        def fill(prefix):
+            count = 0
+            while True:
+                try:
+                    self.reserve('text', f'{prefix}-{count}')
+                except BlockingIOError:
+                    return count
+                count += 1
+        # 23 GiB: the repository's 2.5, then per text 1.25 with room for a
+        # check, a preparation and one more repository claim.
+        self.assertEqual(fill('fictional-text'), 13)
+        budget.release(repository)
+        held = json.loads((budget.STATE / 'priority.json').read_text())
+        held['repository-active'] = time.time() - 1
+        (budget.STATE / 'priority.json').write_text(json.dumps(held))
+        self.assertEqual(fill('fictional-later'), 4)
 
     def test_a_check_waiting_for_room_holds_back_the_attempts_that_would_take_it(self):
         self.roomy()
-        self.learn(repository=budget.GIB, check=budget.GIB, text=512 * MIB, pair=7 * budget.GIB)
-        for name in ('fictional-a', 'fictional-b', 'fictional-c'):
-            self.reserve('repository', name)
-        self.reserve('check', 'fictional-check-a')
-        # A second check waits for CPUs: repository attempts wait behind it,
+        self.learn(repository=budget.GIB, check=budget.GIB, text=512 * MIB, pair=budget.GIB)
+        self.measure(1.0)
+        for n in range(budget.REPOSITORY_SESSIONS):
+            self.reserve('repository', f'fictional-{n}')
+            self.settle()
+        for n in range(5):
+            self.reserve('check', f'fictional-check-{n}')
+            self.settle()
+        # The next check waits for CPUs: repository attempts wait behind it,
         # text attempts (no CPU ceiling counted) do not.
         with self.assertRaisesRegex(BlockingIOError, 'CPU cores'):
-            self.reserve('check', 'fictional-check-b')
+            self.reserve('check', 'fictional-check-5')
         self.reserve('text', 'fictional-text')
         self.assertTrue(budget.priority_waiting('repository'))
         self.assertFalse(budget.priority_waiting('text'))
@@ -263,18 +385,23 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(refused.returncode, 64, refused.stderr)
         self.assertIn('the host gate needs five fields', refused.stderr)
 
-    def test_the_operator_cap_bounds_cpu_heavy_jobs_without_holding_attempts(self):
+    def test_the_operator_cap_bounds_cpu_heavy_jobs_and_a_capped_check_goes_next(self):
         self.roomy()
         self.learn(repository=budget.GIB, check=budget.GIB)
         quiet = io.StringIO()
         with contextlib.redirect_stdout(quiet):
             budget.set_heavy_cap('1')
         self.assertEqual(budget.HEAVY_CAP.read_text(), '1\n')
-        self.reserve('repository', 'fictional-a')
+        session = self.reserve('repository', 'fictional-a')
         with self.assertRaisesRegex(BlockingIOError, 'operator caps CPU-heavy benchmark jobs at 1'):
             self.reserve('check', 'fictional-check')
-        self.assertFalse(budget.priority_waiting('repository'))
+        # The capped check holds new repository sessions, not text ones, so
+        # it takes the place the running session frees.
+        self.assertTrue(budget.priority_waiting('repository'))
         self.reserve('text', 'fictional-text')
+        budget.release(session)
+        self.reserve('check', 'fictional-check-next')
+        (budget.STATE / 'priority.json').unlink()
         with contextlib.redirect_stdout(quiet):
             budget.set_heavy_cap('off')
         self.assertFalse(budget.HEAVY_CAP.exists())
@@ -292,14 +419,15 @@ class BudgetTests(unittest.TestCase):
         self.busy = 125
         record = self.admit('repository', 'fictional-measured', self.gate(ram=60, commit=60))['admission']
         self.assertEqual(record, {
-            'policy': 'dynamic-v1', 'heavyCap': None, 'lane': 'heavy',
+            'policy': 'dynamic-v2', 'heavyCap': None, 'lane': 'heavy',
             'competing': {'text': 1, 'repository': 1}, 'competingHeavy': 1,
             'reservedMemory': 8 * budget.GIB, 'reservedCpu': 2,
             'memoryCurrent': 3 * budget.GIB, 'guestLoad': [1.5, 0.75, 0.25], 'guestCpus': 16,
             'hostAvailableRam': 60 * budget.GIB, 'hostAvailableCommit': 60 * budget.GIB,
             'guestMemAvailable': 32 * budget.GIB, 'hostCpuBusy': 0.125,
             'expectedMemory': 6 * budget.GIB, 'cpuLine': 6, 'sandboxCpu': None,
-            'cpuPressure': None, 'checkStall': None})
+            'cpuPressure': None, 'checkStall': None, 'cpuCapacity': 13, 'sessionBurst': 0.5,
+            'repositorySessions': 1, 'admittedBy': 'ceilings'})
 
     def test_windows_floors_count_the_claims_not_yet_in_use(self):
         self.learn(repository=2 * budget.GIB)
@@ -385,10 +513,10 @@ class BudgetTests(unittest.TestCase):
         self.reserve('text', 'fictional-text')
         self.reserve('pair', 'fictional-pair')
         self.assertEqual(self.groups, [
-            ('session-fictional-repository', (6 * budget.GIB, 2, 768, 128 * MIB, 32 * MIB)),
-            ('session-fictional-text', (2 * budget.GIB, 1, 256, 32 * MIB, 8 * MIB)),
-            ('check-fictional-pair', (4 * budget.GIB, 1, 384, 64 * MIB, 16 * MIB)),
-            ('probe-fictional-pair', (4 * budget.GIB, 1, 384, 64 * MIB, 16 * MIB))])
+            ('session-fictional-repository', (6 * budget.GIB, 2, 768, 128 * MIB, 32 * MIB, 100)),
+            ('session-fictional-text', (2 * budget.GIB, 1, 256, 32 * MIB, 8 * MIB, 100)),
+            ('check-fictional-pair', (4 * budget.GIB, 1, 384, 64 * MIB, 16 * MIB, 10000)),
+            ('probe-fictional-pair', (4 * budget.GIB, 1, 384, 64 * MIB, 16 * MIB, 10000))])
 
     def test_parallel_light_calls_and_one_heavy_share_aggregate_not_serialized(self):
         first = self.reserve('text', 'fictional-one')
@@ -469,8 +597,8 @@ class BudgetTests(unittest.TestCase):
         self.roomy()
         self.learn(repository=budget.GIB, check=budget.GIB)
         token = self.reserve('repository', 'fictional-settled')
-        self.pool.f_bavail = int(2.6 * budget.GIB) // 4096
-        # Just admitted, its 2 GiB reservation still counts: a check waits.
+        self.pool.f_bavail = int(2.2 * budget.GIB) // 4096
+        # Just admitted, its 1 GiB reservation still counts: a check waits.
         with self.assertRaisesRegex(BlockingIOError, 'scratch'):
             self.reserve('check', 'fictional-check')
         # Two minutes later what it wrote shows in the free space instead.

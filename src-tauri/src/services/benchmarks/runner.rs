@@ -1183,17 +1183,22 @@ pub(super) fn attempts_at_once(request: &RunRequest, _configuration: &Configurat
 }
 
 /// Whether a finished turn's check may run after its seat is handed on: an
-/// objectively checked text answer, sealed with its sandbox cleaned, whose
-/// check needs neither the lane nor the account. A repository turn keeps its
-/// seat, so the next session of its configuration never shares the machine
-/// with a check that may be timed, and a judged rendering keeps it, so its
-/// panel finds the accounts as before.
+/// objectively checked text or repository answer, sealed with its sandbox
+/// cleaned, whose check needs neither the lane nor the account. The check is
+/// its own admitted sandbox job, whose CPU weight puts it ahead of the
+/// sessions that start beside it. A planning lab keeps its seat: its checks
+/// time planners on budgets of seconds, so the next session of its
+/// configuration never runs beside them. A judged rendering keeps it too, so
+/// its panel finds the accounts as before.
 fn checks_without_its_seat(attempt: &Attempt, version: &BenchmarkVersion) -> bool {
-    attempt.configuration.execution_profile == "native_text"
-        && attempt.outcome.as_deref() == Some("completed")
+    matches!(
+        attempt.configuration.execution_profile.as_str(),
+        "native_text" | "protected_repository"
+    ) && attempt.outcome.as_deref() == Some("completed")
         && attempt.evidence_hash.is_some()
         && version.manifest.workflow.is_none()
         && version.manifest.evaluator.kind != "rubric"
+        && version.manifest.work_class_id != "planning"
 }
 
 fn resource_waiting(attempt: &Attempt) -> bool {

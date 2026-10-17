@@ -155,7 +155,7 @@ export function runSelftest(resources) {
       "aggregate limits, per-job IO and hard scratch",
       /^budget heavy-cap (off|[1-8])$/m.test(status) &&
         [
-          "budget admission dynamic-v1",
+          "budget admission dynamic-v2",
           "budget memory 25769803776",
           "budget cpu 1450000/100000",
           "budget pids 4224",
