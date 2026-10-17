@@ -66,7 +66,10 @@ function gate() {
     },
   );
   if (result.error) throw result.error;
-  if (result.status !== 0 || !/^\d+,\d+,\d+,\d+$/.test(result.stdout.trim()))
+  if (
+    result.status !== 0 ||
+    !/^\d+,\d+,\d+,\d+,\d+$/.test(result.stdout.trim())
+  )
     throw new Error("Windows resource metadata could not be verified");
   return result.stdout.trim();
 }

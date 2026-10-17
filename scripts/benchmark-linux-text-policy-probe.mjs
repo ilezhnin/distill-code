@@ -172,7 +172,7 @@ async function gated(program, args = [], options = {}) {
     { timeout: 15_000, cap: 4096 },
   );
   const gate = stdout.trim();
-  assert(/^\d+,\d+,\d+,\d+$/.test(gate), "Invalid Windows headroom sample");
+  assert(/^\d+,\d+,\d+,\d+,\d+$/.test(gate), "Invalid Windows headroom sample");
   return linux(
     "/usr/bin/env",
     [`DISTILL_BENCH_HOST_GATE=${gate}`, program, ...args],

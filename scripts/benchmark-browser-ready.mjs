@@ -58,7 +58,7 @@ async function reserve() {
     );
     if (
       sampled.status !== 0 ||
-      !/^\d+,\d+,\d+,\d+$/u.test(sampled.stdout.trim())
+      !/^\d+,\d+,\d+,\d+,\d+$/u.test(sampled.stdout.trim())
     )
       throw new Error("Native Windows headroom sampling failed");
     const reserved = control([
