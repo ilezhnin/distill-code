@@ -900,6 +900,21 @@ def admission(active, kind, observed):
                 guestCpus=os.cpu_count(), **observed)
 
 
+# How far the Windows evidence's time may be from the sandbox clock. WSL2's
+# clock can fall behind Windows after sleep or hibernation until it is
+# resynchronised; a minute-old RAM figure is harmless beside the 12 GiB and
+# 8 GiB floors, while a refusal would stop every admission until then.
+GATE_SKEW_MS = 60_000
+
+
+def gate_age(gate):
+    """How old the Windows evidence is by the sandbox clock, in ms, or None."""
+    try:
+        return round(time.time() * 1000 - int(gate.split(',')[0]))
+    except (ValueError, AttributeError):
+        return None
+
+
 def host_gate(gate, unused, memory):
     """Check the Windows floors and the guest's against this job's need and
     the claims of earlier jobs not yet in use. The host's evidence names its
@@ -910,10 +925,11 @@ def host_gate(gate, unused, memory):
     except (ValueError, AttributeError):
         fail('fresh Windows headroom evidence is required before benchmark admission')
     age = time.time() * 1000 - timestamp
-    # WSL/Windows clocks can differ slightly even on the same machine. Permit
-    # one second of future skew, retaining the five-second stale-evidence cap.
-    if not -1000 <= age <= 5000:
-        raise BlockingIOError('resource_busy: Windows headroom evidence expired before execution; no provider process started')
+    if not -GATE_SKEW_MS <= age <= GATE_SKEW_MS:
+        raise BlockingIOError(
+            f'resource_busy: Windows headroom evidence expired before execution: its time is {age / 1000:+.1f} s '
+            'from the sandbox clock, beyond 60 s either way (resynchronise the WSL clock if this lasts); '
+            'no provider process started')
     additional = memory + unused
     if available_ram < 12 * GIB + additional:
         raise BlockingIOError('resource_busy: Windows available RAM cannot cover benchmark reservations and its 12 GiB desktop floor; no provider process started')
@@ -929,7 +945,8 @@ def host_gate(gate, unused, memory):
         raise BlockingIOError('resource_busy: shared WSL memory cannot cover benchmark reservations and its 2 GiB floor; no provider process started')
     return dict(hostAvailableRam=available_ram, hostAvailableCommit=commit,
                 guestMemAvailable=guest['MemAvailable'],
-                hostCpuBusy=None if not 0 <= busy <= 1000 else busy / 1000)
+                hostCpuBusy=None if not 0 <= busy <= 1000 else busy / 1000,
+                hostGateAgeMs=round(age))
 
 
 def scratch_headroom(active, kind):
@@ -1233,6 +1250,11 @@ def status():
         filesystem = os.statvfs(SCRATCH)
         print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
         print('budget reaper', reaper_state())
+        # The sandbox clock minus the Windows evidence's time, transport
+        # included: a large value means the WSL clock drifted from Windows.
+        age = gate_age(os.environ.get('DISTILL_BENCH_HOST_GATE'))
+        if age is not None:
+            print('budget clock-offset', age)
         try:
             last = REAPER_LOG.read_text().splitlines()[-1]
             if REAPER_LOG.stat().st_mtime > time.time() - 3600:

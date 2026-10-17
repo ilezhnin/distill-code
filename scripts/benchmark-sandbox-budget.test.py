@@ -870,6 +870,7 @@ class BudgetTests(unittest.TestCase):
         (budget.ROOT / 'memory.current').write_text(str(3 * budget.GIB))
         self.busy = 125
         record = self.admit('repository', 'fictional-measured', self.gate(ram=60, commit=60))['admission']
+        self.assertLess(abs(record.pop('hostGateAgeMs')), 2000)
         self.assertEqual(record, {
             'policy': 'dynamic-v2', 'heavyCap': None, 'lane': 'heavy',
             'competing': {'text': 1, 'repository': 1}, 'competingHeavy': 1,
@@ -1016,7 +1017,7 @@ class BudgetTests(unittest.TestCase):
             del budget.print
 
     def test_stale_gate_commit_and_actual_sandbox_volume_fail_before_spawn(self):
-        for gate in (self.gate(age=6000), self.gate(age=-1500), self.gate(commit=9), self.gate(disk=29)):
+        for gate in (self.gate(age=61000), self.gate(age=-61000), self.gate(commit=9), self.gate(disk=29)):
             with self.assertRaises(BlockingIOError):
                 self.reserve('text', 'fictional-rejected', gate)
             self.assertEqual(budget.receipts(), [])
@@ -1024,6 +1025,19 @@ class BudgetTests(unittest.TestCase):
         legacy = ','.join(self.gate().split(',')[:4])
         with self.assertRaisesRegex(RuntimeError, 'capability_missing:'):
             self.reserve('text', 'fictional-legacy', legacy)
+
+    def test_a_drifted_wsl_clock_admits_within_a_minute_and_names_the_clock(self):
+        # WSL2's clock can fall behind Windows after sleep until it is
+        # resynchronised: evidence up to a minute off still admits, with its
+        # age recorded; beyond that the refusal says it is the clock.
+        self.roomy()
+        record = self.admit('text', 'fictional-behind', gate=self.gate(age=30000))['admission']
+        self.assertAlmostEqual(record['hostGateAgeMs'], 30000, delta=2000)
+        self.admit('text', 'fictional-ahead', gate=self.gate(age=-30000))
+        with self.assertRaisesRegex(BlockingIOError, r'Windows headroom evidence expired .* \+61\.\d s from the sandbox clock'):
+            self.reserve('text', 'fictional-drifted', self.gate(age=61000))
+        self.assertAlmostEqual(budget.gate_age(self.gate(age=4000)), 4000, delta=2000)
+        self.assertIsNone(budget.gate_age(None))
 
     def test_shared_guest_memory_floor_protects_other_wsl_workloads(self):
         budget.Path('/proc/meminfo').write_text('MemAvailable: 3145728 kB\n')

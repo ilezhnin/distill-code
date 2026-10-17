@@ -154,6 +154,10 @@ pub struct Admission {
     pub host_cpu_busy: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_cpus: Option<u32>,
+    /// The sandbox clock minus the gate evidence's Windows time, transport
+    /// included: a WSL clock drifted from Windows shows here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_gate_age_ms: Option<i64>,
 }
 
 type PendingAdmissions = BTreeMap<String, (std::time::Instant, Admission)>;

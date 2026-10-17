@@ -217,6 +217,11 @@ logical CPUs were in thousandths. The application samples the last field once
 a second. Operator scripts that do not sample it send 1001, meaning unknown;
 admission then counts no host load outside the sandbox, as for an idle host.
 Evidence with four fields, from scripts written for earlier builds, is refused.
+Evidence whose time is more than a minute from the sandbox clock is refused as
+expired, naming the clock: WSL's clock can fall behind Windows after sleep
+until it is resynchronised. Each admission records the evidence's age
+(`hostGateAgeMs`), and `status` reports `budget clock-offset` (the sandbox
+clock minus the evidence's time, the call's transport included).
 
 All jobs share an aggregate of 24 GiB, 15 CPUs, 4224 processes and
 1024/256 MiB/s of scratch I/O, of which trusted supervisors keep their own
