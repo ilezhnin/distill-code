@@ -212,6 +212,7 @@ const VENDORS: [RegExp, string][] = [
   [/copilot/, "GitHub"],
   [/cursor/, "Cursor"],
   [/amp/, "Sourcegraph"],
+  [/zai|z\.ai|zhipu/, "Z.ai"],
 ];
 
 /** The lab behind a provider id, the way the reference labels a row. */
@@ -225,8 +226,9 @@ export function providerVendor(providerId: string): string {
 
 /**
  * The bridge's display name with the vendor in front where the bridge omits
- * it (Claude Code lists "Opus 5.5", Kimi Code "K3"); the raw id when nothing
- * names it.
+ * it (Claude Code lists "Opus 5.5", Kimi Code "K3"), and without the plan
+ * OpenCode puts in front of a Z.ai model ("Z.AI Coding Plan/GLM-5.3-Flash"
+ * reads "GLM 5.3 Flash"); the raw id when nothing names it.
  */
 export function modelDisplayName(
   configuration: {
@@ -248,6 +250,20 @@ export function modelDisplayName(
     /^K\d/.test(raw)
   )
     return `Kimi ${raw}`;
+  if (providerVendor(configuration.providerId) === "Z.ai") {
+    const name = raw
+      .replace(/^z\.ai coding plan\//i, "")
+      .replace(/^zai-coding-plan\//i, "")
+      .trim();
+    return /^glm-/i.test(name)
+      ? name
+          .split("-")
+          .map((part, index) =>
+            index === 0 ? "GLM" : part.charAt(0).toUpperCase() + part.slice(1),
+          )
+          .join(" ")
+      : name || raw;
+  }
   return raw;
 }
 

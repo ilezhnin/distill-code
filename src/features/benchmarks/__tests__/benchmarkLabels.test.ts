@@ -4,9 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   attentionLabel,
   accountDisplay,
+  configurationOrigin,
   formatElapsed,
   formatSpend,
   modelDisplayName,
+  providerVendor,
   stateLabel,
   stateTone,
 } from "../lib/benchmarkLabels";
@@ -76,6 +78,18 @@ describe("benchmark copy", () => {
     expect(name("claude-acp", "Opus 5.5")).toBe("Claude Opus 5.5");
     expect(name("codex-acp", "GPT-6-Astra")).toBe("GPT-6-Astra");
     expect(name("grok-acp", "Grok 4.7")).toBe("Grok 4.7");
+  });
+
+  it("names Z.ai models and their vendor like every other row", () => {
+    const name = (modelName: string | null, modelId = "id") =>
+      modelDisplayName({ providerId: "zai-acp", modelId, modelName });
+    expect(name("Z.AI Coding Plan/GLM-5.3-Flash")).toBe("GLM 5.3 Flash");
+    expect(name("Z.AI Coding Plan/GLM-5.3")).toBe("GLM 5.3");
+    expect(name(null, "zai-coding-plan/glm-5.3-flash")).toBe("GLM 5.3 Flash");
+    expect(providerVendor("zai-acp")).toBe("Z.ai");
+    expect(configurationOrigin({ providerId: "zai-acp" })).toBe(
+      "Z.ai · zai-acp",
+    );
   });
 
   it("names only the overall board and describes a class board by its rule", () => {
