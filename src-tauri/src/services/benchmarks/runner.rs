@@ -5683,7 +5683,7 @@ impl BenchmarkService {
                     // A tick lasts while anything of any run flies. A cell put
                     // back with a wait starts again once it has waited it out;
                     // one put straight back waits for the next tick.
-                    if tried.contains(&a.id) && !a.wait_until.is_some_and(|until| until <= now()) {
+                    if tried.contains(&a.id) && a.wait_until.is_none_or(|until| until > now()) {
                         continue;
                     }
                     if self
