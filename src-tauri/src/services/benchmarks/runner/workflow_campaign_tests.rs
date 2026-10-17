@@ -204,7 +204,7 @@ impl ExecutionBackend for InventedPanelWorkers {
 
 #[tokio::test]
 async fn frozen_rubric_campaign_reserves_and_scores_one_final_panel_per_trajectory() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(InventedPanelWorkers::default());
     let service = Arc::new(BenchmarkService {
         store: Store::open(dir.path()).await.unwrap(),
@@ -213,6 +213,7 @@ async fn frozen_rubric_campaign_reserves_and_scores_one_final_panel_per_trajecto
         active: Default::default(),
         app: None,
     });
+    dir.register(&service.store.pool);
     let (train, fit) = training(&service).await;
     let roots = roots_with_panel(&service, &train, "rubric-comparison", true).await;
     let mut request = request(&fit, &roots, "rubric-whole-comparison");
@@ -265,6 +266,7 @@ async fn frozen_rubric_campaign_reserves_and_scores_one_final_panel_per_trajecto
             .artifact_hash,
         report.artifact_hash
     );
+    dir.close().await;
 }
 fn request(fit: &learned::FitArtifact, roots: &[BenchmarkVersion], key: &str) -> Request {
     Request {
@@ -304,9 +306,9 @@ async fn complete(service: &Arc<BenchmarkService>, id: &str) -> Campaign {
 
 #[tokio::test]
 async fn campaign_freezes_no_retry_limits_into_each_native_root() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let (train, fit) = training(&service).await;
     let roots = roots(&service, &train, "bounded-campaign").await;
     let mut request = request(&fit, &roots, "bounded-campaign");
@@ -379,13 +381,14 @@ async fn campaign_freezes_no_retry_limits_into_each_native_root() {
         serde_json::to_value(service.store.run(&child.id).await.unwrap().attempts).unwrap(),
         recorded
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn preregistered_campaign_executes_every_policy_and_reports_whole_trajectories() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let (train, fit) = training(&service).await;
     let roots = roots(&service, &train, "comparison").await;
     let request = request(&fit, &roots, "whole-comparison");
@@ -488,7 +491,7 @@ async fn preregistered_campaign_executes_every_policy_and_reports_whole_trajecto
         .all(|c| c.cells.len() == 5 && c.cells.iter().all(|c| c.repeats.len() == 3)));
     assert_eq!(service.query_data().await.unwrap().runs.len(), 1);
     drop(service);
-    let reopened = open(dir.path(), backend.clone()).await;
+    let reopened = open(&dir, backend.clone()).await;
     assert_eq!(
         reopened
             .store
@@ -500,6 +503,7 @@ async fn preregistered_campaign_executes_every_policy_and_reports_whole_trajecto
     );
     reopened.tick().await.unwrap();
     assert_eq!(backend.calls.load(Ordering::SeqCst), 288);
+    dir.close().await;
 }
 
 /// One invented class's training set: role, class and budget recipe are
@@ -552,9 +556,9 @@ async fn class_training(
 
 #[tokio::test]
 async fn a_mixed_role_campaign_uses_each_step_class_model_over_whole_trajectories() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let implementer = ("invented-implementer", "Implement carefully.");
     let reviewer = ("invented-reviewer", "Review carefully.");
     let (implement, implement_fit) = class_training(&service, "debug", implementer, "Repair").await;
@@ -688,13 +692,14 @@ async fn a_mixed_role_campaign_uses_each_step_class_model_over_whole_trajectorie
     {
         assert_eq!(policy.quality, 0.0, "{}", policy.policy);
     }
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn campaign_preserves_refusal_and_requires_explicit_resume_after_restart() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let (train, fit) = training(&service).await;
     let roots = roots(&service, &train, "refusal").await;
     let frozen = service
@@ -723,7 +728,7 @@ async fn campaign_preserves_refusal_and_requires_explicit_resume_after_restart()
         .await
         .unwrap();
     drop(service);
-    let reopened = open(dir.path(), backend.clone()).await;
+    let reopened = open(&dir, backend.clone()).await;
     for _ in 0..3 {
         reopened.tick().await.unwrap();
     }
@@ -756,13 +761,14 @@ async fn campaign_preserves_refusal_and_requires_explicit_resume_after_restart()
     .await
     .unwrap();
     assert_eq!(before, after);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn reservations_cover_historical_relations_exposure_and_existing_holdouts() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let (train, fit) = training(&service).await;
     let held = publish_with_entry(&service, "held_out", 8, true).await;
     let holdout = learned::holdout::HoldoutRequest {
@@ -940,14 +946,15 @@ async fn reservations_cover_historical_relations_exposure_and_existing_holdouts(
         .control_workflow_campaign(&frozen.plan.id, "resume")
         .await
         .is_err());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn a_cost_weighted_fit_without_recorded_costs_refuses_before_any_execution() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
     backend.no_cost.store(true, Ordering::SeqCst);
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let (train, weighted) = training(&service).await;
     let roots = roots(&service, &train, "unpriced").await;
     let calls = backend.calls.load(Ordering::SeqCst);
@@ -982,4 +989,5 @@ async fn a_cost_weighted_fit_without_recorded_costs_refuses_before_any_execution
         .await
         .unwrap();
     assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
+    dir.close().await;
 }

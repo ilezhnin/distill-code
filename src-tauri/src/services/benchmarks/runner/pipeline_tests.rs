@@ -431,18 +431,19 @@ impl ExecutionBackend for OfflineWorkers {
     }
 }
 
-async fn open(root: &std::path::Path, backend: Arc<OfflineWorkers>) -> Arc<BenchmarkService> {
+async fn open(
+    root: &crate::test_support::TempRoot,
+    backend: Arc<OfflineWorkers>,
+) -> Arc<BenchmarkService> {
     if backend.native_v2_inventory && backend.native_store.get().is_none() {
-        assert!(backend
-            .native_store
-            .set(Arc::new(
-                SessionStore::open(&root.join("invented-native-host.sqlite"))
-                    .await
-                    .unwrap()
-            ))
-            .is_ok());
+        let host = SessionStore::open(&root.path().join("invented-native-host.sqlite"))
+            .await
+            .unwrap();
+        root.register(host.pool());
+        assert!(backend.native_store.set(Arc::new(host)).is_ok());
     }
-    let store = Store::open(root).await.unwrap();
+    let store = Store::open(root.path()).await.unwrap();
+    root.register(&store.pool);
     store.recover().await.unwrap();
     Arc::new(BenchmarkService {
         store,
@@ -554,9 +555,9 @@ async fn measure(service: &Arc<BenchmarkService>, versions: &[BenchmarkVersion],
 
 #[tokio::test]
 async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(directory.path(), backend.clone()).await;
+    let service = open(&directory, backend.clone()).await;
     let training = publish(&service, "train", 8).await;
     let held = publish(&service, "held_out", 8).await;
     measure(&service, &training, "offline-training").await;
@@ -706,6 +707,7 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
     // The host stores its own run ID, distinct from the graph's logical run.
     let host_path = directory.path().join("host.sqlite");
     let host = SessionStore::open(&host_path).await.unwrap();
+    directory.register(host.pool());
     let start = ReceiptStart {
         link: ExecutorLink {
             decision_key: decision.request.request_key.clone(),
@@ -740,8 +742,9 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
     service.store.pool.close().await;
     drop(service);
 
-    let service = open(directory.path(), backend.clone()).await;
+    let service = open(&directory, backend.clone()).await;
     let host = SessionStore::open(&host_path).await.unwrap();
+    directory.register(host.pool());
     assert!(!host.claim_executor_receipt(&start).await.unwrap());
     assert_eq!(
         service
@@ -826,4 +829,5 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
     );
     assert!(!host.claim_executor_receipt(&start).await.unwrap());
     assert_eq!(backend.calls.load(Ordering::SeqCst), 96);
+    directory.close().await;
 }

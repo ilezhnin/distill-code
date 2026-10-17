@@ -108,7 +108,7 @@ async fn admitted_roots(
 
 #[tokio::test]
 async fn step_admission_runs_fixed_roots_of_the_idle_account_beside_adaptive_roots() {
-    let (_dir, service, backend, frozen) = setup_with_accounts(8, WALL_BUDGET_SECONDS, true).await;
+    let (dir, service, backend, frozen) = setup_with_accounts(8, WALL_BUDGET_SECONDS, true).await;
     assert_eq!(frozen.plan.order_algorithm, STEP_ADMISSION_ORDER);
     let adaptive = policy_index(&frozen, "learned", None);
     let parser = policy_index(&frozen, "fixed", Some("parser"));
@@ -217,11 +217,12 @@ async fn step_admission_runs_fixed_roots_of_the_idle_account_beside_adaptive_roo
     backend.drain();
     tick.await.unwrap().unwrap();
     service.tick().await.unwrap();
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn step_admission_excludes_worker_waits_from_the_root_clock_and_records_them() {
-    let (_dir, service, backend, frozen) = setup_with_accounts(2, 10, true).await;
+    let (dir, service, backend, frozen) = setup_with_accounts(2, 10, true).await;
     let parser = policy_index(&frozen, "fixed", Some("parser"));
     let frozen = order_cells(&service, frozen, &[parser, parser]).await;
     for id in ["busy-1", "busy-2", "busy-3", "busy-4"] {
@@ -294,11 +295,12 @@ async fn step_admission_excludes_worker_waits_from_the_root_clock_and_records_th
         );
         assert_eq!(root.workflow_steps.len(), 2);
     }
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn step_admission_serves_the_oldest_admitted_root_first_on_a_full_account() {
-    let (_dir, service, backend, frozen) = setup_with_accounts(3, WALL_BUDGET_SECONDS, true).await;
+    let (dir, service, backend, frozen) = setup_with_accounts(3, WALL_BUDGET_SECONDS, true).await;
     let parser = policy_index(&frozen, "fixed", Some("parser"));
     let frozen = order_cells(&service, frozen, &[parser, parser, parser]).await;
     for id in ["busy-1", "busy-2", "busy-3", "busy-4"] {
@@ -426,13 +428,14 @@ async fn step_admission_serves_the_oldest_admitted_root_first_on_a_full_account(
             .next_cell,
         3
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn frozen_account_slots_bound_one_account_and_freezing_rejects_more_than_eight() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(GatedWorkers::default());
-    let service = service(dir.path(), backend.clone()).await;
+    let service = service(&dir, backend.clone()).await;
     let (train, fit) = training_with_weights(
         &service,
         RoleWeights {
@@ -485,11 +488,12 @@ async fn frozen_account_slots_bound_one_account_and_freezing_rejects_more_than_e
     backend.drain();
     tick.await.unwrap().unwrap();
     service.tick().await.unwrap();
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn reserved_campaign_queue_does_not_consume_execution_budget() {
-    let (_dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
+    let (dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
     let frozen = reserved_pool_plan(&service, frozen).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
@@ -606,21 +610,24 @@ async fn reserved_campaign_queue_does_not_consume_execution_budget() {
         assert_eq!(run.attempts[0].workflow_steps.len(), 2);
         assert_ne!(run.attempts[0].outcome.as_deref(), Some("budget_timeout"));
     }
-    let started = backend.started.lock().unwrap();
-    assert_eq!(
-        started.len(),
-        started
-            .iter()
-            .map(|(_, id)| id)
-            .collect::<BTreeSet<_>>()
-            .len()
-    );
+    {
+        let started = backend.started.lock().unwrap();
+        assert_eq!(
+            started.len(),
+            started
+                .iter()
+                .map(|(_, id)| id)
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+    }
     assert_eq!(backend.peak.load(Ordering::SeqCst), 4);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn reserved_campaign_keeps_next_step_capacity_before_admitting_another_root() {
-    let (_dir, service, backend, frozen) = setup(8).await;
+    let (dir, service, backend, frozen) = setup(8).await;
     let frozen = reserved_pool_plan(&service, frozen).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
@@ -669,6 +676,7 @@ async fn reserved_campaign_keeps_next_step_capacity_before_admitting_another_roo
     backend.drain();
     tick.await.unwrap().unwrap();
     service.tick().await.unwrap();
+    dir.close().await;
 }
 
 fn reservation(lane: &str, account: &str) -> WorkerReservation {
@@ -682,7 +690,7 @@ fn reservation(lane: &str, account: &str) -> WorkerReservation {
 
 #[tokio::test]
 async fn reserved_campaign_fifo_allows_disjoint_accounts_but_protects_older_adaptive_roots() {
-    let (_dir, service, backend, mut frozen) =
+    let (dir, service, backend, mut frozen) =
         setup_with_accounts(4, WALL_BUDGET_SECONDS, true).await;
     // Freeze an invented admission order in the isolated test store before
     // any root starts: blocked A, disjoint B, adaptive A+B, then newer B.
@@ -796,6 +804,7 @@ async fn reserved_campaign_fifo_allows_disjoint_accounts_but_protects_older_adap
         service.release(id).await;
     }
     service.tick().await.unwrap();
+    dir.close().await;
 }
 
 fn seat<'a>(id: &'a str, account: &'a str) -> Seat<'a> {
@@ -810,8 +819,8 @@ fn seat<'a>(id: &'a str, account: &'a str) -> Seat<'a> {
 
 #[tokio::test]
 async fn reserved_workers_claim_accounts_atomically_and_share_caps_with_ordinary_runs() {
-    let dir = tempfile::tempdir().unwrap();
-    let service = service(dir.path(), Arc::new(GatedWorkers::default())).await;
+    let dir = crate::test_support::TempRoot::new();
+    let service = service(&dir, Arc::new(GatedWorkers::default())).await;
     for id in ["busy-b-1", "busy-b-2", "busy-b-3", "busy-b-4"] {
         assert!(service
             .claim("ordinary", seat(id, "provider-b/account"))
@@ -856,12 +865,13 @@ async fn reserved_workers_claim_accounts_atomically_and_share_caps_with_ordinary
         .claim("ordinary", seat("released-b", "provider-b/account"))
         .await
         .is_some());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn reserved_effort_variants_count_once_per_shared_account() {
-    let dir = tempfile::tempdir().unwrap();
-    let service = service(dir.path(), Arc::new(GatedWorkers::default())).await;
+    let dir = crate::test_support::TempRoot::new();
+    let service = service(&dir, Arc::new(GatedWorkers::default())).await;
     let pool = vec![
         reservation("effort-low", "shared-account"),
         reservation("effort-high", "shared-account"),
@@ -885,4 +895,5 @@ async fn reserved_effort_variants_count_once_per_shared_account() {
         .claim("ordinary", seat("ordinary", "shared-account"))
         .await
         .is_some());
+    dir.close().await;
 }

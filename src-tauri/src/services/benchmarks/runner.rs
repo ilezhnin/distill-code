@@ -6923,9 +6923,10 @@ mod tests {
     #[tokio::test]
     async fn native_task_history_and_wave_prefixes_use_sealed_bytes_after_workspace_changes() {
         use crate::services::agent_host::store::{SessionRecord, SessionStore};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let database = dir.path().join("host.db");
         let store = SessionStore::open(&database).await.unwrap();
+        dir.register(store.pool());
         let owner = OwnedSessionRequest {
             owner_id: "task:invented-repository".into(),
             provider_id: "claude-acp".into(),
@@ -7038,6 +7039,7 @@ mod tests {
             .await
             .is_err());
         let restarted = SessionStore::open(&database).await.unwrap();
+        dir.register(restarted.pool());
         assert_eq!(
             super::read_owned_task_output(&restarted, &dispatch.request_key, &record.id)
                 .await
@@ -7157,6 +7159,7 @@ mod tests {
             )
             .await
             .is_err());
+        dir.close().await;
     }
 
     #[test]
@@ -7698,9 +7701,14 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
     use tokio::sync::Notify;
-    pub(super) async fn setup() -> (tempfile::TempDir, Arc<BenchmarkService>, Arc<FakeBackend>) {
-        let dir = tempfile::tempdir().unwrap();
+    pub(super) async fn setup() -> (
+        crate::test_support::TempRoot,
+        Arc<BenchmarkService>,
+        Arc<FakeBackend>,
+    ) {
+        let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
         let backend = Arc::new(FakeBackend::default());
         let service = Arc::new(BenchmarkService {
             store,
@@ -7751,7 +7759,7 @@ mod tests {
     }
     #[tokio::test]
     async fn resource_waits_preserve_unstarted_no_replay_cells_without_paid_calls() {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         let mut request = serial_request(&service).await;
         request.repetitions = 1;
         request.max_executions = 1;
@@ -7780,10 +7788,11 @@ mod tests {
         service.tick().await.unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(service.store.run(&run.id).await.unwrap().attempts.len(), 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn durable_matrix_and_idempotent_start_do_not_duplicate() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let req = request(&s).await;
         let run = s.start_run(req.clone()).await.unwrap();
         let again = s.start_run(req.clone()).await.unwrap();
@@ -7813,10 +7822,11 @@ mod tests {
             .unwrap()
             .output
             .is_some());
+        dir.close().await;
     }
     #[tokio::test]
     async fn matrix_order_is_seeded_repeatable_and_frozen_before_dispatch() {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         let mut req = request(&service).await;
         req.repetitions = 6;
         req.max_executions = 12;
@@ -7896,6 +7906,7 @@ mod tests {
         );
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
         assert_eq!(run.id, service.start_run(req).await.unwrap().id);
+        dir.close().await;
     }
     #[test]
     fn a_turn_gets_the_run_limit_or_a_shorter_frozen_budget() {
@@ -7922,7 +7933,7 @@ mod tests {
     }
     #[tokio::test]
     async fn workflow_tick_dispatches_children_once_and_evaluates_only_root() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         let mut draft = seed_definitions().remove(0);
         draft.split = "train".into();
@@ -7967,11 +7978,12 @@ mod tests {
             assert_eq!(attempt.outcome.as_deref(), Some("completed"));
             assert!(attempt.evaluations.is_empty());
         }
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn interrupted_dispatch_is_never_requeued() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let req = request(&s).await;
         let run = s.start_run(req).await.unwrap();
         let mut a = run.attempts[0].clone();
@@ -8001,6 +8013,7 @@ mod tests {
             .iter()
             .all(|a| a.phase == "terminal" && super::super::analysis::score(a).is_some()));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
     }
     /// A second case for a run, published from the next seed.
     async fn second_case(s: &BenchmarkService) -> String {
@@ -8023,7 +8036,7 @@ mod tests {
     /// complete when the run stopped, passed or failed, stands.
     #[tokio::test]
     async fn a_resumed_run_starts_its_unfinished_cases_over() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         let first = req.version_ids[0].clone();
         let second = second_case(&s).await;
@@ -8093,10 +8106,11 @@ mod tests {
                 .count(),
             3
         );
+        dir.close().await;
     }
     #[tokio::test]
     async fn confirmed_remeasurement_seals_the_previous_sitting_atomically() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         req.repetitions = 3;
         req.max_executions = 3;
@@ -8159,10 +8173,11 @@ mod tests {
         );
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].run_id, old.id);
+        dir.close().await;
     }
     #[tokio::test]
     async fn sealing_and_restarting_preserve_superseded_evidence() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let mut req = request(&s).await;
         req.repetitions = 3;
         req.max_executions = 3;
@@ -8196,13 +8211,14 @@ mod tests {
         assert_eq!(archived.outcome.as_deref(), Some("superseded"));
         assert_eq!(archived.output, partial.output);
         assert_eq!(archived.usage.cost, partial.usage.cost);
+        dir.close().await;
     }
     /// A test added to a run inside its window joins that run: the sitting
     /// grows and goes on, no second run starts beside it, and what the run
     /// had measured stands.
     #[tokio::test]
     async fn a_run_inside_its_window_grows_by_the_tests_added_to_it() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let req = request(&s).await;
         let first = req.version_ids[0].clone();
         let run = s.start_run(req).await.unwrap();
@@ -8254,13 +8270,14 @@ mod tests {
         let again = s.extend_run(&run.id, &[second]).await.unwrap_err();
         assert_eq!(again.message, "Every case of this run is complete");
         assert_eq!(s.store.run(&run.id).await.unwrap().attempts.len(), 4);
+        dir.close().await;
     }
     /// Once a run's window closed it is final: nothing resumes it, and the
     /// runner bakes it, keeping the cells measured whole and dropping the
     /// rest, so a case half measured never reads as measured at all.
     #[tokio::test]
     async fn a_run_past_its_window_is_baked() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         let first = req.version_ids[0].clone();
         let second = second_case(&s).await;
@@ -8320,10 +8337,11 @@ mod tests {
         // Baked once: the next tick leaves it alone.
         s.tick().await.unwrap();
         assert_eq!(s.store.run(&run.id).await.unwrap().baked_at, baked.baked_at);
+        dir.close().await;
     }
     #[tokio::test]
     async fn pause_and_cancel_never_send_queued_work() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let req = request(&s).await;
         let run = s.start_run(req).await.unwrap();
         s.control(&run.id, "pause").await.unwrap();
@@ -8338,10 +8356,11 @@ mod tests {
             .iter()
             .all(|a| a.outcome.as_deref() == Some("cancelled")));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn active_cancel_retains_sealed_evidence() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let req = serial_request(&s).await;
         let run = s.start_run(req).await.unwrap();
         let background = s.clone();
@@ -8357,6 +8376,7 @@ mod tests {
         assert_eq!(run.state, "cancelled");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert!(run.attempts.iter().any(|a| a.evidence_hash.is_some()));
+        dir.close().await;
     }
     /// Five efforts of both fake models on each of two accounts, two turns
     /// each: 20 configurations, 40 turns. The second account's models are
@@ -8386,7 +8406,7 @@ mod tests {
     }
     #[tokio::test]
     async fn a_run_flies_its_configurations_side_by_side_within_account_slots() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         // Every account slot dispatches before any turn may finish.
         backend
             .gate_in_flight
@@ -8417,6 +8437,7 @@ mod tests {
                 .count();
             assert!(overlapping <= PARALLEL_ATTEMPTS as usize, "{overlapping}");
         }
+        dir.close().await;
     }
     /// One configuration, eight turns of one case.
     async fn deep_request(s: &BenchmarkService, provider: &str) -> RunRequest {
@@ -8438,7 +8459,7 @@ mod tests {
     }
     #[tokio::test]
     async fn a_configuration_flies_its_attempts_in_parallel() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
         assert_eq!(run.request.parallelism, Some(PARALLEL_ATTEMPTS));
         let run = drain(&s, &run.id).await;
@@ -8455,10 +8476,11 @@ mod tests {
         let data = s.query_data().await.unwrap();
         let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
         assert_eq!(report.rows[0].parallelism, Some(PARALLEL_ATTEMPTS));
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_run_admitted_before_parallelism_flies_one_attempt_at_a_time() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
         let mut old = run.request.clone();
         old.parallelism = None;
@@ -8474,10 +8496,11 @@ mod tests {
         let data = s.query_data().await.unwrap();
         let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
         assert_eq!(report.rows[0].parallelism, Some(1));
+        dir.close().await;
     }
     #[tokio::test]
     async fn an_open_run_can_be_set_to_fly_in_parallel() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
         let mut old = run.request.clone();
         old.parallelism = None;
@@ -8492,10 +8515,11 @@ mod tests {
         assert_eq!(set.request.parallelism, Some(4));
         drain(&s, &run.id).await;
         assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 4);
+        dir.close().await;
     }
     #[tokio::test]
     async fn independent_grok_text_bridges_fill_the_requested_parallelism() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s
             .start_run(deep_request(&s, "grok-acp").await)
             .await
@@ -8503,10 +8527,11 @@ mod tests {
         drain(&s, &run.id).await;
         assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
         assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 4);
+        dir.close().await;
     }
     #[tokio::test]
     async fn independent_grok_repository_bridges_fill_the_shared_account_slots() {
-        let (_dir, s, _backend) = setup().await;
+        let (dir, s, _backend) = setup().await;
         let mut request = deep_request(&s, "grok-acp").await;
         request.parallelism = Some(4);
         let mut configuration = request.configurations[0].clone();
@@ -8544,10 +8569,11 @@ mod tests {
             .await;
         assert!(replacement.is_some());
         assert_eq!(s.active.lock().await.len(), ACCOUNT_SLOTS);
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_spent_account_hands_its_tests_to_another_and_the_row_stays_one() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "second".into()];
         *backend.spent_accounts.lock().unwrap() = vec!["isolated".into()];
         let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
@@ -8566,10 +8592,11 @@ mod tests {
         let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
         assert_eq!(report.rows.len(), 1);
         assert_eq!(report.rows[0].scored, 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn every_account_spent_still_waits_or_stops_as_before() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "second".into()];
         *backend.spent_accounts.lock().unwrap() = vec!["isolated".into(), "second".into()];
         let run = s.start_run(serial_request(&s).await).await.unwrap();
@@ -8579,6 +8606,7 @@ mod tests {
         assert_eq!(held.state, "running");
         assert!(held.attempts.iter().all(|a| a.phase == "pending"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[test]
     fn a_case_goes_out_whole_and_a_begun_case_first() {
@@ -8695,7 +8723,7 @@ mod tests {
     }
     #[tokio::test]
     async fn parallelism_outside_the_slots_is_refused() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         for n in [0, PARALLEL_ATTEMPTS + 1] {
             let mut req = request(&s).await;
             req.request_key = format!("parallel-{n}");
@@ -8703,10 +8731,11 @@ mod tests {
             let error = s.start_run(req).await.unwrap_err();
             assert!(error.message.contains("in parallel"), "{}", error.message);
         }
+        dir.close().await;
     }
     #[tokio::test]
     async fn cancel_stops_every_turn_in_flight() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         backend.hold_turns.store(true, Ordering::SeqCst);
         let run = s.start_run(wide_request(&s, &backend).await).await.unwrap();
         let background = s.clone();
@@ -8735,6 +8764,7 @@ mod tests {
             .attempts
             .iter()
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("cancelled")));
+        dir.close().await;
     }
     #[test]
     fn a_provider_usage_limit_before_any_answer_waits_for_quota() {
@@ -8756,7 +8786,7 @@ mod tests {
     }
     #[tokio::test]
     async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {
-        let (_dir, s, fake) = setup().await;
+        let (dir, s, fake) = setup().await;
         fake.quota_waits.store(1, Ordering::SeqCst);
         let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
@@ -8779,10 +8809,11 @@ mod tests {
             .attempts
             .iter()
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() != Some(QUOTA_WAIT)));
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_selection_refused_before_dispatch_keeps_the_cell_for_the_operator() {
-        let (_dir, s, fake) = setup().await;
+        let (dir, s, fake) = setup().await;
         fake.refused_selections.store(1, Ordering::SeqCst);
         let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
@@ -8793,6 +8824,7 @@ mod tests {
             .iter()
             .all(|a| a.phase == "pending" && a.observed.is_none()));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     /// A sign-in near expiry, a refused preflight or a missing runtime stops
     /// the session before any provider call. The cell keeps its place and
@@ -8800,7 +8832,7 @@ mod tests {
     /// every remaining cell within seconds.
     #[tokio::test]
     async fn a_refusal_before_the_session_keeps_the_cell_for_the_operator() {
-        let (_dir, s, fake) = setup().await;
+        let (dir, s, fake) = setup().await;
         fake.capability_refusals.store(1, Ordering::SeqCst);
         let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
@@ -8827,6 +8859,7 @@ mod tests {
             .iter()
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() != Some("capability_missing")));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
     }
     /// A refusal that lasts as long as the run (a model list never cached, a
     /// profile changed since its probe) would refuse the same cell on every
@@ -8834,7 +8867,7 @@ mod tests {
     /// the cell settles with it, and the run goes on with its other cells.
     #[tokio::test]
     async fn a_refusal_repeated_after_a_resume_settles_its_cell() {
-        let (_dir, s, fake) = setup().await;
+        let (dir, s, fake) = setup().await;
         fake.capability_refusals.store(2, Ordering::SeqCst);
         let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
@@ -8858,10 +8891,11 @@ mod tests {
             .is_some_and(|reason| reason.contains("Grok sign-in expires")));
         // The other cell ran; the settled one never reached the provider.
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn only_the_same_refusal_after_a_resume_settles_a_cell() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let run = s.start_run(request(&s).await).await.unwrap();
         let mut attempt = s.store.run(&run.id).await.unwrap().attempts.remove(0);
         attempt.reason = Some("the Codex model list is not cached".into());
@@ -8881,13 +8915,14 @@ mod tests {
             &attempt,
             &BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON)
         ));
+        dir.close().await;
     }
     /// A Grok sign-in the CLI renews only later holds the provider's cells
     /// until then, without the operator, however often it comes up; the run
     /// then goes on with every cell.
     #[tokio::test]
     async fn a_sign_in_the_cli_renews_later_holds_the_run_on_its_own() {
-        let (_dir, s, fake) = setup().await;
+        let (dir, s, fake) = setup().await;
         fake.sign_in_waits.store(2, Ordering::SeqCst);
         let run = s.start_run(serial_request(&s).await).await.unwrap();
         let release = || {
@@ -8929,13 +8964,14 @@ mod tests {
             .iter()
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("pass")));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
     }
     /// A Grok turn that finds another still running on the due sign-in goes
     /// back to the queue without the operator and without a time to show,
     /// and is asked again shortly.
     #[tokio::test]
     async fn a_turn_waits_for_another_on_the_due_sign_in() {
-        let (_dir, s, fake) = setup().await;
+        let (dir, s, fake) = setup().await;
         fake.busy_sign_ins.store(1, Ordering::SeqCst);
         let run = s.start_run(request(&s).await).await.unwrap();
         s.tick().await.unwrap();
@@ -8967,13 +9003,14 @@ mod tests {
             .attempts
             .iter()
             .all(|a| a.outcome.as_deref() == Some("pass")));
+        dir.close().await;
     }
     /// Run 607f8612 mixed Grok and Kimi: a Grok sign-in wait holds the Grok
     /// cells alone. The other provider's cells run meanwhile, and the run
     /// does not complete while a held cell is pending.
     #[tokio::test]
     async fn a_sign_in_wait_holds_only_that_providers_cells() {
-        let (_dir, s, fake) = setup().await;
+        let (dir, s, fake) = setup().await;
         let mut req = request(&s).await;
         let mut grok = req.configurations[0].clone();
         grok.id = "grok-pass".into();
@@ -9009,6 +9046,7 @@ mod tests {
             .iter()
             .all(|a| a.outcome.as_deref() == Some("pass")));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 4);
+        dir.close().await;
     }
     /// One Grok answer chunk as the host stores it, with Grok's per-chunk
     /// telemetry and the host's stamp.
@@ -9238,7 +9276,7 @@ mod tests {
     }
     #[tokio::test]
     async fn a_retried_turn_gets_a_new_owner_and_key() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let run = s.start_run(request(&s).await).await.unwrap();
         let mut attempt = s.store.run(&run.id).await.unwrap().attempts.remove(0);
         attempt.started_at = Some(1);
@@ -9246,6 +9284,7 @@ mod tests {
         attempt.started_at = Some(2);
         assert_ne!(turn_owner(&attempt), owner);
         assert_ne!(dispatch_key(&attempt), key);
+        dir.close().await;
     }
     #[test]
     fn only_an_identifier_before_the_colon_is_a_host_error_code() {
@@ -9695,7 +9734,7 @@ mod tests {
     }
     #[tokio::test]
     async fn native_auxiliary_usage_is_inclusive_and_kept_out_of_pure_profile() {
-        let (_dir, service, _) = setup().await;
+        let (dir, service, _) = setup().await;
         let req = request(&service).await;
         let run = service.start_run(req).await.unwrap();
         let mut attempt = run.attempts[0].clone();
@@ -9736,10 +9775,11 @@ mod tests {
         }
         assert_eq!(attempt.usage.cost, Some(0.002213));
         assert_eq!(attempt.usage.input, Some(1505));
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_paid_auxiliary_only_failure_is_not_a_zero_cost_pure_turn() {
-        let (_dir, service, _) = setup().await;
+        let (dir, service, _) = setup().await;
         let req = request(&service).await;
         let run = service.start_run(req).await.unwrap();
         for primary in [json!({"inputTokens":0,"outputTokens":0}), Value::Null] {
@@ -9782,11 +9822,12 @@ mod tests {
         );
         assert_eq!(pure.schema, "provider_turn_usage_v1");
         assert_eq!(pure.input, Some(603));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn sealed_recovery_evaluates_without_new_dispatch() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let req = request(&s).await;
         let run = s.start_run(req).await.unwrap();
         let mut a = run.attempts[0].clone();
@@ -9802,10 +9843,11 @@ mod tests {
         assert_eq!(a.outcome.as_deref(), Some("pass"));
         assert_eq!(a.evaluations.len(), 1);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn rubric_review_settles_quality() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let mut draft = seed_definitions().remove(0);
         draft.split = "train".into();
         draft.evaluator.kind = "rubric".into();
@@ -9826,6 +9868,7 @@ mod tests {
             .unwrap();
         assert_eq!(a.outcome.as_deref(), Some("pass"));
         assert_eq!(a.evaluations[1].provenance, "human");
+        dir.close().await;
     }
     #[tokio::test]
     async fn manifest_failure_never_admits_work() {
@@ -9837,10 +9880,11 @@ mod tests {
         assert!(s.start_run(req).await.is_err());
         assert!(s.store.all_runs().await.unwrap().is_empty());
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn old_active_runs_and_export_history_are_not_limited_to_recent_page() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let req = request(&s).await;
         let old = s.start_run(req.clone()).await.unwrap();
         for index in 0..101 {
@@ -9859,6 +9903,7 @@ mod tests {
             .attempts
             .iter()
             .all(|a| a.outcome.as_deref() == Some("pass")));
+        dir.close().await;
     }
     #[test]
     fn a_usage_limit_waits_for_a_reset_it_can_reach_and_stops_otherwise() {
@@ -9970,7 +10015,7 @@ mod tests {
     }
     #[tokio::test]
     async fn releases_exclude_development_without_removing_diagnostics() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let mut seeds = seed_definitions();
         let diagnostic = publish(&s, seeds.remove(0)).await;
         assert!(s.create_release(None).await.is_err());
@@ -9994,11 +10039,12 @@ mod tests {
             .iter()
             .any(|version| version.id == diagnostic.id));
         assert!(s.create_release(None).await.is_err());
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_release_freezes_the_pool_until_the_next() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let mut seeds = seed_definitions();
         for draft in &mut seeds {
             draft.split = "train".into();
@@ -10064,10 +10110,11 @@ mod tests {
             .collect();
         then.sort();
         assert_eq!(then, frozen);
+        dir.close().await;
     }
     #[tokio::test]
     async fn republication_retires_old_versions_without_changing_their_results() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut draft = seed_definitions()
             .into_iter()
             .find(|d| d.evaluator.kind == "exact")
@@ -10175,6 +10222,7 @@ mod tests {
             .rows
             .iter()
             .all(|row| !row.scored_version_ids.contains(&third.id)));
+        dir.close().await;
     }
     /// One repetition of a creative brief for the passing fake model.
     async fn creative_request(s: &BenchmarkService) -> RunRequest {
@@ -10214,7 +10262,7 @@ mod tests {
     }
     #[tokio::test]
     async fn author_cells_are_planned_and_run_like_any_other_cell() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let (req, written) = authored_request(&s).await;
         let own =
             |a: &Attempt| a.version_id == written.id && a.configuration.model_id == "fake-pass";
@@ -10253,10 +10301,11 @@ mod tests {
         unknown.author_policy = Some("author-cells-unknown".into());
         let preview = s.preview_run(&unknown).await.unwrap();
         assert!(!preview.valid);
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_plan_admitted_before_author_cells_were_measured_keeps_its_rule() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let (req, written) = authored_request(&s).await;
         let run = s.start_run(req).await.unwrap();
         // A plan saved before the rule names no author policy, and its own
@@ -10289,10 +10338,11 @@ mod tests {
         only.version_ids = vec![written.id.clone()];
         only.configurations.truncate(1);
         assert_eq!(s.planned_executions(&only).await.unwrap(), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn stale_runtime_pins_are_plan_issues_and_quota_briefs_never_publish() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let mut req = request(&s).await;
         assert!(s.preview_run(&req).await.unwrap().valid);
         req.configurations[0].inventory_revision = Some("runtime-before-an-update".into());
@@ -10310,10 +10360,11 @@ mod tests {
             "{}",
             refused.message
         );
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_cli_default_effort_is_refused_at_planning() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         req.configurations[0].effort = Some("default".into());
         let preview = s.preview_run(&req).await.unwrap();
@@ -10336,6 +10387,7 @@ mod tests {
         req.configurations[0].effort = None;
         assert!(s.preview_run(&req).await.unwrap().valid);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn the_inventory_never_offers_the_cli_default_effort() {
@@ -10348,7 +10400,7 @@ mod tests {
         let haiku = json!({"modelId":"haiku","reasoningEfforts":["default"]});
         assert!(offered_efforts(&haiku, claude).is_empty());
         // The fake models have none either, and leave the effort unset.
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         for model in s
             .backend
             .inventory("fake", Some("isolated"), false)
@@ -10358,10 +10410,11 @@ mod tests {
             assert!(model.efforts.is_empty());
             assert_eq!(model.configuration.effort, None);
         }
+        dir.close().await;
     }
     #[tokio::test]
     async fn an_unset_effort_is_refused_on_a_model_that_lists_levels() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         *backend.effort_levels.lock().unwrap() = vec!["high".into()];
         let mut req = request(&s).await;
         req.configurations[0].effort = None;
@@ -10387,10 +10440,11 @@ mod tests {
         let preview = s.preview_run(&req).await.unwrap();
         assert!(preview.valid, "{:?}", preview.issues);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn the_analysis_data_leaves_out_attempts_acknowledged_at_the_cli_default() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let run = s.start_run(request(&s).await).await.unwrap();
         for _ in 0..3 {
             s.tick().await.unwrap();
@@ -10432,10 +10486,11 @@ mod tests {
                 .attempt_count,
             2
         );
+        dir.close().await;
     }
     #[tokio::test]
     async fn judge_calls_are_reserved_and_only_the_budget_skips_them() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = creative_request(&s).await;
         req.max_executions = 3;
         let preview = s.preview_run(&req).await.unwrap();
@@ -10469,6 +10524,7 @@ mod tests {
             Some("Judge calls are not covered by this saved run's execution budget")
         );
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     /// Starts a creative run and stops it with `action` while its panel runs.
     async fn stop_during_the_panel(
@@ -10493,16 +10549,17 @@ mod tests {
     }
     #[tokio::test]
     async fn a_cancel_reaches_a_running_judge_panel_and_settles_the_attempt() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = stop_during_the_panel(&s, &backend, "cancel").await;
         let a = s.store.attempt(&run.attempts[0].id).await.unwrap();
         assert_eq!(a.phase, "terminal");
         assert_eq!(a.outcome.as_deref(), Some("pending_review"));
         assert_eq!(a.reason.as_deref(), Some(JUDGING_STOPPED));
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_paused_panel_is_asked_again_after_resume_without_a_new_generation() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = stop_during_the_panel(&s, &backend, "pause").await;
         let id = &run.attempts[0].id;
         let waiting = s.store.attempt(id).await.unwrap();
@@ -10525,10 +10582,11 @@ mod tests {
         s.tick().await.unwrap();
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_cancel_settles_a_rendering_that_waits_for_its_panel() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = stop_during_the_panel(&s, &backend, "pause").await;
         s.tick().await.unwrap();
         s.control(&run.id, "cancel").await.unwrap();
@@ -10539,10 +10597,11 @@ mod tests {
         assert_eq!(a.outcome.as_deref(), Some("pending_review"));
         assert_eq!(a.reason.as_deref(), Some(JUDGING_STOPPED));
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn busy_judges_hold_the_run_open_until_the_panel_is_asked() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         backend.busy_judges.store(true, Ordering::SeqCst);
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         let id = &run.attempts[0].id;
@@ -10559,6 +10618,7 @@ mod tests {
         s.tick().await.unwrap();
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     /// Rewrites a creative run's first attempt as a killed process left it:
     /// mid-panel with a render marker and an in-flight judge turn, or sealed
@@ -10607,7 +10667,7 @@ mod tests {
     #[tokio::test]
     async fn a_restart_during_the_first_panel_waits_for_resume_without_a_new_generation() {
         for evaluated in [true, false] {
-            let (_dir, s, backend) = setup().await;
+            let (dir, s, backend) = setup().await;
             let id = restart_during_the_first_panel(&s, &backend, evaluated).await;
             let waiting = s.store.attempt(&id).await.unwrap();
             assert_eq!(waiting.phase, AWAITING_JUDGES, "{evaluated}");
@@ -10625,11 +10685,12 @@ mod tests {
             let judged = s.store.attempt(&id).await.unwrap();
             assert_eq!(judged.phase, "terminal");
             assert!(judged.reason.is_none());
+            dir.close().await;
         }
     }
     #[tokio::test]
     async fn a_restart_while_cancelling_settles_the_rendering() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
@@ -10641,10 +10702,11 @@ mod tests {
         let settled = s.store.attempt(&a.id).await.unwrap();
         assert_eq!(settled.phase, "terminal");
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_restart_inside_a_completed_run_settles_the_rendering() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         // A failed final save left the rendering mid-panel; the run completed anyway.
@@ -10660,10 +10722,11 @@ mod tests {
         assert_eq!(settled.outcome.as_deref(), Some("pending_review"));
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_resumed_panel_whose_votes_all_landed_asks_no_judge() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
@@ -10684,10 +10747,11 @@ mod tests {
             s.store.stored_outcome(&a.id).await.unwrap().as_deref(),
             Some("judged")
         );
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_recovered_rendering_its_candidate_authored_asks_no_judge() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
@@ -10727,11 +10791,12 @@ mod tests {
         assert!(excluded.output.is_some());
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_rendering_of_its_own_brief_goes_to_the_panel() {
         // Seats themselves are `select_judges`' rule: no author, no candidate model.
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         let mut authored = creative();
         authored.name.push_str(" written by the candidate");
@@ -10748,10 +10813,11 @@ mod tests {
         let rendering = s.store.attempt(&run.attempts[0].id).await.unwrap();
         assert!(rendering.output.is_some());
         assert_ne!(rendering.outcome.as_deref(), Some("excluded"));
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_panel_that_fails_before_saving_keeps_the_objective_verdict() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         backend.fail_judges.store(true, Ordering::SeqCst);
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
@@ -10763,6 +10829,7 @@ mod tests {
             .iter()
             .any(|e| e.provenance == "objective" && e.verdict == "pending_review"));
         assert!(a.reason.as_deref().unwrap().starts_with("Judging failed:"));
+        dir.close().await;
     }
     /// A scripted panel: `answers[i]` is judge `i`'s answer.
     struct ScriptedPanel {
@@ -10936,7 +11003,7 @@ mod tests {
     }
     #[tokio::test]
     async fn evaluating_again_keeps_budget_failures_exclusions_and_human_overrides() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = request(&s).await;
         req.repetitions = 1;
         req.max_executions = 1;
@@ -10993,10 +11060,11 @@ mod tests {
         let kept = s.store.attempt(&timed_out.id).await.unwrap();
         assert_eq!(kept.outcome.as_deref(), Some("budget_timeout"));
         assert_eq!(super::super::analysis::score(&kept), Some(0.0));
+        dir.close().await;
     }
     #[tokio::test]
     async fn evaluating_again_persists_the_new_verdict_of_a_finished_attempt() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let mut req = request(&s).await;
         req.repetitions = 1;
         req.max_executions = 1;
@@ -11021,10 +11089,11 @@ mod tests {
         let stored = s.store.attempt(&id).await.unwrap();
         assert_eq!(stored.evaluations.len(), 1);
         assert_eq!(super::super::analysis::score(&stored), Some(1.0));
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_panel_on_one_attempt_never_blocks_a_review_of_another() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let mut req = creative_request(&s).await;
         req.repetitions = 2;
         req.max_executions = 8;
@@ -11039,6 +11108,7 @@ mod tests {
         assert!(reviewed.expect("review waited on another panel").is_ok());
         let busy = s.rescore(first).await.unwrap_err();
         assert_eq!(busy.message, "This attempt is already being evaluated");
+        dir.close().await;
     }
     /// A render marker for two judges and their valid votes, 0.6 and 0.8.
     fn settled_batch() -> [Evaluation; 3] {
@@ -11059,7 +11129,7 @@ mod tests {
     }
     #[tokio::test]
     async fn evaluating_again_without_a_panel_keeps_the_settled_score() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
@@ -11075,10 +11145,11 @@ mod tests {
         let after = s.store.attempt(&a.id).await.unwrap();
         assert_eq!(after.evaluations.len(), before.evaluations.len());
         assert_eq!(super::super::analysis::score(&after), Some(0.7));
+        dir.close().await;
     }
     #[tokio::test]
     async fn an_answer_without_markup_fails_and_asks_no_judge() {
-        let (_dir, s, backend) = setup().await;
+        let (dir, s, backend) = setup().await;
         let mut req = creative_request(&s).await;
         req.configurations[0].id = "fake-fail".into();
         req.configurations[0].model_id = "fake-fail".into();
@@ -11089,10 +11160,11 @@ mod tests {
         assert_eq!(a.outcome.as_deref(), Some("fail"));
         assert_eq!(super::super::analysis::score(&a), Some(0.0));
         assert_eq!(backend.judges.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn judge_turns_cut_off_by_a_restart_are_settled_and_never_vote() {
-        let (_dir, s, _) = setup().await;
+        let (dir, s, _) = setup().await;
         let run = s.start_run(creative_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
         let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
@@ -11125,5 +11197,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(left, 0);
+        dir.close().await;
     }
 }

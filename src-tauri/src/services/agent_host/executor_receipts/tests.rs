@@ -50,9 +50,10 @@ fn local_attribution_is_consumed_without_forwarding_it_to_the_provider() {
 
 #[tokio::test]
 async fn only_one_dispatch_can_be_claimed_even_after_a_restart_and_lost_response() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let path = dir.path().join("host.sqlite");
     let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
     let start = start();
     let (a, b) = tokio::join!(
         store.claim_executor_receipt(&start),
@@ -61,6 +62,7 @@ async fn only_one_dispatch_can_be_claimed_even_after_a_restart_and_lost_response
     assert_ne!(a.unwrap(), b.unwrap());
     store.pool.close().await;
     let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
     let receipt = store
         .executor_receipt(&start.link.decision_key)
         .await
@@ -80,13 +82,15 @@ async fn only_one_dispatch_can_be_claimed_even_after_a_restart_and_lost_response
         .await
         .unwrap();
     assert!(!store.claim_executor_receipt(&start).await.unwrap());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn terminal_evidence_is_idempotent_and_bound_to_the_original_dispatch() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let path = dir.path().join("host.sqlite");
     let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
     let start = start();
     assert!(store
         .finish_executor_receipt(&start, &finish())
@@ -115,6 +119,7 @@ async fn terminal_evidence_is_idempotent_and_bound_to_the_original_dispatch() {
         .is_err());
     store.pool.close().await;
     let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
     assert_eq!(
         store
             .executor_receipt(&start.link.decision_key)
@@ -132,14 +137,16 @@ async fn terminal_evidence_is_idempotent_and_bound_to_the_original_dispatch() {
         .executor_receipt(&start.link.decision_key)
         .await
         .is_err());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn corrupted_dispatch_evidence_is_never_joined_as_a_valid_receipt() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let store = SessionStore::open(&dir.path().join("host.sqlite"))
         .await
         .unwrap();
+    dir.register(&store.pool);
     let start = start();
     store.claim_executor_receipt(&start).await.unwrap();
     sqlx::query("UPDATE executor_receipts SET session_id='other'")
@@ -150,6 +157,7 @@ async fn corrupted_dispatch_evidence_is_never_joined_as_a_valid_receipt() {
         .executor_receipt(&start.link.decision_key)
         .await
         .is_err());
+    dir.close().await;
 }
 
 fn quota_error() -> Value {
@@ -193,10 +201,11 @@ fn retry_proof_requires_the_exact_quota_and_withdrawal_gate() {
 
 #[tokio::test]
 async fn failed_or_unknown_receipts_do_not_authorize_retry_or_unrelated_withdrawal() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let store = SessionStore::open(&dir.path().join("host.sqlite"))
         .await
         .unwrap();
+    dir.register(&store.pool);
     let mut start = start();
     start.account_id = Some("account-a".into());
     assert!(store.claim_executor_receipt(&start).await.unwrap());
@@ -241,13 +250,15 @@ async fn failed_or_unknown_receipts_do_not_authorize_retry_or_unrelated_withdraw
         .mark_executor_prompt_unaccepted(&wrong_link, &start.session_id, &start.host_run_id, &proof)
         .await
         .is_err());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn proven_manual_quota_wait_retry_is_atomic_durable_and_preserves_terminal_bytes() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let path = dir.path().join("host.sqlite");
     let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
     let mut first = start();
     first.account_id = Some("account-a".into());
     store.claim_executor_receipt(&first).await.unwrap();
@@ -259,6 +270,7 @@ async fn proven_manual_quota_wait_retry_is_atomic_durable_and_preserves_terminal
         .unwrap();
     store.pool.close().await;
     let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
     let mut next = first.clone();
     next.host_run_id = "retry-after-reset".into();
     next.message_id = "retry-message".into();
@@ -306,6 +318,7 @@ async fn proven_manual_quota_wait_retry_is_atomic_durable_and_preserves_terminal
     assert!(!store.claim_executor_receipt(&alias).await.unwrap());
     store.pool.close().await;
     let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
     assert_eq!(
         store
             .executor_receipt(&first.link.decision_key)
@@ -325,14 +338,16 @@ async fn proven_manual_quota_wait_retry_is_atomic_durable_and_preserves_terminal
         .await
         .is_err());
     assert!(store.claim_executor_receipt(&next).await.is_err());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn immediate_account_fallback_keeps_logical_turn_and_rechecks_native_routing_policy() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let store = SessionStore::open(&dir.path().join("host.sqlite"))
         .await
         .unwrap();
+    dir.register(&store.pool);
     let mut first = start();
     first.account_id = Some("account-a".into());
     store.claim_executor_receipt(&first).await.unwrap();
@@ -403,4 +418,5 @@ async fn immediate_account_fallback_keeps_logical_turn_and_rechecks_native_routi
         .claim_executor_receipt_with_routing(&switched, true)
         .await
         .unwrap());
+    dir.close().await;
 }

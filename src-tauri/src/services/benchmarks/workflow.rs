@@ -1824,14 +1824,15 @@ mod tests {
     use tokio::sync::Notify;
 
     async fn setup() -> (
-        tempfile::TempDir,
+        crate::test_support::TempRoot,
         BenchmarkService,
         Arc<FakeBackend>,
         Attempt,
         BenchmarkVersion,
     ) {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let backend = Arc::new(FakeBackend::default());
         let service = BenchmarkService {
             store,
@@ -1896,7 +1897,7 @@ mod tests {
 
     #[tokio::test]
     async fn step_decision_precedes_execution_and_survives_retries_unchanged() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let prepared = prepare_step(&service, &root, &version, 0, 17, None, None)
             .await
             .unwrap();
@@ -1961,6 +1962,7 @@ mod tests {
             .unwrap(),
             frozen
         );
+        directory.close().await;
     }
 
     async fn exported_steps(
@@ -1995,7 +1997,7 @@ mod tests {
 
     #[tokio::test]
     async fn step_export_preserves_causal_inputs_without_root_rewards_or_private_fields() {
-        let (_directory, service, _, root, version) = setup().await;
+        let (directory, service, _, root, version) = setup().await;
         let prepared = prepare_step(&service, &root, &version, 0, 23, None, None)
             .await
             .unwrap();
@@ -2051,11 +2053,12 @@ mod tests {
         let (_, rows) = exported_steps(&service, false).await;
         assert_eq!(rows[0]["outcome"]["outcome"], "budget_timeout");
         assert!(rows[0]["outcome"]["reward"].is_null());
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn changed_step_input_is_refused_before_dispatch_and_export() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let prepared = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
@@ -2086,11 +2089,12 @@ mod tests {
             .code,
             "evidence_mismatch"
         );
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn legacy_step_export_does_not_invent_a_pre_dispatch_decision() {
-        let (_directory, service, _, root, version) = setup().await;
+        let (directory, service, _, root, version) = setup().await;
         let (_tx, cancel) = watch::channel(false);
         execute(&service, root, version, 30, cancel).await.unwrap();
         sqlx::query("UPDATE workflow_steps SET decision_json=NULL")
@@ -2103,11 +2107,12 @@ mod tests {
             == "legacy_missing_pre_dispatch_decision"
             && row["decision"].is_null()
             && row["outcome"]["reward"].is_null()));
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn step_export_requires_explicit_heldout_scope_and_omits_later_outcomes() {
-        let (_directory, service, _, root, mut version) = setup().await;
+        let (directory, service, _, root, mut version) = setup().await;
         let (_tx, cancel) = watch::channel(false);
         let result = execute(&service, root, version.clone(), 30, cancel)
             .await
@@ -2138,11 +2143,12 @@ mod tests {
             .await
             .unwrap();
         assert!(exported_steps(&service, true).await.1.is_empty());
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn auxiliary_work_is_preserved_when_a_later_step_is_cancelled() {
-        let (_directory, service, _, root, version) = setup().await;
+        let (directory, service, _, root, version) = setup().await;
         let (_tx, cancel) = watch::channel(false);
         let mut result = execute(&service, root, version, 30, cancel).await.unwrap();
         let mut steps = saved_steps(&service.store, &result.id).await.unwrap();
@@ -2165,11 +2171,12 @@ mod tests {
             "native_text_auxiliary"
         );
         assert_eq!(result.usage.input, Some(20));
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn workflow_runs_fresh_steps_once_and_retains_declared_feedback() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let (_tx, cancel) = watch::channel(false);
         let result = execute(&service, root, version.clone(), 30, cancel.clone())
             .await
@@ -2216,11 +2223,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn workflow_cancel_acknowledges_active_child_and_never_starts_next() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let (tx, cancel) = watch::channel(false);
         let stop = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -2231,6 +2239,7 @@ mod tests {
         assert_eq!(result.outcome.as_deref(), Some("cancelled"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(result.workflow_steps.len(), 1);
+        directory.close().await;
     }
 
     /// A step the host refused before any provider call goes back to the
@@ -2238,7 +2247,7 @@ mod tests {
     /// next pass runs that step, never settles it.
     #[tokio::test]
     async fn a_step_refused_before_its_session_waits_with_its_workflow() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         backend.capability_refusals.store(1, Ordering::SeqCst);
         let (_tx, cancel) = watch::channel(false);
         let refused = execute(&service, root.clone(), version.clone(), 30, cancel.clone())
@@ -2254,11 +2263,12 @@ mod tests {
         let result = execute(&service, root, version, 30, cancel).await.unwrap();
         assert_eq!(result.outcome.as_deref(), Some("completed"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn workflow_recovery_waits_for_resume_and_never_repeats_completed_prefix() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let mut first = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
@@ -2297,11 +2307,12 @@ mod tests {
             .unwrap();
         assert_eq!(result.outcome.as_deref(), Some("completed"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn uncertain_workflow_step_is_never_automatically_resent() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let mut first = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
@@ -2318,11 +2329,12 @@ mod tests {
                 .len(),
             1
         );
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn workflow_recovery_checks_selection_and_budget_before_final_evaluation() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let mut first = prepare_step(&service, &root, &version, 0, 30, None, None)
             .await
             .unwrap();
@@ -2360,11 +2372,12 @@ mod tests {
         let restored = recover(&service, root, version).await.unwrap().unwrap();
         assert_eq!(restored.outcome.as_deref(), Some("budget_timeout"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn sealed_workflow_cancellation_without_output_survives_restart() {
-        let (_directory, service, backend, root, version) = setup().await;
+        let (directory, service, backend, root, version) = setup().await;
         let (_tx, cancel) = watch::channel(true);
         let result = execute(&service, root, version.clone(), 30, cancel)
             .await
@@ -2379,11 +2392,12 @@ mod tests {
             .unwrap();
         assert_eq!(restored.outcome.as_deref(), Some("cancelled"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn workflow_entry_content_hash_matches_candidates_and_changes_with_feedback() {
-        let (_directory, _service, _backend, first, version) = setup().await;
+        let (directory, _service, _backend, first, version) = setup().await;
         let mut second = first.clone();
         second.id = "another-candidate-attempt".into();
         second.configuration.model_id = "another-model".into();
@@ -2394,6 +2408,7 @@ mod tests {
         let x = step_entry(&first, &version.manifest, 1, 29, Some("first answer")).unwrap();
         let y = step_entry(&second, &version.manifest, 1, 29, Some("different answer")).unwrap();
         assert_ne!(x.content_hash, y.content_hash);
+        directory.close().await;
     }
 
     #[test]

@@ -584,8 +584,9 @@ pub(super) mod tests {
     #[tokio::test]
     async fn reservations_are_durable_idempotent_and_cannot_be_rebound() {
         let (data, artifact, request) = fixture();
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         store.save_selector_fit(&artifact).await.unwrap();
         save_versions(&store, &data.versions).await;
         let plan = prepare(&data, &artifact.model, request.clone()).unwrap();
@@ -606,17 +607,20 @@ pub(super) mod tests {
         );
         store.pool.close().await;
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         assert_eq!(
             store.selector_holdouts(&artifact.model.id).await.unwrap()[0].id,
             plan.id
         );
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn raw_unscored_preview_and_concurrently_added_relatives_block_reservation() {
         let (mut data, artifact, request) = fixture();
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         store.save_selector_fit(&artifact).await.unwrap();
         save_versions(&store, &data.versions).await;
         let plan = prepare(&data, &artifact.model, request).unwrap();
@@ -646,13 +650,15 @@ pub(super) mod tests {
                 .await
                 .unwrap();
         assert_eq!(reservations, 0);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn overlapping_concurrent_plans_reserve_families_exactly_once() {
         let (data, artifact, request) = fixture();
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         store.save_selector_fit(&artifact).await.unwrap();
         save_versions(&store, &data.versions).await;
         let first = prepare(&data, &artifact.model, request.clone()).unwrap();
@@ -676,13 +682,15 @@ pub(super) mod tests {
                 .len(),
             1
         );
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn historical_group_names_link_related_families_transitively() {
         let (data, artifact, request) = fixture();
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         store.save_selector_fit(&artifact).await.unwrap();
         save_versions(&store, &data.versions).await;
         let plan = prepare(&data, &artifact.model, request).unwrap();
@@ -704,6 +712,7 @@ pub(super) mod tests {
                 .code,
             "holdout_already_exposed"
         );
+        directory.close().await;
     }
 
     #[tokio::test]
@@ -721,8 +730,9 @@ pub(super) mod tests {
         bridge.manifest.environment["splitGroup"] = serde_json::json!("held-group-1");
         data.versions.push(bridge);
         assert!(prepare(&data, &artifact.model, request).is_err());
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         store.save_selector_fit(&artifact).await.unwrap();
         save_versions(&store, &data.versions).await;
         assert!(store.reserve_selector_holdout(&plan).await.is_err());
@@ -731,5 +741,6 @@ pub(super) mod tests {
             .await
             .unwrap()
             .is_empty());
+        directory.close().await;
     }
 }

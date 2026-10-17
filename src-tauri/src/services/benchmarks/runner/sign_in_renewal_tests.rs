@@ -17,7 +17,7 @@ fn release(run: &str) {
 
 #[tokio::test]
 async fn a_renewal_wait_is_an_unstarted_admission_until_a_provider_saw_the_try() {
-    let (_dir, service, _) = setup().await;
+    let (dir, service, _) = setup().await;
     let run = service
         .start_run(serial_request(&service).await)
         .await
@@ -32,13 +32,14 @@ async fn a_renewal_wait_is_an_unstarted_admission_until_a_provider_saw_the_try()
     assert!(!never_started(&seen, &wait));
     let quota = BenchmarkError::new(QUOTA_WAIT, "invented usage limit");
     assert!(!never_started(&attempt, &quota));
+    dir.close().await;
 }
 
 /// The overnight Grok runs used no automatic retry: a renewal that waited for
 /// other sessions must hold the cell, not stop the run for the operator.
 #[tokio::test]
 async fn a_renewal_wait_holds_a_cell_of_a_run_without_automatic_retry() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     let mut request = serial_request(&service).await;
     request.repetitions = 1;
     request.max_executions = 1;
@@ -67,6 +68,7 @@ async fn a_renewal_wait_holds_a_cell_of_a_run_without_automatic_retry() {
     assert_eq!(done.state, "completed");
     assert_eq!(done.attempts[0].outcome.as_deref(), Some("pass"));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    dir.close().await;
 }
 
 /// A workflow whose first step waits for the renewal has not started: under
@@ -75,7 +77,7 @@ async fn a_renewal_wait_holds_a_cell_of_a_run_without_automatic_retry() {
 #[tokio::test]
 async fn a_workflow_waiting_for_a_renewal_at_its_first_step_starts_afresh() {
     for retry_policy in [RunRetryPolicy::None, RunRetryPolicy::Automatic] {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         backend.busy_sign_ins.store(1, Ordering::SeqCst);
         let run = service
             .start_run(workflow_request(&service, retry_policy).await)
@@ -100,6 +102,7 @@ async fn a_workflow_waiting_for_a_renewal_at_its_first_step_starts_afresh() {
         assert_eq!(root.outcome.as_deref(), Some("pass"), "{retry_policy:?}");
         assert_eq!(root.workflow_steps.len(), 2);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
     }
 }
 
@@ -111,7 +114,7 @@ async fn a_workflow_waiting_for_a_renewal_at_its_first_step_starts_afresh() {
 #[tokio::test]
 async fn a_later_step_waiting_for_a_renewal_keeps_the_rules_of_its_retry_policy() {
     for retry_policy in [RunRetryPolicy::Automatic, RunRetryPolicy::None] {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         backend.busy_sign_in_after.store(1, Ordering::SeqCst);
         let run = service
             .start_run(workflow_request(&service, retry_policy).await)
@@ -126,6 +129,7 @@ async fn a_later_step_waiting_for_a_renewal_keeps_the_rules_of_its_retry_policy(
             assert_eq!(after.state, "needs_attention");
             assert_eq!(root.phase, "terminal");
             assert_eq!(root.outcome.as_deref(), Some(SIGN_IN_WAIT));
+            dir.close().await;
             continue;
         }
         assert_eq!(after.state, "running");
@@ -140,5 +144,6 @@ async fn a_later_step_waiting_for_a_renewal_keeps_the_rules_of_its_retry_policy(
         assert_eq!(root.outcome.as_deref(), Some("pass"));
         assert_eq!(root.workflow_steps.len(), 2);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
     }
 }

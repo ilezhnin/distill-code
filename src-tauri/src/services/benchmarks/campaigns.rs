@@ -502,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn a_campaign_plans_a_discovered_model_at_its_highest_level() {
         use std::sync::Arc;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let backend = Arc::new(super::super::runner::FakeBackend::default());
         *backend.effort_levels.lock().unwrap() = vec!["low".into(), "high".into()];
         let service = BenchmarkService {
@@ -514,6 +514,7 @@ mod tests {
             active: Default::default(),
             app: None,
         };
+        directory.register(&service.store.pool);
         let draft = super::super::runner::seed_definitions().remove(0);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();
@@ -555,12 +556,13 @@ mod tests {
             planned,
             [("fake-fail", Some("high")), ("fake-pass", Some("low"))]
         );
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn discovery_plans_an_author_on_the_case_it_wrote() {
         use std::sync::Arc;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let service = BenchmarkService {
             store: super::super::store::Store::open(directory.path())
                 .await
@@ -570,6 +572,7 @@ mod tests {
             active: Default::default(),
             app: None,
         };
+        directory.register(&service.store.pool);
         let mut draft = super::super::runner::seed_definitions().remove(0);
         draft.environment["authoredBy"] =
             serde_json::json!([{"providerId":"fake","modelId":"fake-fail","effort":null}]);
@@ -613,12 +616,13 @@ mod tests {
         assert_eq!(models, ["fake-fail", "fake-pass"]);
         assert!(runs[0].request.measures_author_cells());
         assert_eq!(runs[0].attempts.len(), 2);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn an_author_keeps_its_discovery_slot() {
         use std::sync::Arc;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let service = BenchmarkService {
             store: super::super::store::Store::open(directory.path())
                 .await
@@ -628,6 +632,7 @@ mod tests {
             active: Default::default(),
             app: None,
         };
+        directory.register(&service.store.pool);
         // The saved candidate, first in inventory order, wrote the only case
         // and still owes it.
         let mut draft = super::super::runner::seed_definitions().remove(0);
@@ -668,12 +673,13 @@ mod tests {
             .map(|c| c.model_id.as_str())
             .collect();
         assert_eq!(models, ["fake-pass"]);
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn disabled_campaign_is_quiet_and_discovery_respects_lifetime_budget() {
         use std::sync::Arc;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let service = BenchmarkService {
             store: super::super::store::Store::open(directory.path())
                 .await
@@ -683,6 +689,7 @@ mod tests {
             active: Default::default(),
             app: None,
         };
+        directory.register(&service.store.pool);
         let definition = service
             .store
             .save_draft(
@@ -748,5 +755,6 @@ mod tests {
         let saved = service.store.schedules().await.unwrap().remove(0);
         assert!(!saved.enabled);
         assert!(saved.paused_reason.unwrap().contains("budget"));
+        directory.close().await;
     }
 }

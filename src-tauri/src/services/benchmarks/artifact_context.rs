@@ -334,10 +334,11 @@ mod tests {
     }
     #[tokio::test]
     async fn root_high_water_survives_reopen_and_refuses_backward_recovery() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = super::super::store::Store::open(directory.path())
             .await
             .unwrap();
+        directory.register(&store.pool);
         let lease = store
             .reserve_task_budget(
                 "invented-root-key",
@@ -359,6 +360,7 @@ mod tests {
         let reopened = super::super::store::Store::open(directory.path())
             .await
             .unwrap();
+        directory.register(&reopened.pool);
         let error = reopened
             .verify_task_budget_clock(
                 &lease,
@@ -378,5 +380,6 @@ mod tests {
             )
             .await
             .unwrap();
+        directory.close().await;
     }
 }

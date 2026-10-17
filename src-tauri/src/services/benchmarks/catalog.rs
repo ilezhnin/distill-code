@@ -284,8 +284,9 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn publication_and_new_work_require_explicit_difficulty() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         for difficulty in [None, Some("unspecified"), Some("unknown")] {
             let mut draft = super::super::seeds::definitions().remove(0);
             draft.facets.difficulty = difficulty.map(Into::into);
@@ -322,11 +323,13 @@ mod tests {
             .unwrap_err()
             .message
             .contains("difficulty"));
+        directory.close().await;
     }
     #[tokio::test]
     async fn malformed_javascript_checks_cannot_reach_reference_execution() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut draft = super::super::seeds::definitions()
             .into_iter()
             .find(|draft| draft.evaluator.kind == "javascript")
@@ -350,12 +353,14 @@ mod tests {
             .unwrap()
             .versions
             .is_empty());
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn unverified_provenance_stays_editable_but_cannot_be_published() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut draft = super::super::seeds::definitions().remove(0);
         draft.environment["authorshipStatus"] = serde_json::json!("unverified");
         let definition = store.save_draft(None, None, draft).await.unwrap();
@@ -376,11 +381,13 @@ mod tests {
             .await
             .unwrap();
         assert!(store.publish(&definition.id, 2).await.is_ok());
+        directory.close().await;
     }
     #[tokio::test]
     async fn archiving_records_the_first_archive_time() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         assert_eq!(definition.archived_at, None);
@@ -415,6 +422,7 @@ mod tests {
         // Restoring a live definition records nothing.
         let live = store.archive(&definition.id, false).await.unwrap();
         assert_eq!(live.archive_history.len(), 2);
+        directory.close().await;
     }
     /// The catalog and runs as the evidence queries read them.
     async fn query_data(store: &Store) -> QueryData {
@@ -444,8 +452,9 @@ mod tests {
     }
     #[tokio::test]
     async fn restoring_an_archive_older_than_its_recorded_time_keeps_its_period() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut versions = Vec::new();
         for task_family in ["planned", "unplanned"] {
             let mut draft = super::super::runner::seed_definitions().remove(0);
@@ -497,11 +506,13 @@ mod tests {
         assert!(!pooled(&after, Some(2000), &unplanned.id));
         assert!(pooled(&after, None, &planned.id));
         assert!(pooled(&after, None, &unplanned.id));
+        directory.close().await;
     }
     #[tokio::test]
     async fn content_of_an_earlier_version_cannot_republish_as_current() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::runner::seed_definitions().remove(0);
         let definition = store.save_draft(None, None, draft.clone()).await.unwrap();
         let first = store.publish(&definition.id, 1).await.unwrap();
@@ -541,11 +552,13 @@ mod tests {
             store.publish(&definition.id, 4).await.unwrap().id,
             second.id
         );
+        directory.close().await;
     }
     #[tokio::test]
     async fn entry_state_hash_tracks_actual_public_fixture_contents() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut draft = super::super::seeds::definitions().remove(0);
         draft.fixtures = vec![Fixture {
             path: "source.txt".into(),
@@ -583,11 +596,13 @@ mod tests {
             changed_entry.fixture_snapshot_hash
         );
         assert_ne!(first_entry.content_hash, changed_entry.content_hash);
+        directory.close().await;
     }
     #[tokio::test]
     async fn drafts_conflict_and_publication_is_immutable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
         let draft = super::super::runner::seed_definitions().remove(0);
         let d = store.save_draft(None, None, draft.clone()).await.unwrap();
         let original = store.publish(&d.id, 1).await.unwrap();
@@ -614,11 +629,13 @@ mod tests {
         );
         store.archive(&d.id, true).await.unwrap();
         assert!(store.version(&original.id).await.is_ok());
+        dir.close().await;
     }
     #[tokio::test]
     async fn interrupted_blob_has_no_published_row() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
         let draft = super::super::runner::seed_definitions().remove(0);
         let d = store.save_draft(None, None, draft.clone()).await.unwrap();
         let hash = fixtures::publish_blob(&store.root, &draft).await.unwrap();
@@ -636,11 +653,13 @@ mod tests {
                 .await
                 .is_err()
         );
+        dir.close().await;
     }
     #[tokio::test]
     async fn split_leakage_and_traversal_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
         let mut draft = super::super::runner::seed_definitions().remove(0);
         let d = store.save_draft(None, None, draft.clone()).await.unwrap();
         store.publish(&d.id, 1).await.unwrap();
@@ -652,5 +671,6 @@ mod tests {
             content: "x".into(),
         });
         assert!(store.save_draft(None, None, draft).await.is_err());
+        dir.close().await;
     }
 }

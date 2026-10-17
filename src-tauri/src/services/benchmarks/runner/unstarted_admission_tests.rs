@@ -74,7 +74,7 @@ async fn prepared(service: &BenchmarkService, root: &str) -> (i64, i64) {
 
 #[tokio::test]
 async fn only_untouched_attempts_in_preparation_count_as_never_started() {
-    let (_dir, service, _) = setup().await;
+    let (dir, service, _) = setup().await;
     let run = service
         .start_run(serial_request(&service).await)
         .await
@@ -125,6 +125,7 @@ async fn only_untouched_attempts_in_preparation_count_as_never_started() {
     }
     let refused = BenchmarkError::new("capability_missing", "the sign-in expires soon");
     assert!(!never_started(&attempt, &refused));
+    dir.close().await;
 }
 
 /// The cells the live run lost: a workflow whose first step the broker
@@ -134,7 +135,7 @@ async fn only_untouched_attempts_in_preparation_count_as_never_started() {
 #[tokio::test]
 async fn a_workflow_refused_before_any_provider_waits_and_starts_afresh() {
     for retry_policy in [RunRetryPolicy::None, RunRetryPolicy::Automatic] {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         backend.resource_refusals.store(1, Ordering::SeqCst);
         let run = service
             .start_run(workflow_request(&service, retry_policy).await)
@@ -177,6 +178,7 @@ async fn a_workflow_refused_before_any_provider_waits_and_starts_afresh() {
             .unwrap();
         assert!(clock.root_started_at_ms >= refused_at);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
     }
 }
 
@@ -186,7 +188,7 @@ async fn a_workflow_refused_before_any_provider_waits_and_starts_afresh() {
 #[tokio::test]
 async fn a_workflow_that_reached_a_provider_keeps_its_refusal() {
     for retry_policy in [RunRetryPolicy::None, RunRetryPolicy::Automatic] {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         backend.resource_refusal_after.store(1, Ordering::SeqCst);
         let run = service
             .start_run(workflow_request(&service, retry_policy).await)
@@ -207,5 +209,6 @@ async fn a_workflow_that_reached_a_provider_keeps_its_refusal() {
         );
         assert_eq!(prepared(&service, &root.id).await, (2, 3));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
 }

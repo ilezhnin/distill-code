@@ -501,10 +501,80 @@ pub fn run() {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::path::Path;
     use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
 
     pub(crate) fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// A temporary folder for tests that open SQLite databases in it.
+    ///
+    /// sqlx closes a database file on its own threads, and the connection a
+    /// test used last goes back to its pool on a task of the test's runtime.
+    /// A plain `TempDir` dropped at the end of a test therefore deletes the
+    /// folder while the file is still open: Windows refuses, `TempDir` ignores
+    /// the error, and the folder stays in the temp directory. A test registers
+    /// each pool it opens here and ends with [`TempRoot::close`].
+    pub(crate) struct TempRoot {
+        pools: Mutex<Vec<sqlx::SqlitePool>>,
+        dir: tempfile::TempDir,
+    }
+
+    impl TempRoot {
+        pub(crate) fn new() -> Self {
+            Self {
+                pools: Mutex::default(),
+                dir: tempfile::tempdir().unwrap(),
+            }
+        }
+
+        pub(crate) fn path(&self) -> &Path {
+            self.dir.path()
+        }
+
+        pub(crate) fn register(&self, pool: &sqlx::SqlitePool) {
+            self.pools.lock().unwrap().push(pool.clone());
+        }
+
+        /// Closes every registered pool, waits until its files are closed,
+        /// and deletes the folder.
+        pub(crate) async fn close(mut self) {
+            let pools = std::mem::take(self.pools.get_mut().unwrap());
+            for pool in pools {
+                pool.close().await;
+                // A connection released just before is still on its way back
+                // to the pool; that task closes it now that the pool is closed.
+                let closed = tokio::time::timeout(Duration::from_secs(10), async {
+                    while pool.size() > 0 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await;
+                assert!(
+                    closed.is_ok(),
+                    "a database in {} is still in use; finish or abort the task that holds it",
+                    self.dir.path().display()
+                );
+            }
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let open = !self
+                .pools
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty();
+            if open && !std::thread::panicking() {
+                panic!(
+                    "databases in {} were never closed; end the test with `.close().await`",
+                    self.dir.path().display()
+                );
+            }
+        }
     }
 }

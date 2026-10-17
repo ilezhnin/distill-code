@@ -210,7 +210,6 @@ pub fn reject_document_links(root: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[cfg(windows)]
     #[test]
@@ -248,10 +247,8 @@ mod tests {
         fs::remove_dir(&link).unwrap();
     }
 
-    fn temp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("distill-root-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     #[test]
@@ -326,7 +323,8 @@ mod tests {
 
     #[test]
     fn the_pointer_file_wins_over_the_default() {
-        let base = temp();
+        let dir = temp();
+        let base = dir.path();
         let config = base.join("config");
         let chosen = base.join("elsewhere");
         write_root_pointer(&config, &chosen).unwrap();
@@ -338,7 +336,8 @@ mod tests {
     fn the_environment_wins_over_the_pointer_file() {
         // A portable run or a second install must be able to redirect
         // everything without disturbing the operator's real setup.
-        let base = temp();
+        let dir = temp();
+        let base = dir.path();
         let config = base.join("config");
         write_root_pointer(&config, &base.join("pointed")).unwrap();
 
@@ -349,7 +348,8 @@ mod tests {
 
     #[test]
     fn a_relative_or_blank_override_is_ignored() {
-        let base = temp();
+        let dir = temp();
+        let base = dir.path();
         let home = base.join("home");
         for value in ["", "   ", "relative/path"] {
             assert_eq!(
@@ -361,17 +361,18 @@ mod tests {
 
     #[test]
     fn document_paths_stay_inside_the_root() {
-        let root = temp();
-        assert!(resolve_document_path(&root, "planner.json").is_ok());
+        let dir = temp();
+        let root = dir.path();
+        assert!(resolve_document_path(root, "planner.json").is_ok());
         assert_eq!(
-            resolve_document_path(&root, "projects/site/planner.json").unwrap(),
+            resolve_document_path(root, "projects/site/planner.json").unwrap(),
             root.join("projects").join("site").join("planner.json")
         );
 
         for escape in ["../outside.json", "projects/../../outside.json"] {
-            assert!(resolve_document_path(&root, escape).is_err(), "{escape}");
+            assert!(resolve_document_path(root, escape).is_err(), "{escape}");
         }
-        assert!(resolve_document_path(&root, "/etc/passwd.json").is_err());
-        assert!(resolve_document_path(&root, "notes.txt").is_err());
+        assert!(resolve_document_path(root, "/etc/passwd.json").is_err());
+        assert!(resolve_document_path(root, "notes.txt").is_err());
     }
 }

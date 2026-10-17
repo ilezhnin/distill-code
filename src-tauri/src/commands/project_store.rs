@@ -321,35 +321,35 @@ pub fn exclude_agent_folders(project_root: &Path) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    fn temp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("distill-project-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     #[test]
     fn refuses_to_leave_the_store() {
-        let root = temp();
-        assert!(resolve_project_document_path(&root, "../secrets.json").is_err());
-        assert!(resolve_project_document_path(&root, "/etc/passwd").is_err());
-        assert!(resolve_project_document_path(&root, "notes.txt").is_err());
+        let dir = temp();
+        let root = dir.path();
+        assert!(resolve_project_document_path(root, "../secrets.json").is_err());
+        assert!(resolve_project_document_path(root, "/etc/passwd").is_err());
+        assert!(resolve_project_document_path(root, "notes.txt").is_err());
     }
 
     #[test]
     fn excludes_agent_folders_once_and_leaves_the_rest_alone() {
-        let root = temp();
+        let dir = temp();
+        let root = dir.path();
         let info = root.join(".git").join("info");
         fs::create_dir_all(&info).unwrap();
         fs::write(info.join("exclude"), "# theirs\nbuild/\n").unwrap();
 
-        assert!(exclude_agent_folders(&root).unwrap());
+        assert!(exclude_agent_folders(root).unwrap());
         let written = fs::read_to_string(info.join("exclude")).unwrap();
         assert!(written.starts_with("# theirs\nbuild/\n"));
         assert!(written.contains(".distill/"));
         assert!(written.contains(".claude/"));
 
         // Second call has nothing to add and must not append again.
-        assert!(!exclude_agent_folders(&root).unwrap());
+        assert!(!exclude_agent_folders(root).unwrap());
         assert_eq!(
             fs::read_to_string(info.join("exclude"))
                 .unwrap()
@@ -361,14 +361,15 @@ mod tests {
 
     #[test]
     fn writes_and_reads_back_a_document() {
-        let root = temp();
+        let dir = temp();
+        let root = dir.path();
         write_project_document_blocking(
             root.to_string_lossy().to_string(),
             "memory/facts.json".into(),
             "{\"a\":1}".into(),
         )
         .unwrap();
-        let target = resolve_project_document_path(&root, "memory/facts.json").unwrap();
+        let target = resolve_project_document_path(root, "memory/facts.json").unwrap();
         let read = super::super::distill_store::read_document_capped(&target).unwrap();
         assert_eq!(read.as_deref(), Some("{\"a\":1}"));
         assert_eq!(
@@ -380,7 +381,8 @@ mod tests {
 
     #[test]
     fn refuses_a_closeout_name_that_is_a_path() {
-        let root = temp();
+        let dir = temp();
+        let root = dir.path();
         // `C:x.md` is drive-relative on Windows and would replace the folder
         // it is joined onto.
         for name in [
@@ -412,8 +414,9 @@ mod tests {
 
     #[test]
     fn a_document_never_written_reads_as_nothing() {
-        let root = temp();
-        let target = resolve_project_document_path(&root, "nope.json").unwrap();
+        let dir = temp();
+        let root = dir.path();
+        let target = resolve_project_document_path(root, "nope.json").unwrap();
         assert!(super::super::distill_store::read_document_capped(&target)
             .unwrap()
             .is_none());

@@ -982,8 +982,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_export_writes_empty_jsonl_files() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let data = QueryData {
             releases: Vec::new(),
             definitions: vec![],
@@ -1003,6 +1004,7 @@ mod tests {
             manifest["currentPool"]["contentHash"],
             format!("{:x}", Sha256::digest(b""))
         );
+        directory.close().await;
     }
 
     #[test]
@@ -1051,7 +1053,7 @@ mod tests {
 
     #[tokio::test]
     async fn exported_decision_precedes_outcomes_and_reloads_with_missing_cost() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let service = super::super::BenchmarkService {
             store: Store::open(directory.path()).await.unwrap(),
             backend: std::sync::Arc::new(super::super::runner::FakeBackend::default()),
@@ -1059,6 +1061,7 @@ mod tests {
             active: Default::default(),
             app: None,
         };
+        directory.register(&service.store.pool);
         let mut draft = super::super::runner::seed_definitions().remove(0);
         draft.split = "train".into();
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
@@ -1150,5 +1153,6 @@ mod tests {
         assert!(ledger
             .lines()
             .all(|line| serde_json::from_str::<Value>(line).is_ok()));
+        directory.close().await;
     }
 }

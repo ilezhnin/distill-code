@@ -137,11 +137,12 @@ fn judge(model: &str) -> Configuration {
     }
 }
 async fn fixture(
-    root: &std::path::Path,
+    root: &crate::test_support::TempRoot,
     bad_seat: bool,
     hold: bool,
 ) -> (BenchmarkService, Arc<PanelBackend>, Request) {
-    let store = Store::open(root).await.unwrap();
+    let store = Store::open(root.path()).await.unwrap();
+    root.register(&store.pool);
     let mut draft = super::super::seeds::definitions().remove(0);
     draft.split = "train".into();
     draft.task_family = "invented-rubric-calibration".into();
@@ -228,8 +229,8 @@ async fn settled(store: &Store, id: &str) -> Record {
 
 #[tokio::test]
 async fn rubric_controls_are_idempotent_and_never_become_candidate_measurements() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, request) = fixture(dir.path(), false, false).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, false, false).await;
     let first = service.qualify_version(request.clone()).await.unwrap();
     let duplicate = service.qualify_version(request.clone()).await.unwrap();
     assert_eq!(first.id, duplicate.id);
@@ -267,12 +268,13 @@ async fn rubric_controls_are_idempotent_and_never_become_candidate_measurements(
     legacy.as_object_mut().unwrap().remove("rubric");
     let old: Request = serde_json::from_value(legacy.clone()).unwrap();
     assert_eq!(serde_json::to_value(old).unwrap(), legacy);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn a_good_median_never_hides_a_judge_accepting_a_wrong_control() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, request) = fixture(dir.path(), true, false).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, true, false).await;
     let first = service.qualify_version(request.clone()).await.unwrap();
     let record = settled(&service.store, &first.id).await;
     assert_eq!(record.status, "failed");
@@ -285,12 +287,13 @@ async fn a_good_median_never_hides_a_judge_accepting_a_wrong_control() {
     let mut replacement = request;
     replacement.request_key = "replacement".into();
     assert!(service.qualify_version(replacement).await.is_err());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn unregistered_or_insufficient_call_budgets_are_rejected_before_reservation() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, mut request) = fixture(dir.path(), false, false).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, mut request) = fixture(&dir, false, false).await;
     request.rubric.as_mut().unwrap().max_judge_calls = 11;
     assert!(service.qualify_version(request.clone()).await.is_err());
     request.rubric = None;
@@ -302,12 +305,13 @@ async fn unregistered_or_insufficient_call_budgets_are_rejected_before_reservati
         .unwrap()
         .is_empty());
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn rejecting_only_empty_or_malformed_answers_cannot_qualify_a_semantic_grader() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, mut request) = fixture(dir.path(), false, false).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, mut request) = fixture(&dir, false, false).await;
     request.controls[2].output = String::new();
     request.controls[3].output = " ".into();
     let first = service.qualify_version(request).await.unwrap();
@@ -318,13 +322,14 @@ async fn rejecting_only_empty_or_malformed_answers_cannot_qualify_a_semantic_gra
         .unwrap()
         .contains("actually assessed by every judge"));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn revocation_or_restart_preserves_the_first_partial_panel_without_replay() {
     for restart in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let (service, backend, request) = fixture(dir.path(), false, true).await;
+        let dir = crate::test_support::TempRoot::new();
+        let (service, backend, request) = fixture(&dir, false, true).await;
         let first = service.qualify_version(request.clone()).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -363,15 +368,17 @@ async fn revocation_or_restart_preserves_the_first_partial_panel_without_replay(
         assert_ne!(placeholder.details.as_ref().unwrap()["inFlight"], true);
         assert_eq!(service.qualify_version(request).await.unwrap().id, first.id);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
 }
 
 /// An exact version whose controls an invented sandbox may refuse before any
 /// evaluator worker starts.
 async fn objective_fixture(
-    root: &std::path::Path,
+    root: &crate::test_support::TempRoot,
 ) -> (Arc<BenchmarkService>, Arc<runner::FakeBackend>, Request) {
-    let store = Store::open(root).await.unwrap();
+    let store = Store::open(root.path()).await.unwrap();
+    root.register(&store.pool);
     let mut draft = super::super::seeds::definitions().remove(0);
     draft.split = "train".into();
     draft.task_family = "invented-objective-qualification".into();
@@ -484,8 +491,8 @@ async fn interrupted_objective(
 
 #[tokio::test]
 async fn objective_controls_wait_out_unstarted_refusals_instead_of_failing() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, request) = objective_fixture(dir.path()).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = objective_fixture(&dir).await;
     backend.evaluation_refusals.store(3, Ordering::SeqCst);
     let record = service.qualify_version(request).await.unwrap();
     assert_eq!(record.status, "controls_verified_review_attested");
@@ -496,14 +503,15 @@ async fn objective_controls_wait_out_unstarted_refusals_instead_of_failing() {
         .iter()
         .all(|c| c.evaluation.is_some() && c.error.is_none() && c.waiting.is_none()));
     assert_eq!(backend.evaluations.load(Ordering::SeqCst), 7);
+    dir.close().await;
 }
 
 /// Waiting never softens a verdict: a control evaluated and wrong fails the
 /// only qualification of its version, and nothing goes on with it.
 #[tokio::test]
 async fn a_wrong_control_stays_final_after_any_wait() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, mut request) = objective_fixture(dir.path()).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, mut request) = objective_fixture(&dir).await;
     request.controls[2].output = "```\nREADY\n```".into();
     backend.evaluation_refusals.store(2, Ordering::SeqCst);
     let record = service.qualify_version(request.clone()).await.unwrap();
@@ -522,6 +530,7 @@ async fn a_wrong_control_stays_final_after_any_wait() {
     let mut replacement = request;
     replacement.request_key = "replacement".into();
     assert!(service.qualify_version(replacement).await.is_err());
+    dir.close().await;
 }
 
 /// A restart before the first qualification settled leaves it interrupted
@@ -529,8 +538,8 @@ async fn a_wrong_control_stays_final_after_any_wait() {
 /// goes on with it, evaluating every control again on the current runtime.
 #[tokio::test]
 async fn a_restart_leaves_an_unsettled_qualification_to_its_request() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, request) = objective_fixture(dir.path()).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = objective_fixture(&dir).await;
     let id = interrupted_objective(&service, &backend, &request).await;
     let interrupted = service.store.qualification(&id).await.unwrap();
     assert_eq!(interrupted.status, INTERRUPTED);
@@ -556,14 +565,15 @@ async fn a_restart_leaves_an_unsettled_qualification_to_its_request() {
     assert_eq!(backend.evaluations.load(Ordering::SeqCst) - before, 4);
     assert_eq!(service.qualify_version(request).await.unwrap().id, id);
     assert_eq!(backend.evaluations.load(Ordering::SeqCst) - before, 4);
+    dir.close().await;
 }
 
 /// Revoking an interrupted qualification settles it failed; its request then
 /// finds it settled and evaluates nothing.
 #[tokio::test]
 async fn revoking_an_interrupted_qualification_settles_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, request) = objective_fixture(dir.path()).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = objective_fixture(&dir).await;
     let id = interrupted_objective(&service, &backend, &request).await;
     service
         .store
@@ -579,6 +589,7 @@ async fn revoking_an_interrupted_qualification_settles_it() {
         "failed"
     );
     assert_eq!(backend.evaluations.load(Ordering::SeqCst), before);
+    dir.close().await;
 }
 
 /// A rubric calibration whose next control finds the judges busy waits. A
@@ -586,8 +597,8 @@ async fn revoking_an_interrupted_qualification_settles_it() {
 /// request keeps the paid panels and asks only the controls still open.
 #[tokio::test]
 async fn an_interrupted_calibration_keeps_its_paid_panels() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, backend, request) = fixture(dir.path(), false, false).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, false, false).await;
     backend.refuse_from.store(2, Ordering::SeqCst);
     let first = service.qualify_version(request.clone()).await.unwrap();
     let waiting = first_record(&service.store, &request.version_id, |record| {
@@ -620,4 +631,5 @@ async fn an_interrupted_calibration_keeps_its_paid_panels() {
         );
     }
     assert_eq!(backend.calls.load(Ordering::SeqCst), 4);
+    dir.close().await;
 }

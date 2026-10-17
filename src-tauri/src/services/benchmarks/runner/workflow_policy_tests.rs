@@ -3,9 +3,9 @@ use crate::services::benchmarks::{workflow, workflow_policy::*};
 
 #[tokio::test]
 async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evidence() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(directory.path(), backend.clone()).await;
+    let service = open(&directory, backend.clone()).await;
     let training = publish_with_entry(&service, "train", 8, true).await;
     measure(&service, &training, "policy-training").await;
     let artifact = fit_or_explain(
@@ -273,7 +273,7 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
     assert_eq!(backend.calls.load(Ordering::SeqCst), before + 1);
     service.store.pool.close().await;
     drop(service);
-    let service = open(directory.path(), backend.clone()).await;
+    let service = open(&directory, backend.clone()).await;
     for _ in 0..3 {
         service.tick().await.unwrap();
     }
@@ -301,4 +301,5 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
             .code,
         "evidence_missing"
     );
+    directory.close().await;
 }

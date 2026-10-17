@@ -89,8 +89,9 @@ fn ordinary_application_request(surface: &str) -> Request {
 
 #[tokio::test]
 async fn certified_class_maps_renderer_choices_without_attesting_their_runtime() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let fit = fitted(&store).await;
     for surface in ["chat", "wave"] {
         let input = ordinary_application_request(surface);
@@ -122,12 +123,14 @@ async fn certified_class_maps_renderer_choices_without_attesting_their_runtime()
         assert_eq!(original.billing_mode, "unknown");
         assert!(original.inventory_revision.is_none());
     }
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn ordinary_class_mapping_respects_pins_availability_effort_and_known_runtime() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let fit = fitted(&store).await;
     for condition in [
         "runtime",
@@ -179,12 +182,14 @@ async fn ordinary_class_mapping_respects_pins_availability_effort_and_known_runt
             );
         }
     }
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn ordinary_unspecified_speed_and_explicit_normal_have_distinct_dispatch_intents() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let fit = fitted(&store).await;
     let original = ordinary_application_request("wave");
     let normal = original.prediction.candidates[0].clone();
@@ -240,12 +245,14 @@ async fn ordinary_unspecified_speed_and_explicit_normal_have_distinct_dispatch_i
             if pin.is_some() { "pin" } else { "learned" }
         );
     }
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn duplicate_runnable_contexts_abstain_without_poisoning_other_choices() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let fit = fitted(&store).await;
     let mut input = ordinary_application_request("wave");
     let mut native = fit
@@ -274,12 +281,14 @@ async fn duplicate_runnable_contexts_abstain_without_poisoning_other_choices() {
     let evidence = decision.research_prediction.unwrap();
     assert_eq!(evidence.scores.len(), 1);
     assert_eq!(evidence.scores[0].configuration.model_id, "painter");
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn unchanged_legacy_ordinary_intent_reprepares_without_reselection_or_migration() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let mut current = ordinary_application_request("chat");
     for candidate in &mut current.prediction.candidates {
         candidate.configuration.fast_mode = None;
@@ -348,12 +357,14 @@ async fn unchanged_legacy_ordinary_intent_reprepares_without_reselection_or_migr
             .code,
         "validation"
     );
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn ordinary_class_mapping_abstains_on_ambiguous_evidence_contexts() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let mut model = fitted(&store).await.model;
     let alternatives: Vec<_> = model
         .candidates
@@ -380,6 +391,7 @@ async fn ordinary_class_mapping_abstains_on_ambiguous_evidence_contexts() {
         "class_policy_abstained:no_trained_available_candidate"
     );
     assert!(decision.research_prediction.unwrap().scores.is_empty());
+    directory.close().await;
 }
 
 fn started(decision: &Decision) -> Observation {
@@ -396,7 +408,7 @@ fn started(decision: &Decision) -> Observation {
 /// Invented persistence fixtures test provenance joins only. They are not
 /// qualification, promotion, runtime-probe or model-performance evidence.
 async fn native_journal_fixture(
-    root: &std::path::Path,
+    root: &crate::test_support::TempRoot,
     profile: &str,
 ) -> (
     Store,
@@ -413,8 +425,12 @@ async fn native_journal_fixture(
         store::{SessionRecord, SessionStore},
     };
     use crate::services::benchmarks::task_execution::{Binding, Request as TaskRequest, Session};
-    let store = Store::open(&root.join("bench")).await.unwrap();
-    let host = SessionStore::open(&root.join("host.db")).await.unwrap();
+    let store = Store::open(&root.path().join("bench")).await.unwrap();
+    root.register(&store.pool);
+    let host = SessionStore::open(&root.path().join("host.db"))
+        .await
+        .unwrap();
+    root.register(host.pool());
     let configuration = Configuration {
         id: "invented-worker".into(),
         provider_id: "claude-acp".into(),
@@ -597,8 +613,8 @@ async fn native_journal_fixture(
 #[tokio::test]
 async fn owned_terminal_journal_uses_native_profile_runtime_and_billing_and_deduplicates() {
     for profile in ["native_text", "protected_repository"] {
-        let dir = tempfile::tempdir().unwrap();
-        let (store, host, receipt, expected) = native_journal_fixture(dir.path(), profile).await;
+        let dir = crate::test_support::TempRoot::new();
+        let (store, host, receipt, expected) = native_journal_fixture(&dir, profile).await;
         assert!(store
             .observe_application_executor(
                 &receipt.start.link.decision_key,
@@ -653,13 +669,14 @@ async fn owned_terminal_journal_uses_native_profile_runtime_and_billing_and_dedu
                 .len(),
             1
         );
+        dir.close().await;
     }
 }
 
 #[tokio::test]
 async fn owned_terminal_journal_refuses_acknowledgement_policy_and_outcome_mismatches() {
-    let dir = tempfile::tempdir().unwrap();
-    let (store, host, receipt, _) = native_journal_fixture(dir.path(), "native_text").await;
+    let dir = crate::test_support::TempRoot::new();
+    let (store, host, receipt, _) = native_journal_fixture(&dir, "native_text").await;
     for field in ["model", "effort", "fast", "account", "session", "run"] {
         let mut wrong = receipt.clone();
         match field {
@@ -750,6 +767,7 @@ async fn owned_terminal_journal_refuses_acknowledgement_policy_and_outcome_misma
         .unwrap()
         .observations
         .is_empty());
+    dir.close().await;
 }
 
 #[test]
@@ -796,8 +814,9 @@ fn application_ids_resolve_to_native_keys_and_invalid_references_are_rejected() 
 
 #[tokio::test]
 async fn unknown_reported_executor_stays_unknown_even_when_execution_completes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let decision = store.prepare_executor_decision(request()).await.unwrap();
     let mut observation = started(&decision);
     observation.configuration = None;
@@ -824,12 +843,14 @@ async fn unknown_reported_executor_stays_unknown_even_when_execution_completes()
         .observations
         .iter()
         .all(|row| row.matches_selected.is_none() && row.observation.configuration.is_none()));
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn both_surfaces_share_the_policy_and_research_never_overrides_the_prior() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let fit = fitted(&store).await;
     for surface in ["chat", "wave"] {
         let mut input = request();
@@ -849,12 +870,14 @@ async fn both_surfaces_share_the_policy_and_research_never_overrides_the_prior()
         .await
         .unwrap()
         .is_none());
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn ordinary_sends_record_why_learned_selection_does_not_apply() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     for surface in ["chat", "wave"] {
         let mut input = request();
         input.surface = surface.into();
@@ -876,12 +899,14 @@ async fn ordinary_sends_record_why_learned_selection_does_not_apply() {
             .unwrap();
         assert_eq!(saved.decision.learned_status, ORDINARY_CONTEXT_UNCOVERED);
     }
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn explicit_pins_and_unavailability_do_not_silently_substitute() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let mut input = request();
     input.prediction.hard_candidate_key = Some(routing::candidate_key(
         &input.prediction.candidates[0].configuration,
@@ -907,12 +932,14 @@ async fn explicit_pins_and_unavailability_do_not_silently_substitute() {
         .unwrap()
         .chosen
         .is_none());
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn incomplete_fit_availability_uses_declared_prior_and_does_not_load_labels() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let mut input = request();
     input.model_id = Some("missing-model".into());
     let missing = store
@@ -935,12 +962,14 @@ async fn incomplete_fit_availability_uses_declared_prior_and_does_not_load_label
         .unwrap()
         .research_prediction
         .is_some());
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn decisions_survive_restart_are_idempotent_and_reject_changed_inputs() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let input = request();
     let (a, b) = tokio::join!(
         store.prepare_executor_decision(input.clone()),
@@ -950,6 +979,7 @@ async fn decisions_survive_restart_are_idempotent_and_reject_changed_inputs() {
     assert_eq!(original.artifact_hash, b.unwrap().artifact_hash);
     store.pool.close().await;
     let reopened = Store::open(directory.path()).await.unwrap();
+    directory.register(&reopened.pool);
     assert_eq!(
         reopened
             .prepare_executor_decision(input.clone())
@@ -980,12 +1010,14 @@ async fn decisions_survive_restart_are_idempotent_and_reject_changed_inputs() {
             .code,
         "invalid_decision"
     );
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn observed_execution_is_immutable_and_mismatch_is_retained() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let decision = store.prepare_executor_decision(request()).await.unwrap();
     let key = &decision.request.request_key;
     let mut start = started(&decision);
@@ -1025,12 +1057,14 @@ async fn observed_execution_is_immutable_and_mismatch_is_retained() {
             .code,
         "observation_conflict"
     );
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn changed_runtime_is_an_observed_mismatch_even_for_the_same_model() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let decision = store.prepare_executor_decision(request()).await.unwrap();
     let mut observation = started(&decision);
     observation
@@ -1043,12 +1077,14 @@ async fn changed_runtime_is_an_observed_mismatch_even_for_the_same_model() {
         .await
         .unwrap();
     assert_eq!(record.observations[0].matches_selected, Some(false));
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn concurrent_start_and_cancel_cannot_record_a_start_after_a_prestart_cancel() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let decision = store.prepare_executor_decision(request()).await.unwrap();
     let cancelled = Observation {
         phase: "terminal".into(),
@@ -1069,12 +1105,14 @@ async fn concurrent_start_and_cancel_cannot_record_a_start_after_a_prestart_canc
         .unwrap()
         .unwrap();
     assert_eq!(record.observations.len(), 1);
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn cancellation_before_start_refuses_late_execution_and_success_needs_observation() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let decision = store.prepare_executor_decision(request()).await.unwrap();
     let key = &decision.request.request_key;
     let mut closed = Observation {
@@ -1103,12 +1141,14 @@ async fn cancellation_before_start_refuses_late_execution_and_success_needs_obse
             .code,
         "decision_terminal"
     );
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn observation_tampering_and_hidden_input_fields_are_rejected() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let input = request();
     let mut wire = serde_json::to_value(&input).unwrap();
     wire["prediction"]["task"]["evaluator"] = serde_json::json!({"expected":"invented-answer"});
@@ -1140,6 +1180,7 @@ async fn observation_tampering_and_hidden_input_fields_are_rejected() {
             .code,
         "invalid_decision"
     );
+    directory.close().await;
 }
 
 #[tokio::test]
@@ -1148,12 +1189,14 @@ async fn host_receipt_reconciles_the_actual_executor_across_store_restart() {
         executor_receipts::{ExecutorLink, ReceiptFinish, ReceiptStart, ReportedSelection},
         store::SessionStore,
     };
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let store = Store::open(&dir.path().join("bench")).await.unwrap();
+    dir.register(&store.pool);
     let decision = store.prepare_executor_decision(request()).await.unwrap();
     let key = &decision.request.request_key;
     let host_path = dir.path().join("host.sqlite");
     let host = SessionStore::open(&host_path).await.unwrap();
+    dir.register(host.pool());
     let start = ReceiptStart {
         link: ExecutorLink {
             decision_key: key.clone(),
@@ -1193,6 +1236,7 @@ async fn host_receipt_reconciles_the_actual_executor_across_store_restart() {
     host.finish_executor_receipt(&start, &finish).await.unwrap();
     drop(host);
     let host = SessionStore::open(&host_path).await.unwrap();
+    dir.register(host.pool());
     let record = store
         .observe_native_host_outcome(
             &host,
@@ -1262,12 +1306,14 @@ async fn host_receipt_reconciles_the_actual_executor_across_store_restart() {
             .code,
         "observation_conflict"
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn absent_host_evidence_and_partial_configuration_never_confirm_selected_defaults() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let store = Store::open(dir.path()).await.unwrap();
+    dir.register(&store.pool);
     let decision = store.prepare_executor_decision(request()).await.unwrap();
     let key = &decision.request.request_key;
     let mut observation = started(&decision);
@@ -1295,12 +1341,14 @@ async fn absent_host_evidence_and_partial_configuration_never_confirm_selected_d
     assert!(terminal.observation.configuration.is_none());
     assert!(terminal.matches_selected.is_none());
     assert!(record.host_execution.is_none());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn ordinary_inventory_beyond_research_bound_keeps_priors_pins_and_learned_matches() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let fit = fitted(&store).await;
     for surface in ["chat", "wave"] {
         let mut input = ordinary_application_request(surface);
@@ -1356,4 +1404,5 @@ async fn ordinary_inventory_beyond_research_bound_keeps_priors_pins_and_learned_
         input.prediction.task.prompt = "x".repeat(2 * 1024 * 1024);
         assert!(validate(&input).is_err());
     }
+    directory.close().await;
 }

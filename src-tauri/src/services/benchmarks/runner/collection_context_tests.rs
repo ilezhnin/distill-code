@@ -47,7 +47,7 @@ fn invented_input() -> artifact_context::Input {
 
 #[tokio::test]
 async fn legacy_collection_does_not_gain_a_context_or_native_clock() {
-    let (_dir, service, _) = tests::setup().await;
+    let (dir, service, _) = tests::setup().await;
     let run = service
         .start_run(tests::request(&service).await)
         .await
@@ -68,11 +68,12 @@ async fn legacy_collection_does_not_gain_a_context_or_native_clock() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn standalone_clock_retry_keeps_origin_and_rejects_a_changed_cap() {
-    let (_dir, service, _) = tests::setup().await;
+    let (dir, service, _) = tests::setup().await;
     let run = service
         .start_run(tests::request(&service).await)
         .await
@@ -96,11 +97,12 @@ async fn standalone_clock_retry_keeps_origin_and_rejects_a_changed_cap() {
             .code,
         "budget_clock_conflict"
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn persisted_context_recovers_exact_input_and_refuses_changed_bindings() {
-    let (_dir, service, _) = tests::setup().await;
+    let (dir, service, _) = tests::setup().await;
     let run = service
         .start_run(tests::request(&service).await)
         .await
@@ -172,11 +174,12 @@ async fn persisted_context_recovers_exact_input_and_refuses_changed_bindings() {
             .code,
         "collection_context_conflict"
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn terminal_recovery_after_expiry_never_reopens_execution_budget() {
-    let (_dir, service, _) = tests::setup().await;
+    let (dir, service, _) = tests::setup().await;
     let run = service
         .start_run(tests::request(&service).await)
         .await
@@ -207,6 +210,7 @@ async fn terminal_recovery_after_expiry_never_reopens_execution_budget() {
             .code,
         "budget_timeout"
     );
+    dir.close().await;
 }
 
 #[tokio::test]
@@ -316,4 +320,5 @@ async fn real_repository_initial_input_is_persisted_and_recovered_without_provid
         serde_json::to_value(prepared).unwrap()
     );
     assert_eq!(backend.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    dir.close().await;
 }

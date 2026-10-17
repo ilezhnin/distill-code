@@ -29,7 +29,7 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
 
 #[tokio::test]
 async fn a_paid_answer_waits_for_its_evaluation_instead_of_failing() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     backend.evaluation_refusals.store(3, Ordering::SeqCst);
     let run = service.start_run(one_cell(&service).await).await.unwrap();
     service.tick().await.unwrap();
@@ -40,13 +40,14 @@ async fn a_paid_answer_waits_for_its_evaluation_instead_of_failing() {
     assert_eq!(attempt.evaluations.len(), 1);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     assert_eq!(backend.evaluations.load(Ordering::SeqCst), 4);
+    dir.close().await;
 }
 
 /// Cancelling the run ends the wait; the sealed answer keeps its refusal and
 /// stays open to Evaluate again.
 #[tokio::test]
 async fn cancelling_the_run_ends_an_evaluation_wait() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     backend
         .evaluation_refusals
         .store(u64::MAX, Ordering::SeqCst);
@@ -66,6 +67,7 @@ async fn cancelling_the_run_ends_an_evaluation_wait() {
     assert_eq!(attempt.outcome.as_deref(), Some("evaluation_error"));
     assert!(attempt.reason.unwrap().starts_with("resource_busy:"));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    dir.close().await;
 }
 
 /// A generation sealed before a restart is evaluated on recovery. A refusal
@@ -73,7 +75,7 @@ async fn cancelling_the_run_ends_an_evaluation_wait() {
 /// neither completes nor bakes until the evaluation lands.
 #[tokio::test]
 async fn a_recovered_generation_waits_for_its_evaluation() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     let run = service.start_run(one_cell(&service).await).await.unwrap();
     let version = service
         .store
@@ -119,6 +121,7 @@ async fn a_recovered_generation_waits_for_its_evaluation() {
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     service.tick().await.unwrap();
     assert_eq!(service.store.run(&run.id).await.unwrap().state, "completed");
+    dir.close().await;
 }
 
 /// Every unstarted refusal the sandbox reports reaches the runner as one,
@@ -143,11 +146,12 @@ async fn unstarted_refusals_are_recognised_where_they_arrive() {
         "evaluation_error",
         "Isolated Linux browser failed",
     )));
-    let (_dir, service, _) = setup().await;
+    let (dir, service, _) = setup().await;
     let run = service.start_run(one_cell(&service).await).await.unwrap();
     let mut attempt = run.attempts[0].clone();
     attempt.reason = Some(RENDERER_BUSY.into());
     assert!(judging_deferred(&attempt));
     attempt.reason = Some("Rendering failed: evaluation_error".into());
     assert!(!judging_deferred(&attempt));
+    dir.close().await;
 }

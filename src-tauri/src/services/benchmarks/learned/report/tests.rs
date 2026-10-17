@@ -258,8 +258,9 @@ fn equal_group_weights_and_resampled_best_fixed_do_not_count_variants_as_indepen
 #[tokio::test]
 async fn persisted_reports_are_single_use_reloadable_and_detect_tampering() {
     let (data, plan, model) = fixture();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let (_, artifact, _) = holdout::tests::fixture();
     store.save_selector_fit(&artifact).await.unwrap();
     sqlx::query("INSERT INTO selector_holdouts(id,request_key,request_hash,model_id,created_at,data_json) VALUES(?,?,?,?,?,?)")
@@ -279,6 +280,7 @@ async fn persisted_reports_are_single_use_reloadable_and_detect_tampering() {
     );
     store.pool.close().await;
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     assert_eq!(
         store
             .evaluate_selector_holdout(&plan.id)
@@ -294,13 +296,15 @@ async fn persisted_reports_are_single_use_reloadable_and_detect_tampering() {
     .await
     .unwrap();
     assert!(store.selector_holdout_report(&plan.id).await.is_err());
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn store_evaluator_reads_original_versions_raw_plans_and_complete_cells() {
     let (data, plan, model) = fixture();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     let (_, artifact, _) = holdout::tests::fixture();
     store.save_selector_fit(&artifact).await.unwrap();
     for version in &data.versions {
@@ -350,4 +354,5 @@ async fn store_evaluator_reads_original_versions_raw_plans_and_complete_cells() 
             .artifact_hash,
         actual.artifact_hash
     );
+    directory.close().await;
 }

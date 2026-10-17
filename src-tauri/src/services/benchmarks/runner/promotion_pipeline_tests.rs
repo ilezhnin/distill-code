@@ -295,9 +295,9 @@ async fn qualified_collection_preregistration_positive_promotion_and_revocation(
 }
 
 async fn qualified_collection_scenario() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let training = publish_with_entry(&service, "train", 8, true).await;
     let mut ids = qualify(&service, &training).await;
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
@@ -712,12 +712,13 @@ async fn qualified_collection_scenario() {
         .await
         .unwrap();
     assert_eq!(backend.calls.load(Ordering::SeqCst), 288);
+    dir.close().await;
 }
 #[tokio::test]
 async fn exposed_replacement_reports_cannot_promote_even_when_acceptance_passes() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend).await;
+    let service = open(&dir, backend).await;
     let training = publish_with_entry(&service, "train", 8, true).await;
     let mut ids = qualify(&service, &training).await;
     measure(&service, &training, "replacement-training").await;
@@ -880,12 +881,13 @@ async fn exposed_replacement_reports_cannot_promote_even_when_acceptance_passes(
         .await
         .unwrap()
         .is_none());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn later_qualification_and_fit_cutoff_cannot_launder_earlier_data() {
-    let dir = tempfile::tempdir().unwrap();
-    let service = open(dir.path(), Arc::new(OfflineWorkers::default())).await;
+    let dir = crate::test_support::TempRoot::new();
+    let service = open(&dir, Arc::new(OfflineWorkers::default())).await;
     let training = publish_with_entry(&service, "train", 8, true).await;
     measure(&service, &training, "unqualified-training").await;
     let mut ids = qualify(&service, &training).await;
@@ -899,11 +901,12 @@ async fn later_qualification_and_fit_cutoff_cannot_launder_earlier_data() {
         .await
         .unwrap_err();
     assert!(error.message.contains("qualification before"));
+    dir.close().await;
 }
 #[tokio::test]
 async fn effective_training_timeout_and_workflow_limits_must_match_deployment() {
-    let dir = tempfile::tempdir().unwrap();
-    let service = open(dir.path(), Arc::new(OfflineWorkers::default())).await;
+    let dir = crate::test_support::TempRoot::new();
+    let service = open(&dir, Arc::new(OfflineWorkers::default())).await;
     let mut training = publish_with_entry(&service, "train", 8, true).await;
     // Publish actual higher entry caps; no target evidence is inserted by hand.
     for version in &mut training {
@@ -958,6 +961,7 @@ async fn effective_training_timeout_and_workflow_limits_must_match_deployment() 
         .validate_campaign_contract(&frozen, &contract)
         .await
         .is_err());
+    dir.close().await;
 }
 
 #[tokio::test]
@@ -965,12 +969,12 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
     use crate::services::benchmarks::task_execution::{
         ModeEnvelope, ModeIntent, ModeRequestV2, PrepareIntent,
     };
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers {
         native_v2_inventory: true,
         ..Default::default()
     });
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let source = dir.path().join("agents").join("invented-role.md");
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
     std::fs::write(&source, "---\ndisplay_name: Invented role\nmodel: claude-acp:painter\neffort: high\nfast_mode: false\n---\nWork carefully.").unwrap();
@@ -1180,6 +1184,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
         .await
         .unwrap();
     assert_eq!(backend.owned_calls.load(Ordering::SeqCst), 4);
+    dir.close().await;
 }
 
 /// One invented class's training set with its own role and scope, qualified
@@ -1233,9 +1238,9 @@ async fn qualified_class(
 
 #[tokio::test]
 async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let implementer = ("invented-implementer", "Implement carefully.");
     let reviewer = ("invented-reviewer", "Review carefully.");
     let (implement_ids, implement_fit) =
@@ -1466,6 +1471,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
         })
         .await
         .is_err());
+    dir.close().await;
 }
 
 /// One invented role file and its class training on the attested native
@@ -1561,12 +1567,12 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
     use crate::services::benchmarks::task_execution::{
         ModeEnvelope, ModeIntent, ModeRequestV2, PrepareIntent,
     };
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers {
         native_v2_inventory: true,
         ..Default::default()
     });
-    let service = open(dir.path(), backend.clone()).await;
+    let service = open(&dir, backend.clone()).await;
     let implementer = ("invented-implementer", "Implement carefully.");
     let reviewer = ("invented-reviewer", "Review carefully.");
     let (implement_source, training, mut ids, implement_fit) =
@@ -1858,6 +1864,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
         beyond.binding.decision.learned_status,
         "trajectory_plan_departed"
     );
+    dir.close().await;
 }
 
 /// In a planned wave, a certificate of one contract covers every step until

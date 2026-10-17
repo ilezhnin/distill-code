@@ -41,8 +41,11 @@ impl ExecutionBackend for NoProvider {
         Box::pin(async { panic!("Qualification must not invoke judges") })
     }
 }
-async fn fixture(root: &std::path::Path) -> (BenchmarkService, qualification::Request) {
-    let store = Store::open(root).await.unwrap();
+async fn fixture(
+    root: &crate::test_support::TempRoot,
+) -> (BenchmarkService, qualification::Request) {
+    let store = Store::open(root.path()).await.unwrap();
+    root.register(&store.pool);
     let mut draft = seed_definitions().remove(0);
     draft.split = "train".into();
     draft.task_family = "invented-control-boundary".into();
@@ -104,8 +107,8 @@ async fn fixture(root: &std::path::Path) -> (BenchmarkService, qualification::Re
 }
 #[tokio::test]
 async fn failed_first_qualification_is_durable_and_cannot_be_replaced() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, mut request) = fixture(dir.path()).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, mut request) = fixture(&dir).await;
     request.controls[2].output = "ok\n".into();
     let failed = service.qualify_version(request.clone()).await.unwrap();
     assert_eq!(failed.status, "failed");
@@ -114,6 +117,7 @@ async fn failed_first_qualification_is_durable_and_cannot_be_replaced() {
     let retry = service.qualify_version(request.clone()).await.unwrap();
     assert_eq!(hash(&retry).unwrap(), hash(&failed).unwrap());
     let reopened = Store::open(dir.path()).await.unwrap();
+    dir.register(&reopened.pool);
     assert_eq!(
         hash(&reopened.qualification(&failed.id).await.unwrap()).unwrap(),
         hash(&failed).unwrap()
@@ -121,11 +125,12 @@ async fn failed_first_qualification_is_durable_and_cannot_be_replaced() {
     request.request_key = "different-key".into();
     request.controls[2].output = "wrong".into();
     assert!(service.qualify_version(request).await.is_err());
+    dir.close().await;
 }
 #[tokio::test]
 async fn qualifications_keep_request_identity_and_revocation() {
-    let dir = tempfile::tempdir().unwrap();
-    let (service, request) = fixture(dir.path()).await;
+    let dir = crate::test_support::TempRoot::new();
+    let (service, request) = fixture(&dir).await;
     let record = service.qualify_version(request.clone()).await.unwrap();
     assert_eq!(record.status, "controls_verified_review_attested");
     let mut changed = request;
@@ -143,4 +148,5 @@ async fn qualifications_keep_request_identity_and_revocation() {
         .unwrap()
         .remove(0);
     assert!(binding.revoked_at.is_some());
+    dir.close().await;
 }

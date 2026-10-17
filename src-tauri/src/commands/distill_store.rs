@@ -278,17 +278,15 @@ pub fn initialize(app: &tauri::App) -> Result<DistillRootState, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn temp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("distill-store-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     #[test]
     fn a_document_never_written_reads_as_nothing() {
-        let root = temp();
+        let dir = temp();
+        let root = dir.path();
         assert_eq!(
             read_document_capped(&root.join("planner.json")).unwrap(),
             None
@@ -297,7 +295,8 @@ mod tests {
 
     #[test]
     fn writes_and_reads_back_a_document() {
-        let root = temp();
+        let dir = temp();
+        let root = dir.path();
         let target = root.join("nested").join("planner.json");
         write_document_at(&target, "{\"a\":1}").unwrap();
         assert_eq!(
@@ -308,7 +307,8 @@ mod tests {
 
     #[test]
     fn refuses_a_document_above_the_size_cap_without_reading_it() {
-        let root = temp();
+        let dir = temp();
+        let root = dir.path();
         let target = root.join("planner.json");
         // Sparse where the filesystem supports it: the point is the declared
         // length, not writing 64 MiB of bytes.

@@ -326,11 +326,12 @@ mod tests {
         profile: ExecutionProfile,
         purpose: &str,
         unknown: bool,
-    ) -> (tempfile::TempDir, SessionStore, VerifiedRuntime) {
-        let root = tempfile::tempdir().unwrap();
+    ) -> (crate::test_support::TempRoot, SessionStore, VerifiedRuntime) {
+        let root = crate::test_support::TempRoot::new();
         let store = SessionStore::open(&root.path().join("host.db"))
             .await
             .unwrap();
+        root.register(store.pool());
         let owner = OwnedSessionRequest {
             owner_id: "invented-owner:1".into(),
             provider_id: "claude-acp".into(),
@@ -431,7 +432,7 @@ mod tests {
             ExecutionProfile::NativeTextV1,
             ExecutionProfile::ProtectedRepositoryV1,
         ] {
-            let (_root, store, runtime) = fixture(profile, "benchmark", false).await;
+            let (root, store, runtime) = fixture(profile, "benchmark", false).await;
             let value = receipt(&store, &runtime).await.unwrap();
             value.validate_policy_metadata().unwrap();
             let dispatch = store
@@ -452,11 +453,12 @@ mod tests {
             let mut changed = value;
             changed.owner_request.account_id = "another-account".into();
             assert!(changed.validate_policy_metadata().is_err());
+            root.close().await;
         }
     }
     #[tokio::test]
     async fn linux_text_identity_is_bound_to_policy_and_committed_host_snapshot() {
-        let (_root, store, mut runtime) =
+        let (root, store, mut runtime) =
             fixture(ExecutionProfile::NativeTextV1, "benchmark", false).await;
         let mut value = receipt(&store, &runtime).await.unwrap();
         let revision = fixtures::hash(b"invented-linux-text-runtime");
@@ -484,16 +486,18 @@ mod tests {
             .unwrap()
             .get("textRevision")
             .is_none());
+        root.close().await;
     }
 
     #[tokio::test]
     async fn native_receipt_refuses_unknown_wrong_owner_and_intent_only_runtime() {
-        let (_root, store, runtime) =
+        let (unknown_root, store, runtime) =
             fixture(ExecutionProfile::NativeTextV1, "benchmark", true).await;
         assert!(receipt(&store, &runtime).await.is_err());
-        let (_root, store, runtime) = fixture(ExecutionProfile::NativeTextV1, "task", false).await;
+        let (task_root, store, runtime) =
+            fixture(ExecutionProfile::NativeTextV1, "task", false).await;
         assert!(receipt(&store, &runtime).await.is_err());
-        let (_root, store, mut runtime) =
+        let (root, store, mut runtime) =
             fixture(ExecutionProfile::NativeTextV1, "benchmark", false).await;
         assert!(attest(
             &store,
@@ -517,6 +521,9 @@ mod tests {
         .is_err());
         runtime.account_id = "selected-but-not-observed-account".into();
         assert!(receipt(&store, &runtime).await.is_err());
+        root.close().await;
+        task_root.close().await;
+        unknown_root.close().await;
     }
     #[tokio::test]
     async fn native_receipt_never_fills_missing_or_changed_terminal_settings_from_owner() {
@@ -525,10 +532,11 @@ mod tests {
             json!({"modelId":"other-model","reasoningEffort":"high","fastMode":false}),
             json!({"modelId":"invented-model","reasoningEffort":null,"fastMode":false}),
         ] {
-            let (_root, store, runtime) =
+            let (root, store, runtime) =
                 fixture(ExecutionProfile::NativeTextV1, "benchmark", false).await;
             store.settle_dispatch("benchmark:invented-owner:1","terminal",Some(&json!({"stopReason":"end_turn","nativeExecutionMs":17,"observedSelection":selection})),None).await.unwrap();
             assert!(receipt(&store, &runtime).await.is_err());
+            root.close().await;
         }
     }
 
@@ -604,5 +612,6 @@ mod tests {
         let missing = sealed_events(events.clone(), Ok(None));
         assert_eq!(missing["turnEvents"], events);
         assert!(missing.get("nativeExecutionReceipt").is_none());
+        root.close().await;
     }
 }

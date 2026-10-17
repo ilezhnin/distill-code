@@ -157,8 +157,12 @@ impl GatedWorkers {
     }
 }
 
-async fn service(root: &std::path::Path, backend: Arc<GatedWorkers>) -> Arc<BenchmarkService> {
-    let store = Store::open(root).await.unwrap();
+async fn service(
+    root: &crate::test_support::TempRoot,
+    backend: Arc<GatedWorkers>,
+) -> Arc<BenchmarkService> {
+    let store = Store::open(root.path()).await.unwrap();
+    root.register(&store.pool);
     store.recover().await.unwrap();
     Arc::new(BenchmarkService {
         store,
@@ -172,7 +176,7 @@ async fn service(root: &std::path::Path, backend: Arc<GatedWorkers>) -> Arc<Benc
 async fn setup(
     parallelism: u32,
 ) -> (
-    tempfile::TempDir,
+    crate::test_support::TempRoot,
     Arc<BenchmarkService>,
     Arc<GatedWorkers>,
     Campaign,
@@ -184,7 +188,7 @@ async fn setup_with_timeout(
     parallelism: u32,
     timeout_seconds: u32,
 ) -> (
-    tempfile::TempDir,
+    crate::test_support::TempRoot,
     Arc<BenchmarkService>,
     Arc<GatedWorkers>,
     Campaign,
@@ -197,14 +201,14 @@ async fn setup_with_accounts(
     timeout_seconds: u32,
     separate_accounts: bool,
 ) -> (
-    tempfile::TempDir,
+    crate::test_support::TempRoot,
     Arc<BenchmarkService>,
     Arc<GatedWorkers>,
     Campaign,
 ) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(GatedWorkers::default());
-    let service = service(dir.path(), backend.clone()).await;
+    let service = service(&dir, backend.clone()).await;
     // Undispatched timeouts have no provider cost receipt. These scheduling
     // checks compare quality and wall time, without inventing a zero cost.
     let (train, fit) = training_with_weights(
@@ -277,7 +281,7 @@ async fn legacy_bounded_plan(service: &BenchmarkService, frozen: Campaign) -> Ca
 
 #[tokio::test]
 async fn concurrent_campaign_refills_while_slow_children_fly_and_drains_all_on_pause() {
-    let (_dir, service, backend, frozen) = setup(4).await;
+    let (dir, service, backend, frozen) = setup(4).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
@@ -453,11 +457,12 @@ async fn concurrent_campaign_refills_while_slow_children_fly_and_drains_all_on_p
             .artifact_hash,
         report.artifact_hash
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn concurrent_campaign_slot_timeout_seals_first_evidence_without_dispatch_or_retry() {
-    let (_dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
+    let (dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
     let frozen = legacy_bounded_plan(&service, frozen).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
@@ -581,11 +586,12 @@ async fn concurrent_campaign_slot_timeout_seals_first_evidence_without_dispatch_
             .artifact_hash,
         report.artifact_hash
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn concurrent_campaign_slot_wait_remains_in_the_next_step_wall_budget() {
-    let (_dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
+    let (dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
     let frozen = legacy_bounded_plan(&service, frozen).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
@@ -663,11 +669,12 @@ async fn concurrent_campaign_slot_wait_remains_in_the_next_step_wall_budget() {
         serde_json::to_value(service.store.run(&timed.id).await.unwrap().attempts).unwrap(),
         before
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn concurrent_campaign_backend_setup_cannot_dispatch_after_root_deadline() {
-    let (_dir, service, backend, frozen) = setup_with_timeout(4, 10).await;
+    let (dir, service, backend, frozen) = setup_with_timeout(4, 10).await;
     backend.gated.store(false, Ordering::SeqCst);
     backend.setup_delay_ms.store(11_000, Ordering::SeqCst);
     service
@@ -713,6 +720,7 @@ async fn concurrent_campaign_backend_setup_cannot_dispatch_after_root_deadline()
             root.started_at.unwrap() + 10_000
         );
     }
+    dir.close().await;
 }
 
 #[tokio::test]
@@ -751,18 +759,19 @@ async fn concurrent_campaign_admission_is_ordered_atomic_and_idempotent() {
     // Crash after the cancellation transaction, before the runner drained it.
     service.store.pool.close().await;
     drop(service);
-    let reopened = self::service(dir.path(), backend.clone()).await;
+    let reopened = self::service(&dir, backend.clone()).await;
     reopened.tick().await.unwrap();
     assert!(children(&reopened, &frozen)
         .await
         .iter()
         .all(|r| r.state == "cancelled" && r.attempts.len() == 1));
     assert_eq!(backend.workers.calls.load(Ordering::SeqCst), 48);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn a_replacement_campaign_measures_the_families_of_a_cancelled_one_only() {
-    let (_dir, service, backend, frozen) = setup(4).await;
+    let (dir, service, backend, frozen) = setup(4).await;
     let mut again = frozen.plan.request.clone();
     again.request_key = "concurrent-comparison-again".into();
     // Reserved, running or paused, the frozen campaign owns its families.
@@ -845,11 +854,12 @@ async fn a_replacement_campaign_measures_the_families_of_a_cancelled_one_only() 
         serde_json::to_value(before.iter().map(|r| &r.attempts).collect::<Vec<_>>()).unwrap()
     );
     assert_eq!(children(&service, &replacement).await.len(), 4);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn concurrent_campaign_cancels_every_active_and_waiting_child() {
-    let (_dir, service, backend, frozen) = setup(8).await;
+    let (dir, service, backend, frozen) = setup(8).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
@@ -898,6 +908,7 @@ async fn concurrent_campaign_cancels_every_active_and_waiting_child() {
             .collect::<Vec<_>>()
     );
     assert_eq!(backend.workers.calls.load(Ordering::SeqCst), 48);
+    dir.close().await;
 }
 
 #[tokio::test]
@@ -920,7 +931,7 @@ async fn concurrent_campaign_restart_preserves_uncertain_first_attempts_and_unto
     service.store.pool.close().await;
     drop(service);
     backend.drain();
-    let reopened = self::service(dir.path(), backend.clone()).await;
+    let reopened = self::service(&dir, backend.clone()).await;
     reopened.tick().await.unwrap();
     let paused = reopened
         .store
@@ -957,15 +968,18 @@ async fn concurrent_campaign_restart_preserves_uncertain_first_attempts_and_unto
         .workflow_campaign_report(&frozen.plan.id)
         .await
         .is_err());
-    let started = backend.started.lock().unwrap();
-    assert_eq!(
-        started
-            .iter()
-            .map(|(_, id)| id)
-            .collect::<BTreeSet<_>>()
-            .len(),
-        started.len()
-    );
+    {
+        let started = backend.started.lock().unwrap();
+        assert_eq!(
+            started
+                .iter()
+                .map(|(_, id)| id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            started.len()
+        );
+    }
+    dir.close().await;
 }
 
 #[test]

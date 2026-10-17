@@ -8592,9 +8592,10 @@ mod tests {
 
     #[tokio::test]
     async fn failed_history_batch_retains_the_uncommitted_suffix_for_retry() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let path = dir.path().join("host.db");
         let store = SessionStore::open(&path).await.unwrap();
+        dir.register(&store.pool);
         for id in ["a", "b"] {
             let record: SessionRecord = serde_json::from_value(json!({
                 "id": id, "harness": "goose", "cwd": "C:\\work", "user_set_name": false,
@@ -8606,6 +8607,7 @@ mod tests {
             .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
             .await
             .unwrap();
+        dir.register(&pool);
         sqlx::query("CREATE TRIGGER fail_append BEFORE INSERT ON session_events WHEN NEW.session_id = 'b' BEGIN SELECT RAISE(FAIL, 'simulated full disk'); END")
             .execute(&pool).await.unwrap();
         let mut pending = vec![
@@ -8634,6 +8636,7 @@ mod tests {
             vec![json!({"n":1}), json!({"n":3})]
         );
         assert_eq!(store.list_events("b").await.unwrap(), vec![json!({"n":2})]);
+        dir.close().await;
     }
 
     fn ids() -> TurnIds {

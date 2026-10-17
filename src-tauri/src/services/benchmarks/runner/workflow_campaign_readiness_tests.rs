@@ -98,12 +98,12 @@ impl ExecutionBackend for ReadinessWorkers {
 }
 
 async fn setup() -> (
-    tempfile::TempDir,
+    crate::test_support::TempRoot,
     Arc<BenchmarkService>,
     Arc<ReadinessWorkers>,
     Campaign,
 ) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let backend = Arc::new(ReadinessWorkers::default());
     let service = Arc::new(BenchmarkService {
         store: Store::open(directory.path()).await.unwrap(),
@@ -112,6 +112,7 @@ async fn setup() -> (
         active: Default::default(),
         app: None,
     });
+    directory.register(&service.store.pool);
     let (train, fit) = training_with_weights(
         &service,
         RoleWeights {
@@ -151,7 +152,7 @@ async fn children(service: &BenchmarkService, frozen: &Campaign) -> Vec<Benchmar
 
 #[tokio::test]
 async fn start_refuses_missing_runtime_settings_or_readiness_before_creating_roots() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     let calls = backend.workers.calls.load(Ordering::SeqCst);
     for fault in 1..=7 {
         backend.inventory_fault.store(fault, Ordering::SeqCst);
@@ -175,11 +176,12 @@ async fn start_refuses_missing_runtime_settings_or_readiness_before_creating_roo
         assert!(children(&service, &frozen).await.is_empty());
         assert_eq!(backend.workers.calls.load(Ordering::SeqCst), calls);
     }
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn a_ready_batch_refreshes_each_account_once_without_selecting_steps() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
@@ -203,11 +205,12 @@ async fn a_ready_batch_refreshes_each_account_once_without_selecting_steps() {
                 && attempt.workflow_steps.is_empty()
         }));
     }
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn readiness_loss_between_start_and_refill_pauses_without_consuming_roots() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     let calls = backend.workers.calls.load(Ordering::SeqCst);
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
@@ -228,11 +231,12 @@ async fn readiness_loss_between_start_and_refill_pauses_without_consuming_roots(
     assert!(saved.state_reason.unwrap().contains("no ready worker"));
     assert!(children(&service, &frozen).await.is_empty());
     assert_eq!(backend.workers.calls.load(Ordering::SeqCst), calls);
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn a_stale_probe_refusal_cannot_pause_a_newer_operator_resume() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
@@ -274,11 +278,12 @@ async fn a_stale_probe_refusal_cannot_pause_a_newer_operator_resume() {
         .await
         .unwrap();
     assert_eq!(children(&service, &frozen).await.len(), 4);
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn refill_refusal_retains_first_outcomes_from_admitted_roots() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
         .await
@@ -312,11 +317,12 @@ async fn refill_refusal_retains_first_outcomes_from_admitted_roots() {
     assert_eq!(retained, first);
     assert_eq!(backend.workers.calls.load(Ordering::SeqCst), calls);
     assert_eq!(children(&service, &frozen).await.len(), 4);
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn refused_resume_preserves_children_and_ready_resume_keeps_original_requests() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     let calls = backend.workers.calls.load(Ordering::SeqCst);
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
@@ -365,11 +371,12 @@ async fn refused_resume_preserves_children_and_ready_resume_keeps_original_reque
         );
     }
     assert_eq!(backend.workers.calls.load(Ordering::SeqCst), calls);
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn adaptive_fallback_does_not_require_an_unavailable_alternative() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     let fixed = frozen
         .plan
         .cells
@@ -393,11 +400,12 @@ async fn adaptive_fallback_does_not_require_an_unavailable_alternative() {
         .await
         .unwrap();
     assert!(children(&service, &frozen).await.is_empty());
+    directory.close().await;
 }
 
 #[tokio::test]
 async fn legacy_recipes_keep_their_original_admission_behavior() {
-    let (_directory, service, backend, frozen) = setup().await;
+    let (directory, service, backend, frozen) = setup().await;
     backend.unavailable.store(true, Ordering::SeqCst);
     let mut plan = frozen.plan;
     for recipe in [
@@ -413,4 +421,5 @@ async fn legacy_recipes_keep_their_original_admission_behavior() {
             .unwrap();
     }
     assert_eq!(backend.refreshes.load(Ordering::SeqCst), 0);
+    directory.close().await;
 }

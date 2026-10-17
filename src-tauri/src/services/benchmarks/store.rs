@@ -1279,8 +1279,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_design_gallery_keeps_the_newest_rendering_per_brief_and_configuration() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1338,6 +1339,7 @@ mod tests {
             .await
             .unwrap();
         assert!(none.is_empty());
+        directory.close().await;
     }
     /// A rendering the old runner stopped for the size of its event record
     /// scored a fixed 0 and, being the newest scored one, took the card. Read
@@ -1345,8 +1347,9 @@ mod tests {
     /// own run has no completed gallery result.
     #[tokio::test]
     async fn a_rendering_stopped_by_its_event_record_is_unscored_in_the_gallery() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1395,11 +1398,13 @@ mod tests {
                 .as_deref(),
             Some("budget_reached")
         );
+        directory.close().await;
     }
     #[tokio::test]
     async fn one_gallery_card_per_model_shows_its_scored_rendering_and_generation_cost() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1480,11 +1485,13 @@ mod tests {
             [0.6, 0.8]
         );
         assert_eq!(card.judges[0].details, Some(json!({"adherence":0.6})));
+        directory.close().await;
     }
     #[tokio::test]
     async fn an_excluded_authored_cell_is_no_gallery_entry() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1514,11 +1521,13 @@ mod tests {
         insert("run-1", 1, json!({"id":"rendering","runId":"run-1","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pending_review","output":"<svg/>","finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert!(entries.is_empty());
+        directory.close().await;
     }
     #[tokio::test]
     async fn a_measured_rendering_of_its_own_brief_is_no_gallery_entry() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1549,11 +1558,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["reader"]
         );
+        directory.close().await;
     }
     #[tokio::test]
     async fn a_rendering_of_an_unknown_effort_is_no_gallery_entry() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1613,11 +1624,13 @@ mod tests {
         for id in ["sonnet", "opus-2", "opus-3"] {
             assert!(store.attempt(id).await.is_ok());
         }
+        directory.close().await;
     }
     #[tokio::test]
     async fn a_rendering_awaiting_its_panel_is_not_a_completed_gallery_result() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1668,11 +1681,13 @@ mod tests {
                 .as_deref(),
             Some("<svg/>")
         );
+        directory.close().await;
     }
     #[tokio::test]
     async fn the_gallery_requires_a_whole_cell_from_one_run_and_keeps_failed_triples() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions()
             .into_iter()
             .find(|d| d.work_class_id == "creative")
@@ -1726,6 +1741,7 @@ mod tests {
                 .score,
             Some(0.0)
         );
+        directory.close().await;
     }
     #[test]
     fn a_refused_rendering_stays_on_the_requested_card() {
@@ -1743,7 +1759,7 @@ mod tests {
     /// cells, and the second open leaves them alone.
     #[tokio::test]
     async fn legacy_work_classes_move_once_and_keep_their_versions() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let mut draft = super::super::runner::seed_definitions().remove(0);
         draft.work_class_id = "coding-simple".into();
         draft.name = "Repair bounded clamp".into();
@@ -1753,6 +1769,7 @@ mod tests {
         planning.facets.difficulty = Some("hard".into());
         {
             let store = Store::open(directory.path()).await.unwrap();
+            directory.register(&store.pool);
             let json = |d: &BenchmarkDraft| serde_json::to_string(d).unwrap();
             for (id, d) in [("d1", &draft), ("d2", &planning)] {
                 sqlx::query("INSERT INTO benchmark_definitions(id,draft_json,revision,archived) VALUES(?,?,1,0)")
@@ -1769,6 +1786,7 @@ mod tests {
             store.pool.close().await;
         }
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let moved = store.version("d1-v").await.unwrap();
         assert_eq!(moved.manifest.work_class_id, "debug");
         assert_eq!(moved.manifest.facets.difficulty.as_deref(), Some("easy"));
@@ -1789,10 +1807,12 @@ mod tests {
         assert_eq!(kept.content_hash, "old-d2");
         store.pool.close().await;
         let again = Store::open(directory.path()).await.unwrap();
+        directory.register(&again.pool);
         assert_eq!(
             again.version("d1-v").await.unwrap().content_hash,
             moved.content_hash
         );
+        directory.close().await;
     }
     #[test]
     fn a_run_summary_names_the_attempt_that_parked_it() {
@@ -1811,7 +1831,7 @@ mod tests {
     }
     #[tokio::test]
     async fn catalog_seed_sets_insert_new_vendors_once() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         // A catalog seeded before seed sets were recorded, whose user then
         // deleted one Anthropic seed.
         {
@@ -1843,6 +1863,7 @@ mod tests {
             store.pool.close().await;
         }
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let entries = store.catalog_entries().await.unwrap();
         assert!(!entries.iter().any(|e| e.id == "seed-anthropic-fable-5-1"));
         // Four kept Anthropic rows, fourteen vendor rows, two estimates.
@@ -1860,9 +1881,12 @@ mod tests {
         assert_eq!(again.len(), 19);
         assert!(!again.iter().any(|e| e.id == "seed-xai-grok-4-5"));
         // A new catalog gets every set.
-        let fresh_directory = tempfile::tempdir().unwrap();
+        let fresh_directory = crate::test_support::TempRoot::new();
         let fresh = Store::open(fresh_directory.path()).await.unwrap();
+        fresh_directory.register(&fresh.pool);
         assert_eq!(fresh.catalog_entries().await.unwrap().len(), 5 + 14 + 2);
+        directory.close().await;
+        fresh_directory.close().await;
     }
     #[test]
     fn a_policy_violation_never_stands_as_a_rendering() {
@@ -1903,8 +1927,9 @@ mod tests {
     }
     #[tokio::test]
     async fn the_usage_ledger_counts_each_judge_session_once() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
@@ -1935,11 +1960,13 @@ mod tests {
         assert_eq!(ledger[2].effort.as_deref(), Some("low"));
         assert_eq!(ledger[2].duration_ms, Some(40));
         assert_eq!(ledger[1].input_tokens, Some(5));
+        dir.close().await;
     }
     #[tokio::test]
     async fn workflow_summary_keeps_the_sole_terminal_root_result_without_evidence() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
@@ -2027,12 +2054,14 @@ mod tests {
             .unwrap()
             .workflow_result
             .is_none());
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn history_summaries_and_result_pages_do_not_load_attempt_evidence() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft.clone()).await.unwrap();
         let first = store.publish(&definition.id, 1).await.unwrap();
@@ -2187,12 +2216,14 @@ mod tests {
             store.attempt("attempt-0").await.unwrap().output.as_deref(),
             Some(output.as_str())
         );
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn a_listed_attempt_without_a_reported_cost_is_priced_from_the_catalog() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
@@ -2209,12 +2240,14 @@ mod tests {
         let cost = |id: &str| listed.iter().find(|a| a.id == id).unwrap().cost;
         assert!((cost("unpriced").unwrap() - 4.5).abs() < 1e-9);
         assert_eq!(cost("reported"), Some(0.42));
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn a_dated_attempt_listing_shows_each_attempt_as_it_stood_then() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
@@ -2298,12 +2331,14 @@ mod tests {
             then["reviewed"].resolved_model.as_deref(),
             Some("native-2026")
         );
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn a_run_summary_names_the_selections_its_attempts_ran_with() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
@@ -2341,12 +2376,14 @@ mod tests {
         assert!(store.runs().await.unwrap()[0]
             .observed_selections
             .is_empty());
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn a_run_summary_lists_only_the_cells_its_run_has_yet_to_settle() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let mut draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft.clone()).await.unwrap();
         let first = store.publish(&definition.id, 1).await.unwrap();
@@ -2411,12 +2448,14 @@ mod tests {
             store.set_run_state("run", state).await.unwrap();
             assert!(store.runs().await.unwrap()[0].open_cells.is_empty());
         }
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn historical_definitions_and_filtered_usage_survive_ui_window_limits() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let oldest = store.save_draft(None, None, draft.clone()).await.unwrap();
         let version = store.publish(&oldest.id, 1).await.unwrap();
@@ -2452,6 +2491,7 @@ mod tests {
         let samples = store.usage_samples().await.unwrap();
         assert_eq!(samples.len(), 1005);
         assert!(samples.iter().any(|s| s.id == "sample-0"));
+        directory.close().await;
     }
 
     /// A catalog of large tasks once listed every prompt, fixture, check and
@@ -2460,8 +2500,9 @@ mod tests {
     /// tasks. Every byte of filler here is invented.
     #[tokio::test]
     async fn catalog_summaries_stay_small_however_large_the_tasks_are() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
         let filler = "invented-filler-".repeat(512);
         let mut draft = super::super::seeds::definitions().remove(0);
         draft.name = "Invented large task".into();
@@ -2644,12 +2685,14 @@ mod tests {
         assert_eq!(legacy.role_context_hash, "clean-v1");
         assert!(legacy.entry_state.is_none() && legacy.workflow.is_none());
         assert_eq!(legacy.environment, json!({}));
+        directory.close().await;
     }
 
     #[tokio::test]
     async fn ledger_counts_native_children_once_and_recovery_preserves_sealed_cancellation() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
         let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft).await.unwrap();
         let version = store.publish(&definition.id, 1).await.unwrap();
@@ -2696,5 +2739,6 @@ mod tests {
         let waiting = store.attempt("waiting").await.unwrap();
         assert_eq!(waiting.phase, "awaiting_judges");
         assert_eq!(waiting.outcome.as_deref(), Some("pending_review"));
+        dir.close().await;
     }
 }

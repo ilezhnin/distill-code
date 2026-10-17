@@ -600,8 +600,9 @@ async fn legacy_ridge_bytes_hashes_predictions_and_persistence_remain_unchanged(
         .iter()
         .all(|score| score.selection_probability.is_none()));
     assert!(!selected.dispatch_allowed);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     store.save_selector_fit(&legacy).await.unwrap();
     store.save_selector_fit(&current).await.unwrap();
     assert_eq!(store.selector_fits().await.unwrap().len(), 2);
@@ -621,6 +622,7 @@ async fn legacy_ridge_bytes_hashes_predictions_and_persistence_remain_unchanged(
     malformed.candidates[0].selection_coefficients = Some(vec![0.0; DIMENSIONS]);
     malformed.id = model_hash(&malformed).unwrap();
     assert!(validate_model(&malformed).is_err());
+    directory.close().await;
 }
 
 #[test]
@@ -850,11 +852,12 @@ fn missing_cost_is_not_free_and_failures_get_no_speed_credit() {
 
 #[tokio::test]
 async fn immutable_fits_survive_reopen_and_inference_loads_no_labels() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TempRoot::new();
     let data = data();
     let artifact = fit(&data, request(&data)).unwrap();
     let id = artifact.model.id.clone();
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     store.save_selector_fit(&artifact).await.unwrap();
     let mut retry = artifact.clone();
     retry.created_at += 100;
@@ -865,6 +868,7 @@ async fn immutable_fits_survive_reopen_and_inference_loads_no_labels() {
     assert_eq!(store.selector_fits().await.unwrap().len(), 1);
     store.pool.close().await;
     let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
     assert_eq!(store.selector_fit(&id).await.unwrap().model.id, id);
     // Labels can be unavailable while the separately loaded inference still works.
     sqlx::query("UPDATE selector_fits SET snapshot_json='{}' WHERE id=?")
@@ -888,4 +892,5 @@ async fn immutable_fits_survive_reopen_and_inference_loads_no_labels() {
         predict(&damaged, &prediction(&data, 0)).unwrap_err().code,
         "invalid_model"
     );
+    directory.close().await;
 }

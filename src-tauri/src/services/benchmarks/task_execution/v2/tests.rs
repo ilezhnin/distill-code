@@ -183,13 +183,13 @@ impl ExecutionBackend for NativeFixture {
     }
 }
 async fn fixture() -> (
-    tempfile::TempDir,
+    crate::test_support::TempRoot,
     BenchmarkService,
     Arc<NativeFixture>,
     ModeV2,
     RequestV2,
 ) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::TempRoot::new();
     let roles = dir.path().join("agents");
     std::fs::create_dir_all(&roles).unwrap();
     let path = roles.join("invented-role.md");
@@ -206,6 +206,7 @@ async fn fixture() -> (
         active: Default::default(),
         app: None,
     };
+    dir.register(&service.store.pool);
     let mut intent = ModeRequestV2 {
         schema_version: 2,
         context_id: "invented-chat".into(),
@@ -258,7 +259,7 @@ async fn fixture() -> (
 
 #[tokio::test]
 async fn no_fit_or_certificate_still_prepares_and_dispatches_native_prior() {
-    let (_dir, service, backend, _, request) = fixture().await;
+    let (dir, service, backend, _, request) = fixture().await;
     let prepared = service
         .prepare_owned_task_intent(PrepareIntent::V2(request.clone()))
         .await
@@ -293,10 +294,11 @@ async fn no_fit_or_certificate_still_prepares_and_dispatches_native_prior() {
         .await
         .unwrap();
     assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+    dir.close().await;
 }
 #[tokio::test]
 async fn native_pin_without_fit_and_changed_role_or_runtime_refuse_before_dispatch() {
-    let (_dir, service, backend, mode, mut request) = fixture().await;
+    let (dir, service, backend, mode, mut request) = fixture().await;
     let choices = service
         .owned_task_choices_v2(&mode.request.context_id)
         .await
@@ -332,10 +334,11 @@ async fn native_pin_without_fit_and_changed_role_or_runtime_refuse_before_dispat
             .artifact_hash,
         prepared.binding.artifact_hash
     );
+    dir.close().await;
 }
 #[tokio::test]
 async fn forged_role_class_profile_and_controls_do_not_acquire_native_authority() {
-    let (_dir, service, _, mode, request) = fixture().await;
+    let (dir, service, _, mode, request) = fixture().await;
     for field in [
         "rolePrompt",
         "permissions",
@@ -365,11 +368,12 @@ async fn forged_role_class_profile_and_controls_do_not_acquire_native_authority(
     let mut changed = mode.request;
     changed.execution_profile = "interactive_acp".into();
     assert!(service.inspect_owned_task_mode(&changed).await.is_err());
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn native_v2_role_preference_precedes_default_and_unknown_mapping_keeps_prior_usable() {
-    let (_dir, service, backend, mode, mut request) = fixture().await;
+    let (dir, service, backend, mode, mut request) = fixture().await;
     let source = &mode.consent.roles[0].source_path;
     std::fs::write(source, "---\ndisplay_name: Invented role\nmodel: claude-acp:invented-model[medium]\nfast_mode: false\n---\nRepair the supplied text.").unwrap();
     let mut mode_request = mode.request.clone();
@@ -438,11 +442,12 @@ async fn native_v2_role_preference_precedes_default_and_unknown_mapping_keeps_pr
         .await
         .unwrap();
     assert_eq!(backend.starts.load(Ordering::SeqCst), 2);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn native_v2_definite_refusal_requires_absence_and_lost_commits_recover_exact_bytes() {
-    let (_dir, service, backend, mode, request) = fixture().await;
+    let (dir, service, backend, mode, request) = fixture().await;
     let mut unsaved = mode.request.clone();
     unsaved.context_id = "another-native-context".into();
     unsaved.acknowledged_contract_hash = service
@@ -525,11 +530,12 @@ async fn native_v2_definite_refusal_requires_absence_and_lost_commits_recover_ex
         "owned_task_intent_refused"
     );
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn expired_setup_records_a_native_refusal_only_with_provider_start_absence() {
-    let (_dir, service, backend, _, mut request) = fixture().await;
+    let (dir, service, backend, _, mut request) = fixture().await;
     let refusals = || async {
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM task_budget_bindings WHERE refusal_json IS NOT NULL",
@@ -605,10 +611,11 @@ async fn expired_setup_records_a_native_refusal_only_with_provider_start_absence
         .unwrap();
     assert_eq!(recovered.binding.decision.source, "prior");
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+    dir.close().await;
 }
 #[tokio::test]
 async fn an_expired_prepared_task_records_the_no_prompt_outcome_instead_of_dispatching() {
-    let (_dir, service, backend, _, mut request) = fixture().await;
+    let (dir, service, backend, _, mut request) = fixture().await;
     request.step_budget_seconds = 1;
     let prepared = service
         .prepare_owned_task_intent(PrepareIntent::V2(request))
@@ -623,11 +630,12 @@ async fn an_expired_prepared_task_records_the_no_prompt_outcome_instead_of_dispa
     assert_eq!(dispatch.error.unwrap()["kind"], "budget_timeout");
     assert_eq!(backend.refusals.load(Ordering::SeqCst), 1);
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn a_descendant_of_an_expired_root_is_a_definite_pre_write_refusal() {
-    let (_dir, service, backend, chat_mode, _) = fixture().await;
+    let (dir, service, backend, chat_mode, _) = fixture().await;
     let mut wave = chat_mode.request.clone();
     wave.context_id = "invented-conductor".into();
     wave.surface = "wave".into();
@@ -681,11 +689,12 @@ async fn a_descendant_of_an_expired_root_is_a_definite_pre_write_refusal() {
     // Nothing was bound or decided, so the request may be explicitly edited.
     assert_eq!(error.code, "owned_task_intent_refused");
     assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn a_revision_continues_the_exact_root_lineage_and_budget() {
-    let (_dir, service, _, chat_mode, _) = fixture().await;
+    let (dir, service, _, chat_mode, _) = fixture().await;
     let mut wave = chat_mode.request.clone();
     wave.context_id = "invented-conductor".into();
     wave.surface = "wave".into();
@@ -790,6 +799,7 @@ async fn a_revision_continues_the_exact_root_lineage_and_budget() {
     ] {
         assert!(prepare(request).await.is_err());
     }
+    dir.close().await;
 }
 
 #[tokio::test]
@@ -883,4 +893,5 @@ async fn a_mixed_role_lineage_never_borrows_a_single_role_certificate() {
     .await
     .unwrap();
     assert_eq!(pinned.binding.decision.source, "pin");
+    dir.close().await;
 }

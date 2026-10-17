@@ -420,6 +420,15 @@ fn db_error(context: &str, error: sqlx::Error) -> String {
     format!("{context}: {error}")
 }
 
+#[cfg(test)]
+impl SessionStore {
+    /// For tests outside the agent host that close the database before its
+    /// folder is deleted (see `crate::test_support::TempRoot`).
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+}
+
 impl SessionStore {
     pub async fn open(db_path: &Path) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
@@ -2009,9 +2018,10 @@ mod tests {
 
     #[tokio::test]
     async fn listed_owners_survive_restart_and_ignore_copied_snapshot_ownership() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let path = dir.path().join("ownership.db");
         let store = SessionStore::open(&path).await.unwrap();
+        dir.register(&store.pool);
         let forged = json!({"_meta":{"executionOwner":{"kind":"task","id":"task:copied"},"other":"preserved"}});
         for (id, purpose) in [
             ("research", "benchmark"),
@@ -2043,6 +2053,7 @@ mod tests {
         store.pool.close().await;
 
         let restarted = SessionStore::open(&path).await.unwrap();
+        dir.register(&restarted.pool);
         let listed = restarted.list_sessions(0, 50).await.unwrap();
         assert_eq!(listed.len(), 3);
         assert!(listed.iter().all(|session| session.id != "hidden"));
@@ -2079,13 +2090,15 @@ mod tests {
             json!({"kind":"task","id":"task:hidden"})
         );
         assert_eq!(restarted.list_sessions(1, 1).await.unwrap().len(), 1);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn task_terminal_failure_is_immutable_and_public_hash_corruption_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let path = dir.path().join("task.db");
         let store = SessionStore::open(&path).await.unwrap();
+        dir.register(&store.pool);
         for (session, key) in [
             ("failed-task", "failed-key"),
             ("successful-task", "successful-key"),
@@ -2140,6 +2153,7 @@ mod tests {
             .await
             .is_err());
         let restarted = SessionStore::open(&path).await.unwrap();
+        dir.register(&restarted.pool);
         assert_eq!(
             restarted
                 .execution_dispatch("failed-key")
@@ -2185,13 +2199,15 @@ mod tests {
             .await
             .unwrap_err()
             .contains("integrity"));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn owned_session_and_dispatch_survive_restart_without_duplicate_admission() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let path = dir.path().join("owned.db");
         let store = SessionStore::open(&path).await.unwrap();
+        dir.register(&store.pool);
         let owner = OwnedSessionRequest {
             owner_id: "attempt-1".into(),
             provider_id: "claude-acp".into(),
@@ -2254,6 +2270,7 @@ mod tests {
         assert!(store.reserve_dispatch(&second, "prompt").await.is_err());
         store.pool.close().await;
         let restarted = SessionStore::open(&path).await.unwrap();
+        dir.register(&restarted.pool);
         restarted.reconcile_execution_dispatches().await.unwrap();
         assert_eq!(
             restarted
@@ -2287,14 +2304,16 @@ mod tests {
                 .phase,
             "terminal"
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn owned_evidence_pages_preserve_unknown_usage_and_cursor() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let store = SessionStore::open(&dir.path().join("host.db"))
             .await
             .unwrap();
+        dir.register(&store.pool);
         let owner = OwnedSessionRequest {
             owner_id: "attempt".into(),
             provider_id: "claude-acp".into(),
@@ -2331,6 +2350,7 @@ mod tests {
             .await
             .unwrap();
         assert!(store.execution_policy_violation("a").await.unwrap());
+        dir.close().await;
     }
 
     fn record(id: &str) -> SessionRecord {
@@ -2369,11 +2389,12 @@ mod tests {
         })
     }
 
-    async fn store_with_history() -> (tempfile::TempDir, SessionStore) {
-        let dir = tempfile::tempdir().expect("temp dir");
+    async fn store_with_history() -> (crate::test_support::TempRoot, SessionStore) {
+        let dir = crate::test_support::TempRoot::new();
         let store = SessionStore::open(&dir.path().join("host.db"))
             .await
             .expect("open store");
+        dir.register(&store.pool);
         // 2026-09-11T00:00:10Z is Unix 1789084810.
         let history = vec![
             ("2026-09-11T00:00:09.500Z".to_string(), event("one")),
@@ -2414,7 +2435,7 @@ mod tests {
 
     #[tokio::test]
     async fn switching_accounts_preserves_history_settings_and_marks_context_for_transfer() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store.set_model("a", Some("claude-sonnet")).await.unwrap();
         store
             .set_run_settings("a", Some("high"), Some(true))
@@ -2438,19 +2459,22 @@ mod tests {
             store.get_session("b").await.unwrap().unwrap().account_id,
             None
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn saved_account_identity_survives_store_reopen_and_unassigned_chats_stay_unbound() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::TempRoot::new();
         let path = dir.path().join("host.db");
         let store = SessionStore::open(&path).await.unwrap();
+        dir.register(&store.pool);
         let mut managed = record("managed");
         managed.account_id = Some("account-one".into());
         store.insert_session(&managed).await.unwrap();
         store.insert_session(&record("legacy")).await.unwrap();
         store.pool.close().await;
         let reopened = SessionStore::open(&path).await.unwrap();
+        dir.register(&reopened.pool);
         assert_eq!(
             reopened
                 .get_session("managed")
@@ -2470,11 +2494,12 @@ mod tests {
                 .account_id,
             None
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn switching_an_unknown_chat_cannot_reassign_another_chats_account() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         assert!(store
             .switch_account("missing", "account-two", "native", &json!({}))
             .await
@@ -2484,11 +2509,12 @@ mod tests {
             None
         );
         assert!(!store.carryover_pending("a").await.unwrap());
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_fork_keeps_the_history_and_its_times() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store.copy_events("a", "b", None).await.expect("copy");
         let copied = texts_and_times(&store, "b").await;
         assert_eq!(copied, texts_and_times(&store, "a").await);
@@ -2497,11 +2523,12 @@ mod tests {
         let fork = store.get_session("b").await.unwrap().unwrap();
         assert_eq!(fork.message_count, 1);
         assert_eq!(fork.last_snippet.as_deref(), Some("onetwothree"));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn history_pages_keep_whole_prompts_and_are_stable_after_appends() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let mut expected = Vec::new();
         for turn in 0..45 {
             for part in 0..2 {
@@ -2535,11 +2562,12 @@ mod tests {
             .collect();
         prefix.append(&mut actual);
         assert_eq!(prefix, expected);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn deferred_results_are_read_by_session_and_leave_export_unchanged() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let original = serde_json::json!({"sessionId":"large","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool","status":"completed","rawOutput":"x".repeat(100_000)}});
         let ids = store
             .append_events("large", std::slice::from_ref(&original))
@@ -2555,11 +2583,12 @@ mod tests {
         );
         assert!(store.history_event("a", ids[0]).await.is_err());
         assert_eq!(store.list_events("large").await.unwrap(), vec![original]);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_fork_rolls_back_instead_of_silently_omitting_corrupt_history() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         sqlx::query("UPDATE session_events SET payload_json = 'malformed' WHERE id = (SELECT MAX(id) FROM session_events WHERE session_id = 'a')")
             .execute(&store.pool).await.unwrap();
         assert!(store
@@ -2579,11 +2608,12 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 3);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_fork_from_a_message_drops_what_came_after_it() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store
             .copy_events("a", "b", Some(ForkBoundary::BeforeSecond(1_789_084_810)))
             .await
@@ -2594,11 +2624,12 @@ mod tests {
             .map(|(text, _)| text)
             .collect();
         assert_eq!(copied, vec!["one".to_string()]);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn exact_forks_separate_same_timestamp_messages_and_keep_all_reply_pieces() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let stamp = "2026-09-11T00:00:09.500Z".to_string();
         let mut prompt = event("prompt");
         prompt["update"]["messageId"] = json!("shared-id");
@@ -2662,11 +2693,12 @@ mod tests {
             .await
             .is_err());
         assert_eq!(store.list_events("source").await.unwrap().len(), 4);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn streaming_replay_preserves_content_across_many_database_rows() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let events: Vec<_> = (0..5000)
             .map(|index| {
                 json!({
@@ -2694,11 +2726,12 @@ mod tests {
         let expected: String = (0..5000).map(|index| format!("piece-{index} ")).collect();
         assert_eq!(text, expected);
         assert_eq!(store.list_events("replay").await.unwrap(), events);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_directory_move_preserves_history_and_carries_it_to_the_fresh_bridge() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let history = store.list_events("a").await.unwrap();
         store
             .set_bridge_session_id("a", Some("old-bridge"))
@@ -2711,11 +2744,12 @@ mod tests {
         assert!(moved.bridge_session_id.is_none());
         assert!(store.carryover_pending("a").await.unwrap());
         assert_eq!(store.list_events("a").await.unwrap(), history);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_truncated_fork_uses_only_copied_message_metadata() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         // Each source row has its own stable message identity.
         sqlx::query("UPDATE session_events SET payload_json = json_set(payload_json, '$.update.messageId', CAST(id AS TEXT)) WHERE session_id = 'a'")
             .execute(&store.pool).await.unwrap();
@@ -2732,11 +2766,12 @@ mod tests {
             store.get_session("a").await.unwrap().unwrap().message_count,
             30
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn an_unstarted_session_moves_to_another_harness_without_its_old_events() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store
             .append_events("b", &[event("commands")])
             .await
@@ -2755,11 +2790,12 @@ mod tests {
         assert!(store.list_events("b").await.expect("events").is_empty());
         // Nothing was said, so there is nothing to hand the new agent.
         assert!(!store.carryover_pending("b").await.expect("pending"));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_session_with_messages_moves_with_its_transcript_and_owes_it_to_the_new_agent() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store.touch("a", 1, Some("one")).await.expect("touch");
         store
             .set_run_settings("a", Some("xhigh"), Some(true))
@@ -2801,17 +2837,19 @@ mod tests {
         assert!(store.carryover_pending("a").await.expect("pending"));
         store.clear_carryover("a").await.expect("clear");
         assert!(!store.carryover_pending("a").await.expect("pending"));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_session_that_is_gone_is_not_moved_anywhere() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let moved = store
             .rebind_session("nobody", "codex-acp", None, "codex-1", None, &json!({}))
             .await;
         assert!(moved.is_err());
         // Nothing of anyone else's was touched on the way to finding that out.
         assert_eq!(store.list_events("a").await.expect("events").len(), 3);
+        dir.close().await;
     }
 
     /// sqlx stores the checksum of every migration it applies and refuses to
@@ -2846,7 +2884,7 @@ mod tests {
 
     #[tokio::test]
     async fn retiring_system_accounts_preserves_transcripts_and_saved_account_bindings() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let before = store.list_events("a").await.unwrap();
         sqlx::query("UPDATE sessions SET harness = 'codex-acp', account_id = 'system:codex-acp' WHERE id = 'a'")
             .execute(&store.pool).await.unwrap();
@@ -2881,11 +2919,12 @@ mod tests {
             .unwrap();
         assert_eq!(store.list_events("a").await.unwrap(), before);
         assert!(store.carryover_pending("a").await.unwrap());
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn the_cleanup_migration_drops_command_lists_and_nothing_else() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let command_list = json!({
             "sessionId": "b",
             "update": { "sessionUpdate": "available_commands_update", "availableCommands": [] },
@@ -2936,11 +2975,12 @@ mod tests {
             ]
         );
         assert_eq!(store.list_events("a").await.expect("events").len(), 3);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn the_rename_migration_moves_stored_names_and_leaves_prose_about_them() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let stored = json!({
             "sessionId": "b",
             "update": {
@@ -2987,20 +3027,22 @@ mod tests {
             update["content"]["text"],
             "see distill://session/abc and the \"berdctl_cross_session\" origin"
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_session_stored_before_the_run_settings_existed_reads_back_with_none() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let existing = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(existing.reasoning_effort, None);
         assert_eq!(existing.fast_mode, None);
         assert_eq!(existing.legacy_model_id, None);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn the_effort_and_the_fast_toggle_are_stored_and_cleared_on_their_own() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store
             .set_run_settings("a", Some("xhigh"), Some(true))
             .await
@@ -3031,11 +3073,12 @@ mod tests {
         let untouched = store.get_session("b").await.expect("read").expect("row");
         assert_eq!(untouched.reasoning_effort, None);
         assert_eq!(untouched.fast_mode, None);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn splitting_a_folded_model_id_keeps_the_original_and_happens_once() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store
             .set_model("a", Some("gpt-5.6-sol[xhigh]"))
             .await
@@ -3063,11 +3106,12 @@ mod tests {
         assert_eq!(kept.model_id.as_deref(), Some("gpt-5.6-luna[low]"));
         assert_eq!(kept.reasoning_effort.as_deref(), Some("xhigh"));
         assert_eq!(kept.legacy_model_id.as_deref(), Some("gpt-5.6-sol[xhigh]"));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_batch_of_events_is_stored_in_order_under_the_ids_it_reports() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let of_b = |text: &str| {
             let mut payload = event(text);
             payload["sessionId"] = json!("b");
@@ -3090,11 +3134,12 @@ mod tests {
             .await
             .expect("empty append")
             .is_empty());
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_prompt_the_bridge_rejects_leaves_no_trace_in_the_log_or_the_count() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let of_b = |text: &str| {
             let mut payload = event(text);
             payload["sessionId"] = json!("b");
@@ -3143,11 +3188,12 @@ mod tests {
         assert_eq!(after.last_message_at, undo.last_message_at);
         // The other session's history is none of the discard's business.
         assert_eq!(texts_and_times(&store, "a").await.len(), 3);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn deleting_a_session_takes_its_events_with_it() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         assert_eq!(texts_and_times(&store, "a").await.len(), 3);
         store.delete_session("a").await.expect("delete");
         assert!(store.get_session("a").await.expect("get").is_none());
@@ -3155,11 +3201,12 @@ mod tests {
         // them: orphan rows here are never read, listed or reclaimed again.
         assert!(texts_and_times(&store, "a").await.is_empty());
         assert!(store.get_session("b").await.expect("get").is_some());
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_bridge_session_can_be_recorded_and_given_up_again() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store
             .set_bridge_session_id("b", Some("bridge-1"))
             .await
@@ -3188,11 +3235,12 @@ mod tests {
                 .bridge_session_id,
             None
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn the_database_syncs_each_committed_batch() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
             .fetch_one(&store.pool)
             .await
@@ -3204,11 +3252,12 @@ mod tests {
             .expect("synchronous");
         // 2 == FULL: acknowledged WAL commits have been synced.
         assert_eq!(synchronous, 2);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn an_agent_title_never_replaces_a_name_the_user_chose() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store
             .set_agent_title("a", "Fix the build")
             .await
@@ -3221,11 +3270,12 @@ mod tests {
         assert!(!store.set_agent_title("a", "Other").await.expect("title"));
         let renamed = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(renamed.title.as_deref(), Some("Mine"));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_harness_title_only_names_an_untitled_chat() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         assert!(store
             .set_title_if_untitled("a", "first prompt echoed back")
             .await
@@ -3240,11 +3290,12 @@ mod tests {
             .expect("title"));
         let titled = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(titled.title.as_deref(), Some("Model picker names"));
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn clearing_a_name_hands_the_naming_back_to_the_agent() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         store.set_title("a", "Mine", true).await.expect("rename");
 
         // An empty rename is "I have no name for this", not "its name is the
@@ -3261,6 +3312,7 @@ mod tests {
             .expect("title");
         let named = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(named.title.as_deref(), Some("Fix the build"));
+        dir.close().await;
     }
 
     /// A stored update as the host records it: `kind` under the ids the turn
@@ -3280,11 +3332,14 @@ mod tests {
         json!({ "type": "text", "text": value })
     }
 
-    async fn store_with_conversation(events: &[Value]) -> (tempfile::TempDir, SessionStore) {
-        let dir = tempfile::tempdir().expect("temp dir");
+    async fn store_with_conversation(
+        events: &[Value],
+    ) -> (crate::test_support::TempRoot, SessionStore) {
+        let dir = crate::test_support::TempRoot::new();
         let store = SessionStore::open(&dir.path().join("host.db"))
             .await
             .expect("open store");
+        dir.register(&store.pool);
         store.insert_session(&record("c")).await.expect("insert");
         store.append_events("c", events).await.expect("append");
         (dir, store)
@@ -3318,7 +3373,7 @@ mod tests {
         let prompt =
             json!({ "messageId": "m1", "runId": "run-1", "created": "2026-09-21T10:00:00Z" });
         let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
-        let (_dir, store) = store_with_conversation(&[
+        let (dir, store) = store_with_conversation(&[
             chunk(
                 "user_message_chunk",
                 prompt.clone(),
@@ -3364,6 +3419,7 @@ mod tests {
         let events = store.list_events("c").await.expect("read");
         assert_eq!(events[1]["update"]["_meta"]["distill"]["messageId"], "m1");
         assert_eq!(events[1]["sessionId"], "c");
+        dir.close().await;
     }
 
     #[tokio::test]
@@ -3382,7 +3438,7 @@ mod tests {
                 }
             })
         };
-        let (_dir, store) = store_with_conversation(&[
+        let (dir, store) = store_with_conversation(&[
             chunk("user_message_chunk", prompt, text("question")),
             chunk(
                 "agent_message_chunk",
@@ -3447,12 +3503,13 @@ mod tests {
                 was_last: false
             }
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_reply_that_ended_on_a_step_has_nothing_to_edit() {
         let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
-        let (_dir, store) = store_with_conversation(&[
+        let (dir, store) = store_with_conversation(&[
             chunk("agent_message_chunk", reply.clone(), text("Looking.")),
             json!({
                 "sessionId": "c",
@@ -3478,6 +3535,7 @@ mod tests {
                 ("tool_call".to_string(), String::new()),
             ]
         );
+        dir.close().await;
     }
 
     #[tokio::test]
@@ -3487,7 +3545,7 @@ mod tests {
         let stamp = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
         let mut named = chunk("agent_message_chunk", stamp.clone(), text("reply"));
         named["update"]["messageId"] = json!("msg_1");
-        let (_dir, store) = store_with_conversation(&[named]).await;
+        let (dir, store) = store_with_conversation(&[named]).await;
 
         let rewrite = store
             .rewrite_message_text("c", MessageSide::Assistant, "r1", "hijack", None)
@@ -3503,12 +3561,13 @@ mod tests {
             kinds_and_texts(&store, "c").await,
             vec![("agent_message_chunk".to_string(), "edited".to_string())]
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_reply_from_before_replies_had_ids_answers_to_the_derived_one() {
         let stamp = json!({ "messageId": "m1", "runId": "run-1" });
-        let (_dir, store) = store_with_conversation(&[
+        let (dir, store) = store_with_conversation(&[
             chunk("user_message_chunk", stamp.clone(), text("question")),
             chunk("agent_message_chunk", stamp.clone(), text("old ")),
             chunk("agent_message_chunk", stamp, text("answer")),
@@ -3533,6 +3592,7 @@ mod tests {
             .await
             .expect("rewrite");
         assert_eq!(rewrite.chunks, 0);
+        dir.close().await;
     }
 
     #[tokio::test]
@@ -3540,7 +3600,7 @@ mod tests {
         let stamp = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
         let mut named = chunk("agent_message_chunk", stamp, text("reply"));
         named["update"]["messageId"] = json!("agent-msg-7");
-        let (_dir, store) = store_with_conversation(&[named]).await;
+        let (dir, store) = store_with_conversation(&[named]).await;
 
         let rewrite = store
             .rewrite_message_text("c", MessageSide::Assistant, "agent-msg-7", "edited", None)
@@ -3551,12 +3611,13 @@ mod tests {
             kinds_and_texts(&store, "c").await,
             vec![("agent_message_chunk".to_string(), "edited".to_string())]
         );
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn an_unknown_message_leaves_the_log_as_it_was() {
         let stamp = json!({ "messageId": "m1", "runId": "run-1" });
-        let (_dir, store) =
+        let (dir, store) =
             store_with_conversation(&[chunk("user_message_chunk", stamp, text("hello"))]).await;
 
         let rewrite = store
@@ -3580,11 +3641,12 @@ mod tests {
             .await
             .expect("rewrite");
         assert_eq!(rewrite.chunks, 0);
+        dir.close().await;
     }
 
     /// A reply that did work in steps: text, a tool call with its progress,
     /// a thought, more text, another tool call, then the answer.
-    async fn store_with_a_stepped_reply() -> (tempfile::TempDir, SessionStore) {
+    async fn store_with_a_stepped_reply() -> (crate::test_support::TempRoot, SessionStore) {
         let prompt = json!({ "messageId": "m1", "runId": "run-1" });
         let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
         let tool = |kind: &str, id: &str| {
@@ -3615,7 +3677,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_step_is_edited_by_its_place_among_the_reply_s_runs() {
-        let (_dir, store) = store_with_a_stepped_reply().await;
+        let (dir, store) = store_with_a_stepped_reply().await;
 
         // The second text run is the text between the two tool calls; the
         // first is the two chunks before the first one, folded into one.
@@ -3705,11 +3767,12 @@ mod tests {
             .await
             .expect("rewrite");
         assert_eq!(rewrite.chunks, 0);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn a_step_is_removed_with_everything_it_was_made_of() {
-        let (_dir, store) = store_with_a_stepped_reply().await;
+        let (dir, store) = store_with_a_stepped_reply().await;
 
         // A tool call goes with its progress; the text around it stays.
         let removal = store
@@ -3770,13 +3833,14 @@ mod tests {
             .expect("remove");
         assert_eq!(removal.removed, 0);
         assert_eq!(kinds_and_texts(&store, "c").await.len(), 4);
+        dir.close().await;
     }
 
     #[tokio::test]
     async fn removing_the_last_text_says_what_the_chat_ends_on_now() {
         let prompt = json!({ "messageId": "m1", "runId": "run-1" });
         let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
-        let (_dir, store) = store_with_conversation(&[
+        let (dir, store) = store_with_conversation(&[
             chunk("user_message_chunk", prompt, text("question")),
             chunk("agent_message_chunk", reply.clone(), text("step ")),
             chunk("agent_message_chunk", reply.clone(), text("one")),
@@ -3813,6 +3877,7 @@ mod tests {
             .await
             .expect("remove");
         assert_eq!(removal.last_text.as_deref(), Some("question"));
+        dir.close().await;
     }
 
     #[test]
@@ -3839,7 +3904,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_snippet_changes_without_the_times() {
-        let (_dir, store) = store_with_history().await;
+        let (dir, store) = store_with_history().await;
         let before = store.get_session("a").await.expect("read").expect("row");
         store
             .set_last_snippet("a", Some("what was said"))
@@ -3850,5 +3915,6 @@ mod tests {
         assert_eq!(after.updated_at, before.updated_at);
         assert_eq!(after.last_message_at, before.last_message_at);
         assert_eq!(after.message_count, before.message_count);
+        dir.close().await;
     }
 }

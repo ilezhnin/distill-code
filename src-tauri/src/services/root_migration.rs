@@ -516,6 +516,10 @@ mod tests {
         assert_eq!(original, old);
         assert!(source.exists());
         adopt_sessions(&root, &legacy).await.unwrap();
+        // Dropped connections close their files later, on sqlx's worker
+        // threads; the folder is deleted right after this test returns.
+        copy.close().await.unwrap();
+        db.close().await.unwrap();
     }
 
     #[test]

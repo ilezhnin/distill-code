@@ -15,7 +15,7 @@ async fn bounded_request(service: &BenchmarkService) -> RunRequest {
 
 #[tokio::test]
 async fn execution_limits_accepted_quota_never_retries_or_changes_account() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
     backend.accepted_quota_waits.store(1, Ordering::SeqCst);
     let run = service
@@ -58,12 +58,13 @@ async fn execution_limits_accepted_quota_never_retries_or_changes_account() {
     assert_eq!(recovered.attempts.len(), 1);
     assert_eq!(serde_json::to_value(&recovered.attempts[0]).unwrap(), saved);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn execution_limits_predispatch_refusals_settle_without_retry() {
     for quota in [false, true] {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         if quota {
             backend.quota_waits.store(1, Ordering::SeqCst);
         } else {
@@ -94,12 +95,13 @@ async fn execution_limits_predispatch_refusals_settle_without_retry() {
             Some("isolated")
         );
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
 }
 
 #[tokio::test]
 async fn execution_limits_resume_keeps_receipts_and_only_runs_original_fresh_slots() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     let mut request = bounded_request(&service).await;
     request.repetitions = 2;
     request.max_executions = 2;
@@ -145,12 +147,13 @@ async fn execution_limits_resume_keeps_receipts_and_only_runs_original_fresh_slo
         service.control(&run.id, "resume").await.unwrap_err().code,
         "retry_forbidden"
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn execution_limits_omitted_or_automatic_preserves_account_fallback() {
     for explicit in [false, true] {
-        let (_dir, service, backend) = setup().await;
+        let (dir, service, backend) = setup().await;
         *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
         backend.accepted_quota_waits.store(1, Ordering::SeqCst);
         let mut request = bounded_request(&service).await;
@@ -170,12 +173,13 @@ async fn execution_limits_omitted_or_automatic_preserves_account_fallback() {
             Some("alternative")
         );
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
     }
 }
 
 #[tokio::test]
 async fn execution_limits_expiry_during_preview_creates_no_plan() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     let mut request = bounded_request(&service).await;
     request
         .execution_limits
@@ -193,11 +197,12 @@ async fn execution_limits_expiry_during_preview_creates_no_plan() {
         .unwrap();
     assert_eq!(count, 0);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn execution_limits_expired_pending_plan_cannot_dispatch_or_resume() {
-    let (_dir, service, backend) = setup().await;
+    let (dir, service, backend) = setup().await;
     let mut request = bounded_request(&service).await;
     request
         .execution_limits
@@ -228,11 +233,12 @@ async fn execution_limits_expired_pending_plan_cannot_dispatch_or_resume() {
         service.control(&run.id, "resume").await.unwrap_err().code,
         "dispatch_deadline"
     );
+    dir.close().await;
 }
 
 #[tokio::test]
 async fn execution_limits_wire_is_optional_and_rejects_unknown_policy() {
-    let (_dir, service, _) = setup().await;
+    let (dir, service, _) = setup().await;
     let request = serial_request(&service).await;
     let mut wire = serde_json::to_value(&request).unwrap();
     assert!(wire.get("executionLimits").is_none());
@@ -249,4 +255,5 @@ async fn execution_limits_wire_is_optional_and_rejects_unknown_policy() {
     );
     wire["executionLimits"]["retryPolicy"] = json!("sometimes");
     assert!(serde_json::from_value::<RunRequest>(wire).is_err());
+    dir.close().await;
 }
