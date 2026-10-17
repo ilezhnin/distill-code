@@ -9,6 +9,64 @@ use super::protocol;
 
 pub const ADAPTER_REVISION: u32 = 1;
 
+/// Where bench-enter puts OpenCode's configuration home for an owned run in
+/// the benchmark sandbox: root-owned, so OpenCode installs nothing into it,
+/// and holding only the policy plugin the configuration loads from it.
+pub(super) const SANDBOX_CONFIG_HOME: &str = "/tmp/opencode-config";
+/// The sandbox tools, after the ripgrep that Z.ai sessions alone have for
+/// OpenCode's grep and glob tools.
+const SANDBOX_PATH: &str =
+    "/opt/distill-tools/zai/bin:/opt/distill-tools/bin:/usr/local/bin:/usr/bin:/bin";
+/// The OpenCode agent of the protected repository profile.
+pub(super) const REPOSITORY_AGENT: &str = "distill-repository";
+
+/// The environment of an owned OpenCode in the benchmark sandbox, after the
+/// policy's own flags: the configuration home, the PATH, the configuration
+/// and the policy plugin bench-enter writes from
+/// `DISTILL_BENCH_OPENCODE_PLUGIN`. The configuration names the account key
+/// by its file in the attempt's private copy; no secret is part of it.
+pub(super) fn sandbox_env(config: &Value, plugin: &str) -> Vec<(String, String)> {
+    vec![
+        ("XDG_CONFIG_HOME".into(), SANDBOX_CONFIG_HOME.into()),
+        ("PATH".into(), SANDBOX_PATH.into()),
+        ("OPENCODE_CONFIG_CONTENT".into(), config.to_string()),
+        ("DISTILL_BENCH_OPENCODE_PLUGIN".into(), plugin.into()),
+    ]
+}
+
+/// The protected repository profile's configuration: the text profile's,
+/// whose agent answers with no tools, with an agent of its own instead that
+/// works in the workspace with OpenCode's local file and shell tools. It
+/// delegates to no subagent and fetches nothing from the web, and the policy
+/// plugin gives its requests `prompt` as their whole system prompt.
+pub(super) fn repository_config(text: &Value, prompt: &str) -> Value {
+    let mut config = text.clone();
+    config["default_agent"] = json!(REPOSITORY_AGENT);
+    config["plugin"] = json!([[
+        format!("file://{SANDBOX_CONFIG_HOME}/distill-benchmark-policy.mjs"),
+        {"prompt": prompt}
+    ]]);
+    let agents = config["agent"]
+        .as_object_mut()
+        .expect("the Z.ai policy configures agents");
+    agents.retain(|name, _| name == "title");
+    agents.insert(
+        REPOSITORY_AGENT.into(),
+        json!({
+            "description": "Distill repository benchmark: local tools, no delegation",
+            "mode": "primary",
+            "prompt": prompt,
+            "permission": {
+                "*": "deny",
+                "read": "allow", "list": "allow", "glob": "allow", "grep": "allow",
+                "edit": "allow", "bash": "allow", "todowrite": "allow",
+                "external_directory": "allow", "doom_loop": "allow"
+            }
+        }),
+    );
+    config
+}
+
 pub fn highspeed_base(id: &str) -> Option<&str> {
     id.starts_with("zai-coding-plan/glm-")
         .then(|| id.strip_suffix("-highspeed"))

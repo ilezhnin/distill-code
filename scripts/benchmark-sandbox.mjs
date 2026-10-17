@@ -7,13 +7,19 @@
 //   node scripts/benchmark-sandbox.mjs selftest   check the confinement from inside
 //   node scripts/benchmark-sandbox.mjs deploy-helpers  network-free helper update
 //   node scripts/benchmark-sandbox.mjs heavy-lanes N   heavy jobs at once (1-3)
+//   node scripts/benchmark-sandbox.mjs install-tool ID...  only those provider
+//                                     tools (downloads them; helpers, users and
+//                                     the browser stay as they are)
 //
 // Provider sign-in happens inside the sandbox, by hand, once per account:
 //   wsl -d distill-bench -u root bench-login claude|codex|grok|kimi <account-id>
+// A Z.ai account has no sign-in: Distill copies its saved API key in
+// (benchmark_sandbox_sign_in), piping it to `bench-login zai <account-id>`.
 //
 // The provider tools are the versions Distill runs on Windows: the managed
 // bridges from acp-tools.lock.json (installed with npm ci from the same
-// lock) and the pinned Kimi Code and Grok releases.
+// lock), the pinned Kimi Code and Grok releases and, for Z.ai, the Linux
+// build of the OpenCode release the doctor installs.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -35,6 +41,7 @@ const location = path.join(root, "benchmarks", "sandbox");
 const SPECS = {
   kimi: "@moonshot-ai/kimi-code@2.1.0",
   grok: "@xai-official/grok@1.0.40",
+  zai: "opencode-linux-x64@1.18.35",
 };
 function wsl(args, options = {}) {
   const result = spawnSync("wsl.exe", args, { encoding: "utf8", ...options });
@@ -112,9 +119,20 @@ function stage() {
   return dir;
 }
 
-function provision() {
-  if (!distroExists()) create();
+function provision(tools = []) {
+  if (tools.some((id) => !/^[a-z0-9-]+$/.test(id)))
+    throw new Error("install-tool takes provider tool ids");
+  if (!distroExists()) {
+    if (tools.length)
+      throw new Error(
+        "The benchmark distribution must already exist; provision explicitly first",
+      );
+    create();
+  }
   const dir = stage();
+  for (const id of tools)
+    if (!fs.existsSync(path.join(dir, "tools", id)))
+      throw new Error(`No provider tool ${id}`);
   try {
     const tar = spawnSync("tar", ["-cf", "-", "-C", dir, "."], {
       maxBuffer: 1 << 28,
@@ -131,14 +149,17 @@ function provision() {
         "bash",
         "-c",
         "rm -rf /tmp/distill-provision && mkdir -p /tmp/distill-provision && " +
-          "tar -x -C /tmp/distill-provision && bash /tmp/distill-provision/provision.sh",
+          'tar -x -C /tmp/distill-provision && bash /tmp/distill-provision/provision.sh "$@"',
+        "provision",
+        ...(tools.length ? ["--tools", ...tools] : []),
       ],
       { input: tar.stdout, stdio: ["pipe", "inherit", "inherit"] },
     );
     if (result.status !== 0)
       throw new Error(`provision.sh exited ${result.status}`);
-    // The boot configuration (no Windows drives, no interop) applies from the next start.
-    wsl(["--terminate", DISTRO]);
+    // The boot configuration (no Windows drives, no interop) applies from the
+    // next start. Installing tools alone leaves it, and running jobs, alone.
+    if (!tools.length) wsl(["--terminate", DISTRO]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -220,9 +241,12 @@ function heavyLanes(value) {
     throw new Error(`bench-budget heavy-lanes exited ${result.status}`);
 }
 
-const [command, argument] = process.argv.slice(2);
+const [command, argument, ...rest] = process.argv.slice(2);
 if (!command) provision();
-else if (command === "status") status();
+else if (command === "install-tool") {
+  if (!argument) throw new Error("install-tool takes at least one tool id");
+  provision([argument, ...rest]);
+} else if (command === "status") status();
 else if (command === "selftest") selftest();
 else if (command === "deploy-helpers") deployHelpers();
 else if (command === "heavy-lanes") heavyLanes(argument);

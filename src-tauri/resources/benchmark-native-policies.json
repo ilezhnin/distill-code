@@ -217,5 +217,81 @@
       "policy": "22745085402d29498340f352793947eab3ee9171b66747f197aa10e010bc66fd",
       "adapter": "c4771c3172bbac9a868e1049db6425bdbd39fb5c5107091560b16a0b4b2f20bb"
     }
+  },
+  "zai": {
+    "revision": "distill-native-text-zai-v1",
+    "runtime": {
+      "label": "opencode:1.18.35",
+      "files": {
+        "executable": "83567c13cc5e361ded7e48351cb024cd4503285960d82c30fc585194da46d757"
+      }
+    },
+    "permissionMode": "distill-benchmark",
+    "env": {
+      "OPENCODE_DISABLE_AUTOUPDATE": "true",
+      "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+      "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+      "OPENCODE_DISABLE_EXTERNAL_SKILLS": "true",
+      "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
+      "OPENCODE_DISABLE_MODELS_FETCH": "true",
+      "OPENCODE_DISABLE_PROJECT_CONFIG": "true",
+      "OPENCODE_DISABLE_SHARE": "true"
+    },
+    "config": {
+      "$schema": "https://opencode.ai/config.json",
+      "enabled_providers": ["zai-coding-plan"],
+      "model": "zai-coding-plan/glm-5.3",
+      "provider": {
+        "zai-coding-plan": {
+          "options": {
+            "baseURL": "https://api.z.ai/api/coding/paas/v4",
+            "apiKey": "{file:/tmp/provider/api-key}"
+          }
+        }
+      },
+      "share": "disabled",
+      "autoupdate": false,
+      "snapshot": false,
+      "lsp": false,
+      "formatter": false,
+      "instructions": [],
+      "mcp": {},
+      "plugin": [
+        [
+          "file:///tmp/opencode-config/distill-benchmark-policy.mjs",
+          {
+            "prompt": "Complete the supplied benchmark task. Return only the requested answer."
+          }
+        ]
+      ],
+      "permission": {
+        "*": "deny"
+      },
+      "default_agent": "distill-benchmark",
+      "agent": {
+        "title": {
+          "disable": true
+        },
+        "distill-benchmark": {
+          "description": "Distill benchmark turn: one answer, no tools",
+          "mode": "primary",
+          "prompt": "Complete the supplied benchmark task. Return only the requested answer.",
+          "permission": {
+            "*": "deny"
+          }
+        }
+      }
+    },
+    "verified": {
+      "date": "2026-10-17",
+      "runtime": {
+        "label": "opencode:1.18.35",
+        "files": {
+          "executable": "83567c13cc5e361ded7e48351cb024cd4503285960d82c30fc585194da46d757"
+        }
+      },
+      "policy": "d38dd24d555227bb7aa23343e69860f0a60ecab823de631c46b6a67a7cf9c3d6",
+      "adapter": "6bee4be8aa1120fb7246e7ac26469e8666c8248660efb99269ab3dc1ebee8e4b"
+    }
   }
 }

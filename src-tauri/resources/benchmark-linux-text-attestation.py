@@ -17,7 +17,7 @@ import tempfile
 ROOT = Path('/opt/distill-tools')
 RECEIPTS = ROOT / 'text-policy-proofs'
 CACHE = Path('/run/distill-text-proof-cache')
-PROVIDERS = ('claude', 'codex', 'grok', 'kimi')
+PROVIDERS = ('claude', 'codex', 'grok', 'kimi', 'zai')
 
 
 def protected_info(info, directory=False):
@@ -136,7 +136,7 @@ def collect(provider, cache=None):
     if provider not in PROVIDERS:
         raise ValueError('unknown provider')
     entry = {'claude': 'claude-agent-acp', 'codex': 'codex-acp',
-             'grok': 'grok', 'kimi': 'kimi'}[provider]
+             'grok': 'grok', 'kimi': 'kimi', 'zai': 'opencode'}[provider]
     result = {'entrypoint': artifact(launcher_target(entry), cache)}
     if provider == 'claude':
         result['claudeCli'] = artifact(launcher_target('claude'), cache)
@@ -155,6 +155,10 @@ def collect(provider, cache=None):
         result['codexNative'] = artifact(natives[0], cache)
     elif provider == 'grok':
         result['grokNative'] = result['entrypoint']
+    elif provider == 'zai':
+        # OpenCode is its own ELF executable; its grep and glob tools run the
+        # ripgrep only Z.ai sessions have on their PATH.
+        result['ripgrep'] = artifact(ROOT / 'zai' / 'bin' / 'rg', cache)
     return result
 
 

@@ -2,7 +2,7 @@
 // It copies only this allowlist of public infrastructure into a fresh offline
 // Linux probe namespace. Synthetic credentials and loopback requests prove the
 // policy; a protected local receipt binds the source and Linux executables.
-// Usage: node scripts/benchmark-linux-text-policy-probe.mjs claude|codex|grok|kimi
+// Usage: node scripts/benchmark-linux-text-policy-probe.mjs claude|codex|grok|kimi|zai
 //        node scripts/benchmark-linux-text-policy-probe.mjs --self-test
 //        node scripts/benchmark-linux-text-policy-probe.mjs --measure-cache codex
 // Add --diagnostic to run the suite without installing a proof receipt.
@@ -27,6 +27,7 @@ const adapters = {
   claude: "benchmark-claude-policy.mjs",
   codex: "benchmark-codex-policy.mjs",
   kimi: "benchmark-linux-text-kimi.mjs",
+  zai: "benchmark-zai-policy.mjs",
 };
 const resources = "src-tauri/resources/";
 const allowed = [
@@ -40,6 +41,7 @@ const allowed = [
   `${resources}benchmark-kimi-policy.mjs`,
   `${resources}benchmark-linux-text-kimi.mjs`,
   `${resources}benchmark-linux-text-bootstrap.mjs`,
+  `${resources}benchmark-zai-policy.mjs`,
 ];
 
 function tar(files) {
@@ -284,8 +286,8 @@ for path in [target, *target.rglob('*')]: os.chown(path, owner.pw_uid, owner.pw_
 
 async function qualify(provider) {
   assert(
-    ["claude", "codex", "grok", "kimi"].includes(provider),
-    "Choose claude, codex, grok or kimi",
+    ["claude", "codex", "grok", "kimi", "zai"].includes(provider),
+    "Choose claude, codex, grok, kimi or zai",
   );
   const { fingerprint, revision, expected } = await inputs(provider);
   const attestation = await source(
@@ -312,6 +314,7 @@ async function qualify(provider) {
         "/opt/distill-tools/codex-acp/node_modules/@agentclientprotocol/codex-acp",
       kimi: "/opt/distill-tools/kimi/node_modules/@moonshot-ai/kimi-code",
       grok: artifacts.grokNative?.path,
+      zai: artifacts.entrypoint?.path,
     }[provider];
     const script =
       provider === "claude"
@@ -324,6 +327,13 @@ async function qualify(provider) {
       `DISTILL_BENCH_DEADLINE_MS=${Date.now() + 12 * 60_000}`,
       "DISTILL_LINUX_POLICY_PROBE=offline-v1",
       `DISTILL_LINUX_PROBE_ARTIFACTS=${JSON.stringify(artifacts)}`,
+      // bench-enter writes OpenCode's root-owned configuration home from
+      // this, exactly as for an owned session.
+      ...(provider === "zai"
+        ? [
+            `DISTILL_BENCH_OPENCODE_PLUGIN=${await source(`${resources}${adapters.zai}`)}`,
+          ]
+        : []),
       "--",
       "/usr/local/bin/node",
       "/workspace/scripts/benchmark-linux-text-probe-entry.mjs",
@@ -388,11 +398,15 @@ async function selfTest() {
   assert.equal(archive.subarray(512, 529).toString(), "invented fixture\n");
   assert.throws(() => tar([["../escape", "bad"]]));
   const values = await Promise.all(
-    ["claude", "codex", "grok", "kimi"].map(inputs),
+    ["claude", "codex", "grok", "kimi", "zai"].map(inputs),
   );
-  assert.equal(new Set(values.map((value) => value.fingerprint)).size, 4);
+  assert.equal(new Set(values.map((value) => value.fingerprint)).size, 5);
   assert.equal(new Set(values.map((value) => value.revision)).size, 1);
-  checkStatus(values[0].expected.join("\n"), values[0].expected);
+  // A sandbox reports its heavy-lane setting besides the pinned lines.
+  checkStatus(
+    [...values[0].expected, "budget heavy-lanes 2"].join("\n"),
+    values[0].expected,
+  );
   assert.throws(() => checkStatus("", values[0].expected));
   assert(
     allowed.every((path) => !/private|benchmark-tasks|calibration/.test(path)),
@@ -403,7 +417,7 @@ async function selfTest() {
 }
 
 async function measureCache(provider) {
-  assert(["claude", "codex", "grok", "kimi"].includes(provider));
+  assert(["claude", "codex", "grok", "kimi", "zai"].includes(provider));
   const { fingerprint, revision, expected } = await inputs(provider);
   checkStatus((await gated("/usr/local/sbin/bench-status")).stdout, expected);
   const script = await source(

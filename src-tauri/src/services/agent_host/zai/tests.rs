@@ -220,3 +220,120 @@ async fn live_zai_config_adapter() {
     bridge.close_session(session).await;
     bridge.kill();
 }
+
+fn text_config() -> Value {
+    super::super::execution::NativeProvider::Zai
+        .policy_config()
+        .expect("Z.ai configuration")
+}
+
+/// The owned OpenCode reaches the Coding Plan alone, reads the key from the
+/// attempt's private copy and never carries it in its configuration.
+#[test]
+fn sandbox_configuration_uses_only_the_coding_plan_and_names_the_key_by_file() {
+    let config = text_config();
+    assert_eq!(config["enabled_providers"], json!(["zai-coding-plan"]));
+    let options = &config["provider"]["zai-coding-plan"]["options"];
+    assert_eq!(options["baseURL"], crate::services::zai::CODING_ENDPOINT);
+    assert_eq!(options["apiKey"], "{file:/tmp/provider/api-key}");
+    assert_eq!(
+        config["provider"].as_object().unwrap().len(),
+        1,
+        "no other provider is configured"
+    );
+    for (field, off) in [
+        ("share", json!("disabled")),
+        ("autoupdate", json!(false)),
+        ("snapshot", json!(false)),
+        ("lsp", json!(false)),
+        ("formatter", json!(false)),
+        ("instructions", json!([])),
+        ("mcp", json!({})),
+    ] {
+        assert_eq!(config[field], off, "{field}");
+    }
+    // A title is a second model request; the title agent is removed.
+    assert_eq!(config["agent"]["title"], json!({"disable": true}));
+    assert!(config.get("small_model").is_none());
+    let env = sandbox_env(&config, "invented plugin source");
+    let names: Vec<&str> = env.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "XDG_CONFIG_HOME",
+            "PATH",
+            "OPENCODE_CONFIG_CONTENT",
+            "DISTILL_BENCH_OPENCODE_PLUGIN"
+        ]
+    );
+    assert_eq!(env[0].1, SANDBOX_CONFIG_HOME);
+    assert!(env[1].1.starts_with("/opt/distill-tools/zai/bin:"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&env[2].1).unwrap(),
+        config,
+        "the configuration reaches OpenCode as written"
+    );
+}
+
+/// The text profile's agent answers with no tool; its requests carry the
+/// benchmark prompt as their whole system prompt through the policy plugin,
+/// which bench-enter writes where the configuration loads it from.
+#[test]
+fn text_agent_denies_every_tool_and_the_plugin_gets_its_prompt() {
+    let config = text_config();
+    let prompt = super::super::execution::SYSTEM_PROMPT;
+    assert_eq!(config["default_agent"], "distill-benchmark");
+    let agent = &config["agent"]["distill-benchmark"];
+    assert_eq!(agent["mode"], "primary");
+    assert_eq!(agent["prompt"], prompt);
+    assert_eq!(agent["permission"], json!({"*": "deny"}));
+    // A step limit would add OpenCode's own "maximum steps" message.
+    assert!(agent.get("steps").is_none());
+    assert_eq!(config["permission"], json!({"*": "deny"}));
+    let plugin = format!("file://{SANDBOX_CONFIG_HOME}/distill-benchmark-policy.mjs");
+    assert_eq!(config["plugin"], json!([[plugin, {"prompt": prompt}]]));
+    let enter = include_str!("../../../../resources/benchmark-sandbox/bench-enter");
+    assert!(enter.contains(&format!(">{}", plugin.trim_start_matches("file://"))));
+    assert!(enter.contains(&format!(
+        "install -d -m 755 -o root -g root {SANDBOX_CONFIG_HOME} "
+    )));
+}
+
+/// The repository agent works with local file and shell tools, delegates to
+/// no subagent and fetches nothing from the web.
+#[test]
+fn repository_agent_allows_local_tools_only() {
+    let text = text_config();
+    let config = repository_config(&text, "Invented repository prompt.");
+    assert_eq!(config["default_agent"], REPOSITORY_AGENT);
+    let agents = config["agent"].as_object().unwrap();
+    let mut names: Vec<&str> = agents.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["distill-repository", "title"]);
+    let permission = &agents[REPOSITORY_AGENT]["permission"];
+    assert_eq!(permission["*"], "deny");
+    for tool in ["read", "list", "glob", "grep", "edit", "bash", "todowrite"] {
+        assert_eq!(permission[tool], "allow", "{tool}");
+    }
+    for denied in ["task", "webfetch", "websearch", "skill", "question"] {
+        assert!(permission.get(denied).is_none(), "{denied}");
+    }
+    assert_eq!(
+        config["plugin"][0][1],
+        json!({"prompt": "Invented repository prompt."})
+    );
+    assert_eq!(
+        agents[REPOSITORY_AGENT]["prompt"],
+        "Invented repository prompt."
+    );
+    // Everything else is the text profile's.
+    for field in [
+        "provider",
+        "enabled_providers",
+        "permission",
+        "snapshot",
+        "share",
+    ] {
+        assert_eq!(config[field], text[field], "{field}");
+    }
+}

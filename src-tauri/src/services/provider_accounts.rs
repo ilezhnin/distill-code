@@ -152,6 +152,18 @@ pub fn supports_managed_accounts(provider_id: &str) -> bool {
     matches!(provider_id, "codex-acp" | "claude-acp" | "zai-acp")
 }
 
+/// How use of `account` is billed, as benchmark configurations record it:
+/// "subscription" or metered "api". A Z.ai key is a Coding Plan key: the
+/// only endpoint Distill gives it is the plan's (`zai::CODING_ENDPOINT`),
+/// with no fallback to the separately billed API.
+pub fn billing_mode(account: &ProviderAccount) -> &'static str {
+    if account.auth_method == AuthMethod::ApiKey && account.provider_id != "zai-acp" {
+        "api"
+    } else {
+        "subscription"
+    }
+}
+
 /// Providers whose own CLI keeps the sign-in (Grok, Kimi). Distill names that
 /// sign-in with a fixed identity so benchmark configurations, routes and
 /// activity can refer to it; it is never stored, and chats keep using the CLI
@@ -547,6 +559,20 @@ pub fn scoped_env(
         return Err("Account authorization is being changed; try again when it completes".into());
     }
     scoped_env_at(&distill_root::app_root(app)?, account, base)
+}
+
+/// The saved API key of `account`, for the one host operation that hands it
+/// to another runtime of the same account: the copy in the benchmark
+/// sandbox. Callers pass it on standard input and never log it.
+pub fn api_key(app: &AppHandle, account: &ProviderAccount) -> Result<String, String> {
+    if account_change_in_progress(&account.id) {
+        return Err("Account authorization is being changed; try again when it completes".into());
+    }
+    if account.auth_method != AuthMethod::ApiKey {
+        return Err("This account has no saved API key".into());
+    }
+    validate_identity(account)?;
+    read_api_key(&distill_root::app_root(app)?, account)
 }
 
 /// Presence is a local diagnostic, not evidence that the provider accepted a
@@ -1015,6 +1041,33 @@ fn unprotect_secret(bytes: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Benchmark configurations record a Coding Plan key as the subscription
+    /// it is, and every other API key as metered use.
+    #[test]
+    fn a_zai_coding_plan_key_is_subscription_use() {
+        let account = |provider_id: &str, auth_method| ProviderAccount {
+            id: "invented-account".into(),
+            provider_id: provider_id.into(),
+            label: "Invented".into(),
+            auth_method,
+            enabled: true,
+            auto_switch: false,
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert_eq!(
+            billing_mode(&account("zai-acp", AuthMethod::ApiKey)),
+            "subscription"
+        );
+        for provider in ["codex-acp", "claude-acp"] {
+            assert_eq!(billing_mode(&account(provider, AuthMethod::ApiKey)), "api");
+            assert_eq!(
+                billing_mode(&account(provider, AuthMethod::OAuth)),
+                "subscription"
+            );
+        }
+    }
 
     #[test]
     fn zai_rejects_browser_auth_before_creating_an_account() {

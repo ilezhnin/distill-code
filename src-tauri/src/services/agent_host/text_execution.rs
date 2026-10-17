@@ -199,6 +199,10 @@ fn environment(provider: NativeProvider) -> Vec<(String, String)> {
         NativeProvider::Kimi => {
             env.push(("KIMI_CODE_HOME".into(), "/home/candidate/.kimi-code".into()));
         }
+        NativeProvider::Zai => env.extend(super::zai::sandbox_env(
+            &provider.policy_config().expect("Z.ai configuration"),
+            adapter(provider).expect("Z.ai policy plugin"),
+        )),
     }
     env
 }
@@ -230,7 +234,11 @@ pub(super) fn launch(
             .map(|(key, value)| format!("{key}={value}")),
     );
     args.push("--".into());
-    if let Some(adapter) = adapter(provider) {
+    // OpenCode and Grok are native executables; the others are Node bridges
+    // that load their adapter before their entrypoint.
+    if provider == NativeProvider::Zai {
+        args.extend(["/opt/distill-tools/bin/opencode", "acp"].map(str::to_owned));
+    } else if let Some(adapter) = adapter(provider) {
         let adapter_url = format!(
             "data:text/javascript;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(adapter)
@@ -251,7 +259,7 @@ pub(super) fn launch(
             NativeProvider::Claude => "/opt/distill-tools/claude-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
             NativeProvider::Codex => "/opt/distill-tools/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
             NativeProvider::Kimi => "/opt/distill-tools/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
-            NativeProvider::Grok => unreachable!(),
+            NativeProvider::Grok | NativeProvider::Zai => unreachable!(),
         }.into());
         if provider == NativeProvider::Kimi {
             args.push("acp".into());
@@ -313,6 +321,45 @@ mod tests {
             assert_ne!(profile_key("invented-owner"), profile_key("another-owner"));
             assert_eq!(policy_fingerprint(provider).len(), 64);
         }
+    }
+
+    /// OpenCode runs as its own executable with the account's sandbox home,
+    /// the policy configuration and plugin, and no key on its command line.
+    #[test]
+    fn zai_text_launch_runs_opencode_with_its_policy_and_no_secret() {
+        let request = OwnedSessionRequest {
+            owner_id: "invented-owner".into(),
+            provider_id: "zai-acp".into(),
+            account_id: "invented-account".into(),
+            model_id: "zai-coding-plan/glm-5.3".into(),
+            reasoning_effort: Some("high".into()),
+            fast_mode: Some(false),
+            cwd: "/workspace".into(),
+            title: "Synthetic text task".into(),
+            profile: ExecutionProfile::NativeTextV1,
+        };
+        let launch = launch(&request, NativeProvider::Zai, "revision".into());
+        assert!(launch.args.contains(
+            &"DISTILL_BENCH_ACCOUNT_HOME=/home/candidate/accounts/invented-account/zai".into()
+        ));
+        assert!(launch.args.ends_with(&[
+            "--".into(),
+            "/opt/distill-tools/bin/opencode".into(),
+            "acp".into()
+        ]));
+        let env: BTreeMap<String, String> = environment(NativeProvider::Zai).into_iter().collect();
+        assert_eq!(env["DISTILL_BENCH_RESOURCE_CLASS"], "text");
+        assert_eq!(env["OPENCODE_DISABLE_MODELS_FETCH"], "true");
+        assert_eq!(env["XDG_CONFIG_HOME"], "/tmp/opencode-config");
+        assert_eq!(
+            env["DISTILL_BENCH_OPENCODE_PLUGIN"],
+            NativeProvider::Zai.adapter().unwrap()
+        );
+        let config: Value = serde_json::from_str(&env["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(config, NativeProvider::Zai.policy_config().unwrap());
+        assert!(!env.contains_key("DISTILL_ZAI_API_KEY"));
+        // The Linux proof covers the plugin as its adapter.
+        assert_eq!(adapter(NativeProvider::Zai), NativeProvider::Zai.adapter());
     }
 
     #[test]

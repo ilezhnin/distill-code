@@ -14,6 +14,8 @@ pub const NATIVE_TEXT_ADAPTER: &str =
     include_str!("../../../resources/benchmark-claude-policy.mjs");
 const CODEX_ADAPTER: &str = include_str!("../../../resources/benchmark-codex-policy.mjs");
 const KIMI_ADAPTER: &str = include_str!("../../../resources/benchmark-kimi-policy.mjs");
+/// OpenCode's policy plugin for Z.ai, loaded in place of a Node preload.
+const ZAI_ADAPTER: &str = include_str!("../../../resources/benchmark-zai-policy.mjs");
 /// The system prompt every native text profile puts in place of the vendor's.
 /// `resources/benchmark-native-policies.json` carries the same text for the
 /// providers configured there; a test keeps the two equal.
@@ -40,6 +42,7 @@ struct NativePolicies {
     codex: ProviderPolicy,
     grok: ProviderPolicy,
     kimi: ProviderPolicy,
+    zai: ProviderPolicy,
 }
 
 /// One provider's entry in the policy resource.
@@ -55,7 +58,8 @@ struct ProviderPolicy {
     #[serde(default)]
     env: BTreeMap<String, String>,
     /// Codex: the configuration every thread starts with, through
-    /// `CODEX_CONFIG`.
+    /// `CODEX_CONFIG`. Z.ai: OpenCode's whole configuration, through
+    /// `OPENCODE_CONFIG_CONTENT`.
     #[serde(default)]
     config: Option<Map<String, Value>>,
     /// Codex: the fields set on every entry of the model catalog the owned
@@ -182,6 +186,7 @@ pub enum NativeProvider {
     Codex,
     Grok,
     Kimi,
+    Zai,
 }
 
 impl NativeProvider {
@@ -192,6 +197,7 @@ impl NativeProvider {
         NativeProvider::Codex,
         NativeProvider::Grok,
         NativeProvider::Kimi,
+        NativeProvider::Zai,
     ];
 
     pub fn for_harness(harness_id: &str) -> Option<Self> {
@@ -207,6 +213,7 @@ impl NativeProvider {
             Self::Codex => "codex-acp",
             Self::Grok => "grok-acp",
             Self::Kimi => "kimi-acp",
+            Self::Zai => "zai-acp",
         }
     }
 
@@ -217,6 +224,7 @@ impl NativeProvider {
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::Kimi => "kimi",
+            Self::Zai => "zai",
         }
     }
 
@@ -227,6 +235,7 @@ impl NativeProvider {
             Self::Codex => Some(&POLICIES.codex),
             Self::Grok => Some(&POLICIES.grok),
             Self::Kimi => Some(&POLICIES.kimi),
+            Self::Zai => Some(&POLICIES.zai),
         }
     }
 
@@ -235,13 +244,14 @@ impl NativeProvider {
             .map_or(NATIVE_TEXT_POLICY_REVISION, |policy| &policy.revision)
     }
 
-    /// The preload module that edits the bridge as Node loads it, for a
-    /// provider whose bridge runs under Node.
+    /// The policy module the bridge loads: the preload that edits a Node
+    /// bridge as Node loads it, or the plugin OpenCode loads for Z.ai.
     pub fn adapter(self) -> Option<&'static str> {
         match self {
             Self::Claude => Some(NATIVE_TEXT_ADAPTER),
             Self::Codex => Some(CODEX_ADAPTER),
             Self::Kimi => Some(KIMI_ADAPTER),
+            Self::Zai => Some(ZAI_ADAPTER),
             Self::Grok => None,
         }
     }
@@ -270,8 +280,8 @@ impl NativeProvider {
     }
 
     /// `session/new` `_meta`: the provider's own spelling of the no-tool,
-    /// clean-context policy. Codex and Kimi read none of it (their policy
-    /// reaches the process through the environment and the adapter); Grok's
+    /// clean-context policy. Codex, Kimi and Z.ai read none of it (their
+    /// policy reaches the process through the environment and the adapter); Grok's
     /// replaces the system prompt and gives the session an agent profile
     /// without tools, rules or context. The revision is kept as evidence.
     pub fn session_meta(self, model: &str) -> Value {
@@ -298,7 +308,8 @@ impl NativeProvider {
     /// skips the call for a provider that declares no modes (Grok; with no
     /// tools nothing asks, and the host refuses and tags any request). Codex
     /// refuses `default`, and its `agent` mode sends approvals to a reviewer
-    /// model. Kimi's `default` asks the host for every approval.
+    /// model. Kimi's `default` asks the host for every approval. Z.ai's mode
+    /// is the OpenCode agent its configuration defines.
     pub fn permission_mode(self) -> Option<&'static str> {
         match self.policy() {
             None => Some("default"),
@@ -339,7 +350,7 @@ impl NativeProvider {
                 "kimi-code/kimi-for-coding",
                 "kimi-code/kimi-for-coding-highspeed",
             ],
-            Self::Claude | Self::Codex | Self::Grok => &[],
+            Self::Claude | Self::Codex | Self::Grok | Self::Zai => &[],
         }
     }
 
@@ -349,7 +360,7 @@ impl NativeProvider {
     pub fn judges_images(self) -> bool {
         match self {
             Self::Claude => true,
-            Self::Codex | Self::Grok | Self::Kimi => false,
+            Self::Codex | Self::Grok | Self::Kimi | Self::Zai => false,
         }
     }
 
@@ -394,7 +405,27 @@ impl NativeProvider {
             Self::Codex => "Codex",
             Self::Grok => "Grok",
             Self::Kimi => "Kimi Code",
+            Self::Zai => "Z.ai Coding Plan",
         }
+    }
+
+    /// The configuration document the resource gives this provider's process
+    /// (Codex: `CODEX_CONFIG`; Z.ai: OpenCode's), as written.
+    pub(crate) fn policy_config(self) -> Option<Value> {
+        self.policy()?.config.clone().map(Value::Object)
+    }
+
+    /// The fixed variables of this provider's process in the resource.
+    pub(crate) fn policy_env(self) -> Vec<(String, String)> {
+        self.policy()
+            .map(|policy| {
+                policy
+                    .env
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -722,7 +753,8 @@ mod tests {
     }
 
     /// A provider runs only on a passed loopback probe of exactly what this
-    /// build ships. Kimi, Codex and Grok passed on October 4.
+    /// build ships. Kimi, Codex and Grok passed on October 4, Z.ai on
+    /// October 17.
     #[test]
     fn only_a_probe_of_the_shipped_entry_and_adapter_admits_a_provider() {
         assert_eq!(NativeProvider::Claude.admission_issue(), None);
@@ -759,6 +791,17 @@ mod tests {
             Some("b93232ee921370b27b8b0fd219f0e2c91bfe89586c65dfc3e564fa17d053f5ef")
         );
         assert_eq!(grok.adapter, None);
+        // Z.ai passed on the pinned opencode.exe with its policy plugin
+        // (scripts/benchmark-provider-policy-probe.mjs zai).
+        assert_eq!(NativeProvider::Zai.admission_issue(), None);
+        let zai = POLICIES.zai.verified.as_ref().unwrap();
+        assert_eq!(zai.runtime, POLICIES.zai.runtime);
+        assert_eq!(zai.date, "2026-10-17");
+        assert_eq!(
+            NativeProvider::Zai.policy_digest().as_deref(),
+            Some("d38dd24d555227bb7aa23343e69860f0a60ecab823de631c46b6a67a7cf9c3d6")
+        );
+        assert_eq!(zai.adapter, Some(digest(ZAI_ADAPTER)));
         let mut unprobed = POLICIES.grok.clone();
         unprobed.verified = None;
         assert_eq!(
@@ -1090,6 +1133,7 @@ mod tests {
             NativeProvider::Claude,
             NativeProvider::Codex,
             NativeProvider::Kimi,
+            NativeProvider::Zai,
         ] {
             assert_eq!(other.prompt_meta(), None, "{other:?}");
         }
@@ -1209,6 +1253,73 @@ mod tests {
         assert!(dir.join("home").join("auth.json").exists());
         discard_owned_sign_in(NativeProvider::Grok, &dir).unwrap();
         assert!(!dir.join("home").join("auth.json").exists());
+    }
+
+    /// Z.ai runs OpenCode: its policy is the configuration, the environment
+    /// flags and the plugin that makes the profile's prompt the whole system
+    /// prompt. None of it carries a key.
+    #[test]
+    fn zai_policy_is_opencode_configuration_flags_and_plugin() {
+        let zai = NativeProvider::Zai;
+        assert_eq!(NativeProvider::for_harness("zai-acp"), Some(zai));
+        assert_eq!(validate_request(&request("zai-acp")), Ok(zai));
+        assert_eq!(zai.policy_revision(), "distill-native-text-zai-v1");
+        assert_eq!(zai.adapter(), Some(ZAI_ADAPTER));
+        assert!(ZAI_ADAPTER.contains("experimental.chat.system.transform"));
+        assert_eq!(
+            zai.session_meta("zai-coding-plan/glm-5.3"),
+            json!({"distillNativePolicy": {
+                "revision": "distill-native-text-zai-v1",
+                "adapterHash": digest(ZAI_ADAPTER),
+            }})
+        );
+        // The mode is the OpenCode agent the configuration defines.
+        assert_eq!(zai.permission_mode(), Some("distill-benchmark"));
+        let config = zai.policy_config().unwrap();
+        assert!(config["agent"]["distill-benchmark"].is_object());
+        assert_eq!(
+            config["agent"]["distill-benchmark"]["prompt"],
+            SYSTEM_PROMPT
+        );
+        assert_eq!(config["plugin"][0][1]["prompt"], SYSTEM_PROMPT);
+        let env: BTreeMap<String, String> = zai.policy_env().into_iter().collect();
+        for flag in [
+            "OPENCODE_DISABLE_AUTOUPDATE",
+            "OPENCODE_DISABLE_CLAUDE_CODE",
+            "OPENCODE_DISABLE_DEFAULT_PLUGINS",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+            "OPENCODE_DISABLE_LSP_DOWNLOAD",
+            "OPENCODE_DISABLE_MODELS_FETCH",
+            "OPENCODE_DISABLE_PROJECT_CONFIG",
+            "OPENCODE_DISABLE_SHARE",
+        ] {
+            assert_eq!(env.get(flag).map(String::as_str), Some("true"), "{flag}");
+        }
+        // Skipping external plugins would also skip the policy plugin.
+        assert!(!env.contains_key("OPENCODE_PURE"));
+        assert_eq!(env.len(), 8);
+        assert!(zai.excluded_efforts().is_empty());
+        assert!(zai.moving_aliases().is_empty());
+        assert!(!zai.judges_images());
+        assert!(POLICIES.zai.args.is_empty());
+        assert!(POLICIES.zai.session_meta.is_none());
+        assert!(POLICIES.zai.config_toml.is_none());
+        assert!(POLICIES.zai.model_catalog.is_none());
+        let request = request("zai-acp");
+        assert_ne!(
+            zai.policy_hash(&request).unwrap(),
+            NativeProvider::Kimi.policy_hash(&request).unwrap()
+        );
+        let mut changed = POLICIES.zai.clone();
+        changed
+            .config
+            .as_mut()
+            .unwrap()
+            .insert("snapshot".into(), json!(true));
+        assert_ne!(
+            zai.configured_hash_input(&changed, &request),
+            zai.configured_hash_input(&POLICIES.zai, &request)
+        );
     }
 
     #[test]

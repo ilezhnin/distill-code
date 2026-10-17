@@ -7,14 +7,17 @@ shift 5
 vars=()
 while [[ ${1:-} != -- ]]; do vars+=("$1"); shift; done
 shift
+egress=public
 for variable in "${vars[@]}"; do
   if [[ $variable == DISTILL_BENCH_ACCOUNT_HOME=* ]]; then
     [[ $mode == session ]] || exit 64
     /usr/local/sbin/bench-auth prepare "$id" "${variable#*=}"
+    # A Z.ai session may reach the Z.ai API alone.
+    [[ ${variable#*=} != */zai ]] || egress=zai
   fi
 done
 if [[ $net == session ]]; then
-  namespace=$(/usr/local/sbin/bench-network "$id")
+  namespace=$(/usr/local/sbin/bench-network "$id" "$egress")
   network=(ip netns exec "$namespace")
 elif [[ $net == bench ]]; then
   network=(ip netns exec bench)

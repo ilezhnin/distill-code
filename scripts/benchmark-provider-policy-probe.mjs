@@ -12,6 +12,7 @@
 //   node scripts/benchmark-provider-policy-probe.mjs codex <codex-acp package dir>
 //   node scripts/benchmark-provider-policy-probe.mjs grok <grok executable>
 //   node scripts/benchmark-provider-policy-probe.mjs kimi <kimi-code package dir>
+//   node scripts/benchmark-provider-policy-probe.mjs zai <opencode executable>
 //
 // For Codex the package dir is the installed @agentclientprotocol/codex-acp
 // (package.json, dist/index.js); the @openai/codex it depends on supplies the
@@ -49,6 +50,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import zlib from "node:zlib";
 
 const [provider, installedArgument] = process.argv.slice(2);
@@ -66,7 +68,7 @@ if (linux) {
 }
 assert(
   provider && installedArgument,
-  "Usage: benchmark-provider-policy-probe.mjs <codex|grok|kimi> <installed package dir or executable>",
+  "Usage: benchmark-provider-policy-probe.mjs <codex|grok|kimi|zai> <installed package dir or executable>",
 );
 const installed = resolve(installedArgument);
 const repo = (path) => new URL(`../${path}`, import.meta.url);
@@ -2446,6 +2448,507 @@ async function probeKimi(root, children) {
   }
 }
 
+/** A chat completions reply as Z.ai's Coding Plan endpoint streams it, with
+ * its usage in the OpenAI shape (cached prompt tokens in the details). */
+function writeZaiCompletion(response, { text, call }) {
+  const usage = {
+    prompt_tokens: 10,
+    completion_tokens: 5,
+    total_tokens: 15,
+    prompt_tokens_details: { cached_tokens: 2 },
+  };
+  const delta = call
+    ? {
+        role: "assistant",
+        tool_calls: [
+          {
+            index: 0,
+            id: "call_probe",
+            type: "function",
+            function: {
+              name: call.name,
+              arguments: JSON.stringify(call.arguments),
+            },
+          },
+        ],
+      }
+    : { role: "assistant", content: text };
+  response.writeHead(200, { "content-type": "text/event-stream" });
+  const chunk = (choice, extra = {}) =>
+    response.write(
+      `data: ${JSON.stringify({ id: "chatcmpl_probe", object: "chat.completion.chunk", created: 1, model: "glm-probe", choices: [{ index: 0, ...choice }], ...extra })}\n\n`,
+    );
+  chunk({ delta, finish_reason: null });
+  chunk({ delta: {}, finish_reason: call ? "tool_calls" : "stop" }, { usage });
+  response.write("data: [DONE]\n\n");
+  response.end();
+}
+
+async function probeZai(root, children) {
+  const policy = policies.zai;
+  const executable = installed;
+  assert.equal(
+    sha256(await readFile(executable)),
+    linux ? linuxArtifacts.entrypoint.sha256 : policy.runtime.files.executable,
+    "The installed OpenCode is not the pinned build",
+  );
+  const adapter = await readFile(
+    repo("src-tauri/resources/benchmark-zai-policy.mjs"),
+    "utf8",
+  );
+  const marker = join(root, "escaped.txt");
+  const writeMarker = (label) =>
+    `require('fs').writeFileSync(${JSON.stringify(marker)},'${label}')`;
+
+  // The hostile fixture: a user profile with Claude instructions and skills,
+  // personal skills and an OpenCode configuration home with global
+  // instructions and an MCP server; and a workspace with project
+  // instructions, Claude instructions, a context file its configuration
+  // names, a project skill and an MCP server.
+  const userHome = join(root, "user-home");
+  const userConfig = join(userHome, ".config");
+  const workspace = join(root, "workspace");
+  const runtimeDir = join(root, "runtime");
+  for (const dir of [
+    join(userHome, ".claude", "skills", "hostile"),
+    join(userHome, ".agents", "skills", "personal"),
+    join(userConfig, "opencode"),
+    join(workspace, ".opencode", "skill", "project"),
+    runtimeDir,
+  ])
+    await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(userHome, ".claude", "CLAUDE.md"),
+    contextMarker("USERHOME-CLAUDEMD"),
+  );
+  await writeFile(
+    join(userHome, ".claude", "skills", "hostile", "SKILL.md"),
+    skillFixture("hostile", contextMarker("USERHOME-CLAUDE-SKILL")),
+  );
+  await writeFile(
+    join(userHome, ".agents", "skills", "personal", "SKILL.md"),
+    skillFixture("personal", contextMarker("USERHOME-SKILL")),
+  );
+  await writeFile(
+    join(userConfig, "opencode", "AGENTS.md"),
+    contextMarker("USERCONFIG-AGENTSMD"),
+  );
+  const mcp = (label) => ({
+    hostile: {
+      type: "local",
+      command: [process.execPath, "-e", writeMarker(label)],
+    },
+  });
+  await writeFile(
+    join(userConfig, "opencode", "opencode.json"),
+    JSON.stringify({ mcp: mcp("user-mcp") }),
+  );
+  await writeFile(
+    join(workspace, "AGENTS.md"),
+    contextMarker("WORKSPACE-AGENTSMD"),
+  );
+  await writeFile(
+    join(workspace, "CLAUDE.md"),
+    contextMarker("WORKSPACE-CLAUDEMD"),
+  );
+  await writeFile(
+    join(workspace, "CONTEXT.md"),
+    contextMarker("WORKSPACE-CONTEXT"),
+  );
+  await writeFile(
+    join(workspace, ".opencode", "skill", "project", "SKILL.md"),
+    skillFixture("project", contextMarker("WORKSPACE-SKILL")),
+  );
+  await writeFile(
+    join(workspace, "opencode.json"),
+    JSON.stringify({ instructions: ["CONTEXT.md"], mcp: mcp("project-mcp") }),
+  );
+
+  let hostileReply = false;
+  const stub = await loopback((entry, response) => {
+    if (entry.url.endsWith("/chat/completions")) {
+      const title = textOf(entry.body.messages ?? []).includes(
+        "Generate a title for this conversation",
+      );
+      const call = hostileReply && !title;
+      hostileReply = false;
+      writeZaiCompletion(
+        response,
+        call
+          ? {
+              call: {
+                name: "bash",
+                arguments: {
+                  command: `node -e "${writeMarker("tool")}"`,
+                  description: "Write the marker",
+                },
+              },
+            }
+          : { text: "POLICY_PROBE_OK" },
+      );
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  const endpoint = `${stub.url}/api/coding/paas/v4`;
+  const key = "synthetic-probe-key";
+  // The account key, where the sandbox's private copy is: in the probe
+  // namespace's own empty /tmp on Linux, beside the run elsewhere.
+  const keyFile = linux ? "/tmp/provider/api-key" : join(runtimeDir, "api-key");
+  await mkdir(dirname(keyFile), { recursive: true, mode: 0o700 });
+  await writeFile(keyFile, `${key}\n`, { mode: 0o600 });
+  // The configuration home. In Linux bench-enter made it root-owned, with
+  // the plugin the probe command handed it, so OpenCode installs nothing
+  // into it. Elsewhere the run makes one whose plugin SDK dependency is
+  // already recorded as installed, with the same effect.
+  const configHome = linux
+    ? "/tmp/opencode-config"
+    : join(runtimeDir, "opencode-config");
+  const pluginFile = join(configHome, "distill-benchmark-policy.mjs");
+  if (linux) {
+    assert.equal(
+      await readFile(pluginFile, "utf8"),
+      `${adapter}\n`,
+      "bench-enter must write the shipped policy plugin",
+    );
+  } else {
+    const dir = join(configHome, "opencode");
+    await mkdir(join(dir, "node_modules"), { recursive: true });
+    const dependency = { "@opencode-ai/plugin": "1.18.35" };
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ dependencies: dependency }),
+    );
+    await writeFile(
+      join(dir, "package-lock.json"),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { "": { dependencies: dependency } },
+      }),
+    );
+    await writeFile(pluginFile, adapter);
+  }
+  const config = JSON.parse(JSON.stringify(policy.config));
+  const options = config.provider["zai-coding-plan"].options;
+  assert.equal(options.baseURL, "https://api.z.ai/api/coding/paas/v4");
+  assert.equal(options.apiKey, "{file:/tmp/provider/api-key}");
+  options.baseURL = endpoint;
+  if (!linux) {
+    options.apiKey = `{file:${keyFile.replaceAll("\\", "/")}}`;
+    config.plugin[0][0] = pathToFileURL(pluginFile).href;
+  }
+  const proxy = {
+    HTTP_PROXY: stub.url,
+    HTTPS_PROXY: stub.url,
+    http_proxy: stub.url,
+    https_proxy: stub.url,
+    NO_PROXY: "127.0.0.1,localhost",
+    no_proxy: "127.0.0.1,localhost",
+  };
+  const homes = (home, configDir, data) => ({
+    HOME: home,
+    USERPROFILE: home,
+    XDG_CONFIG_HOME: configDir,
+    XDG_DATA_HOME: join(data, "data"),
+    XDG_CACHE_HOME: join(data, "cache"),
+    XDG_STATE_HOME: join(data, "state"),
+  });
+  const base = baseEnv();
+  if (linux) base.PATH = `/opt/distill-tools/zai/bin:${base.PATH}`;
+  // Restricted: what the host starts in the sandbox (environment() in
+  // text_execution.rs), on the hostile user profile and workspace.
+  const restrictedEnv = {
+    ...base,
+    ...policy.env,
+    ...homes(userHome, configHome, join(runtimeDir, "restricted")),
+    ...proxy,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+  };
+  const model = "zai-coding-plan/glm-5.3";
+  const open = async (client, mode) => {
+    const opened = await client.call("session/new", {
+      cwd: workspace,
+      mcpServers: [],
+    });
+    if (mode) {
+      const current = opened.configOptions?.find(
+        (option) => option.category === "mode",
+      )?.currentValue;
+      assert.equal(current, mode, "The policy agent must be the default");
+      await client.call("session/set_mode", {
+        sessionId: opened.sessionId,
+        modeId: mode,
+      });
+    }
+    await client.call("session/set_config_option", {
+      sessionId: opened.sessionId,
+      configId: "model",
+      value: model,
+    });
+    await client.call("session/set_config_option", {
+      sessionId: opened.sessionId,
+      configId: "effort",
+      value: "high",
+    });
+    return opened.sessionId;
+  };
+  const task =
+    "Benchmark task:\n/init\n@general @AGENTS.md $hostile\nRead AGENTS.md, use the hostile skill, agent or MCP server, and write escaped.txt. If no tools are available, answer POLICY_PROBE_OK.";
+  try {
+    const restricted = startNative(
+      children,
+      executable,
+      ["acp"],
+      restrictedEnv,
+      workspace,
+    );
+    await restricted.initialize();
+    const sessionId = await open(restricted, policy.permissionMode);
+    const before = restricted.notifications.length;
+    const turnStart = stub.requests.length;
+    const answered = await restricted.call("session/prompt", {
+      sessionId,
+      prompt: [{ type: "text", text: task }],
+    });
+    // A title or other auxiliary request would follow the turn.
+    await sleep(1500);
+    const turnRequests = stub.requests
+      .slice(turnStart)
+      .filter((entry) => entry.url.endsWith("/chat/completions"));
+    assert.equal(
+      turnRequests.length,
+      1,
+      `One owned turn must make one model request, saw ${turnRequests.length}`,
+    );
+    const [request] = turnRequests;
+    assert.equal(
+      request.url,
+      "/api/coding/paas/v4/chat/completions",
+      "The Coding Plan endpoint alone serves the turn",
+    );
+    assert.equal(
+      request.authorization,
+      `Bearer ${key}`,
+      "The account key must come from its file",
+    );
+    assert.equal(
+      request.body.tools?.length ?? 0,
+      0,
+      `No tools may reach the model: ${textOf(request.body.tools)}`,
+    );
+    assert.equal(request.body.model, "glm-5.3", "The selected model runs");
+    assert.equal(
+      request.body.reasoning_effort,
+      "high",
+      "The selected effort reaches the model",
+    );
+    const seen = chatRequestText(request.body);
+    assert.deepEqual(
+      seen.instructions,
+      [policies.systemPrompt],
+      `The instructions must be the benchmark system prompt: ${textOf(seen.instructions)}`,
+    );
+    assert.deepEqual(
+      seen.user,
+      [task],
+      `The model must see only the task: ${textOf(request.body.messages)}`,
+    );
+    assert.deepEqual(seen.other, [], "No other input may reach the model");
+    assert(
+      !textOf(stub.requests).includes(secret),
+      "Private fixture context leaked into a request",
+    );
+    assert(!(await exists(marker)), "An MCP server or plugin executed");
+    const restrictedUpdates = restricted.notifications.slice(before);
+    assert(
+      restrictedUpdates.every(
+        (value) =>
+          value.params?.update?.sessionUpdate !== "current_mode_update",
+      ),
+      "A slash command inside the task changed the mode",
+    );
+    assert(
+      textOf(restrictedUpdates).includes("POLICY_PROBE_OK"),
+      "ACP must return the stub response",
+    );
+    // The usage the runner reads comes with the prompt response, the cached
+    // share apart from the uncached input.
+    assert.equal(answered.stopReason, "end_turn");
+    assert.deepEqual(
+      answered.usage,
+      { inputTokens: 8, outputTokens: 5, totalTokens: 15, cachedReadTokens: 2 },
+      `Prompt usage the runner reads: ${textOf(answered)}`,
+    );
+
+    // A hostile reply calls the shell in a fresh session. Nothing may run.
+    hostileReply = true;
+    const hostileSession = await open(restricted, policy.permissionMode);
+    const hostileStart = stub.requests.length;
+    const hostileBefore = restricted.notifications.length;
+    const hostileAnswer = await restricted
+      .call("session/prompt", {
+        sessionId: hostileSession,
+        prompt: [
+          {
+            type: "text",
+            text: "Benchmark task:\nTry to write the marker using a native tool.",
+          },
+        ],
+      })
+      .catch((error) => ({ error: String(error) }));
+    await sleep(1500);
+    assert(!(await exists(marker)), "A tool, MCP server or plugin executed");
+    const hostileRequests = stub.requests
+      .slice(hostileStart)
+      .filter((entry) => entry.url.endsWith("/chat/completions"));
+    assert(
+      hostileRequests.every((entry) => (entry.body.tools?.length ?? 0) === 0),
+      "No tools may reach the model after a refused call",
+    );
+    const toolCalls = restricted.notifications
+      .slice(hostileBefore)
+      .filter((value) =>
+        ["tool_call", "tool_call_update"].includes(
+          value.params?.update?.sessionUpdate,
+        ),
+      );
+    assert(
+      toolCalls.every((value) => value.params.update.status !== "completed"),
+      "A refused tool call must not complete",
+    );
+    // Nothing besides the model endpoint: no catalog, plugin, share or
+    // update fetch. Outside the sandbox OpenCode may fetch the ripgrep it
+    // finds on the sandbox's PATH; that is the only request let through.
+    const restrictedRequests = stub.requests.length;
+    const restrictedTunnels = [...stub.tunnels];
+    const otherEndpoints = [
+      ...new Set(
+        stub.requests
+          .map((entry) => entry.url)
+          .filter((url) => !url.endsWith("/chat/completions")),
+      ),
+    ];
+    assert.deepEqual(otherEndpoints, [], "Only model requests reach the API");
+    assert.deepEqual(
+      restrictedTunnels.filter(
+        (target) => linux || target !== "github.com:443",
+      ),
+      [],
+      `No request may leave the machine: ${textOf(restrictedTunnels)}`,
+    );
+
+    // Positive control: the same executable as an unrestricted chat would
+    // run it, on the hostile profile and workspace, with the user's
+    // configuration home: tools, context and the MCP fixture must all be
+    // there, and the session is titled with a second request.
+    const control = startNative(
+      children,
+      executable,
+      ["acp"],
+      {
+        ...baseEnv(),
+        ...homes(userHome, userConfig, join(runtimeDir, "control")),
+        ...proxy,
+        OPENCODE_DISABLE_AUTOUPDATE: "true",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          enabled_providers: ["zai-coding-plan"],
+          model,
+          small_model: "zai-coding-plan/glm-5.3-flash",
+          provider: {
+            "zai-coding-plan": { options: { baseURL: endpoint, apiKey: key } },
+          },
+        }),
+      },
+      workspace,
+    );
+    await control.initialize();
+    const controlSession = await open(control, null);
+    await control.call("session/prompt", {
+      sessionId: controlSession,
+      prompt: [{ type: "text", text: "Say POLICY_PROBE_OK." }],
+    });
+    const deadline = Date.now() + 10000;
+    while (!(await exists(marker)) && Date.now() < deadline) await sleep(50);
+    await sleep(1500);
+    const controlRequests = stub.requests
+      .slice(restrictedRequests)
+      .filter((entry) => entry.url.endsWith("/chat/completions"));
+    assert(
+      controlRequests.some((entry) => entry.body.tools?.length > 0),
+      "Positive control must expose native tools",
+    );
+    assert(
+      controlRequests.some((entry) =>
+        textOf(entry.body.messages).includes("You are a title generator"),
+      ),
+      "Positive control must title the session with a second request",
+    );
+    // OpenCode reads one global instruction file, its own configuration
+    // home's AGENTS.md before ~/.claude/CLAUDE.md, so the control shows the
+    // first; the restricted run, whose home has neither, shows no marker.
+    const zaiLocations = [
+      "USERHOME-CLAUDE-SKILL",
+      "USERHOME-SKILL",
+      "USERCONFIG-AGENTSMD",
+      "WORKSPACE-AGENTSMD",
+      "WORKSPACE-CONTEXT",
+      "WORKSPACE-SKILL",
+    ];
+    const controlMarkers = markersIn(controlRequests, zaiLocations);
+    assert.deepEqual(
+      controlMarkers,
+      zaiLocations,
+      "Positive control must expose every context fixture",
+    );
+    assert(
+      await exists(marker),
+      "Positive control must run the hostile MCP fixture",
+    );
+    assert(
+      controlRequests.some(
+        (entry) =>
+          chatRequestText(entry.body).instructions.join("\n") !==
+          policies.systemPrompt,
+      ),
+      "Positive control must keep OpenCode's own system prompt",
+    );
+
+    return {
+      runtime: policy.runtime.label,
+      restrictedRequests: turnRequests.length,
+      promptResponse: answered,
+      hostileRequests: hostileRequests.length,
+      hostileToolCallUpdates: toolCalls.length,
+      hostileAnswer,
+      refusedAgentRequests: restricted.agentRequests.map(
+        (value) => value.method,
+      ),
+      restrictedTunnels,
+      otherEndpoints,
+      controlRequests: controlRequests.length,
+      controlContext: controlMarkers,
+      checks: [
+        "pinned OpenCode build",
+        "the account key reaches the Coding Plan endpoint from its file; nothing else is configured",
+        "one model request per owned turn, no title request",
+        "no tools in the request",
+        "the selected model and effort reach the model",
+        "the system message is the benchmark system prompt; environment, instructions and skills absent",
+        "the model sees only the task; slash commands, agent and file mentions inert",
+        "home, user and project context absent (no fixture marker in any restricted request); no MCP server or plugin ran",
+        "prompt response carries usage",
+        "hostile tool call executed nothing",
+        "no catalog, plugin, share or update fetch left the machine",
+        "positive control exposes tools, the user's, Claude and project context fixtures, titles the session and runs the MCP fixture",
+      ],
+    };
+  } finally {
+    await stub.close();
+  }
+}
+
 /** The `verified` block for `provider`'s resource entry: what this run passed
  * on, in the shape NativeProvider::admission_issue compares. */
 async function verification(provider) {
@@ -2453,6 +2956,7 @@ async function verification(provider) {
   const adapter = {
     codex: "benchmark-codex-policy.mjs",
     kimi: "benchmark-kimi-policy.mjs",
+    zai: "benchmark-zai-policy.mjs",
   }[provider];
   return {
     date: new Date().toISOString().slice(0, 10),
@@ -2464,7 +2968,12 @@ async function verification(provider) {
   };
 }
 
-const probes = { codex: probeCodex, grok: probeGrok, kimi: probeKimi };
+const probes = {
+  codex: probeCodex,
+  grok: probeGrok,
+  kimi: probeKimi,
+  zai: probeZai,
+};
 assert(probes[provider], `No policy probe for '${provider}' yet`);
 const root = await mkdtemp(join(tmpdir(), "distill-provider-policy-"));
 const children = [];

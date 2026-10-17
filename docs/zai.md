@@ -37,5 +37,26 @@ reported reset times. Account details also show credit balances and any reported
 MCP tool-call allowance. Missing values remain unknown. A failed refresh preserves
 previous measurements with an error; a telemetry cooldown is not an exhausted
 model allowance. The integration never redeems quota resets automatically.
-Z.ai sessions are not admitted to native benchmark profiles until that runtime
-is verified there.
+
+## Benchmarks
+
+Benchmark sessions run the Linux build of the same OpenCode release inside the
+`distill-bench` sandbox (see [benchmark operations](benchmark-operations.md)).
+Benchmark configurations record Coding Plan use as `subscription`, since the
+plan's endpoint is the only one configured. The sandbox keeps its own copy of
+each account's key: the `benchmark_sandbox_sign_in` command passes the saved
+key to `bench-login zai <account-id>` on standard input, never as an argument
+or in a log. Copy it again after changing the key in Distill. Removing the
+account's sandbox folder (`/home/candidate/accounts/<account-id>/zai`) removes
+the copy; signing out in Distill does not.
+
+Each attempt gets a private copy of the key and may reach only `api.z.ai` on
+port 443, at the addresses it resolves to when the attempt starts; it has no
+DNS and no other host. OpenCode runs with its project configuration, Claude
+compatibility, external skills, default plugins, model catalog fetch, sharing,
+title requests and updates turned off, and with a root-owned configuration home
+holding only the Distill policy plugin. The plugin makes the profile's prompt
+the whole system prompt. The native text profile has no tools; the protected
+repository profile allows OpenCode's file, search, shell and to-do tools, with
+the ripgrep release OpenCode would otherwise download. It has no subagents and
+no web tools.

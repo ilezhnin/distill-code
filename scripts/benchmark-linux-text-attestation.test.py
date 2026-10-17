@@ -94,6 +94,17 @@ class MetadataCacheTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 policy.validate_receipt({**receipt, 'runtimeArtifacts': {}}, 'codex', 'b' * 64, 'c' * 64)
 
+    def test_zai_receipt_binds_opencode_and_its_ripgrep(self):
+        root = Path('/opt/distill-tools')
+        launchers = {'opencode': str(root / 'zai/node_modules/opencode-linux-x64/bin/opencode')}
+        hashed = lambda path, cache=None: {'path': str(path), 'sha256': 'f' * 64}
+        with patch.object(policy, 'launcher_target', side_effect=launchers.__getitem__), \
+                patch.object(policy, 'artifact', side_effect=hashed):
+            artifacts = policy.collect('zai')
+        self.assertEqual(sorted(artifacts), ['entrypoint', 'ripgrep'])
+        self.assertEqual(artifacts['entrypoint']['path'], launchers['opencode'])
+        self.assertEqual(Path(artifacts['ripgrep']['path']), root / 'zai' / 'bin' / 'rg')
+
 
 if __name__ == '__main__':
     unittest.main()

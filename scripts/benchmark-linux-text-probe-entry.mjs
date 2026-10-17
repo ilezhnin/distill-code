@@ -7,7 +7,9 @@ const [provider, script, ...args] = process.argv.slice(2);
 assert.equal(process.env.DISTILL_LINUX_POLICY_PROBE, "offline-v1");
 assert.equal(process.platform, "linux");
 assert.equal(process.env.HOME, "/home/candidate");
-if (provider !== "grok") {
+// Grok and OpenCode are native executables; only Node bridges load the
+// bootstrap.
+if (provider !== "grok" && provider !== "zai") {
   const policies = JSON.parse(
     await readFile(
       new URL(

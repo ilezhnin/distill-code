@@ -68,7 +68,10 @@ before measurement, not during a run. Sign in to the selected account through
 `bench-login` inside the sandbox, following the command described at the top of
 [the provisioning script](../scripts/benchmark-sandbox.mjs). Use the account ID
 from the application and the provider's normal login flow. Never put credentials
-in a task, command transcript intended for publication, or source file.
+in a task, command transcript intended for publication, or source file. A Z.ai
+Coding Plan account has no login flow: the `benchmark_sandbox_sign_in` command
+copies its saved key into the sandbox on the helper's standard input (see
+[Z.ai Coding Plan](zai.md#benchmarks)). Z.ai sessions reach only the Z.ai API.
 
 For an existing distribution, update helpers without downloading dependencies
 or restarting other WSL distributions:
@@ -80,6 +83,15 @@ node scripts/benchmark-linux-text-policy-probe.mjs codex
 node scripts/benchmark-linux-text-policy-probe.mjs claude
 node scripts/benchmark-linux-text-policy-probe.mjs grok
 node scripts/benchmark-linux-text-policy-probe.mjs kimi
+node scripts/benchmark-linux-text-policy-probe.mjs zai
+```
+
+To add or update one provider tool in an existing distribution, for example
+OpenCode for Z.ai, install only that tool. This downloads its pinned packages
+and leaves helpers, users, the browser and other tools as they are:
+
+```powershell
+node scripts/benchmark-sandbox.mjs install-tool zai
 ```
 
 Run qualification for the providers you use after installing their pinned Linux

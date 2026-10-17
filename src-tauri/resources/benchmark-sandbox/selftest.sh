@@ -240,6 +240,51 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
                          ("oauth", "unknown", None))
 
+    def zai_account(self, key):
+        account = scope["ACCOUNTS"] / "invented-account" / "zai"
+        account.mkdir(parents=True, exist_ok=True)
+        (account / "api-key").write_bytes(key)
+        return account
+
+    def test_zai_key_is_copied_privately_and_never_saved_back(self):
+        account = self.zai_account(b"invented-zai-key\n")
+        scope["directory"] = scope["ROOT"] / "zai"
+        scope["prepare"](str(account))
+        copy = scope["directory"] / "home" / "api-key"
+        self.assertEqual(copy.read_bytes(), b"invented-zai-key\n")
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o600)
+        copy.write_bytes(b"changed-by-the-attempt\n")
+        (scope["directory"] / "home" / "auth.json").write_text("{}", encoding="utf-8")
+        scope["save"]()
+        self.assertEqual((account / "api-key").read_bytes(), b"invented-zai-key\n")
+        self.assertFalse((account / "auth.json").exists())
+
+    def test_zai_status_is_unbounded_and_never_prints_the_key(self):
+        account = self.zai_account(b"synthetic-private-zai-key\n")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["account_status"](str(account))
+        self.assertEqual(output.getvalue().splitlines(), [
+            "account zai invented-account yes",
+            "account-health zai invented-account unbounded unknown -",
+        ])
+        invalid_keys = (b"", b"\n", b"synthetic private\n", b"synthetic\nprivate\n", b"x" * 4097)
+        for index, invalid in enumerate(invalid_keys):
+            with self.subTest(invalid=index):
+                (account / "api-key").write_bytes(invalid)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    scope["account_status"](str(account))
+                self.assertEqual(output.getvalue().splitlines(), [
+                    "account zai invented-account no",
+                    "account-health zai invented-account unknown invalid -",
+                ])
+                self.assertNotIn("synthetic", output.getvalue())
+                scope["directory"] = scope["ROOT"] / f"invalid-{index}"
+                with self.assertRaisesRegex(ValueError, "invalid API key file"):
+                    scope["prepare"](str(account))
+
     def test_status_never_prints_tokens_or_invalid_document_excerpts(self):
         expiry = int(time.time()) + 3600
         account, target = self.account("claude", claude(expiry, "synthetic-private-token"))
@@ -315,6 +360,31 @@ printf '{"access_token":"older","refresh_token":"older","expires_at":400}\n' >/s
 /usr/local/sbin/bench-auth save selftest-kimi-a
 check "newer Kimi refresh replaces an older completed grant" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["expires_at"])' "$kimi_home/credentials/kimi-code.json")" 500
 for item in a b; do /usr/local/sbin/bench-clean "selftest-kimi-$item"; done
+
+# Z.ai: an invented key, piped in as the host pipes the real one.
+zai_home=$auth_account/zai
+check "Z.ai key is never read from a terminal" "$(script -qec "/usr/local/sbin/bench-login zai $(basename "$auth_account")" /dev/null </dev/null >/dev/null 2>&1; echo $?)" 64
+printf 'invented-zai-key\n' | /usr/local/sbin/bench-login zai "$(basename "$auth_account")" >/dev/null
+check "Z.ai key stored privately" "$(stat -c '%a %U' "$zai_home/api-key")" "600 root"
+check "Z.ai account is signed in" "$(/usr/local/sbin/bench-auth status "$zai_home")" \
+  "account zai $(basename "$auth_account") yes
+account-health zai $(basename "$auth_account") unbounded unknown -"
+check "a line break inside a key is refused" "$(printf 'invented\nkey\n' | /usr/local/sbin/bench-login zai "$(basename "$auth_account")" >/dev/null 2>&1; echo $?)" 65
+/usr/local/sbin/bench-copy selftest-z </tmp/selftest.tar >/dev/null
+zai() { run session selftest-z "DISTILL_BENCH_ACCOUNT_HOME=$zai_home" -- "$@"; }
+check "Z.ai session gets a private key copy" "$(zai bash -c 'cat /tmp/provider/api-key; printf changed >/tmp/provider/api-key')" invented-zai-key
+check "Z.ai session names only the API" "$(zai bash -c 'getent hosts api.z.ai >/dev/null && echo api; getent hosts api.anthropic.com >/dev/null && echo other')" api
+check "Z.ai session reaches the Z.ai API" "$(zai curl -s -o /dev/null -w '%{http_code}' -m 15 https://api.z.ai/ | grep -c '^[1-5][0-9][0-9]$')" 1
+check "Z.ai session reaches no other host" "$(zai curl -s -m 5 https://1.1.1.1/ >/dev/null; echo $?)" 7
+check "Z.ai session has no resolver" "$(zai bash -c 'timeout 5 bash -c "exec 3<>/dev/tcp/8.8.8.8/53" 2>/dev/null && echo open')" ""
+zai_address=$(getent ahostsv4 api.z.ai | awk 'NR == 1 {print $1}')
+check "Z.ai session has no other port" "$(zai bash -c "timeout 5 bash -c 'exec 3<>/dev/tcp/$zai_address/80' 2>/dev/null && echo open")" ""
+/usr/local/sbin/bench-kill session selftest-z
+/usr/local/sbin/bench-clean selftest-z
+check "Z.ai attempt never writes the account key" "$(cat "$zai_home/api-key")" invented-zai-key
+check "Z.ai clean removes its firewall" "$(iptables -S | grep -c "DZ-$(printf '%s' selftest-z | sha256sum | cut -c1-12)")" 0
+check "public session after Z.ai still public" "$(run session selftest-b -- curl -s -o /dev/null -w '%{http_code}' -m 15 https://api.anthropic.com/ | grep -c '^[1-5][0-9][0-9]$')" 1
+/usr/local/sbin/bench-kill session selftest-b
 /usr/local/sbin/bench-clean selftest-a
 /usr/local/sbin/bench-clean selftest-b
 rm -rf "$auth_account"

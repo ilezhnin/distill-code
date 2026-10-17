@@ -541,6 +541,7 @@ fn native_text_reason(provider: NativeProvider) -> &'static str {
         NativeProvider::Codex => "Fresh owned sessions with Codex tools, code mode, subagents, skills, AGENTS.md, apps and web search disabled; exact selection required; 'ultra' effort excluded",
         NativeProvider::Grok => "Fresh owned sessions on a private Grok home with tools, rules, hooks, skills and web search disabled; uses the Grok CLI sign-in",
         NativeProvider::Kimi => "Fresh owned sessions with Kimi tools, SYSTEM.md, AGENTS.md, hooks, reminders, MCP and search disabled in process; uses the Kimi Code sign-in",
+        NativeProvider::Zai => "Fresh owned OpenCode sessions with tools, instructions, skills, plugins, MCP and titles disabled; GLM Coding Plan subscription endpoint only, no metered fallback; uses the account key Distill copies into distill-bench",
     }
 }
 
@@ -607,6 +608,36 @@ pub async fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
         });
     }
     capabilities
+}
+/// Copies the saved key of the Z.ai Coding Plan account `account_id` into
+/// the benchmark sandbox, where that account's benchmark sessions read it.
+/// Run it again after changing the key in Distill. Device-login providers
+/// sign in inside the sandbox with `bench-login` instead.
+#[tauri::command]
+pub async fn benchmark_sandbox_sign_in(
+    app: AppHandle,
+    provider_id: String,
+    account_id: String,
+) -> Result<()> {
+    if provider_id != NativeProvider::Zai.harness_id() {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Only Z.ai keys are copied into the sandbox; other providers sign in there with bench-login",
+        ));
+    }
+    let account = provider_accounts::account(&app, &account_id)
+        .map_err(|message| BenchmarkError::new("validation", message))?;
+    if account.provider_id != provider_id {
+        return Err(BenchmarkError::new(
+            "validation",
+            "The account belongs to another provider",
+        ));
+    }
+    let key = provider_accounts::api_key(&app, &account)
+        .map_err(|message| BenchmarkError::new("validation", message))?;
+    crate::services::benchmark_sandbox::store_api_key(&account.id, &key)
+        .await
+        .map_err(|error| BenchmarkError::new("infrastructure_failure", error.to_string()))
 }
 /// Ledger analysis is CPU work over every attempt; it runs off the async
 /// workers so a long history never stalls other commands.
@@ -1072,6 +1103,11 @@ mod tests {
         assert!(grok.supported);
         assert_eq!(grok.reason, native_text_reason(NativeProvider::Grok));
         assert_eq!(grok.cli_account_id.as_deref(), Some("cli-login-grok-acp"));
+        // Z.ai runs on managed Coding Plan accounts.
+        let zai = native_text_capability(NativeProvider::Zai);
+        assert!(zai.supported);
+        assert_eq!(zai.reason, native_text_reason(NativeProvider::Zai));
+        assert_eq!(zai.cli_account_id, None);
         // A profile the probe has not passed says why, and keeps naming its
         // CLI sign-in, so its rows still list.
         let unprobed = capability_with_issue(

@@ -22,6 +22,11 @@ echo "git $(git --version 2>/dev/null | cut -d' ' -f3)"
 for binary in /usr/local/bin/node /usr/bin/git /opt/distill-tools/bin/*; do
   echo "binary $binary $(sha256sum "$binary" 2>/dev/null | cut -d' ' -f1)"
 done
+# Executables a tool keeps on its own sessions' PATH alone (Z.ai's ripgrep).
+for binary in /opt/distill-tools/zai/bin/*; do
+  [[ -f $binary ]] || continue
+  echo "binary $binary $(sha256sum "$binary" 2>/dev/null | cut -d' ' -f1)"
+done
 echo "netns $(if ip netns exec bench ip -4 route show default 2>/dev/null | grep -q 10.231.0.1; then echo up; else echo down; fi)"
 for manifest in /opt/distill-tools/*/manifest; do
   [[ -f $manifest ]] || continue
@@ -41,7 +46,7 @@ for account in /home/candidate/accounts/*/*; do
   [[ -d $account ]] || continue
   provider=$(basename "$account")
   id=$(basename "$(dirname "$account")")
-  if [[ $provider == claude || $provider == grok ]]; then
+  if [[ $provider == claude || $provider == grok || $provider == zai ]]; then
     /usr/local/sbin/bench-auth status "$account" || {
       echo "account $provider $id no"
       echo "account-health $provider $id unknown invalid -"

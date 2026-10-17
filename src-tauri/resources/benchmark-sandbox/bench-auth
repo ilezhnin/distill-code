@@ -1,5 +1,9 @@
 #!/usr/bin/python3
-"""Prepare private CLI homes; retain only changed OAuth files after a stop."""
+"""Prepare private CLI homes; retain only changed OAuth files after a stop.
+
+A Z.ai account holds one API key that Distill copied in with bench-login.
+Attempts get a private copy and nothing they write is ever saved back.
+"""
 import fcntl
 import hashlib
 import json
@@ -37,12 +41,20 @@ def credential_json(data):
     return value
 
 
+def api_key(data):
+    """A stored API key: one printable ASCII line, as bench-login writes it."""
+    key = data[:-1] if data.endswith(b"\n") else data
+    if not 0 < len(key) <= 4096 or any(byte < 0x21 or byte > 0x7e for byte in key):
+        raise ValueError("invalid API key file")
+    return data
+
+
 def account_path(value):
     path = Path(value)
     relative = path.relative_to(ACCOUNTS)
     if (len(relative.parts) != 2
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", relative.parts[0])
-            or relative.parts[1] not in ("claude", "codex", "grok", "kimi")
+            or relative.parts[1] not in ("claude", "codex", "grok", "kimi", "zai")
             or path.resolve(strict=True) != path):
         raise ValueError("invalid sandbox account")
     return path
@@ -67,6 +79,15 @@ def prepare(value):
     home = directory / "home"
     home.mkdir(mode=0o700)
     os.chown(home, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+    if provider == "zai":
+        # A static key: no original is recorded, so save never imports a
+        # file from the attempt into the account.
+        source = account / "api-key"
+        if source.resolve(strict=True) != source:
+            raise ValueError("unsafe credential path")
+        write_private(home / "api-key", api_key(regular_bytes(source)), True)
+        write_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": {}}).encode())
+        return
     if provider == "kimi":
         credentials = account / "credentials"
         if credentials.resolve(strict=True) != credentials:
@@ -220,11 +241,17 @@ def account_status(value):
     account = account_path(value)
     provider = account.name
     try:
-        source = account / (".credentials.json" if provider == "claude" else "auth.json")
+        name = {"claude": ".credentials.json", "zai": "api-key"}.get(provider, "auth.json")
+        source = account / name
         if source.resolve(strict=True) != source:
             raise ValueError("unsafe credential path")
-        health = local_credential_health(provider, credential_json(regular_bytes(source)),
-                                         int(time.time() * 1000))
+        if provider == "zai":
+            # An API key makes no expiry claim; its usage policy decides.
+            api_key(regular_bytes(source))
+            health = ("unbounded", "unknown", None)
+        else:
+            health = local_credential_health(provider, credential_json(regular_bytes(source)),
+                                             int(time.time() * 1000))
     except FileNotFoundError:
         health = ("unknown", "missing", None)
     except Exception:

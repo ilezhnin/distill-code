@@ -9,6 +9,8 @@
   "binary /opt/distill-tools/bin/codex-acp": "90890c0681e9369de798325ac2a32c7011ca85f5388add32db4508a6da2a1256",
   "binary /opt/distill-tools/bin/grok": "f01423fa4f9a5eb56f0834a7392df438705fca7d48db83d66b2a31b9092b8881",
   "binary /opt/distill-tools/bin/kimi": "1707ed4d3da50b1e005953eaac581137ea450b1dae01654cdb1bde34f1a624f6",
+  "binary /opt/distill-tools/bin/opencode": "e3b42cdbf8e725691382f2ce2db5b0190685769a19fc41ee7d1c13052e64563d",
+  "binary /opt/distill-tools/zai/bin/rg": "ebeaf56f8a25e102e9419933423738b3a2a613a444fd749d695e15eba53f71f2",
   "tool claude-acp version": "@agentclientprotocol/claude-agent-acp@0.81.0",
   "tool claude-acp file claude": "1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b",
   "tool claude-acp file claude-agent-acp": "9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
@@ -18,5 +20,7 @@
   "tool grok version": "@xai-official/grok@1.0.40",
   "tool grok file grok": "92c997dfd109c0672d40d5ae6fbd15835d53ffaf12cf9ea124d22aaef3ff23fc",
   "tool kimi version": "@moonshot-ai/kimi-code@2.1.0",
-  "tool kimi file kimi": "6f801a114b5a5d708d9fec1ea0002ac42ec19841c088a96aecd7e6117b8b1d59"
+  "tool kimi file kimi": "6f801a114b5a5d708d9fec1ea0002ac42ec19841c088a96aecd7e6117b8b1d59",
+  "tool zai version": "opencode-linux-x64@1.18.35",
+  "tool zai file opencode": "77b2cfe4b97df6f15c3673b22100b9f79c711f25ecb9bf513bb82526b15d24fa"
 }

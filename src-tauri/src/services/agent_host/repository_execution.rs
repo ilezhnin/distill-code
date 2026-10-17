@@ -48,6 +48,7 @@ fn adapter(provider: NativeProvider) -> Option<&'static str> {
         NativeProvider::Claude => Some(execution::NATIVE_TEXT_ADAPTER),
         NativeProvider::Codex => Some(CODEX),
         NativeProvider::Kimi => Some(KIMI),
+        NativeProvider::Zai => NativeProvider::Zai.adapter(),
         NativeProvider::Grok => None,
     }
 }
@@ -115,6 +116,17 @@ fn environment(provider: NativeProvider) -> Vec<(String, String)> {
             env.push(("KIMI_CODE_HOME".into(), "/home/candidate/.kimi-code".into()));
             env.push(("KIMI_CODE_NO_AUTO_UPDATE".into(), "1".into()));
         }
+        NativeProvider::Zai => {
+            env.extend(provider.policy_env());
+            let config = super::zai::repository_config(
+                &provider.policy_config().expect("Z.ai configuration"),
+                PROMPT,
+            );
+            env.extend(super::zai::sandbox_env(
+                &config,
+                adapter(provider).expect("Z.ai policy plugin"),
+            ));
+        }
     }
     env
 }
@@ -124,6 +136,7 @@ pub(super) fn permission_mode(provider: NativeProvider) -> Option<&'static str> 
         NativeProvider::Claude => Some("bypassPermissions"),
         NativeProvider::Codex => Some("agent-full-access"),
         NativeProvider::Kimi => Some("auto"),
+        NativeProvider::Zai => Some(super::zai::REPOSITORY_AGENT),
         NativeProvider::Grok => None,
     }
 }
@@ -159,7 +172,7 @@ pub(super) fn session_meta(provider: NativeProvider, model: &str) -> Value {
             profile.as_object_mut().unwrap().remove("maxTurns");
             meta
         }
-        NativeProvider::Codex | NativeProvider::Kimi => json!({}),
+        NativeProvider::Codex | NativeProvider::Kimi | NativeProvider::Zai => json!({}),
     }
 }
 
@@ -206,8 +219,11 @@ pub(super) fn launch(
             .map(|(key, value)| format!("{key}={value}")),
     );
     args.push("--".into());
-    // No shell interprets the host's environment or arguments.
-    if let Some(adapter) = adapter(provider) {
+    // No shell interprets the host's environment or arguments. OpenCode and
+    // Grok are native executables; the others are Node bridges.
+    if provider == NativeProvider::Zai {
+        args.extend(["/opt/distill-tools/bin/opencode", "acp"].map(str::to_owned));
+    } else if let Some(adapter) = adapter(provider) {
         args.extend([
             "/usr/local/bin/node".into(),
             "--import".into(),
@@ -220,7 +236,7 @@ pub(super) fn launch(
             NativeProvider::Claude => "/opt/distill-tools/claude-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
             NativeProvider::Codex => "/opt/distill-tools/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
             NativeProvider::Kimi => "/opt/distill-tools/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
-            NativeProvider::Grok => unreachable!(),
+            NativeProvider::Grok | NativeProvider::Zai => unreachable!(),
         };
         args.push(entrypoint.into());
         if provider == NativeProvider::Kimi {
@@ -391,5 +407,43 @@ mod tests {
         assert_eq!(codex["features"]["multi_agent"], false);
         assert_ne!(attempt_id("one"), attempt_id("two"));
         assert!(sandbox::valid_id(&attempt_id("owner:with/slashes")).is_ok());
+    }
+
+    /// The Z.ai repository profile is OpenCode's repository agent: local file
+    /// and shell tools in the workspace, with the repository prompt as its
+    /// whole system prompt.
+    #[test]
+    fn zai_repository_runs_the_repository_agent() {
+        let zai = NativeProvider::Zai;
+        assert_eq!(permission_mode(zai), Some("distill-repository"));
+        assert_eq!(session_meta(zai, "zai-coding-plan/glm-5.3"), json!({}));
+        let env: std::collections::BTreeMap<String, String> =
+            environment(zai).into_iter().collect();
+        assert_eq!(env["DISTILL_BENCH_INSTRUCTIONS"], PROMPT);
+        assert_eq!(env["OPENCODE_DISABLE_PROJECT_CONFIG"], "true");
+        assert!(env["PATH"].starts_with("/opt/distill-tools/zai/bin:"));
+        let config: Value = serde_json::from_str(&env["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(config["default_agent"], "distill-repository");
+        assert_eq!(config["agent"]["distill-repository"]["prompt"], PROMPT);
+        assert_eq!(config["plugin"][0][1]["prompt"], PROMPT);
+        assert_eq!(env["DISTILL_BENCH_OPENCODE_PLUGIN"], zai.adapter().unwrap());
+        let request = OwnedSessionRequest {
+            owner_id: "invented-owner".into(),
+            provider_id: "zai-acp".into(),
+            account_id: "invented-account".into(),
+            model_id: "zai-coding-plan/glm-5.3".into(),
+            reasoning_effort: None,
+            fast_mode: None,
+            cwd: "/workspace".into(),
+            title: "Synthetic repository task".into(),
+            profile: ExecutionProfile::ProtectedRepositoryV1,
+        };
+        let launch = launch(&request, zai, "revision".into());
+        assert!(launch.args.ends_with(&[
+            "--".into(),
+            "/opt/distill-tools/bin/opencode".into(),
+            "acp".into()
+        ]));
+        assert_eq!(launch.sandbox.unwrap().0, attempt_id("invented-owner"));
     }
 }

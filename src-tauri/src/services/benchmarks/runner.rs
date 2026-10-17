@@ -1745,7 +1745,7 @@ impl NativeBackend {
     ) -> Result<Vec<InventoryModel>> {
         let record =
             crate::services::provider_accounts::account(&self.app, account).map_err(host_error)?;
-        let billing = record.auth_method;
+        let billing = crate::services::provider_accounts::billing_mode(&record);
         // A provider with no verified profile is listed but never pinned
         // or admitted.
         let native = NativeProvider::for_harness(provider);
@@ -1779,14 +1779,7 @@ impl NativeBackend {
                         model_id: id.into(),
                         effort: None,
                         fast_mode: None,
-                        billing_mode: if billing
-                            == crate::services::provider_accounts::AuthMethod::ApiKey
-                        {
-                            "api"
-                        } else {
-                            "subscription"
-                        }
-                        .into(),
+                        billing_mode: billing.into(),
                         execution_profile: "native_text".into(),
                         inventory_revision: identity
                             .as_ref()

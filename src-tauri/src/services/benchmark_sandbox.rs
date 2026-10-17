@@ -1223,6 +1223,40 @@ fn parse_status(text: &str) -> io::Result<Status> {
     })
 }
 
+/// What `bench-login zai` reads on standard input: the key as one printable
+/// ASCII line, the form the sandbox stores and accepts.
+fn api_key_input(key: &str) -> io::Result<Vec<u8>> {
+    let key = key.trim();
+    if key.is_empty() || key.len() > 4096 || !key.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "The saved key is not one printable line; save it again in Distill",
+        ));
+    }
+    Ok(format!("{key}\n").into_bytes())
+}
+
+/// Copies a Z.ai account's saved key into its sandbox home, where every
+/// benchmark session of the account reads a private copy. The key travels
+/// only on the helper's standard input: never as an argument, a variable or
+/// in a diagnostic, which carries only the helper's own short message.
+pub(crate) async fn store_api_key(account: &str, key: &str) -> io::Result<()> {
+    valid_id(account)?;
+    let input = api_key_input(key)?;
+    invoke_raw(
+        "/usr/local/sbin/bench-login",
+        &["zai", account],
+        Some(&input),
+        TAIL_BYTES,
+        Duration::from_secs(60),
+        None,
+    )
+    .await?
+    .require_success("Z.ai key copy")?;
+    Ok(())
+}
+
 pub(crate) async fn copy(id: &str, archive: &[u8]) -> io::Result<()> {
     valid_id(id)?;
     invoke(
@@ -1884,6 +1918,56 @@ mod tests {
             assert!(signed
                 .require_account_window(provider, "account-2", 1_800_000_000_000, 3600)
                 .is_err());
+        }
+    }
+
+    /// A Z.ai key is an API key: signed in while bench-login stored one, with
+    /// no expiry claim, and part of no runtime identity.
+    #[test]
+    fn a_zai_key_is_an_unbounded_sign_in_outside_runtime_identity() {
+        let base = status();
+        let signed = parse_status(&format!(
+            "{base}\naccount zai account-1 yes\naccount-health zai account-1 unbounded unknown -"
+        ))
+        .unwrap();
+        assert_eq!(signed.revision, parse_status(&base).unwrap().revision);
+        assert!(signed
+            .require_account_window("zai", "account-1", 1_800_000_000_000, 3600)
+            .is_ok());
+        let missing = parse_status(&format!(
+            "{base}\naccount zai account-1 no\naccount-health zai account-1 unknown missing -"
+        ))
+        .unwrap();
+        assert!(missing.require_account("zai", "account-1").is_err());
+        // The pinned OpenCode and its ripgrep are part of the runtime.
+        for pin in [
+            "binary /opt/distill-tools/bin/opencode",
+            "binary /opt/distill-tools/zai/bin/rg",
+            "tool zai file opencode",
+        ] {
+            let line = base.lines().find(|line| line.starts_with(pin)).unwrap();
+            assert!(parse_status(&base.replace(line, &format!("{pin} changed"))).is_err());
+        }
+    }
+
+    #[test]
+    fn a_saved_key_reaches_bench_login_as_one_line_or_not_at_all() {
+        assert_eq!(
+            api_key_input("  invented-zai-key.Part2  ").unwrap(),
+            b"invented-zai-key.Part2\n"
+        );
+        let long = "k".repeat(4097);
+        for invalid in [
+            "",
+            "   ",
+            "invented key",
+            "invented\nkey",
+            "invented\u{e9}key",
+            long.as_str(),
+        ] {
+            let error = api_key_input(invalid).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(!error.to_string().contains("invented"));
         }
     }
 

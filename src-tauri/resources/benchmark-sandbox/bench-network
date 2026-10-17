@@ -1,22 +1,49 @@
 #!/bin/bash
-# bench-network ID [clean]: one candidate network namespace. Only public
-# internet egress; even localhost belongs to this attempt alone.
+# bench-network ID [public|zai|clean]: one candidate network namespace. Even
+# localhost belongs to this attempt alone.
+#   public  egress to the public internet only (the default)
+#   zai     HTTPS to the Z.ai API alone: the addresses api.z.ai resolves to
+#           now, named in the namespace's own /etc/hosts; no DNS and no other
+#           host, public or private
 set -euo pipefail
 id=${1:-}
-[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || exit 64
+egress=${2:-public}
+[[ $id =~ ^[A-Za-z0-9_-]{1,80}$ && $egress =~ ^(public|zai|clean)$ ]] || exit 64
 key=$(printf '%s' "$id" | sha256sum | cut -c1-12)
-host=db$key
-peer=dp$key
 namespace=distill-$key
+peer=dp$key
+# An allowlisted attempt has its own interface prefix, so the public rules
+# installed for db+ never apply to it.
+host=db$key
+[[ $egress != zai ]] || host=dz$key
+chain=DZ-$key
 exec 9>/run/lock/distill-bench-network
 flock 9
-if [[ ${2:-} == clean ]]; then
-  ip link del "$host" 2>/dev/null || true
+remove() {
+  ip link del "db$key" 2>/dev/null || true
+  ip link del "dz$key" 2>/dev/null || true
+  while iptables -D FORWARD -i "dz$key" -j "$chain" 2>/dev/null; do :; done
+  iptables -F "$chain" 2>/dev/null || true
+  iptables -X "$chain" 2>/dev/null || true
   ip netns del "$namespace" 2>/dev/null || true
+  rm -rf "/etc/netns/$namespace"
+}
+if [[ $egress == clean ]]; then
+  remove
   exit 0
 fi
 /usr/local/sbin/bench-net
 [[ ! -e /run/netns/$namespace ]] || { echo "$namespace"; exit 0; }
+addresses=()
+if [[ $egress == zai ]]; then
+  # Resolved by the VM's public resolvers; only global unicast IPv4 counts.
+  mapfile -t addresses < <(/usr/bin/python3 -c '
+import ipaddress, socket
+found = {info[4][0] for info in socket.getaddrinfo("api.z.ai", 443, socket.AF_INET, socket.SOCK_STREAM)}
+print("\n".join(sorted(a for a in found if ipaddress.ip_address(a).is_global)))
+' 2>/dev/null || true)
+  [[ ${#addresses[@]} -gt 0 && -n ${addresses[0]} ]] || { echo 'Cannot resolve the Z.ai API' >&2; exit 75; }
+fi
 # Allocate a free /30 under the lock. Routes disappear with their veth.
 subnet=
 for ((n=0; n<16384; n++)); do
@@ -27,7 +54,7 @@ for ((n=0; n<16384; n++)); do
   fi
 done
 [[ -n $subnet ]] || { echo 'No free benchmark subnet' >&2; exit 75; }
-trap 'ip link del "$host" 2>/dev/null || true; ip netns del "$namespace" 2>/dev/null || true' ERR
+trap remove ERR
 ip netns add "$namespace"
 ip link add "$host" type veth peer name "$peer"
 ip link set "$peer" netns "$namespace"
@@ -38,10 +65,35 @@ ip netns exec "$namespace" ip link set "$peer" up
 ip netns exec "$namespace" ip link set lo up
 ip netns exec "$namespace" ip route add default via "$subnet.$((b + 1))"
 ip netns exec "$namespace" sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
-iptables -C FORWARD -i db+ -j DISTILL-BENCH 2>/dev/null || iptables -I FORWARD -i db+ -j DISTILL-BENCH
-iptables -C FORWARD -o db+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null ||
-  iptables -I FORWARD -o db+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -C INPUT -i db+ -j DROP 2>/dev/null || iptables -I INPUT -i db+ -j DROP
+if [[ $egress == zai ]]; then
+  iptables -N "$chain" 2>/dev/null || iptables -F "$chain"
+  for range in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 \
+    172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/3; do
+    iptables -A "$chain" -d "$range" -j REJECT
+  done
+  for address in "${addresses[@]}"; do
+    iptables -A "$chain" -o eth0 -d "$address" -p tcp --dport 443 -j ACCEPT
+  done
+  iptables -A "$chain" -j REJECT
+  iptables -I FORWARD -i "$host" -j "$chain"
+  iptables -C FORWARD -o dz+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null ||
+    iptables -I FORWARD -o dz+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -C INPUT -i dz+ -j DROP 2>/dev/null || iptables -I INPUT -i dz+ -j DROP
+  # `ip netns exec` binds these over /etc/hosts and /etc/resolv.conf. With
+  # no nameserver every other name fails at once on the namespace's own
+  # loopback instead of waiting for a blocked resolver.
+  mkdir -p "/etc/netns/$namespace"
+  {
+    printf '127.0.0.1 localhost\n'
+    printf '%s api.z.ai\n' "${addresses[@]}"
+  } >"/etc/netns/$namespace/hosts"
+  printf 'options timeout:1 attempts:1\n' >"/etc/netns/$namespace/resolv.conf"
+else
+  iptables -C FORWARD -i db+ -j DISTILL-BENCH 2>/dev/null || iptables -I FORWARD -i db+ -j DISTILL-BENCH
+  iptables -C FORWARD -o db+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null ||
+    iptables -I FORWARD -o db+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -C INPUT -i db+ -j DROP 2>/dev/null || iptables -I INPUT -i db+ -j DROP
+fi
 iptables -t nat -C POSTROUTING -s 10.232.0.0/16 -o eth0 -j MASQUERADE 2>/dev/null ||
   iptables -t nat -A POSTROUTING -s 10.232.0.0/16 -o eth0 -j MASQUERADE
 echo "$namespace"
