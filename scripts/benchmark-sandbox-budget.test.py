@@ -302,6 +302,41 @@ class BudgetTests(unittest.TestCase):
             budget.ADMISSION_MEMORY = production_memory
         self.assertEqual(budget.priority_waiting('text'), 'a check or preparation waits for room first')
 
+    def test_a_group_that_vanishes_has_stopped(self):
+        # The job's supervisor and the reaper remove groups too, so a group
+        # can go between bench-kill's test and its kill write, or between
+        # observe's and stop()'s reads. That is a stopped group, not a failed
+        # cleanup: g6 lost attempts to "cgroup.kill: No such file or directory".
+        gone = budget.ROOT / 'session-fictional-gone'
+        self.assertFalse(budget.populated(gone))
+        budget.stop = production_stop
+        self.assertTrue(budget.stop(['session-fictional-gone']))
+        self.assertIsNone(budget.observe('session', 'fictional-gone'))
+        bash = shutil.which('bash') if sys.platform != 'win32' else next(
+            (str(path) for path in (Path(r'C:\Program Files\Git\bin\bash.exe'),) if path.exists()), None)
+        if bash is None:
+            self.skipTest('no POSIX bash for bench-kill')
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            group = work / 'cgroups' / 'session-fictional'
+            group.mkdir(parents=True)
+            (group / 'cgroup.procs').write_text('')
+            # The observation is where the group goes: its supervisor removes
+            # it meanwhile.
+            observe = work / 'observe'
+            observe.write_text(f'#!/bin/bash\nrm -rf "{group.as_posix()}"\n', newline='\n')
+            observe.chmod(0o755)
+            killer = work / 'bench-kill'
+            killer.write_text(source.with_name('bench-kill').read_text()
+                              .replace('/sys/fs/cgroup/distill-bench', (work / 'cgroups').as_posix())
+                              .replace('/usr/local/sbin/bench-budget', observe.as_posix()),
+                              newline='\n')
+            stopped = subprocess.run([bash, killer.as_posix(), 'session', 'fictional'],
+                                     capture_output=True, text=True, timeout=60)
+            self.assertEqual(stopped.returncode, 0, stopped.stderr)
+            self.assertNotIn('No such file', stopped.stderr)
+            self.assertFalse(group.exists())
+
     def test_a_group_with_exiting_tasks_is_left_for_the_next_reap(self):
         # cgroup.procs can read empty while exiting tasks still populate the
         # group, and rmdir then fails with EBUSY. That must not fail another

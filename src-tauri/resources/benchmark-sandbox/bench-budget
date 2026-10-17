@@ -332,12 +332,16 @@ RMDIR_RETRY = 1.0
 
 def populated(path):
     """Whether a group still holds tasks, exiting ones included: cgroup.procs
-    can read empty while they still populate it."""
+    can read empty while they still populate it. A group that is gone holds
+    nothing: bench-kill and the job's supervisor remove groups too."""
     try:
         events = dict(line.split() for line in (path / 'cgroup.events').read_text().splitlines() if line.strip())
         return events.get('populated') == '1'
     except (OSError, ValueError):
-        return bool((path / 'cgroup.procs').read_text().strip())
+        try:
+            return bool((path / 'cgroup.procs').read_text().strip())
+        except FileNotFoundError:
+            return False
 
 
 def stop(groups):
@@ -345,18 +349,22 @@ def stop(groups):
     still has exiting tasks after a short wait is left for the next reap: its
     removal must not fail another job's admission."""
     for name in groups:
-        path = ROOT / name
-        if path.exists():
-            write(path / 'cgroup.kill', 1)
+        # A group removed meanwhile has stopped.
+        try:
+            write(ROOT / name / 'cgroup.kill', 1)
+        except FileNotFoundError:
+            pass
     until = time.monotonic() + 5
     removed = True
     for name in groups:
         path = ROOT / name
         while path.exists() and populated(path) and time.monotonic() < until:
             time.sleep(0.05)
-        if not path.exists():
+        try:
+            left = (path / 'cgroup.procs').read_text().strip()
+        except FileNotFoundError:
             continue
-        if (path / 'cgroup.procs').read_text().strip():
+        if left:
             fail('benchmark process tree did not stop')
         retry = time.monotonic() + RMDIR_RETRY
         while True:
@@ -921,9 +929,12 @@ def observe(mode, identifier):
         fail('invalid sandbox observation mode')
     name = mode + '-' + identifier
     events = ROOT / name / 'memory.events'
-    if not events.exists():
+    # The job's supervisor and the reaper remove groups: one that is gone,
+    # before or while it is read, has nothing left to observe.
+    try:
+        counters = dict(line.split() for line in events.read_text().splitlines())
+    except FileNotFoundError:
         return
-    counters = dict(line.split() for line in events.read_text().splitlines())
     if not int(counters.get('oom_kill', 0)):
         return
     with locked():
