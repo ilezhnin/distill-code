@@ -12,6 +12,10 @@ struct PanelBackend {
     calls: AtomicUsize,
     bad_seat: bool,
     hold: bool,
+    /// Controls from this index on find the judges busy, before anything is
+    /// rendered or asked; refused panels are counted apart from asked ones.
+    refuse_from: AtomicUsize,
+    refusals: AtomicUsize,
 }
 impl runner::ExecutionBackend for PanelBackend {
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
@@ -43,6 +47,13 @@ impl runner::ExecutionBackend for PanelBackend {
         index: usize,
     ) -> BoxFuture<'a, Result<Evaluation>> {
         Box::pin(async move {
+            if index >= self.refuse_from.load(Ordering::SeqCst) {
+                self.refusals.fetch_add(1, Ordering::SeqCst);
+                return Err(BenchmarkError::new(
+                    "resource_busy",
+                    "Judge accounts are busy; evaluate again later",
+                ));
+            }
             self.calls.fetch_add(1, Ordering::SeqCst);
             let panel = super::super::judge_panel::frozen(&version.manifest, &[])?.unwrap();
             let batch = format!("{}-control-{index}", record.id);
@@ -186,6 +197,8 @@ async fn fixture(
         calls: AtomicUsize::new(0),
         bad_seat,
         hold,
+        refuse_from: AtomicUsize::new(usize::MAX),
+        refusals: AtomicUsize::new(0),
     });
     (
         BenchmarkService {
@@ -351,4 +364,260 @@ async fn revocation_or_restart_preserves_the_first_partial_panel_without_replay(
         assert_eq!(service.qualify_version(request).await.unwrap().id, first.id);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     }
+}
+
+/// An exact version whose controls an invented sandbox may refuse before any
+/// evaluator worker starts.
+async fn objective_fixture(
+    root: &std::path::Path,
+) -> (Arc<BenchmarkService>, Arc<runner::FakeBackend>, Request) {
+    let store = Store::open(root).await.unwrap();
+    let mut draft = super::super::seeds::definitions().remove(0);
+    draft.split = "train".into();
+    draft.task_family = "invented-objective-qualification".into();
+    draft.evaluator.kind = "exact".into();
+    draft.evaluator.expected = "READY".into();
+    draft.evaluator.known_good = "READY".into();
+    draft.evaluator.known_bad = "WAIT".into();
+    draft.evaluator.revision = "invented-exact-1".into();
+    let definition = store.save_draft(None, None, draft).await.unwrap();
+    let version = store
+        .publish(&definition.id, definition.draft_revision)
+        .await
+        .unwrap();
+    let request = Request {
+        request_key: "invented-objective".into(),
+        version_id: version.id,
+        content_hash: version.content_hash,
+        evaluator_revision: version.manifest.evaluator.revision,
+        reviewer: "Fixture operator".into(),
+        contract_review: "Invented requirement".into(),
+        alternative_review: "A plain and a fenced answer".into(),
+        family_review: "Invented family only".into(),
+        exposure_review: "Development fixture; not held-out evidence".into(),
+        requirements: vec![Requirement {
+            id: "ready".into(),
+            statement: "The answer is READY".into(),
+            positive_controls: vec!["a".into(), "b".into()],
+            negative_controls: vec!["c".into(), "d".into()],
+        }],
+        controls: [
+            ("a", "READY", "pass"),
+            ("b", "```text\nREADY\n```", "pass"),
+            ("c", "WAIT", "fail"),
+            ("d", "```\nREADY\n```\nand more", "fail"),
+        ]
+        .into_iter()
+        .map(|(id, output, expected)| Control {
+            id: id.into(),
+            output: output.into(),
+            expected: expected.into(),
+            rationale: "Invented known outcome".into(),
+        })
+        .collect(),
+        rubric: None,
+    };
+    let backend = Arc::new(runner::FakeBackend::default());
+    let service = Arc::new(BenchmarkService {
+        store,
+        backend: backend.clone(),
+        wake: Default::default(),
+        active: Default::default(),
+        app: None,
+    });
+    (service, backend, request)
+}
+
+/// The first qualification of `version_id` once `ready` holds for it.
+async fn first_record(store: &Store, version_id: &str, ready: impl Fn(&Record) -> bool) -> Record {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(binding) = store
+                .qualification_bindings(version_id)
+                .await
+                .unwrap()
+                .first()
+            {
+                let record = store.qualification(&binding.id).await.unwrap();
+                if ready(&record) {
+                    return record;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("Fixture qualification never reached the expected state")
+}
+
+/// Starts the objective qualification while the sandbox refuses every
+/// evaluation, ends it like a closed app once a control waits, and recovers.
+async fn interrupted_objective(
+    service: &Arc<BenchmarkService>,
+    backend: &runner::FakeBackend,
+    request: &Request,
+) -> String {
+    backend
+        .evaluation_refusals
+        .store(u64::MAX, Ordering::SeqCst);
+    let running = tokio::spawn({
+        let service = service.clone();
+        let request = request.clone();
+        async move { service.qualify_version(request).await }
+    });
+    let waiting = first_record(&service.store, &request.version_id, |record| {
+        record.controls.first().is_some_and(|c| c.waiting.is_some())
+    })
+    .await;
+    assert_eq!(waiting.status, "reserved");
+    assert!(waiting.controls[0]
+        .waiting
+        .as_deref()
+        .unwrap()
+        .contains("preparation queue expired before worker startup"));
+    running.abort();
+    let _ = running.await;
+    service.store.recover().await.unwrap();
+    backend.evaluation_refusals.store(0, Ordering::SeqCst);
+    waiting.id
+}
+
+#[tokio::test]
+async fn objective_controls_wait_out_unstarted_refusals_instead_of_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, backend, request) = objective_fixture(dir.path()).await;
+    backend.evaluation_refusals.store(3, Ordering::SeqCst);
+    let record = service.qualify_version(request).await.unwrap();
+    assert_eq!(record.status, "controls_verified_review_attested");
+    assert_eq!(record.failure, None);
+    assert_eq!(record.controls.len(), 4);
+    assert!(record
+        .controls
+        .iter()
+        .all(|c| c.evaluation.is_some() && c.error.is_none() && c.waiting.is_none()));
+    assert_eq!(backend.evaluations.load(Ordering::SeqCst), 7);
+}
+
+/// Waiting never softens a verdict: a control evaluated and wrong fails the
+/// only qualification of its version, and nothing goes on with it.
+#[tokio::test]
+async fn a_wrong_control_stays_final_after_any_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, backend, mut request) = objective_fixture(dir.path()).await;
+    request.controls[2].output = "```\nREADY\n```".into();
+    backend.evaluation_refusals.store(2, Ordering::SeqCst);
+    let record = service.qualify_version(request.clone()).await.unwrap();
+    assert_eq!(record.status, "failed");
+    assert_eq!(record.controls.len(), 3);
+    assert!(record
+        .failure
+        .as_deref()
+        .unwrap()
+        .contains("Control c disagrees"));
+    service.store.recover().await.unwrap();
+    let evaluations = backend.evaluations.load(Ordering::SeqCst);
+    let again = service.qualify_version(request.clone()).await.unwrap();
+    assert_eq!(hash(&again).unwrap(), hash(&record).unwrap());
+    assert_eq!(backend.evaluations.load(Ordering::SeqCst), evaluations);
+    let mut replacement = request;
+    replacement.request_key = "replacement".into();
+    assert!(service.qualify_version(replacement).await.is_err());
+}
+
+/// A restart before the first qualification settled leaves it interrupted
+/// without a verdict. Another request still cannot replace it; the same one
+/// goes on with it, evaluating every control again on the current runtime.
+#[tokio::test]
+async fn a_restart_leaves_an_unsettled_qualification_to_its_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, backend, request) = objective_fixture(dir.path()).await;
+    let id = interrupted_objective(&service, &backend, &request).await;
+    let interrupted = service.store.qualification(&id).await.unwrap();
+    assert_eq!(interrupted.status, INTERRUPTED);
+    assert_eq!(interrupted.failure, None);
+    assert_eq!(interrupted.finished_at, None);
+    assert!(interrupted.controls.iter().all(|c| c.waiting.is_none()));
+    assert!(service.store.qualification_stopped(&id).await.unwrap());
+    service.store.recover().await.unwrap();
+    assert_eq!(
+        hash(&service.store.qualification(&id).await.unwrap()).unwrap(),
+        hash(&interrupted).unwrap()
+    );
+    let mut replacement = request.clone();
+    replacement.request_key = "replacement".into();
+    assert!(service.qualify_version(replacement).await.is_err());
+    let before = backend.evaluations.load(Ordering::SeqCst);
+    let resumed = service.qualify_version(request.clone()).await.unwrap();
+    assert_eq!(resumed.id, id);
+    assert_eq!(resumed.created_at, interrupted.created_at);
+    assert_eq!(resumed.status, "controls_verified_review_attested");
+    assert_eq!(resumed.controls.len(), 4);
+    assert!(resumed.controls.iter().all(|c| c.evaluation.is_some()));
+    assert_eq!(backend.evaluations.load(Ordering::SeqCst) - before, 4);
+    assert_eq!(service.qualify_version(request).await.unwrap().id, id);
+    assert_eq!(backend.evaluations.load(Ordering::SeqCst) - before, 4);
+}
+
+/// Revoking an interrupted qualification settles it failed; its request then
+/// finds it settled and evaluates nothing.
+#[tokio::test]
+async fn revoking_an_interrupted_qualification_settles_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, backend, request) = objective_fixture(dir.path()).await;
+    let id = interrupted_objective(&service, &backend, &request).await;
+    service
+        .store
+        .revoke_qualification(&id, "Fixture stop")
+        .await
+        .unwrap();
+    let revoked = service.store.qualification(&id).await.unwrap();
+    assert_eq!(revoked.status, "failed");
+    assert!(revoked.failure.as_deref().unwrap().contains("revoked"));
+    let before = backend.evaluations.load(Ordering::SeqCst);
+    assert_eq!(
+        service.qualify_version(request).await.unwrap().status,
+        "failed"
+    );
+    assert_eq!(backend.evaluations.load(Ordering::SeqCst), before);
+}
+
+/// A rubric calibration whose next control finds the judges busy waits. A
+/// restart then leaves it interrupted, its running loop stops, and the same
+/// request keeps the paid panels and asks only the controls still open.
+#[tokio::test]
+async fn an_interrupted_calibration_keeps_its_paid_panels() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, backend, request) = fixture(dir.path(), false, false).await;
+    backend.refuse_from.store(2, Ordering::SeqCst);
+    let first = service.qualify_version(request.clone()).await.unwrap();
+    let waiting = first_record(&service.store, &request.version_id, |record| {
+        record.controls.get(2).is_some_and(|c| c.waiting.is_some())
+    })
+    .await;
+    assert_eq!(waiting.id, first.id);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    service.store.recover().await.unwrap();
+    let interrupted = service.store.qualification(&first.id).await.unwrap();
+    assert_eq!(interrupted.status, INTERRUPTED);
+    // The loop of the closed calibration stops without settling anything.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let refusals = backend.refusals.load(Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(backend.refusals.load(Ordering::SeqCst), refusals);
+    assert_eq!(
+        hash(&service.store.qualification(&first.id).await.unwrap()).unwrap(),
+        hash(&interrupted).unwrap()
+    );
+    backend.refuse_from.store(usize::MAX, Ordering::SeqCst);
+    assert_eq!(service.qualify_version(request).await.unwrap().id, first.id);
+    let record = settled(&service.store, &first.id).await;
+    assert_eq!(record.status, "controls_verified_review_attested");
+    assert_eq!(record.controls.len(), 4);
+    for index in 0..2 {
+        assert_eq!(
+            serde_json::to_value(&record.controls[index]).unwrap(),
+            serde_json::to_value(&interrupted.controls[index]).unwrap()
+        );
+    }
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 4);
 }

@@ -29,16 +29,38 @@ pub(crate) const MAX_JUDGES: usize = 3;
 pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 180;
 const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
 const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
+const RENDERER_BUSY: &str =
+    "Waiting for local resources to render for the judge panel; evaluate again later";
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.
 pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
+/// The reason a sealed generation carries while the sandbox has not yet
+/// admitted its evaluation.
+const EVALUATION_WAIT: &str = "Waiting for local resources to evaluate";
+/// How long an evaluation the sandbox refused before starting waits before it
+/// asks again. The broker's own admission already waited out its window.
+pub(super) const EVALUATION_RETRY: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(2)
+};
 
 /// Whether a panel stopped short in a way its run can take up again.
 fn judging_deferred(attempt: &Attempt) -> bool {
     matches!(
         attempt.reason.as_deref(),
-        Some(JUDGING_STOPPED | JUDGES_BUSY)
+        Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY)
     )
+}
+
+/// Whether `error` refused an evaluation before any evaluator worker started:
+/// the local broker queued it, its admission window closed in a queue, the
+/// host preparation queue expired, the host gate's evidence expired or the
+/// host lacked headroom. Only the trusted pre-start path reports
+/// `resource_busy`, so nothing graded the answer and nothing was spent: the
+/// same evaluation may be asked again, and the refusal is no verdict.
+pub(super) fn unstarted_refusal(error: &BenchmarkError) -> bool {
+    error.code == "resource_busy"
 }
 
 /// What stops a judge panel between its calls: the run's cancel signal and,
@@ -223,6 +245,15 @@ pub trait ExecutionBackend: Send + Sync {
         _timeout_seconds: u32,
     ) -> BoxFuture<'a, Result<()>> {
         self.readiness(configuration)
+    }
+    /// Grades `output` with the published evaluator. The local sandbox may
+    /// refuse before any evaluator worker starts; see [`unstarted_refusal`].
+    fn evaluate_output<'a>(
+        &'a self,
+        draft: &'a BenchmarkDraft,
+        output: &'a str,
+    ) -> BoxFuture<'a, Result<Evaluation>> {
+        Box::pin(evaluate(draft, output))
     }
     /// Scores a creative rendering with a panel of other models; nothing happens
     /// where no panel can be assembled.
@@ -2329,6 +2360,13 @@ impl NativeBackend {
                 } else {
                     match super::worker::render(&document, width, height).await {
                         Ok(bytes) => bytes,
+                        // Nothing rendered and no judge was asked: the panel
+                        // waits like one whose judges are busy.
+                        Err(error) if unstarted_refusal(&error) => {
+                            log::info!("[benchmarks] judge rendering waits: {}", error.message);
+                            attempt.reason = Some(RENDERER_BUSY.into());
+                            return Ok(attempt);
+                        }
                         Err(error) => {
                             attempt.reason = Some(format!("Rendering failed: {}", error.message));
                             return Ok(attempt);
@@ -2475,6 +2513,12 @@ impl ExecutionBackend for NativeBackend {
                     JudgeEvidence::Qualification { record, index },
                 )
                 .await?;
+            // Busy judge accounts or a renderer the sandbox has not admitted
+            // stop the panel before it renders or asks anyone: the control
+            // waits for them instead of failing.
+            if let Some(busy @ (JUDGES_BUSY | RENDERER_BUSY)) = judged.reason.as_deref() {
+                return Err(BenchmarkError::new("resource_busy", busy));
+            }
             let score = super::analysis::score(&judged).ok_or_else(|| {
                 BenchmarkError::new(
                     "rubric_calibration_incomplete",
@@ -5162,7 +5206,11 @@ impl BenchmarkService {
                 // series; ordinary sitting expiry must not supersede them.
                 continue;
             }
-            if self.flying(&run.id).await > 0 {
+            // A sealed generation still waiting for its evaluation is part of
+            // the sitting.
+            if self.flying(&run.id).await > 0
+                || run.attempts.iter().any(|a| a.phase == "interrupted")
+            {
                 continue;
             }
             if run.attempts.iter().any(|a| a.phase == AWAITING_JUDGES) {
@@ -5183,6 +5231,11 @@ impl BenchmarkService {
         .await?;
         for data in interrupted {
             let mut a: Attempt = serde_json::from_str(&data)?;
+            // A sealed generation whose evaluation the sandbox refused asks
+            // again once its short pause is over.
+            if a.wait_until.is_some_and(|until| until > now()) {
+                continue;
+            }
             let request = self.store.run(&a.run_id).await?.request;
             let version = self.store.version(&a.version_id).await?;
             let recovered = if version.manifest.workflow.is_some() {
@@ -5204,15 +5257,45 @@ impl BenchmarkService {
                         continue;
                     }
                     if restored.outcome.as_deref() == Some("completed") {
-                        match evaluate(
-                            &version.manifest,
-                            restored.output.as_deref().unwrap_or_default(),
-                        )
-                        .await
+                        match self
+                            .backend
+                            .evaluate_output(
+                                &version.manifest,
+                                restored.output.as_deref().unwrap_or_default(),
+                            )
+                            .await
                         {
                             Ok(e) => {
+                                if restored
+                                    .reason
+                                    .as_deref()
+                                    .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
+                                {
+                                    restored.reason = None;
+                                }
+                                restored.wait_until = None;
                                 restored.outcome = Some(e.verdict.clone());
                                 restored.evaluations.push(e);
+                            }
+                            // Nothing graded the sealed generation: it stays
+                            // interrupted, and a later pass asks again without
+                            // recovering the turn again, as long as its run
+                            // goes on. The run waits for it.
+                            Err(e)
+                                if unstarted_refusal(&e)
+                                    && restored.evidence_hash.is_some()
+                                    && !matches!(
+                                        self.store.run_state(&restored.run_id).await?.as_str(),
+                                        "cancelling" | "cancelled"
+                                    ) =>
+                            {
+                                restored.phase = "interrupted".into();
+                                restored.reason = Some(format!("{EVALUATION_WAIT}: {}", e.message));
+                                restored.wait_until =
+                                    Some(now() + EVALUATION_RETRY.as_millis() as i64);
+                                self.store.save_attempt(&restored).await?;
+                                self.changed().await;
+                                continue;
                             }
                             Err(e) => {
                                 restored.outcome = Some("evaluation_error".into());
@@ -5325,9 +5408,10 @@ impl BenchmarkService {
                 // Cells held for their provider still wait for it; the run
                 // completes only once none is pending.
                 let held = run.attempts.iter().any(|a| {
-                    a.phase == "pending"
+                    (a.phase == "pending"
                         && (provider_held(&run.id, &a.configuration.provider_id)
-                            || resource_waiting(a))
+                            || resource_waiting(a)))
+                        || a.phase == "interrupted"
                 });
                 if flying == 0 && waiting.is_none() && !held {
                     self.store.set_run_state(&run.id, "completed").await?;
@@ -6139,17 +6223,33 @@ impl BenchmarkService {
         if completed.outcome.as_deref() != Some("completed") {
             return Ok(completed);
         }
-        let evaluation = match evaluate(
-            &version.manifest,
-            completed.output.as_deref().unwrap_or_default(),
-        )
-        .await
-        {
-            Ok(evaluation) => evaluation,
-            Err(error) => {
-                completed.outcome = Some("evaluation_error".into());
-                completed.reason = Some(error.message);
-                return Ok(completed);
+        let output = completed.output.clone().unwrap_or_default();
+        let mut waited = false;
+        let evaluation = loop {
+            match self
+                .backend
+                .evaluate_output(&version.manifest, &output)
+                .await
+            {
+                Ok(evaluation) => break evaluation,
+                // Nothing graded the paid answer yet: it waits for the sandbox
+                // as long as its run goes on, and is never generated again.
+                Err(error) if unstarted_refusal(&error) && !stop.cancelled() => {
+                    if !waited {
+                        log::info!(
+                            "[benchmarks] {EVALUATION_WAIT} attempt {}: {}",
+                            completed.id,
+                            error.message
+                        );
+                        waited = true;
+                    }
+                    tokio::time::sleep(EVALUATION_RETRY).await;
+                }
+                Err(error) => {
+                    completed.outcome = Some("evaluation_error".into());
+                    completed.reason = Some(error.message);
+                    return Ok(completed);
+                }
             }
         };
         let judging =
@@ -6356,6 +6456,12 @@ pub struct FakeBackend {
     /// local resources, once.
     #[cfg(test)]
     resource_refusal_after: std::sync::atomic::AtomicU64,
+    /// Evaluations the local sandbox refuses before any worker starts, and
+    /// the evaluations asked in all.
+    #[cfg(test)]
+    pub(super) evaluation_refusals: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pub(super) evaluations: std::sync::atomic::AtomicU64,
     /// Sessions whose provider refuses the requested model before dispatch.
     pub refused_selections: std::sync::atomic::AtomicU64,
     /// Sessions the host refuses to open before any provider call (a sign-in
@@ -6395,6 +6501,30 @@ impl ExecutionBackend for FakeBackend {
     }
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
+    }
+    #[cfg(test)]
+    fn evaluate_output<'a>(
+        &'a self,
+        draft: &'a BenchmarkDraft,
+        output: &'a str,
+    ) -> BoxFuture<'a, Result<Evaluation>> {
+        use std::sync::atomic::Ordering;
+        Box::pin(async move {
+            self.evaluations.fetch_add(1, Ordering::SeqCst);
+            if self
+                .evaluation_refusals
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(BenchmarkError::new(
+                    "resource_busy",
+                    "resource_busy: benchmark preparation queue expired before worker startup",
+                ));
+            }
+            evaluate(draft, output).await
+        })
     }
     fn accounts<'a>(&'a self, _: &'a str, _: bool) -> BoxFuture<'a, Result<Vec<String>>> {
         Box::pin(async move {
@@ -6633,6 +6763,9 @@ mod execution_limits_tests;
 
 #[cfg(test)]
 mod unstarted_admission_tests;
+
+#[cfg(test)]
+mod evaluation_wait_tests;
 
 #[cfg(test)]
 mod collection_context_tests;

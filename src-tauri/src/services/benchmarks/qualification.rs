@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 mod tests;
 
+/// The status of a first qualification an interruption stopped before any
+/// verdict; its request goes on with it.
+const INTERRUPTED: &str = "interrupted";
+
 fn invalid(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("invalid_qualification", message)
 }
@@ -89,6 +93,10 @@ pub struct ControlResult {
     /// Calibration evidence never enters candidate attempts or model boards.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub judge_evaluations: Vec<Evaluation>,
+    /// Why this unfinished control has not been evaluated yet: the local
+    /// sandbox or the judges refused before anything graded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -266,8 +274,9 @@ impl BenchmarkService {
         }
         Ok(())
     }
-    /// Reserve before any execution. A interrupted or failed first panel is
-    /// retained; another request cannot replace that version's qualification.
+    /// Reserve before any execution. A failed first panel is retained, and
+    /// another request cannot replace that version's qualification; the same
+    /// request goes on with one an interruption left without a verdict.
     pub async fn qualify_version(&self, request: Request) -> Result<Record> {
         validate(&request)?;
         let version = self.store.version(&request.version_id).await?;
@@ -328,7 +337,7 @@ impl BenchmarkService {
             }
             let id: String = row.try_get("id")?;
             tx.commit().await?;
-            return self.store.qualification(&id).await;
+            return Box::pin(self.resume_qualification(&id)).await;
         }
         Store::require_current_versions_in(
             &mut tx,
@@ -353,40 +362,86 @@ impl BenchmarkService {
         event(&mut tx, &record.id, "qualification_reserved").await?;
         tx.commit().await?;
         self.changed().await;
-        if rubric {
+        self.start_controls(version, record).await
+    }
+    /// Goes on with the first qualification `id` when an interruption left it
+    /// unsettled without a verdict; any other record returns as it stands.
+    /// Objective controls cost nothing to evaluate again, so all of them run
+    /// again on the evaluator installed now. A rubric calibration keeps its
+    /// settled panels, which were paid for, and goes on with the next control;
+    /// an interrupted one never asked a judge, or it would have settled failed.
+    async fn resume_qualification(&self, id: &str) -> Result<Record> {
+        let record = self.store.qualification(id).await?;
+        if record.status != INTERRUPTED {
+            return Ok(record);
+        }
+        let version = self.store.version(&record.request.version_id).await?;
+        let browser = runner::requires_browser_runtime(&version.manifest);
+        let mut resumed = record.clone();
+        resumed.status = "reserved".into();
+        if record.request.rubric.is_some() {
+            resumed
+                .controls
+                .retain(|control| control.evaluation.is_some());
+            if browser
+                && record.evaluator_runtime_revision
+                    != Some(Box::pin(super::worker::ready()).await?)
+            {
+                return Err(invalid("The renderer changed since this rubric calibration began; its paid panels cannot be replayed, so revoke it or restore that renderer"));
+            }
+        } else {
+            resumed.controls.clear();
+            resumed.evaluator_runtime_revision = if browser {
+                Some(Box::pin(super::worker::ready()).await?)
+            } else {
+                None
+            };
+        }
+        if !self.store.take_up_qualification(&record, &resumed).await? {
+            return self.store.qualification(id).await;
+        }
+        self.changed().await;
+        self.start_controls(version, resumed).await
+    }
+    /// Runs the controls of a reserved record: a rubric calibration in the
+    /// background, returning the reserved record, objective controls before
+    /// returning the settled one. An error that leaves no verdict leaves the
+    /// record interrupted, so the same request goes on with it later.
+    async fn start_controls(&self, version: BenchmarkVersion, record: Record) -> Result<Record> {
+        let id = record.id.clone();
+        if record.request.rubric.is_some() {
             let store = self.store.clone();
             let backend = self.backend.clone();
             let app = self.app.clone();
-            let pending_id = record.id.clone();
-            let failed_id = pending_id.clone();
+            let stopped_id = id.clone();
             tokio::spawn(async move {
                 if let Err(error) =
                     run_controls(&store, backend.as_ref(), &version, record, app.as_ref()).await
                 {
                     // Keep the last committed placeholder and any partial spend;
                     // no second request may replay an ambiguous judge call.
-                    if let Ok(mut failed) = store.qualification(&failed_id).await {
-                        if failed.status == "reserved" {
-                            failed.failure = Some(format!("{}: {}", error.code, error.message));
-                            let _ = store.finish_qualification(&mut failed).await;
-                        }
-                    }
+                    let _ = store.stop_qualification(&stopped_id, &error).await;
                     log::warn!("[benchmarks] rubric calibration stopped: {}", error.code);
                     super::notify_changed(&store, app.as_ref()).await;
                 }
             });
-            return self.store.qualification(&pending_id).await;
+            return self.store.qualification(&id).await;
         }
         // Keep the rendering/evaluation future off the caller's stack. This
         // service is also awaited from larger qualification/promotion flows.
-        Box::pin(run_controls(
+        let settled = Box::pin(run_controls(
             &self.store,
             self.backend.as_ref(),
             &version,
             record,
             self.app.as_ref(),
         ))
-        .await
+        .await;
+        if let Err(error) = &settled {
+            let _ = self.store.stop_qualification(&id, error).await;
+            self.changed().await;
+        }
+        settled
     }
 }
 
@@ -545,37 +600,76 @@ async fn run_controls(
     mut record: Record,
     app: Option<&tauri::AppHandle>,
 ) -> Result<Record> {
-    for index in 0..record.request.controls.len() {
+    // A resumed calibration keeps the controls it settled and goes on with
+    // the next one.
+    for index in record.controls.len()..record.request.controls.len() {
         if store.qualification_stopped(&record.id).await? {
             record.failure = Some("Qualification was revoked before completion".into());
             break;
         }
         let control = &record.request.controls[index];
+        let output = control.output.clone();
         record.controls.push(ControlResult {
             control_id: control.id.clone(),
-            output_hash: fixtures::hash(control.output.as_bytes()),
+            output_hash: fixtures::hash(output.as_bytes()),
             evaluation: None,
             error: None,
             judge_evaluations: Vec::new(),
+            waiting: None,
         });
         store.save_qualification_progress(&record).await?;
-        let evaluated = tokio::select! {
-            result = Box::pin(runner::evaluate(&version.manifest, &control.output)) => result,
-            result = qualification_cancellation(store, &record.id) => {
-                result?;
-                Err(BenchmarkError::new("cancelled", "Qualification was revoked during evaluator admission"))
+        let evaluated = loop {
+            let evaluated = tokio::select! {
+                result = backend.evaluate_output(&version.manifest, &output) => result,
+                result = qualification_cancellation(store, &record.id) => {
+                    result?;
+                    Err(BenchmarkError::new("cancelled", "Qualification was revoked during evaluator admission"))
+                }
+            };
+            let evaluated = match evaluated {
+                Ok(evaluation)
+                    if record.request.rubric.is_some()
+                        && evaluation.verdict == "pending_review" =>
+                {
+                    backend
+                        .judge_control(store, &mut record, version, index)
+                        .await
+                }
+                other => other,
+            };
+            match evaluated {
+                // The sandbox or the judges refused before anything graded the
+                // control or any judge was asked. That is no verdict, and the
+                // version's only qualification must not spend itself on it:
+                // the control waits and asks again.
+                Err(error)
+                    if runner::unstarted_refusal(&error)
+                        && record.controls[index].judge_evaluations.is_empty() =>
+                {
+                    let waiting = format!("Waiting for local resources: {}", error.message);
+                    if record.controls[index].waiting.as_deref() != Some(waiting.as_str()) {
+                        record.controls[index].waiting = Some(waiting);
+                        store.save_qualification_progress(&record).await?;
+                        super::notify_changed(store, app).await;
+                    }
+                    let revoked = tokio::select! {
+                        _ = tokio::time::sleep(runner::EVALUATION_RETRY) => false,
+                        result = qualification_cancellation(store, &record.id) => {
+                            result?;
+                            true
+                        }
+                    };
+                    if revoked {
+                        break Err(BenchmarkError::new(
+                            "cancelled",
+                            "Qualification was revoked while waiting for local resources",
+                        ));
+                    }
+                }
+                other => break other,
             }
         };
-        let evaluated = match evaluated {
-            Ok(evaluation)
-                if record.request.rubric.is_some() && evaluation.verdict == "pending_review" =>
-            {
-                backend
-                    .judge_control(store, &mut record, version, index)
-                    .await
-            }
-            other => other,
-        };
+        record.controls[index].waiting = None;
         match evaluated {
             Ok(evaluation) => {
                 record.controls[index].evaluation = Some(evaluation);
@@ -643,23 +737,30 @@ async fn qualification_cancellation(store: &Store, id: &str) -> Result<()> {
 }
 
 impl Store {
+    /// Whether controls must stop: the record settled, was revoked or was
+    /// interrupted, so nothing in this process may run it any longer.
     pub(super) async fn qualification_stopped(&self, id: &str) -> Result<bool> {
         let active = sqlx::query_scalar::<_, bool>(
-            "SELECT phase='reserved' AND revoked_at IS NULL FROM selector_qualifications WHERE id=?")
+            "SELECT phase='reserved' AND status='reserved' AND revoked_at IS NULL FROM selector_qualifications WHERE id=?")
             .bind(id).fetch_optional(&self.pool).await?;
         Ok(active != Some(true))
     }
+    /// Settles `record` from the status it holds in storage, running or
+    /// interrupted.
     pub(super) async fn finish_qualification(&self, record: &mut Record) -> Result<()> {
-        record.status = if record.failure.is_none() {
-            "controls_verified_review_attested"
-        } else {
-            "failed"
-        }
-        .into();
+        let held = std::mem::replace(
+            &mut record.status,
+            if record.failure.is_none() {
+                "controls_verified_review_attested"
+            } else {
+                "failed"
+            }
+            .into(),
+        );
         record.finished_at = Some(now());
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let updated = sqlx::query("UPDATE selector_qualifications SET phase='terminal',status=?,record_json=?,record_hash=? WHERE id=? AND phase='reserved'")
-            .bind(&record.status).bind(serde_json::to_string(record)?).bind(hash(record)?).bind(&record.id)
+        let updated = sqlx::query("UPDATE selector_qualifications SET phase='terminal',status=?,record_json=?,record_hash=? WHERE id=? AND phase='reserved' AND status=?")
+            .bind(&record.status).bind(serde_json::to_string(record)?).bind(hash(record)?).bind(&record.id).bind(held)
             .execute(&mut *tx).await?.rows_affected();
         if updated != 1 {
             return Err(invalid("Qualification first result is already settled"));
@@ -668,22 +769,79 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+    /// A restart stops every running first qualification. One that nothing
+    /// decided waits, interrupted, for its request to go on with it; one with
+    /// a verdict, a revocation or a judge call that cannot be replayed settles
+    /// failed, its partial evidence and unknown usage preserved.
     pub(super) async fn recover_qualifications(&self) -> Result<()> {
         let ids = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM selector_qualifications WHERE phase='reserved'",
+            "SELECT id FROM selector_qualifications WHERE phase='reserved' AND status='reserved'",
         )
         .fetch_all(&self.pool)
         .await?;
         for id in ids {
             let mut record = self.qualification(&id).await?;
-            record.failure = Some("Application restarted before the first qualification settled; partial judge evidence and unknown usage are preserved without replay".into());
+            if resumable(&record) && !self.qualification_stopped(&id).await? {
+                self.interrupt_qualification(&mut record).await?;
+                continue;
+            }
+            record.failure.get_or_insert_with(|| "Application restarted before the first qualification settled; partial judge evidence and unknown usage are preserved without replay".into());
             self.finish_qualification(&mut record).await?;
         }
         Ok(())
     }
+    /// Settles what an error left of the running first qualification `id`:
+    /// interrupted when nothing decided it, failed otherwise.
+    pub(super) async fn stop_qualification(&self, id: &str, error: &BenchmarkError) -> Result<()> {
+        let mut record = self.qualification(id).await?;
+        if record.status != "reserved" {
+            return Ok(());
+        }
+        if resumable(&record) && !self.qualification_stopped(id).await? {
+            return self.interrupt_qualification(&mut record).await;
+        }
+        record
+            .failure
+            .get_or_insert_with(|| format!("{}: {}", error.code, error.message));
+        self.finish_qualification(&mut record).await
+    }
+    async fn interrupt_qualification(&self, record: &mut Record) -> Result<()> {
+        let held = hash(record)?;
+        record.status = INTERRUPTED.into();
+        for control in &mut record.controls {
+            control.waiting = None;
+        }
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let updated = sqlx::query("UPDATE selector_qualifications SET status=?,record_json=?,record_hash=? WHERE id=? AND phase='reserved' AND status='reserved' AND record_hash=?")
+            .bind(&record.status).bind(serde_json::to_string(record)?).bind(hash(record)?).bind(&record.id).bind(held)
+            .execute(&mut *tx).await?.rows_affected();
+        if updated != 1 {
+            return Err(invalid(
+                "Qualification changed before it could be interrupted",
+            ));
+        }
+        event(&mut tx, &record.id, "qualification_interrupted").await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    /// Takes up the interrupted `record` as `resumed`, unless it was revoked
+    /// or another request took it up first.
+    async fn take_up_qualification(&self, record: &Record, resumed: &Record) -> Result<bool> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let updated = sqlx::query("UPDATE selector_qualifications SET status=?,record_json=?,record_hash=? WHERE id=? AND phase='reserved' AND status=? AND revoked_at IS NULL AND record_hash=?")
+            .bind(&resumed.status).bind(serde_json::to_string(resumed)?).bind(hash(resumed)?).bind(&record.id)
+            .bind(INTERRUPTED).bind(hash(record)?)
+            .execute(&mut *tx).await?.rows_affected();
+        if updated != 1 {
+            return Ok(false);
+        }
+        event(&mut tx, &record.id, "qualification_resumed").await?;
+        tx.commit().await?;
+        Ok(true)
+    }
     pub(super) async fn save_qualification_progress(&self, record: &Record) -> Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let changed=sqlx::query("UPDATE selector_qualifications SET record_json=?,record_hash=? WHERE id=? AND phase='reserved'")
+        let changed=sqlx::query("UPDATE selector_qualifications SET record_json=?,record_hash=? WHERE id=? AND phase='reserved' AND status='reserved'")
             .bind(serde_json::to_string(record)?).bind(hash(record)?).bind(&record.id).execute(&mut *tx).await?.rows_affected();
         if changed != 1 {
             return Err(invalid("Qualification is no longer reserved"));
@@ -734,6 +892,22 @@ impl Store {
         sqlx::query("UPDATE selector_qualifications SET revoked_at=?,revocation_reason=? WHERE id=? AND revoked_at IS NULL").bind(now()).bind(reason).bind(id).execute(&mut *tx).await?;
         event(&mut tx, id, "qualification_revoked").await?;
         tx.commit().await?;
+        // Nothing runs an interrupted qualification to notice the revocation.
+        let mut record = self.qualification(id).await?;
+        if record.status == INTERRUPTED {
+            record.failure = Some("Qualification was revoked before completion".into());
+            self.finish_qualification(&mut record).await?;
+        }
         Ok(())
     }
+}
+
+/// Whether an unsettled first qualification may go on: nothing decided it,
+/// and no unfinished control asked a judge whose call would need a replay.
+fn resumable(record: &Record) -> bool {
+    record.failure.is_none()
+        && record.controls.iter().all(|control| {
+            control.error.is_none()
+                && (control.evaluation.is_some() || control.judge_evaluations.is_empty())
+        })
 }

@@ -55,6 +55,8 @@ export interface QualificationRecord {
     evaluation: Evaluation | null;
     error: string | null;
     judgeEvaluations?: Evaluation[];
+    /** Why the control has not been evaluated yet; absent once it has. */
+    waiting?: string;
   }[];
   status: string;
   finishedAt: number | null;

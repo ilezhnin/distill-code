@@ -81,6 +81,21 @@ export function BenchmarkQualificationPanel({
   } catch {
     /* Native validation reports malformed controls on submission. */
   }
+  const submit = async (request: QualificationRequest) => {
+    inFlight.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await api.qualifyVersion(request);
+      client.setQueryData(["benchmarks", "qualification", saved.id], saved);
+    } catch (failure) {
+      setError(benchmarkErrorMessage(failure));
+    } finally {
+      await bindings.refetch();
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
   const qualify = async () => {
     if (inFlight.current) return;
     let request = submitted;
@@ -123,19 +138,13 @@ export function BenchmarkQualificationPanel({
       }
     }
     setSubmitted(request);
-    inFlight.current = true;
-    setBusy(true);
-    setError(null);
-    try {
-      const saved = await api.qualifyVersion(request);
-      client.setQueryData(["benchmarks", "qualification", saved.id], saved);
-    } catch (failure) {
-      setError(benchmarkErrorMessage(failure));
-    } finally {
-      await bindings.refetch();
-      inFlight.current = false;
-      setBusy(false);
-    }
+    await submit(request);
+  };
+  // The stored request is the original one, so the service goes on with
+  // the qualification an interruption left without a verdict.
+  const resume = async () => {
+    if (archived || !record.data || inFlight.current) return;
+    await submit(record.data.request);
   };
   const revoke = async () => {
     if (archived || !binding || inFlight.current) return;
@@ -243,7 +252,9 @@ export function BenchmarkQualificationPanel({
                           {" · "}
                           {result?.evaluation
                             ? `${result.evaluation.verdict} (${result.evaluation.score ?? t("unknown")}) · ${result.evaluation.reason}`
-                            : (result?.error ?? t("qualification.unrecorded"))}
+                            : (result?.error ??
+                              result?.waiting ??
+                              t("qualification.unrecorded"))}
                           {result ? (
                             <code className="block break-all text-muted-foreground">
                               {result.outputHash}
@@ -274,6 +285,18 @@ export function BenchmarkQualificationPanel({
                     </pre>
                   </details>
                 </>
+              ) : null}
+              {!archived &&
+              binding.revokedAt === null &&
+              binding.status === "interrupted" &&
+              record.data ? (
+                <Button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void resume()}
+                >
+                  {t("qualification.resume")}
+                </Button>
               ) : null}
               {!archived && binding.revokedAt === null ? (
                 <div className="space-y-2">

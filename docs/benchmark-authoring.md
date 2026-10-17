@@ -294,8 +294,13 @@ cannot establish semantic calibration. Failed or incomplete panels stay failed.
 Control evidence, session identities, partial usage and rendering artifacts live
 in qualification storage and never create model attempts, training observations
 or leaderboard entries. Revocation stops further judge calls and cancels an
-active calibration turn. Restart seals incomplete first qualifications as failed
-without replaying them; unknown usage remains unknown. These controls establish
+active calibration turn. A control the local sandbox or busy judges refuse
+before anything graded it waits and asks again; that refusal is no verdict.
+Restart leaves a first qualification without a verdict interrupted, and the same
+request resumes it: objective controls run again on the current evaluator, while
+a calibration keeps its settled panels. Restart seals one whose open control
+already asked a judge as failed without replaying it; unknown usage remains
+unknown. These controls establish
 agreement on the reviewed examples, not independence, empirical task difficulty,
 universal grader reliability or permission to deploy a selector. Research fits
 and promotion registration verify that rubric labels and qualification controls

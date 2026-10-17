@@ -431,6 +431,66 @@ it("inspects failed and unrecorded first controls, then revokes with an explicit
   expect(api.qualifyVersion).not.toHaveBeenCalled();
 });
 
+it("shows why a control waits and resumes an interrupted qualification with its stored request", async () => {
+  const interrupted = { ...binding, status: "interrupted" };
+  vi.mocked(api.qualificationBindings).mockResolvedValue([interrupted]);
+  vi.mocked(api.getQualification).mockResolvedValue({
+    ...record,
+    status: "interrupted",
+    finishedAt: null,
+    failure: null,
+    controls: [
+      {
+        controlId: "positive-a",
+        outputHash: "output",
+        evaluation: null,
+        error: null,
+        waiting: "Waiting for local resources: benchmark queue",
+      },
+    ],
+  });
+  vi.mocked(api.qualifyVersion).mockResolvedValue(record);
+  show(<BenchmarkQualificationPanel version={version} />);
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByText("Grader qualification", { selector: "summary" }),
+  );
+  expect(
+    await screen.findByText(
+      /First qualification interrupted before any verdict/,
+    ),
+  ).toBeVisible();
+  expect(
+    await screen.findByText("Waiting for local resources: benchmark queue", {
+      exact: false,
+      selector: "li",
+    }),
+  ).toBeVisible();
+  await user.click(
+    screen.getByRole("button", { name: "Resume qualification" }),
+  );
+  await waitFor(() => expect(api.qualifyVersion).toHaveBeenCalledOnce());
+  expect(api.qualifyVersion).toHaveBeenCalledWith(request);
+  expect(api.revokeQualification).not.toHaveBeenCalled();
+});
+
+it("offers no resume for a settled qualification", async () => {
+  vi.mocked(api.qualificationBindings).mockResolvedValue([binding]);
+  vi.mocked(api.getQualification).mockResolvedValue(record);
+  show(<BenchmarkQualificationPanel version={version} />);
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByText("Grader qualification", { selector: "summary" }),
+  );
+  await screen.findByText("Grader interrupted", {
+    exact: false,
+    selector: "li",
+  });
+  expect(
+    screen.queryByRole("button", { name: "Resume qualification" }),
+  ).not.toBeInTheDocument();
+});
+
 it("never defaults to approval and freezes explicit rule, exact scope and qualification IDs before campaign start", async () => {
   let saved: RegisteredPromotionRule | null = null;
   vi.mocked(api.getPromotionRule).mockImplementation(async () => saved);

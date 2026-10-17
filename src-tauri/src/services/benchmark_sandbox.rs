@@ -227,24 +227,15 @@ static HOST_PREPARATION: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new()
 
 /// Acquire before allocating a snapshot/package, and retain through its final
 /// import/export. Invocation deliberately does not acquire this gate again.
+///
+/// One permit matches the Linux broker's single preparation room: every
+/// holder goes on to a `prep` lease there, so a second permit would only move
+/// its wait into that queue while holding another host buffer reservation.
 pub(crate) async fn host_preparation(
     deadline_ms: u64,
 ) -> io::Result<tokio::sync::OwnedSemaphorePermit> {
-    let gate = HOST_PREPARATION
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
-        .clone();
-    let permit = tokio::time::timeout(
-        Duration::from_millis(remaining_ms(deadline_ms)?),
-        gate.acquire_owned(),
-    )
-    .await
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Native preparation queue deadline expired",
-        )
-    })?
-    .map_err(io::Error::other)?;
+    let gate = HOST_PREPARATION.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)));
+    let permit = queue_for_preparation(gate, deadline_ms).await?;
     // Max input512MiB + ring/output overlap1GiB, in addition to Linux prep2GiB.
     tokio::task::spawn_blocking(|| {
         check_headroom(
@@ -255,6 +246,27 @@ pub(crate) async fn host_preparation(
     .await
     .map_err(io::Error::other)??;
     Ok(permit)
+}
+
+/// Waits for `gate` until `deadline_ms`, in arrival order. A deadline that
+/// passes in the queue is the queue's refusal: nothing was prepared and no
+/// worker started, so the caller may wait and ask again.
+async fn queue_for_preparation(
+    gate: &Arc<tokio::sync::Semaphore>,
+    deadline_ms: u64,
+) -> io::Result<tokio::sync::OwnedSemaphorePermit> {
+    tokio::time::timeout(
+        Duration::from_millis(remaining_ms(deadline_ms)?),
+        gate.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "resource_busy: benchmark host preparation queue expired before worker startup",
+        )
+    })?
+    .map_err(io::Error::other)
 }
 
 pub(crate) fn host_gate() -> io::Result<String> {
@@ -1996,6 +2008,37 @@ mod tests {
         let (tail, truncated) = read_tail(bytes.as_slice(), 100).await.unwrap();
         assert_eq!(tail, vec![b'x'; 100]);
         assert!(truncated);
+    }
+
+    /// The host preparation queue refuses like the broker's queue when its
+    /// deadline passes while another preparation holds the permit, as a
+    /// qualification control met on 2026-10-17; it admits in arrival order.
+    #[tokio::test]
+    async fn a_host_preparation_queue_that_expires_is_a_busy_refusal() {
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = gate.clone().acquire_owned().await.unwrap();
+        let refused = queue_for_preparation(&gate, now() + 50).await.unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(
+            refused.to_string(),
+            "resource_busy: benchmark host preparation queue expired before worker startup"
+        );
+        let next = tokio::spawn({
+            let gate = gate.clone();
+            async move { queue_for_preparation(&gate, now() + 60_000).await }
+        });
+        tokio::task::yield_now().await;
+        drop(held);
+        assert!(next.await.unwrap().is_ok());
+        // A deadline already gone before the queue is the caller's own.
+        let late = queue_for_preparation(&gate, now() - 1).await.unwrap_err();
+        assert_eq!(late.kind(), io::ErrorKind::TimedOut);
     }
 
     /// A lease that waits in a busy queue until its window closes is refused

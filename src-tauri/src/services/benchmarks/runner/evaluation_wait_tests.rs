@@ -1,0 +1,153 @@
+//! A paid answer whose evaluation the local sandbox refused before any worker
+//! started waits for the sandbox and is evaluated then. The refusal is no
+//! verdict and never generates the answer again.
+use super::tests::{serial_request, setup};
+use super::*;
+use std::sync::atomic::Ordering;
+
+/// One cell, one turn, and no replacement attempt, like a measurement run.
+async fn one_cell(service: &BenchmarkService) -> RunRequest {
+    let mut request = serial_request(service).await;
+    request.repetitions = 1;
+    request.max_executions = 1;
+    request.execution_limits = Some(RunExecutionLimits {
+        retry_policy: RunRetryPolicy::None,
+        dispatch_not_after_ms: None,
+    });
+    request
+}
+
+async fn until(what: &str, mut done: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !done() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what}"));
+}
+
+#[tokio::test]
+async fn a_paid_answer_waits_for_its_evaluation_instead_of_failing() {
+    let (_dir, service, backend) = setup().await;
+    backend.evaluation_refusals.store(3, Ordering::SeqCst);
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    service.tick().await.unwrap();
+    let settled = service.store.run(&run.id).await.unwrap();
+    let attempt = &settled.attempts[0];
+    assert_eq!(attempt.phase, "terminal");
+    assert_eq!(attempt.outcome.as_deref(), Some("pass"));
+    assert_eq!(attempt.evaluations.len(), 1);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.evaluations.load(Ordering::SeqCst), 4);
+}
+
+/// Cancelling the run ends the wait; the sealed answer keeps its refusal and
+/// stays open to Evaluate again.
+#[tokio::test]
+async fn cancelling_the_run_ends_an_evaluation_wait() {
+    let (_dir, service, backend) = setup().await;
+    backend
+        .evaluation_refusals
+        .store(u64::MAX, Ordering::SeqCst);
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let ticking = tokio::spawn({
+        let service = service.clone();
+        async move { service.tick().await }
+    });
+    until("the evaluation never waited", || {
+        backend.evaluations.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    service.control(&run.id, "cancel").await.unwrap();
+    ticking.await.unwrap().unwrap();
+    let attempt = service.store.run(&run.id).await.unwrap().attempts[0].clone();
+    assert_eq!(attempt.phase, "terminal");
+    assert_eq!(attempt.outcome.as_deref(), Some("evaluation_error"));
+    assert!(attempt.reason.unwrap().starts_with("resource_busy:"));
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+}
+
+/// A generation sealed before a restart is evaluated on recovery. A refusal
+/// keeps it interrupted, without recovering the turn again, and its run
+/// neither completes nor bakes until the evaluation lands.
+#[tokio::test]
+async fn a_recovered_generation_waits_for_its_evaluation() {
+    let (_dir, service, backend) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let version = service
+        .store
+        .version(&run.attempts[0].version_id)
+        .await
+        .unwrap();
+    let mut sealed = run.attempts[0].clone();
+    sealed.phase = "interrupted".into();
+    sealed.outcome = Some("completed".into());
+    sealed.output = Some(version.manifest.evaluator.known_good.clone());
+    sealed.started_at = Some(now());
+    sealed.finished_at = Some(now());
+    sealed.evidence_hash = Some(
+        fixtures::seal(&service.store.root, &sealed, &json!({}))
+            .await
+            .unwrap(),
+    );
+    service.store.save_attempt(&sealed).await.unwrap();
+    backend.evaluation_refusals.store(2, Ordering::SeqCst);
+    service.tick().await.unwrap();
+    let waiting = service.store.attempt(&sealed.id).await.unwrap();
+    assert_eq!(waiting.phase, "interrupted");
+    assert_eq!(waiting.outcome.as_deref(), Some("completed"));
+    assert!(waiting.reason.unwrap().starts_with(EVALUATION_WAIT));
+    assert!(waiting.wait_until.is_some());
+    assert!(waiting.evaluations.is_empty());
+    assert_eq!(service.store.run(&run.id).await.unwrap().state, "running");
+    for _ in 0..50 {
+        if service.store.attempt(&sealed.id).await.unwrap().phase == "terminal" {
+            break;
+        }
+        tokio::time::sleep(EVALUATION_RETRY * 2).await;
+        service.tick().await.unwrap();
+    }
+    let settled = service.store.attempt(&sealed.id).await.unwrap();
+    assert_eq!(settled.phase, "terminal");
+    assert_eq!(settled.outcome.as_deref(), Some("pass"));
+    assert_eq!(settled.reason, None);
+    assert_eq!(settled.wait_until, None);
+    assert_eq!(settled.evaluations.len(), 1);
+    assert_eq!(settled.evidence_hash, sealed.evidence_hash);
+    assert_eq!(backend.evaluations.load(Ordering::SeqCst), 3);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    service.tick().await.unwrap();
+    assert_eq!(service.store.run(&run.id).await.unwrap().state, "completed");
+}
+
+/// Every unstarted refusal the sandbox reports reaches the runner as one,
+/// the host preparation queue included; busy renderers defer a panel.
+#[tokio::test]
+async fn unstarted_refusals_are_recognised_where_they_arrive() {
+    for message in [
+        "resource_busy: benchmark resource capacity is queued; no provider process started",
+        "resource_busy: benchmark preparation queue expired before worker startup",
+        "resource_busy: benchmark host preparation queue expired before worker startup",
+        "resource_busy: Windows headroom evidence expired before execution; no provider process started",
+    ] {
+        let error = std::io::Error::new(std::io::ErrorKind::WouldBlock, message);
+        assert!(unstarted_refusal(&sandbox_setup_error(error, Some(1))));
+    }
+    let timed_out = std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "Sandbox operation exceeded its time limit",
+    );
+    assert!(!unstarted_refusal(&sandbox_setup_error(timed_out, Some(1))));
+    assert!(!unstarted_refusal(&BenchmarkError::new(
+        "evaluation_error",
+        "Isolated Linux browser failed",
+    )));
+    let (_dir, service, _) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let mut attempt = run.attempts[0].clone();
+    attempt.reason = Some(RENDERER_BUSY.into());
+    assert!(judging_deferred(&attempt));
+    attempt.reason = Some("Rendering failed: evaluation_error".into());
+    assert!(!judging_deferred(&attempt));
+}

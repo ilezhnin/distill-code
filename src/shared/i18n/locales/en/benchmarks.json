@@ -857,11 +857,12 @@
     "invalidPanel": "Provide a nonempty requirement array and at least four controls. Native validation checks their contents and coverage.",
     "submit": "Reserve and evaluate first controls",
     "retry": "Retry the same qualification request",
-    "immutableRetry": "The submitted inputs and request identity are frozen. A failed or interrupted first panel cannot be replaced; publish a reviewed revision for a new panel.",
+    "immutableRetry": "The submitted inputs and request identity are frozen. A failed first panel cannot be replaced; publish a reviewed revision for a new panel. An interrupted one goes on with the same request.",
     "expected": "Expected: {{verdict}}",
     "unrecorded": "No first result recorded",
     "record": "Exact review, controls and first evidence",
     "revoke": "Revoke qualification",
+    "resume": "Resume qualification",
     "minimumAcceptedScore": "Minimum accepted control score",
     "maximumRejectedScore": "Maximum rejected control score",
     "judgeCallBudget": "Up to {{count}} judge calls.",
@@ -870,7 +871,8 @@
     "states": {
       "reserved": "First qualification reserved; controls incomplete",
       "failed": "First qualification failed",
-      "controls_verified_review_attested": "Controls verified; operator reviews attested"
+      "controls_verified_review_attested": "Controls verified; operator reviews attested",
+      "interrupted": "First qualification interrupted before any verdict; resume it with the same request"
     }
   },
   "promotion": {

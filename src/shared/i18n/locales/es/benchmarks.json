@@ -857,11 +857,12 @@
     "invalidPanel": "Incluye una matriz de requisitos no vacía y al menos cuatro controles. La validación nativa comprueba su contenido y cobertura.",
     "submit": "Reservar y evaluar los primeros controles",
     "retry": "Reintentar la misma solicitud de cualificación",
-    "immutableRetry": "Los datos enviados y la identidad de la solicitud están congelados. El primer panel fallido o interrumpido no puede sustituirse; publica una revisión evaluada para un panel nuevo.",
+    "immutableRetry": "Los datos enviados y la identidad de la solicitud están congelados. El primer panel fallido no puede sustituirse; publica una revisión evaluada para un panel nuevo. Uno interrumpido continúa con la misma solicitud.",
     "expected": "Esperado: {{verdict}}",
     "unrecorded": "Sin primer resultado registrado",
     "record": "Revisión, controles y primeras evidencias exactas",
     "revoke": "Revocar cualificación",
+    "resume": "Reanudar cualificación",
     "minimumAcceptedScore": "Puntuación mínima de los controles aceptados",
     "maximumRejectedScore": "Puntuación máxima de los controles rechazados",
     "judgeCallBudget": "Hasta {{count}} llamadas a jueces.",
@@ -870,7 +871,8 @@
     "states": {
       "reserved": "Primera cualificación reservada; controles incompletos",
       "failed": "Primera cualificación fallida",
-      "controls_verified_review_attested": "Controles verificados; revisiones del operador atestadas"
+      "controls_verified_review_attested": "Controles verificados; revisiones del operador atestadas",
+      "interrupted": "Primera cualificación interrumpida antes de cualquier veredicto; reanúdala con la misma solicitud"
     }
   },
   "promotion": {
