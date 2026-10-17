@@ -200,12 +200,34 @@ async fn admit_event(
     if !owned {
         return events.send(event).map_err(|_| "bridge event loop closed");
     }
+    admit_bounded_event(
+        event,
+        bytes,
+        events,
+        cancelled,
+        event_slots(),
+        event_budget(),
+    )
+    .await
+}
+
+/// Queues a benchmark bridge's event once it holds a slot from `slots` and its
+/// bytes from `budget`. The bridge always passes the process-wide pair; tests
+/// pass their own so that concurrent tests never see each other's permits.
+async fn admit_bounded_event(
+    event: BridgeEvent,
+    bytes: usize,
+    events: &mpsc::UnboundedSender<BridgeEvent>,
+    cancelled: &mut watch::Receiver<bool>,
+    slots: Arc<Semaphore>,
+    budget: Arc<Semaphore>,
+) -> Result<(), &'static str> {
     let admission = async {
-        let slot = event_slots()
+        let slot = slots
             .acquire_owned()
             .await
             .map_err(|_| "benchmark event budget closed")?;
-        let lease = event_budget()
+        let lease = budget
             .acquire_many_owned(frame_units(bytes))
             .await
             .map_err(|_| "benchmark event byte budget closed")?;
@@ -1609,11 +1631,20 @@ pub(super) mod tests {
         assert_eq!(outgoing_budget().available_permits(), budget_before);
     }
 
+    /// A slot pool and byte budget sized like the process-wide pair but owned
+    /// by one test, so its permit counts stay exact while other tests run.
+    fn private_admission() -> (Arc<Semaphore>, Arc<Semaphore>) {
+        (
+            Arc::new(Semaphore::new(OWNED_EVENT_SLOTS)),
+            Arc::new(Semaphore::new(OWNED_QUEUE_UNITS)),
+        )
+    }
+
     #[tokio::test]
     async fn queued_events_hold_global_admission_and_cancel_without_deadlocking() {
         let (events, mut received) = mpsc::unbounded_channel();
         let (cancel, mut cancelled) = watch::channel(false);
-        let slots = event_slots();
+        let (slots, budget) = private_admission();
         let held = slots
             .clone()
             .acquire_many_owned(OWNED_EVENT_SLOTS as u32)
@@ -1621,12 +1652,13 @@ pub(super) mod tests {
             .unwrap();
         let (ack, _rx) = oneshot::channel();
         cancel.send_replace(true);
-        assert!(admit_event(
+        assert!(admit_bounded_event(
             BridgeEvent::Drained { ack },
             1,
-            true,
             &events,
-            &mut cancelled
+            &mut cancelled,
+            slots.clone(),
+            budget.clone(),
         )
         .await
         .is_err());
@@ -1635,12 +1667,13 @@ pub(super) mod tests {
         cancel.send_replace(false);
         cancelled.borrow_and_update();
         let (ack, _rx) = oneshot::channel();
-        admit_event(
+        admit_bounded_event(
             BridgeEvent::Drained { ack },
             1,
-            true,
             &events,
             &mut cancelled,
+            slots.clone(),
+            budget,
         )
         .await
         .unwrap();
@@ -1654,23 +1687,26 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn stopped_event_router_releases_global_transport_admission() {
-        let bytes_before = event_budget().available_permits();
-        let slots_before = event_slots().available_permits();
+        let (slots, budget) = private_admission();
         let (events, received) = mpsc::unbounded_channel();
         let (_cancel, mut cancelled) = watch::channel(false);
         drop(received);
         let (ack, _rx) = oneshot::channel();
-        assert!(admit_event(
-            BridgeEvent::Drained { ack },
-            2048,
-            true,
-            &events,
-            &mut cancelled
-        )
-        .await
-        .is_err());
-        assert_eq!(event_budget().available_permits(), bytes_before);
-        assert_eq!(event_slots().available_permits(), slots_before);
+        // Only the send fails, so the event held its slot and bytes by then.
+        assert_eq!(
+            admit_bounded_event(
+                BridgeEvent::Drained { ack },
+                2048,
+                &events,
+                &mut cancelled,
+                slots.clone(),
+                budget.clone(),
+            )
+            .await,
+            Err("bridge event loop closed")
+        );
+        assert_eq!(budget.available_permits(), OWNED_QUEUE_UNITS);
+        assert_eq!(slots.available_permits(), OWNED_EVENT_SLOTS);
     }
 
     #[tokio::test]
