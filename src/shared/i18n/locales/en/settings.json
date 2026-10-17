@@ -689,6 +689,16 @@
       "spent": "Spent so far: {{spent}}",
       "spentOfLimit": "Spent so far: {{spent}} of {{limit}}",
       "unavailable": "Spending could not be read, so tests do not use credits."
+    },
+    "sandboxKeys": {
+      "title": "Z.ai keys in the benchmark sandbox",
+      "description": "Z.ai tests run in the benchmark sandbox, which keeps its own copy of the account's saved key. Copy it again after you change the key.",
+      "none": "No Z.ai Coding Plan accounts",
+      "noneDescription": "Add a Coding Plan account under AI providers, then copy its key here.",
+      "copy": "Copy key to benchmark sandbox",
+      "copying": "Copying...",
+      "done": "Key copied to the benchmark sandbox.",
+      "failed": "Not copied: {{message}}"
     }
   },
   "mcpManager": {

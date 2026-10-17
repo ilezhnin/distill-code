@@ -1,12 +1,21 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { benchmarkApi } from "@/features/benchmarks/api/benchmarks";
+import {
+  benchmarkApi,
+  benchmarkErrorMessage,
+} from "@/features/benchmarks/api/benchmarks";
 import {
   MAX_TIME_LIMIT_MINUTES,
   useBenchmarkSettingsStore,
 } from "@/features/benchmarks/stores/benchmarkSettingsStore";
+import type { ProviderAccount } from "@/features/providers/api/providerAccounts";
+import {
+  startProviderAccountsMonitor,
+  useProviderAccountsStore,
+} from "@/features/providers/stores/providerAccountsStore";
 import { useLocaleFormatting } from "@/shared/i18n";
+import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { SettingsRow } from "@/shared/ui/settings-row";
@@ -56,6 +65,7 @@ export function BenchmarkSettings() {
           </SettingsRow>
           <CreditLimitRow />
         </SettingsSection>
+        <ZaiSandboxKeys />
       </SettingsSections>
     </SettingsPage>
   );
@@ -134,5 +144,89 @@ function CreditLimitRow() {
         ) : null}
       </div>
     </SettingsRow>
+  );
+}
+
+const ZAI_PROVIDER_ID = "zai-acp";
+
+/**
+ * Z.ai tests run in the benchmark sandbox, which keeps its own copy of each
+ * Coding Plan account's key; this copies it there without a script.
+ */
+function ZaiSandboxKeys() {
+  const { t } = useTranslation("settings");
+  const loaded = useProviderAccountsStore((state) => state.loaded);
+  const accounts = useProviderAccountsStore((state) => state.accounts).filter(
+    (account) => account.providerId === ZAI_PROVIDER_ID,
+  );
+  useEffect(() => {
+    startProviderAccountsMonitor();
+  }, []);
+  if (!loaded) return null;
+  return (
+    <SettingsSection title={t("benchmarks.sandboxKeys.title")}>
+      {accounts.length === 0 ? (
+        <SettingsRow
+          label={t("benchmarks.sandboxKeys.none")}
+          description={t("benchmarks.sandboxKeys.noneDescription")}
+        />
+      ) : (
+        accounts.map((account) => (
+          <SandboxKeyRow key={account.id} account={account} />
+        ))
+      )}
+    </SettingsSection>
+  );
+}
+
+type CopyResult =
+  | { state: "idle" | "copying" | "done" }
+  | { state: "error"; message: string };
+
+function SandboxKeyRow({ account }: { account: ProviderAccount }) {
+  const { t } = useTranslation("settings");
+  const [result, setResult] = useState<CopyResult>({ state: "idle" });
+  const copy = async () => {
+    setResult({ state: "copying" });
+    try {
+      await benchmarkApi.copyKeyToSandbox(account.providerId, account.id);
+      setResult({ state: "done" });
+    } catch (error) {
+      setResult({ state: "error", message: benchmarkErrorMessage(error) });
+    }
+  };
+  return (
+    <SettingsRow
+      label={account.label}
+      description={t("benchmarks.sandboxKeys.description")}
+      align="start"
+      action={({ labelId }) => (
+        <div className="flex max-w-80 flex-col items-end gap-1">
+          <Button
+            type="button"
+            variant="subtle"
+            size="xs"
+            aria-describedby={labelId}
+            feedbackState={result.state === "copying" ? "loading" : "idle"}
+            loadingLabel={t("benchmarks.sandboxKeys.copying")}
+            onClick={() => void copy()}
+          >
+            {t("benchmarks.sandboxKeys.copy")}
+          </Button>
+          {result.state === "done" ? (
+            <p
+              className="text-right text-xs text-muted-foreground"
+              role="status"
+            >
+              {t("benchmarks.sandboxKeys.done")}
+            </p>
+          ) : result.state === "error" ? (
+            <p className="text-right text-xs text-destructive" role="alert">
+              {t("benchmarks.sandboxKeys.failed", { message: result.message })}
+            </p>
+          ) : null}
+        </div>
+      )}
+    />
   );
 }

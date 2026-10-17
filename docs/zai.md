@@ -44,9 +44,10 @@ Benchmark sessions run the Linux build of the same OpenCode release inside the
 `distill-bench` sandbox (see [benchmark operations](benchmark-operations.md)).
 Benchmark configurations record Coding Plan use as `subscription`, since the
 plan's endpoint is the only one configured. The sandbox keeps its own copy of
-each account's key: the `benchmark_sandbox_sign_in` command passes the saved
-key to `bench-login zai <account-id>` on standard input, never as an argument
-or in a log. Copy it again after changing the key in Distill. Removing the
+each account's key: **Copy key to benchmark sandbox** in Settings > Benchmarks
+(the `benchmark_sandbox_sign_in` command) passes the saved key to
+`bench-login zai <account-id>` on standard input, never as an argument or in a
+log. Copy it again after changing the key in Distill. Removing the
 account's sandbox folder (`/home/candidate/accounts/<account-id>/zai`) removes
 the copy; signing out in Distill does not.
 

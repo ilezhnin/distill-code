@@ -294,6 +294,12 @@ export const benchmarkApi = {
       accountId,
       refresh,
     }),
+  /**
+   * Copies a Z.ai Coding Plan account's saved key into the benchmark sandbox,
+   * which keeps its own copy; repeat after the key changes.
+   */
+  copyKeyToSandbox: (providerId: string, accountId: string) =>
+    invoke<void>("benchmark_sandbox_sign_in", { providerId, accountId }),
   listen: (callback: (event: Pick<BenchmarkEvent, "sequence">) => void) =>
     listen<Pick<BenchmarkEvent, "sequence">>("benchmark-changed", (event) =>
       callback(event.payload),

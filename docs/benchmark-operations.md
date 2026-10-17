@@ -69,8 +69,9 @@ before measurement, not during a run. Sign in to the selected account through
 [the provisioning script](../scripts/benchmark-sandbox.mjs). Use the account ID
 from the application and the provider's normal login flow. Never put credentials
 in a task, command transcript intended for publication, or source file. A Z.ai
-Coding Plan account has no login flow: the `benchmark_sandbox_sign_in` command
-copies its saved key into the sandbox on the helper's standard input (see
+Coding Plan account has no login flow: **Copy key to benchmark sandbox** in
+Settings > Benchmarks (the `benchmark_sandbox_sign_in` command) copies its saved
+key into the sandbox on the helper's standard input (see
 [Z.ai Coding Plan](zai.md#benchmarks)). Z.ai sessions reach only the Z.ai API.
 
 For an existing distribution, update helpers without downloading dependencies
