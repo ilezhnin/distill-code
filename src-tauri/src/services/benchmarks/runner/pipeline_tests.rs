@@ -516,6 +516,7 @@ async fn publish_with_entry(
 
 async fn measure(service: &Arc<BenchmarkService>, versions: &[BenchmarkVersion], key: &str) {
     let request = RunRequest {
+        author_policy: None,
         request_key: key.into(),
         version_ids: versions.iter().map(|v| v.id.clone()).collect(),
         configurations: configurations(),

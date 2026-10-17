@@ -93,15 +93,21 @@ export function BenchmarkModelRunDialog({
   const name = modelDisplayName(configuration);
   const effort = explicitEffort(configuration.effort);
   // Frozen leaderboard releases remain readable; new runs use current tests.
-  const { eligible, authored } = useMemo(() => {
+  // A test this model wrote runs too, tagged: the board counts only its
+  // speed and cost.
+  const { eligible, own } = useMemo(() => {
     const current = currentVersions(definitions)
       .filter((version) => isRankedSplit(version.manifest.split))
       .sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
-    const wrote = (version: BenchmarkVersion) =>
-      authoredByCandidate(version.manifest.environment, configuration);
     return {
-      eligible: current.filter((version) => !wrote(version)),
-      authored: current.filter(wrote),
+      eligible: current,
+      own: new Set(
+        current
+          .filter((version) =>
+            authoredByCandidate(version.manifest.environment, configuration),
+          )
+          .map((version) => version.id),
+      ),
     };
   }, [definitions, configuration]);
   // A click overrides a test's default until a run finishes.
@@ -141,10 +147,7 @@ export function BenchmarkModelRunDialog({
     configurations: [candidate],
     repetitions: REQUIRED_REPETITIONS,
     timeoutSeconds: runTimeLimitSeconds(versions),
-    maxExecutions: Math.max(
-      1,
-      plannedTurns(versions, candidate) * REQUIRED_REPETITIONS,
-    ),
+    maxExecutions: Math.max(1, plannedTurns(versions) * REQUIRED_REPETITIONS),
     preview: false,
   });
   const [runId, setRunId] = useState<string | null>(activeRunId);
@@ -199,12 +202,16 @@ export function BenchmarkModelRunDialog({
     queryFn: () => listByIds(attemptIds),
     enabled: attemptIds.length > 0,
   });
-  // The result each test stands at on the leaderboard, shown until a run
-  // reports a newer one.
+  // The result each test stands at on the leaderboard, own tests included,
+  // shown until a run reports a newer one.
+  const standingIds = useMemo(
+    () => [...row.attemptIds, ...(row.ownAttemptIds ?? [])],
+    [row.attemptIds, row.ownAttemptIds],
+  );
   const standingAttempts = useQuery({
-    queryKey: [...benchmarkKeys, "standing", row.attemptIds],
-    queryFn: () => listByIds(row.attemptIds),
-    enabled: row.attemptIds.length > 0,
+    queryKey: [...benchmarkKeys, "standing", standingIds],
+    queryFn: () => listByIds(standingIds),
+    enabled: standingIds.length > 0,
   });
   // The standing cell of each test: repetitions passed of those scored.
   const standing = useMemo(() => {
@@ -230,7 +237,7 @@ export function BenchmarkModelRunDialog({
     );
   }, [standingAttempts.data]);
   const resolvingStanding =
-    row.attemptIds.length > 0 && standingAttempts.isPending;
+    standingIds.length > 0 && standingAttempts.isPending;
   const scores = useMemo(
     () =>
       new Map(
@@ -523,6 +530,14 @@ export function BenchmarkModelRunDialog({
                     <span className="min-w-0 flex-1 truncate">
                       {version.manifest.name}
                     </span>
+                    {own.has(version.id) ? (
+                      <span
+                        className="shrink-0 text-xs text-muted-foreground"
+                        title={t("modelRun.authoredHint")}
+                      >
+                        {t("modelRun.authored")}
+                      </span>
+                    ) : null}
                     {status ? (
                       <TestStatusMark status={status} now={now} />
                     ) : standing.has(version.id) ? (
@@ -537,19 +552,6 @@ export function BenchmarkModelRunDialog({
                 </li>
               );
             })}
-            {authored.map((version) => (
-              <li key={version.id}>
-                <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal text-muted-foreground">
-                  <Checkbox disabled checked={false} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {version.manifest.name}
-                  </span>
-                  <span className="shrink-0 text-xs">
-                    {t("modelRun.authored")}
-                  </span>
-                </Label>
-              </li>
-            ))}
           </ol>
         </DialogBody>
         <DialogFooter>

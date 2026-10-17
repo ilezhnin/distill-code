@@ -28,6 +28,7 @@ import type {
   BenchmarkVersion,
   CandidateObservation,
   CaseStats,
+  HomeAdvantageReport,
   SelectorHarnessQuery,
   SelectorHarnessReport,
   Capability,
@@ -244,6 +245,8 @@ export const benchmarkApi = {
     invoke<SelectorHarnessReport>("benchmark_selector_harness", { query }),
   /** Discrimination and flakiness of every pool case over the standing cells. */
   getCaseStats: () => invoke<CaseStats[]>("benchmark_get_case_stats"),
+  getHomeAdvantage: (cutoffAt: number | null = null) =>
+    invoke<HomeAdvantageReport>("benchmark_get_home_advantage", { cutoffAt }),
   getHistory: (configuration: Configuration, model = false) =>
     invoke<HistorySnapshot[]>("benchmark_get_history", {
       configuration,

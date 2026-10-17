@@ -198,7 +198,7 @@ deploy. The authoritative field definitions are
 | `name`, `description`, `prompt` | Describe a useful task and an observable deliverable; make every requirement public to the candidate |
 | `workClassId`, `category`, `facets` | Use an existing work class and describe the task without encoding answers or candidate performance |
 | `taskFamily`, `environment.splitGroup`, `split` | Group related variants together and assign `train` or `held_out` before candidate measurements |
-| `source`, `license`, author exclusions | Record provenance, permission to use the material, and which candidates must be excluded |
+| `source`, `license`, `environment.authoredBy` | Record provenance, permission to use the material, and which candidates wrote the task |
 | `executionProfile`, `permissions`, `limits` | Specify the actual tools, network, context, time and artifact bounds |
 | `fixtures`, `environment`, `entryState` | Supply the permitted starting material and explicit initial state for the chosen profile |
 | `evaluator`, `repetitions` | Define the grading contract, reference controls and repeated measurement count |
@@ -278,8 +278,9 @@ repetitions and limits. Preserve these original configuration IDs for subsequent
 workflow campaigns; the fitting service normalizes evidence keys separately.
 
 For objective single-step tasks, the planned candidate count is
-`eligible versions x configurations x repetitions`. Author exclusions reduce
-eligible cells. Workflow steps and rubric judges add calls; use
+`eligible versions x configurations x repetitions`. A candidate's own tests
+are planned too; a run admitted before that rule (no `authorPolicy`) leaves
+them out. Workflow steps and rubric judges add calls; use
 `benchmark_preview_run` and its `executionCount` instead of relying on the simple
 formula. Qualification-control counts, candidate calls and judge calls are
 different quantities and should be reported separately.

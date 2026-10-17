@@ -878,6 +878,7 @@ async fn reservations_cover_historical_relations_exposure_and_existing_holdouts(
         .await
         .unwrap();
     let run = RunRequest {
+        author_policy: None,
         request_key: "alias-bypass".into(),
         version_ids: vec![alias.id.clone()],
         configurations: configurations(),

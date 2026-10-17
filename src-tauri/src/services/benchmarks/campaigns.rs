@@ -242,7 +242,8 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
             update_if_current(service, &expected, &schedule).await?;
             continue;
         }
-        let mut request = schedule.request.clone();
+        // Each admission plans under the author rule current at its start.
+        let mut request = schedule.request.clone().with_current_author_policy();
         let candidates = match &schedule.discovery {
             Some(rule) => match service
                 .backend
@@ -266,12 +267,14 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
             None => request.configurations.clone(),
         };
         // New unsupported candidates remain untested; only covered configurations
-        // that owe at least one case they did not author enter a plan, so only
-        // they take one of discovery's candidate slots.
+        // that owe at least one case enter a plan, so only they take one of
+        // discovery's candidate slots. A plan that measures author cells owes
+        // its candidates' own cases too.
         let mut manifests = Vec::new();
         for id in &request.version_ids {
             manifests.push(service.store.version(id).await?.manifest);
         }
+        let measures_author_cells = request.measures_author_cells();
         let eligible: Vec<Configuration> = candidates
             .into_iter()
             .filter(|configuration| {
@@ -280,9 +283,10 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
                         .backend
                         .unsupported(configuration, manifest)
                         .is_none()
-                }) && manifests
-                    .iter()
-                    .any(|manifest| !super::routing::authored_by_candidate(manifest, configuration))
+                }) && (measures_author_cells
+                    || manifests.iter().any(|manifest| {
+                        !super::routing::authored_by_candidate(manifest, configuration)
+                    }))
             })
             .collect();
         request.configurations = match &schedule.discovery {
@@ -531,6 +535,7 @@ mod tests {
             parallelism: None,
             execution_limits: None,
             workflow_policy: None,
+            author_policy: None,
         };
         let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();
@@ -553,7 +558,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovery_never_plans_a_candidate_on_cases_it_wrote() {
+    async fn discovery_plans_an_author_on_the_case_it_wrote() {
         use std::sync::Arc;
         let directory = tempfile::tempdir().unwrap();
         let service = BenchmarkService {
@@ -586,6 +591,7 @@ mod tests {
             parallelism: None,
             execution_limits: None,
             workflow_policy: None,
+            author_policy: None,
         };
         let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();
@@ -597,18 +603,20 @@ mod tests {
             "{:?}",
             service.store.schedules().await.unwrap()[0].paused_reason
         );
-        let models: Vec<_> = runs[0]
+        let mut models: Vec<_> = runs[0]
             .request
             .configurations
             .iter()
             .map(|c| c.model_id.as_str())
             .collect();
-        assert_eq!(models, ["fake-pass"]);
-        assert_eq!(runs[0].attempts.len(), 1);
+        models.sort_unstable();
+        assert_eq!(models, ["fake-fail", "fake-pass"]);
+        assert!(runs[0].request.measures_author_cells());
+        assert_eq!(runs[0].attempts.len(), 2);
     }
 
     #[tokio::test]
-    async fn a_candidate_that_owes_nothing_never_takes_a_discovery_slot() {
+    async fn an_author_keeps_its_discovery_slot() {
         use std::sync::Arc;
         let directory = tempfile::tempdir().unwrap();
         let service = BenchmarkService {
@@ -620,7 +628,8 @@ mod tests {
             active: Default::default(),
             app: None,
         };
-        // The saved candidate, first in inventory order, wrote the only case.
+        // The saved candidate, first in inventory order, wrote the only case
+        // and still owes it.
         let mut draft = super::super::runner::seed_definitions().remove(0);
         draft.environment["authoredBy"] =
             serde_json::json!([{"providerId":"fake","modelId":"fake-pass","effort":null}]);
@@ -642,6 +651,7 @@ mod tests {
             parallelism: None,
             execution_limits: None,
             workflow_policy: None,
+            author_policy: None,
         };
         let schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":true,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":1},"maxRuns":2,"maxTotalExecutions":4})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();
@@ -657,7 +667,7 @@ mod tests {
             .iter()
             .map(|c| c.model_id.as_str())
             .collect();
-        assert_eq!(models, ["fake-fail"]);
+        assert_eq!(models, ["fake-pass"]);
     }
 
     #[tokio::test]
@@ -699,6 +709,7 @@ mod tests {
             parallelism: None,
             execution_limits: None,
             workflow_policy: None,
+            author_policy: None,
         };
         let mut schedule:Schedule=serde_json::from_value(serde_json::json!({"id":"pilot","name":"Pilot","enabled":false,"intervalMinutes":60,"nextDueAt":0,"request":request,"missed":false,"discovery":{"providerId":"fake","accountId":"isolated","includeNewModels":true,"modelIds":[],"maxCandidates":2},"maxRuns":1,"maxTotalExecutions":2})).unwrap();
         service.store.save_schedule(&schedule).await.unwrap();

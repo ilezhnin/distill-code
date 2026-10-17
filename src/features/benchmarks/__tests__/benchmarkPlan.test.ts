@@ -29,20 +29,17 @@ describe("planned turns", () => {
     task.manifest.environment = {
       judgePanel: { recipe: "frozen-native-panel-v1", judges: [{}, {}] },
     };
-    expect(plannedTurns([task], configuration)).toBe(4);
+    expect(plannedTurns([task])).toBe(4);
   });
-  it("counts every step and a judged case's panel, nothing for a case the candidate wrote", () => {
+  it("counts every step and a judged case's panel, cases the candidate wrote included", () => {
     expect(
-      plannedTurns(
-        [
-          caseOf("exact"),
-          caseOf("rubric"),
-          caseOf("exact", undefined, 3),
-          caseOf("rubric", [{ ...configuration, modelId: "MODEL-1" }]),
-          caseOf("exact", [configuration]),
-        ],
-        configuration,
-      ),
-    ).toBe(1 + 4 + 3);
+      plannedTurns([
+        caseOf("exact"),
+        caseOf("rubric"),
+        caseOf("exact", undefined, 3),
+        caseOf("rubric", [{ ...configuration, modelId: "MODEL-1" }]),
+        caseOf("exact", [configuration]),
+      ]),
+    ).toBe(1 + 4 + 3 + 4 + 1);
   });
 });

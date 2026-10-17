@@ -81,7 +81,7 @@ Specify:
 - An objective evaluator or a versioned rubric with a calibrated judge protocol.
 - Tool and network permissions, prerequisites, time and artifact bounds.
 - Repetition count, dataset split, difficulty and other applicable facets.
-- Author exclusions, role context and related-family grouping when applicable.
+- Author identities, role context and related-family grouping when applicable.
 
 Every execution profile uses the dedicated Linux benchmark runtime. Profile
 permissions remain authoritative: native text has no tools even though its
@@ -103,13 +103,35 @@ installed identity requires new compatible qualification evidence. See
 ```
 
 Only a candidate with the same provider, concrete model and reasoning effort
-is excluded from that test. Declared model aliases resolve to their concrete
+is an author of that test. Declared model aliases resolve to their concrete
 target before comparison. Account, speed and execution profile are not part
 of authorship. Use an explicit effort, or `null` only for a model without
-reasoning control. Changing effort does not inherit an author's exclusion.
-Legacy string tags are provenance, not wildcard exclusions; convert them using
+reasoning control. Another effort of the same model is not an author.
+Legacy string tags are provenance, not wildcard matches; convert them using
 the original authoring evidence before publishing. Preserve unresolved tags
 in `environment.legacyAuthoredBy` rather than guessing a model or effort.
+
+An author's own test is planned, run, evaluated and stored like any other
+cell and labeled as its own. Each analysis decides what the cell counts for:
+
+- Quality, points and ranks on the boards, the design gallery, routing
+  evidence, learned fits, held-out reports and workflow policies leave own
+  cells out. An author cannot write a test that probes its own blind spots,
+  and a rubric can favor the author's style.
+- Speed and cost shares, each test's speed and cost record, and a row's
+  duration and spend count own cells.
+- A model's history compares the model with itself, so its points count the
+  tests it wrote; the model page says so under the chart.
+- An author never takes a judge seat on its own test.
+
+`benchmark_get_home_advantage` reports, for each author identity, its quality,
+speed and cost relative to the non-author candidates on the tests it wrote,
+against the same relative measure on other authors' tests (recipe
+`author-home-advantage-v1`). Only complete cells count, related tests are
+resampled together as one group, and fewer than two independent groups on
+either side give an estimate without an interval. Speed and cost compare as
+logarithms of ratios. Use the report before deciding whether own cells may
+enter quality or training; the defaults above do not change on their own.
 
 The editor offers Training and Held-out evaluation. Development remains a
 legacy data value for historical diagnostics, not a choice for new tests.
@@ -304,7 +326,9 @@ it. Changing a task invalidates any qualification that is not explicitly bound
 to its new public contract and evaluator.
 
 Freeze the candidate provider, concrete model, native effort, runtime, repetitions
-and limits before starting a run. Author exclusions remain binding. Missing
+and limits before starting a run. A run records its author rule as
+`authorPolicy` at admission; a run admitted before own cells were measured
+keeps leaving them out, including when it resumes or grows. Missing
 measurements, infrastructure failures and unsupported configurations are explicit
 states, not automatic failures or free execution. Preserve every planned outcome.
 
@@ -361,9 +385,12 @@ examples stay outside rating and training pools. Complete compatible repetition
 cells are required for supported comparisons; absent usage remains unknown.
 
 Exports contain public decision features, pseudonymous candidate/account
-identities and separately labeled outcomes. Protected evaluator contents are not
-inference features. Held-out data requires explicit export scope. Export files
-remain private local artifacts even when their schema is documented publicly.
+identities and separately labeled outcomes. An author's own cell carries
+`authoredByCandidate`, keeps `reward` empty and reports its measured score as
+`authoredReward`; the training ledger keeps it masked and unowed. Protected
+evaluator contents are not inference features. Held-out data requires explicit
+export scope. Export files remain private local artifacts even when their schema
+is documented publicly.
 
 Learned fits, holdout reservations and reports are research artifacts. A fit or a
 positive isolated comparison does not authorize production dispatch. Promotion

@@ -620,6 +620,19 @@ pub async fn benchmark_get_leaderboard(
     })
     .await
 }
+/// Each author identity's relative quality, speed and cost on the cases it
+/// wrote against other authors' cases, with uncertainty.
+#[tauri::command]
+pub async fn benchmark_get_home_advantage(
+    app: AppHandle,
+    cutoff_at: Option<i64>,
+) -> Result<benchmarks::home_advantage::HomeAdvantageReport> {
+    let s = service(&app).await?;
+    analyze(s.query_data().await?, move |data| {
+        benchmarks::home_advantage::report(data, cutoff_at)
+    })
+    .await
+}
 #[tauri::command]
 pub async fn benchmark_get_case_stats(app: AppHandle) -> Result<Vec<CaseStats>> {
     let s = service(&app).await?;

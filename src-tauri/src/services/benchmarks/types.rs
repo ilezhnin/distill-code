@@ -256,7 +256,15 @@ pub struct RunRequest {
     /// admitted before it was recorded ran one at a time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<u32>,
+    /// How the run treats a cell whose candidate authored the case, recorded
+    /// at admission (see [`AUTHOR_CELLS_MEASURED`]). A run admitted before it
+    /// was recorded never planned those cells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_policy: Option<String>,
 }
+/// Author-own cells are planned, run and labeled like any other cell; each
+/// analysis decides whether it counts them.
+pub const AUTHOR_CELLS_MEASURED: &str = "author-cells-measured-v1";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunExecutionLimits {
@@ -274,6 +282,22 @@ pub enum RunRetryPolicy {
     None,
 }
 impl RunRequest {
+    /// Whether the run plans the cells of candidates that authored a case.
+    /// A research workflow policy never admits an author into its pool.
+    pub fn measures_author_cells(&self) -> bool {
+        self.author_policy.as_deref() == Some(AUTHOR_CELLS_MEASURED)
+    }
+
+    /// Records the current author rule on a request being admitted, before
+    /// it is compared with a saved plan.
+    pub fn with_current_author_policy(mut self) -> Self {
+        if self.workflow_policy.is_none() {
+            self.author_policy
+                .get_or_insert_with(|| AUTHOR_CELLS_MEASURED.into());
+        }
+        self
+    }
+
     pub fn automatic_retry(&self) -> bool {
         self.execution_limits
             .as_ref()
@@ -655,6 +679,14 @@ pub struct LeaderboardRow {
     /// measured, without the cells kept only for their spend.
     #[serde(default)]
     pub result_attempt_ids: Vec<String>,
+    /// Attempts on the candidate's own cases that the row counts for speed
+    /// and cost only, apart from `attempt_ids`.
+    #[serde(default)]
+    pub own_attempt_ids: Vec<String>,
+    /// Pool cases this candidate helped author. A board leaves them out of
+    /// quality, points and rank; a history counts them.
+    #[serde(default)]
+    pub own_version_ids: Vec<String>,
     /// Success per work class of the suite, in the cohort's class order.
     pub axes: Vec<LeaderboardAxis>,
     /// Pool cases this configuration has no scored result for: the gap a

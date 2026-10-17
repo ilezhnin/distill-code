@@ -918,6 +918,7 @@ async fn effective_training_timeout_and_workflow_limits_must_match_deployment() 
     let mut ids = qualify(&service, &training).await;
     let run = service
         .start_run(RunRequest {
+            author_policy: None,
             request_key: "higher-collected-timeout".into(),
             version_ids: training.iter().map(|v| v.id.clone()).collect(),
             configurations: configurations(),
@@ -991,6 +992,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
     let mut qualifications = qualify(&service, &training).await;
     let run = service
         .start_run(RunRequest {
+            author_policy: None,
             request_key: "v2-qualified-training".into(),
             version_ids: training.iter().map(|version| version.id.clone()).collect(),
             configurations: native_v2_configurations(),
@@ -1510,6 +1512,7 @@ async fn native_class(
     let qualifications = qualify(service, &training).await;
     let run = service
         .start_run(RunRequest {
+            author_policy: None,
             request_key: format!("{class}-native-training"),
             version_ids: training.iter().map(|version| version.id.clone()).collect(),
             configurations: native_v2_configurations(),

@@ -571,7 +571,7 @@ describe("creative rubric review", () => {
     }
   });
 
-  it("offers no evaluation on a case the candidate wrote", async () => {
+  it("evaluates a case the candidate wrote again without a hint during blind review", async () => {
     const [version] = creativeDefinition.versions;
     vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
       {
@@ -594,8 +594,35 @@ describe("creative rubric review", () => {
     showEvidence();
     await screen.findByText("Score the drawing against the brief.");
     expect(
-      screen.queryByRole("button", { name: /Evaluate again/ }),
+      screen.getByRole("button", { name: /Evaluate again/ }),
+    ).toBeInTheDocument();
+    // A blind review reveals nothing about who wrote the case.
+    expect(
+      screen.queryByText(/This model wrote this test/),
     ).not.toBeInTheDocument();
+  });
+
+  it("says when an evaluated case is the candidate's own", async () => {
+    const [version] = definition.versions;
+    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+      {
+        ...definition,
+        versions: [
+          {
+            ...version,
+            manifest: {
+              ...version.manifest,
+              environment: { authoredBy: [configuration] },
+            },
+          },
+        ],
+      },
+    ]);
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
+    showEvidence();
+    expect(
+      await screen.findByText(/This model wrote this test/),
+    ).toBeInTheDocument();
   });
 
   it("shows why the service refused to evaluate again", async () => {

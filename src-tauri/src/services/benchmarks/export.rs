@@ -22,7 +22,7 @@ fn exported_split(split: &str, include_held_out: bool) -> bool {
     split == "train" || (include_held_out && split == "held_out")
 }
 
-fn split_group(draft: &BenchmarkDraft) -> &str {
+pub(super) fn split_group(draft: &BenchmarkDraft) -> &str {
     draft
         .environment
         .get("splitGroup")
@@ -65,6 +65,8 @@ fn validate_splits(data: &QueryData, cutoff: Option<i64>) -> Result<()> {
 /// One portable observation; cutoff applies to its score and judge evidence.
 /// The raw archive has no historical query. Ledger calls supply only terminal
 /// attempts known at their frozen cutoff, never later outputs or measurements.
+/// An author's own cell keeps `reward` empty, so quality and training leave it
+/// out by default, and carries its measured score as `authoredReward`.
 fn observation(
     attempt: Option<&Attempt>,
     repetition: u32,
@@ -72,13 +74,11 @@ fn observation(
     salt: &str,
     cutoff: Option<i64>,
 ) -> Value {
-    let reward = if authored {
-        None
-    } else {
-        attempt.and_then(|a| super::analysis::score_as_of(a, cutoff))
-    };
+    let score = attempt.and_then(|a| super::analysis::score_as_of(a, cutoff));
+    let reward = if authored { None } else { score };
     json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
-        "excluded":authored.then_some("authored_by_candidate"),
+        "excluded":authored.then_some("authored_by_candidate"),"authoredByCandidate":authored,
+        "authoredReward":if authored { score } else { None },
         "outcome":attempt.and_then(|a|super::analysis::outcome_as_of(a.outcome.as_deref(),a.finished_at,&a.evaluations,cutoff)),
         "phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),"nativeExecutionMs":attempt.and_then(|a|a.native_execution_ms),"workerOverheadMs":attempt.and_then(|a|a.duration_ms.zip(a.native_execution_ms).map(|(wall,native)|wall.saturating_sub(native))),
         "usage":attempt.map(|a|&a.usage),"resolvedModel":attempt.and_then(|a|a.resolved_model.as_ref()),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
@@ -130,7 +130,7 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                         observation(attempt.copied(), repetition, authored, salt, None)
                     })
                     .collect();
-                matrix.push(json!({"configuration":public_configuration(config,salt),"outcomes":observations}));
+                matrix.push(json!({"configuration":public_configuration(config,salt),"authoredByCandidate":authored,"outcomes":observations}));
             }
             result.push(json!({"schemaVersion":2,"candidateKeyAlgorithm":super::routing::CANDIDATE_KEY_ALGORITHM,
                 "runId":run.id,"taskVersion":version.id,"contentHash":version.content_hash,
@@ -339,7 +339,7 @@ pub fn ledger_rows_at(
             };
             matrix.push(json!({"configuration":public_configuration(configuration,salt), "owed":owed, "observed":complete,
                 "notPlanned":not_planned,"observationStatus":observation_status,"requiredRepetitions":required_repetitions,
-                "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"outcomes":outcomes,
+                "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"authoredByCandidate":excluded,"outcomes":outcomes,
                 "meanCost":super::analysis::mean_case_cost(&selected,Some(cutoff)),
                 "runId":selected.first().map(|a|&a.run_id),
                 "effectiveTimeoutSeconds":selected.first().map(|a|super::runner::effective_timeout_seconds(runs[a.run_id.as_str()].request.timeout_seconds,&version.manifest)),
@@ -788,6 +788,11 @@ mod tests {
         assert_eq!(cell["owed"], false);
         assert_eq!(cell["observed"], false);
         assert!(cell["reward"].is_null());
+        // The measured own cell stays labeled, with its score apart.
+        assert_eq!(cell["authoredByCandidate"], true);
+        assert_eq!(cell["outcomes"][0]["authoredByCandidate"], true);
+        assert!(cell["outcomes"][0]["reward"].is_null());
+        assert_eq!(cell["outcomes"][0]["authoredReward"], 1.0);
         // Every owed cell is measured, so every row is a complete matrix.
         assert!(rows.iter().all(|r| r["completeMatrix"] == true));
     }
@@ -1064,6 +1069,7 @@ mod tests {
             .unwrap();
         let run = service
             .start_run(RunRequest {
+                author_policy: None,
                 request_key: "export-test".into(),
                 version_ids: vec![version.id],
                 configurations: inventory.into_iter().map(|m| m.configuration).collect(),

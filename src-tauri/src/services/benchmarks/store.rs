@@ -530,6 +530,11 @@ impl Store {
                 continue;
             }
             let manifest: BenchmarkDraft = serde_json::from_str(&row.get::<String, _>(1))?;
+            // The gallery compares quality, so a rendering of a brief its
+            // candidate wrote stays out of it, as on every quality board.
+            if super::routing::authored_by_candidate(&manifest, &attempt.configuration) {
+                continue;
+            }
             // A rendering its event record stopped is unscored, as on every
             // board (see `evidence`).
             super::evidence::rendering_with_answer_cap(
@@ -1438,6 +1443,41 @@ mod tests {
         insert("run-1", 1, json!({"id":"rendering","runId":"run-1","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pending_review","output":"<svg/>","finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]})).await;
         let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
         assert!(entries.is_empty());
+    }
+    #[tokio::test]
+    async fn a_measured_rendering_of_its_own_brief_is_no_gallery_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let mut draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|d| d.work_class_id == "creative")
+            .unwrap();
+        draft.environment["authoredBy"] =
+            json!([{"providerId":"claude-acp","modelId":"writer","effort":null}]);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let configuration = |model: &str| json!({"id":model,"providerId":"claude-acp","accountId":"account","modelId":model,"effort":null,"fastMode":false,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"r1"});
+        let mut tx = store.pool.begin().await.unwrap();
+        let request = json!({"requestKey":"run-1","versionIds":[version.id],"configurations":[],"repetitions":1,"timeoutSeconds":600,"maxExecutions":2,"preview":false,"authorPolicy":"author-cells-measured-v1"});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run-1','run-1','completed',1,0,0,?)")
+            .bind(request.to_string())
+            .execute(&mut *tx).await.unwrap();
+        for model in ["writer", "reader"] {
+            let attempt = json!({"id":model,"runId":"run-1","versionId":version.id,"configuration":configuration(model),"observed":configuration(model),"repetition":0,"phase":"terminal","outcome":"pass","output":format!("<svg data-id='{model}'/>"),"finishedAt":1,"usage":{"schema":"native"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run-1',?,?,0,'terminal',?)")
+                .bind(model).bind(&version.id).bind(model).bind(attempt.to_string())
+                .execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        add_gallery_repetitions(&store).await;
+        let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.attempt_id.as_str())
+                .collect::<Vec<_>>(),
+            ["reader"]
+        );
     }
     #[tokio::test]
     async fn a_rendering_of_an_unknown_effort_is_no_gallery_entry() {

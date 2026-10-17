@@ -184,6 +184,12 @@ export interface RunRequest {
    * time).
    */
   parallelism?: number;
+  /**
+   * How the run treats a cell whose candidate wrote the case, recorded by
+   * the service at admission. Absent on runs admitted before author cells
+   * were measured: those never planned them.
+   */
+  authorPolicy?: string;
 }
 export interface RunPreview {
   valid: boolean;
@@ -457,6 +463,13 @@ export interface LeaderboardRow {
   attemptIds: string[];
   /** The attempts whose cases have a score; absent on older snapshots. */
   resultAttemptIds?: string[];
+  /** Attempts on the candidate's own cases, counted for speed and cost only. */
+  ownAttemptIds?: string[];
+  /**
+   * Pool cases this candidate helped write. A board leaves them out of
+   * quality, points and rank; a history counts them.
+   */
+  ownVersionIds?: string[];
   /** Success per work class of the suite, in the cohort's class order. */
   axes: LeaderboardAxis[];
   /** Pool cases without a scored result: the gap a catch-up run fills. */
@@ -471,6 +484,42 @@ export interface LeaderboardRow {
   resolvedModels?: string[];
   /** Attempts of this configuration its standing run flew at once. */
   parallelism?: number | null;
+}
+/** One metric of an author's home advantage (`author-home-advantage-v1`). */
+export interface HomeAdvantageMetric {
+  /** `measured`, or `insufficient` below two task groups on either side. */
+  status: string;
+  own: HomeAdvantageCaseSet;
+  other: HomeAdvantageCaseSet;
+  /** Relative value on own cases minus relative value on other authors' cases. */
+  difference: number | null;
+  interval: { lower: number; upper: number } | null;
+}
+export interface HomeAdvantageCaseSet {
+  cases: number;
+  groups: number;
+  comparators: number;
+  relative: number | null;
+}
+/**
+ * An author identity's quality, speed and cost on the cases it wrote against
+ * other authors' cases, each relative to non-author candidates. Speed and
+ * cost are natural logs of ratios; negative means relatively faster or cheaper.
+ */
+export interface HomeAdvantageReport {
+  recipe: string;
+  cutoffAt: number | null;
+  bootstrapSamples: number;
+  seed: number;
+  intervalMass: number;
+  authors: {
+    author: { providerId: string; modelId: string; effort: string | null };
+    candidateKeys: string[];
+    quality: HomeAdvantageMetric;
+    speed: HomeAdvantageMetric;
+    cost: HomeAdvantageMetric;
+  }[];
+  limitations: string[];
 }
 export interface LeaderboardAxis {
   id: string;

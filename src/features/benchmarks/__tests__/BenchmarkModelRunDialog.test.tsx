@@ -72,8 +72,6 @@ const definitions: BenchmarkDefinition[] = [
   test(3, "Charlie"),
   test(4, "Delta"),
   test(5, "Echo"),
-  // Written by the candidate: listed, never run.
-  test(6, "Foxtrot", "exact", [configuration]),
   // Archived: not a current test.
   { ...test(7, "Golf"), archived: true },
   {
@@ -98,9 +96,13 @@ const definitions: BenchmarkDefinition[] = [
   },
 ];
 
+// Written by the candidate: run like any other test, and tagged.
+const own = test(6, "Foxtrot", "exact", [configuration]);
+
 function show(
   options: {
     configuration?: Configuration;
+    definitions?: BenchmarkDefinition[];
     runId?: string | null;
     /** Tests the model already has a score on, by version and attempt. */
     measured?: { versionIds: string[]; attemptIds: string[] };
@@ -118,7 +120,7 @@ function show(
           scoredVersionIds: options.measured?.versionIds ?? [],
           attemptIds: options.measured?.attemptIds ?? [],
         })}
-        definitions={definitions}
+        definitions={options.definitions ?? definitions}
         runId={options.runId ?? null}
         onClose={vi.fn()}
       />
@@ -206,27 +208,43 @@ it("keeps archived versions and development tests out of new runs", async () => 
   expect(screen.queryByText("Infrastructure only")).not.toBeInTheDocument();
 });
 
-it("checks every current test, keeps the model's own out, and runs the rest on today's runtime", async () => {
+it("checks every current test, tags the model's own, and runs them on today's runtime", async () => {
   const user = userEvent.setup();
   // The row's newest attempt ran on a runtime that has since changed.
-  show({ configuration: { ...configuration, inventoryRevision: "then" } });
+  show({
+    configuration: { ...configuration, inventoryRevision: "then" },
+    definitions: [...definitions, own],
+  });
   const dialog = await screen.findByRole("dialog");
   // The title names the model and its effort; nothing asks for them again.
   expect(within(dialog).getByRole("heading")).toHaveTextContent("model-1");
   expect(within(dialog).getByRole("heading")).toHaveTextContent("high");
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
-  // Six current tests the model did not write, all checked.
-  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
-  for (const name of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Hotel"])
+  // Seven current tests, the one the model wrote included, all checked.
+  expect(screen.getByText("7 of 7 selected")).toBeInTheDocument();
+  for (const name of [
+    "Alpha",
+    "Bravo",
+    "Charlie",
+    "Delta",
+    "Echo",
+    "Foxtrot",
+    "Hotel",
+  ])
     expect(
       within(screen.getByText(name).closest("label") as HTMLElement).getByRole(
         "checkbox",
       ),
     ).toBeChecked();
-  const own = screen.getByText("Foxtrot").closest("label") as HTMLElement;
-  expect(within(own).getByRole("checkbox")).toBeDisabled();
-  expect(within(own).getByText("Written by this model")).toBeInTheDocument();
+  const written = screen.getByText("Foxtrot").closest("label") as HTMLElement;
+  expect(within(written).getByRole("checkbox")).toBeEnabled();
+  expect(within(written).getByText("Own task")).toBeInTheDocument();
+  expect(
+    within(
+      screen.getByText("Alpha").closest("label") as HTMLElement,
+    ).queryByText("Own task"),
+  ).not.toBeInTheDocument();
   expect(screen.queryByText("Golf")).not.toBeInTheDocument();
   expect(screen.queryByText("Infrastructure only")).not.toBeInTheDocument();
   await user.click(
@@ -234,7 +252,7 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
       "checkbox",
     ),
   );
-  expect(screen.getByText("5 of 6 selected")).toBeInTheDocument();
+  expect(screen.getByText("6 of 7 selected")).toBeInTheDocument();
   const start = screen.getByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());
   await user.click(start);
@@ -251,15 +269,16 @@ it("checks every current test, keeps the model's own out, and runs the rest on t
       "version-2",
       "version-3",
       "version-5",
+      "version-6",
       "version-8",
     ],
     // Every measurement is three repetitions; a case counts only when all pass.
     repetitions: 3,
     // Four hours from Settings, not a field in the dialog.
     timeoutSeconds: 14_400,
-    // Four exact tests at one turn, the judged one at one plus three judges,
+    // Five exact tests at one turn, the judged one at one plus three judges,
     // three times over.
-    maxExecutions: 24,
+    maxExecutions: 27,
     preview: false,
   };
   await waitFor(() =>

@@ -1788,6 +1788,7 @@ mod tests {
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();
         let request = RunRequest {
+            author_policy: None,
             request_key: "workflow-test".into(),
             version_ids: vec![version.id.clone()],
             configurations: vec![Configuration {

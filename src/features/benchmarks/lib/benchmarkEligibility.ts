@@ -1,13 +1,14 @@
 // What the service admits for a case and an attempt, mirrored so the UI never
-// offers an action it refuses: routing::authored_by_candidate for planning,
-// the stored outcomes Service::rescore and Service::review accept, and the
-// panel verdict analysis::judge_panel settles.
+// offers an action it refuses: routing::authored_by_candidate for a
+// candidate's own cases, the stored outcomes Service::rescore and
+// Service::review accept, and the panel verdict analysis::judge_panel settles.
 import type { Configuration, Evaluation } from "../types";
 
 /**
- * A candidate is never planned on, nor scored on, a case it helped write.
- * Authors in `environment.authoredBy` name a provider, model and effort.
- * All three must match. Legacy string needles cannot identify an author.
+ * Whether a candidate helped write a case. Authors in `environment.authoredBy`
+ * name a provider, model and effort; all three must match. The case still runs
+ * for its author, tagged: boards count its speed and cost, never its quality.
+ * Legacy string needles cannot identify an author.
  */
 // Declared harness aliases (`alias_of` in agent_host/harness.rs): an alias is
 // the author of whatever the model it stands for wrote.

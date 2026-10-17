@@ -85,8 +85,7 @@ export function BenchmarkRunDialog({
     selected.includes(version.id),
   );
   const versions = chosenVersions.map((version) => version.id);
-  const owedTurns = (configuration: Configuration) =>
-    plannedTurns(chosenVersions, configuration);
+  const owedTurns = plannedTurns(chosenVersions);
   // The run's limit only stops a turn that never ends (Settings).
   const timeoutSeconds = runTimeLimitSeconds(chosenVersions);
   const [maxExecutions, setMaxExecutions] = useState(20);
@@ -156,9 +155,7 @@ export function BenchmarkRunDialog({
   );
   const signature = JSON.stringify(request);
   const validPreview = preview?.signature === signature ? preview.result : null;
-  const count =
-    configurations.reduce((total, entry) => total + owedTurns(entry), 0) *
-    repetitions;
+  const count = configurations.length * owedTurns * repetitions;
   const supported = new Set(
     capabilities.data
       ?.filter((entry) => entry.supported)

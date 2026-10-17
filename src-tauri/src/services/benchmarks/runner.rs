@@ -5887,9 +5887,10 @@ impl BenchmarkService {
             .into_iter()
             .find(|account| Some(account.as_str()) != current && !exhausted(run_id, account))
     }
-    /// The pending attempts ready to dispatch. A pending cell whose candidate
-    /// authored the case settles as excluded here, without any model call. A
-    /// cell whose provider is held (see [`hold_provider_until`]) waits, and
+    /// The pending attempts ready to dispatch. In a run admitted before author
+    /// cells were measured, a pending cell whose candidate authored the case
+    /// settles as excluded here, without any model call. A cell whose
+    /// provider is held (see [`hold_provider_until`]) waits, and
     /// nothing starts once the run's window closed.
     async fn dispatchable(&self, run: &BenchmarkRun) -> Result<Vec<(Attempt, BenchmarkVersion)>> {
         let mut ready = Vec::new();
@@ -5913,7 +5914,9 @@ impl BenchmarkService {
                 versions.insert(pending.version_id.clone(), version);
             }
             let version = &versions[&pending.version_id];
-            if !super::routing::authored_by_candidate(&version.manifest, &pending.configuration) {
+            if run.request.measures_author_cells()
+                || !super::routing::authored_by_candidate(&version.manifest, &pending.configuration)
+            {
                 ready.push((pending.clone(), version.clone()));
                 continue;
             }
@@ -6041,8 +6044,10 @@ impl BenchmarkService {
         let mut settled = waiting.clone();
         settled.phase = "terminal".into();
         // A plan saved before authored cells were left out may still hold a
-        // rendering its candidate wrote; no verdict on it could ever count.
-        if super::routing::authored_by_candidate(&version.manifest, &waiting.configuration) {
+        // rendering its candidate wrote; under its rule no verdict on it counts.
+        if !run.request.measures_author_cells()
+            && super::routing::authored_by_candidate(&version.manifest, &waiting.configuration)
+        {
             settled.outcome = Some("excluded".into());
             settled.reason = Some("authored by this candidate".into());
             self.store.save_attempt(&settled).await?;
@@ -7216,6 +7221,7 @@ mod tests {
         let d = s.store.save_draft(None, None, draft).await.unwrap();
         let v = s.store.publish(&d.id, 1).await.unwrap();
         RunRequest {
+            author_policy: None,
             request_key: "test-key".into(),
             version_ids: vec![v.id],
             configurations: vec![Configuration {
@@ -8152,6 +8158,7 @@ mod tests {
             updated_at: 0,
             baked_at: None,
             request: RunRequest {
+                author_policy: None,
                 request_key: "run".into(),
                 version_ids: vec!["a".into(), "b".into(), "c".into()],
                 configurations: vec![attempts[0].configuration.clone()],
@@ -9690,55 +9697,87 @@ mod tests {
             .await
             .unwrap();
     }
-    #[tokio::test]
-    async fn authored_cells_are_never_planned_or_dispatched() {
-        let (_dir, s, backend) = setup().await;
-        let mut req = request(&s).await;
+    /// A request with a case one candidate wrote and one it did not, for
+    /// that candidate and another model, one repetition each.
+    async fn authored_request(s: &BenchmarkService) -> (RunRequest, BenchmarkVersion) {
+        let mut req = request(s).await;
         let mut authored = seed_definitions().remove(0);
         authored.split = "train".into();
         authored.name.push_str(" written by the candidate");
         authored.environment["authoredBy"] = json!([req.configurations[0]]);
-        let written = publish(&s, authored).await;
+        let written = publish(s, authored).await;
         req.version_ids.push(written.id.clone());
         req.repetitions = 1;
         let mut other = req.configurations[0].clone();
         other.id = "fake-fail".into();
         other.model_id = "fake-fail".into();
         req.configurations.push(other);
-        req.max_executions = 3;
+        req.max_executions = 4;
+        (req, written)
+    }
+    #[tokio::test]
+    async fn author_cells_are_planned_and_run_like_any_other_cell() {
+        let (_dir, s, backend) = setup().await;
+        let (req, written) = authored_request(&s).await;
+        let own =
+            |a: &Attempt| a.version_id == written.id && a.configuration.model_id == "fake-pass";
         let preview = s.preview_run(&req).await.unwrap();
         assert!(preview.valid, "{:?}", preview.issues);
-        assert_eq!(preview.execution_count, 3);
+        assert_eq!(preview.execution_count, 4);
         let run = s.start_run(req.clone()).await.unwrap();
-        assert_eq!(run.attempts.len(), 3);
-        assert!(!run
-            .attempts
-            .iter()
-            .any(|a| a.version_id == written.id && a.configuration.model_id == "fake-pass"));
-        // A configuration that wrote every selected case owes nothing.
+        assert_eq!(
+            run.request.author_policy.as_deref(),
+            Some(AUTHOR_CELLS_MEASURED)
+        );
+        assert_eq!(run.attempts.len(), 4);
+        assert!(run.attempts.iter().any(own));
+        // The same request key returns the plan it admitted.
+        assert_eq!(s.start_run(req.clone()).await.unwrap().id, run.id);
+        for _ in 0..5 {
+            s.tick().await.unwrap();
+        }
+        let run = s.store.run(&run.id).await.unwrap();
+        assert_eq!(run.state, "completed");
+        let measured = run.attempts.iter().find(|a| own(a)).unwrap();
+        assert_eq!(measured.phase, "terminal");
+        assert!(super::super::analysis::score(measured).is_some());
+        assert_ne!(measured.outcome.as_deref(), Some("excluded"));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 4);
+        // A configuration that wrote every selected case owes those cases.
         let mut only = req.clone();
         only.request_key = "only-authored".into();
         only.version_ids = vec![written.id.clone()];
         only.configurations.truncate(1);
         let preview = s.preview_run(&only).await.unwrap();
+        assert!(preview.valid, "{:?}", preview.issues);
+        assert_eq!(preview.execution_count, 1);
+        let mut unknown = req.clone();
+        unknown.request_key = "unknown-policy".into();
+        unknown.author_policy = Some("author-cells-unknown".into());
+        let preview = s.preview_run(&unknown).await.unwrap();
         assert!(!preview.valid);
-        assert!(preview.issues.iter().any(|i| i.contains("owes none")));
-        // A plan saved before this rule still holds such a cell: it settles
-        // without any model call when its turn comes.
-        let mut legacy = run.attempts[0].clone();
-        legacy.id = "legacy-authored".into();
-        legacy.version_id = written.id.clone();
-        legacy.configuration = req.configurations[0].clone();
-        legacy.repetition = 0;
-        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,?,?,?,0,'pending',?)")
-            .bind(&legacy.id).bind(&run.id).bind(&written.id).bind(&legacy.configuration.id)
-            .bind(serde_json::to_string(&legacy).unwrap())
-            .execute(&s.store.pool).await.unwrap();
+    }
+    #[tokio::test]
+    async fn a_plan_admitted_before_author_cells_were_measured_keeps_its_rule() {
+        let (_dir, s, backend) = setup().await;
+        let (req, written) = authored_request(&s).await;
+        let run = s.start_run(req).await.unwrap();
+        // A plan saved before the rule names no author policy, and its own
+        // cell, still pending, settles without any model call.
+        let mut legacy = run.request.clone();
+        legacy.author_policy = None;
+        rewrite_plan(&s, &run.id, &legacy).await;
+        assert_eq!(s.planned_executions(&legacy).await.unwrap(), 3);
         for _ in 0..5 {
             s.tick().await.unwrap();
         }
-        assert_eq!(s.store.run(&run.id).await.unwrap().state, "completed");
-        let excluded = s.store.attempt("legacy-authored").await.unwrap();
+        let run = s.store.run(&run.id).await.unwrap();
+        assert_eq!(run.state, "completed");
+        let excluded = run
+            .attempts
+            .iter()
+            .find(|a| a.version_id == written.id && a.configuration.model_id == "fake-pass")
+            .unwrap();
         assert_eq!(excluded.phase, "terminal");
         assert_eq!(excluded.outcome.as_deref(), Some("excluded"));
         assert_eq!(
@@ -9747,6 +9786,12 @@ mod tests {
         );
         assert!(excluded.session_id.is_none());
         assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
+        // Its rule also refuses a plan whose candidate wrote every case.
+        let mut only = legacy.clone();
+        only.request_key = "only-authored".into();
+        only.version_ids = vec![written.id.clone()];
+        only.configurations.truncate(1);
+        assert_eq!(s.planned_executions(&only).await.unwrap(), 0);
     }
     #[tokio::test]
     async fn stale_runtime_pins_are_plan_issues_and_quota_briefs_never_publish() {
@@ -10155,6 +10200,9 @@ mod tests {
         authored.name.push_str(" written by the candidate");
         authored.environment["authoredBy"] = json!([run.request.configurations[0]]);
         let written = publish(&s, authored).await;
+        let mut request = run.request.clone();
+        request.author_policy = None;
+        rewrite_plan(&s, &run.id, &request).await;
         let mut legacy = s.store.attempt(&run.attempts[0].id).await.unwrap();
         legacy.id = "legacy-authored".into();
         legacy.version_id = written.id.clone();
@@ -10182,6 +10230,27 @@ mod tests {
         assert!(excluded.output.is_some());
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn a_rendering_of_its_own_brief_goes_to_the_panel() {
+        // Seats themselves are `select_judges`' rule: no author, no candidate model.
+        let (_dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let mut authored = creative();
+        authored.name.push_str(" written by the candidate");
+        authored.environment["authoredBy"] = json!([req.configurations[0]]);
+        let written = publish(&s, authored).await;
+        req.request_key = "own-creative".into();
+        req.version_ids = vec![written.id.clone()];
+        req.repetitions = 1;
+        req.max_executions = 4;
+        let run = s.start_run(req).await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        let rendering = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert!(rendering.output.is_some());
+        assert_ne!(rendering.outcome.as_deref(), Some("excluded"));
     }
     #[tokio::test]
     async fn a_panel_that_fails_before_saving_keeps_the_objective_verdict() {

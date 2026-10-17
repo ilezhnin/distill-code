@@ -360,6 +360,7 @@ pub fn run() {
             commands::benchmarks::benchmark_get_leaderboard,
             commands::benchmarks::benchmark_get_history,
             commands::benchmarks::benchmark_get_case_stats,
+            commands::benchmarks::benchmark_get_home_advantage,
             commands::benchmarks::benchmark_select_candidate,
             commands::benchmarks::benchmark_fit_selector,
             commands::benchmarks::benchmark_list_selector_fits,

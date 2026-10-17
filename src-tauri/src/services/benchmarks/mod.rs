@@ -9,6 +9,7 @@ pub mod executor;
 pub mod export;
 pub mod fixtures;
 pub mod generated;
+pub mod home_advantage;
 mod judge_checks;
 mod judge_panel;
 pub mod learned;
@@ -89,9 +90,12 @@ pub(super) fn judge_execution_count(draft: &BenchmarkDraft) -> usize {
         .map_or(runner::MAX_JUDGES, |panel| panel.len())
 }
 
-/// A plan owes a cell unless its candidate helped write the case.
-fn owed(version: &BenchmarkVersion, configuration: &Configuration) -> bool {
-    !routing::authored_by_candidate(&version.manifest, configuration)
+/// A plan owes every cell, its candidate's own cases included, unless it was
+/// admitted before author cells were measured: such a plan never owed the
+/// cases its candidate helped write.
+fn owed(request: &RunRequest, version: &BenchmarkVersion, configuration: &Configuration) -> bool {
+    request.measures_author_cells()
+        || !routing::authored_by_candidate(&version.manifest, configuration)
 }
 
 /// Executions a plan owes: every owed cell's turns and judge reservation, per repetition.
@@ -99,7 +103,7 @@ fn owed_executions(versions: &[BenchmarkVersion], request: &RunRequest) -> usize
     let mut turns = 0usize;
     for version in versions {
         for configuration in &request.configurations {
-            if owed(version, configuration) {
+            if owed(request, version, configuration) {
                 turns = turns.saturating_add(execution_count(&version.manifest));
             }
         }
@@ -342,6 +346,7 @@ impl BenchmarkService {
         Ok(owed_executions(&versions, request))
     }
     pub async fn preview_run(&self, request: &RunRequest) -> Result<RunPreview> {
+        let request = &request.clone().with_current_author_policy();
         self.store
             .require_current_versions(&request.version_ids)
             .await?;
@@ -368,11 +373,18 @@ impl BenchmarkService {
             .as_ref()
             .map(|policy| &policy.candidates)
             .unwrap_or(&request.configurations);
+        if request
+            .author_policy
+            .as_deref()
+            .is_some_and(|policy| policy != AUTHOR_CELLS_MEASURED)
+        {
+            issues.push("Unknown author-cell policy".into());
+        }
         if !versions.is_empty()
             && request
                 .configurations
                 .iter()
-                .any(|c| !versions.iter().any(|v| owed(v, c)))
+                .any(|c| !versions.iter().any(|v| owed(request, v, c)))
         {
             issues.push("A configuration authored every selected case and owes none".into());
         }
@@ -531,7 +543,7 @@ impl BenchmarkService {
     ) -> Result<BenchmarkRun> {
         // The run records how many attempts of a configuration it flies at
         // once, before the request is compared with a saved plan.
-        let mut request = request;
+        let mut request = request.with_current_author_policy();
         request.parallelism.get_or_insert(runner::PARALLEL_ATTEMPTS);
         if let Some(id) =
             sqlx::query_scalar::<_, String>("SELECT id FROM run_plans WHERE request_key=?")
@@ -591,14 +603,14 @@ impl BenchmarkService {
             versions.push(self.store.version(version_id).await?);
         }
         let path = self.store.root.join("runs").join(&id);
-        // A candidate is never scheduled on a case it helped write.
+        // Only a plan admitted before author cells were measured leaves them out.
         let authored: BTreeSet<(&str, &str)> = versions
             .iter()
             .flat_map(|v| {
                 request
                     .configurations
                     .iter()
-                    .filter(|c| !owed(v, c))
+                    .filter(|c| !owed(&request, v, c))
                     .map(|c| (v.id.as_str(), c.id.as_str()))
             })
             .collect();
@@ -731,8 +743,9 @@ impl BenchmarkService {
     /// Adds cases to a run inside its window and goes on with it, so the
     /// sitting grows instead of a second run starting beside it. A case the
     /// run already planned is not added again: unfinished, it starts over;
-    /// complete, it stands. A case a configuration authored is left out.
-    /// With no cases to add this is a resume.
+    /// complete, it stands. A run admitted before author cells were measured
+    /// leaves out a case a configuration authored. With no cases to add this
+    /// is a resume.
     /// Sets how many attempts of a configuration a run inside its window
     /// flies at once from now on, as the operator asks. The request records
     /// the newest setting, so a run that changed it notes the last one.
@@ -809,7 +822,7 @@ impl BenchmarkService {
             let version = self.store.version(version_id).await?;
             for configuration in &run.request.configurations {
                 if planned.contains(&(version.id.clone(), configuration.id.clone()))
-                    || !owed(&version, configuration)
+                    || !owed(&run.request, &version, configuration)
                 {
                     continue;
                 }
@@ -1136,12 +1149,6 @@ impl BenchmarkService {
             ));
         }
         let v = self.store.version(&a.version_id).await?;
-        if routing::authored_by_candidate(&v.manifest, &a.configuration) {
-            return Err(BenchmarkError::new(
-                "validation",
-                "The candidate authored this case, so its result is excluded",
-            ));
-        }
         let output = a.output.as_deref().ok_or_else(|| {
             BenchmarkError::new("evidence_missing", "Attempt has no sealed output")
         })?;

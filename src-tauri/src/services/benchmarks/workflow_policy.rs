@@ -325,6 +325,8 @@ impl TryFrom<WorkflowRunRequest> for RunRequest {
             max_executions: value.max_executions,
             preview: false,
             parallelism: Some(1),
+            // A research policy refuses author candidates; it has no author cells.
+            author_policy: None,
         })
     }
 }

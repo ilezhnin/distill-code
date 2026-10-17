@@ -827,11 +827,13 @@ pub fn case_tracker(data: &QueryData) -> Vec<CaseStats> {
     let pool = pool(data, &query);
     // The development library still shows diagnostic outcomes. These internal
     // statistics are never returned as official leaderboard rows.
+    // Own cases leave the rows' attempt lists, as they leave every quality view.
     let rows = leaderboard_from_attempts(
         data,
         &query,
         &data.attempts.iter().collect::<Vec<_>>(),
         pool.clone(),
+        OwnCases::QualityExcluded,
     )
     .rows;
     let attempts: BTreeMap<&str, &Attempt> =
@@ -1082,16 +1084,32 @@ pub(super) fn mean_case_cost(attempts: &[&Attempt], as_of: Option<i64>) -> Optio
     })
 }
 
+/// How a board counts a candidate's own cases, the ones it helped author.
+/// Their speed and cost always count; their quality counts only where a
+/// model is compared with itself over time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OwnCases {
+    /// Quality, points and ranks leave own cases out.
+    QualityExcluded,
+    /// Every cell counts: a model's history follows the model itself.
+    Counted,
+}
+
 /// The leaderboard is a ledger over the current pool of cases: every
 /// configuration stands on its newest run, whole, so a run is one session of
 /// measurement and no older run fills its gaps; coverage is counted against
 /// the pool, and a rank needs every case complete.
 pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
+    leaderboard_counting(data, query, OwnCases::QualityExcluded)
+}
+
+fn leaderboard_counting(data: &QueryData, query: &ResultQuery, own: OwnCases) -> LeaderboardReport {
     leaderboard_from_attempts(
         data,
         query,
         &data.attempts.iter().collect::<Vec<_>>(),
         ranked_pool(data, query),
+        own,
     )
 }
 
@@ -1100,9 +1118,10 @@ fn leaderboard_from_attempts(
     query: &ResultQuery,
     source: &[&Attempt],
     pool: Vec<&BenchmarkVersion>,
+    own: OwnCases,
 ) -> LeaderboardReport {
-    let mut report = measurement_report(data, query, source, pool.clone(), false);
-    let models = measurement_report(data, query, source, pool, true);
+    let mut report = measurement_report(data, query, source, pool.clone(), false, own);
+    let models = measurement_report(data, query, source, pool, true, own);
     report.models = models
         .rows
         .into_iter()
@@ -1194,8 +1213,11 @@ fn measurement_report(
     source: &[&Attempt],
     pool: Vec<&BenchmarkVersion>,
     by_model: bool,
+    own: OwnCases,
 ) -> LeaderboardReport {
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
+    let pool_versions: BTreeMap<&str, &BenchmarkVersion> =
+        pool.iter().map(|v| (v.id.as_str(), *v)).collect();
     let runs: BTreeMap<&str, &BenchmarkRun> = data
         .runs
         .iter()
@@ -1305,26 +1327,89 @@ fn measurement_report(
                 ledger_profile(&configuration.execution_profile).to_owned();
             let parallelism = standing_request
                 .map(|request| super::runner::attempts_at_once(request, &configuration));
+            // The candidate's own cases: on a board their cells count for
+            // speed and cost but never for quality, points or a rank.
+            let own_version_ids: Vec<String> = pool
+                .iter()
+                .filter(|v| super::routing::authored_by_candidate(&v.manifest, &configuration))
+                .map(|v| v.id.clone())
+                .collect();
+            let counts_own = own == OwnCases::Counted;
             let eligible: Vec<&BenchmarkVersion> = pool
                 .iter()
                 .copied()
-                .filter(|v| !super::routing::authored_by_candidate(&v.manifest, &configuration))
+                .filter(|v| counts_own || !own_version_ids.contains(&v.id))
                 .collect();
             let excluded = pool.len() as u32 - eligible.len() as u32;
-            attempts.retain(|a| eligible.iter().any(|v| v.id == a.version_id));
-            for attempt in &attempts {
+            // An attempt is an own cell when its requested candidate wrote
+            // the case, the rule its run planned it under.
+            let own_cell = |a: &Attempt| {
+                !counts_own
+                    && (own_version_ids.contains(&a.version_id)
+                        || pool_versions.get(a.version_id.as_str()).is_some_and(|v| {
+                            super::routing::authored_by_candidate(&v.manifest, &a.configuration)
+                        }))
+            };
+            let every_cell = attempts.clone();
+            let own_attempt_ids: Vec<String> = every_cell
+                .iter()
+                .filter(|a| own_cell(a))
+                .map(|a| a.id.clone())
+                .collect();
+            attempts.retain(|a| !own_cell(a));
+            for attempt in &every_cell {
                 contributing.insert(attempt.run_id.as_str());
             }
+            // Speed and cost read every cell of the sitting, own cases included.
+            let every_cells = case_cells(&every_cell, query.as_of, protocol);
+            let every_scored: Vec<&Attempt> = every_cell
+                .iter()
+                .copied()
+                .filter(|a| score_as_of(a, query.as_of).is_some())
+                .collect();
+            let every_scored_versions: BTreeSet<&str> = every_cells.keys().copied().collect();
+            let spent = spent_attempts(&every_cell, &every_scored_versions, query.as_of);
+            let cost = mean_case_cost(&spent, query.as_of);
+            let resources = board_stats(&every_cells, &records);
+            // Work that never began measured nothing, so it never dates the row.
+            let measured_at = every_scored
+                .iter()
+                .chain(&spent)
+                .flat_map(|a| {
+                    a.finished_at.into_iter().chain(
+                        a.evaluations
+                            .iter()
+                            .map(|e| e.created_at)
+                            .filter(|at| query.as_of.is_none_or(|cutoff| *at <= cutoff)),
+                    )
+                })
+                .max();
+            let median_duration_ms = median(
+                every_scored
+                    .iter()
+                    .filter_map(|a| a.duration_ms.map(|v| v as f64))
+                    .collect(),
+            );
+            // Auxiliary model calls inflate the counters; keep the figure pure.
+            let median_output_tokens = median(
+                every_scored
+                    .iter()
+                    .filter(|a| !has_auxiliary_usage(a))
+                    .filter_map(|a| a.usage.output.map(|v| v as f64))
+                    .collect(),
+            );
             if eligible.is_empty() {
                 return Some(LeaderboardRow {
                     comparison_key: String::new(),
                     configuration, passed: 0, scored: 0, attempted: 0, planned: 0, complete: 0, quality: None,
-                    median_duration_ms: None, median_output_tokens: None, cost: None, measured_at: None,
-                    points: None, speed_share: None, cost_share: None,
+                    median_duration_ms, median_output_tokens, cost, measured_at,
+                    points: None, speed_share: resources.speed_share, cost_share: resources.cost_share,
                     status: "excluded".into(),
-                    reason: format!("{excluded} cases excluded: this candidate helped author every case in the pool"),
+                    reason: format!("{excluded} cases left out of quality: this candidate helped author every case in the pool; their speed and cost still count"),
                     attempt_ids: Vec::new(),
                     result_attempt_ids: Vec::new(),
+                    own_attempt_ids,
+                    own_version_ids,
                     axes: Vec::new(),
                     missing_version_ids: Vec::new(),
                     unsupported_version_ids: Vec::new(),
@@ -1341,13 +1426,10 @@ fn measurement_report(
                 .collect::<BTreeSet<_>>()
                 .len() as u32;
             let cells = case_cells(&attempts, query.as_of, protocol);
-            let scored_versions: BTreeSet<&str> = cells.keys().copied().collect();
             // The repetitions the cells are made of: scored ones alone, so a
             // repetition of a measured case that never ran dates or costs nothing.
             let scored_attempts: Vec<&Attempt> = attempts.iter().copied()
                 .filter(|a| score_as_of(a, query.as_of).is_some()).collect();
-            let spent = spent_attempts(&attempts, &scored_versions, query.as_of);
-            let cost = mean_case_cost(&spent, query.as_of);
             let standard_budgets = attempts.iter().all(|a| {
                 eligible.iter().find(|v| v.id == a.version_id).is_some_and(|v|
                     runs[a.run_id.as_str()].request.timeout_seconds >= v.manifest.limits.timeout_seconds)
@@ -1368,12 +1450,18 @@ fn measurement_report(
                         .filter(|v| v.manifest.work_class_id == *class)
                         .count() as u32;
                     let stats = board_stats(&subset, &records);
+                    let class_cells: BTreeMap<&str, CaseCell> = every_cells
+                        .iter()
+                        .filter(|(version, _)| work_class(version) == class)
+                        .map(|(version, cell)| (*version, *cell))
+                        .collect();
+                    let resources = board_stats(&class_cells, &records);
                     LeaderboardAxis {
                         id: class.clone(),
                         quality: stats.quality,
                         points: stats.points,
-                        speed_share: stats.speed_share,
-                        cost_share: stats.cost_share,
+                        speed_share: resources.speed_share,
+                        cost_share: resources.cost_share,
                         passed: stats.passed,
                         scored: stats.scored,
                         planned: cases,
@@ -1415,28 +1503,13 @@ fn measurement_report(
                 planned,
                 complete,
                 quality,
-                median_duration_ms: median(
-                    scored_attempts
-                        .iter()
-                        .filter_map(|a| a.duration_ms.map(|v| v as f64))
-                        .collect(),
-                ),
-                // Auxiliary model calls inflate the counters; keep the figure pure.
-                median_output_tokens: median(
-                    scored_attempts
-                        .iter()
-                        .filter(|a| !has_auxiliary_usage(a))
-                        .filter_map(|a| a.usage.output.map(|v| v as f64))
-                        .collect(),
-                ),
+                median_duration_ms,
+                median_output_tokens,
                 cost,
-                // Work that never began measured nothing, so it never dates the row.
-                measured_at: scored_attempts.iter().chain(&spent).flat_map(|a| a.finished_at.into_iter().chain(
-                    a.evaluations.iter().map(|e| e.created_at).filter(|at| query.as_of.is_none_or(|cutoff| *at <= cutoff))
-                )).max(),
+                measured_at,
                 points,
-                speed_share: overall.speed_share,
-                cost_share: overall.cost_share,
+                speed_share: resources.speed_share,
+                cost_share: resources.cost_share,
                 status: if attempted == 0 {
                     "untested"
                 } else if complete == planned && standard_budgets {
@@ -1449,7 +1522,9 @@ fn measurement_report(
                     "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; {}; every repetition must pass{}{}",
                     if by_model { "each test uses its newest scored cell across the model's runs" } else { "the newest run stands whole" },
                     if excluded > 0 {
-                        format!("; {excluded} cases authored by this candidate excluded")
+                        format!("; {excluded} cases authored by this candidate left out of quality, their speed and cost counted")
+                    } else if counts_own && !own_version_ids.is_empty() {
+                        format!("; includes {} cases authored by this candidate", own_version_ids.len())
                     } else {
                         String::new()
                     },
@@ -1457,6 +1532,8 @@ fn measurement_report(
                 ),
                 attempt_ids: attempts.iter().map(|a| a.id.clone()).collect(),
                 result_attempt_ids: scored_attempts.iter().map(|a| a.id.clone()).collect(),
+                own_attempt_ids,
+                own_version_ids,
                 axes,
                 missing_version_ids,
                 unsupported_version_ids,
@@ -1638,6 +1715,7 @@ fn recalculated_history_report(
             &ResultQuery::default(),
             &selected,
             ranked_pool(data, &ResultQuery::default()),
+            OwnCases::Counted,
         )
     };
     for row in &mut report.rows {
@@ -1795,14 +1873,16 @@ fn history_for(
     }
     let events: BTreeSet<(i64, &str)> = observed.iter().map(|(run, at)| (*at, *run)).collect();
     newest_observations(events.into_iter().rev(), HISTORY_POINTS, |(at, run_id)| {
-        // As the board stood at the run's end.
-        let report = leaderboard(
+        // As the board stood at the run's end, with the model's own cases
+        // counted: a history compares the model with itself.
+        let report = leaderboard_counting(
             data,
             &ResultQuery {
                 as_of: Some(at),
                 limit: Some(500),
                 ..Default::default()
             },
+            OwnCases::Counted,
         );
         let (recalculated_report, backfilled_version_ids, revised_version_ids) =
             recalculated_history_report(data, &own, &current, run_id, at, by_model);
@@ -2000,6 +2080,7 @@ pub(super) mod tests {
             })
             .collect::<Vec<_>>();
         let request = RunRequest {
+            author_policy: None,
             request_key: "request".into(),
             version_ids: versions.iter().map(|v| v.id.clone()).collect(),
             configurations: vec![config.clone()],
@@ -2127,20 +2208,49 @@ pub(super) mod tests {
         assert!(!of("v3").smoke);
     }
     #[test]
-    fn authored_cases_are_excluded_from_rows() {
+    fn authored_cases_leave_quality_but_count_for_speed_and_cost() {
         let mut data = dataset();
         let query = ResultQuery::default();
         assert_eq!(leaderboard(&data, &query).rows[0].status, "comparable");
         data.versions[0].manifest.environment["authoredBy"] =
             serde_json::json!([data.runs[0].request.configurations[0]]);
-        // Both frozen runs share the suite, so the authored case drops one cell each.
+        // The own case is the only one the standing run solved, and it ran
+        // with known spend.
+        for attempt in &mut data.attempts {
+            attempt.usage.cost = Some(if attempt.version_id == "v0" { 3.0 } else { 1.0 });
+            if attempt.id == "after-v0" {
+                attempt.outcome = Some("pass".into());
+            }
+        }
         let row = &leaderboard(&data, &query).rows[0];
         assert_eq!(row.planned, 5);
         assert!(row
             .reason
-            .contains("1 cases authored by this candidate excluded"));
+            .contains("1 cases authored by this candidate left out of quality"));
         assert!(!row.attempt_ids.contains(&"after-v0".to_string()));
+        assert_eq!(row.own_attempt_ids, vec!["after-v0"]);
+        assert_eq!(row.own_version_ids, vec!["v0"]);
         assert_eq!(row.scored_version_ids, vec!["v1", "v2", "v3", "v4", "v5"]);
+        assert_eq!((row.passed, row.quality), (0, Some(0.0)));
+        // Speed and cost read the own cell too.
+        assert_eq!(row.speed_share, Some(1.0));
+        assert_eq!(row.cost, Some(8.0 / 6.0));
+        assert_eq!(row.axes[0].speed_share, Some(1.0));
+        // A history compares the model with itself and counts the own case.
+        let configuration = data.runs[0].request.configurations[0].clone();
+        let points = history(&data, &configuration);
+        let newest = points.last().unwrap();
+        let counted = newest
+            .report
+            .rows
+            .iter()
+            .find(|r| leaderboard_key(&r.configuration) == leaderboard_key(&configuration))
+            .unwrap();
+        assert_eq!(counted.planned, 6);
+        assert!(counted.scored_version_ids.contains(&"v0".to_string()));
+        assert_eq!(counted.own_version_ids, vec!["v0"]);
+        assert!(counted.own_attempt_ids.is_empty());
+        assert_eq!(counted.passed, 1);
         for version in &mut data.versions {
             version.manifest.environment["authoredBy"] =
                 serde_json::json!([data.runs[0].request.configurations[0]]);
@@ -2149,6 +2259,8 @@ pub(super) mod tests {
         assert_eq!(report.rows[0].status, "excluded");
         assert_eq!(report.rows[0].quality, None);
         assert!(report.rows[0].scored_version_ids.is_empty());
+        assert_eq!(report.rows[0].median_duration_ms, Some(100.0));
+        assert_eq!(report.rows[0].own_attempt_ids.len(), 6);
         assert!(report.cohort.is_some());
     }
     /// A run is one sitting: the newest run that began stands whole, and

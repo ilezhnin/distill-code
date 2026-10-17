@@ -167,13 +167,16 @@ export function BenchmarkEvidenceView({
     (evaluation) => evaluation.provenance === "human",
   );
   // Budget failures, cancelled, refused and excluded attempts keep their
-  // outcome, and a candidate is never scored on a case it wrote.
+  // outcome. A case the candidate wrote is evaluated like any other; the
+  // boards decide what its score counts for.
   const canRescore =
     attempt?.phase === "terminal" &&
     attempt.output !== null &&
     hasEvaluatedOutcome(attempt.outcome) &&
-    !authoredByCandidate(manifest?.environment, attempt.configuration) &&
     (panelKind ? Boolean(rubric.trim()) && !overridden : !blind);
+  const ownTask =
+    attempt != null &&
+    authoredByCandidate(manifest?.environment, attempt.configuration);
   // Only a renderable answer to a brief with criteria reaches the panel; any
   // other answer is checked again without a model call.
   const panelRescore =
@@ -283,6 +286,11 @@ export function BenchmarkEvidenceView({
           ) : null}
           {evidence.isPending ? (
             <BenchmarkEmpty title={t("loading")} compact />
+          ) : null}
+          {ownTask && !blind ? (
+            <p className="text-sm text-muted-foreground">
+              {t("evidence.ownTask")}
+            </p>
           ) : null}
           {attempt && !blind ? (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">

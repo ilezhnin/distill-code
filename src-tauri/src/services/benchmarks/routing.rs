@@ -72,9 +72,10 @@ pub const CANDIDATE_KEY_ALGORITHM: &str = "leaderboard-identity-v2";
 pub fn candidate_key(c: &Configuration) -> String {
     hash(super::analysis::leaderboard_key(c).as_bytes())
 }
-/// Excludes only an exact provider, concrete model and reasoning-effort match.
-/// Legacy strings carry insufficient identity and never act as wildcards.
-pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configuration) -> bool {
+/// Whether `configuration` is the candidate an author identity names: the
+/// same provider, concrete model and reasoning effort. Account, speed and
+/// execution profile are not part of authorship.
+pub fn is_author(author: &BenchmarkAuthor, configuration: &Configuration) -> bool {
     let normalize = |value: &str| value.trim().to_lowercase();
     let concrete = |provider: &str, model: &str| {
         super::runner::concrete_model(provider, model).unwrap_or_else(|| model.into())
@@ -82,25 +83,39 @@ pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configurati
     let provider = normalize(&configuration.provider_id);
     let model = concrete(&provider, &normalize(&configuration.model_id));
     let effort = configuration.effort.as_deref().map(normalize);
+    let author_provider = normalize(&author.provider_id);
+    let author_model = normalize(&author.model_id);
+    !author_provider.is_empty()
+        && !author_model.is_empty()
+        && author_provider == provider
+        && concrete(&author_provider, &author_model) == model
+        && author.effort.as_deref().map(normalize) == effort
+}
+
+/// The exact author identities a case declares. Legacy strings carry
+/// insufficient identity and name no author.
+pub fn exact_authors(draft: &BenchmarkDraft) -> Vec<BenchmarkAuthor> {
     draft
         .environment
         .get("authoredBy")
         .and_then(serde_json::Value::as_array)
-        .is_some_and(|authors| {
+        .map(|authors| {
             authors
                 .iter()
                 .filter(|author| author.get("effort").is_some())
                 .filter_map(|author| serde_json::from_value::<BenchmarkAuthor>(author.clone()).ok())
-                .any(|author| {
-                    let author_provider = normalize(&author.provider_id);
-                    let author_model = normalize(&author.model_id);
-                    !author_provider.is_empty()
-                        && !author_model.is_empty()
-                        && author_provider == provider
-                        && concrete(&author_provider, &author_model) == model
-                        && author.effort.as_deref().map(normalize) == effort
-                })
+                .collect()
         })
+        .unwrap_or_default()
+}
+
+/// Whether the candidate helped write the case: only an exact provider,
+/// concrete model and reasoning-effort match. Legacy strings never act as
+/// wildcards.
+pub fn authored_by_candidate(draft: &BenchmarkDraft, configuration: &Configuration) -> bool {
+    exact_authors(draft)
+        .iter()
+        .any(|author| is_author(author, configuration))
 }
 
 pub fn validate_authored_by(draft: &BenchmarkDraft) -> Vec<String> {
@@ -714,6 +729,7 @@ mod tests {
     }
     fn request(configurations: Vec<Configuration>) -> RunRequest {
         RunRequest {
+            author_policy: None,
             request_key: "key".into(),
             version_ids: vec![],
             configurations,

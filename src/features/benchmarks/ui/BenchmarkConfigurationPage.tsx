@@ -130,6 +130,12 @@ export function BenchmarkConfigurationPage({
     () => historyMeasurements(history.snapshots, key, false, true),
     [history.snapshots, key],
   );
+  // A history compares the model with itself, so it counts the tests the
+  // model wrote, which its board row leaves out of quality.
+  const ownTests = Math.max(
+    0,
+    ...measurements.map((entry) => entry.row.ownVersionIds?.length ?? 0),
+  );
   const [selection, setSelection] = useState<{
     id: string;
     runId: string;
@@ -405,6 +411,11 @@ export function BenchmarkConfigurationPage({
             selectedId={selected ? pointId(selected.snapshot) : null}
             onSelect={select}
           />
+          {ownTests > 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("history.ownTests", { count: ownTests })}
+            </p>
+          ) : null}
         </section>
       ) : null}
       {selected ? (

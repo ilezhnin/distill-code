@@ -1,7 +1,6 @@
 // What a run plan owes, counted the way `preview_run` counts it before the
 // service admits the plan.
-import type { BenchmarkDraft, BenchmarkVersion, Configuration } from "../types";
-import { authoredByCandidate } from "./benchmarkEligibility";
+import type { BenchmarkDraft, BenchmarkVersion } from "../types";
 
 /** Judge calls reserved per judged case (runner::MAX_JUDGES). */
 export const JUDGE_CALLS = 3;
@@ -52,21 +51,16 @@ export function runWindowOpen(
 }
 
 /**
- * Every turn one repetition of `versions` takes on `configuration`: each
+ * Every turn one repetition of `versions` takes on one configuration: each
  * workflow step plus the judge reservation of a judged case. A candidate owes
- * nothing on a case it wrote.
+ * the cases it wrote too; the service runs and labels them.
  */
-export function plannedTurns(
-  versions: readonly BenchmarkVersion[],
-  configuration: Pick<Configuration, "modelId" | "providerId" | "effort">,
-): number {
+export function plannedTurns(versions: readonly BenchmarkVersion[]): number {
   return versions.reduce(
     (total, version) =>
-      authoredByCandidate(version.manifest.environment, configuration)
-        ? total
-        : total +
-          (version.manifest.workflow?.steps.length ?? 1) +
-          judgeCalls(version.manifest),
+      total +
+      (version.manifest.workflow?.steps.length ?? 1) +
+      judgeCalls(version.manifest),
     0,
   );
 }
