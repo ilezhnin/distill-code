@@ -1703,7 +1703,7 @@ fn dispatch_key(attempt: &Attempt) -> String {
 /// The owner of an attempt's candidate session. The host keeps one session
 /// and one turn per owner, so a turn tried again after a refusal needs a new
 /// owner as well as a new key; both carry the start time.
-fn turn_owner(attempt: &Attempt) -> String {
+pub(super) fn turn_owner(attempt: &Attempt) -> String {
     format!("{}:{}", attempt.id, attempt.started_at.unwrap_or_default())
 }
 

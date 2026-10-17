@@ -314,12 +314,27 @@ def save():
     write_private(receipt_file, json.dumps(receipt).encode())
 
 
+def account_statuses(values):
+    """account_status for each account in order; one it cannot read is
+    reported as signed out with invalid health, as a failed call was."""
+    for value in values:
+        try:
+            account_status(value)
+        except Exception:
+            path = Path(value)
+            print(f"account {path.name} {path.parent.name} no")
+            print(f"account-health {path.name} {path.parent.name} unknown invalid -")
+
+
 try:
-    if len(sys.argv) == 3 and sys.argv[1] == "status":
+    if len(sys.argv) >= 3 and sys.argv[1] == "status":
         # Status never copies grants, refreshes tokens, or starts a session.
         with open("/run/lock/distill-bench-auth", "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_SH)
-            account_status(sys.argv[2])
+            if len(sys.argv) == 3:
+                account_status(sys.argv[2])
+            else:
+                account_statuses(sys.argv[2:])
         sys.exit(0)
     action, attempt = sys.argv[1:3]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", attempt):

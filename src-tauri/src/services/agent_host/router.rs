@@ -1470,18 +1470,23 @@ impl Inner {
                 // A refused reservation starts no provider process or paid turn.
                 // Drop releases an unclaimed token; the Linux supervisor owns it
                 // once bench-run starts, including host exit and cancellation.
-                let reservation = crate::services::benchmark_sandbox::reserve(class, id, deadline)
-                    .await
-                    .map_err(|error| {
-                        let message = error.to_string();
-                        // Only this trusted pre-spawn broker can establish that
-                        // no provider process started. Never apply this rewrite
-                        // to an arbitrary provider/bridge error after spawn.
-                        let reason = message
-                            .find("resource_busy:")
-                            .map_or(message.as_str(), |start| &message[start..]);
-                        protocol::internal(reason)
-                    })?;
+                let reservation = crate::services::benchmark_sandbox::reserve(
+                    class,
+                    id,
+                    deadline,
+                    crate::services::benchmark_sandbox::continues(&request.owner_id),
+                )
+                .await
+                .map_err(|error| {
+                    let message = error.to_string();
+                    // Only this trusted pre-spawn broker can establish that
+                    // no provider process started. Never apply this rewrite
+                    // to an arbitrary provider/bridge error after spawn.
+                    let reason = message
+                        .find("resource_busy:")
+                        .map_or(message.as_str(), |start| &message[start..]);
+                    protocol::internal(reason)
+                })?;
                 let separator = launch
                     .args
                     .iter()

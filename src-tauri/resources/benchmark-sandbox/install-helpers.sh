@@ -38,6 +38,8 @@ install -d -m 755 /workspace /submission
 install -o root -g root -m 644 "$src/benchmark-browser-worker.mjs" /usr/local/lib/distill/benchmark-browser-worker.mjs
 install -o root -g root -m 644 "$src/browser-runtime.json" /opt/distill-browser/runtime.json
 /usr/local/sbin/bench-budget mount-scratch
+# New helpers may set new limits: bench-net runs its whole setup again.
+rm -f /run/distill-bench-net.ready
 /usr/local/sbin/bench-net
 /usr/local/sbin/bench-budget status
 echo "Retained helper backup at $backup" >&2

@@ -8,6 +8,16 @@
 set -eu
 # WSL's boot command does not inherit an interactive root shell's PATH.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Every benchmark run, network and status calls this. Once this boot has
+# finished setup (the marker names the boot; /run empties at every WSL start)
+# and the namespace and control group still stand, there is nothing to do:
+# return without starting a process.
+ready=/run/distill-bench-net.ready
+if [ -f "$ready" ] && [ -e /run/netns/bench ] && [ -d /sys/fs/cgroup/distill-bench/control ]; then
+  read -r boot </proc/sys/kernel/random/boot_id
+  read -r marked <"$ready" || marked=
+  [ "$marked" != "$boot" ] || exit 0
+fi
 mkdir -p /run/lock
 exec 9>/run/lock/distill-bench-net
 flock 9
@@ -20,6 +30,7 @@ fi
 # The VM's network namespace outlives this distribution's restarts, so a
 # leftover half (a veth without its namespace) is torn down and rebuilt.
 if ip netns exec bench ip -4 route show default 2>/dev/null | grep -q 10.231.0.1; then
+  cat /proc/sys/kernel/random/boot_id >"$ready"
   exit 0
 fi
 ip link del bench0 2>/dev/null || true
@@ -54,3 +65,4 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/etc/netns/bench/resolv.conf
 # Publish readiness only after every limit and firewall rule is installed.
 # A failed setup has no default route and is rebuilt on the next invocation.
 ip netns exec bench ip route add default via 10.231.0.1
+cat /proc/sys/kernel/random/boot_id >"$ready"

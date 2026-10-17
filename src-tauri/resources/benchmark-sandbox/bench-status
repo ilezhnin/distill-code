@@ -5,9 +5,9 @@
 # is not proof that the provider accepts a credential or can refresh it.
 set -uo pipefail
 # Admission can be the first command after WSL starts. Join the boot helper's
-# lock and finish initialization before reporting readiness.
-/usr/local/sbin/bench-net >&2 || exit $?
+# lock and finish initialization before reporting readiness, once.
 if [[ -z ${DISTILL_BENCH_CONTROL:-} ]]; then
+  /usr/local/sbin/bench-net >&2 || exit $?
   exec /usr/local/sbin/bench-budget control -- /usr/bin/env DISTILL_BENCH_CONTROL=1 /bin/bash "$0" "$@"
 fi
 /usr/local/sbin/bench-budget status || exit $?
@@ -22,14 +22,27 @@ for binary in /opt/distill-tools/zai/bin/*; do
   [[ -f $binary ]] && binaries+=("$binary")
 done
 # Rehash the installed entrypoint of every tool file, not its
-# provisioning-time receipt.
+# provisioning-time receipt: the last word of the launcher's `exec ... "$@"`.
+declare -A entrypoint=()
+launched() {
+  local line found=
+  [[ -f $1 ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ $line =~ ^exec\ (.*)\ \"\$@\"$ ]]; then
+      found=${BASH_REMATCH[1]}
+      found=${found##*[[:space:]]}
+    fi
+  done <"$1"
+  printf '%s' "$found"
+}
 tools=()
 for manifest in /opt/distill-tools/*/manifest; do
   [[ -f $manifest ]] || continue
   while read -r tool kind name recorded; do
     [[ $kind == file ]] || continue
     launcher=/opt/distill-tools/bin/$name
-    tools+=("$(sed -n 's/^exec \(.*\) "\$@"$/\1/p' "$launcher" 2>/dev/null | awk '{print $NF}')")
+    [[ -n ${entrypoint[$launcher]+set} ]] || entrypoint[$launcher]=$(launched "$launcher")
+    tools+=("${entrypoint[$launcher]}")
   done <"$manifest"
 done
 # One pass over every digest below. bench-digest reads a file again only
@@ -39,17 +52,20 @@ while read -r sum path; do
   [[ -n $path && $sum != - ]] && digest[$path]=$sum
 done < <(/usr/local/sbin/bench-digest status "${helpers[@]}" "${browser[@]}" "${binaries[@]}" "${tools[@]}")
 # The digest of a path, empty where it has none (as sha256sum printed none).
-digest_of() { [[ -n ${1:-} ]] && echo "${digest[$1]:-}"; }
 for file in "${helpers[@]}"; do
-  echo "file $(basename "$file") $(digest_of "$file")"
+  echo "file ${file##*/} ${digest[$file]:-}"
 done
 for file in "${browser[@]}"; do
-  echo "file $(basename "$file" | sed 's/^runtime.json$/browser-runtime.json/') $(digest_of "$file")"
+  name=${file##*/}
+  [[ $name != runtime.json ]] || name=browser-runtime.json
+  echo "file $name ${digest[$file]:-}"
 done
 echo "node $(node --version 2>/dev/null)"
-echo "git $(git --version 2>/dev/null | cut -d' ' -f3)"
+version=$(git --version 2>/dev/null)
+read -r _ _ version _ <<<"$version"
+echo "git ${version:-}"
 for binary in "${binaries[@]}"; do
-  echo "binary $binary $(digest_of "$binary")"
+  echo "binary $binary ${digest[$binary]:-}"
 done
 echo "netns $(if ip netns exec bench ip -4 route show default 2>/dev/null | grep -q 10.231.0.1; then echo up; else echo down; fi)"
 for manifest in /opt/distill-tools/*/manifest; do
@@ -57,22 +73,42 @@ for manifest in /opt/distill-tools/*/manifest; do
   while read -r tool kind name recorded; do
     if [[ $kind == file ]]; then
       launcher=/opt/distill-tools/bin/$name
-      target=$(sed -n 's/^exec \(.*\) "\$@"$/\1/p' "$launcher" | awk '{print $NF}')
-      echo "tool $tool file $name $(digest_of "$target")"
+      [[ -n ${entrypoint[$launcher]+set} ]] || entrypoint[$launcher]=$(launched "$launcher")
+      target=${entrypoint[$launcher]}
+      echo "tool $tool file $name ${target:+${digest[$target]:-}}"
     else
       echo "tool $tool $kind $name"
     fi
   done <"$manifest"
 done
+# OAuth and key accounts are read by one bench-auth, in this order; it
+# prints the same two lines per account, or "no" and "invalid" for one it
+# cannot read. Other accounts are reported here.
+read_by_auth=()
 for account in /home/candidate/accounts/*/*; do
   [[ -d $account ]] || continue
-  provider=$(basename "$account")
-  id=$(basename "$(dirname "$account")")
+  provider=${account##*/}
+  [[ $provider == claude || $provider == grok || $provider == zai ]] && read_by_auth+=("$account")
+done
+declare -A health=()
+if ((${#read_by_auth[@]})); then
+  while IFS= read -r line; do
+    read -r _ provider id _ <<<"$line"
+    health["$provider/$id"]+="$line"$'\n'
+  done < <(/usr/local/sbin/bench-auth status "${read_by_auth[@]}" 2>/dev/null)
+fi
+for account in /home/candidate/accounts/*/*; do
+  [[ -d $account ]] || continue
+  provider=${account##*/}
+  id=${account%/*}
+  id=${id##*/}
   if [[ $provider == claude || $provider == grok || $provider == zai ]]; then
-    /usr/local/sbin/bench-auth status "$account" || {
+    if [[ -n ${health["$provider/$id"]:-} ]]; then
+      printf '%s' "${health["$provider/$id"]}"
+    else
       echo "account $provider $id no"
       echo "account-health $provider $id unknown invalid -"
-    }
+    fi
     continue
   fi
   signed=no

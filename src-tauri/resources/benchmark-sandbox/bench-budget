@@ -35,6 +35,7 @@ aggregate is shared by measured use, and every admission records what it
 measured; every finished job records its CPU seconds and memory peak.
 """
 import math
+import errno
 import fcntl
 import json
 import os
@@ -63,7 +64,7 @@ DEVICE = None
 POLICY = 'dynamic-v2'
 # The aggregate every admitted job shares. Admission leaves one GiB of the
 # memory ceiling to trusted supervisors, page tables and filesystem
-# bookkeeping; supervisors also keep their own half CPU and 128 processes.
+# bookkeeping; supervisors also keep their own CPU and 128 processes.
 ADMISSION_MEMORY = 23 * GIB
 AGGREGATE_CPU = 14
 AGGREGATE_PIDS = 4096
@@ -166,6 +167,18 @@ def write(path, value):
     path.write_text(str(value))
 
 
+def ensure(path, value):
+    """Write a cgroup setting only when it differs. Every broker call runs
+    setup; rewriting the control group's cpu.max on each would restart its
+    throttling period accounting."""
+    try:
+        if path.read_text().strip() == str(value):
+            return
+    except OSError:
+        pass
+    write(path, value)
+
+
 def protected(path):
     info = path.lstat()
     return path.is_dir() and not path.is_symlink() and info.st_uid == 0 and not info.st_mode & 0o022
@@ -190,8 +203,8 @@ def heavy_cap():
 
 
 def cpu_max():
-    # The control group's own half CPU comes on top of the jobs' share.
-    return f"{AGGREGATE_CPU * 100000 + 50000} 100000"
+    # The control group's own CPU comes on top of the jobs' share.
+    return f"{(AGGREGATE_CPU + SUPERVISOR_CPUS) * 100000} 100000"
 
 
 def setup():
@@ -201,16 +214,17 @@ def setup():
     controllers = set(Path('/sys/fs/cgroup/cgroup.controllers').read_text().split())
     if not {'memory', 'cpu', 'pids', 'io'} <= controllers:
         fail('WSL cgroup v2 memory, CPU, PID and IO controllers are required')
-    write(Path('/sys/fs/cgroup/cgroup.subtree_control'), '+memory +cpu +pids +io')
-    ROOT.mkdir(exist_ok=True)
-    write(ROOT / 'memory.swap.max', 0)
-    write(ROOT / 'cgroup.subtree_control', '+memory +cpu +pids +io')
+    for parent in (Path('/sys/fs/cgroup'), ROOT):
+        parent.mkdir(exist_ok=True)
+        if not {'memory', 'cpu', 'pids', 'io'} <= set((parent / 'cgroup.subtree_control').read_text().split()):
+            write(parent / 'cgroup.subtree_control', '+memory +cpu +pids +io')
+    ensure(ROOT / 'memory.swap.max', 0)
     control = ROOT / 'control'
     control.mkdir(exist_ok=True)
-    write(control / 'memory.max', 256 * 1024 ** 2)
-    write(control / 'memory.swap.max', 0)
-    write(control / 'pids.max', 128)
-    write(control / 'cpu.max', '50000 100000')
+    ensure(control / 'memory.max', 256 * 1024 ** 2)
+    ensure(control / 'memory.swap.max', 0)
+    ensure(control / 'pids.max', 128)
+    ensure(control / 'cpu.max', f'{SUPERVISOR_CPUS * 100000} 100000')
     STATE.mkdir(mode=0o700, exist_ok=True)
     (STATE / 'attempts').mkdir(mode=0o700, exist_ok=True)
     (STATE / 'outcomes').mkdir(mode=0o700, exist_ok=True)
@@ -223,11 +237,12 @@ def setup():
 
 
 def apply_limits():
-    write(ROOT / 'memory.max', ADMISSION_MEMORY + GIB)
-    write(ROOT / 'memory.high', ADMISSION_MEMORY)
-    write(ROOT / 'cpu.max', cpu_max())
-    write(ROOT / 'pids.max', AGGREGATE_PIDS + 128)
-    write(ROOT / 'io.max', f"{DEVICE} rbps={AGGREGATE_IO[0]} wbps={AGGREGATE_IO[1]}")
+    ensure(ROOT / 'memory.max', ADMISSION_MEMORY + GIB)
+    ensure(ROOT / 'memory.high', ADMISSION_MEMORY)
+    ensure(ROOT / 'cpu.max', cpu_max())
+    ensure(ROOT / 'pids.max', AGGREGATE_PIDS + 128)
+    if io_limit(ROOT) != tuple(map(str, AGGREGATE_IO)):
+        write(ROOT / 'io.max', f"{DEVICE} rbps={AGGREGATE_IO[0]} wbps={AGGREGATE_IO[1]}")
     expected = {'memory.max': str(ADMISSION_MEMORY + GIB), 'memory.swap.max': '0',
                 'cpu.max': cpu_max(), 'pids.max': str(AGGREGATE_PIDS + 128)}
     for name, value in expected.items():
@@ -311,20 +326,53 @@ def live(receipt):
             proc_identity(receipt['pid']) == receipt['start'])
 
 
+# How long a group's removal waits for its exiting tasks to leave.
+RMDIR_RETRY = 1.0
+
+
+def populated(path):
+    """Whether a group still holds tasks, exiting ones included: cgroup.procs
+    can read empty while they still populate it."""
+    try:
+        events = dict(line.split() for line in (path / 'cgroup.events').read_text().splitlines() if line.strip())
+        return events.get('populated') == '1'
+    except (OSError, ValueError):
+        return bool((path / 'cgroup.procs').read_text().strip())
+
+
 def stop(groups):
+    """Kill and remove each group; True once every one is gone. A group that
+    still has exiting tasks after a short wait is left for the next reap: its
+    removal must not fail another job's admission."""
     for name in groups:
         path = ROOT / name
         if path.exists():
             write(path / 'cgroup.kill', 1)
     until = time.monotonic() + 5
+    removed = True
     for name in groups:
         path = ROOT / name
-        while path.exists() and (path / 'cgroup.procs').read_text().strip() and time.monotonic() < until:
+        while path.exists() and populated(path) and time.monotonic() < until:
             time.sleep(0.05)
-        if path.exists():
-            if (path / 'cgroup.procs').read_text().strip():
-                fail('benchmark process tree did not stop')
-            path.rmdir()
+        if not path.exists():
+            continue
+        if (path / 'cgroup.procs').read_text().strip():
+            fail('benchmark process tree did not stop')
+        retry = time.monotonic() + RMDIR_RETRY
+        while True:
+            try:
+                path.rmdir()
+                break
+            except FileNotFoundError:
+                break
+            except OSError as error:
+                if error.errno != errno.EBUSY:
+                    raise
+                if time.monotonic() >= retry:
+                    removed = False
+                    break
+                time.sleep(0.05)
+    return removed
 
 
 def locked():
@@ -338,8 +386,10 @@ def receipts():
     for path in STATE.glob('lease-*.json'):
         value = json.loads(path.read_text())
         if not live(value):
-            stop(value['groups'])
-            path.unlink(missing_ok=True)
+            # A group still busy keeps its expired lease, so a later reap
+            # removes it.
+            if stop(value['groups']):
+                path.unlink(missing_ok=True)
         else:
             result.append(value)
     return result
@@ -528,6 +578,28 @@ def sandbox_cores():
     return (used - used_before) / 1e6 / (at - before)
 
 
+def job_pressure():
+    """The highest share of time, over ten seconds, that any running job's
+    tasks waited for a CPU: the jobs' own cgroups, never the supervisors'
+    control group (whose half-core ceiling throttles its own bursts of
+    status and cleanup work). None without a job."""
+    worst = None
+    try:
+        leaves = [path for path in ROOT.iterdir() if path.is_dir() and path.name != 'control']
+    except OSError:
+        return None
+    for leaf in leaves:
+        try:
+            text = (leaf / 'cpu.pressure').read_text()
+        except OSError:
+            continue
+        match = re.search(r'some avg10=([0-9.]+)', text)
+        if match:
+            value = float(match.group(1)) / 100
+            worst = value if worst is None else max(worst, value)
+    return worst
+
+
 def guest_pressure(resource='cpu'):
     """The guest's share of time with tasks stalled on `resource` (cpu or
     memory), over ten seconds."""
@@ -607,17 +679,18 @@ def hold(resource, until=None):
     path.write_text(json.dumps(held))
 
 
-def decide(active, kind, gate, host_buffers=0):
+def decide(active, kind, gate, host_buffers=0, continuing=False):
     """Admit `kind` beside `active` or raise BlockingIOError naming the line
     that holds it. Returns the measurements it decided on. A check or
     preparation it refuses holds new attempts back (see PRIORITY_HOLD)."""
     try:
-        observed = admit_measured(active, kind, gate, host_buffers)
+        observed = admit_measured(active, kind, gate, host_buffers, continuing)
     except BlockingIOError as busy:
         reason = str(busy)
         # A check the operator's cap refuses also holds sessions back, so it
-        # takes the next freed place instead of a new session.
-        if kind not in ATTEMPTS and 'Windows headroom evidence expired' not in reason:
+        # takes the next freed place instead of a new session; so does a
+        # later workflow step, whose earlier steps are paid for.
+        if (kind not in ATTEMPTS or continuing) and 'Windows headroom evidence expired' not in reason:
             hold('cpu' if 'CPU' in reason else 'memory', time.time() + PRIORITY_HOLD)
         elif getattr(busy, 'text_would_free', False):
             # Text sessions need less room and refill every few minutes, so
@@ -632,9 +705,14 @@ def decide(active, kind, gate, host_buffers=0):
     return observed
 
 
-def admit_measured(active, kind, gate, host_buffers):
+def admit_measured(active, kind, gate, host_buffers, continuing=False):
+    """Admission of `kind`. A `continuing` session (a later step of a
+    workflow already under way) is an attempt that goes ahead of new ones:
+    no priority hold, no CPU pressure or check-stall guard, no session cap,
+    no room kept for another repository claim; its ceilings, the memory
+    claims and guard, the CPU lines and the Windows floors still apply."""
     memory, cpu, pids, lane = CLASSES[kind]
-    held = priority_waiting(kind) if kind in ATTEMPTS else None
+    held = priority_waiting(kind) if kind in ATTEMPTS and not continuing else None
     if held:
         raise BlockingIOError('resource_busy: ' + held + '; no provider process started')
     if kind in ATTEMPTS:
@@ -651,7 +729,7 @@ def admit_measured(active, kind, gate, host_buffers):
         needed_room = needed + expected_memory('check', recorded) + expected_memory('prep', recorded)
     else:
         needed_room = needed
-    if kind == 'text' and learned('repository', recorded) and repository_active(active):
+    if kind == 'text' and not continuing and learned('repository', recorded) and repository_active(active):
         needed_room += expected_memory('repository', recorded)
     if claims + needed_room > ADMISSION_MEMORY:
         busy = BlockingIOError('resource_busy: sandbox memory the running jobs claim leaves no room for this job; no provider process started')
@@ -674,7 +752,7 @@ def admit_measured(active, kind, gate, host_buffers):
     timed = sum(row['cpu'] for row in active if row['kind'] in SENSITIVE)
     sessions = sum(row['kind'] == 'repository' for row in active)
     burst = session_burst(recorded)
-    pressure = guest_pressure()
+    pressure = job_pressure()
     stalled = recent_stall()
     admitted_by = None
     if kind in CPU_HEAVY:
@@ -685,9 +763,10 @@ def admit_measured(active, kind, gate, host_buffers):
         if ceilings + cpu + reserve <= line:
             admitted_by = 'ceilings'
         elif kind == 'repository':
-            if sessions >= REPOSITORY_SESSIONS:
+            if sessions >= REPOSITORY_SESSIONS and not continuing:
                 raise BlockingIOError('resource_busy: the sandbox runs its most repository sessions at once; no provider process started')
-            if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
+            if not continuing and ((pressure is not None and pressure > SESSION_PRESSURE)
+                                   or (stalled is not None and stalled > STALL_LINE)):
                 raise BlockingIOError('resource_busy: CPU pressure in the sandbox holds new repository sessions; no provider process started')
             used = measured if measured is not None else ceilings
             if used + burst * (sessions + 1) + timed + CHECK_CPUS <= capacity:
@@ -698,12 +777,15 @@ def admit_measured(active, kind, gate, host_buffers):
             raise BlockingIOError('resource_busy: CPU cores the host leaves free cannot cover this job beside the running checks and sessions; no provider process started')
     else:
         busy = (measured if measured is not None else ceilings) + (0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0)))
-        if busy + cpu > LIGHT_LOAD * (os.cpu_count() or 1) or (pressure is not None and pressure > LIGHT_PRESSURE):
+        if busy + cpu > LIGHT_LOAD * (os.cpu_count() or 1) or (
+                not continuing and pressure is not None and pressure > LIGHT_PRESSURE):
             raise BlockingIOError('resource_busy: measured CPU load is above the light-job admission line; no provider process started')
     observed.update(expectedMemory=needed, claimedMemory=claims, cpuLine=line, heavyCpus=ceilings,
                     sandboxCpu=None if measured is None else round(measured, 3),
                     cpuPressure=pressure, checkStall=stalled, cpuCapacity=capacity,
                     sessionBurst=round(burst, 3), repositorySessions=sessions, admittedBy=admitted_by)
+    if continuing:
+        observed['continuing'] = True
     return observed
 
 
@@ -794,7 +876,7 @@ def make_groups(kind, identifier):
     return groups
 
 
-def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
+def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=False):
     deadline = deadline_ms / 1000
     ident(identifier)
     if kind not in CLASSES or not time.time() < deadline <= time.time() + 86400 + 480 or not 0 <= host_buffers <= GIB + 65536:
@@ -804,9 +886,9 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
         active = receipts()
         # Sign-ins and probes queue without a reservation; attempts wait
         # behind them, checks and preparations go ahead.
-        if kind in ATTEMPTS and waiting():
+        if kind in ATTEMPTS and not continuing and waiting():
             raise BlockingIOError('resource_busy: benchmark resource capacity is queued; no provider process started')
-        observed = decide(active, kind, gate, host_buffers)
+        observed = decide(active, kind, gate, host_buffers, continuing)
         scratch_headroom(active, kind)
         record = admission(active, kind, observed)
         groups = make_groups(kind, identifier)
@@ -829,8 +911,7 @@ def release(token):
         path = STATE / ('lease-' + token + '.json')
         if path.exists():
             row = json.loads(path.read_text())
-            if row.get('pending'):
-                stop(row['groups'])
+            if row.get('pending') and stop(row['groups']):
                 path.unlink()
 
 
@@ -1019,8 +1100,10 @@ def run(kind, identifier, command):
                         record_stall(kind, groups, admitted_at, stalled_before)
                 except (OSError, ValueError):
                     pass
-                stop(groups)
-                lease.unlink(missing_ok=True)
+                # A group still busy keeps the lease for the next reap; this
+                # supervisor is gone by then, so the lease is not live.
+                if stop(groups):
+                    lease.unlink(missing_ok=True)
         if child is not None:
             try:
                 child.wait(timeout=5)
@@ -1147,8 +1230,11 @@ def main():
         except OSError:
             pass
         return 0
-    if len(sys.argv) in (6, 7) and sys.argv[1] == 'reserve':
-        reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) == 7 else 0)
+    if len(sys.argv) in (6, 7, 8) and sys.argv[1] == 'reserve':
+        if len(sys.argv) == 8 and sys.argv[7] != 'continuing':
+            fail('unsupported benchmark reservation flag')
+        reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) >= 7 else 0,
+                len(sys.argv) == 8)
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == 'outcome':
         token = sys.argv[2]

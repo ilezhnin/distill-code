@@ -64,7 +64,7 @@ fn resource_hash(bytes: &[u8]) -> String {
 }
 
 pub(crate) const RESOURCE_POLICY: &str =
-    "dynamic-v2-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8-inodes131072-weights10000-300-100";
+    "dynamic-v2-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8-inodes131072-weights10000-300-100-control1";
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Budget lines the broker reports: the aggregate every admitted job shares
@@ -75,7 +75,7 @@ const GIB: u64 = 1024 * 1024 * 1024;
 const FIXED_BUDGET: [&str; 9] = [
     "budget admission dynamic-v2",
     "budget memory 25769803776",
-    "budget cpu 1450000/100000",
+    "budget cpu 1500000/100000",
     "budget pids 4224",
     "budget io 1073741824/268435456",
     "budget swap 0",
@@ -137,6 +137,9 @@ pub struct Admission {
     pub repository_sessions: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admitted_by: Option<String>,
+    /// Set on a later workflow step's session, admitted ahead of new attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuing: Option<bool>,
     /// Memory the benchmark cgroup actually used at admission.
     pub memory_current: u64,
     /// The WSL guest's 1, 5 and 15 minute load averages, CPUs and free memory.
@@ -348,12 +351,50 @@ impl Drop for Reservation {
 /// Reserve a candidate session's process tree. Its admission record, with
 /// the Windows CPU share the broker decided on, waits for the attempt's
 /// evidence.
+/// Owners of sessions that continue a workflow already under way: a later
+/// step, whose earlier steps a provider already worked on. Admission lets
+/// such a session ahead of new attempts and past the CPU pressure guards;
+/// its ceilings, memory and the Windows floors still bound it (bench-budget).
+static CONTINUING: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Marks `owner`'s session as continuing a workflow while this lives.
+pub(crate) struct Continuing(String);
+
+impl Continuing {
+    pub(crate) fn new(owner: String) -> Self {
+        CONTINUING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owner.clone());
+        Self(owner)
+    }
+}
+
+impl Drop for Continuing {
+    fn drop(&mut self) {
+        CONTINUING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// Whether `owner`'s session continues a workflow (see [`Continuing`]).
+pub(crate) fn continues(owner: &str) -> bool {
+    CONTINUING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(owner)
+}
+
 pub(crate) async fn reserve(
     class: ResourceClass,
     id: &str,
     deadline_ms: u64,
+    continuing: bool,
 ) -> io::Result<Reservation> {
-    let mut reservation = reserve_with_buffers(class, id, deadline_ms, 0).await?;
+    let mut reservation = reserve_with_buffers_for(class, id, deadline_ms, 0, continuing).await?;
     reservation.admission.host_cpus = std::thread::available_parallelism()
         .ok()
         .and_then(|count| u32::try_from(count.get()).ok());
@@ -367,15 +408,29 @@ async fn reserve_with_buffers(
     deadline_ms: u64,
     host_buffers: usize,
 ) -> io::Result<Reservation> {
+    reserve_with_buffers_for(class, id, deadline_ms, host_buffers, false).await
+}
+
+async fn reserve_with_buffers_for(
+    class: ResourceClass,
+    id: &str,
+    deadline_ms: u64,
+    host_buffers: usize,
+    continuing: bool,
+) -> io::Result<Reservation> {
     valid_id(id)?;
     remaining_ms(deadline_ms)?;
     host_admission_for(class).await?;
     let gate = host_gate()?;
     let deadline = deadline_ms.to_string();
     let host_buffers = host_buffers.to_string();
+    let mut args: Vec<&str> = vec!["reserve", class.key(), id, &deadline, &gate, &host_buffers];
+    if continuing {
+        args.push("continuing");
+    }
     let out = invoke_raw(
         "/usr/local/sbin/bench-budget",
-        &["reserve", class.key(), id, &deadline, &gate, &host_buffers],
+        &args,
         None,
         4096,
         Duration::from_millis(remaining_ms(deadline_ms)?.min(15_000)),
@@ -384,6 +439,15 @@ async fn reserve_with_buffers(
     .await?;
     if !out.success() && out.reason().contains("resource_busy:") {
         return Err(io::Error::new(io::ErrorKind::WouldBlock, out.reason()));
+    }
+    // A cgroup busy for a moment (EBUSY while another job's group is reaped)
+    // refused this admission before anything started: wait like any other
+    // local refusal instead of failing the run's storage.
+    if !out.success() && out.reason().contains("[Errno 16]") {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "resource_busy: a sandbox control group was busy during admission; no provider process started",
+        ));
     }
     let out = out.require_success("resource admission")?;
     let value: serde_json::Value = serde_json::from_slice(&out.stdout)?;
@@ -1269,8 +1333,15 @@ pub(crate) struct Recent<K, T> {
     slots: std::sync::Mutex<BTreeMap<K, Observed<T>>>,
 }
 
-/// One key's last observation and when it was made, locked while observing.
-type Observed<T> = Arc<tokio::sync::Mutex<Option<(std::time::Instant, T)>>>;
+/// One key's last observation, when it started and when it finished,
+/// locked while observing.
+type Observed<T> = Arc<tokio::sync::Mutex<Option<Observation<T>>>>;
+
+struct Observation<T> {
+    started: std::time::Instant,
+    finished: std::time::Instant,
+    value: T,
+}
 
 impl<K: Ord + Clone, T: Clone> Recent<K, T> {
     pub(crate) const fn new(reuse: Duration) -> Self {
@@ -1280,8 +1351,11 @@ impl<K: Ord + Clone, T: Clone> Recent<K, T> {
         }
     }
 
-    /// The value observed for `key` within the reuse window, else (or when
-    /// `fresh`) a new observation, which later checks then share.
+    /// The value observed for `key` within the reuse window, else a new
+    /// observation, which later checks then share. A `fresh` check takes
+    /// only an observation that started after it asked, so every check that
+    /// arrives while one runs shares the next: the state after the event
+    /// that asked (a turn's end, a renewal), observed once for all of them.
     pub(crate) async fn get<E, F, O>(&self, key: K, fresh: bool, observe: O) -> Result<T, E>
     where
         O: FnOnce() -> F,
@@ -1298,15 +1372,26 @@ impl<K: Ord + Clone, T: Clone> Recent<K, T> {
             }
             Arc::clone(slots.entry(key).or_default())
         };
+        let asked = std::time::Instant::now();
         let mut held = slot.lock().await;
-        if let Some((at, value)) = held.as_ref() {
-            if !fresh && at.elapsed() < self.reuse {
-                return Ok(value.clone());
+        if let Some(last) = held.as_ref() {
+            let current = if fresh {
+                last.started >= asked
+            } else {
+                last.finished.elapsed() < self.reuse
+            };
+            if current {
+                return Ok(last.value.clone());
             }
         }
+        let started = std::time::Instant::now();
         // Boxed: readiness is awaited deep inside an attempt's preparation.
         let value = Box::pin(observe()).await?;
-        *held = Some((std::time::Instant::now(), value.clone()));
+        *held = Some(Observation {
+            started,
+            finished: std::time::Instant::now(),
+            value: value.clone(),
+        });
         Ok(value)
     }
 
@@ -1331,7 +1416,8 @@ pub(crate) async fn ready() -> io::Result<Status> {
 }
 
 /// A new observation, never an earlier one: the runtime as it is after a
-/// turn, for the receipt sealed with that turn's evidence.
+/// turn, for the receipt sealed with that turn's evidence. Receipts that
+/// arrive while one observation runs share the next.
 pub(crate) async fn observe_now() -> io::Result<Status> {
     host_admission().await?;
     STATUS.get((), true, observe_status).await
@@ -1701,14 +1787,17 @@ async fn invoke_until_inner(
     Ok(out)
 }
 
+/// [`ready`] within a native deadline: the shared observation of the last
+/// seconds, or a new one the deadline bounds. Only a deadline that passes
+/// is a timeout.
 pub(crate) async fn ready_until(deadline_ms: u64) -> io::Result<Status> {
-    let out = invoke_until("/usr/local/sbin/bench-status", "", 128 * 1024, deadline_ms)
-        .await?
-        .require_success("status")?;
-    if out.truncated {
-        return Err(io::Error::other("Sandbox status exceeded its limit"));
-    }
-    parse_status(&String::from_utf8_lossy(&out.stdout))
+    let remaining = remaining_ms(deadline_ms)?;
+    tokio::time::timeout(
+        Duration::from_millis(remaining),
+        STATUS.get((), false, observe_status),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Native sandbox deadline expired"))?
 }
 
 /// Apply/export data-only repository transitions in protected root staging.
@@ -2036,7 +2125,7 @@ mod tests {
             off.replace("budget admission dynamic-v2\n", ""),
             off.replace("budget admission dynamic-v2", "budget admission dynamic-v1"),
             off.replace("budget memory 25769803776", "budget memory 19327352832"),
-            off.replace("budget cpu 1450000/100000", "budget cpu 650000/100000"),
+            off.replace("budget cpu 1500000/100000", "budget cpu 1450000/100000"),
             off.replace("light 33554432/8388608", "light 134217728/33554432"),
         ] {
             assert!(
@@ -2466,6 +2555,17 @@ mod tests {
             assert!(!error.contains("secret-value"));
         }
     }
+    #[test]
+    fn a_continuing_owner_is_marked_only_while_its_guard_lives() {
+        let owner = "invented-step:1".to_owned();
+        assert!(!continues(&owner));
+        let guard = Continuing::new(owner.clone());
+        assert!(continues(&owner));
+        assert!(!continues("invented-step:2"));
+        drop(guard);
+        assert!(!continues(&owner));
+    }
+
     /// Readiness checks within the reuse window share one observation, and
     /// checks that arrive while it runs wait for it; a receipt's fresh check,
     /// an expired window or a failure observes again.
@@ -2526,6 +2626,20 @@ mod tests {
                 .unwrap(),
             7
         );
+        // Fresh checks that ask together share one observation once the
+        // one already running (which started before they asked) is done.
+        let together: Arc<Recent<(), usize>> = Arc::new(Recent::new(Duration::from_secs(60)));
+        let count = Arc::new(AtomicUsize::new(0));
+        let asked: Vec<_> = (0..6)
+            .map(|_| {
+                let (together, count) = (together.clone(), count.clone());
+                tokio::spawn(async move { together.get((), true, observe(count)).await })
+            })
+            .collect();
+        for check in asked {
+            assert!(check.await.unwrap().unwrap() >= 1);
+        }
+        assert!(count.load(Ordering::SeqCst) <= 2, "{count:?}");
         // A forgotten observation is observed again.
         failed.forget();
         assert_eq!(

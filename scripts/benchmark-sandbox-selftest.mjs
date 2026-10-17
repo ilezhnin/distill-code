@@ -160,7 +160,7 @@ export function runSelftest(resources) {
         [
           "budget admission dynamic-v2",
           "budget memory 25769803776",
-          "budget cpu 1450000/100000",
+          "budget cpu 1500000/100000",
           "budget pids 4224",
           "budget io 1073741824/268435456",
           "budget swap 0",
@@ -390,6 +390,19 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
       );
     });
     pass("timed jobs outweigh sessions", weights.join(" ") === "10000 100");
+    // Once the sandbox is up, bench-net returns without starting a process
+    // (it runs before every job and status pass).
+    const forks = root(`import re,subprocess
+def forks(): return int(re.search(r"processes (\\d+)", open("/proc/stat").read()).group(1))
+best = None
+for _ in range(3):
+    before = forks(); subprocess.run(["/usr/local/sbin/bench-net"], check=True); after = forks()
+    best = after - before if best is None else min(best, after - before)
+print(best)`);
+    pass(
+      "bench-net returns at once when the sandbox is up",
+      Number(forks) <= 3,
+    );
     // Every finished job records what it used.
     const usage = successful("/usr/local/sbin/bench-budget", ["usage", "50"])
       .split("\n")

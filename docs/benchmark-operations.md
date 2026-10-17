@@ -176,8 +176,10 @@ naming the line that holds it, while it does not:
   leaving one check's two CPUs, the line dropping by one check while checks
   waited for CPUs. Light jobs and preparations need the measured load below
   three quarters of the guest's CPUs and, where Linux reports it, CPU pressure
-  below a quarter. Every finished job records its CPU seconds, average cores,
-  memory peak and wall time; `bench-budget usage` lists the latest.
+  below a quarter. The CPU pressure these lines read is the highest of the
+  running jobs' own, never the supervisors' control group. Every finished job
+  records its CPU seconds, average cores, memory peak and wall time;
+  `bench-budget usage` lists the latest.
 - Priority. While a check or a preparation waits for memory, no attempt
   starts; while a check waits for CPUs, no CPU-heavy attempt starts. Neither
   starves behind attempts. A check the operator's cap refuses holds new
@@ -188,6 +190,11 @@ naming the line that holds it, while it does not:
   learned, a text attempt leaves room for one more repository claim while a
   repository job ran in the last five minutes. A sign-in or probe queued
   without a reservation holds attempts back, never checks or preparations.
+  A later step of a workflow whose earlier steps a provider already worked on
+  goes ahead of new attempts like a check: no priority hold, ticket, CPU
+  pressure or check-stall guard or session cap holds it, only its ceilings,
+  the memory claims and guard, the CPU lines and the Windows floors; when it
+  is refused, new attempts wait for it.
 - Scratch. The filesystem's free space must cover the new job's scratch
   reservation (1 GiB and 16384 inodes for a repository session), half a GiB,
   and the reservations of jobs admitted in the last two minutes; an older
@@ -211,12 +218,15 @@ a second. Operator scripts that do not sample it send 1001, meaning unknown;
 admission then counts no host load outside the sandbox, as for an idle host.
 Evidence with four fields, from scripts written for earlier builds, is refused.
 
-All jobs share an aggregate of 24 GiB, 14.5 CPUs, 4224 processes and
+All jobs share an aggregate of 24 GiB, 15 CPUs, 4224 processes and
 1024/256 MiB/s of scratch I/O, of which trusted supervisors keep their own
-half CPU, 128 processes and one GiB. The host disk, Windows and other WSL
+CPU, 128 processes and one GiB. The host disk, Windows and other WSL
 distributions are outside these limits; each attempt records the measurements
 it was admitted under (see [Freeze and run](#4-freeze-and-run-the-measurement-matrix)).
-Cleanup retains its own capacity. No additional virtual machine is created per
+Cleanup retains its own capacity. A finished job's control group that still
+holds exiting processes after a second is left, with its expired lease, for
+the next cleanup; a job whose admission finds a control group busy that way
+returns to the queue unstarted. No additional virtual machine is created per
 test.
 
 The operator may cap CPU-heavy jobs at once (sessions and timed jobs
@@ -258,8 +268,10 @@ which empties at every WSL start; a damaged or unprotected record is read as
 absent. One sandbox observation answers the readiness checks that follow it
 within ten seconds, and checks that arrive while it runs share it. The receipt
 sealed after each turn, and each step of a sign-in renewal, always observe the
-sandbox again, so the checks after a renewal read the renewed grant; copying a
-Z.ai key into the sandbox drops the shared observation.
+sandbox again, so the checks after a renewal read the renewed grant; those that
+ask while one such observation runs share the next one. Copying a Z.ai key into
+the sandbox drops the shared observation. The supervisors' own CPU (status,
+cleanup and admission work) is one CPU of its own, outside the jobs' share.
 
 Helper updates retain a backup of old helpers and any previous scratch tree.
 Keep those local recovery copies until the update is verified. Runtime changes

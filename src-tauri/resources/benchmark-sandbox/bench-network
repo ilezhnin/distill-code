@@ -17,8 +17,6 @@ peer=dp$key
 host=db$key
 [[ $egress != zai ]] || host=dz$key
 chain=DZ-$key
-exec 9>/run/lock/distill-bench-network
-flock 9
 remove() {
   ip link del "db$key" 2>/dev/null || true
   ip link del "dz$key" 2>/dev/null || true
@@ -28,7 +26,13 @@ remove() {
   ip netns del "$namespace" 2>/dev/null || true
   rm -rf "/etc/netns/$namespace"
 }
+exec 9>/run/lock/distill-bench-network
+flock 9
 if [[ $egress == clean ]]; then
+  # Creation starts with the namespace and removal ends with its resolver
+  # directory, so a leftover always shows in one of these.
+  [[ -e /run/netns/$namespace || -e /etc/netns/$namespace || -e /sys/class/net/db$key || -e /sys/class/net/dz$key ]] ||
+    exit 0
   remove
   exit 0
 fi

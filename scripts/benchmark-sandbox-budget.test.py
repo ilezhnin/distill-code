@@ -25,6 +25,7 @@ source = Path(__file__).parent.parent / 'src-tauri/resources/benchmark-sandbox/b
 budget = importlib.machinery.SourceFileLoader('benchmark_budget_fixture', str(source)).load_module()
 unpack = importlib.machinery.SourceFileLoader('benchmark_unpack_fixture', str(source.with_name('bench-unpack'))).load_module()
 production_scratch_headroom = budget.scratch_headroom
+production_stop = budget.stop
 production_os = budget.os
 MIB = 1024 ** 2
 
@@ -103,14 +104,14 @@ class BudgetTests(unittest.TestCase):
             row['admitted'] = time.time() - 300
             path.write_text(json.dumps(row))
 
-    def admit(self, kind, identifier, gate=None):
+    def admit(self, kind, identifier, gate=None, continuing=False):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            budget.reserve(kind, identifier, int(time.time()*1000)+60000, gate or self.gate())
+            budget.reserve(kind, identifier, int(time.time()*1000)+60000, gate or self.gate(), 0, continuing)
         return json.loads(output.getvalue())
 
-    def reserve(self, kind, identifier, gate=None):
-        return self.admit(kind, identifier, gate)['token']
+    def reserve(self, kind, identifier, gate=None, continuing=False):
+        return self.admit(kind, identifier, gate, continuing)['token']
 
     def test_status_reports_the_dynamic_policy_and_its_fixed_aggregate(self):
         output = io.StringIO()
@@ -118,7 +119,7 @@ class BudgetTests(unittest.TestCase):
             budget.status()
         lines = output.getvalue().splitlines()
         for line in ('budget admission dynamic-v2', 'budget heavy-cap off', 'budget memory 25769803776',
-                     'budget cpu 1450000/100000', 'budget swap 0', 'budget pids 4224',
+                     'budget cpu 1500000/100000', 'budget swap 0', 'budget pids 4224',
                      'budget disk 8589934592', 'budget inodes 131072', 'budget io 1073741824/268435456',
                      'budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608'):
             self.assertIn(line, lines)
@@ -214,14 +215,23 @@ class BudgetTests(unittest.TestCase):
         self.roomy()
         self.learn(repository=budget.GIB, check=budget.GIB, prep=256 * MIB)
         self.measure(1.0)
-        pressure = budget.Path('/proc/pressure/cpu')
-        pressure.write_text('some avg10=15.00 avg60=1.00 avg300=1.00 total=9\n')
         for name in ('fictional-a', 'fictional-b', 'fictional-c'):
             self.reserve('repository', name)
+        # A job stalled on CPU more than a tenth of ten seconds holds new
+        # sessions beyond the ceiling rule.
+        pressure = budget.ROOT / 'session-fictional-b' / 'cpu.pressure'
+        pressure.write_text('some avg10=15.00 avg60=1.00 avg300=1.00 total=9\n')
         with self.assertRaisesRegex(BlockingIOError, 'CPU pressure in the sandbox'):
             self.reserve('repository', 'fictional-d')
         pressure.write_text('some avg10=5.00 avg60=1.00 avg300=1.00 total=9\n')
-        self.assertEqual(self.admit('repository', 'fictional-d')['admission']['admittedBy'], 'measured')
+        # The supervisors' own control group never does, nor the guest's
+        # pressure it causes.
+        (budget.ROOT / 'control').mkdir()
+        (budget.ROOT / 'control' / 'cpu.pressure').write_text('some avg10=40.00 avg60=1.00 avg300=1.00 total=9\n')
+        budget.Path('/proc/pressure/cpu').write_text('some avg10=19.70 avg60=1.00 avg300=1.00 total=9\n')
+        self.assertAlmostEqual(budget.job_pressure(), 0.05)
+        record = self.admit('repository', 'fictional-d')['admission']
+        self.assertEqual((record['admittedBy'], record['cpuPressure']), ('measured', 0.05))
         # Checks that waited for CPUs hold new sessions too.
         (budget.STATE / 'stalls.json').write_text(json.dumps([0.3] * 10))
         with self.assertRaisesRegex(BlockingIOError, 'CPU pressure in the sandbox'):
@@ -246,6 +256,115 @@ class BudgetTests(unittest.TestCase):
         pressure.write_text('some avg10=4.00 avg60=1.00 avg300=1.00 total=9\n')
         self.reserve('text', 'fictional-text')
         self.assertEqual(budget.guest_pressure('memory'), 0.04)
+
+    def test_a_later_workflow_step_goes_ahead_of_new_attempts(self):
+        # Its earlier steps are paid for: the priority holds, the ticket queue,
+        # the CPU pressure and check-stall guards and the session cap hold new
+        # attempts, not it; memory and the Windows floors still bound it.
+        self.roomy()
+        self.learn(repository=budget.GIB, text=512 * MIB, check=budget.GIB, prep=256 * MIB)
+        self.measure(1.0)
+        budget.hold('memory', time.time() + 60)
+        with self.assertRaisesRegex(BlockingIOError, 'waits for room first'):
+            self.reserve('text', 'fictional-new-text')
+        record = self.admit('text', 'fictional-step-text', continuing=True)['admission']
+        self.assertTrue(record['continuing'])
+        budget.hold('memory')
+        ticket = budget.STATE / ('wait-' + 'b' * 32 + '.json')
+        ticket.write_text(json.dumps({'pid': budget.os.getpid(), 'start': budget.proc_identity(budget.os.getpid()),
+                                      'deadline': time.time() + 60, 'created': time.time_ns()}))
+        with self.assertRaisesRegex(BlockingIOError, 'capacity is queued'):
+            self.reserve('repository', 'fictional-new-queued')
+        self.reserve('repository', 'fictional-step-queued', continuing=True)
+        ticket.unlink()
+        for n in range(budget.REPOSITORY_SESSIONS - 1):
+            self.reserve('repository', f'fictional-{n}')
+            self.settle()
+        with self.assertRaisesRegex(BlockingIOError, 'most repository sessions'):
+            self.reserve('repository', 'fictional-new-ninth')
+        self.reserve('repository', 'fictional-step-ninth', continuing=True)
+        self.settle()
+        pressure = budget.ROOT / 'session-fictional-0' / 'cpu.pressure'
+        pressure.write_text('some avg10=30.00 avg60=1.00 avg300=1.00 total=9\n')
+        budget.Path('/proc/pressure/cpu').write_text('some avg10=30.00 avg60=1.00 avg300=1.00 total=9\n')
+        with self.assertRaisesRegex(BlockingIOError, 'CPU pressure|most repository sessions'):
+            self.reserve('repository', 'fictional-new-pressed')
+        self.reserve('repository', 'fictional-step-pressed', continuing=True)
+        self.settle()
+        # Memory still bounds it, and a refused later step holds new attempts
+        # back so it takes the next freed room.
+        (budget.ROOT / 'memory.current').write_text('0')
+        budget.ADMISSION_MEMORY, production_memory = 12 * budget.GIB, budget.ADMISSION_MEMORY
+        try:
+            with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
+                self.reserve('repository', 'fictional-step-full', continuing=True)
+        finally:
+            budget.ADMISSION_MEMORY = production_memory
+        self.assertEqual(budget.priority_waiting('text'), 'a check or preparation waits for room first')
+
+    def test_a_group_with_exiting_tasks_is_left_for_the_next_reap(self):
+        # cgroup.procs can read empty while exiting tasks still populate the
+        # group, and rmdir then fails with EBUSY. That must not fail another
+        # job's admission: the expired lease stays until its group is gone.
+        import errno as errnos
+        busy = {'count': 0}
+
+        class Group(type(Path())):
+            def rmdir(self):
+                if busy['count']:
+                    busy['count'] -= 1
+                    raise OSError(errnos.EBUSY, 'Device or resource busy', str(self))
+                shutil.rmtree(self)
+        budget.ROOT = Group(budget.ROOT)
+        budget.stop = production_stop
+        budget.RMDIR_RETRY, production_retry = 0.2, budget.RMDIR_RETRY
+        self.addCleanup(setattr, budget, 'RMDIR_RETRY', production_retry)
+        leaf = budget.ROOT / 'session-fictional-old'
+        leaf.mkdir()
+        (leaf / 'cgroup.procs').write_text('')
+        (leaf / 'cgroup.events').write_text('populated 0\nfrozen 0\n')
+        lease = budget.STATE / ('lease-' + 'c' * 32 + '.json')
+        lease.write_text(json.dumps({'pid': 2 ** 30, 'start': 'gone', 'deadline': time.time() + 60, 'kind': 'text',
+                                     'id': 'fictional-old', 'groups': ['session-fictional-old'], 'memory': 0,
+                                     'cpu': 1, 'pids': 1, 'lane': 'light'}))
+        busy['count'] = 10 ** 6
+        self.assertEqual(budget.receipts(), [])
+        self.assertTrue(lease.exists() and leaf.exists())
+        # Busy for a moment only: removed on the retry, and the lease goes.
+        busy['count'] = 2
+        self.assertEqual(budget.receipts(), [])
+        self.assertFalse(lease.exists() or leaf.exists())
+        # Exiting tasks show in cgroup.events even when cgroup.procs is empty.
+        exiting = budget.ROOT / 'session-fictional-exiting'
+        exiting.mkdir()
+        (exiting / 'cgroup.procs').write_text('')
+        (exiting / 'cgroup.events').write_text('populated 1\nfrozen 0\n')
+        self.assertTrue(budget.populated(exiting))
+        (exiting / 'cgroup.events').unlink()
+        self.assertFalse(budget.populated(exiting))
+        shutil.rmtree(exiting)
+
+    def test_cgroup_settings_are_written_only_when_they_differ(self):
+        path = budget.ROOT / 'cpu.max'
+        path.write_text('100000 100000\n')
+        written = []
+        production_write = budget.write
+        budget.write = lambda target, value: written.append((target.name, value))
+        try:
+            budget.ensure(path, '100000 100000')
+            self.assertEqual(written, [])
+            budget.ensure(path, '150000 100000')
+            budget.ensure(budget.ROOT / 'missing.max', 5)
+            self.assertEqual(written, [('cpu.max', '150000 100000'), ('missing.max', 5)])
+        finally:
+            budget.write = production_write
+
+    def test_supervisors_get_the_cpu_admission_leaves_them(self):
+        # The aggregate is the jobs' 14 CPUs and the supervisors' one, which
+        # the logical line already leaves out.
+        self.assertEqual(budget.cpu_max(), '1500000 100000')
+        self.assertEqual(budget.SUPERVISOR_CPUS, 1)
+        self.assertIsNone(budget.job_pressure())
 
     def test_timed_jobs_weigh_a_hundred_times_a_session(self):
         self.roomy()

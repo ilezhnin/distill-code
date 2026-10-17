@@ -1611,6 +1611,13 @@ pub fn execute(
                     } else {
                         allowance
                     };
+                    // A later step of a workflow a provider already worked
+                    // on goes ahead of new attempts in the sandbox.
+                    let continuing = (!untouched).then(|| {
+                        crate::services::benchmark_sandbox::Continuing::new(
+                            super::runner::turn_owner(&saved.attempt),
+                        )
+                    });
                     let result = service
                         .backend
                         .execute(
@@ -1621,6 +1628,7 @@ pub fn execute(
                             cancel.clone(),
                         )
                         .await;
+                    drop(continuing);
                     let retry = match &result {
                         Err(error)
                             if !untouched

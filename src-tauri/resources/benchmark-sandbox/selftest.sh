@@ -309,6 +309,25 @@ class CredentialTests(unittest.TestCase):
         (account / "api-key").write_bytes(key)
         return account
 
+    def test_one_status_pass_reads_every_account_in_order(self):
+        # bench-status reads all OAuth and key accounts in one call; one it
+        # cannot read is reported as before, without hiding the others.
+        now = int(time.time())
+        account, _ = self.account("claude", claude(now + 7200, "current"))
+        zai = self.zai_account(b"invented-zai-key\n")
+        missing = scope["ACCOUNTS"] / "invented-gone" / "grok"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["account_statuses"]([str(account), str(missing), str(zai)])
+        self.assertEqual(output.getvalue().splitlines(), [
+            "account claude invented-account yes",
+            f"account-health claude invented-account oauth current {(now + 7200) * 1000}",
+            "account grok invented-gone no",
+            "account-health grok invented-gone unknown invalid -",
+            "account zai invented-account yes",
+            "account-health zai invented-account unbounded unknown -",
+        ])
+
     def test_zai_key_is_copied_privately_and_never_saved_back(self):
         account = self.zai_account(b"invented-zai-key\n")
         scope["directory"] = scope["ROOT"] / "zai"

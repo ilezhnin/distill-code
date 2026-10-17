@@ -9,9 +9,9 @@ if [[ ! $mode =~ ^(session|check|probe|login|browser|prep)$ || ! $id =~ ^[A-Za-z
 fi
 # A paired check owns its untrusted probe even if its supervisor was cancelled.
 if [[ $mode == check ]]; then /usr/local/sbin/bench-kill probe "$id"; fi
-/usr/local/sbin/bench-budget observe "$mode" "$id"
 cgroup=/sys/fs/cgroup/distill-bench/$mode-$id
 if [[ -d $cgroup ]]; then
+  /usr/local/sbin/bench-budget observe "$mode" "$id"
   echo 1 >"$cgroup/cgroup.kill"
   for _ in $(seq 50); do
     [[ -z $(cat "$cgroup/cgroup.procs") ]] && break
