@@ -240,3 +240,95 @@ async fn a_due_schedule_starts_its_run_while_another_run_flies() {
     held.close(&service, &[started.id.as_str()]).await;
     dir.close().await;
 }
+
+#[test]
+fn repeated_local_refusals_wait_longer_up_to_a_minute() {
+    let waits: Vec<i64> = (1..=8).map(unstarted_wait_ms).collect();
+    assert_eq!(
+        waits,
+        [2_000, 5_000, 10_000, 20_000, 40_000, 60_000, 60_000, 60_000]
+    );
+    let id = "invented-refused-attempt";
+    assert_eq!(local_refusal_wait(id), 2_000);
+    assert_eq!(local_refusal_wait(id), 5_000);
+    local_refusals_cleared(id);
+    assert_eq!(local_refusal_wait(id), 2_000);
+    local_refusals_cleared(id);
+}
+
+/// The broker refuses a cell's turn before any provider process, so the
+/// runner puts the cell back itself (and, for a workflow root, discards the
+/// refused try's steps and clocks); it starts again within the tick by its
+/// own wait, which grows when the refusal repeats.
+#[tokio::test]
+async fn a_cell_the_broker_refused_starts_again_within_the_tick() {
+    for workflow in [false, true] {
+        let (dir, service, backend) = setup().await;
+        let held = HeldPass::open(&service, &backend).await;
+        let mut request = one_cell(&service, "held-pass-refused-run").await;
+        if workflow {
+            let mut draft = seed_definitions().remove(0);
+            draft.split = "train".into();
+            draft.workflow = Some(WorkflowSpec {
+                schema_version: 1,
+                driver_revision: "held-pass-test-v1".into(),
+                steps: vec![
+                    WorkflowStep {
+                        id: "plan".into(),
+                        prompt: "Prepare the public plan.".into(),
+                        include_previous_output: false,
+                        scope: None,
+                    },
+                    WorkflowStep {
+                        id: "answer".into(),
+                        prompt: "Produce the final structured answer.".into(),
+                        include_previous_output: true,
+                        scope: None,
+                    },
+                ],
+            });
+            let definition = service.store.save_draft(None, None, draft).await.unwrap();
+            let version = service.store.publish(&definition.id, 1).await.unwrap();
+            request.version_ids = vec![version.id];
+            request.max_executions = 2;
+        }
+        request.configurations[0].account_id = Some("second-account".into());
+        request.execution_limits = Some(RunExecutionLimits {
+            retry_policy: RunRetryPolicy::None,
+            dispatch_not_after_ms: None,
+        });
+        let refusals = if workflow { 1 } else { 2 };
+        backend.resource_refusals.store(refusals, Ordering::SeqCst);
+        let run = service.start_run(request).await.unwrap();
+        service.wake.notify_one();
+        let waiting = |a: &Attempt| a.phase == "pending" && a.wait_until.is_some();
+        let first = attempt_when(&service, &run.id, "waited", waiting)
+            .await
+            .wait_until
+            .unwrap();
+        if !workflow {
+            let again = attempt_when(&service, &run.id, "waited again", |a| {
+                waiting(a) && a.wait_until != Some(first)
+            })
+            .await;
+            assert!(again.wait_until.unwrap() >= first + 5_000);
+        }
+        let started = attempt_when(&service, &run.id, "started again", |a| {
+            a.started_at.is_some() && matches!(a.phase.as_str(), "preparing" | "running")
+        })
+        .await;
+        assert_eq!(started.outcome, None, "{workflow}");
+        let calls = std::time::Instant::now() + Duration::from_secs(15);
+        while backend.calls.load(Ordering::SeqCst) < 2 {
+            assert!(
+                std::time::Instant::now() < calls,
+                "no turn after the refusal"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        held.still_open(&service).await;
+        held.close(&service, &[run.id.as_str()]).await;
+        dir.close().await;
+    }
+}

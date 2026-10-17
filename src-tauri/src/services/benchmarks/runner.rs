@@ -1514,6 +1514,38 @@ fn provider_held(run_id: &str, provider_id: &str) -> bool {
     provider_hold(run_id, provider_id).is_some()
 }
 
+/// The local refusals each attempt met in a row before any provider process,
+/// in this process.
+static UNSTARTED_REFUSALS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, u32>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// How long a cell the local broker refused `refusals` times in a row waits
+/// before it asks again: 2 s, then 5, 10, 20, 40 and at most 60 s, so a
+/// sandbox that stays full is not polled every few seconds.
+fn unstarted_wait_ms(refusals: u32) -> i64 {
+    [2_000, 5_000, 10_000, 20_000, 40_000, 60_000][refusals.clamp(1, 6) as usize - 1]
+}
+
+/// Counts another local refusal of `attempt_id` and returns its wait.
+fn local_refusal_wait(attempt_id: &str) -> i64 {
+    let mut refusals = UNSTARTED_REFUSALS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let count = refusals.entry(attempt_id.to_owned()).or_default();
+    *count = count.saturating_add(1);
+    unstarted_wait_ms(*count)
+}
+
+/// `attempt_id` got past local admission, or settled: its next refusal
+/// waits the shortest time again.
+fn local_refusals_cleared(attempt_id: &str) {
+    UNSTARTED_REFUSALS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(attempt_id);
+}
+
 /// The ready attempts in dispatch order: a case's repetitions go out
 /// together, at the place of its first one in the plan, and a case already
 /// begun goes first, so a run stopped early leaves whole cases rather than
@@ -5416,25 +5448,21 @@ impl BenchmarkService {
     /// verdict, as its generation is paid for; no other cell starts.
     async fn bake_closed_windows(&self) -> Result<()> {
         let at = now();
-        for run in self
+        // A campaign owns first attempts across its whole repetition series;
+        // ordinary sitting expiry must not supersede them, so its runs are
+        // not listed.
+        for id in self
             .store
-            .unbaked_runs(at - super::analysis::RUN_WINDOW_MS)
+            .unbaked_run_ids(at - super::analysis::RUN_WINDOW_MS)
             .await?
         {
-            if self
-                .store
-                .workflow_campaign_owns(&run.request.request_key)
-                .await?
-            {
-                // A campaign owns first attempts across its whole repetition
-                // series; ordinary sitting expiry must not supersede them.
+            if self.flying(&id).await > 0 {
                 continue;
             }
+            let run = self.store.run(&id).await?;
             // A sealed generation still waiting for its evaluation is part of
             // the sitting.
-            if self.flying(&run.id).await > 0
-                || run.attempts.iter().any(|a| a.phase == "interrupted")
-            {
+            if run.attempts.iter().any(|a| a.phase == "interrupted") {
                 continue;
             }
             if run.attempts.iter().any(|a| a.phase == AWAITING_JUDGES) {
@@ -6295,6 +6323,7 @@ impl BenchmarkService {
         };
         match result {
             Ok(mut completed) => {
+                local_refusals_cleared(&a.id);
                 quota_recovered(&run.id, &a.configuration.provider_id);
                 completed.phase = self.settled_phase(run, &completed).await?.into();
                 self.store.save_attempt(&completed).await?;
@@ -6327,13 +6356,14 @@ impl BenchmarkService {
                             &mut failed,
                             format!("Waiting for local resources: {}", error.message),
                         );
-                        failed.wait_until = Some(now() + 2_000);
+                        failed.wait_until = Some(now() + local_refusal_wait(&a.id));
                     }
                     failed.workflow_steps.clear();
+                    // The flight's end tells the app, once.
                     self.store.save_attempt(&failed).await?;
-                    self.changed().await;
                     return Ok(());
                 }
+                local_refusals_cleared(&a.id);
                 let retry_allowed = run.request.automatic_retry()
                     && run.request.require_dispatch_admission(now()).is_ok();
                 if retry_allowed && error.code == "account_busy" {

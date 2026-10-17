@@ -879,20 +879,16 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
-    /// Runs whose window closed at or before `cutoff` and whose cells are not
-    /// final yet, oldest first.
-    pub async fn unbaked_runs(&self, cutoff: i64) -> Result<Vec<BenchmarkRun>> {
-        let ids = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM run_plans WHERE baked_at IS NULL AND created_at<=? ORDER BY created_at,id",
+    /// The ids of runs whose window closed at or before `cutoff` and whose
+    /// cells are not final yet, oldest first, leaving out the runs a workflow
+    /// campaign owns. Only ids: the caller loads a run once it may bake it.
+    pub async fn unbaked_run_ids(&self, cutoff: i64) -> Result<Vec<String>> {
+        Ok(sqlx::query_scalar::<_, String>(
+            "SELECT id FROM run_plans p WHERE baked_at IS NULL AND created_at<=? AND NOT EXISTS(SELECT 1 FROM workflow_campaign_cells c WHERE c.request_key=p.request_key) ORDER BY created_at,id",
         )
         .bind(cutoff)
         .fetch_all(&self.pool)
-        .await?;
-        let mut out = Vec::new();
-        for id in ids {
-            out.push(self.run(&id).await?);
-        }
-        Ok(out)
+        .await?)
     }
     /// Replaces a run's request: how a run inside its window grows by the
     /// cases added to it.
