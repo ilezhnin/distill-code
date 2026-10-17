@@ -122,16 +122,18 @@ class BudgetTests(unittest.TestCase):
                      'budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608'):
             self.assertIn(line, lines)
 
-    def test_before_any_peak_is_learned_todays_mix_still_fits(self):
-        # Ceilings stand in for unknown needs: two repository sessions, two
-        # text sessions and room for one check and one preparation.
+    def test_before_any_peak_is_learned_a_wave_starts_at_full_parallelism(self):
+        # Repository sessions claim 2 GiB until eight are recorded; every
+        # other class its ceiling. Eight sessions fit beside room for one
+        # check and one preparation, then memory holds the ninth.
         self.roomy()
-        for name in ('fictional-a', 'fictional-b'):
-            self.reserve('repository', name)
-        self.reserve('text', 'fictional-light-a')
-        self.reserve('text', 'fictional-light-b')
+        self.measure(1.0)
+        for n in range(8):
+            self.reserve('repository', f'fictional-{n}')
+            self.settle()
         with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
-            self.reserve('text', 'fictional-light-c')
+            self.reserve('repository', 'fictional-ninth')
+        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 2 * budget.GIB)
         # Checks and preparation take the room attempts leave.
         self.reserve('check', 'fictional-check')
         self.reserve('prep', 'fictional-prep')
@@ -255,7 +257,7 @@ class BudgetTests(unittest.TestCase):
             budget.PEAKS.write_text(json.dumps({'cpu-repository': [cores] * budget.PEAK_SAMPLES}))
             self.assertEqual(budget.session_burst(budget.peaks()), burst)
         # Memory expectations ignore the CPU ring, and the log stays bounded.
-        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 6 * budget.GIB)
+        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 2 * budget.GIB)
         budget.USAGE.write_text('{}\n' * (budget.USAGE_LINES + 50))
         budget.record_usage('text', 'fictional', ['session-fictional'], time.time() - 100)
         self.assertEqual(len(budget.USAGE.read_text().splitlines()), budget.USAGE_LINES)
@@ -336,12 +338,16 @@ class BudgetTests(unittest.TestCase):
 
     def test_a_repository_attempt_text_cannot_make_room_for_holds_nothing(self):
         self.roomy()
-        for name in ('fictional-a', 'fictional-b'):
+        self.learn(repository=4 * budget.GIB)
+        for name in ('fictional-a', 'fictional-b', 'fictional-c'):
             self.reserve('repository', name)
         with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
-            self.reserve('repository', 'fictional-c')
+            self.reserve('repository', 'fictional-d')
         self.assertIsNone(budget.priority_waiting('text'))
-        self.reserve('text', 'fictional-text')
+        # A text attempt is refused by memory alone (it would leave no room
+        # for another learned repository claim), not by a hold.
+        with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
+            self.reserve('text', 'fictional-text')
 
     def test_checks_and_preparations_go_ahead_of_a_queued_sign_in(self):
         # A sign-in or probe without a reservation waits in the ticket queue;
@@ -421,11 +427,11 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(record, {
             'policy': 'dynamic-v2', 'heavyCap': None, 'lane': 'heavy',
             'competing': {'text': 1, 'repository': 1}, 'competingHeavy': 1,
-            'reservedMemory': 8 * budget.GIB, 'reservedCpu': 2,
+            'reservedMemory': 4 * budget.GIB, 'reservedCpu': 2,
             'memoryCurrent': 3 * budget.GIB, 'guestLoad': [1.5, 0.75, 0.25], 'guestCpus': 16,
             'hostAvailableRam': 60 * budget.GIB, 'hostAvailableCommit': 60 * budget.GIB,
             'guestMemAvailable': 32 * budget.GIB, 'hostCpuBusy': 0.125,
-            'expectedMemory': 6 * budget.GIB, 'cpuLine': 6, 'sandboxCpu': None,
+            'expectedMemory': 2 * budget.GIB, 'cpuLine': 6, 'sandboxCpu': None,
             'cpuPressure': None, 'checkStall': None, 'cpuCapacity': 13, 'sessionBurst': 0.5,
             'repositorySessions': 1, 'admittedBy': 'ceilings'})
 

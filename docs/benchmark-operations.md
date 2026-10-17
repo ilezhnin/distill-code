@@ -434,7 +434,11 @@ the sandbox's memory in use, the WSL guest's load averages, CPUs and free
 memory, Windows available RAM and commit headroom, and Windows CPU use over the
 last second. It describes the moment of admission; a job admitted later does
 not change it. Each attempt also records, as `accountLoad`, how many turns its
-account had in flight when it was admitted and the pace then. Attempts recorded
+account had in flight when it was admitted and the pace then, and, as
+`phaseTimes`, when it opened its session (workspace ready), sent its prompt,
+had its answer collected and sealed, and began its evaluation; with
+`startedAt` and the evaluation's `createdAt` these split its preparation,
+turn, collection and check. Attempts recorded
 before these fields existed, and attempts recovered after an application
 restart, do not have them. Compare speed across attempts admitted under
 similar conditions (the policy, the rule, the sessions running and the

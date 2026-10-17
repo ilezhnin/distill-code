@@ -149,6 +149,9 @@ export function runSelftest(resources) {
     return result;
   };
   try {
+    // A freshly started distribution may still be running its boot command;
+    // bring the network and the scratch volume up first, as bench-run does.
+    successful("/usr/local/sbin/bench-net");
     const status = successful("/usr/local/sbin/bench-budget", ["status"]);
     // Rust readiness pins the dynamic policy and its fixed aggregate.
     pass(
@@ -290,6 +293,118 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
       authTests,
     );
     pass("invented credential merge/privacy regressions", true);
+    // Readiness digests: a pass from the record reports exactly what a cold
+    // pass reads, the record is root's alone, and a changed file is read again.
+    const identity = (text) =>
+      text
+        .split("\n")
+        .filter((line) => /^(file|binary|tool) /u.test(line))
+        .join("\n");
+    root(
+      "import pathlib;pathlib.Path('/run/distill-bench-digests/status.json').unlink(missing_ok=True)",
+    );
+    const cold = identity(successful("/usr/local/sbin/bench-status"));
+    const warm = identity(successful("/usr/local/sbin/bench-status"));
+    pass(
+      "status names the pinned node digest",
+      /^binary \/usr\/local\/bin\/node [0-9a-f]{64}$/mu.test(cold),
+    );
+    pass(
+      "recorded status digests equal a cold pass",
+      cold !== "" && warm === cold,
+    );
+    pass(
+      "digest record is root only",
+      root(
+        "import os;print(' '.join(f'{os.stat(p).st_uid} {os.stat(p).st_mode & 0o777:o}' for p in ('/run/distill-bench-digests', '/run/distill-bench-digests/status.json')))",
+      ) === "0 700 0 600",
+    );
+    const probe = root(
+      "import tempfile;print(tempfile.mkstemp(prefix='selftest-digest-', dir='/root')[1])",
+    );
+    try {
+      const digest = (text) => {
+        root(`import pathlib;pathlib.Path('${probe}').write_text('${text}')`);
+        return successful("/usr/local/sbin/bench-digest", [
+          "status",
+          probe,
+        ]).split(" ")[0];
+      };
+      const first = digest("one");
+      const second = digest("two");
+      pass(
+        "a changed file is read again",
+        first !== second &&
+          second ===
+            root(
+              `import hashlib,pathlib;print(hashlib.sha256(pathlib.Path('${probe}').read_bytes()).hexdigest())`,
+            ),
+      );
+    } finally {
+      root(`import pathlib;pathlib.Path('${probe}').unlink(missing_ok=True)`);
+    }
+    // Host evidence has five fields: a sample with the old four is refused,
+    // as an argument by bench-run and in the environment by admission.
+    const four = gate().split(",").slice(0, 4).join(",");
+    const asArgument = call("/usr/local/sbin/bench-run", [
+      "login",
+      id,
+      `DISTILL_BENCH_HOST_GATE=${four}`,
+      "--",
+      "true",
+    ]);
+    pass(
+      "four-field host gate refused as an argument",
+      asArgument.status === 64 && asArgument.stderr.includes("five fields"),
+    );
+    const inEnvironment = call("/usr/bin/env", [
+      `DISTILL_BENCH_HOST_GATE=${four}`,
+      "/usr/local/sbin/bench-run",
+      "login",
+      id,
+      "--",
+      "true",
+    ]);
+    pass(
+      "four-field host gate refused in the environment",
+      inEnvironment.status !== 0 &&
+        inEnvironment.stderr.includes("fresh Windows headroom evidence"),
+    );
+    // Timed jobs take the CPU before sessions: check leaves weigh 10000, a
+    // session's 100.
+    const weighed = `${id}-weights`;
+    const weights = ["check", "text"].map((kind) => {
+      const reply = call("/usr/local/sbin/bench-budget", [
+        "reserve",
+        kind,
+        `${weighed}-${kind}`,
+        String(Date.now() + 30_000),
+        gate(),
+      ]);
+      if (reply.status !== 0) throw new Error(reply.stderr.trim());
+      const token = JSON.parse(reply.stdout).token;
+      tokens.push(token);
+      const group = kind === "check" ? "check" : "session";
+      return root(
+        `from pathlib import Path;print(Path('/sys/fs/cgroup/distill-bench/${group}-${weighed}-${kind}/cpu.weight').read_text().strip())`,
+      );
+    });
+    pass("timed jobs outweigh sessions", weights.join(" ") === "10000 100");
+    // Every finished job records what it used.
+    const usage = successful("/usr/local/sbin/bench-budget", ["usage", "50"])
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    pass(
+      "finished jobs record their CPU seconds and memory peak",
+      usage.some(
+        (entry) =>
+          entry.id === id &&
+          entry.kind === "text" &&
+          typeof entry.cpuSeconds === "number" &&
+          entry.memoryPeak > 0,
+      ),
+    );
   } finally {
     for (const token of tokens)
       successful("/usr/local/sbin/bench-budget", ["release", token]);

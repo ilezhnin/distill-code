@@ -81,6 +81,13 @@ LIGHT_PRESSURE = 0.25
 # ceiling. The expectation is the 95th percentile with a quarter on top.
 PEAK_RING = 32
 PEAK_SAMPLES = 8
+# What a class claims before eight of its jobs are recorded, where that is
+# less than its ceiling: a repository session waits for the remote model
+# most of its time and was measured at under half a GiB on average, so a
+# wave starts at full parallelism instead of two sessions at their 6 GiB
+# ceilings. Its memory.max stays the ceiling, and a session using more than
+# it claims claims what it uses.
+INITIAL_MEMORY = {'repository': 2 * GIB}
 # Checks whose share of time spent waiting for a CPU exceeds this tighten the
 # CPU line by one check while the recent median stays above it.
 STALL_LINE = 0.10
@@ -372,12 +379,13 @@ def peaks():
 
 
 def expected_memory(kind, recorded):
-    """What a job of `kind` is expected to need: its ceiling until enough of
-    its class are recorded, then their 95th percentile plus a quarter."""
+    """What a job of `kind` is expected to need: its initial claim (the
+    ceiling for most classes) until enough of its class are recorded, then
+    their 95th percentile plus a quarter."""
     ceiling = CLASSES[kind][0]
     seen = sorted(value for value in recorded.get(kind, []) if isinstance(value, int) and value > 0)
     if len(seen) < PEAK_SAMPLES:
-        return ceiling
+        return min(ceiling, INITIAL_MEMORY.get(kind, ceiling))
     p95 = seen[min(len(seen) - 1, math.ceil(0.95 * len(seen)) - 1)]
     return min(ceiling, max(256 * MIB, p95 + p95 // 4))
 
@@ -412,7 +420,7 @@ def record_usage(kind, identifier, groups, admitted_at):
     repository sessions' burst allowance (session_burst)."""
     wall = time.time() - admitted_at
     usage = [read_number(ROOT / name / 'cpu.stat', r'usage_usec (\d+)') for name in groups]
-    if wall < 1 or not usage or any(value is None for value in usage):
+    if wall <= 0 or not usage or any(value is None for value in usage):
         return
     seconds = sum(usage) / 1e6
     cores = round(seconds / wall, 4)

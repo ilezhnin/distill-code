@@ -1201,6 +1201,14 @@ fn checks_without_its_seat(attempt: &Attempt, version: &BenchmarkVersion) -> boo
         && version.manifest.work_class_id != "planning"
 }
 
+/// Records when `attempt` reached `phase` (see `Attempt::phase_times`).
+fn mark_phase(attempt: &mut Attempt, phase: &str) {
+    attempt
+        .phase_times
+        .get_or_insert_with(Default::default)
+        .insert(phase.into(), now());
+}
+
 fn resource_waiting(attempt: &Attempt) -> bool {
     attempt.wait_until.is_some_and(|until| until > now())
         && attempt
@@ -3637,6 +3645,7 @@ impl ExecutionBackend for NativeBackend {
                 .await
                 .map_err(host_error)?;
             attempt.session_id = Some(session.session_id.clone());
+            mark_phase(&mut attempt, "sessionOpened");
             let mut observed = attempt.configuration.clone();
             observed.model_id = session.selection.model_id.unwrap_or_default();
             observed.effort = session.selection.reasoning_effort;
@@ -3741,6 +3750,7 @@ impl ExecutionBackend for NativeBackend {
             }
             .map_err(host_error)?;
             attempt.host_run_id = Some(dispatch.run_id);
+            mark_phase(&mut attempt, "dispatched");
             attempt.phase = "running".into();
             store.save_attempt(&attempt).await?;
             let mut capture = TurnCapture::new(version.manifest.limits.max_artifact_bytes);
@@ -3807,6 +3817,7 @@ impl ExecutionBackend for NativeBackend {
             self.record_credit_use(&store.root, &mut attempt, &mut evidence, &credit)
                 .await;
             record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
+            mark_phase(&mut attempt, "collected");
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             store.save_attempt(&attempt).await?;
             if let Some(id) = cleanup.0.as_deref() {
@@ -4007,6 +4018,7 @@ impl ExecutionBackend for NativeBackend {
                 evidence["repositoryArtifactError"] = error;
             }
             record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
+            mark_phase(&mut attempt, "collected");
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             // Persist the patch before removing its only working copy. Recovery
             // can repeat cleanup if the process exits between these operations.
@@ -6315,7 +6327,8 @@ impl BenchmarkService {
         };
         // The cancel signal stays live through judging.
         let result = match result {
-            Ok(completed) => {
+            Ok(mut completed) => {
+                mark_phase(&mut completed, "checkStarted");
                 let stop = JudgeStop::run(&run.id, cancel_rx);
                 // A republication that changed only the evaluator while the
                 // turn ran evaluates it, as it evaluated the settled ones.
@@ -8994,6 +9007,7 @@ mod tests {
             collection_context: None,
             sandbox_admission: None,
             account_load: None,
+            phase_times: None,
             credit_use: None,
         };
         let version = |id: &str| BenchmarkVersion {

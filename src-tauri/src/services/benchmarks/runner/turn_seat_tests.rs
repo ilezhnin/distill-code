@@ -125,6 +125,12 @@ async fn lane_turns_while_its_previous_answer_is_checked(profile: &str) {
     assert!(second.started_at.unwrap() < verdict_at(first));
     // Claimed only once the second check gave its seat back.
     assert!(third.started_at.unwrap() >= verdict_at(second));
+    // Each attempt records when its check began, before its verdict.
+    assert!(attempts.iter().all(|a| a
+        .phase_times
+        .as_ref()
+        .and_then(|times| times.get("checkStarted"))
+        .is_some_and(|at| *at >= a.finished_at.unwrap() && *at <= verdict_at(a))));
     assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 1);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
     dir.close().await;

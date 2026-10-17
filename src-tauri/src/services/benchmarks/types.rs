@@ -676,6 +676,14 @@ pub struct Attempt {
     /// attempts recorded before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_load: Option<AccountLoad>,
+    /// When the attempt passed each step after its claim (`startedAt`), in
+    /// UTC milliseconds: `sessionOpened` (its workspace ready and the
+    /// provider session acknowledged), `dispatched` (the prompt sent),
+    /// `collected` (the answer collected and sealed) and `checkStarted` (its
+    /// evaluation begun); the verdict's time is its evaluation's
+    /// `createdAt`. Absent on attempts recorded before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_times: Option<std::collections::BTreeMap<String, i64>>,
 }
 /// How busy an attempt's account was when the attempt was admitted (see
 /// `Attempt::account_load`).
