@@ -36,16 +36,33 @@ describe("catalog provider participation", () => {
       new Map([[future.id, "not_ready"]]),
     );
     expect(getProviderUsageStatusKind(signedOut)).toBe("sign-in");
-    expect(isListedUsageProvider(signedOut, true)).toBe(true);
+    expect(isListedUsageProvider(signedOut, "not_ready", true)).toBe(true);
     const [missing] = buildProviderStatuses(
       [future],
       [],
       new Map([[future.id, "not_installed"]]),
     );
-    expect(isListedUsageProvider(missing, false)).toBe(false);
+    expect(isListedUsageProvider(missing, "not_installed", false)).toBe(false);
     expect(buildProviderStatuses([future], [], new Map())[0].status).toBe(
       "idle",
     );
+  });
+
+  it("does not list an installed provider whose sign-in never completed", () => {
+    // An abandoned setup installs the CLI and stops before sign-in: Doctor
+    // reports it installed but not ready, and nothing was ever connected.
+    const [abandoned] = buildProviderStatuses(
+      [future],
+      [],
+      new Map([[future.id, "not_ready"]]),
+    );
+    expect(isListedUsageProvider(abandoned, "not_ready", false)).toBe(false);
+    const [connected] = buildProviderStatuses(
+      [future],
+      [],
+      new Map([[future.id, "ready"]]),
+    );
+    expect(isListedUsageProvider(connected, "ready", false)).toBe(true);
   });
 
   it("uses monthly coding constraints alongside shorter Kimi quota windows", () => {

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
+import { hasCompletedSignIn } from "@/features/providers/lib/providerConnections";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import {
   DropdownMenu,
@@ -27,6 +29,7 @@ import { UsageRosterPanel } from "./UsageRosterPanel";
 export function StatusBar() {
   const { t } = useTranslation("status");
   const { agentReadiness } = useAgentProviderStatus();
+  const accounts = useProviderAccountsStore((state) => state.accounts);
   const catalog = useProviderCatalogStore((state) => state.entries);
   const snapshot = useProviderRateLimitsStore((state) => state.snapshot);
   const isRefreshing = useProviderRateLimitsStore(
@@ -61,11 +64,13 @@ export function StatusBar() {
     return () => window.clearInterval(timer);
   }, [paused]);
 
-  const visibleProviders = providers.filter((provider) => {
-    const readiness = agentReadiness.get(provider.provider);
-    const installed = readiness === "ready" || readiness === "not_ready";
-    return isListedUsageProvider(provider, installed);
-  });
+  const visibleProviders = providers.filter((provider) =>
+    isListedUsageProvider(
+      provider,
+      agentReadiness.get(provider.provider),
+      hasCompletedSignIn(provider.provider, accounts),
+    ),
+  );
   const isEmpty = visibleProviders.length === 0;
 
   return (

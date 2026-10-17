@@ -1,5 +1,9 @@
 import { CURATED_PROVIDER_CATALOG } from "@/features/providers/curatedProviders";
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
+import {
+  MANAGED_ACCOUNT_PROVIDERS,
+  type ProviderAccount,
+} from "../api/providerAccounts";
 
 const STORAGE_KEY = "distill:providerConnections:v1";
 
@@ -57,6 +61,26 @@ export function recordReadyProviders(
       ready: [...readyIds],
     });
   }
+}
+
+/**
+ * Whether a sign-in to this provider has completed here: the provider was
+ * ready at least once and, where Distill keeps the provider's accounts, an
+ * account is still saved. A not-ready provider with one is a real account
+ * that signed out or expired. Without one it is a setup that only installed
+ * the CLI or saved an account before its browser sign-in was abandoned.
+ */
+export function hasCompletedSignIn(
+  providerId: string,
+  accounts: readonly ProviderAccount[],
+): boolean {
+  if (
+    (MANAGED_ACCOUNT_PROVIDERS as readonly string[]).includes(providerId) &&
+    !accounts.some((account) => account.providerId === providerId)
+  ) {
+    return false;
+  }
+  return Object.hasOwn(readConnections().connectedAt, providerId);
 }
 
 function catalogRank(providerId: string): number {

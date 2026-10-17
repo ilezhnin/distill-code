@@ -1,3 +1,4 @@
+import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
 import type {
   ProviderRateLimits,
   RateLimitWindow,
@@ -37,16 +38,21 @@ export function isProviderVisible(provider: ProviderRateLimits): boolean {
 }
 
 /**
- * Status-bar listing. Usage-only visibility hides an installed harness whose
+ * Status-bar listing. Usage-only visibility hides a connected harness whose
  * quota fetch has not landed yet (idle) or whose auth files usage cannot
- * read (unavailable). Doctor already knows the CLI is there — keep the row
- * instead of the empty "Connect your accounts" CTA.
+ * read (unavailable), so readiness keeps that row instead of the empty
+ * "Connect your accounts" CTA. An installed harness that is not signed in is
+ * listed with Sign in only when a sign-in completed before: an abandoned
+ * setup that only installed the CLI, or saved an account and never finished
+ * signing in, is not an account to restore.
  */
 export function isListedUsageProvider(
   provider: ProviderRateLimits,
-  installed: boolean,
+  readiness: AgentProviderReadiness | undefined,
+  signedInBefore: boolean,
 ): boolean {
-  if (installed) return true;
+  if (readiness === "ready") return true;
+  if (readiness === "not_ready") return signedInBefore;
   return isProviderVisible(provider);
 }
 

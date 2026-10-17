@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
 import { CURATED_PROVIDER_CATALOG } from "@/features/providers/curatedProviders";
+import { recordReadyProviders } from "@/features/providers/lib/providerConnections";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { useAgentSetupStore } from "@/features/providers/stores/agentSetupStore";
 import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
@@ -25,6 +26,7 @@ vi.mock("../stores/providerRateLimitsStore", async (importOriginal) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   readiness.clear();
   for (const provider of CURATED_PROVIDER_CATALOG) {
     readiness.set(provider.id, "not_installed");
@@ -35,6 +37,29 @@ beforeEach(() => {
     emptyCtaDismissed: false,
     isRefreshing: false,
   });
+});
+
+it("does not offer sign-in for a CLI installed by an abandoned setup", () => {
+  // Setup installed Copilot and was closed before its sign-in; nothing was
+  // ever connected, so there is no account to show or restore.
+  readiness.set("copilot-acp", "not_ready");
+  render(<StatusBar />);
+  expect(
+    screen.getByRole("button", { name: "Configure usage tracking" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Usage" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Sign in")).not.toBeInTheDocument();
+});
+
+it("offers sign-in for a provider that signed in before and signed out", () => {
+  recordReadyProviders(new Set(["grok-acp"]), 1);
+  recordReadyProviders(new Set(), 2);
+  readiness.set("grok-acp", "not_ready");
+  render(<StatusBar />);
+  expect(screen.getByRole("button", { name: "Usage" })).toBeInTheDocument();
+  expect(screen.getByText("Sign in")).toBeInTheDocument();
 });
 
 it("opens provider settings from the empty bar without starting any setup", async () => {
