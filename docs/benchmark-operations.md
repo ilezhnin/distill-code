@@ -223,11 +223,14 @@ All jobs share an aggregate of 24 GiB, 15 CPUs, 4224 processes and
 CPU, 128 processes and one GiB. The host disk, Windows and other WSL
 distributions are outside these limits; each attempt records the measurements
 it was admitted under (see [Freeze and run](#4-freeze-and-run-the-measurement-matrix)).
-Cleanup retains its own capacity. A finished job's control group that still
-holds exiting processes after a second is left, with its expired lease, for
-the next cleanup; a job whose admission finds a control group busy that way
-returns to the queue unstarted. No additional virtual machine is created per
-test.
+Cleanup retains its own capacity. A finished job's control group whose
+processes have not left a few seconds after the kill, exiting or stuck, is
+left with its expired lease for the next cleanup, which then checks it once
+without waiting, so a stuck process never holds other jobs' admission; a job
+whose admission finds a control group busy for a moment returns to the queue
+unstarted. A process sitting in the sandbox's root control group itself, which
+keeps the job controllers from being enabled, fails admission with that
+cause instead. No additional virtual machine is created per test.
 
 The operator may cap CPU-heavy jobs at once (sessions and timed jobs
 together), for example to six for the first wave on a new admission policy or

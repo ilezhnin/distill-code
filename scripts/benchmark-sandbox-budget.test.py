@@ -73,7 +73,7 @@ class BudgetTests(unittest.TestCase):
             self.groups.append((name, limits))
             (budget.ROOT / name).mkdir()
         budget.child_group = child_group
-        budget.stop = lambda groups: [shutil.rmtree(budget.ROOT / name, ignore_errors=True) for name in groups]
+        budget.stop = lambda groups, patient=True: [shutil.rmtree(budget.ROOT / name, ignore_errors=True) for name in groups]
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -365,10 +365,21 @@ class BudgetTests(unittest.TestCase):
         busy['count'] = 10 ** 6
         self.assertEqual(budget.receipts(), [])
         self.assertTrue(lease.exists() and leaf.exists())
-        # Busy for a moment only: removed on the retry, and the lease goes.
-        busy['count'] = 2
+        self.assertIn('busy_since', json.loads(lease.read_text()))
+        # Once found busy it is tried once per reap, without the wait.
+        busy['count'] = 1
+        self.assertEqual(budget.receipts(), [])
+        self.assertTrue(lease.exists() and leaf.exists())
+        # Free at last: removed, and the lease goes.
         self.assertEqual(budget.receipts(), [])
         self.assertFalse(lease.exists() or leaf.exists())
+        # Busy for a moment only on a first stop: removed on the retry.
+        again = budget.ROOT / 'session-fictional-brief'
+        again.mkdir()
+        (again / 'cgroup.procs').write_text('')
+        busy['count'] = 2
+        self.assertTrue(budget.stop(['session-fictional-brief']))
+        self.assertFalse(again.exists())
         # Exiting tasks show in cgroup.events even when cgroup.procs is empty.
         exiting = budget.ROOT / 'session-fictional-exiting'
         exiting.mkdir()
@@ -378,6 +389,53 @@ class BudgetTests(unittest.TestCase):
         (exiting / 'cgroup.events').unlink()
         self.assertFalse(budget.populated(exiting))
         shutil.rmtree(exiting)
+
+    def test_a_process_in_the_root_group_is_named_not_waited_for(self):
+        # The kernel refuses to enable controllers while a process sits in
+        # the parent group itself; that lasts, so it must not read as the
+        # transient EBUSY the app requeues on.
+        import errno as errnos
+        parent = budget.ROOT / 'fictional-parent'
+        parent.mkdir()
+        (parent / 'cgroup.subtree_control').write_text('cpu\n')
+        production_write = budget.write
+        self.addCleanup(setattr, budget, 'write', production_write)
+
+        def write(path, value):
+            if path.name == 'cgroup.subtree_control':
+                raise OSError(errnos.EBUSY, 'Device or resource busy', str(path))
+            production_write(path, value)
+        budget.write = write
+        with self.assertRaises(RuntimeError) as refused:
+            budget.enable_controllers(parent)
+        self.assertIn('capability_missing: a process sits in', str(refused.exception))
+        self.assertNotIn('Errno 16', str(refused.exception))
+        # Enabled already: nothing is written.
+        (parent / 'cgroup.subtree_control').write_text('cpu io memory pids\n')
+        budget.enable_controllers(parent)
+
+    def test_a_stuck_or_vanishing_group_never_fails_or_stalls_another_call(self):
+        # A task that survives cgroup.kill keeps its group populated for
+        # minutes; bench-kill removes groups outside the broker lock. Neither
+        # may fail a reserve, and a group already found stuck costs no wait.
+        budget.stop = production_stop
+        stuck = budget.ROOT / 'session-fictional-stuck'
+        stuck.mkdir()
+        (stuck / 'cgroup.procs').write_text('4711\n')
+        (stuck / 'cgroup.events').write_text('populated 1\nfrozen 0\n')
+        lease = budget.STATE / ('lease-' + 'd' * 32 + '.json')
+        lease.write_text(json.dumps({'pid': 2 ** 30, 'start': 'gone', 'deadline': time.time() + 60, 'kind': 'text',
+                                     'id': 'fictional-stuck', 'groups': ['session-fictional-stuck'], 'memory': 0,
+                                     'cpu': 1, 'pids': 1, 'lane': 'light', 'busy_since': time.time() - 60}))
+        started = time.monotonic()
+        self.assertEqual(budget.receipts(), [])
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertTrue(lease.exists() and stuck.exists())
+        # A group that vanished, or vanishes, is gone, not an error.
+        self.assertFalse(budget.populated(budget.ROOT / 'session-fictional-gone'))
+        self.assertTrue(budget.stop(['session-fictional-gone']))
+        shutil.rmtree(stuck)
+        lease.unlink()
 
     def test_the_reaper_survives_a_failed_pass_and_names_itself(self):
         # Once the sandbox is up, bench-net restarts the reaper only after its

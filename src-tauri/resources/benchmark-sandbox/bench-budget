@@ -207,6 +207,22 @@ def cpu_max():
     return f"{(AGGREGATE_CPU + SUPERVISOR_CPUS) * 100000} 100000"
 
 
+def enable_controllers(parent):
+    """Turn on the job controllers below `parent`. The kernel refuses that
+    (EBUSY) while a process sits in `parent` itself, which lasts until someone
+    moves it: name it, so admissions fail visibly instead of waiting as if a
+    group were only busy for a moment."""
+    if {'memory', 'cpu', 'pids', 'io'} <= set((parent / 'cgroup.subtree_control').read_text().split()):
+        return
+    try:
+        write(parent / 'cgroup.subtree_control', '+memory +cpu +pids +io')
+    except OSError as error:
+        if error.errno != errno.EBUSY:
+            raise
+        fail(f'a process sits in {parent} itself, so the benchmark job controllers cannot be enabled there; '
+             'move it into a child group or stop it')
+
+
 def setup():
     global DEVICE
     if os.geteuid() != 0:
@@ -216,8 +232,7 @@ def setup():
         fail('WSL cgroup v2 memory, CPU, PID and IO controllers are required')
     for parent in (Path('/sys/fs/cgroup'), ROOT):
         parent.mkdir(exist_ok=True)
-        if not {'memory', 'cpu', 'pids', 'io'} <= set((parent / 'cgroup.subtree_control').read_text().split()):
-            write(parent / 'cgroup.subtree_control', '+memory +cpu +pids +io')
+        enable_controllers(parent)
     ensure(ROOT / 'memory.swap.max', 0)
     control = ROOT / 'control'
     control.mkdir(exist_ok=True)
@@ -344,29 +359,30 @@ def populated(path):
             return False
 
 
-def stop(groups):
-    """Kill and remove each group; True once every one is gone. A group that
-    still has exiting tasks after a short wait is left for the next reap: its
-    removal must not fail another job's admission."""
+def stop(groups, patient=True):
+    """Kill and remove each group; True once every one is gone. A group whose
+    tasks have not left after a short wait, exiting or stuck past the kill,
+    is left for the next reap: its removal must not fail or stall another
+    job's admission. Not `patient` (a group already found busy), each group
+    is checked once without waiting."""
     for name in groups:
         # A group removed meanwhile has stopped.
         try:
             write(ROOT / name / 'cgroup.kill', 1)
         except FileNotFoundError:
             pass
-    until = time.monotonic() + 5
+    until = time.monotonic() + (5 if patient else 0)
     removed = True
     for name in groups:
         path = ROOT / name
-        while path.exists() and populated(path) and time.monotonic() < until:
+        while populated(path) and time.monotonic() < until:
             time.sleep(0.05)
-        try:
-            left = (path / 'cgroup.procs').read_text().strip()
-        except FileNotFoundError:
+        if not path.exists():
             continue
-        if left:
-            fail('benchmark process tree did not stop')
-        retry = time.monotonic() + RMDIR_RETRY
+        if populated(path):
+            removed = False
+            continue
+        retry = time.monotonic() + (RMDIR_RETRY if patient else 0)
         while True:
             try:
                 path.rmdir()
@@ -395,9 +411,13 @@ def receipts():
         value = json.loads(path.read_text())
         if not live(value):
             # A group still busy keeps its expired lease, so a later reap
-            # removes it.
-            if stop(value['groups']):
+            # removes it. Once found busy it is checked without waiting: a
+            # task stuck for minutes must not hold every broker call.
+            if stop(value['groups'], patient='busy_since' not in value):
                 path.unlink(missing_ok=True)
+            elif 'busy_since' not in value:
+                value['busy_since'] = time.time()
+                replace_private(path, json.dumps(value))
         else:
             result.append(value)
     return result
