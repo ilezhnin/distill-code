@@ -463,6 +463,7 @@ async fn open(
         backend,
         wake: tokio::sync::Notify::new(),
         active: Default::default(),
+        queries: Default::default(),
         app: None,
     })
 }

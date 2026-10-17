@@ -110,6 +110,7 @@ async fn setup() -> (
         backend: backend.clone(),
         wake: Default::default(),
         active: Default::default(),
+        queries: Default::default(),
         app: None,
     });
     directory.register(&service.store.pool);

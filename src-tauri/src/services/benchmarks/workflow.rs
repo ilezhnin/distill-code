@@ -1913,6 +1913,7 @@ mod tests {
             backend: backend.clone(),
             wake: Notify::new(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         };
         let mut draft = super::super::runner::seed_definitions().remove(0);
@@ -2045,7 +2046,7 @@ mod tests {
     ) -> (serde_json::Value, Vec<serde_json::Value>) {
         let result = super::super::export::export(
             &service.store,
-            service.query_data().await.unwrap(),
+            &service.query_data().await.unwrap(),
             include_held_out,
         )
         .await
@@ -2155,7 +2156,7 @@ mod tests {
         assert_eq!(
             super::super::export::export(
                 &service.store,
-                service.query_data().await.unwrap(),
+                &service.query_data().await.unwrap(),
                 false
             )
             .await
@@ -2207,6 +2208,7 @@ mod tests {
             .execute(&service.store.pool)
             .await
             .unwrap();
+        service.store.forget_parsed();
         assert!(exported_steps(&service, false).await.1.is_empty());
         assert_eq!(exported_steps(&service, true).await.1.len(), 2);
         version.manifest.split = "development".into();
@@ -2216,6 +2218,7 @@ mod tests {
             .execute(&service.store.pool)
             .await
             .unwrap();
+        service.store.forget_parsed();
         assert!(exported_steps(&service, true).await.1.is_empty());
         directory.close().await;
     }

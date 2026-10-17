@@ -1122,9 +1122,20 @@ pub struct PoolRelease {
     pub created_at: i64,
     pub version_ids: Vec<String>,
 }
+/// What the analyses read of a definition: whether and when it was archived.
+/// Its draft stays in the store, and [`QueryData::versions`] carries every
+/// published manifest.
+#[derive(Debug, Clone, Default)]
+pub struct DefinitionState {
+    pub id: String,
+    pub archived: bool,
+    pub archived_at: Option<i64>,
+    /// Earlier archive periods a restore closed, as (archived_at, restored_at).
+    pub archive_history: Vec<(i64, i64)>,
+}
 #[derive(Debug, Clone)]
 pub struct QueryData {
-    pub definitions: Vec<BenchmarkDefinition>,
+    pub definitions: Vec<DefinitionState>,
     pub versions: Vec<BenchmarkVersion>,
     pub runs: Vec<BenchmarkRun>,
     pub attempts: Vec<Attempt>,

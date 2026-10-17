@@ -37,6 +37,14 @@
     relaunches the app. Off by default: a relaunch kills every running turn,
     including the one of an agent that made the change from inside this app.
 
+.PARAMETER Optimized
+    Build the app's own crates optimized (opt-level 2), as dependencies already
+    are, for an app that runs benchmark waves. The identity, app folders and
+    distillctl endpoint stay the dev app's. Only this launch sees the setting,
+    so other builds and tests keep their fast unoptimized profile; the first
+    optimized launch, and each one after a change to the app crate, compiles
+    that crate again.
+
 .EXAMPLE
     pwsh -File scripts\windows\Launch-Distill.ps1 -InstallShortcut
     pwsh -File scripts\windows\Launch-Distill.ps1
@@ -46,7 +54,8 @@ param(
     [switch]$InstallShortcut,
     [switch]$SkipSetup,
     [switch]$NoPause,
-    [switch]$Watch
+    [switch]$Watch,
+    [switch]$Optimized
 )
 
 $ErrorActionPreference = "Stop"
@@ -423,6 +432,13 @@ try {
     $tauriArguments = @("exec", "tauri", "dev", "--features", $features, "--config", "src-tauri/tauri.dev.conf.json", "--config", $devConfigPath)
     if (-not $Watch) {
         $tauriArguments += "--no-watch"
+    }
+
+    # Dependencies are opt-level 2 by [profile.dev.package."*"]; this lifts the
+    # app's own crates to match, for this process only.
+    if ($Optimized) {
+        $env:CARGO_PROFILE_DEV_OPT_LEVEL = "2"
+        Write-WindowsDevInfo "profile: app crates optimized (opt-level 2)"
     }
 
     $launched = $true

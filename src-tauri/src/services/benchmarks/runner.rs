@@ -1590,14 +1590,30 @@ fn local_refusals_cleared(attempt_id: &str) {
         .remove(attempt_id);
 }
 
+/// Whether `seat` (and every worker a v3 root reserves with it) fits beside
+/// the flights in `active`: below [`TOTAL_SLOTS`] in all, below its lane's
+/// and its account's limits, and not flying already.
+fn room(
+    active: &std::collections::HashMap<String, Flight>,
+    seat: &Seat<'_>,
+    workers: &[WorkerReservation],
+) -> bool {
+    let on = |used: &dyn Fn(&Flight) -> bool| active.values().filter(|f| used(f)).count();
+    active.len() < TOTAL_SLOTS
+        && !active.contains_key(seat.id)
+        && on(&|flight| flight.uses_lane(seat.lane)) < seat.lane_slots
+        && on(&|flight| flight.uses_account(seat.account)) < seat.account_slots
+        && workers.iter().all(|worker| {
+            on(&|flight| flight.uses_lane(&worker.lane)) < worker.lane_slots
+                && on(&|flight| flight.uses_account(&worker.account)) < worker.account_slots
+        })
+}
+
 /// The ready attempts in dispatch order: a case's repetitions go out
 /// together, at the place of its first one in the plan, and a case already
 /// begun goes first, so a run stopped early leaves whole cases rather than
 /// one or two repetitions of many. The order of cases stays the plan's.
-fn grouped_by_cell(
-    run: &BenchmarkRun,
-    ready: Vec<(Attempt, BenchmarkVersion)>,
-) -> Vec<(Attempt, BenchmarkVersion)> {
+fn grouped_by_cell<V>(run: &BenchmarkRun, ready: Vec<(Attempt, V)>) -> Vec<(Attempt, V)> {
     let cell = |a: &Attempt| {
         (
             a.version_id.clone(),
@@ -5751,6 +5767,10 @@ impl BenchmarkService {
             }
         }
     }
+    /// Whether [`Self::claim_workers`] would take `seat` now, without taking it.
+    async fn has_room(&self, seat: &Seat<'_>, workers: &[WorkerReservation]) -> bool {
+        room(&*self.active.lock().await, seat, workers)
+    }
     /// Attempts and panels of `run_id` in flight.
     async fn flying(&self, run_id: &str) -> usize {
         self.active
@@ -5772,31 +5792,7 @@ impl BenchmarkService {
         workers: Vec<WorkerReservation>,
     ) -> Option<watch::Receiver<bool>> {
         let mut active = self.active.lock().await;
-        let on_account = active
-            .values()
-            .filter(|flight| flight.uses_account(seat.account))
-            .count();
-        let on_lane = active
-            .values()
-            .filter(|flight| flight.uses_lane(seat.lane))
-            .count();
-        if active.len() >= TOTAL_SLOTS
-            || active.contains_key(seat.id)
-            || on_lane >= seat.lane_slots
-            || on_account >= seat.account_slots
-            || workers.iter().any(|worker| {
-                active
-                    .values()
-                    .filter(|flight| flight.uses_lane(&worker.lane))
-                    .count()
-                    >= worker.lane_slots
-                    || active
-                        .values()
-                        .filter(|flight| flight.uses_account(&worker.account))
-                        .count()
-                        >= worker.account_slots
-            })
-        {
+        if !room(&active, &seat, &workers) {
             return None;
         }
         let (cancel, signal) = watch::channel(false);
@@ -5848,24 +5844,11 @@ impl BenchmarkService {
         self: &Arc<Self>,
         run: &BenchmarkRun,
         mut a: Attempt,
-        version: BenchmarkVersion,
+        version: Arc<BenchmarkVersion>,
         flights: &mut tokio::task::JoinSet<()>,
         tried: &mut std::collections::HashSet<String>,
         waiting_accounts: &mut std::collections::BTreeSet<String>,
     ) -> Result<bool> {
-        if let Err(error) = self.backend.resource_admission(&a.configuration).await {
-            if error.code == "resource_busy" {
-                let reason = format!("Waiting for local resources: {}", error.message);
-                if a.reason.as_deref() != Some(reason.as_str()) {
-                    a.reason = Some(reason);
-                    self.store.save_attempt(&a).await?;
-                }
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        // An account whose limit ran out under this run hands its tests to
-        // another account of the provider that has room.
         if !run.request.automatic_retry()
             && (a.started_at.is_some()
                 || a.session_id.is_some()
@@ -5880,6 +5863,8 @@ impl BenchmarkService {
             self.store.set_run_state(&run.id, "needs_attention").await?;
             return Ok(false);
         }
+        // An account whose limit ran out under this run hands its tests to
+        // another account of the provider that has room.
         if let Some(account) = a
             .configuration
             .account_id
@@ -5981,6 +5966,26 @@ impl BenchmarkService {
             .iter()
             .map(|worker| worker.account.clone())
             .collect();
+        // A cell without a free seat waits without probing the host: a fill
+        // passes every pending cell, and most of them wait for a seat.
+        if !self.has_room(&seat, &workers).await {
+            waiting_accounts.extend(accounts);
+            return Ok(false);
+        }
+        if let Err(error) = self.backend.resource_admission(&a.configuration).await {
+            if error.code == "resource_busy" {
+                let reason = format!("Waiting for local resources: {}", error.message);
+                if a.reason.as_deref() != Some(reason.as_str()) {
+                    // The stored cell, without an account handoff that only
+                    // its start makes.
+                    let mut waiting = self.store.attempt(&a.id).await?;
+                    waiting.reason = Some(reason);
+                    self.store.save_attempt(&waiting).await?;
+                }
+                return Ok(false);
+            }
+            return Err(error);
+        }
         let Some(cancel_rx) = self.claim_workers(&run.id, seat, workers).await else {
             waiting_accounts.extend(accounts);
             return Ok(false);
@@ -6032,7 +6037,13 @@ impl BenchmarkService {
         let (service, run) = (self.clone(), run.clone());
         flights.spawn(async move {
             if let Err(error) = service
-                .run_attempt(&run, a, version, judge_budget, cancel_rx)
+                .run_attempt(
+                    &run,
+                    a,
+                    Arc::unwrap_or_clone(version),
+                    judge_budget,
+                    cancel_rx,
+                )
                 .await
             {
                 log::warn!("[benchmarks] attempt stopped: {}", error.message);
@@ -6570,7 +6581,10 @@ impl BenchmarkService {
     /// settles as excluded here, without any model call. A cell whose
     /// provider is held (see [`hold_provider_until`]) waits, and
     /// nothing starts once the run's window closed.
-    async fn dispatchable(&self, run: &BenchmarkRun) -> Result<Vec<(Attempt, BenchmarkVersion)>> {
+    async fn dispatchable(
+        &self,
+        run: &BenchmarkRun,
+    ) -> Result<Vec<(Attempt, Arc<BenchmarkVersion>)>> {
         let mut ready = Vec::new();
         if now() >= super::analysis::window_closes(run)
             && !self
@@ -6580,7 +6594,7 @@ impl BenchmarkService {
         {
             return Ok(ready);
         }
-        let mut versions: std::collections::HashMap<String, BenchmarkVersion> =
+        let mut versions: std::collections::HashMap<String, Arc<BenchmarkVersion>> =
             std::collections::HashMap::new();
         for pending in run.attempts.iter().filter(|a| {
             a.phase == "pending"
@@ -6588,7 +6602,7 @@ impl BenchmarkService {
                 && !resource_waiting(a)
         }) {
             if !versions.contains_key(&pending.version_id) {
-                let version = self.store.version(&pending.version_id).await?;
+                let version = self.store.version_shared(&pending.version_id).await?;
                 versions.insert(pending.version_id.clone(), version);
             }
             let version = &versions[&pending.version_id];
@@ -6847,6 +6861,9 @@ pub struct FakeBackend {
     inventory_delay_ms: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     resource_busy: std::sync::atomic::AtomicBool,
+    /// Host headroom probes the dispatcher made.
+    #[cfg(test)]
+    pub(super) resource_probes: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     resource_refusals: std::sync::atomic::AtomicU64,
     /// Once this many turns ran (zero: never), the next one is refused for
@@ -6905,6 +6922,9 @@ pub struct FakeBackend {
 impl ExecutionBackend for FakeBackend {
     fn resource_admission<'a>(&'a self, _: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            #[cfg(test)]
+            self.resource_probes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             #[cfg(test)]
             if self.resource_busy.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(BenchmarkError::new(
@@ -8107,6 +8127,7 @@ mod tests {
             backend: backend.clone(),
             wake: Notify::new(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         });
         (dir, service, backend)
@@ -8148,6 +8169,82 @@ mod tests {
             parallelism: Some(1),
             ..request(s).await
         }
+    }
+    #[tokio::test]
+    async fn a_cell_without_a_seat_waits_without_probing_the_host() {
+        let (dir, service, backend) = setup().await;
+        let mut request = serial_request(&service).await;
+        request.repetitions = 1;
+        request.max_executions = 1;
+        let run = service.start_run(request).await.unwrap();
+        let run = service.store.run(&run.id).await.unwrap();
+        let lane = super::super::analysis::configuration_key(&run.attempts[0].configuration);
+        // Another flight of the same configuration holds its only seat.
+        let holder = Seat {
+            id: "invented-holder",
+            lane: &lane,
+            lane_slots: 1,
+            account: "",
+            account_slots: ACCOUNT_SLOTS,
+        };
+        assert!(service.claim(&run.id, holder).await.is_some());
+        let mut flights = tokio::task::JoinSet::new();
+        let mut tried = std::collections::HashSet::new();
+        for _ in 0..3 {
+            service.fill(&mut flights, &mut tried).await.unwrap();
+        }
+        assert!(flights.is_empty());
+        assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 0);
+        // Once the seat frees, the cell asks the host once and starts.
+        service.release("invented-holder").await;
+        service.fill(&mut flights, &mut tried).await.unwrap();
+        assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 1);
+        while flights.join_next().await.is_some() {}
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn a_change_notice_names_the_runs_changed_since_the_last_one() {
+        let (dir, service, _) = setup().await;
+        let notified = std::sync::atomic::AtomicI64::new(0);
+        let run = service.start_run(request(&service).await).await.unwrap();
+        // The first notice names nothing: the app refreshes everything.
+        let first = super::super::changed_notice(&service.store, &notified)
+            .await
+            .unwrap();
+        assert!(first.get("entityIds").is_none());
+        let mut attempt = service.store.run(&run.id).await.unwrap().attempts.remove(0);
+        attempt.reason = Some("Invented wait".into());
+        service.store.save_attempt(&attempt).await.unwrap();
+        let next = super::super::changed_notice(&service.store, &notified)
+            .await
+            .unwrap();
+        assert_eq!(next["entityIds"], serde_json::json!([run.id]));
+        assert!(next["sequence"].as_i64() > first["sequence"].as_i64());
+        // Nothing committed since: nothing to refresh.
+        let idle = super::super::changed_notice(&service.store, &notified)
+            .await
+            .unwrap();
+        assert_eq!(idle["entityIds"], serde_json::json!([]));
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn the_dispatcher_loads_only_runs_it_acts_on() {
+        let (dir, service, _) = setup().await;
+        let run = service.start_run(request(&service).await).await.unwrap();
+        for (state, loaded) in [
+            ("running", true),
+            ("pausing", true),
+            ("cancelling", true),
+            ("paused", false),
+            ("needs_attention", false),
+            ("completed", false),
+        ] {
+            service.store.set_run_state(&run.id, state).await.unwrap();
+            let active = service.store.active_runs().await.unwrap();
+            assert_eq!(active.iter().any(|r| r.id == run.id), loaded, "{state}");
+        }
+        dir.close().await;
     }
     #[tokio::test]
     async fn resource_waits_preserve_unstarted_no_replay_cells_without_paid_calls() {

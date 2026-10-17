@@ -204,6 +204,7 @@ async fn fixture() -> (
         backend: backend.clone(),
         wake: Default::default(),
         active: Default::default(),
+        queries: Default::default(),
         app: None,
     };
     dir.register(&service.store.pool);

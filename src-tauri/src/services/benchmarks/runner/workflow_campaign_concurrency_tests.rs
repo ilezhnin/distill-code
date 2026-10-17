@@ -169,6 +169,7 @@ async fn service(
         backend,
         wake: Default::default(),
         active: Default::default(),
+        queries: Default::default(),
         app: None,
     })
 }

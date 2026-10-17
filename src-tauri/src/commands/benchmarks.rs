@@ -2,6 +2,7 @@
 use crate::services::agent_host::execution::NativeProvider;
 use crate::services::benchmarks::{self, types::*, BenchmarkState};
 use crate::services::provider_accounts;
+use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 async fn service(app: &AppHandle) -> Result<std::sync::Arc<benchmarks::BenchmarkService>> {
@@ -526,7 +527,8 @@ pub async fn benchmark_get_routing_evidence(
     query: RoutingEvidenceQuery,
 ) -> Result<RoutingEvidence> {
     let s = service(&app).await?;
-    benchmarks::routing::get_evidence(&s.query_data().await?, &query)
+    let data = s.query_data().await?;
+    benchmarks::routing::get_evidence(&data, &query)
 }
 #[tauri::command]
 pub async fn benchmark_get_candidate_observations(
@@ -642,12 +644,28 @@ pub async fn benchmark_sandbox_sign_in(
 /// Ledger analysis is CPU work over every attempt; it runs off the async
 /// workers so a long history never stalls other commands.
 async fn analyze<T: Send + 'static>(
-    data: QueryData,
+    data: Arc<QueryData>,
     work: impl FnOnce(&QueryData) -> T + Send + 'static,
 ) -> Result<T> {
     tauri::async_runtime::spawn_blocking(move || work(&data))
         .await
         .map_err(|error| BenchmarkError::new("infrastructure_failure", error.to_string()))
+}
+/// An analysis a view keeps asking for while runs save attempts, shared by
+/// `key` (the command and its arguments): a view asking again shares the next
+/// computation instead of overlapping its own superseded request.
+async fn shared<T: Clone + Send + Sync + 'static>(
+    s: &benchmarks::BenchmarkService,
+    key: String,
+    work: impl FnOnce(&QueryData) -> T + Send + 'static,
+) -> Result<T> {
+    let value = s
+        .queries
+        .share(&key, || async move {
+            analyze(s.query_data().await?, work).await
+        })
+        .await?;
+    Ok(Arc::unwrap_or_clone(value))
 }
 #[tauri::command]
 pub async fn benchmark_get_leaderboard(
@@ -655,7 +673,7 @@ pub async fn benchmark_get_leaderboard(
     query: ResultQuery,
 ) -> Result<LeaderboardReport> {
     let s = service(&app).await?;
-    analyze(s.query_data().await?, move |data| {
+    shared(&s, format!("leaderboard\u{1f}{query:?}"), move |data| {
         benchmarks::analysis::leaderboard(data, &query)
     })
     .await
@@ -668,9 +686,11 @@ pub async fn benchmark_get_home_advantage(
     cutoff_at: Option<i64>,
 ) -> Result<benchmarks::home_advantage::HomeAdvantageReport> {
     let s = service(&app).await?;
-    analyze(s.query_data().await?, move |data| {
-        benchmarks::home_advantage::report(data, cutoff_at)
-    })
+    shared(
+        &s,
+        format!("home-advantage\u{1f}{cutoff_at:?}"),
+        move |data| benchmarks::home_advantage::report(data, cutoff_at),
+    )
     .await
 }
 /// The credit limit set for benchmark turns and the credits they spent. Read
@@ -687,7 +707,7 @@ pub async fn benchmark_get_credit_spend(
 #[tauri::command]
 pub async fn benchmark_get_case_stats(app: AppHandle) -> Result<Vec<CaseStats>> {
     let s = service(&app).await?;
-    analyze(s.query_data().await?, benchmarks::analysis::case_tracker).await
+    shared(&s, "case-stats".into(), benchmarks::analysis::case_tracker).await
 }
 /// Chooses a configuration for a class of work from the evidence, or the
 /// persona's prior while evidence is short; `record` keeps the decision.
@@ -934,9 +954,11 @@ pub async fn benchmark_selector_harness(
     query: benchmarks::selector::HarnessQuery,
 ) -> Result<benchmarks::selector::HarnessReport> {
     let s = service(&app).await?;
-    analyze(s.query_data().await?, move |data| {
-        benchmarks::selector::harness(data, &query)
-    })
+    shared(
+        &s,
+        format!("selector-harness\u{1f}{query:?}"),
+        move |data| benchmarks::selector::harness(data, &query),
+    )
     .await?
 }
 #[tauri::command]
@@ -946,7 +968,8 @@ pub async fn benchmark_get_history(
     model: Option<bool>,
 ) -> Result<Vec<HistorySnapshot>> {
     let s = service(&app).await?;
-    analyze(s.query_data().await?, move |data| {
+    let key = format!("history\u{1f}{configuration:?}\u{1f}{model:?}");
+    shared(&s, key, move |data| {
         if model.unwrap_or(false) {
             benchmarks::analysis::model_history(data, &configuration)
         } else {
@@ -1039,7 +1062,8 @@ pub async fn benchmark_export_dataset(
     include_held_out: bool,
 ) -> Result<ExportResult> {
     let s = service(&app).await?;
-    benchmarks::export::export(&s.store, s.query_data().await?, include_held_out).await
+    let data = s.query_data().await?;
+    benchmarks::export::export(&s.store, &data, include_held_out).await
 }
 #[tauri::command]
 pub async fn benchmark_list_schedules(app: AppHandle) -> Result<Vec<Schedule>> {
@@ -1072,7 +1096,7 @@ mod tests {
             attempts: Vec::new(),
             required_repetitions: 1,
         };
-        let received = analyze(data, move |_| {
+        let received = analyze(Arc::new(data), move |_| {
             receiver
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .is_ok()

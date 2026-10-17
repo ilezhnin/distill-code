@@ -185,6 +185,13 @@ turn. Rust changes reach the app on the next launch; pass `-Watch` to get the
 rebuild-on-save back. `just dev-windows` keeps the watcher, and
 `DISTILL_DEV_NO_WATCH=1` turns it off there too.
 
+For an app that runs benchmark waves, `-Optimized` builds the app's own crates
+at opt-level 2, as the dependencies already are, under the same dev identity,
+app folders and distillctl endpoint. The setting applies to that launch only,
+so other builds and tests keep the unoptimized profile. The first optimized
+launch, and each one after a change to the app crate, compiles that crate
+again.
+
 ## Build An Installer
 
 ```powershell

@@ -9,6 +9,7 @@ pub mod evidence;
 pub mod executor;
 pub mod export;
 pub mod fixtures;
+pub mod flights;
 pub mod generated;
 pub mod home_advantage;
 mod judge_checks;
@@ -226,6 +227,7 @@ impl BenchmarkState {
                     backend,
                     wake: Notify::new(),
                     active: Default::default(),
+                    queries: Default::default(),
                     app: Some(app.clone()),
                 });
                 service.seed().await?;
@@ -257,6 +259,9 @@ pub struct BenchmarkService {
     pub wake: Notify,
     /// Attempts and judge panels in flight, by lane (see [`runner::Flight`]).
     pub active: Mutex<std::collections::HashMap<String, runner::Flight>>,
+    /// The query data and the views' analyses, one computation of each at a
+    /// time (see [`flights::Flights`]).
+    pub queries: flights::Flights,
     #[cfg_attr(test, allow(dead_code))]
     app: Option<tauri::AppHandle>,
 }
@@ -268,29 +273,61 @@ pub(super) async fn notify_changed(
     // desktop notification adapter in a real Tauri application.
     #[cfg(not(test))]
     if let Some(app) = app {
-        if let Ok(sequence) =
-            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(sequence),0) FROM benchmark_events")
-                .fetch_one(&store.pool)
-                .await
-        {
-            let _ = tauri::Emitter::emit(
-                app,
-                "benchmark-changed",
-                serde_json::json!({"sequence":sequence}),
-            );
+        static NOTIFIED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        if let Ok(notice) = changed_notice(store, &NOTIFIED).await {
+            let _ = tauri::Emitter::emit(app, "benchmark-changed", notice);
         }
     }
+}
+/// The most entities one notice names; past it the app refreshes everything.
+const NOTICE_ENTITIES: i64 = 100;
+/// The notice for events committed since the last one (`notified` holds its
+/// sequence): the newest sequence and the ids of the entities those events
+/// changed (runs, definitions, campaigns), so the app refreshes only their
+/// views. Without ids (the first notice, or more than [`NOTICE_ENTITIES`])
+/// the app refreshes everything.
+#[cfg_attr(test, allow(dead_code))]
+async fn changed_notice(
+    store: &Store,
+    notified: &std::sync::atomic::AtomicI64,
+) -> Result<serde_json::Value> {
+    let sequence =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(sequence),0) FROM benchmark_events")
+            .fetch_one(&store.pool)
+            .await?;
+    let since = notified.fetch_max(sequence, std::sync::atomic::Ordering::SeqCst);
+    if since == 0 {
+        return Ok(serde_json::json!({ "sequence": sequence }));
+    }
+    let ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT entity_id FROM benchmark_events WHERE sequence>? AND sequence<=? LIMIT ?",
+    )
+    .bind(since)
+    .bind(sequence)
+    .bind(NOTICE_ENTITIES + 1)
+    .fetch_all(&store.pool)
+    .await?;
+    if ids.len() as i64 > NOTICE_ENTITIES {
+        return Ok(serde_json::json!({ "sequence": sequence }));
+    }
+    Ok(serde_json::json!({ "sequence": sequence, "entityIds": ids }))
 }
 impl BenchmarkService {
     pub async fn changed(&self) {
         notify_changed(&self.store, self.app.as_ref()).await;
     }
-    pub async fn query_data(&self) -> Result<QueryData> {
-        let definitions = self.store.all_definitions().await?;
-        let versions: Vec<BenchmarkVersion> = definitions
-            .iter()
-            .flat_map(|d| d.versions.clone())
-            .collect();
+    /// What every analysis reads. Views asking at once share one load, and
+    /// none overlaps another (see [`flights::Flights`]).
+    pub async fn query_data(&self) -> Result<Arc<QueryData>> {
+        self.queries
+            .share("query-data", || self.load_query_data())
+            .await
+    }
+    async fn load_query_data(&self) -> Result<QueryData> {
+        // Analyses read a definition's archive state only; its draft stays in
+        // the store, and published manifests come parsed from the store.
+        let definitions = self.store.definition_states().await?;
+        let versions = self.store.all_versions().await?;
         let mut runs = self.store.all_runs().await?;
         // A mixed-worker trajectory is not a measurement of its root column
         // or of any one of its workers. Raw run/attempt views retain it.

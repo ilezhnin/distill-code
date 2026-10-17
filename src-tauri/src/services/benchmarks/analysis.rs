@@ -2396,14 +2396,11 @@ pub(super) mod tests {
         assert_eq!(row.points, Some(0));
         assert_eq!(row.speed_share, None);
         // Archiving a definition retires its case from the pool.
-        data.definitions.push(BenchmarkDefinition {
+        data.definitions.push(DefinitionState {
             id: "d6".into(),
-            draft_revision: 1,
             archived: true,
             archived_at: None,
             archive_history: vec![],
-            draft: data.versions[6].manifest.clone(),
-            versions: vec![],
         });
         assert_eq!(
             leaderboard(&data, &ResultQuery::default()).rows[0].status,

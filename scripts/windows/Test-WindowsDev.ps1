@@ -80,6 +80,10 @@ try {
     # watcher there relaunches the app under them and kills their turn.
     Assert-Equal "desktop launcher keeps the Rust watcher off unless asked" `
         ($launchDistill -match '(?ms)if \(-not \$Watch\) \{\r?\n\s+\$tauriArguments \+= "--no-watch"\r?\n\s+\}') $true
+    # Only an optimized launch lifts the app crates' opt-level, and only in its
+    # own process: every other build keeps the fast dev profile.
+    Assert-Equal "desktop launcher optimizes the app crates only when asked" `
+        ($launchDistill -match '(?ms)if \(\$Optimized\) \{\r?\n\s+\$env:CARGO_PROFILE_DEV_OPT_LEVEL = "2"') $true
 
     $justfile = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "justfile")
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true

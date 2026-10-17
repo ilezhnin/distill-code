@@ -419,6 +419,15 @@ export interface BenchmarkEvent {
   kind: string;
   createdAt: number;
 }
+/**
+ * The service's notice of committed events: the newest sequence and the
+ * entities they changed (runs, definitions, campaigns). Without `entityIds`
+ * everything may have changed.
+ */
+export interface BenchmarkChange {
+  sequence: number;
+  entityIds?: string[];
+}
 export interface Capability {
   providerId: string;
   executionProfile: string;
