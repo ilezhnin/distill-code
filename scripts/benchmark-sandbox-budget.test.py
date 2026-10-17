@@ -61,7 +61,8 @@ class BudgetTests(unittest.TestCase):
         budget.os.statvfs = lambda _path: self.pool
         budget.os.getloadavg = lambda: (1.5, 0.75, 0.25)
         budget.os.cpu_count = lambda: 16
-        guest = {'/proc/meminfo': root / 'guest-meminfo', '/proc/pressure/cpu': root / 'guest-pressure'}
+        guest = {'/proc/meminfo': root / 'guest-meminfo', '/proc/pressure/cpu': root / 'guest-pressure',
+                 '/proc/pressure/memory': root / 'guest-memory-pressure'}
         budget.Path = lambda value: guest.get(value, Path(value))
         (root / 'guest-meminfo').write_text('MemAvailable: 33554432 kB\n')
         self.lock = threading.Lock()
@@ -123,17 +124,18 @@ class BudgetTests(unittest.TestCase):
             self.assertIn(line, lines)
 
     def test_before_any_peak_is_learned_a_wave_starts_at_full_parallelism(self):
-        # Repository sessions claim 2 GiB until eight are recorded; every
-        # other class its ceiling. Eight sessions fit beside room for one
-        # check and one preparation, then memory holds the ninth.
+        # Repository sessions claim 3 GiB, half their ceiling, until eight
+        # are recorded; every other class its ceiling. Five sessions fit
+        # beside room for one check and one preparation, then memory holds
+        # the sixth.
         self.roomy()
         self.measure(1.0)
-        for n in range(8):
+        for n in range(5):
             self.reserve('repository', f'fictional-{n}')
             self.settle()
         with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
-            self.reserve('repository', 'fictional-ninth')
-        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 2 * budget.GIB)
+            self.reserve('repository', 'fictional-sixth')
+        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 3 * budget.GIB)
         # Checks and preparation take the room attempts leave.
         self.reserve('check', 'fictional-check')
         self.reserve('prep', 'fictional-prep')
@@ -225,6 +227,26 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(BlockingIOError, 'CPU pressure in the sandbox'):
             self.reserve('repository', 'fictional-e')
 
+    def test_measured_memory_use_or_pressure_holds_new_attempts(self):
+        # The smaller initial claims are guarded by what the sandbox uses:
+        # above 70 % of the admission memory, or with memory pressure above a
+        # tenth, no attempt starts; checks and preparations still do.
+        self.roomy()
+        (budget.ROOT / 'memory.current').write_text(str(17 * budget.GIB))
+        for kind in ('repository', 'text'):
+            with self.assertRaisesRegex(BlockingIOError, 'memory in use or memory pressure'):
+                self.reserve(kind, f'fictional-{kind}')
+        self.reserve('check', 'fictional-check')
+        self.reserve('prep', 'fictional-prep')
+        (budget.ROOT / 'memory.current').write_text(str(15 * budget.GIB))
+        pressure = budget.Path('/proc/pressure/memory')
+        pressure.write_text('some avg10=12.50 avg60=1.00 avg300=1.00 total=9\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n')
+        with self.assertRaisesRegex(BlockingIOError, 'memory in use or memory pressure'):
+            self.reserve('text', 'fictional-text')
+        pressure.write_text('some avg10=4.00 avg60=1.00 avg300=1.00 total=9\n')
+        self.reserve('text', 'fictional-text')
+        self.assertEqual(budget.guest_pressure('memory'), 0.04)
+
     def test_timed_jobs_weigh_a_hundred_times_a_session(self):
         self.roomy()
         self.learn(repository=budget.GIB, text=512 * MIB, check=budget.GIB, pair=budget.GIB,
@@ -257,7 +279,7 @@ class BudgetTests(unittest.TestCase):
             budget.PEAKS.write_text(json.dumps({'cpu-repository': [cores] * budget.PEAK_SAMPLES}))
             self.assertEqual(budget.session_burst(budget.peaks()), burst)
         # Memory expectations ignore the CPU ring, and the log stays bounded.
-        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 2 * budget.GIB)
+        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 3 * budget.GIB)
         budget.USAGE.write_text('{}\n' * (budget.USAGE_LINES + 50))
         budget.record_usage('text', 'fictional', ['session-fictional'], time.time() - 100)
         self.assertEqual(len(budget.USAGE.read_text().splitlines()), budget.USAGE_LINES)
@@ -427,11 +449,11 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(record, {
             'policy': 'dynamic-v2', 'heavyCap': None, 'lane': 'heavy',
             'competing': {'text': 1, 'repository': 1}, 'competingHeavy': 1,
-            'reservedMemory': 4 * budget.GIB, 'reservedCpu': 2,
+            'reservedMemory': 5 * budget.GIB, 'reservedCpu': 2,
             'memoryCurrent': 3 * budget.GIB, 'guestLoad': [1.5, 0.75, 0.25], 'guestCpus': 16,
             'hostAvailableRam': 60 * budget.GIB, 'hostAvailableCommit': 60 * budget.GIB,
             'guestMemAvailable': 32 * budget.GIB, 'hostCpuBusy': 0.125,
-            'expectedMemory': 2 * budget.GIB, 'cpuLine': 6, 'sandboxCpu': None,
+            'expectedMemory': 3 * budget.GIB, 'cpuLine': 6, 'sandboxCpu': None,
             'cpuPressure': None, 'checkStall': None, 'cpuCapacity': 13, 'sessionBurst': 0.5,
             'repositorySessions': 1, 'admittedBy': 'ceilings'})
 

@@ -83,11 +83,17 @@ PEAK_RING = 32
 PEAK_SAMPLES = 8
 # What a class claims before eight of its jobs are recorded, where that is
 # less than its ceiling: a repository session waits for the remote model
-# most of its time and was measured at under half a GiB on average, so a
-# wave starts at full parallelism instead of two sessions at their 6 GiB
-# ceilings. Its memory.max stays the ceiling, and a session using more than
-# it claims claims what it uses.
-INITIAL_MEMORY = {'repository': 2 * GIB}
+# most of its time and was measured at 0.2-0.45 GiB on average, so it claims
+# half its ceiling and a wave starts at full parallelism instead of two
+# sessions at their 6 GiB ceilings. Its memory.max stays the ceiling, and a
+# session using more than it claims claims what it uses.
+INITIAL_MEMORY = {'repository': 3 * GIB}
+# What the smaller claims allow, a simultaneous spike, is caught by measure:
+# no new attempt starts while the jobs use more than this share of the
+# admission memory or the guest's memory pressure over ten seconds exceeds
+# a tenth.
+MEMORY_GUARD = 0.70
+MEMORY_PRESSURE = 0.10
 # Checks whose share of time spent waiting for a CPU exceeds this tighten the
 # CPU line by one check while the recent median stays above it.
 STALL_LINE = 0.10
@@ -522,10 +528,11 @@ def sandbox_cores():
     return (used - used_before) / 1e6 / (at - before)
 
 
-def guest_pressure():
-    """The guest's share of time with CPU-starved tasks, over ten seconds."""
+def guest_pressure(resource='cpu'):
+    """The guest's share of time with tasks stalled on `resource` (cpu or
+    memory), over ten seconds."""
     try:
-        found = re.search(r'some avg10=([0-9.]+)', Path('/proc/pressure/cpu').read_text())
+        found = re.search(r'some avg10=([0-9.]+)', Path('/proc/pressure/' + resource).read_text())
     except OSError:
         return None
     return float(found.group(1)) / 100 if found else None
@@ -630,6 +637,11 @@ def admit_measured(active, kind, gate, host_buffers):
     held = priority_waiting(kind) if kind in ATTEMPTS else None
     if held:
         raise BlockingIOError('resource_busy: ' + held + '; no provider process started')
+    if kind in ATTEMPTS:
+        in_use = read_number(ROOT / 'memory.current') or 0
+        stalled_memory = guest_pressure('memory')
+        if in_use > MEMORY_GUARD * ADMISSION_MEMORY or (stalled_memory is not None and stalled_memory > MEMORY_PRESSURE):
+            raise BlockingIOError('resource_busy: sandbox memory in use or memory pressure is above its guard line; no provider process started')
     sample_cpu()
     recorded = peaks()
     claims = sum(claim(row, recorded) for row in active)
