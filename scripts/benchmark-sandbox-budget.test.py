@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import tarfile
@@ -187,6 +188,80 @@ class BudgetTests(unittest.TestCase):
         held = json.loads((budget.STATE / 'priority.json').read_text())
         (budget.STATE / 'priority.json').write_text(json.dumps({key: time.time() - 1 for key in held}))
         self.reserve('text', 'fictional-text-later')
+
+    def test_a_repository_attempt_short_of_memory_holds_new_text_attempts_back(self):
+        # Before any peak is learned a text attempt needs 8 GiB of room and a
+        # repository attempt 12: text sessions refilling every few minutes
+        # would otherwise keep the repository attempt out for good.
+        self.roomy()
+        texts = [self.reserve('text', f'fictional-text-{n}') for n in range(8)]
+        with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
+            self.reserve('repository', 'fictional-repository')
+        self.assertEqual(budget.priority_waiting('text'),
+                         'a repository attempt waits for the memory text sessions claim')
+        self.assertIsNone(budget.priority_waiting('repository'))
+        for token in texts[:3]:
+            budget.release(token)
+        with self.assertRaisesRegex(BlockingIOError, 'repository attempt waits for the memory'):
+            self.reserve('text', 'fictional-text-refill')
+        # Checks and preparations are not held by it.
+        self.reserve('prep', 'fictional-prep')
+        budget.release(next(path.name[6:-5] for path in budget.STATE.glob('lease-*.json')
+                            if json.loads(path.read_text())['id'] == 'fictional-prep'))
+        self.reserve('repository', 'fictional-repository')
+        # Once it is in, the hold is gone.
+        self.assertIsNone(budget.priority_waiting('text'))
+
+    def test_a_repository_attempt_text_cannot_make_room_for_holds_nothing(self):
+        self.roomy()
+        for name in ('fictional-a', 'fictional-b'):
+            self.reserve('repository', name)
+        with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
+            self.reserve('repository', 'fictional-c')
+        self.assertIsNone(budget.priority_waiting('text'))
+        self.reserve('text', 'fictional-text')
+
+    def test_checks_and_preparations_go_ahead_of_a_queued_sign_in(self):
+        # A sign-in or probe without a reservation waits in the ticket queue;
+        # attempts wait behind it, checks and preparations do not.
+        self.roomy()
+        ticket = budget.STATE / ('wait-' + 'a' * 32 + '.json')
+        ticket.write_text(json.dumps({'pid': budget.os.getpid(), 'start': budget.proc_identity(budget.os.getpid()),
+                                      'deadline': time.time() + 60, 'created': time.time_ns()}))
+        for kind in ('text', 'repository'):
+            with self.assertRaisesRegex(BlockingIOError, 'capacity is queued'):
+                self.reserve(kind, f'fictional-{kind}')
+        for kind in ('check', 'browser', 'prep'):
+            self.reserve(kind, f'fictional-{kind}')
+        ticket.unlink()
+        self.reserve('text', 'fictional-text')
+
+    def test_unknown_host_cpu_counts_no_load_outside_the_sandbox(self):
+        # 1001 (or any share above 1000) is "not sampled": the operator
+        # scripts send it, and the line is then the guest's physical cores.
+        self.roomy()
+        self.busy = 1001
+        record = self.admit('repository', 'fictional-a')['admission']
+        self.assertIsNone(record['hostCpuBusy'])
+        self.assertEqual(record['cpuLine'], 8)
+        self.busy = 250
+        record = self.admit('text', 'fictional-text')['admission']
+        self.assertEqual(record['hostCpuBusy'], 0.25)
+        self.assertEqual(record['cpuLine'], 4)
+
+    def test_a_four_field_host_gate_is_refused(self):
+        old = f'{int(time.time() * 1000)},{60 * budget.GIB},{60 * budget.GIB},{57 * budget.GIB}'
+        with self.assertRaisesRegex(RuntimeError, 'fresh Windows headroom evidence is required'):
+            self.reserve('text', 'fictional-text', gate=old)
+        bash = shutil.which('bash') if sys.platform != 'win32' else next(
+            (str(path) for path in (Path(r'C:\Program Files\Git\bin\bash.exe'),) if path.exists()), None)
+        if bash is None:
+            self.skipTest('no POSIX bash for bench-run')
+        script = source.with_name('bench-run')
+        refused = subprocess.run([bash, script.as_posix(), 'login', 'fictional', 'DISTILL_BENCH_HOST_GATE=' + old, '--', 'true'],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(refused.returncode, 64, refused.stderr)
+        self.assertIn('the host gate needs five fields', refused.stderr)
 
     def test_the_operator_cap_bounds_cpu_heavy_jobs_without_holding_attempts(self):
         self.roomy()

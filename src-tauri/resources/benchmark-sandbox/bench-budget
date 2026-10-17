@@ -456,18 +456,39 @@ def cpu_line(host_cores, measured):
 
 
 def priority_waiting(kind):
-    """Whether a check or preparation was refused, moments ago, the room an
-    attempt of `kind` would take: memory holds every attempt, CPUs only the
-    CPU-heavy ones."""
+    """Who holds an attempt of `kind` back, if anyone (None): a check or
+    preparation refused, moments ago, the room it would take (memory holds
+    every attempt, CPUs only the CPU-heavy ones), or, for a text attempt, a
+    repository attempt refused the memory text sessions claim (see decide)."""
     try:
         held = json.loads((STATE / 'priority.json').read_text())
     except (OSError, ValueError):
-        return False
+        return None
     if not isinstance(held, dict):
-        return False
+        return None
     now = time.time()
-    return (held.get('memory', 0) > now or
-            (kind in CPU_HEAVY and held.get('cpu', 0) > now))
+    if held.get('memory', 0) > now or (kind in CPU_HEAVY and held.get('cpu', 0) > now):
+        return 'a check or preparation waits for room first'
+    if kind == 'text' and held.get('repository', 0) > now:
+        return 'a repository attempt waits for the memory text sessions claim'
+    return None
+
+
+def hold(resource, until=None):
+    """Hold attempts back for `resource` until `until` (None: release it)."""
+    path = STATE / 'priority.json'
+    try:
+        held = json.loads(path.read_text())
+    except (OSError, ValueError):
+        held = {}
+    held = held if isinstance(held, dict) else {}
+    if until is None:
+        if resource not in held:
+            return
+        held.pop(resource)
+    else:
+        held[resource] = until
+    path.write_text(json.dumps(held))
 
 
 def decide(active, kind, gate, host_buffers=0):
@@ -475,26 +496,26 @@ def decide(active, kind, gate, host_buffers=0):
     that holds it. Returns the measurements it decided on. A check or
     preparation it refuses holds new attempts back (see PRIORITY_HOLD)."""
     try:
-        return admit_measured(active, kind, gate, host_buffers)
+        observed = admit_measured(active, kind, gate, host_buffers)
     except BlockingIOError as busy:
         reason = str(busy)
         if kind not in ATTEMPTS and 'Windows headroom evidence expired' not in reason and 'operator caps' not in reason:
-            resource = 'cpu' if 'CPU' in reason else 'memory'
-            path = STATE / 'priority.json'
-            try:
-                held = json.loads(path.read_text())
-            except (OSError, ValueError):
-                held = {}
-            held = held if isinstance(held, dict) else {}
-            held[resource] = time.time() + PRIORITY_HOLD
-            path.write_text(json.dumps(held))
+            hold('cpu' if 'CPU' in reason else 'memory', time.time() + PRIORITY_HOLD)
+        elif getattr(busy, 'text_would_free', False):
+            # Text sessions need less room and refill every few minutes, so
+            # a repository attempt's larger claim would never fit beside them.
+            hold('repository', time.time() + PRIORITY_HOLD)
         raise
+    if kind == 'repository':
+        hold('repository')
+    return observed
 
 
 def admit_measured(active, kind, gate, host_buffers):
     memory, cpu, pids, lane = CLASSES[kind]
-    if kind in ATTEMPTS and priority_waiting(kind):
-        raise BlockingIOError('resource_busy: a check or preparation waits for room first; no provider process started')
+    held = priority_waiting(kind) if kind in ATTEMPTS else None
+    if held:
+        raise BlockingIOError('resource_busy: ' + held + '; no provider process started')
     sample_cpu()
     recorded = peaks()
     claims = sum(claim(row, recorded) for row in active)
@@ -505,7 +526,13 @@ def admit_measured(active, kind, gate, host_buffers):
     else:
         needed_room = needed
     if claims + needed_room > ADMISSION_MEMORY:
-        raise BlockingIOError('resource_busy: sandbox memory the running jobs claim leaves no room for this job; no provider process started')
+        busy = BlockingIOError('resource_busy: sandbox memory the running jobs claim leaves no room for this job; no provider process started')
+        # Whether the text sessions' leaving would make the room a refused
+        # repository attempt lacks (decide then holds new ones back).
+        lacking = claims + needed_room - ADMISSION_MEMORY
+        busy.text_would_free = kind == 'repository' and sum(
+            claim(row, recorded) for row in active if row['kind'] == 'text') >= lacking
+        raise busy
     if (read_number(ROOT / 'pids.current') or 0) + pids > AGGREGATE_PIDS:
         raise BlockingIOError('resource_busy: sandbox process budget leaves no room for this job; no provider process started')
     observed = host_gate(gate, unused, needed)
@@ -627,7 +654,9 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0):
     setup()
     with locked():
         active = receipts()
-        if waiting():
+        # Sign-ins and probes queue without a reservation; attempts wait
+        # behind them, checks and preparations go ahead.
+        if kind in ATTEMPTS and waiting():
             raise BlockingIOError('resource_busy: benchmark resource capacity is queued; no provider process started')
         observed = decide(active, kind, gate, host_buffers)
         scratch_headroom(active, kind)

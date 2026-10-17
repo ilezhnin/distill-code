@@ -133,21 +133,50 @@ pub(super) fn record_turn(account: &str, turns: u32, speed: Option<f64>, now: i6
 }
 
 /// Whether a provider's answer to a sent prompt says it is limiting rate:
-/// the HTTP 429 family and its usual wordings. Usage limits that ran out are
-/// quota waits, handled apart.
+/// an HTTP 429 named as a status, and the usual rate-limit and overload
+/// wordings of provider errors. A bare 429 among other digits (an execution
+/// time, a port, a hash) and words a model might write ("overloaded" alone,
+/// "slow down") are not. Usage limits that ran out are quota waits, handled
+/// apart.
 pub(super) fn throttle_signal(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     [
-        "429",
         "rate limit",
         "rate_limit",
         "ratelimit",
+        "rate-limit",
         "too many requests",
-        "overloaded",
-        "slow down",
+        "overloaded_error",
+        "model is overloaded",
+        "server is overloaded",
+        "currently overloaded",
     ]
     .iter()
     .any(|signal| text.contains(signal))
+        || status_429(&text)
+}
+
+/// A 429 that stands alone, not inside a longer number or word, and that a
+/// status word names shortly before it: "HTTP 429", "status: 429",
+/// `"status":429`, "error code 429".
+fn status_429(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices("429").any(|(at, _)| {
+        let alone = |index: Option<usize>| {
+            index
+                .and_then(|index| bytes.get(index))
+                .is_none_or(|byte| !byte.is_ascii_alphanumeric())
+        };
+        // Bytes, not a str slice: 16 bytes back may fall inside a character.
+        let before = &bytes[at.saturating_sub(16)..at];
+        alone(at.checked_sub(1))
+            && alone(Some(at + 3))
+            && ["http", "status", "code", "error"].iter().any(|word| {
+                before
+                    .windows(word.len())
+                    .any(|window| window == word.as_bytes())
+            })
+    })
 }
 
 /// Tokens per second a finished turn streamed, from its own usage and native
@@ -224,6 +253,13 @@ mod tests {
         pace.finished(4, Some(60.0), 0);
         assert_eq!(pace.limit(), 3);
         assert!(!pace.speeds.contains_key(&4));
+        // With no lower level measured there is nothing to compare with.
+        let mut alone = Pace::new(4, 0);
+        for _ in 0..3 * COMPARABLE {
+            alone.finished(4, Some(10.0), 0);
+        }
+        assert!(alone.slowed().is_none());
+        assert_eq!(alone.limit(), 4);
         // Unknown speeds teach nothing either way.
         let mut quiet = Pace::new(4, 0);
         for _ in 0..50 {
@@ -239,7 +275,14 @@ mod tests {
             "Rate limit reached for requests",
             "{\"error\":{\"type\":\"rate_limit_error\"}}",
             "The model is overloaded, please retry",
-            "Please slow down",
+            "Erreur « HTTP 429 » : trop de requêtes",
+        ] {
+            assert!(throttle_signal(text), "{text}");
+        }
+        for text in [
+            "Provider error: HTTP/1.1 429",
+            "{\"status\":429,\"message\":\"slow\"}",
+            "error code 429",
         ] {
             assert!(throttle_signal(text), "{text}");
         }
@@ -247,6 +290,13 @@ mod tests {
             "resource_busy: benchmark resource capacity is queued",
             "You've reached your monthly usage limit",
             "stream disconnected",
+            // A budget timeout's reason carries the execution time.
+            "{\"nativeExecutionMs\":429810}",
+            "{\"nativeExecutionMs\":723429}",
+            "port 54290 refused",
+            "commit 4290a1b",
+            "The queue in the answer was overloaded, so I slowed down",
+            "Please slow down",
         ] {
             assert!(!throttle_signal(text), "{text}");
         }

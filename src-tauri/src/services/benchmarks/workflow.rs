@@ -897,6 +897,20 @@ fn check_public_bytes(version: &BenchmarkVersion, prompt: &str, entry: &EntrySta
     Ok(())
 }
 
+/// How often a later workflow step the local broker refused asks again.
+#[cfg(not(test))]
+pub(super) const LATER_STEP_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+pub(super) const LATER_STEP_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Whether a later step first tried at `first_try` with `allowance` seconds
+/// may still wait for sandbox room at `now`: the next try must start within
+/// the first quarter of its allowance.
+pub(super) fn later_step_may_wait(first_try: i64, allowance: u32, now: i64) -> bool {
+    let next = now.saturating_sub(first_try) + LATER_STEP_RETRY.as_millis() as i64;
+    next <= i64::from(allowance) * 1000 / 4
+}
+
 /// Worker-slot waits the steps of a step-admitted root recorded; its wall
 /// clock runs from admission without them.
 fn excluded_waits_ms(steps: &[SavedStep]) -> i64 {
@@ -1579,16 +1593,68 @@ pub fn execute(
                     )
                     .await
             } else {
-                service
-                    .backend
-                    .execute(
-                        &service.store,
-                        saved.attempt.clone(),
-                        effective_version,
-                        remaining.min(saved.entry.remaining_budget_seconds),
-                        cancel.clone(),
-                    )
-                    .await
+                // A later step the local broker refused before any provider
+                // process started waits for room on its root's seat, so the
+                // paid steps before it are kept: it asks again while no more
+                // than a quarter of its allowance has passed. On the wall
+                // clock that time comes off the step's own allowance; past
+                // the quarter the refusal settles the step, unscored. The
+                // first step goes back to the queue instead (below).
+                let allowance = remaining.min(saved.entry.remaining_budget_seconds);
+                let first_try = now();
+                let mut cancelled = cancel.clone();
+                loop {
+                    let waited =
+                        u32::try_from((now() - first_try).max(0) / 1000).unwrap_or(u32::MAX);
+                    let timeout = if new_clock || concurrent_policy {
+                        allowance.saturating_sub(waited)
+                    } else {
+                        allowance
+                    };
+                    let result = service
+                        .backend
+                        .execute(
+                            &service.store,
+                            saved.attempt.clone(),
+                            effective_version.clone(),
+                            timeout,
+                            cancel.clone(),
+                        )
+                        .await;
+                    let retry = match &result {
+                        Err(error)
+                            if !untouched
+                                && error.code == "resource_busy"
+                                && later_step_may_wait(first_try, allowance, now()) =>
+                        {
+                            let current = service.store.attempt(&saved.attempt.id).await?;
+                            (current.phase == "preparing"
+                                && !super::runner::reached_provider(&current))
+                            .then_some(current)
+                        }
+                        _ => None,
+                    };
+                    let Some(current) = retry else {
+                        break result;
+                    };
+                    tokio::select! {
+                        _ = tokio::time::sleep(LATER_STEP_RETRY) => {}
+                        changed = cancelled.changed() => {
+                            // A closed channel cancels nothing; still pause.
+                            if changed.is_err() {
+                                tokio::time::sleep(LATER_STEP_RETRY).await;
+                            }
+                        }
+                    }
+                    if *cancel.borrow() || request.require_dispatch_admission(now()).is_err() {
+                        break result;
+                    }
+                    // A new start is a new owner for the host, as for a cell
+                    // that went back to the queue.
+                    saved.attempt = current;
+                    saved.attempt.started_at = Some(now());
+                    service.store.save_attempt(&saved.attempt).await?;
+                }
             };
             // The local broker refused the first step a provider would have
             // seen, or a sandbox sign-in renewal held it back: the workflow

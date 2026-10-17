@@ -146,7 +146,11 @@ holds it, while it does not:
   the line drops by one check.
 - Priority. While a check or a preparation waits for memory, no attempt
   starts; while a check waits for CPUs, no CPU-heavy attempt starts. Neither
-  starves behind attempts.
+  starves behind attempts. While a repository attempt waits for memory that
+  the running text sessions claim, no new text attempt starts, so the smaller
+  text claims cannot keep refilling the room it needs. A sign-in or probe
+  queued without a reservation holds attempts back, never checks or
+  preparations.
 - Scratch. The filesystem's free space must cover the new job's scratch
   reservation, half a GiB, and the reservations of jobs admitted in the last
   two minutes; an older job's use already shows in the free space. A job that
@@ -160,6 +164,14 @@ holds it, while it does not:
   wait names that cause. A larger page file raises the commit limit without
   lowering the RAM floor. Admission evidence also carries how busy the host's
   CPUs were over the last second.
+
+The Windows evidence each admission needs (`DISTILL_BENCH_HOST_GATE`) has five
+comma-separated integers: the time in milliseconds, available RAM, commit
+headroom and the sandbox volume's free space in bytes, and how busy all
+logical CPUs were in thousandths. The application samples the last field once
+a second. Operator scripts that do not sample it send 1001, meaning unknown;
+admission then counts no host load outside the sandbox, as for an idle host.
+Evidence with four fields, from scripts written for earlier builds, is refused.
 
 All jobs share an aggregate of 24 GiB, 14.5 CPUs, 4224 processes and
 1024/256 MiB/s of scratch I/O, of which trusted supervisors keep their own
@@ -187,7 +199,11 @@ model call or permit replay of an already submitted answer. Work that belongs
 to a turn already sent waits for room as well: its answer's collection, a
 later workflow step's workspace and the transitions between steps wait inside
 their own native deadline, and a collection without one waits up to thirty
-minutes. A check's own time limit starts once it is admitted, so waiting for
+minutes. A later workflow step whose session the sandbox refuses asks again
+every ten seconds on its root's seat, under every retry policy, while no more
+than a quarter of its allowance has passed; on the wall-clock budget that time
+comes off the step's own allowance. Past that quarter the refusal ends the
+step, unscored. The first step of a workflow returns to the queue instead. A check's own time limit starts once it is admitted, so waiting for
 room never shortens it. Only a deadline that passes while waiting ends the
 attempt, as unscored infrastructure failure. Evaluator admission waits on the
 captured answer; a runtime resource failure is inconclusive infrastructure
@@ -235,8 +251,10 @@ return to the queue ("Waits for a running Grok test") as unstarted
 admissions, under every retry policy, while later steps of workflows already
 running finish on the sign-in they were admitted with. A later step whose own
 limit needs the renewal waits only under automatic retry; a run without it
-stops for the operator, as for any refused later step. The renewal then starts
-one short session on the account, whose Grok CLI begins with
+stops for the operator. The renewal then starts
+one short session on the account, admitted as a text session under the same
+rules as every other job (a host build that keeps the measured load above the
+light line defers it), whose Grok CLI begins with
 `GROK_AUTH_EARLY_INVALIDATION_SECS` past the sign-in's remaining lifetime and
 renews it before its model listing; no model is called. Stopping that session
 saves the renewed grant to the account with bench-auth's rules for a

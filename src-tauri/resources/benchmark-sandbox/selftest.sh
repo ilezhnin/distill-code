@@ -28,6 +28,10 @@ check "no Windows host" "$(run login selftest -- curl -s -m 5 "http://$gateway:4
 check "no WSL DNS tunnel" "$(run login selftest -- bash -c 'timeout 5 bash -c "exec 3<>/dev/tcp/10.255.255.254/53" 2>/dev/null && echo open')" ""
 check "no local network" "$(run login selftest -- bash -c 'timeout 5 bash -c "exec 3<>/dev/tcp/192.168.1.1/80" 2>/dev/null && echo open')" ""
 check "no VM services" "$(run login selftest -- bash -c 'timeout 5 bash -c "exec 3<>/dev/tcp/10.231.0.1/22" 2>/dev/null && echo open')" ""
+# Host evidence has five fields; a script still sending the old four is refused.
+gate4=$(printf '%s' "${DISTILL_BENCH_HOST_GATE:-0,0,0,0,0}" | cut -d, -f1-4)
+check "four-field host gate refused as an argument" "$(/usr/local/sbin/bench-run login selftest "DISTILL_BENCH_HOST_GATE=$gate4" -- true 2>/dev/null; echo $?)" 64
+check "four-field host gate refused in the environment" "$(DISTILL_BENCH_HOST_GATE=$gate4 /usr/local/sbin/bench-run login selftest -- true 2>&1 >/dev/null | grep -c 'fresh Windows headroom evidence')" 1
 
 printf 'one\n' >/tmp/selftest-file
 tar -cf /tmp/selftest.tar -C /tmp selftest-file

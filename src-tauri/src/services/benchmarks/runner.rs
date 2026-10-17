@@ -1217,24 +1217,36 @@ fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
     if account.is_empty() || !reached_provider(attempt) {
         return;
     }
-    let throttled = error
-        .map(|error| account_pace::throttle_signal(&error.message))
-        .unwrap_or_else(|| {
-            attempt.outcome.as_deref() != Some("completed")
-                && attempt
-                    .reason
-                    .as_deref()
-                    .is_some_and(account_pace::throttle_signal)
-        });
+    // A turn that ran out of its own time or was stopped says nothing about
+    // the provider's rate, whatever its reason quotes.
+    let ended = error.map_or(attempt.outcome.as_deref(), |error| {
+        Some(error.code.as_str())
+    });
+    let throttled = !matches!(ended, Some("budget_timeout" | "cancelled"))
+        && error
+            .map(|error| account_pace::throttle_signal(&error.message))
+            .unwrap_or_else(|| {
+                attempt.outcome.as_deref() != Some("completed")
+                    && attempt
+                        .reason
+                        .as_deref()
+                        .is_some_and(account_pace::throttle_signal)
+            });
     if throttled {
         account_pace::record_throttle(account, now());
     } else if error.is_none() && attempt.outcome.as_deref() == Some("completed") {
         let turns = attempt.account_load.as_ref().map_or(1, |load| load.turns);
-        let speed = account_pace::speed(
-            attempt.usage.output,
-            attempt.usage.reasoning,
-            attempt.native_execution_ms,
-        );
+        // Only a text turn's native time is the provider streaming; a
+        // repository turn's includes its tools.
+        let speed = if attempt.configuration.execution_profile == "native_text" {
+            account_pace::speed(
+                attempt.usage.output,
+                attempt.usage.reasoning,
+                attempt.native_execution_ms,
+            )
+        } else {
+            None
+        };
         account_pace::record_turn(account, turns, speed, now());
     }
 }
@@ -6726,9 +6738,11 @@ pub struct FakeBackend {
     #[cfg(test)]
     resource_refusals: std::sync::atomic::AtomicU64,
     /// Once this many turns ran (zero: never), the next one is refused for
-    /// local resources, once.
+    /// local resources, once and then `resource_refusal_repeats` more times.
     #[cfg(test)]
     resource_refusal_after: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pub(super) resource_refusal_repeats: std::sync::atomic::AtomicU64,
     /// Evaluations the local sandbox refuses before any worker starts, and
     /// the evaluations asked in all.
     #[cfg(test)]
@@ -6934,7 +6948,13 @@ impl ExecutionBackend for FakeBackend {
             {
                 let after = self.resource_refusal_after.load(Ordering::SeqCst);
                 if after > 0 && self.calls.load(Ordering::SeqCst) >= after {
-                    self.resource_refusal_after.store(0, Ordering::SeqCst);
+                    if self
+                        .resource_refusal_repeats
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_err()
+                    {
+                        self.resource_refusal_after.store(0, Ordering::SeqCst);
+                    }
                     return Err(BenchmarkError::new(
                         "resource_busy",
                         "Invented admission race after a provider turn",
@@ -7470,6 +7490,57 @@ mod tests {
         record_sandbox_admission(&mut later, &mut empty, Some("invented-sealed-sandbox"));
         assert!(later.sandbox_admission.is_none());
         assert!(empty.get("sandboxAdmission").is_none());
+    }
+    /// The pace learns speeds from text turns only (a repository turn's
+    /// native time includes its tools), and a turn that ran out of its own
+    /// time or was stopped is no rate-limit signal, whatever its reason says.
+    #[test]
+    fn only_text_turns_teach_the_pace_speed_and_timeouts_never_throttle() {
+        let row = judge_row("sonnet");
+        let turn = |profile: &str, turns: u32, output: u64| {
+            let mut attempt =
+                super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+            attempt.configuration.execution_profile = profile.into();
+            attempt.outcome = Some("completed".into());
+            attempt.session_id = Some("invented-session".into());
+            attempt.usage.output = Some(output);
+            attempt.native_execution_ms = Some(10_000);
+            attempt.account_load = Some(AccountLoad { turns, limit: 4 });
+            attempt
+        };
+        // Five turns alone at 500 tokens/s, five beside three others at 100.
+        for (profile, account, limit) in [
+            (
+                "protected_repository",
+                "invented-acp\u{1f}pace-repository",
+                4,
+            ),
+            ("native_text", "invented-acp\u{1f}pace-text", 3),
+        ] {
+            for _ in 0..5 {
+                pace_turn(account, &turn(profile, 1, 5000), None);
+                pace_turn(account, &turn(profile, 4, 1000), None);
+            }
+            assert_eq!(account_pace::limit(account), limit, "{profile}");
+        }
+        let account = "invented-acp\u{1f}pace-timeout";
+        let mut timed = turn("native_text", 1, 0);
+        timed.outcome = Some("budget_timeout".into());
+        timed.reason = Some("rate limit reached; {\"nativeExecutionMs\":429810}".into());
+        pace_turn(account, &timed, None);
+        pace_turn(
+            account,
+            &timed,
+            Some(&BenchmarkError::new(
+                "budget_timeout",
+                "HTTP 429 rate limit",
+            )),
+        );
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS);
+        let mut limited = timed.clone();
+        limited.outcome = Some("provider_error".into());
+        pace_turn(account, &limited, None);
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS / 2);
     }
     /// A sealed turn whose answer could not be collected before its deadline
     /// because the sandbox had no room is unscored infrastructure, never the

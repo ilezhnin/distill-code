@@ -182,33 +182,94 @@ async fn a_workflow_refused_before_any_provider_waits_and_starts_afresh() {
     }
 }
 
-/// A workflow a provider already worked on has started: a later refusal for
-/// local resources settles it as before, under either retry policy, with
-/// every step record and clock it used.
+/// A workflow a provider already worked on has started, and its later step
+/// the local broker refused waits for room on the root's seat instead of
+/// losing the paid steps (2026-10-17: e245dd7d, ed4eaa5a and e1d07e6f lost
+/// theirs to a host build's commit headroom). Under either retry policy the
+/// step asks again, with a new owner, and the root finishes.
 #[tokio::test]
-async fn a_workflow_that_reached_a_provider_keeps_its_refusal() {
+async fn a_later_step_refused_for_local_resources_waits_on_its_root() {
     for retry_policy in [RunRetryPolicy::None, RunRetryPolicy::Automatic] {
         let (dir, service, backend) = setup().await;
         backend.resource_refusal_after.store(1, Ordering::SeqCst);
+        backend.resource_refusal_repeats.store(2, Ordering::SeqCst);
         let run = service
             .start_run(workflow_request(&service, retry_policy).await)
             .await
             .unwrap();
-        for _ in 0..2 {
+        for _ in 0..3 {
             service.tick().await.unwrap();
         }
         let settled = service.store.run(&run.id).await.unwrap();
+        assert_eq!(settled.state, "completed", "{retry_policy:?}");
+        assert_eq!(settled.attempts.len(), 1);
         let root = &settled.attempts[0];
-        assert_eq!(root.phase, "terminal", "{retry_policy:?}");
-        assert_eq!(root.outcome.as_deref(), Some("resource_busy"));
+        assert_eq!(root.phase, "terminal");
+        assert_eq!(root.outcome.as_deref(), Some("pass"), "{retry_policy:?}");
         assert_eq!(root.workflow_steps.len(), 2);
-        assert!(root.workflow_steps[0].host_run_id.is_some());
-        assert_eq!(
-            root.workflow_steps[1].outcome.as_deref(),
-            Some("resource_busy")
-        );
+        assert!(root
+            .workflow_steps
+            .iter()
+            .all(|step| step.host_run_id.is_some()));
         assert_eq!(prepared(&service, &root.id).await, (2, 3));
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
         dir.close().await;
     }
+}
+
+/// The wait has a bound: a later step still refused once a quarter of its
+/// allowance has passed settles as the refusal, which is unscored, with
+/// every step record and clock it used. No second turn is paid for.
+#[tokio::test]
+async fn a_later_step_settles_its_refusal_after_a_quarter_of_its_allowance() {
+    let (dir, service, backend) = setup().await;
+    backend.resource_refusal_after.store(1, Ordering::SeqCst);
+    backend
+        .resource_refusal_repeats
+        .store(10_000, Ordering::SeqCst);
+    let mut request = workflow_request(&service, RunRetryPolicy::None).await;
+    // A quarter of four seconds: one second of asking.
+    request.timeout_seconds = 4;
+    let run = service.start_run(request).await.unwrap();
+    let started = Instant::now();
+    for _ in 0..2 {
+        service.tick().await.unwrap();
+    }
+    let settled = service.store.run(&run.id).await.unwrap();
+    let root = &settled.attempts[0];
+    assert_eq!(root.phase, "terminal");
+    assert_eq!(root.outcome.as_deref(), Some("resource_busy"));
+    assert!(!super::super::analysis::is_measured(root));
+    assert_eq!(
+        root.workflow_steps[1].outcome.as_deref(),
+        Some("resource_busy")
+    );
+    assert!(root.workflow_steps[0].host_run_id.is_some());
+    assert_eq!(prepared(&service, &root.id).await, (2, 3));
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    // It asked for about a second, not for the whole allowance.
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    backend.resource_refusal_after.store(0, Ordering::SeqCst);
+    dir.close().await;
+}
+
+#[test]
+fn a_later_step_asks_again_only_inside_the_first_quarter_of_its_allowance() {
+    let retry = super::super::workflow::LATER_STEP_RETRY.as_millis() as i64;
+    assert!(super::super::workflow::later_step_may_wait(0, 600, 0));
+    assert!(super::super::workflow::later_step_may_wait(
+        0,
+        600,
+        150_000 - retry
+    ));
+    assert!(!super::super::workflow::later_step_may_wait(
+        0,
+        600,
+        150_001 - retry
+    ));
+    assert!(!super::super::workflow::later_step_may_wait(0, 0, 0));
 }

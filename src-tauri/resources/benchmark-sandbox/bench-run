@@ -48,7 +48,10 @@ while (($#)) && [[ $1 != -- ]]; do
     [[ ${1#*=} =~ ^[0-9a-f]{32}$ ]] || exit 64
     export DISTILL_BENCH_RESERVATION=${1#*=}
   elif [[ $1 == DISTILL_BENCH_HOST_GATE=* ]]; then
-    [[ ${1#*=} =~ ^[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+$ ]] || exit 64
+    [[ ${1#*=} =~ ^[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+$ ]] || {
+      echo "bench-run: the host gate needs five fields: time ms, RAM, commit, volume free, CPU busy in thousandths (1001 unknown)" >&2
+      exit 64
+    }
     export DISTILL_BENCH_HOST_GATE=${1#*=}
   else
     vars+=("$1")
