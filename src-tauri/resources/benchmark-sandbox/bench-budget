@@ -35,6 +35,7 @@ aggregate is shared by measured use, and every admission records what it
 measured; every finished job records its CPU seconds and memory peak.
 """
 import math
+import datetime
 import errno
 import fcntl
 import json
@@ -277,10 +278,47 @@ def io_limit(group):
     return None, None
 
 
+# bench-net holds this lock while it sets the sandbox up, the scratch disk's
+# mount included, and marks its own children with DISTILL_BENCH_NET_LOCKED.
+NET_LOCK = Path('/run/lock/distill-bench-net')
+BOOT_SETUP_WAIT = 30
+
+
+def scratch_mount():
+    try:
+        return subprocess.check_output(['findmnt', '-rn', '-M', str(SCRATCH), '-o', 'FSTYPE,SOURCE,OPTIONS'],
+                                       text=True).strip().split()
+    except subprocess.CalledProcessError:
+        return []
+
+
+def wait_for_net_setup():
+    """Wait (bounded) while bench-net sets the sandbox up: right after the
+    distribution boots, its boot command may still be mounting the scratch
+    disk when the app's first admission arrives."""
+    if os.environ.get('DISTILL_BENCH_NET_LOCKED'):
+        return
+    try:
+        handle = open(NET_LOCK, 'r')
+    except FileNotFoundError:
+        return
+    with handle:
+        until = time.monotonic() + BOOT_SETUP_WAIT
+        while time.monotonic() < until:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                time.sleep(0.1)
+
+
 def scratch_device():
     # The device must be our protected, fixed-size loop image, never the distro
     # root filesystem. A missing loop/quota implementation fails closed.
-    mounts = subprocess.check_output(['findmnt', '-rn', '-M', str(SCRATCH), '-o', 'FSTYPE,SOURCE,OPTIONS'], text=True).strip().split()
+    mounts = scratch_mount()
+    if not mounts:
+        wait_for_net_setup()
+        mounts = scratch_mount()
     if len(mounts) != 3 or mounts[0] != 'ext4' or not {'nodev', 'nosuid'} <= set(mounts[2].split(',')):
         fail('bounded benchmark scratch is not mounted (run deploy-helpers)')
     backing = subprocess.check_output(['losetup', '--noheadings', '--raw', '-O', 'BACK-FILE', mounts[1]], text=True).strip()
@@ -408,7 +446,9 @@ def locked():
 def receipts():
     result = []
     for path in STATE.glob('lease-*.json'):
-        value = json.loads(path.read_text())
+        value = readable(path)
+        if value is None:
+            continue
         if not live(value):
             # A group still busy keeps its expired lease, so a later reap
             # removes it. Once found busy it is checked without waiting: a
@@ -426,7 +466,9 @@ def receipts():
 def waiting():
     queue = []
     for path in STATE.glob('wait-*.json'):
-        row = json.loads(path.read_text())
+        row = readable(path)
+        if row is None:
+            continue
         if live(row):
             queue.append((row['created'], path.name))
         else:
@@ -479,12 +521,37 @@ def claim(row, recorded):
 
 
 def replace_private(path, text):
-    """Write a root-only state file whole, never half."""
+    """Write a root-only state file whole, never half. The staging name is
+    the writer's own, so two writers of one file never mix their bytes."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    staged = path.with_name(path.name + '.new')
+    staged = path.with_name(f'{path.name}.{os.getpid()}.new')
     staged.write_text(text)
     os.chmod(staged, 0o600)
     os.replace(staged, path)
+
+
+# A state file that does not parse and is older than this was left half
+# written by a crash (every writer replaces files whole); it is set aside.
+TORN_AFTER = 60
+
+
+def readable(path):
+    """The JSON state in `path`, or None when it is gone or does not parse.
+    One that does not parse and is older than TORN_AFTER is renamed
+    `.unreadable` and noted in the reaper log, so it stops failing every pass
+    while staying there for the operator."""
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        try:
+            if path.stat().st_mtime < time.time() - TORN_AFTER:
+                path.rename(path.with_name(path.name + '.unreadable'))
+                note_reaper(f'set aside unreadable {path.name}')
+        except OSError:
+            pass
+        return None
 
 
 def record_peak(kind, groups):
@@ -927,7 +994,7 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
                    groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane,
                    host_buffers=host_buffers, admitted=time.time())
         row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
-        (STATE / ('lease-' + token + '.json')).write_text(json.dumps(row))
+        replace_private(STATE / ('lease-' + token + '.json'), json.dumps(row))
         print(json.dumps({'token': token, 'id': identifier, 'class': kind, 'deadlineMs': deadline_ms,
                           'admission': record}))
 
@@ -959,10 +1026,10 @@ def observe(mode, identifier):
         return
     with locked():
         for path in STATE.glob('lease-*.json'):
-            row = json.loads(path.read_text())
-            if name in row['groups']:
+            row = readable(path)
+            if row is not None and name in row['groups']:
                 token = path.name[6:-5]
-                (STATE / 'outcomes' / (token + '.json')).write_text(json.dumps({
+                replace_private(STATE / 'outcomes' / (token + '.json'), json.dumps({
                     'token': token, 'infrastructureError': 'infrastructure_error: benchmark process tree reached its memory ceiling'}))
 
 
@@ -1018,8 +1085,8 @@ def run(kind, identifier, command):
     deadline = min(started + 86400 + 480, int(deadline_ms) / 1000) if deadline_ms else started + (120 if kind == 'prep' else 3600)
     if deadline <= started:
         raise TimeoutError('benchmark deadline expired before resource admission')
-    ticket.write_text(json.dumps({'pid': os.getpid(), 'start': proc_identity(os.getpid()),
-                                  'deadline': min(deadline, started + 300), 'created': time.time_ns()}))
+    replace_private(ticket, json.dumps({'pid': os.getpid(), 'start': proc_identity(os.getpid()),
+                                        'deadline': min(deadline, started + 300), 'created': time.time_ns()}))
     lease = STATE / ('lease-' + token + '.json')
     groups = []
     owned = False
@@ -1042,7 +1109,7 @@ def run(kind, identifier, command):
                 # already accounts for pending launchers without a race.
                 groups, deadline = row['groups'], row['deadline']
                 row.update(pending=False, pid=os.getpid(), start=proc_identity(os.getpid()))
-                lease.write_text(json.dumps(row))
+                replace_private(lease, json.dumps(row))
                 owned = True
                 OUTCOME_TOKEN = token
                 ticket.unlink(missing_ok=True)
@@ -1071,7 +1138,7 @@ def run(kind, identifier, command):
                                host_buffers=host_buffers, admitted=time.time())
                     scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
                     row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
-                    lease.write_text(json.dumps(row))
+                    replace_private(lease, json.dumps(row))
                     owned = True
                     OUTCOME_TOKEN = token
                     ticket.unlink(missing_ok=True)
@@ -1085,7 +1152,7 @@ def run(kind, identifier, command):
         stalled_before = stall_total(groups)
         owner_path = SCRATCH / 'owners' / (identifier + '.json')
         if owner_path.exists():
-            owner_path.write_text(json.dumps({'id': identifier, 'deadline': max(deadline + 300, time.time() + 7200)}))
+            replace_private(owner_path, json.dumps({'id': identifier, 'deadline': max(deadline + 300, time.time() + 7200)}))
         env = dict(os.environ, DISTILL_BENCH_BUNDLE=token)
         # Supervisors stay in the reserved control group; only actual workers
         # enter leaves. A paired supervisor must survive killing either child.
@@ -1165,6 +1232,13 @@ def status():
         print('budget session-burst', session_burst(recorded))
         filesystem = os.statvfs(SCRATCH)
         print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
+        print('budget reaper', reaper_state())
+        try:
+            last = REAPER_LOG.read_text().splitlines()[-1]
+            if REAPER_LOG.stat().st_mtime > time.time() - 3600:
+                print('budget reaper-log', last)
+        except (OSError, IndexError):
+            pass
 
 
 def set_heavy_cap(text):
@@ -1184,8 +1258,36 @@ def set_heavy_cap(text):
     status()
 
 
-# The running reaper's pid. bench-net starts no process while it lives.
+# The running reaper's pid and start time (as proc_identity reads it).
+# bench-net starts no process while a process with both lives.
 REAPER_PID = Path('/run/distill-bench-reaper.pid')
+# Consecutive failed passes (a minute) after which the reaper gives way:
+# bench-net then starts a fresh one, and status shows the last error.
+REAPER_FAILURES = 12
+REAPER_LOG = STATE / 'reaper.err'
+REAPER_LOG_LINES = 20
+
+
+def note_reaper(message):
+    """Append a dated line (UTC) to the bounded reaper log; never raises."""
+    try:
+        try:
+            lines = REAPER_LOG.read_text().splitlines()[-(REAPER_LOG_LINES - 1):]
+        except FileNotFoundError:
+            lines = []
+        stamp = datetime.datetime.fromtimestamp(time.time(), datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        replace_private(REAPER_LOG, '\n'.join(lines + [stamp + ' ' + ' '.join(str(message).split())]) + '\n')
+    except OSError:
+        pass
+
+
+def reaper_state():
+    """'ok' while the process the pid file names is the reaper, else 'down'."""
+    try:
+        pid, start = REAPER_PID.read_text().split()
+    except (OSError, ValueError):
+        return 'down'
+    return 'ok' if pid.isdigit() and proc_identity(int(pid)) == start else 'down'
 
 
 def reap_pass():
@@ -1199,8 +1301,57 @@ def reap_pass():
     expire_scratch({row['id'] for row in active})
 
 
+REAPER_ARGV = [b'/usr/local/sbin/bench-budget', b'reap', b'--daemon']
+
+
+def stop_reaper():
+    """End every running reaper and wait until its lock is free. A reaper
+    keeps the helpers it started with in memory and holds its lock, so after
+    new helpers are installed the fresh reaper bench-net starts would exit at
+    once and leave the old code reaping. Reapers are found by their command
+    line, so those from before the pid file named itself stop too."""
+    found = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            argv = (entry / 'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        if argv[1:4] == REAPER_ARGV:
+            found.append(int(entry.name))
+    for pid in found:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    with open(STATE / 'reaper-lock', 'a+') as handle:
+        for stubborn in (False, True):
+            until = time.monotonic() + 5
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    REAPER_PID.unlink(missing_ok=True)
+                    return len(found)
+                except BlockingIOError:
+                    if time.monotonic() >= until:
+                        break
+                    time.sleep(0.05)
+            if stubborn:
+                fail('the running benchmark reaper did not stop')
+            for pid in found:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
 def reap():
     # A detached independent owner watchdog survives Windows app termination.
+    if sys.argv[2:] == ['--stop']:
+        print('stopped reapers', stop_reaper())
+        return 0
     setup()
     write(ROOT / 'control' / 'cgroup.procs', os.getpid())
     handle = open(STATE / 'reaper-lock', 'a+')
@@ -1209,15 +1360,23 @@ def reap():
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        REAPER_PID.write_text(f'{os.getpid()}\n')
+        replace_private(REAPER_PID, f'{os.getpid()} {proc_identity(os.getpid())}\n')
+        failures = 0
         while True:
-            # One failed pass (a ticket read while it is written, a group
-            # still stopping, a slow cleanup) must not end the watchdog: once
-            # the sandbox is up, bench-net restarts it only after it is gone.
+            # One failed pass (a group still stopping, a slow cleanup) must
+            # not end the watchdog; a failure that lasts a minute ends it, so
+            # bench-net starts a fresh one and status names the error.
             try:
                 reap_pass()
-            except Exception:
-                pass
+                if failures:
+                    note_reaper(f'recovered after {failures} failed passes')
+                failures = 0
+            except Exception as error:
+                failures += 1
+                note_reaper(f'pass failed ({failures}/{REAPER_FAILURES}): {type(error).__name__}: {error}')
+                if failures >= REAPER_FAILURES:
+                    REAPER_PID.unlink(missing_ok=True)
+                    return 70
             time.sleep(5)
     with locked():
         receipts()
@@ -1235,17 +1394,26 @@ def own(identifier):
     # A bounded independent retention deadline applies even after app crash.
     # The credential save helper retains ambiguous refresh evidence before
     # this owner can be removed; failure deliberately prevents deletion.
-    path.write_text(json.dumps({'id': identifier, 'deadline': time.time() + 7200}))
+    replace_private(path, json.dumps({'id': identifier, 'deadline': time.time() + 7200}))
 
 
 def expire_scratch(active):
     for path in (SCRATCH / 'owners').glob('*.json'):
-        row = json.loads(path.read_text())
-        identifier = ident(row['id'])
-        if identifier not in active and row['deadline'] < time.time():
-            result = subprocess.run(['/usr/local/sbin/bench-clean', identifier],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, timeout=30)
+        # One owner that cannot be read or cleaned must not keep the others.
+        row = readable(path)
+        try:
+            identifier = ident(row['id'])
+            expired = row['deadline'] < time.time()
+        except (TypeError, KeyError, RuntimeError):
+            continue
+        if identifier not in active and expired:
+            try:
+                result = subprocess.run(['/usr/local/sbin/bench-clean', identifier],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=30)
+            except subprocess.TimeoutExpired:
+                note_reaper(f'cleanup of {identifier} did not finish in 30 s')
+                continue
             if result.returncode == 0:
                 path.unlink(missing_ok=True)
 
@@ -1328,7 +1496,7 @@ if __name__ == '__main__':
                 reason = str(error)
                 if not reason.startswith(('infrastructure_error:', 'benchmark owned execution deadline', 'benchmark host transport')):
                     reason = 'infrastructure_error: trusted sandbox resource supervision or cleanup failed'
-                (STATE / 'outcomes' / (OUTCOME_TOKEN + '.json')).write_text(json.dumps({
+                replace_private(STATE / 'outcomes' / (OUTCOME_TOKEN + '.json'), json.dumps({
                     'token': OUTCOME_TOKEN, 'infrastructureError': reason}))
             except OSError:
                 pass

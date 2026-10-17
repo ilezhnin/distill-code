@@ -276,10 +276,18 @@ ask while one such observation runs share the next one. Copying a Z.ai key into
 the sandbox drops the shared observation. The supervisors' own CPU (status,
 cleanup and admission work) is one CPU of its own, outside the jobs' share. A
 watchdog in the sandbox reaps expired jobs and samples their CPU use every five
-seconds. A failed pass does not stop it, and the next job, network or status
-call starts it again if it is gone.
+seconds. It records its pid with the process's start time, so a reused pid
+never passes for it. A failed pass does not stop it; a minute of failed passes
+does, and the next job, network or status call starts a fresh one. `status`
+reports `budget reaper ok` or `down` and, for an hour, the last line of its
+bounded log (`/run/distill-bench-budget/reaper.err`, UTC times). A state file
+that a crash left half written is renamed `.unreadable` and logged instead of
+failing every pass. The first admission after the distribution boots waits up
+to thirty seconds while the boot's setup mounts the scratch disk.
 
 Helper updates retain a backup of old helpers and any previous scratch tree.
+They stop the running watchdog, which keeps the old helpers in memory, so the
+setup that follows starts one with the new helpers.
 Keep those local recovery copies until the update is verified. Runtime changes
 require fresh inventory selection and compatible qualification. Linux renderer
 identity includes installed browser libraries and fonts, so previous Windows

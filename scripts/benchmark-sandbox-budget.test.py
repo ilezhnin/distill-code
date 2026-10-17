@@ -3,7 +3,9 @@ import contextlib
 import importlib.machinery
 import io
 import json
+import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -35,6 +37,8 @@ class BudgetTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
         budget.STATE = root / 'leases'
+        budget.REAPER_LOG = budget.STATE / 'reaper.err'
+        budget.REAPER_PID = root / 'reaper.pid'
         budget.ROOT = root / 'groups'
         # Windows checkouts cannot make a root-owned 0644 file; the setting
         # path reports one, as the sandbox does.
@@ -437,6 +441,175 @@ class BudgetTests(unittest.TestCase):
         shutil.rmtree(stuck)
         lease.unlink()
 
+    def test_the_first_admission_after_boot_waits_for_the_scratch_mount(self):
+        # The boot command's bench-net may still be mounting the scratch disk
+        # when the app's first reserve arrives: that waits for bench-net's lock
+        # instead of failing with "findmnt -M /srv/bench exit 1".
+        lock = Path(self.temporary.name) / 'distill-bench-net'
+        lock.write_text('')
+        production = (budget.NET_LOCK, budget.fcntl, budget.scratch_mount)
+        self.addCleanup(lambda: [setattr(budget, name, value) for name, value in
+                                 zip(('NET_LOCK', 'fcntl', 'scratch_mount'), production)])
+        budget.NET_LOCK = lock
+        busy = {'left': 3}
+
+        def flock(_handle, _flags):
+            if busy['left']:
+                busy['left'] -= 1
+                raise BlockingIOError
+        budget.fcntl = types.SimpleNamespace(flock=flock, LOCK_SH=1, LOCK_NB=4)
+        mounts = [[], ['ext4', '/dev/loop7', 'rw,nosuid,nodev']]
+        budget.scratch_mount = lambda: mounts.pop(0) if busy['left'] == 0 or len(mounts) == 2 else []
+        self.assertEqual(budget.scratch_mount(), [])
+        budget.wait_for_net_setup()
+        self.assertEqual(busy['left'], 0)
+        self.assertEqual(budget.scratch_mount(), ['ext4', '/dev/loop7', 'rw,nosuid,nodev'])
+        # bench-net's own setup never waits for the lock it holds.
+        busy['left'] = 5
+        budget.os.environ = dict(budget.os.environ, DISTILL_BENCH_NET_LOCKED='1')
+        budget.wait_for_net_setup()
+        self.assertEqual(busy['left'], 5)
+
+    def test_installing_helpers_stops_the_reaper_that_holds_the_old_code(self):
+        # A reaper keeps its helpers in memory and holds its lock, so a fresh
+        # one would exit at once after new helpers: install-helpers.sh ends it
+        # (found by command line, whatever its era) before setup starts anew.
+        proc = Path(self.temporary.name) / 'proc'
+        for pid, argv in ((100, [b'/usr/bin/python3', b'/usr/local/sbin/bench-budget', b'reap', b'--daemon']),
+                          (101, [b'/usr/bin/python3', b'/usr/local/sbin/bench-budget', b'status']),
+                          (102, [b'/bin/bash', b'/usr/local/sbin/bench-run'])):
+            (proc / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / 'cmdline').write_bytes(b'\0'.join(argv) + b'\0')
+        production = (budget.Path, budget.fcntl, budget.signal)
+        self.addCleanup(lambda: setattr(budget, 'Path', production[0]) or setattr(budget, 'fcntl', production[1])
+                        or setattr(budget, 'signal', production[2]))
+        routed = budget.Path
+        budget.Path = lambda value: proc if value == '/proc' else routed(value)
+        signals = []
+        held = {'until': None}
+
+        def kill(pid, sent):
+            signals.append((pid, sent))
+            if sent == held['until']:
+                held['until'] = 'free'
+
+        def flock(_handle, _flags):
+            if held['until'] != 'free':
+                raise BlockingIOError
+        budget.os.kill = kill
+        budget.signal = types.SimpleNamespace(SIGTERM='TERM', SIGKILL='KILL')
+        budget.fcntl = types.SimpleNamespace(flock=flock, LOCK_EX=2, LOCK_NB=4)
+        budget.REAPER_PID.write_text('17\n')
+        held['until'] = 'TERM'
+        self.assertEqual(budget.stop_reaper(), 1)
+        self.assertEqual(signals, [(100, 'TERM')])
+        self.assertFalse(budget.REAPER_PID.exists())
+        # One that ignores SIGTERM is killed after five seconds.
+        signals.clear()
+        held['until'] = 'KILL'
+        clock = {'now': 0.0}
+        budget.time = types.SimpleNamespace(time=time.time, sleep=lambda s: clock.update(now=clock['now'] + s),
+                                            monotonic=lambda: clock['now'])
+        self.addCleanup(setattr, budget, 'time', time)
+        self.assertEqual(budget.stop_reaper(), 1)
+        self.assertEqual(signals, [(100, 'TERM'), (100, 'KILL')])
+
+    def test_a_reaper_that_keeps_failing_gives_way_and_says_why(self):
+        # A failure that lasts must not hide behind a live pid: after twelve
+        # failed passes the reaper removes its pid and exits, so bench-net
+        # starts a fresh one, and its bounded log names the error.
+        (budget.ROOT / 'control').mkdir()
+        sleeps = []
+
+        def reap_pass():
+            raise ValueError('an owner file nobody can read')
+        production = (budget.reap_pass, budget.time, budget.fcntl, sys.argv)
+
+        def restore():
+            budget.reap_pass, budget.time, budget.fcntl, sys.argv = production
+            vars(budget).pop('open', None)
+        self.addCleanup(restore)
+        budget.reap_pass = reap_pass
+        budget.time = types.SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=sleeps.append)
+        budget.fcntl = types.SimpleNamespace(flock=lambda *_: None, LOCK_EX=2, LOCK_NB=4)
+        budget.open = lambda *_args, **_options: io.StringIO()
+        sys.argv = ['bench-budget', 'reap', '--daemon']
+        self.assertEqual(budget.reap(), 70)
+        self.assertEqual(len(sleeps), budget.REAPER_FAILURES - 1)
+        self.assertFalse(budget.REAPER_PID.exists())
+        self.assertEqual(budget.reaper_state(), 'down')
+        log = budget.REAPER_LOG.read_text().splitlines()
+        self.assertEqual(len(log), budget.REAPER_LOG_LINES - 8)
+        self.assertIn('pass failed (12/12): ValueError: an owner file nobody can read', log[-1])
+        # The log stays bounded however long the failures go on.
+        for _ in range(3 * budget.REAPER_LOG_LINES):
+            budget.note_reaper('invented failure')
+        self.assertEqual(len(budget.REAPER_LOG.read_text().splitlines()), budget.REAPER_LOG_LINES)
+
+    def test_bench_net_takes_the_fast_path_only_for_the_reaper_it_started(self):
+        # The pid space wraps: a live process under the reaper's old pid is
+        # not the reaper unless its start time matches too.
+        bash = shutil.which('bash') if sys.platform != 'win32' else next(
+            (str(path) for path in (Path(r'C:\Program Files\Git\bin\bash.exe'),) if path.exists()), None)
+        if bash is None:
+            self.skipTest('no POSIX bash for bench-net')
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory)
+            for folder in ('run/netns', 'sys/class/net', 'sys/fs/cgroup/distill-bench/control',
+                           'proc/sys/kernel/random', 'proc/4711'):
+                (fake / folder).mkdir(parents=True)
+            (fake / 'run/netns/bench').write_text('')
+            (fake / 'sys/class/net/bench0').write_text('')
+            # Linux files end lines with \n alone, as the shell reads them.
+            (fake / 'proc/sys/kernel/random/boot_id').write_text('invented-boot\n', newline='\n')
+            (fake / 'run/distill-bench-net.ready').write_text('invented-boot\n', newline='\n')
+            fields = ['S'] + [str(field) for field in range(4, 22)] + ['12345'] + ['0'] * 8
+            (fake / 'proc/4711/stat').write_text('4711 (python3 a) b) ' + ' '.join(fields) + '\n', newline='\n')
+            net = fake / 'bench-net'
+            text = source.with_name('bench-net').read_text()
+            # Stop where the full setup would start; only the fast path runs.
+            text = text.replace('mkdir -p /run/lock', 'exit 3')
+            text = re.sub(r'(?<![\w/.-])/(run|proc|sys)/', lambda m: (fake / m.group(1)).as_posix() + '/', text)
+            net.write_text(text, newline='\n')
+            for line, expected in (('4711 12345', 0), ('4711 99999', 3), ('4711', 3), ('4712 12345', 3)):
+                (fake / 'run/distill-bench-reaper.pid').write_text(line + '\n', newline='\n')
+                ran = subprocess.run([bash, net.as_posix()], capture_output=True, text=True, timeout=30)
+                self.assertEqual(ran.returncode, expected, (line, ran.stderr))
+                self.assertEqual(ran.stderr, '', line)
+
+    def test_a_half_written_state_file_is_set_aside_not_fatal(self):
+        # Every writer replaces files whole now, so a file that does not parse
+        # and is a minute old was cut short by a crash: readers skip it and set
+        # it aside instead of failing every pass. A fresh one is only skipped.
+        torn = budget.STATE / ('lease-' + 'e' * 32 + '.json')
+        torn.write_text('{"pid": 4')
+        old = time.time() - budget.TORN_AFTER - 5
+        os.utime(torn, (old, old))
+        fresh = budget.STATE / 'wait-fictional.json'
+        fresh.write_text('')
+        self.assertEqual(budget.receipts(), [])
+        self.assertEqual(budget.waiting(), [])
+        self.assertFalse(torn.exists())
+        self.assertTrue(torn.with_name(torn.name + '.unreadable').exists())
+        self.assertTrue(fresh.exists())
+        self.assertIn('set aside unreadable ' + torn.name, budget.REAPER_LOG.read_text())
+        # One unreadable owner does not keep an expired one from its cleanup.
+        production_scratch = budget.SCRATCH
+        self.addCleanup(setattr, budget, 'SCRATCH', production_scratch)
+        budget.SCRATCH = Path(self.temporary.name) / 'scratch'
+        owners = budget.SCRATCH / 'owners'
+        owners.mkdir(parents=True, exist_ok=True)
+        (owners / 'fictional-broken.json').write_text('{"id": ')
+        (owners / 'fictional-done.json').write_text(json.dumps({'id': 'fictional-done', 'deadline': 0}))
+        cleaned = []
+        production_run = budget.subprocess.run
+        self.addCleanup(setattr, budget.subprocess, 'run', production_run)
+        budget.subprocess.run = lambda command, **_: cleaned.append(command[1]) or types.SimpleNamespace(returncode=0)
+        budget.expire_scratch(set())
+        self.assertEqual(cleaned, ['fictional-done'])
+        self.assertFalse((owners / 'fictional-done.json').exists())
+        self.assertTrue((owners / 'fictional-broken.json').exists())
+
     def test_the_reaper_survives_a_failed_pass_and_names_itself(self):
         # Once the sandbox is up, bench-net restarts the reaper only after its
         # pid is gone, so one failed pass must not end it.
@@ -470,7 +643,11 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaises(Stop):
             budget.reap()
         self.assertEqual(len(passes), 3)
-        self.assertEqual(budget.REAPER_PID.read_text(), f'{budget.os.getpid()}\n')
+        # The pid and its start time: a reused pid does not pass as the reaper.
+        self.assertEqual(budget.REAPER_PID.read_text().split()[0], str(budget.os.getpid()))
+        self.assertEqual(len(budget.REAPER_PID.read_text().split()), 2)
+        self.assertIn('pass failed (1/12): ValueError', budget.REAPER_LOG.read_text())
+        self.assertIn('recovered after 1 failed passes', budget.REAPER_LOG.read_text())
 
     def test_cgroup_settings_are_written_only_when_they_differ(self):
         path = budget.ROOT / 'cpu.max'

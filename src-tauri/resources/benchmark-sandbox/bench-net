@@ -18,14 +18,24 @@ if [ -f "$ready" ] && [ -e /run/netns/bench ] && [ -e /sys/class/net/bench0 ] \
   && [ -d /sys/fs/cgroup/distill-bench/control ] && [ -f /run/distill-bench-reaper.pid ]; then
   read -r boot </proc/sys/kernel/random/boot_id
   read -r marked <"$ready" || marked=
-  read -r reaper </run/distill-bench-reaper.pid || reaper=
-  if [ "$marked" = "$boot" ] && [ -n "$reaper" ] && [ -d "/proc/$reaper" ]; then
-    exit 0
+  # The reaper's pid and its start time (field 22 of /proc/PID/stat, as the
+  # broker's proc_identity reads it): a pid the kernel has since given to
+  # another process does not keep this path open.
+  read -r reaper started </run/distill-bench-reaper.pid || reaper=
+  if [ "$marked" = "$boot" ] && [ -n "$reaper" ] && [ -n "${started:-}" ] \
+    && read -r stat 2>/dev/null <"/proc/$reaper/stat"; then
+    # After the command name's last ")", the third field comes first.
+    set -- ${stat##*")"}
+    if [ "${20:-}" = "$started" ]; then
+      exit 0
+    fi
   fi
 fi
 mkdir -p /run/lock
 exec 9>/run/lock/distill-bench-net
 flock 9
+# What this setup starts must not wait for the lock it holds.
+export DISTILL_BENCH_NET_LOCKED=1
 # The first distribution to boot cannot depend on another distro's systemd
 # enabling these controllers on the shared cgroup root.
 if [ -f /var/lib/distill-bench/scratch.ext4 ]; then
