@@ -1544,21 +1544,27 @@ fn deadline_outcome(error: io::Error, deadline_ms: u64) -> io::Error {
 }
 
 pub(crate) async fn copy_until(id: &str, archive: &[u8], deadline_ms: u64) -> io::Result<()> {
-    copy_until_inner(id, archive, deadline_ms)
+    valid_id(id)?;
+    let deadline = deadline_ms.to_string();
+    copy_until_inner(&[id, &deadline], Some(archive), deadline_ms)
         .await
-        .map_err(|error| deadline_outcome(error, deadline_ms))
+        .and_then(|out| out.require_success("copy"))
+        .map_err(|error| deadline_outcome(error, deadline_ms))?;
+    Ok(())
 }
 
-async fn copy_until_inner(id: &str, archive: &[u8], deadline_ms: u64) -> io::Result<()> {
-    valid_id(id)?;
+async fn copy_until_inner(
+    args: &[&str],
+    archive: Option<&[u8]>,
+    deadline_ms: u64,
+) -> io::Result<Output> {
     remaining_ms(deadline_ms)?;
-    let deadline = deadline_ms.to_string();
     // A later step's workspace waits for room inside its own deadline.
     let out = invoke_once_admitted(
-        (ResourceClass::Preparation, id),
+        (ResourceClass::Preparation, args[0]),
         "/usr/local/sbin/bench-copy",
-        &[id, &deadline],
-        Some(archive),
+        args,
+        archive,
         TAIL_BYTES,
         Duration::from_secs(125),
         deadline_ms,
@@ -1568,8 +1574,59 @@ async fn copy_until_inner(id: &str, archive: &[u8], deadline_ms: u64) -> io::Res
     if out.code == Some(124) {
         return Err(io::Error::new(io::ErrorKind::TimedOut, out.reason()));
     }
+    Ok(out)
+}
+
+/// Builds the attempt's workspace from the published `tree`: the sandbox's
+/// cached copy of it, or, given its `archive`, that archive once bench-copy
+/// found it holds `tree`; the sandbox then keeps it for the attempts and
+/// checks after. `Ok(false)` without an archive: the cache holds no copy
+/// and nothing was written, so the caller sends the archive.
+pub(crate) async fn copy_tree(
+    id: &str,
+    tree: &str,
+    archive: Option<&[u8]>,
+    deadline_ms: Option<u64>,
+) -> io::Result<bool> {
+    valid_id(id)?;
+    valid_tree(tree)?;
+    let deadline_ms = match deadline_ms {
+        Some(deadline_ms) => deadline_ms,
+        None => now_ms()?.saturating_add(CONTROL_TIMEOUT.as_millis() as u64),
+    };
+    let deadline = deadline_ms.to_string();
+    let mut args = vec![id, deadline.as_str(), tree];
+    if archive.is_some() {
+        args.push("-");
+    }
+    let out = copy_until_inner(&args, archive, deadline_ms)
+        .await
+        .map_err(|error| deadline_outcome(error, deadline_ms))?;
+    if archive.is_none() && not_cached(&out, tree) {
+        return Ok(false);
+    }
     out.require_success("copy")?;
-    Ok(())
+    Ok(true)
+}
+
+fn valid_tree(tree: &str) -> io::Result<()> {
+    if matches!(tree.len(), 40 | 64)
+        && tree
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        Ok(())
+    } else {
+        Err(io::Error::other("Invalid snapshot tree id"))
+    }
+}
+
+/// The helper's answer when the sandbox's snapshot cache holds no copy of
+/// `tree`: it wrote nothing, and the caller may send the snapshot.
+fn not_cached(out: &Output, tree: &str) -> bool {
+    out.code == Some(3)
+        && out.infrastructure_error().is_none()
+        && out.stdout == format!("not cached {tree}\n").as_bytes()
 }
 
 // The Linux worker owns its process group. The native absolute deadline is
@@ -1768,12 +1825,21 @@ fn require_patch(out: Output) -> io::Result<Output> {
     out.require_success("patch")
 }
 
-pub(crate) async fn prepare_check(id: &str, archive: &[u8]) -> io::Result<Output> {
+/// Prepares check `id` on the published `tree`. The package carries the
+/// snapshot (snapshot.tar) only when the sandbox's cache lacks it; for one
+/// without it, `Ok(None)` says the cache holds no copy and nothing was
+/// prepared, so the caller sends the snapshot.
+pub(crate) async fn prepare_check(
+    id: &str,
+    tree: &str,
+    package: &[u8],
+) -> io::Result<Option<Output>> {
     valid_id(id)?;
+    valid_tree(tree)?;
     let result = invoke(
         "/usr/local/sbin/bench-check-prep",
-        &[id],
-        Some(archive),
+        &[id, tree],
+        Some(package),
         TAIL_BYTES,
         CONTROL_TIMEOUT,
     )
@@ -1781,10 +1847,13 @@ pub(crate) async fn prepare_check(id: &str, archive: &[u8]) -> io::Result<Output
     // Preparing applies the answer in a checker cgroup, too.
     kill("check", id).await?;
     let out = result?;
-    if out.code == Some(2) {
-        return Ok(out);
+    if not_cached(&out, tree) {
+        return Ok(None);
     }
-    out.require_success("prepare check")
+    if out.code == Some(2) {
+        return Ok(Some(out));
+    }
+    out.require_success("prepare check").map(Some)
 }
 
 pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result<Output> {
@@ -2057,6 +2126,58 @@ mod tests {
             deadline_outcome(io::Error::other("unrelated"), now + 3_600_000).kind(),
             io::ErrorKind::Other
         );
+    }
+
+    #[test]
+    fn only_the_helpers_own_answer_for_the_asked_tree_is_a_cache_miss() {
+        let tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        let answer = |code, stdout: &str, infrastructure: Option<&str>| Output {
+            code: Some(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            truncated: false,
+            infrastructure: infrastructure.map(str::to_owned),
+        };
+        assert!(not_cached(
+            &answer(3, &format!("not cached {tree}\n"), None),
+            tree
+        ));
+        // Another tree's miss, another exit, or a lease the broker failed
+        // are no reason to send the snapshot and try again.
+        let other = "0".repeat(40);
+        assert!(!not_cached(
+            &answer(3, &format!("not cached {other}\n"), None),
+            tree
+        ));
+        assert!(!not_cached(
+            &answer(70, &format!("not cached {tree}\n"), None),
+            tree
+        ));
+        assert!(!not_cached(&answer(3, "", None), tree));
+        assert!(!not_cached(
+            &answer(
+                3,
+                &format!("not cached {tree}\n"),
+                Some("infrastructure_error: x")
+            ),
+            tree
+        ));
+    }
+
+    #[test]
+    fn a_snapshot_tree_is_a_full_lowercase_git_object_id() {
+        assert!(valid_tree(&"a".repeat(40)).is_ok());
+        assert!(valid_tree(&"0123456789abcdef".repeat(4)).is_ok());
+        for tree in [
+            "A".repeat(40),
+            "a".repeat(39),
+            "g".repeat(40),
+            "a".repeat(41),
+            String::new(),
+        ] {
+            assert!(valid_tree(&tree).is_err(), "{tree}");
+        }
+        assert!(valid_tree(&format!("-{}", "a".repeat(39))).is_err());
     }
 
     #[test]

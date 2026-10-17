@@ -708,6 +708,22 @@ async fn source_git(snapshot: &Snapshot, args: &[&str]) -> Result<Vec<u8>> {
 /// Verify the frozen tree and export only its files. Archiving the tree also
 /// avoids Git's global PAX comment carrying the source commit identity.
 pub async fn archive(snapshot: &Snapshot) -> Result<Vec<u8>> {
+    verify(snapshot).await?;
+    let archive = source_git(snapshot, &["archive", "--format=tar", &snapshot.tree]).await?;
+    if archive.len() > MAX_SNAPSHOT_BYTES {
+        return Err(BenchmarkError::new(
+            "validation",
+            "Repository snapshot exceeds 256 MiB",
+        ));
+    }
+    validate_archive(&archive)?;
+    Ok(archive)
+}
+
+/// Verify that the snapshot's commit still holds the published tree. A
+/// workspace the sandbox builds from its cached copy of the tree passes this
+/// check as an archived one does.
+pub async fn verify(snapshot: &Snapshot) -> Result<()> {
     if [&snapshot.commit, &snapshot.tree]
         .iter()
         .any(|id| ![40, 64].contains(&id.len()) || !id.bytes().all(|c| c.is_ascii_hexdigit()))
@@ -728,26 +744,30 @@ pub async fn archive(snapshot: &Snapshot) -> Result<Vec<u8>> {
             "The snapshot commit no longer holds the published tree",
         ));
     }
-    let archive = source_git(snapshot, &["archive", "--format=tar", &snapshot.tree]).await?;
-    if archive.len() > MAX_SNAPSHOT_BYTES {
-        return Err(BenchmarkError::new(
-            "validation",
-            "Repository snapshot exceeds 256 MiB",
-        ));
-    }
-    validate_archive(&archive)?;
-    Ok(archive)
+    Ok(())
 }
 
 /// Bound only the trusted local Git exporter; no candidate command runs here.
 pub async fn archive_until(snapshot: &Snapshot, deadline_ms: u64) -> Result<Vec<u8>> {
+    within(deadline_ms, archive(snapshot)).await
+}
+
+/// [`verify`] within the native deadline.
+pub async fn verify_until(snapshot: &Snapshot, deadline_ms: u64) -> Result<()> {
+    within(deadline_ms, verify(snapshot)).await
+}
+
+async fn within<T>(
+    deadline_ms: u64,
+    work: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
     let remaining = deadline_ms
         .checked_sub(super::store::now() as u64)
         .filter(|remaining| *remaining > 0)
         .ok_or_else(|| {
             BenchmarkError::new("budget_timeout", "Native repository deadline expired")
         })?;
-    tokio::time::timeout(Duration::from_millis(remaining), archive(snapshot))
+    tokio::time::timeout(Duration::from_millis(remaining), work)
         .await
         .map_err(|_| {
             BenchmarkError::new(
@@ -883,21 +903,13 @@ fn append_file(builder: &mut tar::Builder<Vec<u8>>, path: &str, bytes: &[u8]) ->
     Ok(())
 }
 
-fn check_archive(snapshot: &[u8], patch: &str, check: &HiddenCheck) -> Result<Vec<u8>> {
-    validate_archive(snapshot)?;
+/// The check's package: the answer and the check's files, and the snapshot's
+/// archive as snapshot.tar only when the sandbox's cache lacks it.
+fn check_archive(snapshot: Option<&[u8]>, patch: &str, check: &HiddenCheck) -> Result<Vec<u8>> {
     let mut builder = tar::Builder::new(Vec::new());
-    // Include the directory even for an empty snapshot.
-    let mut directory = tar::Header::new_gnu();
-    directory.set_entry_type(tar::EntryType::Directory);
-    directory.set_size(0);
-    directory.set_mode(0o755);
-    directory.set_cksum();
-    builder.append_data(&mut directory, "snapshot", std::io::empty())?;
-    for entry in tar::Archive::new(snapshot).entries()? {
-        let mut entry = entry?;
-        let path = PathBuf::from("snapshot").join(entry.path()?);
-        let mut header = entry.header().clone();
-        builder.append_data(&mut header, path, &mut entry)?;
+    if let Some(snapshot) = snapshot {
+        validate_archive(snapshot)?;
+        append_file(&mut builder, "snapshot.tar", snapshot)?;
     }
     append_file(&mut builder, "answer.patch", patch.as_bytes())?;
     for file in &check.files {
@@ -924,6 +936,38 @@ fn check_archive(snapshot: &[u8], patch: &str, check: &HiddenCheck) -> Result<Ve
     Ok(builder.into_inner()?)
 }
 
+/// Prepares check `id` on the sandbox's cached copy of the snapshot. Only
+/// when the cache lacks it is the snapshot archived here, under the host
+/// preparation gate, and sent; the sandbox keeps it for the checks after.
+async fn prepare_check(
+    id: &str,
+    snapshot: &Snapshot,
+    patch: &str,
+    check: &HiddenCheck,
+) -> Result<sandbox::Output> {
+    let package = check_archive(None, patch, check)?;
+    if let Some(prepared) = sandbox::prepare_check(id, &snapshot.tree, &package)
+        .await
+        .map_err(sandbox_error)?
+    {
+        return Ok(prepared);
+    }
+    let _preparation =
+        sandbox::host_preparation((super::store::now() as u64).saturating_add(420_000))
+            .await
+            .map_err(sandbox_error)?;
+    let package = check_archive(Some(&archive(snapshot).await?), patch, check)?;
+    sandbox::prepare_check(id, &snapshot.tree, &package)
+        .await
+        .map_err(sandbox_error)?
+        .ok_or_else(|| {
+            BenchmarkError::new(
+                "infrastructure_failure",
+                "Repository sandbox did not take the check's snapshot",
+            )
+        })
+}
+
 /// Publication must run even an empty known-bad answer against the real
 /// check. Otherwise a check that always succeeds could pass publication.
 pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Result<Evaluation> {
@@ -931,22 +975,15 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
         .await
         .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
     let check = hidden_check(&manifest.evaluator)?;
-    let preparation =
-        sandbox::host_preparation((super::store::now() as u64).saturating_add(420_000))
-            .await
-            .map_err(sandbox_error)?;
-    let snapshot = archive(&snapshot(manifest)?).await?;
-    let package = check_archive(&snapshot, patch, &check)?;
+    let snapshot = snapshot(manifest)?;
+    verify(&snapshot).await?;
     let id = format!("check-{}", uuid::Uuid::new_v4());
     let mut cleanup = sandbox::Cleanup(Some(id.clone()));
     let details = Some(
         serde_json::json!({"sandbox": sandbox::DISTRIBUTION, "runtimeRevision": status.revision, "checkId": id}),
     );
     let result = async {
-        let prepared = sandbox::prepare_check(&id, &package)
-            .await
-            .map_err(sandbox_error)?;
-        drop(preparation);
+        let prepared = prepare_check(&id, &snapshot, patch, &check).await?;
         if prepared.code == Some(2) {
             return Ok(evaluation(
                 manifest,
@@ -1283,6 +1320,57 @@ else:
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn a_check_package_carries_the_snapshot_only_when_the_sandbox_lacks_it() {
+        let entries = |package: &[u8]| -> Vec<(String, Vec<u8>)> {
+            tar::Archive::new(package)
+                .entries()
+                .unwrap()
+                .map(|entry| {
+                    let mut entry = entry.unwrap();
+                    let path = entry.path().unwrap().to_string_lossy().into_owned();
+                    let mut bytes = Vec::new();
+                    std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+                    (path, bytes)
+                })
+                .collect()
+        };
+        let check = HiddenCheck {
+            files: vec![Fixture {
+                path: "invented_check.py".into(),
+                content: "print('invented')\n".into(),
+            }],
+            command: vec!["python3".into(), "invented_check.py".into()],
+            timeout_seconds: 10,
+            probe: None,
+        };
+        let mut snapshot = tar::Builder::new(Vec::new());
+        append_file(&mut snapshot, "fixture.txt", b"invented\n").unwrap();
+        let snapshot = snapshot.into_inner().unwrap();
+        let cached = entries(&check_archive(None, "a patch", &check).unwrap());
+        assert_eq!(
+            cached
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["answer.patch", "hidden/invented_check.py"]
+        );
+        // Sent, the snapshot is its archive byte for byte, for the sandbox
+        // to check against the published tree and keep.
+        let sent = entries(&check_archive(Some(&snapshot), "a patch", &check).unwrap());
+        assert_eq!(sent[0], ("snapshot.tar".into(), snapshot));
+        assert_eq!(sent[1..], cached[..]);
+        let mut linked = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_cksum();
+        linked
+            .append_link(&mut header, "escape", "/invented/outside")
+            .unwrap();
+        assert!(check_archive(Some(&linked.into_inner().unwrap()), "", &check).is_err());
     }
 
     #[test]

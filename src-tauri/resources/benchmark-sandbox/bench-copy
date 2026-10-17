@@ -1,27 +1,31 @@
 #!/bin/bash
-# bench-copy ID [ABSOLUTE_DEADLINE_EPOCH_MS] < snapshot.tar
+# bench-copy ID [ABSOLUTE_DEADLINE_EPOCH_MS [TREE [-]]] [< snapshot.tar]
 # Writes the snapshot's files twice: the candidate's copy in
 # /srv/bench/work/ID (one commit, no history, owned by the candidate) and a
 # pristine base in /srv/bench/base/ID that only root reaches, against which
 # bench-patch reads the answer whatever the candidate did to its own .git.
+# With TREE the snapshot is that published tree: the sandbox's cached copy,
+# or with "-" the archive on standard input, checked to hold TREE and then
+# cached. Without "-" it exits 3, having written nothing, when the cache
+# holds no copy of TREE.
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo "bench-copy: root required" >&2; exit 77; }
 if [[ -z ${DISTILL_BENCH_BUNDLE:-} ]]; then
-  [[ $# != 2 ]] || export DISTILL_BENCH_DEADLINE_MS=$2
+  [[ $# -lt 2 ]] || export DISTILL_BENCH_DEADLINE_MS=$2
   exec /usr/local/sbin/bench-budget prep "${1:-}" -- /bin/bash "$0" "$@"
 fi
 # The deadline supervisor owns a separate Linux process group, including the
 # tar/cp/Git children. Killing wsl.exe alone does not stop those processes.
-if [[ ${1:-} != --worker && $# == 2 ]]; then
+if [[ ${1:-} != --worker && $# -ge 2 && $# -le 4 ]]; then
   exec /usr/bin/python3 -c '
 import os, re, signal, subprocess, sys, time
-entry, ident, deadline = sys.argv[1:]
+entry, ident, deadline, *snapshot = sys.argv[1:]
 if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", ident) or not re.fullmatch(r"[0-9]{1,16}", deadline):
     print("bench-copy: bad id/deadline", file=sys.stderr); sys.exit(64)
 remaining = min(120.0, (int(deadline) - time.time_ns() // 1_000_000) / 1000)
 if remaining <= 0:
     print("bench-copy: native deadline expired", file=sys.stderr); sys.exit(124)
-child = subprocess.Popen(["/bin/bash", entry, "--worker", ident], start_new_session=True)
+child = subprocess.Popen(["/bin/bash", entry, "--worker", ident, *snapshot], start_new_session=True)
 try:
     sys.exit(child.wait(timeout=remaining))
 except subprocess.TimeoutExpired:
@@ -33,16 +37,19 @@ except subprocess.TimeoutExpired:
         child.wait()
     print("bench-copy: native deadline expired", file=sys.stderr)
     sys.exit(124)
-' "$0" "$1" "$2"
+' "$0" "$@"
 fi
+tree= source=
 if [[ ${1:-} == --worker ]]; then
-  [[ $# == 2 ]] || exit 64
-  id=$2
+  [[ $# -ge 2 && $# -le 4 ]] || exit 64
+  id=$2 tree=${3:-} source=${4:-}
 else
   [[ $# == 1 ]] || exit 64
   id=${1:-}
 fi
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-copy: bad id" >&2; exit 64; }
+[[ -z $tree || $tree =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "bench-copy: bad tree" >&2; exit 64; }
+[[ -z $source || ( -n $tree && $source == - ) ]] || { echo "bench-copy: bad snapshot source" >&2; exit 64; }
 /usr/local/sbin/bench-budget own "$id"
 work=/srv/bench/work/$id
 base=/srv/bench/base/$id
@@ -81,21 +88,56 @@ made_base=1
 mkdir -m 700 -- "$work"
 made_work=1
 chmod 700 "$base" "$work"
-/usr/local/sbin/bench-unpack "$base"
-cp -a "$base/." "$work/"
+if [[ -z $tree ]]; then
+  /usr/local/sbin/bench-unpack "$base"
+elif [[ -n $source ]]; then
+  /usr/local/sbin/bench-unpack --tree "$tree" "$base"
+else
+  status=0
+  /usr/local/sbin/bench-unpack --cached "$tree" "$base" || status=$?
+  if (( status == 3 )); then echo "not cached $tree"; exit 3; fi
+  (( status == 0 )) || exit "$status"
+fi
 # Both start as the same single commit, made here before the candidate owns
 # anything, so no configuration of its runs as root.
+/usr/bin/git "${git_commit[@]}" -C "$base" init -q
+# Preserve the verified archive tree exactly. `git add` would apply its
+# .gitattributes encodings/filters and omit tracked .gitignore entries. One
+# process hashes every file without filters and one stages them all: the
+# same blobs, modes and tree as one hash-object/update-index pair per file.
+/usr/bin/python3 - "$base" "${git_commit[@]}" <<'PY'
+import os, stat, subprocess, sys
+root, options = os.fsencode(sys.argv[1]), sys.argv[2:]
+git = ['/usr/bin/git', *options, '-C', sys.argv[1]]
+entries = []
+for directory, directories, files in os.walk(root):
+    if directory == root:
+        directories[:] = [name for name in directories if name != b'.git']
+    for name in files:
+        path = os.path.join(directory, name)
+        info = os.lstat(path)
+        if stat.S_ISREG(info.st_mode):
+            entries.append((os.path.relpath(path, root), b'100755' if info.st_mode & 0o111 else b'100644'))
+if entries:
+    # hash-object reads one name per line and C-unquotes it, so every name
+    # is quoted and any byte, a line break included, survives.
+    def quoted(path):
+        return b'"' + b''.join(b'\\' + bytes([byte]) if byte in b'"\\' else bytes([byte]) if 0x20 <= byte < 0x7f
+                               else b'\\%03o' % byte for byte in path) + b'"\n'
+    blobs = subprocess.run(git + ['hash-object', '-w', '--no-filters', '--stdin-paths'],
+                           input=b''.join(quoted(path) for path, _ in entries),
+                           stdout=subprocess.PIPE, check=True).stdout.split()
+    if len(blobs) != len(entries):
+        sys.exit('bench-copy: snapshot hashing lost a file')
+    subprocess.run(git + ['update-index', '-z', '--index-info'], check=True,
+                   input=b''.join(mode + b' ' + blob + b'\t' + path + b'\0' for (path, mode), blob in zip(entries, blobs)))
+PY
+if [[ -n $tree && $(/usr/bin/git "${git_commit[@]}" -C "$base" write-tree) != "$tree" ]]; then
+  echo "bench-copy: the snapshot does not hold tree $tree" >&2
+  exit 65
+fi
+cp -a "$base/." "$work/"
 for dir in "$base" "$work"; do
-  /usr/bin/git "${git_commit[@]}" -C "$dir" init -q
-  # Preserve the verified archive tree exactly. `git add` would apply its
-  # .gitattributes encodings/filters and omit tracked .gitignore entries.
-  while IFS= read -r -d '' path; do
-    relative=${path#"$dir/"}
-    mode=100644
-    [[ -x $path ]] && mode=100755
-    blob=$(/usr/bin/git "${git_commit[@]}" -C "$dir" hash-object -w --no-filters -- "$path")
-    /usr/bin/git "${git_commit[@]}" -C "$dir" update-index --add --cacheinfo "$mode,$blob,$relative"
-  done < <(/usr/bin/find "$dir" -path "$dir/.git" -prune -o -type f -print0)
   /usr/bin/git "${git_commit[@]}" -C "$dir" commit -q --allow-empty -m snapshot
 done
 chown -R candidate:candidate "$work"

@@ -113,6 +113,22 @@ stages declared task inputs and the selected provider's credential material.
 Provider inference sends those inputs to its endpoint under the account's
 existing data-use policy.
 
+A repository attempt works in its own copy of the published snapshot, with a
+pristine root-only base beside it from which its answer is read. Every check
+gets its own copy too. Nothing unpacked is shared, but the archives they
+unpack are cached: `/srv/bench/cache` keeps one read-only, root-only archive
+per published tree, named by the tree's id, which no run can see (sessions,
+checks and probes have `/srv/bench` hidden). An archive is kept only once
+its files hold that tree, and each use checks the tree again; an entry that
+fails the check, or that anyone but root could have changed, is removed and
+counts as absent. When the cache lacks a tree, the controller archives the
+snapshot on Windows and sends it, as every attempt did before, and the
+sandbox keeps it for the attempts and checks after. A later workflow step
+starts from its predecessor's archive instead. Entries unused for seven days
+go, and beyond 256 MiB or 512 entries the least recently used go first; an
+archive is kept only while 3 GiB of scratch stay free. Removing
+`/srv/bench/cache` while no job runs is always safe.
+
 Benchmark jobs share an 8 GiB scratch filesystem with 131072 inodes. Every job
 keeps its own memory, CPU, process and scratch I/O ceiling, and admission never
 changes it; the aggregate is shared by measured use. The CPU weight decides

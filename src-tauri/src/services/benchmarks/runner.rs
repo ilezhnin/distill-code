@@ -888,6 +888,37 @@ async fn preparation_gate(deadline: Option<u64>) -> Result<tokio::sync::OwnedSem
         .map_err(|error| sandbox_setup_error(error, deadline))
 }
 
+/// Builds workspace `id` from the published, already verified `snapshot`:
+/// the sandbox's cached copy of its tree when it holds one. Otherwise the
+/// snapshot is archived here, under the host preparation gate, and sent,
+/// and the sandbox keeps it for the attempts and checks after.
+///
+/// Boxed: an attempt awaits it under many layers on a runtime worker stack.
+fn copy_snapshot<'a>(
+    id: &'a str,
+    snapshot: &'a super::repository::Snapshot,
+    deadline: Option<u64>,
+) -> BoxFuture<'a, Result<()>> {
+    Box::pin(async move {
+        let setup_error = |error| sandbox_setup_error(error, deadline);
+        if sandbox::copy_tree(id, &snapshot.tree, None, deadline)
+            .await
+            .map_err(setup_error)?
+        {
+            return Ok(());
+        }
+        let _preparation = preparation_gate(deadline).await?;
+        let archive = match deadline {
+            Some(deadline) => super::repository::archive_until(snapshot, deadline).await?,
+            None => super::repository::archive(snapshot).await?,
+        };
+        sandbox::copy_tree(id, &snapshot.tree, Some(&archive), deadline)
+            .await
+            .map_err(setup_error)?;
+        Ok(())
+    })
+}
+
 fn collection_budget(
     draft: &BenchmarkDraft,
 ) -> Result<Option<super::artifact_context::BudgetLease>> {
@@ -2937,15 +2968,12 @@ impl ExecutionBackend for NativeBackend {
                 .map(unsigned_deadline)
                 .transpose()?;
             let cwd = if repository {
-                let _preparation = if binding.context_v2.is_none() {
-                    Some(preparation_gate(deadline).await?)
-                } else {
-                    None
-                };
                 let source = binding.request.repository.as_ref().ok_or_else(|| {
                     BenchmarkError::new("validation", "An explicit repository snapshot is required")
                 })?;
-                let archive = if let Some(context) = &binding.context_v2 {
+                // A later step starts from its sealed predecessor's archive;
+                // a first one from the published snapshot (`None`).
+                let advanced = if let Some(context) = &binding.context_v2 {
                     let before = context.artifact_before.as_ref().ok_or_else(|| {
                         BenchmarkError::new(
                             "invalid_task_authority",
@@ -2977,9 +3005,10 @@ impl ExecutionBackend for NativeBackend {
                             "Native repository setup differs from its frozen predecessor artifact",
                         ));
                     }
-                    prepared.archive
+                    Some(prepared.archive)
                 } else {
-                    super::repository::archive(source).await?
+                    super::repository::verify(source).await?;
+                    None
                 };
                 let marker_dir = store.root.join("task-executions").join(&binding.id);
                 tokio::fs::create_dir_all(&marker_dir).await?;
@@ -2999,11 +3028,16 @@ impl ExecutionBackend for NativeBackend {
                         sandbox::clean(&copy_id).await?;
                     }
                     tokio::fs::write(&marker,serde_json::to_vec(&json!({"bindingId":binding.id,"contextHash":binding.context_hash,"phase":"copying"}))?).await?;
-                    match deadline {
-                        Some(deadline) => sandbox::copy_until(&copy_id, &archive, deadline).await,
-                        None => sandbox::copy(&copy_id, &archive).await,
+                    match &advanced {
+                        Some(archive) => match deadline {
+                            Some(deadline) => {
+                                sandbox::copy_until(&copy_id, archive, deadline).await
+                            }
+                            None => sandbox::copy(&copy_id, archive).await,
+                        }
+                        .map_err(|error| sandbox_setup_error(error, deadline))?,
+                        None => copy_snapshot(&copy_id, source, deadline).await?,
                     }
-                    .map_err(|error| sandbox_setup_error(error, deadline))?;
                 }
                 "/workspace".into()
             } else {
@@ -3582,13 +3616,8 @@ impl ExecutionBackend for NativeBackend {
             busy().await?;
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
             let cwd = if let Some(id) = cleanup.0.as_deref().filter(|_| repository) {
-                let _preparation = if artifact_input.is_none() {
-                    Some(preparation_gate(deadline).await?)
-                } else {
-                    None
-                };
                 let snapshot = super::repository::snapshot(&version.manifest)?;
-                let archive = if let Some(input) = &artifact_input {
+                if let Some(input) = &artifact_input {
                     let prepared = super::repository::advance_until(
                         &snapshot,
                         &input.lineage,
@@ -3603,17 +3632,22 @@ impl ExecutionBackend for NativeBackend {
                             "Collection predecessor differs from its native artifact input",
                         ));
                     }
-                    prepared.archive
-                } else if let Some(deadline) = deadline {
-                    super::repository::archive_until(&snapshot, deadline).await?
+                    match deadline {
+                        Some(deadline) => {
+                            sandbox::copy_until(id, &prepared.archive, deadline).await
+                        }
+                        None => sandbox::copy(id, &prepared.archive).await,
+                    }
+                    .map_err(|error| sandbox_setup_error(error, deadline))?;
                 } else {
-                    super::repository::archive(&snapshot).await?
-                };
-                match deadline {
-                    Some(deadline) => sandbox::copy_until(id, &archive, deadline).await,
-                    None => sandbox::copy(id, &archive).await,
+                    match deadline {
+                        Some(deadline) => {
+                            super::repository::verify_until(&snapshot, deadline).await?
+                        }
+                        None => super::repository::verify(&snapshot).await?,
+                    }
+                    copy_snapshot(id, &snapshot, deadline).await?;
                 }
-                .map_err(|error| sandbox_setup_error(error, deadline))?;
                 "/workspace".to_owned()
             } else {
                 "/workspace".to_owned()

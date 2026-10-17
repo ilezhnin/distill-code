@@ -1,12 +1,17 @@
 #!/bin/bash
-# bench-check-prep ID < check.tar
-# check.tar holds snapshot/ (the snapshot's files), answer.patch and hidden/
-# (the check's files). Builds /srv/bench/checks/ID for the checker: the
+# bench-check-prep ID [TREE] < check.tar
+# check.tar holds answer.patch and hidden/ (the check's files), and the
+# snapshot: snapshot/ (its files) or, with TREE, that published tree, either
+# the sandbox's cached copy or snapshot.tar (the archive), checked to hold
+# TREE and then cached. Builds /srv/bench/checks/ID for the checker: the
 # snapshot as one commit, the answer applied, the hidden files added. Exits 2
-# when the answer does not apply.
+# when the answer does not apply, and 3, leaving nothing, when the cache
+# holds no copy of TREE and check.tar no snapshot.tar.
 set -euo pipefail
 id=${1:-}
+tree=${2:-}
 [[ $id =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "bench-check-prep: bad id" >&2; exit 64; }
+[[ $# -le 2 && ( -z $tree || $tree =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ) ]] || { echo "bench-check-prep: bad tree" >&2; exit 64; }
 if [[ -z ${DISTILL_BENCH_BUNDLE:-} ]]; then
   exec /usr/local/sbin/bench-budget prep "$id" -- /bin/bash "$0" "$@"
 fi
@@ -21,7 +26,23 @@ mkdir -p "$staging" "$dir"
 chmod 700 "$staging" "$dir"
 trap 'rm -rf "$staging"' EXIT
 /usr/local/sbin/bench-unpack "$staging"
-cp -a "$staging/snapshot/." "$dir/"
+if [[ -z $tree ]]; then
+  cp -a "$staging/snapshot/." "$dir/"
+elif [[ -e $staging/snapshot ]]; then
+  echo "bench-check-prep: a cached snapshot comes without snapshot/" >&2
+  exit 64
+elif [[ -f $staging/snapshot.tar ]]; then
+  /usr/local/sbin/bench-unpack --tree "$tree" "$dir" <"$staging/snapshot.tar"
+else
+  status=0
+  /usr/local/sbin/bench-unpack --cached "$tree" "$dir" || status=$?
+  if (( status == 3 )); then
+    rm -rf "$dir"
+    echo "not cached $tree"
+    exit 3
+  fi
+  (( status == 0 )) || exit "$status"
+fi
 # The snapshot's single commit is made here, before the checker owns
 # anything; the answer is applied as the checker, inside its own run.
 for name in ${!GIT_@}; do unset "$name"; done

@@ -1,22 +1,59 @@
 #!/usr/bin/python3
-"""Extract bounded data-only tar input into a new, root-owned staging tree."""
+"""Extract bounded data-only tar input into a new, root-owned staging tree.
+
+bench-unpack DIR < archive
+bench-unpack --tree TREE DIR < snapshot.tar
+    Also check that the archive holds TREE, Git's id of its files and their
+    executable bits, then keep the archive in the snapshot cache.
+bench-unpack --cached TREE DIR
+    Extract the cache's copy of TREE, checked against TREE first. Exits 3,
+    having written nothing, when the cache holds no intact copy.
+
+The snapshot cache is root only and outside every run's view: bench-enter
+hides /srv/bench from sessions, checks and probes. Each entry is one
+read-only archive named by its tree. Every attempt still gets its own
+extraction; nothing extracted is ever shared.
+"""
+import hashlib
 import os
 from pathlib import Path
-import shutil
+import re
+import stat
 import sys
 import tarfile
+import tempfile
+import time
 
 LIMIT = 512 * 1024 ** 2
+CACHE = Path('/srv/bench/cache')
+NOT_CACHED = 3
+TREE = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
+ENTRY = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\.tar')
+SPOOL = '.spool-'
+# Entries unused this long go; beyond these totals the least recently used
+# go first. The whole published corpus is about 130 MB.
+CACHE_AGE = 7 * 86400
+CACHE_BYTES = 256 * 1024 ** 2
+CACHE_ENTRIES = 512
+# An archive is kept only while this much of the 8 GiB scratch volume stays
+# free, so the cache never takes room admission promised to a job; a large
+# archive is not kept at all, it would only push smaller ones out.
+CACHE_FLOOR = 3 * 1024 ** 3
+CACHE_LARGEST = CACHE_BYTES // 4
+# A store killed with its attempt leaves its spool; the next store removes it.
+SPOOL_AGE = 3600
+# Headers and padding of the most entries the limits admit, on top of LIMIT.
+SPOOL_LIMIT = LIMIT + 32768 * 1024 + 10240
 
-def main():
-    if os.geteuid() != 0 or len(sys.argv) != 2:
-        raise ValueError('trusted unpack arguments required')
-    root = Path(sys.argv[1])
-    if root.is_symlink() or not root.is_dir() or root.stat().st_uid != 0:
-        raise ValueError('unsafe benchmark staging parent')
+
+def unpack(source, root, algorithm=None):
+    """Extract `source` into `root`, or only read it when `root` is None.
+    Returns Git's tree id of the files under `algorithm`, if one is named.
+    Both modes refuse exactly the same archives."""
     seen = set()
+    directories, files = set(), {}
     total = 0
-    with tarfile.open(fileobj=sys.stdin.buffer, mode='r|') as archive:
+    with tarfile.open(fileobj=source, mode='r|') as archive:
         for entry in archive:
             parts = entry.name.split('/')
             if entry.isdir() and parts[-1] == '':
@@ -29,24 +66,230 @@ def main():
             total += entry.size
             if len(seen) > 32768 or total > LIMIT or entry.size < 0 or entry.size > 256 * 1024 ** 2:
                 raise ValueError('benchmark archive exceeds its byte or inode budget')
-            destination = root
-            for part in parts[:-1]:
-                destination /= part
-                destination.mkdir(mode=0o700, exist_ok=True)
-                if destination.is_symlink() or not destination.is_dir():
+            # A file where a directory belongs, or the reverse, obstructs the
+            # extraction; reading alone refuses what extracting would refuse.
+            for depth in range(1, len(parts) if entry.isfile() else len(parts) + 1):
+                prefix = '/'.join(parts[:depth])
+                if prefix in files:
                     raise ValueError('obstructed benchmark staging path')
-            destination /= parts[-1]
+                directories.add(prefix)
+            path = '/'.join(parts)
+            if entry.isfile() and (path in directories or path in files):
+                raise ValueError('obstructed benchmark staging path')
+            destination = root
+            if root is not None:
+                for part in parts[:-1]:
+                    destination /= part
+                    destination.mkdir(mode=0o700, exist_ok=True)
+                    if destination.is_symlink() or not destination.is_dir():
+                        raise ValueError('obstructed benchmark staging path')
+                destination /= parts[-1]
             if entry.isdir():
-                destination.mkdir(mode=0o700, exist_ok=True)
-            else:
+                if root is not None:
+                    destination.mkdir(mode=0o700, exist_ok=True)
+                continue
+            executable = bool(entry.mode & 0o111)
+            blob = None
+            if algorithm:
+                blob = hashlib.new(algorithm)
+                blob.update(b'blob %d\0' % entry.size)
+            output = None
+            if root is not None:
                 fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o755 if entry.mode & 0o111 else 0o644)
-                with os.fdopen(fd, 'wb') as output, archive.extractfile(entry) as source:
-                    shutil.copyfileobj(source, output, length=65536)
+                             0o755 if executable else 0o644)
+                output = os.fdopen(fd, 'wb')
+            try:
+                with archive.extractfile(entry) as data:
+                    while block := data.read(65536):
+                        if output is not None:
+                            output.write(block)
+                        if blob is not None:
+                            blob.update(block)
+            finally:
+                if output is not None:
+                    output.close()
+            files[path] = (b'100755' if executable else b'100644', blob.digest() if blob else None)
+    return tree_id(files, algorithm) if algorithm else None
+
+
+def tree_id(files, algorithm):
+    """Git's id of the tree holding `files` ({path: (mode, raw blob id)})."""
+    root = {}
+    for path, leaf in files.items():
+        node = root
+        *parents, name = path.encode('utf-8', 'surrogateescape').split(b'/')
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[name] = leaf
+
+    def write(node):
+        body = bytearray()
+        # Git orders entries by name, a directory's as if it ended in '/'.
+        for name in sorted(node, key=lambda name: name + b'/' if isinstance(node[name], dict) else name):
+            value = node[name]
+            mode, raw = (b'40000', write(value)) if isinstance(value, dict) else value
+            body += mode + b' ' + name + b'\0' + raw
+        return hashlib.new(algorithm, b'tree %d\0' % len(body) + bytes(body)).digest()
+
+    return write(root).hex()
+
+
+def algorithm_of(tree):
+    if not TREE.fullmatch(tree):
+        raise ValueError('benchmark snapshot tree must be a full Git object id')
+    return 'sha1' if len(tree) == 40 else 'sha256'
+
+
+def trusted(info, mode=None):
+    """Owned by root, and with exactly `mode`, or else writable by root alone."""
+    return info.st_uid == 0 and (stat.S_IMODE(info.st_mode) == mode if mode is not None
+                                 else not info.st_mode & 0o022)
+
+
+def cache_directory():
+    """The cache's directory: made root only on first use, refused when its
+    parent or itself could be changed by anyone but root."""
+    parent = CACHE.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or not trusted(parent):
+        raise ValueError('unsafe benchmark snapshot cache parent')
+    try:
+        CACHE.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    info = CACHE.lstat()
+    if not stat.S_ISDIR(info.st_mode) or not trusted(info, 0o700):
+        raise ValueError('unsafe benchmark snapshot cache')
+    return CACHE
+
+
+def intact(info):
+    """An entry is used only as written: one root-owned read-only file."""
+    return stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and trusted(info, 0o400)
+
+
+def drop(path, info):
+    """Remove the entry at `path` if it still is the file `info` describes;
+    a newer copy stored meanwhile stays."""
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino):
+        path.unlink(missing_ok=True)
+
+
+def store(tree, root):
+    """Extract standard input into `root`, check it holds `tree` and keep it."""
+    algorithm = algorithm_of(tree)
+    cache = cache_directory()
+    fd, name = tempfile.mkstemp(prefix=SPOOL, dir=cache)
+    spool = Path(name)
+    try:
+        with os.fdopen(fd, 'w+b') as output:
+            size = 0
+            while block := sys.stdin.buffer.read(65536):
+                size += len(block)
+                if size > SPOOL_LIMIT:
+                    raise ValueError('benchmark archive exceeds its byte or inode budget')
+                output.write(block)
+            output.flush()
+            output.seek(0)
+            if unpack(output, root, algorithm) != tree:
+                raise ValueError('benchmark snapshot archive does not hold its published tree')
+            free = os.statvfs(cache)
+            keep = size <= CACHE_LARGEST and free.f_bavail * free.f_frsize - size >= CACHE_FLOOR
+            if keep:
+                os.fsync(output.fileno())
+        if keep:
+            os.chmod(spool, 0o400)
+            os.replace(spool, cache / (tree + '.tar'))
+    finally:
+        spool.unlink(missing_ok=True)
+    evict(cache)
+
+
+def cached(tree, root):
+    """Extract the cache's copy of `tree` into `root`; NOT_CACHED, with
+    nothing written, when there is none or it is not intact."""
+    algorithm = algorithm_of(tree)
+    path = cache_directory() / (tree + '.tar')
+    if path.is_symlink():
+        path.unlink(missing_ok=True)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return NOT_CACHED
+    with os.fdopen(fd, 'rb') as entry:
+        info = os.fstat(entry.fileno())
+        # Read once to check, then extract: a damaged entry writes nothing.
+        try:
+            holds = intact(info) and unpack(entry, None, algorithm) == tree
+        except (ValueError, tarfile.TarError):
+            holds = False
+        if holds:
+            entry.seek(0)
+            if unpack(entry, root, algorithm) != tree:
+                raise ValueError('benchmark snapshot cache entry changed while in use')
+    if not holds:
+        print('benchmark snapshot cache entry is damaged; removed', file=sys.stderr)
+        drop(path, info)
+        return NOT_CACHED
+    # Recently used entries are evicted last.
+    try:
+        os.utime(path)
+    except FileNotFoundError:
+        pass
+    return 0
+
+
+def evict(cache, now=None):
+    now = time.time() if now is None else now
+    entries = []
+    for path in cache.iterdir():
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if path.name.startswith(SPOOL):
+            if info.st_mtime < now - SPOOL_AGE:
+                path.unlink(missing_ok=True)
+        elif ENTRY.fullmatch(path.name) and stat.S_ISREG(info.st_mode):
+            if info.st_mtime < now - CACHE_AGE:
+                path.unlink(missing_ok=True)
+            else:
+                entries.append((info.st_mtime, info.st_size, path))
+    total = 0
+    for count, (_, size, path) in enumerate(sorted(entries, reverse=True)):
+        total += size
+        if total > CACHE_BYTES or count >= CACHE_ENTRIES:
+            path.unlink(missing_ok=True)
+
+
+def main():
+    arguments = sys.argv[1:]
+    mode = tree = None
+    if len(arguments) == 3 and arguments[0] in ('--tree', '--cached'):
+        mode, tree = arguments[:2]
+        arguments = arguments[2:]
+    if os.geteuid() != 0 or len(arguments) != 1:
+        raise ValueError('trusted unpack arguments required')
+    root = Path(arguments[0])
+    if root.is_symlink() or not root.is_dir() or root.stat().st_uid != 0:
+        raise ValueError('unsafe benchmark staging parent')
+    if mode == '--tree':
+        store(tree, root)
+    elif mode == '--cached':
+        return cached(tree, root)
+    else:
+        unpack(sys.stdin.buffer, root)
+    return 0
+
 
 if __name__ == '__main__':
     try:
-        main()
-    except (OSError, ValueError, tarfile.TarError):
-        print('capability_missing: unsafe or over-budget benchmark archive', file=sys.stderr)
+        sys.exit(main())
+    except (OSError, ValueError, tarfile.TarError) as error:
+        reason = str(error) if isinstance(error, ValueError) and 'snapshot' in str(error) else ''
+        print('capability_missing: unsafe or over-budget benchmark archive' + (': ' + reason if reason else ''),
+              file=sys.stderr)
         sys.exit(70)

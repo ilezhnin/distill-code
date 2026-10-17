@@ -65,6 +65,43 @@ check "check runs as the checker" "$(run check selftest-a -- id -un)" checker
 check "check sees the answer and its files" "$(run check selftest-a -- bash check.sh && echo pass)" pass
 check "check has no network" "$(run check selftest-a -- curl -s -m 5 https://api.anthropic.com/ >/dev/null; echo $?)" 6
 
+# Snapshot cache: an archive is kept only once it holds its tree, a copy or
+# check from it is that snapshot, and no run ever sees it.
+deadline=$(( $(date +%s%3N) + 100000 ))
+tree=$(git --git-dir=/srv/bench/base/selftest-b/.git rev-parse 'HEAD^{tree}')
+fake=$(printf '%040d' 7)
+rm -f "/srv/bench/cache/$tree.tar"
+check "uncached snapshot is a miss" "$(/usr/local/sbin/bench-copy selftest-c "$deadline" "$tree" </dev/null 2>/dev/null; echo "exit $?")" "not cached $tree
+exit 3"
+check "a miss leaves no copy" "$(ls /srv/bench/work /srv/bench/base | grep -c selftest-c)" 0
+check "an archive without its tree is refused" "$(/usr/local/sbin/bench-copy selftest-c "$deadline" "$fake" - </tmp/selftest.tar 2>&1 >/dev/null | grep -c 'does not hold its published tree')" 1
+check "a refused archive leaves nothing" "$(ls -A /srv/bench/work /srv/bench/cache | grep -c "selftest-c\|$fake")" 0
+check "an archive holding its tree is cached" "$(/usr/local/sbin/bench-copy selftest-c "$deadline" "$tree" - </tmp/selftest.tar)" "copied selftest-c"
+check "snapshot cache is root only and read only" "$(stat -c '%u %a' /srv/bench/cache "/srv/bench/cache/$tree.tar" | tr '\n' ' ')" "0 700 0 400 "
+check "cached copy" "$(/usr/local/sbin/bench-copy selftest-d "$deadline" "$tree" </dev/null)" "copied selftest-d"
+check "cached copy is the snapshot's tree" "$(git --git-dir=/srv/bench/base/selftest-d/.git rev-parse 'HEAD^{tree}') $(stat -c %U /srv/bench/work/selftest-d)" "$tree candidate"
+check "cached copy is one commit" "$(run session selftest-d -- git log --oneline | wc -l)" 1
+check "sessions cannot see the snapshot cache" "$(run session selftest-d -- bash -c "ls -A /srv/bench; test -e /srv/bench/cache/$tree.tar && echo seen")" ""
+install -m 400 /tmp/selftest.tar "/srv/bench/cache/$fake.tar"
+check "a cache entry without its tree is never used" "$(/usr/local/sbin/bench-copy selftest-e "$deadline" "$fake" </dev/null 2>/dev/null; echo "exit $?"; test -e "/srv/bench/cache/$fake.tar" && echo kept)" "not cached $fake
+exit 3"
+install -m 400 /tmp/selftest.tar "/srv/bench/cache/$fake.tar"
+touch -d '30 days ago' "/srv/bench/cache/$fake.tar"
+/usr/local/sbin/bench-copy selftest-e "$deadline" "$tree" - </tmp/selftest.tar >/dev/null
+check "unused cache entries are evicted" "$(test -e "/srv/bench/cache/$fake.tar" && echo kept)" ""
+mkdir -p /tmp/selftest-cached/hidden
+cp /tmp/selftest-check/answer.patch /tmp/selftest-cached/
+cp /tmp/selftest-check/hidden/check.sh /tmp/selftest-cached/hidden/
+tar -cf /tmp/selftest-cached.tar -C /tmp/selftest-cached .
+check "check prepared from the cache" "$(/usr/local/sbin/bench-check-prep selftest-d "$tree" </tmp/selftest-cached.tar)" "prepared selftest-d"
+check "cached check sees the answer and its files" "$(run check selftest-d -- bash check.sh && echo pass)" pass
+check "check cannot see the snapshot cache" "$(run check selftest-d -- bash -c 'ls -A /srv/bench')" ""
+check "uncached check is a miss and leaves nothing" "$(/usr/local/sbin/bench-check-prep selftest-f "$fake" </tmp/selftest-cached.tar 2>/dev/null; echo "exit $?"; ls /srv/bench/checks | grep -c selftest-f)" "not cached $fake
+exit 3
+0"
+for item in c d e f; do /usr/local/sbin/bench-clean "selftest-$item"; done
+rm -rf /tmp/selftest-cached /tmp/selftest-cached.tar "/srv/bench/cache/$tree.tar"
+
 # Synthetic sign-in data only: no real credential is read or changed.
 # This block also runs on the host with Python alone: it loads only helper
 # function definitions, substitutes ownership operations, and uses temporary
