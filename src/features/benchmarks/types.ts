@@ -100,6 +100,45 @@ export interface BenchmarkDefinition {
   draft: BenchmarkDraft;
   versions: BenchmarkVersion[];
 }
+/**
+ * The listed part of a manifest, under the same paths, so a full manifest
+ * reads as one too. Of the environment only `authoredBy`, the seats of
+ * `judgePanel.judges` (provider, model, effort), `splitGroup` and
+ * `generator.family` are listed; fetch the version for anything else.
+ */
+export interface BenchmarkManifestSummary {
+  name: string;
+  category: string;
+  taskFamily: string;
+  split: string;
+  executionProfile: string;
+  measurementProfile: string;
+  evaluator: Pick<Evaluator, "kind" | "revision">;
+  limits: BenchmarkDraft["limits"];
+  repetitions: number;
+  workClassId: string;
+  roleId: string | null;
+  roleContextHash: string;
+  facets: TaskFacets;
+  entryState: Pick<EntryState, "contentHash"> | null;
+  workflow: {
+    steps: {
+      id: string;
+      scope?: Omit<WorkflowScope, "rolePrompt"> | null;
+    }[];
+  } | null;
+  environment: unknown;
+}
+export interface BenchmarkVersionSummary
+  extends Omit<BenchmarkVersion, "manifest"> {
+  manifest: BenchmarkManifestSummary;
+}
+/** What the catalog lists; the test itself loads one definition at a time. */
+export interface BenchmarkDefinitionSummary
+  extends Omit<BenchmarkDefinition, "draft" | "versions"> {
+  draft: BenchmarkManifestSummary;
+  versions: BenchmarkVersionSummary[];
+}
 export interface ValidationReport {
   valid: boolean;
   issues: string[];

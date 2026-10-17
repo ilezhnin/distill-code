@@ -1287,7 +1287,7 @@ impl BenchmarkService {
         Ok(schedule)
     }
     async fn seed(&self) -> Result<()> {
-        if !self.store.definitions().await?.is_empty() {
+        if self.store.has_definitions().await? {
             return Ok(());
         }
         for draft in runner::seed_definitions() {

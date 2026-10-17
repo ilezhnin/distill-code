@@ -20,7 +20,7 @@ import {
   poolChanges,
   type PoolChanges,
 } from "../lib/benchmarkReleases";
-import type { BenchmarkDefinition } from "../types";
+import type { BenchmarkDefinitionSummary } from "../types";
 import { BenchmarkAlert, Field, SectionHeading } from "./BenchmarkPrimitives";
 
 /**
@@ -31,7 +31,7 @@ export function BenchmarkReleasesDialog({
   definitions,
   onClose,
 }: {
-  definitions: BenchmarkDefinition[];
+  definitions: BenchmarkDefinitionSummary[];
   onClose: () => void;
 }) {
   const { t } = useTranslation("benchmarks");

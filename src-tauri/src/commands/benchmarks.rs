@@ -273,9 +273,18 @@ pub async fn benchmark_revoke_promotion(
     s.changed().await;
     Ok(value)
 }
+/// Summaries only; a test's contents load one definition or version at a time.
 #[tauri::command]
-pub async fn benchmark_list_definitions(app: AppHandle) -> Result<Vec<BenchmarkDefinition>> {
-    service(&app).await?.store.definitions().await
+pub async fn benchmark_list_definitions(app: AppHandle) -> Result<Vec<BenchmarkDefinitionSummary>> {
+    service(&app).await?.store.definition_summaries().await
+}
+#[tauri::command]
+pub async fn benchmark_get_definition(app: AppHandle, id: String) -> Result<BenchmarkDefinition> {
+    service(&app).await?.store.definition(&id).await
+}
+#[tauri::command]
+pub async fn benchmark_get_version(app: AppHandle, id: String) -> Result<BenchmarkVersion> {
+    service(&app).await?.store.version(&id).await
 }
 #[tauri::command]
 pub async fn benchmark_save_draft(

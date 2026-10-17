@@ -396,7 +396,7 @@ mod tests {
             .unwrap();
         let again = store.archive(&definition.id, true).await.unwrap();
         assert_eq!(again.archived_at, Some(at - 100));
-        let listed = store.definitions().await.unwrap();
+        let listed = store.definition_summaries().await.unwrap();
         assert_eq!(listed[0].archived_at, Some(at - 100));
         let restored = store.archive(&definition.id, false).await.unwrap();
         assert!(!restored.archived);

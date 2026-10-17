@@ -8,7 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
-import type { BenchmarkVersion } from "../types";
+import type { BenchmarkVersionSummary } from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
 import { SectionHeading } from "./BenchmarkPrimitives";
 
@@ -31,7 +31,7 @@ export function BenchmarkAttemptsDialog({
   /** Figures at the right edge of the header, such as rank and rating. */
   aside?: ReactNode;
   attemptIds: string[];
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   children?: ReactNode;
   onEvidence: (id: string) => void;
   onClose: () => void;

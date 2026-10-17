@@ -19,11 +19,11 @@ import type {
   WorkflowCampaign,
   WorkflowCampaignRequest,
 } from "../lib/workflowCampaign";
-import type { BenchmarkVersion } from "../types";
+import type { BenchmarkVersionSummary } from "../types";
 import { BenchmarkAlert, Field, SelectField } from "./BenchmarkPrimitives";
 
 /** The role of every step, in order: its own scope, else the root's. */
-function stepRoles(version: BenchmarkVersion): (string | null)[] {
+function stepRoles(version: BenchmarkVersionSummary): (string | null)[] {
   return (
     version.manifest.workflow?.steps.map(
       (step) => step.scope?.roleId ?? version.manifest.roleId,
@@ -32,7 +32,7 @@ function stepRoles(version: BenchmarkVersion): (string | null)[] {
 }
 
 /** The work class of every step, in order: its own scope, else the root's. */
-function stepClasses(version: BenchmarkVersion): string[] {
+function stepClasses(version: BenchmarkVersionSummary): string[] {
   return (
     version.manifest.workflow?.steps.map(
       (step) => step.scope?.workClassId ?? version.manifest.workClassId,
@@ -48,7 +48,7 @@ export function WorkflowCampaignForm({
   disabled = false,
 }: {
   artifact: SelectorFitArtifact;
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   onFrozen: (campaign: WorkflowCampaign) => void;
   onReservationPendingChange?: (pending: boolean) => boolean | undefined;
   disabled?: boolean;

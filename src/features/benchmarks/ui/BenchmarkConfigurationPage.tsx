@@ -37,7 +37,7 @@ import {
 } from "../lib/benchmarkLabels";
 import { formatContext, resolveCatalogEntry } from "../lib/modelCatalog";
 import type {
-  BenchmarkVersion,
+  BenchmarkVersionSummary,
   LeaderboardReport,
   LeaderboardRow,
   ResultQuery,
@@ -103,7 +103,7 @@ export function BenchmarkConfigurationPage({
   row: LeaderboardRow;
   report: LeaderboardReport;
   runs: RunSummary[];
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   onEvidence: (id: string) => void;
   /** Opens this model's run dialog, following the run measuring it now. */
   onRun: (activeRunId: string | null) => void;

@@ -13,7 +13,7 @@ import {
   type SelectorFitArtifact,
   type SelectorHoldoutRequest,
 } from "../lib/benchmarkLearning";
-import type { BenchmarkVersion } from "../types";
+import type { BenchmarkVersionSummary } from "../types";
 import { BenchmarkAlert, Field, SelectField } from "./BenchmarkPrimitives";
 import { SelectorHoldoutReportView } from "./SelectorHoldoutReportView";
 
@@ -23,7 +23,7 @@ export function SelectorHoldoutForm({
   versions,
 }: {
   artifact: SelectorFitArtifact;
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
 }) {
   const { t } = useTranslation("benchmarks");
   const checkboxPrefix = useId();

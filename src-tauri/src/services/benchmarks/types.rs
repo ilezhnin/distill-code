@@ -213,6 +213,90 @@ pub struct BenchmarkDefinition {
     pub draft: BenchmarkDraft,
     pub versions: Vec<BenchmarkVersion>,
 }
+/// A definition as the catalog lists it: the manifest facts every list,
+/// picker and board needs, never its task. Prompts, fixtures, checks,
+/// alternatives and the rest of the environment stay in the store; read
+/// them one definition or version at a time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkDefinitionSummary {
+    pub id: String,
+    pub draft_revision: i64,
+    pub archived: bool,
+    pub archived_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archive_history: Vec<(i64, i64)>,
+    pub draft: ManifestSummary,
+    /// Newest first, like [`BenchmarkDefinition::versions`].
+    pub versions: Vec<BenchmarkVersionSummary>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkVersionSummary {
+    pub id: String,
+    pub definition_id: String,
+    pub content_hash: String,
+    pub published_at: i64,
+    pub manifest: ManifestSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carries_from: Option<String>,
+}
+/// The listed part of a [`BenchmarkDraft`], under the same names, so code
+/// reading these paths reads a summary and a full manifest alike. Of the
+/// environment it keeps `authoredBy` and the seats of `judgePanel.judges`
+/// as provider, model and effort, `splitGroup` and `generator.family`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestSummary {
+    pub name: String,
+    pub category: String,
+    pub task_family: String,
+    pub split: String,
+    pub execution_profile: String,
+    pub measurement_profile: String,
+    pub evaluator: EvaluatorSummary,
+    pub limits: Limits,
+    pub repetitions: u32,
+    pub work_class_id: String,
+    pub role_id: Option<String>,
+    pub role_context_hash: String,
+    pub facets: TaskFacets,
+    pub entry_state: Option<EntryStateSummary>,
+    pub workflow: Option<WorkflowSummary>,
+    pub environment: Value,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluatorSummary {
+    pub kind: String,
+    pub revision: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryStateSummary {
+    pub content_hash: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSummary {
+    pub steps: Vec<WorkflowStepSummary>,
+}
+/// A step's identity and scope without its prompt or role prompt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepSummary {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<WorkflowScopeSummary>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowScopeSummary {
+    pub role_id: String,
+    pub work_class_id: String,
+    pub purpose: String,
+    pub step_budget_seconds: u32,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationReport {

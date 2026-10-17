@@ -10,7 +10,7 @@ import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { formatUsd } from "../lib/benchmarkLabels";
 import type {
   AttemptSummary,
-  BenchmarkVersion,
+  BenchmarkVersionSummary,
   LeaderboardCohort,
 } from "../types";
 import {
@@ -32,7 +32,7 @@ export interface TaskReference {
 
 /** The pool supplies the same task numbers to model pages and individual runs. */
 export function poolTaskOrder(
-  versions: BenchmarkVersion[],
+  versions: BenchmarkVersionSummary[],
   cohort: LeaderboardCohort | null | undefined,
 ): TaskReference[] {
   const pool = new Set(cohort?.versionIds ?? []);

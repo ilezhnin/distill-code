@@ -15,10 +15,20 @@ import type {
 export const benchmarkKeys = ["benchmarks"] as const;
 
 /**
- * History recomputes a leaderboard per observation, and a running batch saves
- * an attempt every few seconds, so events refresh it at most this often.
+ * History recomputes a leaderboard per observation and the catalog reads
+ * every manifest, while a running batch saves an attempt every few seconds,
+ * so events refresh them at most this often. The app's own catalog edits
+ * still refresh at once.
  */
-export const HISTORY_REFRESH_MS = 15_000;
+export const THROTTLED_REFRESH_MS = 15_000;
+const THROTTLED_QUERIES = new Set([
+  "history",
+  "definitions",
+  "definition",
+  "version",
+]);
+const throttled = (query: { queryKey: readonly unknown[] }) =>
+  THROTTLED_QUERIES.has(String(query.queryKey[1]));
 
 function useBenchmarkInvalidation(enabled: boolean) {
   const client = useQueryClient();
@@ -27,20 +37,21 @@ function useBenchmarkInvalidation(enabled: boolean) {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     let sequence = 0;
-    let historyTimer: ReturnType<typeof setTimeout> | undefined;
+    let throttledTimer: ReturnType<typeof setTimeout> | undefined;
     const refresh = () => {
       void client.invalidateQueries({
         queryKey: benchmarkKeys,
-        predicate: (query) => query.queryKey[1] !== "history",
+        predicate: (query) => !throttled(query),
       });
-      if (historyTimer !== undefined) return;
-      historyTimer = setTimeout(() => {
-        historyTimer = undefined;
+      if (throttledTimer !== undefined) return;
+      throttledTimer = setTimeout(() => {
+        throttledTimer = undefined;
         if (cancelled) return;
         void client.invalidateQueries({
-          queryKey: [...benchmarkKeys, "history"],
+          queryKey: benchmarkKeys,
+          predicate: throttled,
         });
-      }, HISTORY_REFRESH_MS);
+      }, THROTTLED_REFRESH_MS);
     };
     // Subscribe first, then reconcile committed events to close the mount gap.
     void benchmarkApi
@@ -71,16 +82,33 @@ function useBenchmarkInvalidation(enabled: boolean) {
       .catch(refresh);
     return () => {
       cancelled = true;
-      clearTimeout(historyTimer);
+      clearTimeout(throttledTimer);
       unlisten?.();
     };
   }, [client, enabled]);
 }
 
+/** The catalog as summaries: no task contents, whatever its size. */
 export const useBenchmarkDefinitions = () =>
   useQuery({
     queryKey: [...benchmarkKeys, "definitions"],
     queryFn: benchmarkApi.listDefinitions,
+  });
+
+/** One test with its full draft and versions, for its detail and editor. */
+export const useBenchmarkDefinition = (id: string | undefined) =>
+  useQuery({
+    queryKey: [...benchmarkKeys, "definition", id],
+    queryFn: () => benchmarkApi.getDefinition(id as string),
+    enabled: Boolean(id),
+  });
+
+/** One published version's full manifest. */
+export const useBenchmarkVersion = (id: string | undefined) =>
+  useQuery({
+    queryKey: [...benchmarkKeys, "version", id],
+    queryFn: () => benchmarkApi.getVersion(id as string),
+    enabled: Boolean(id),
   });
 /** Mounted by AppShell so completed work reaches Stats from any view. */
 export function useBenchmarkRuntime() {

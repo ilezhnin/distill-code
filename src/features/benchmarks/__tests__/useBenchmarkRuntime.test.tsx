@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import {
-  HISTORY_REFRESH_MS,
+  THROTTLED_REFRESH_MS,
   useBenchmarkRuntime,
 } from "../hooks/useBenchmarks";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
@@ -103,7 +103,7 @@ describe("persistent benchmark runtime", () => {
     client.clear();
   });
 
-  it("refreshes history at most once per interval while a run saves attempts", async () => {
+  it("refreshes history and the catalog at most once per interval while a run saves attempts", async () => {
     let changed: ((event: { sequence: number }) => void) | undefined;
     vi.mocked(benchmarkApi.listen).mockImplementation(async (callback) => {
       changed = callback;
@@ -114,9 +114,11 @@ describe("persistent benchmark runtime", () => {
       defaultOptions: { queries: { retry: false } },
     });
     const history = ["benchmarks", "history", "model"];
+    const catalog = ["benchmarks", "definitions"];
+    const version = ["benchmarks", "version", "version-1"];
     const runs = ["benchmarks", "runs"];
-    client.setQueryData(history, []);
-    client.setQueryData(runs, []);
+    for (const key of [history, catalog, version, runs])
+      client.setQueryData(key, []);
     const stale = (key: string[]) => client.getQueryState(key)?.isInvalidated;
     render(
       <QueryClientProvider client={client}>
@@ -129,8 +131,12 @@ describe("persistent benchmark runtime", () => {
       for (const sequence of [1, 2, 3]) act(() => changed?.({ sequence }));
       expect(stale(runs)).toBe(true);
       expect(stale(history)).toBe(false);
-      await act(() => vi.advanceTimersByTimeAsync(HISTORY_REFRESH_MS));
+      expect(stale(catalog)).toBe(false);
+      expect(stale(version)).toBe(false);
+      await act(() => vi.advanceTimersByTimeAsync(THROTTLED_REFRESH_MS));
       expect(stale(history)).toBe(true);
+      expect(stale(catalog)).toBe(true);
+      expect(stale(version)).toBe(true);
     } finally {
       vi.useRealTimers();
     }

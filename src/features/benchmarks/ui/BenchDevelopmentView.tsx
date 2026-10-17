@@ -30,9 +30,9 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
-import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { benchmarkKeys, useBenchmarkDefinition } from "../hooks/useBenchmarks";
 import { hasDifficulty } from "../lib/benchmarkReleases";
-import type { BenchmarkDefinition, CaseStats } from "../types";
+import type { BenchmarkDefinitionSummary, CaseStats } from "../types";
 import { BenchmarkDetail } from "./BenchmarkDetail";
 import { SelectorHarness } from "./SelectorHarness";
 import {
@@ -45,7 +45,9 @@ import {
 } from "./BenchmarkPrimitives";
 
 /** Family name when the definition carries a deterministic variant generator. */
-function generatorFamily(draft: BenchmarkDefinition["draft"]): string | null {
+function generatorFamily(
+  draft: BenchmarkDefinitionSummary["draft"],
+): string | null {
   const environment = draft.environment;
   if (!environment || typeof environment !== "object") return null;
   const generator = (environment as { generator?: unknown }).generator;
@@ -85,7 +87,7 @@ export function BenchDevelopmentView({
   onEvidence,
   actions,
 }: {
-  definitions: BenchmarkDefinition[];
+  definitions: BenchmarkDefinitionSummary[];
   loading: boolean;
   benchmarkId?: string;
   workClassId: string | null;
@@ -101,7 +103,11 @@ export function BenchDevelopmentView({
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"active" | "all">("active");
   const [error, setError] = useState<string | null>(null);
-  const definition = definitions.find((entry) => entry.id === benchmarkId);
+  // The list carries summaries; the opened test loads in full on its own.
+  const opened = useBenchmarkDefinition(
+    benchmarkId && benchmarkId !== "new" ? benchmarkId : undefined,
+  );
+  const definition = opened.data;
   const workClasses = useMemo(
     () =>
       [
@@ -146,7 +152,7 @@ export function BenchDevelopmentView({
     if (benchmarkId !== "new" && !definition) {
       return (
         <div className="space-y-5">
-          {loading ? (
+          {opened.isPending ? (
             <BenchmarkEmpty title={t("benchmarks:loading")} compact />
           ) : (
             <BenchmarkEmpty title={t("benchmarks:editor.missing")} />

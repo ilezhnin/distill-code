@@ -17,7 +17,7 @@ vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) => String(error),
   benchmarkApi: {
     getEvidence: vi.fn(),
-    listDefinitions: vi.fn(),
+    getVersion: vi.fn(),
     submitReview: vi.fn(),
     rescore: vi.fn(),
   },
@@ -29,6 +29,17 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@/features/stats/lib/usageLedger", () => ({
   projectBenchmarkUsage: vi.fn(),
 }));
+
+/** Serves each version of these tests the way the service reads one. */
+function catalog(definitions: BenchmarkDefinition[]) {
+  vi.mocked(benchmarkApi.getVersion).mockImplementation(async (id) => {
+    const version = definitions
+      .flatMap((entry) => entry.versions)
+      .find((entry) => entry.id === id);
+    if (!version) throw new Error("Published version not found");
+    return version;
+  });
+}
 
 const visualDefinition: BenchmarkDefinition = {
   ...definition,
@@ -96,13 +107,11 @@ describe("blind benchmark review", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(visualAttempt);
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      visualDefinition,
-    ]);
+    catalog([visualDefinition]);
   });
 
   it("shows recorded critical conditions and quotes as text, including abstentions", async () => {
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([definition]);
+    catalog([definition]);
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
       ...attempt,
       evaluations: [
@@ -176,9 +185,7 @@ describe("blind benchmark review", () => {
   });
 
   it("keeps identity hidden while the frozen definition is still loading", async () => {
-    vi.mocked(benchmarkApi.listDefinitions).mockReturnValue(
-      new Promise(() => {}),
-    );
+    vi.mocked(benchmarkApi.getVersion).mockReturnValue(new Promise(() => {}));
     showEvidence();
     await screen.findByText("Captured page output");
     expect(screen.getByRole("dialog")).not.toHaveTextContent("model-1");
@@ -242,7 +249,7 @@ describe("blind benchmark review", () => {
 
   it("does not offer manual scores for an objective evaluator without a published review rubric", async () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([definition]);
+    catalog([definition]);
     showEvidence();
     await screen.findByRole("heading", { name: /model-1/ });
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
@@ -302,9 +309,7 @@ describe("creative rubric review", () => {
 
   it("renders the drawing without scripts and records every criterion behind the weighted score", async () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(drawing);
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     vi.mocked(benchmarkApi.submitReview).mockResolvedValue(drawing);
     showEvidence();
     await screen.findByText("Score the drawing against the brief.");
@@ -367,9 +372,7 @@ describe("creative rubric review", () => {
       ],
     };
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(unjudged);
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     vi.mocked(benchmarkApi.rescore).mockResolvedValue(unjudged);
     showEvidence();
     const again = await screen.findByRole("button", {
@@ -421,9 +424,7 @@ describe("creative rubric review", () => {
 
   it("keeps a rendering anonymous while its panel holds only part of its votes", async () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(panel(3, [0.7]));
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     showEvidence();
     await screen.findByRole("button", {
       name: "Evaluate again (up to 3 model calls)",
@@ -440,9 +441,7 @@ describe("creative rubric review", () => {
 
   it("opens the identity once the panel reaches its size", async () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(panel(2, [0.6, 0.8]));
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     showEvidence();
     await screen.findByRole("heading", { name: /model-1/ });
     expect(screen.getByText("Override the panel")).toBeInTheDocument();
@@ -468,9 +467,7 @@ describe("creative rubric review", () => {
       ],
     };
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(overridden);
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     showEvidence();
     await screen.findByRole("heading", { name: /model-1/ });
     expect(
@@ -480,9 +477,7 @@ describe("creative rubric review", () => {
   });
 
   it("offers no evaluation for outcomes the service keeps", async () => {
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     for (const outcome of ["budget_timeout", "cancelled", "excluded"]) {
       vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
         ...drawing,
@@ -518,9 +513,7 @@ describe("creative rubric review", () => {
       ],
     };
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(prose);
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     showEvidence();
     await screen.findByRole("heading", { name: /model-1/ });
     expect(
@@ -544,9 +537,7 @@ describe("creative rubric review", () => {
   });
 
   it("shows the identity, elapsed time and cost of a budget failure", async () => {
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     for (const outcome of ["budget_timeout", "budget_reached"]) {
       vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
         ...drawing,
@@ -573,7 +564,7 @@ describe("creative rubric review", () => {
 
   it("evaluates a case the candidate wrote again without a hint during blind review", async () => {
     const [version] = creativeDefinition.versions;
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+    catalog([
       {
         ...creativeDefinition,
         versions: [
@@ -604,7 +595,7 @@ describe("creative rubric review", () => {
 
   it("says when an evaluated case is the candidate's own", async () => {
     const [version] = definition.versions;
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+    catalog([
       {
         ...definition,
         versions: [
@@ -626,9 +617,7 @@ describe("creative rubric review", () => {
   });
 
   it("shows why the service refused to evaluate again", async () => {
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      creativeDefinition,
-    ]);
+    catalog([creativeDefinition]);
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(drawing);
     vi.mocked(benchmarkApi.rescore).mockRejectedValue(
       "No judge panel: 1 eligible judge(s), at least 2 are required",

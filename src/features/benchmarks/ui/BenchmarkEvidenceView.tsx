@@ -26,7 +26,7 @@ import {
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
-import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
+import { benchmarkKeys, useBenchmarkVersion } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import {
   authoredByCandidate,
@@ -72,7 +72,6 @@ export function BenchmarkEvidenceView({
   const [shownId, setShownId] = useState(openedId);
   const attemptId = shownId;
   const client = useQueryClient();
-  const definitions = useBenchmarkDefinitions();
   const evidence = useQuery({
     queryKey: [...benchmarkKeys, "evidence", attemptId],
     queryFn: () => benchmarkApi.getEvidence(attemptId),
@@ -100,9 +99,9 @@ export function BenchmarkEvidenceView({
         other.configuration.id === attempt?.configuration.id,
     )
     .sort((a, b) => a.repetition - b.repetition);
-  const manifest = definitions.data
-    ?.flatMap((definition) => definition.versions)
-    .find((version) => version.id === attempt?.versionId)?.manifest;
+  // The rubric and checks belong to the attempt's own version alone.
+  const version = useBenchmarkVersion(attempt?.versionId);
+  const manifest = version.data?.manifest;
   const visual =
     manifest?.evaluator.kind === "javascript" ||
     manifest?.evaluator.kind === "browser";
@@ -278,10 +277,9 @@ export function BenchmarkEvidenceView({
               ))}
             </div>
           ) : null}
-          {error || evidence.error || definitions.error ? (
+          {error || evidence.error || version.error ? (
             <BenchmarkAlert>
-              {error ??
-                benchmarkErrorMessage(evidence.error ?? definitions.error)}
+              {error ?? benchmarkErrorMessage(evidence.error ?? version.error)}
             </BenchmarkAlert>
           ) : null}
           {evidence.isPending ? (

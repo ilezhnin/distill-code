@@ -574,6 +574,16 @@ or a promised public HTTP API. Inside the app, use the existing typed wrappers:
 | Shared executor decisions | [Executor selection](../src/features/benchmarks/lib/executorSelection.ts) |
 | Native command argument shapes | [Command handlers](../src-tauri/src/commands/benchmarks.rs) |
 
+`benchmark_list_definitions` lists the catalog as summaries: each definition's
+identity, archive state and draft revision, and for its draft and every version
+the listed manifest facts (name, family, class, split, difficulty, limits,
+evaluator kind and revision, workflow step scopes, authors, judge seats, split
+group and generator family). It never carries prompts, fixtures, checks or the
+rest of the environment, so its size does not grow with the tasks. Read one
+test's contents with `benchmark_get_definition({ id })`, which returns its
+draft and every published version, or one version with
+`benchmark_get_version({ id })`.
+
 For example, application code reads the artifact after fitting rather than
 treating the summary as a model:
 

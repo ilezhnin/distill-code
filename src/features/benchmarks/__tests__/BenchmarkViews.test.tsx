@@ -27,6 +27,7 @@ import {
   BenchmarkSchedulesDialog,
 } from "../ui/BenchmarkManagementDialogs";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
+import type { BenchmarkDefinition } from "../types";
 import {
   BENCHMARK_SECTIONS,
   type BenchmarkLocation,
@@ -51,6 +52,8 @@ vi.mock("../api/benchmarks", () => ({
       : String(error),
   benchmarkApi: {
     listDefinitions: vi.fn(),
+    getDefinition: vi.fn(),
+    getVersion: vi.fn(),
     listRuns: vi.fn(),
     listWorkflowCampaigns: vi.fn().mockResolvedValue([]),
     listAttempts: vi.fn(),
@@ -89,6 +92,23 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
   convertFileSrc: (path: string) => path,
 }));
+
+/** Lists these tests and serves each one in full, the way the service does. */
+function catalog(definitions: BenchmarkDefinition[]) {
+  vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue(definitions);
+  vi.mocked(benchmarkApi.getDefinition).mockImplementation(async (id) => {
+    const found = definitions.find((entry) => entry.id === id);
+    if (!found) throw new Error("Definition not found");
+    return found;
+  });
+  vi.mocked(benchmarkApi.getVersion).mockImplementation(async (id) => {
+    const found = definitions
+      .flatMap((entry) => entry.versions)
+      .find((entry) => entry.id === id);
+    if (!found) throw new Error("Published version not found");
+    return found;
+  });
+}
 
 /** A measured simple-coding axis with the given board points. */
 function codingAxis(points: number) {
@@ -180,7 +200,7 @@ describe("benchmark authoring and saved evidence", () => {
     HTMLElement.prototype.releasePointerCapture = () => {};
     HTMLElement.prototype.scrollIntoView = () => {};
     useBenchmarkViewStore.setState({ dirty: false, pending: null });
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([definition]);
+    catalog([definition]);
     vi.mocked(benchmarkApi.listRuns).mockResolvedValue([runSummary]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getRun).mockResolvedValue(run);
@@ -334,7 +354,7 @@ describe("benchmark authoring and saved evidence", () => {
         },
       ],
     });
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
+    catalog([
       sample("algorithm", "algorithms", "Algorithm sample"),
       sample("writing", "writing", "Writing sample"),
       {
@@ -1523,7 +1543,7 @@ describe("benchmark authoring and saved evidence", () => {
         },
       },
     };
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([generated]);
+    catalog([generated]);
     vi.mocked(benchmarkApi.generateVariant).mockResolvedValue({
       ...generated.draft,
       name: "Two-worker list schedule (variant 7)",
@@ -1582,10 +1602,7 @@ describe("benchmark authoring and saved evidence", () => {
         },
       ],
     };
-    vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
-      definition,
-      smoke,
-    ]);
+    catalog([definition, smoke]);
     vi.mocked(benchmarkApi.getCaseStats).mockResolvedValue([
       {
         versionId: "version-1",
@@ -1680,6 +1697,40 @@ describe("benchmark authoring and saved evidence", () => {
       definition.draftRevision,
     );
     expect(onImported).toHaveBeenCalledWith();
+  });
+  it("lists summaries and reads only the opened test in full", async () => {
+    const full = {
+      ...definition,
+      versions: [
+        {
+          ...definition.versions[0],
+          manifest: {
+            ...definition.versions[0].manifest,
+            prompt: "Full published prompt",
+          },
+        },
+      ],
+    };
+    vi.mocked(benchmarkApi.getDefinition).mockResolvedValue(full);
+    const view = wrap(
+      <BenchmarksView
+        location={{ section: "development" }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    await screen.findByRole("button", { name: definition.draft.name });
+    expect(benchmarkApi.getDefinition).not.toHaveBeenCalled();
+    expect(benchmarkApi.getVersion).not.toHaveBeenCalled();
+    view.rerender(
+      <BenchmarksView
+        location={{ section: "development", benchmarkId: definition.id }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Full published prompt")).toBeVisible();
+    expect(benchmarkApi.getDefinition).toHaveBeenCalledWith(definition.id);
   });
   it("loads saved-test results only on opening the tab and requests bounded historical pages", async () => {
     vi.mocked(benchmarkApi.listAttempts).mockImplementation(async (query) =>

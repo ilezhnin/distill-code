@@ -23,7 +23,7 @@ import {
   selectorTaskGroup,
   type SelectorPrediction,
 } from "../lib/benchmarkLearning";
-import type { BenchmarkVersion } from "../types";
+import type { BenchmarkVersionSummary } from "../types";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -57,7 +57,7 @@ export function BenchmarkLearningDialog({
 }: {
   initialWorkClassId?: string;
   initialFitId?: string;
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   onClose: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
@@ -163,9 +163,11 @@ export function BenchmarkLearningDialog({
     setError(null);
     setResult(null);
     try {
+      // The list carries no task contents; read the one target's manifest.
+      const full = await benchmarkApi.getVersion(target.id);
       setResult(
         await benchmarkApi.predictSelector(fitId, {
-          task: publicSelectorTask(target.manifest),
+          task: publicSelectorTask(full.manifest),
           targetFamily: target.manifest.taskFamily,
           targetGroup: selectorTaskGroup(target.manifest),
           minQuality: 0.5,

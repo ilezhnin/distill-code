@@ -21,7 +21,7 @@ import {
   workflowResultReason,
 } from "../lib/benchmarkLabels";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
-import type { BenchmarkVersion, RunSummary } from "../types";
+import type { BenchmarkVersionSummary, RunSummary } from "../types";
 import {
   BenchmarkAlert,
   Field,
@@ -45,8 +45,8 @@ export function WorkflowCampaignDialog({
   runs = [],
   onOpenRun,
 }: {
-  versions: BenchmarkVersion[];
-  currentVersions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
+  currentVersions: BenchmarkVersionSummary[];
   onClose: () => void;
   onEvidence: (id: string) => void;
   initialCampaignId?: string;
@@ -466,7 +466,7 @@ function CampaignResult({
   onEvidence,
 }: {
   campaign: WorkflowCampaign;
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   showPromotion: boolean;
   evidenceDisabled: boolean;
   promotionDisabled: boolean;

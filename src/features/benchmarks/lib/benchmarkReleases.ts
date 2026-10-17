@@ -1,4 +1,4 @@
-import type { BenchmarkDefinition, PoolRelease } from "../types";
+import type { BenchmarkDefinitionSummary, PoolRelease } from "../types";
 
 export function hasDifficulty(value: string | null | undefined): boolean {
   return value === "easy" || value === "medium" || value === "hard";
@@ -10,7 +10,7 @@ export function isRankedSplit(split: string): boolean {
 }
 
 /** Only the newest published version of each active test accepts new runs. */
-export function currentVersions(definitions: BenchmarkDefinition[]) {
+export function currentVersions(definitions: BenchmarkDefinitionSummary[]) {
   return definitions
     .filter((definition) => !definition.archived)
     .flatMap((definition) =>
@@ -22,7 +22,9 @@ export function currentVersions(definitions: BenchmarkDefinition[]) {
 }
 
 /** Every live ranked test's newest version: what the next release freezes. */
-export function liveVersionIds(definitions: BenchmarkDefinition[]): string[] {
+export function liveVersionIds(
+  definitions: BenchmarkDefinitionSummary[],
+): string[] {
   return currentVersions(definitions)
     .filter((version) => isRankedSplit(version.manifest.split))
     .map((version) => version.id)
@@ -40,7 +42,7 @@ export interface PoolChanges {
  * whose version changed, and a test that left it.
  */
 export function poolChanges(
-  definitions: BenchmarkDefinition[],
+  definitions: BenchmarkDefinitionSummary[],
   previous: string[],
   next: string[],
 ): PoolChanges {

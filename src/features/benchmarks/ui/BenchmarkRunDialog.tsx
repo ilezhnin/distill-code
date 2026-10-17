@@ -27,7 +27,7 @@ import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import { currentVersions } from "../lib/benchmarkReleases";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
-  BenchmarkDefinition,
+  BenchmarkDefinitionSummary,
   Configuration,
   RunPreview,
   RunRequest,
@@ -51,7 +51,7 @@ export function BenchmarkRunDialog({
   onClose,
   onStarted,
 }: {
-  definitions: BenchmarkDefinition[];
+  definitions: BenchmarkDefinitionSummary[];
   selectedVersionIds?: string[];
   previewOnly?: boolean;
   onClose: () => void;

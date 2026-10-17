@@ -19,7 +19,7 @@ import {
   shortId,
   workClassLabel,
 } from "../lib/benchmarkLabels";
-import type { BenchmarkVersion, ResultQuery } from "../types";
+import type { BenchmarkVersionSummary, ResultQuery } from "../types";
 import { passed, TestStatusMark } from "./BenchmarkTestStatus";
 import {
   BenchmarkAlert,
@@ -54,7 +54,7 @@ export function BenchmarkAttemptList({
   onEvidence,
 }: {
   query: ResultQuery;
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   showModel?: boolean;
   resetKey?: string;
   onEvidence: (id: string) => void;

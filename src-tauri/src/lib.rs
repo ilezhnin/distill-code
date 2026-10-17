@@ -302,6 +302,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::benchmarks::benchmark_list_definitions,
+            commands::benchmarks::benchmark_get_definition,
+            commands::benchmarks::benchmark_get_version,
             commands::benchmarks::benchmark_get_owned_task_mode,
             commands::benchmarks::benchmark_execution_backend_metadata,
             commands::benchmarks::benchmark_owned_task_choices,

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isRecord } from "@/shared/lib/isRecord";
 import type {
   BenchmarkDraft,
+  BenchmarkManifestSummary,
   Configuration,
   RoutingEvidenceQuery,
 } from "../types";
@@ -74,7 +75,9 @@ export function publicSelectorTask(draft: BenchmarkDraft): PublicSelectorTask {
   };
 }
 
-export function selectorTaskGroup(draft: BenchmarkDraft): string {
+export function selectorTaskGroup(
+  draft: Pick<BenchmarkManifestSummary, "environment" | "taskFamily">,
+): string {
   const environment = draft.environment;
   if (
     environment &&

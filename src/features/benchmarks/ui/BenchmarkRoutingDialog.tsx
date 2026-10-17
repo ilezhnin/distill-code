@@ -17,7 +17,7 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { formatQuality, shortId } from "../lib/benchmarkLabels";
 import type {
-  BenchmarkVersion,
+  BenchmarkVersionSummary,
   Configuration,
   RoutingEvidence,
   RoutingEvidenceQuery,
@@ -39,7 +39,7 @@ interface Candidate {
 }
 
 function candidatesFor(
-  version: BenchmarkVersion | undefined,
+  version: BenchmarkVersionSummary | undefined,
   runs: RunSummary[],
 ): Candidate[] {
   if (!version) return [];
@@ -64,7 +64,7 @@ export function BenchmarkRoutingDialog({
   onClose,
   onEvidence,
 }: {
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   runs: RunSummary[];
   onClose: () => void;
   onEvidence: (id: string) => void;

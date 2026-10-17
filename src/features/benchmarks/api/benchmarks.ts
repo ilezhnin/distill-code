@@ -22,6 +22,7 @@ import type {
   AttemptSummary,
   DesignEntry,
   BenchmarkDefinition,
+  BenchmarkDefinitionSummary,
   BenchmarkDraft,
   BenchmarkEvent,
   BenchmarkRun,
@@ -152,8 +153,13 @@ export const benchmarkApi = {
     invoke<SelectorFitArtifact>("benchmark_get_selector_fit", { id }),
   predictSelector: (id: string, request: SelectorPredictionRequest) =>
     invoke<SelectorPrediction>("benchmark_predict_selector", { id, request }),
+  /** Summaries; read a test's contents with getDefinition or getVersion. */
   listDefinitions: () =>
-    invoke<BenchmarkDefinition[]>("benchmark_list_definitions"),
+    invoke<BenchmarkDefinitionSummary[]>("benchmark_list_definitions"),
+  getDefinition: (id: string) =>
+    invoke<BenchmarkDefinition>("benchmark_get_definition", { id }),
+  getVersion: (id: string) =>
+    invoke<BenchmarkVersion>("benchmark_get_version", { id }),
   saveDraft: (
     id: string | null,
     expectedRevision: number | null,

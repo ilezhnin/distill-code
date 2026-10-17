@@ -1,12 +1,17 @@
 // What a run plan owes, counted the way `preview_run` counts it before the
 // service admits the plan.
-import type { BenchmarkDraft, BenchmarkVersion } from "../types";
+import type {
+  BenchmarkManifestSummary,
+  BenchmarkVersionSummary,
+} from "../types";
 
 /** Judge calls reserved per judged case (runner::MAX_JUDGES). */
 export const JUDGE_CALLS = 3;
 
 /** Exact frozen seats, or the maximum discovery reservation for legacy cases. */
-export function judgeCalls(draft: BenchmarkDraft): number {
+export function judgeCalls(
+  draft: Pick<BenchmarkManifestSummary, "evaluator" | "environment">,
+): number {
   if (draft.evaluator.kind !== "rubric") return 0;
   const environment = draft.environment;
   const panel =
@@ -55,7 +60,9 @@ export function runWindowOpen(
  * workflow step plus the judge reservation of a judged case. A candidate owes
  * the cases it wrote too; the service runs and labels them.
  */
-export function plannedTurns(versions: readonly BenchmarkVersion[]): number {
+export function plannedTurns(
+  versions: readonly BenchmarkVersionSummary[],
+): number {
   return versions.reduce(
     (total, version) =>
       total +

@@ -11,7 +11,7 @@ import {
 import { Label } from "@/shared/ui/label";
 import { SearchBar } from "@/shared/ui/SearchBar";
 import { shortId } from "../lib/benchmarkLabels";
-import type { BenchmarkVersion } from "../types";
+import type { BenchmarkVersionSummary } from "../types";
 
 const SPLITS = ["train", "held_out", "development"] as const;
 
@@ -26,7 +26,7 @@ export function BenchmarkTestPicker({
   disabled,
   onChange,
 }: {
-  versions: BenchmarkVersion[];
+  versions: BenchmarkVersionSummary[];
   selectedIds: string[];
   disabled: boolean;
   onChange: (ids: string[]) => void;

@@ -33,8 +33,8 @@ import {
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   Attempt,
-  BenchmarkDefinition,
-  BenchmarkVersion,
+  BenchmarkDefinitionSummary,
+  BenchmarkVersionSummary,
   Configuration,
   LeaderboardRow,
   RunRequest,
@@ -81,7 +81,7 @@ export function BenchmarkModelRunDialog({
 }: {
   /** The model's leaderboard row, as the leaderboard stands now. */
   row: LeaderboardRow;
-  definitions: BenchmarkDefinition[];
+  definitions: BenchmarkDefinitionSummary[];
   /** The model's newest run inside its window: followed, finished or warned about. */
   runId: string | null;
   onClose: () => void;
@@ -139,7 +139,7 @@ export function BenchmarkModelRunDialog({
       : null;
   const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
   const requestFor = (
-    versions: BenchmarkVersion[],
+    versions: BenchmarkVersionSummary[],
     candidate: Configuration,
   ): RunRequest => ({
     requestKey,

@@ -13,6 +13,44 @@ pub struct Store {
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
+/// A SQL expression reading a [`ManifestSummary`] out of the manifest JSON in
+/// `column`, path by path. Nothing outside these paths leaves SQLite, however
+/// large the prompt, fixtures, checks or environment are. Defaults follow
+/// [`BenchmarkDraft`]'s serde defaults. `json()` keeps nested values JSON
+/// through CASE and subqueries.
+fn manifest_summary_sql(column: &str) -> String {
+    const SQL: &str = "json_object(
+        'name',json_extract(@,'$.name'),
+        'category',json_extract(@,'$.category'),
+        'taskFamily',json_extract(@,'$.taskFamily'),
+        'split',json_extract(@,'$.split'),
+        'executionProfile',json_extract(@,'$.executionProfile'),
+        'measurementProfile',json_extract(@,'$.measurementProfile'),
+        'evaluator',json_object('kind',json_extract(@,'$.evaluator.kind'),'revision',json_extract(@,'$.evaluator.revision')),
+        'limits',json_object('timeoutSeconds',json_extract(@,'$.limits.timeoutSeconds'),'maxTurns',json_extract(@,'$.limits.maxTurns'),'maxArtifactBytes',json_extract(@,'$.limits.maxArtifactBytes')),
+        'repetitions',json_extract(@,'$.repetitions'),
+        'workClassId',COALESCE(json_extract(@,'$.workClassId'),'general'),
+        'roleId',json_extract(@,'$.roleId'),
+        'roleContextHash',COALESCE(json_extract(@,'$.roleContextHash'),'clean-v1'),
+        'facets',json_object('language',json_extract(@,'$.facets.language'),'domain',json_extract(@,'$.facets.domain'),'difficulty',json_extract(@,'$.facets.difficulty'),'inputBytes',json_extract(@,'$.facets.inputBytes'),'outputFormat',json_extract(@,'$.facets.outputFormat')),
+        'entryState',json(CASE WHEN json_type(@,'$.entryState')='object' THEN json_object('contentHash',json_extract(@,'$.entryState.contentHash')) END),
+        'workflow',json(CASE WHEN json_type(@,'$.workflow')='object' THEN json_object('steps',json((SELECT json_group_array(json_object('id',json_extract(s.value,'$.id'),'scope',json(CASE WHEN json_type(s.value,'$.scope')='object' THEN json_object('roleId',json_extract(s.value,'$.scope.roleId'),'workClassId',json_extract(s.value,'$.scope.workClassId'),'purpose',json_extract(s.value,'$.scope.purpose'),'stepBudgetSeconds',json_extract(s.value,'$.scope.stepBudgetSeconds')) END))) FROM json_each(@,'$.workflow.steps') s))) END),
+        'environment',json_object(
+            'authoredBy',json(CASE WHEN json_type(@,'$.environment.authoredBy')='array' THEN (SELECT json_group_array(json_object('providerId',json_extract(a.value,'$.providerId'),'modelId',json_extract(a.value,'$.modelId'),'effort',json_extract(a.value,'$.effort'))) FROM json_each(@,'$.environment.authoredBy') a WHERE a.type='object' AND json_type(a.value,'$.providerId')='text' AND json_type(a.value,'$.modelId')='text' AND json_type(a.value,'$.effort') IN ('text','null')) END),
+            'splitGroup',CASE WHEN json_type(@,'$.environment.splitGroup')='text' THEN json_extract(@,'$.environment.splitGroup') END,
+            'judgePanel',json(CASE WHEN json_type(@,'$.environment.judgePanel.judges')='array' THEN json_object('judges',json((SELECT json_group_array(json_object('providerId',json_extract(j.value,'$.providerId'),'modelId',json_extract(j.value,'$.modelId'),'effort',json_extract(j.value,'$.effort'))) FROM json_each(@,'$.environment.judgePanel.judges') j))) WHEN json_type(@,'$.environment.judgePanel')='object' THEN json_object() END),
+            'generator',json(CASE WHEN json_type(@,'$.environment.generator.family')='text' THEN json_object('family',json_extract(@,'$.environment.generator.family')) END)))";
+    SQL.replace('@', column)
+}
+/// Parses [`manifest_summary_sql`]'s JSON. Environment keys a manifest does
+/// not declare stay absent rather than null.
+fn manifest_summary(json: &str) -> Result<ManifestSummary> {
+    let mut summary: ManifestSummary = serde_json::from_str(json)?;
+    if let serde_json::Value::Object(environment) = &mut summary.environment {
+        environment.retain(|_, value| !value.is_null());
+    }
+    Ok(summary)
+}
 impl Store {
     pub async fn open(root: &Path) -> Result<Self> {
         tokio::fs::create_dir_all(root).await?;
@@ -118,24 +156,57 @@ impl Store {
             })
             .collect())
     }
-    /// UI catalog window: the newest 1,000 definitions. Evidence and export
+    /// UI catalog window: the newest 1,000 definitions, as summaries. SQLite
+    /// reads the listed paths out of each manifest, so the app never holds
+    /// the task contents of the whole catalog at once. Evidence and export
     /// consumers must use all_definitions so old published cases remain visible.
-    pub async fn definitions(&self) -> Result<Vec<BenchmarkDefinition>> {
-        let rows=sqlx::query("SELECT id,draft_json,revision,archived,archived_at FROM benchmark_definitions ORDER BY rowid DESC LIMIT 1000").fetch_all(&self.pool).await?;
-        let mut out = Vec::new();
+    pub async fn definition_summaries(&self) -> Result<Vec<BenchmarkDefinitionSummary>> {
+        let rows = sqlx::query(&format!(
+            "SELECT id,revision,archived,archived_at,{} FROM benchmark_definitions ORDER BY rowid DESC LIMIT 1000",
+            manifest_summary_sql("draft_json")
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        let versions = format!(
+            "SELECT id,content_hash,published_at,carries_from,{} FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC,rowid DESC",
+            manifest_summary_sql("manifest_json")
+        );
+        let mut out = Vec::with_capacity(rows.len());
         for r in rows {
             let id: String = r.get(0);
-            out.push(BenchmarkDefinition {
-                id: id.clone(),
-                draft: serde_json::from_str(r.get(1))?,
-                draft_revision: r.get(2),
-                archived: r.get(3),
-                archived_at: r.get(4),
+            let mut listed = Vec::new();
+            for v in sqlx::query(&versions)
+                .bind(&id)
+                .fetch_all(&self.pool)
+                .await?
+            {
+                listed.push(BenchmarkVersionSummary {
+                    id: v.get(0),
+                    definition_id: id.clone(),
+                    content_hash: v.get(1),
+                    published_at: v.get(2),
+                    carries_from: v.get(3),
+                    manifest: manifest_summary(v.get(4))?,
+                });
+            }
+            out.push(BenchmarkDefinitionSummary {
                 archive_history: self.archive_history(&id).await?,
-                versions: self.versions_for(&id).await?,
+                draft_revision: r.get(1),
+                archived: r.get(2),
+                archived_at: r.get(3),
+                draft: manifest_summary(r.get(4))?,
+                versions: listed,
+                id,
             });
         }
         Ok(out)
+    }
+    pub async fn has_definitions(&self) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM benchmark_definitions)")
+                .fetch_one(&self.pool)
+                .await?,
+        )
     }
     pub async fn all_definitions(&self) -> Result<Vec<BenchmarkDefinition>> {
         let mut definitions = Vec::new();
@@ -2369,7 +2440,7 @@ mod tests {
                 .unwrap();
         }
         tx.commit().await.unwrap();
-        let visible = store.definitions().await.unwrap();
+        let visible = store.definition_summaries().await.unwrap();
         assert_eq!(visible.len(), 1000);
         assert!(!visible.iter().any(|d| d.id == oldest.id));
         let historical = store.all_definitions().await.unwrap();
@@ -2381,6 +2452,198 @@ mod tests {
         let samples = store.usage_samples().await.unwrap();
         assert_eq!(samples.len(), 1005);
         assert!(samples.iter().any(|s| s.id == "sample-0"));
+    }
+
+    /// A catalog of large tasks once listed every prompt, fixture, check and
+    /// mutant in one reply, hundreds of megabytes, and the app ran out of
+    /// memory. The list carries summaries whose size does not grow with the
+    /// tasks. Every byte of filler here is invented.
+    #[tokio::test]
+    async fn catalog_summaries_stay_small_however_large_the_tasks_are() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        let filler = "invented-filler-".repeat(512);
+        let mut draft = super::super::seeds::definitions().remove(0);
+        draft.name = "Invented large task".into();
+        draft.task_family = "invented-family".into();
+        draft.split = "held_out".into();
+        draft.work_class_id = "debug".into();
+        draft.facets.difficulty = Some("hard".into());
+        draft.description = filler.clone();
+        draft.prompt = filler.clone();
+        draft.role_prompt = filler.clone();
+        draft.evaluator = Evaluator {
+            kind: "rubric".into(),
+            expected: filler.clone(),
+            rubric: filler.clone(),
+            revision: "invented-revision".into(),
+            known_good: filler.clone(),
+            known_bad: filler.clone(),
+        };
+        draft.fixtures = (0..4)
+            .map(|index| Fixture {
+                path: format!("fixtures/input-{index}.txt"),
+                content: filler.clone(),
+            })
+            .collect();
+        draft.environment = json!({
+            "mutants": [filler, filler, filler, filler],
+            "alternatives": [{ "answer": filler }],
+            "repositoryArtifactInput": { "before": { "patch": filler } },
+            "authoredBy": [
+                { "providerId": "example-provider", "modelId": "example-model", "effort": "xhigh" },
+                "legacy-tag",
+                { "providerId": "example-provider", "modelId": "other-model", "effort": null, "notes": filler },
+            ],
+            "splitGroup": "invented-group",
+            "judgePanel": {
+                "recipe": "frozen-native-panel-v1",
+                "judges": [
+                    { "providerId": "judge-a", "modelId": "judge-model", "effort": "high", "accountId": "account-a" },
+                    { "providerId": "judge-b", "modelId": "judge-model", "effort": null, "accountId": "account-b" },
+                ],
+            },
+            "generator": { "family": "invented-generator", "template": filler },
+        });
+        draft.entry_state = Some(EntryState {
+            schema_version: 1,
+            root_task_id: "root".into(),
+            step_id: "step".into(),
+            parent_step_id: None,
+            fixture_snapshot_hash: "snapshot".into(),
+            conversation_prefix: filler.clone(),
+            previous_reports: vec![filler.clone()],
+            remaining_budget_seconds: 60,
+            content_hash: "entry-hash".into(),
+        });
+        draft.workflow = Some(WorkflowSpec {
+            schema_version: 2,
+            driver_revision: "driver".into(),
+            steps: vec![
+                WorkflowStep {
+                    id: "implement".into(),
+                    prompt: filler.clone(),
+                    include_previous_output: false,
+                    scope: Some(WorkflowScope {
+                        role_id: "implementer".into(),
+                        role_prompt: filler.clone(),
+                        work_class_id: "debug".into(),
+                        purpose: "implement".into(),
+                        step_budget_seconds: 60,
+                    }),
+                },
+                WorkflowStep {
+                    id: "review".into(),
+                    prompt: filler.clone(),
+                    include_previous_output: true,
+                    scope: None,
+                },
+            ],
+        });
+        let manifest = serde_json::to_string(&draft).unwrap();
+        assert!(manifest.len() > 150_000, "{}", manifest.len());
+        const DEFINITIONS: usize = 160;
+        let mut tx = store.pool.begin().await.unwrap();
+        for index in 0..DEFINITIONS {
+            let id = format!("definition-{index}");
+            sqlx::query("INSERT INTO benchmark_definitions(id,draft_json,revision,archived) VALUES(?,?,3,?)")
+                .bind(&id).bind(&manifest).bind(index == 0).execute(&mut *tx).await.unwrap();
+            for version in 0..2 {
+                sqlx::query("INSERT INTO benchmark_versions(id,definition_id,content_hash,manifest_json,published_at) VALUES(?,?,?,?,?)")
+                    .bind(format!("{id}-v{version}")).bind(&id).bind(format!("hash-{index}-{version}"))
+                    .bind(&manifest).bind(version).execute(&mut *tx).await.unwrap();
+            }
+        }
+        tx.commit().await.unwrap();
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT (SELECT SUM(LENGTH(draft_json)) FROM benchmark_definitions)+(SELECT SUM(LENGTH(manifest_json)) FROM benchmark_versions)",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(stored > 90_000_000, "{stored}");
+
+        let listed = store.definition_summaries().await.unwrap();
+        let reply = serde_json::to_string(&listed).unwrap();
+        assert_eq!(listed.len(), DEFINITIONS);
+        assert!(reply.len() < 1_000_000, "{} bytes", reply.len());
+        assert!(!reply.contains("invented-filler-"));
+        assert!(!reply.contains("account-a"));
+
+        // The listed facts read the same paths as the full manifest.
+        let first = listed.last().unwrap();
+        assert_eq!(first.id, "definition-0");
+        assert!(first.archived);
+        assert_eq!(first.draft_revision, 3);
+        let ids: Vec<&str> = first.versions.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["definition-0-v1", "definition-0-v0"]);
+        let summary = &first.versions[0].manifest;
+        assert_eq!(summary, &first.draft);
+        assert_eq!(summary.name, draft.name);
+        assert_eq!(summary.task_family, draft.task_family);
+        assert_eq!(summary.split, "held_out");
+        assert_eq!(summary.work_class_id, "debug");
+        assert_eq!(summary.facets, draft.facets);
+        assert_eq!(summary.limits, draft.limits);
+        assert_eq!(summary.repetitions, draft.repetitions);
+        assert_eq!(summary.evaluator.kind, "rubric");
+        assert_eq!(summary.evaluator.revision, "invented-revision");
+        assert_eq!(
+            summary
+                .entry_state
+                .as_ref()
+                .map(|e| e.content_hash.as_str()),
+            Some("entry-hash")
+        );
+        let workflow = summary.workflow.as_ref().unwrap();
+        assert_eq!(workflow.steps.len(), 2);
+        assert_eq!(
+            workflow.steps[0]
+                .scope
+                .as_ref()
+                .map(|s| s.work_class_id.as_str()),
+            Some("debug")
+        );
+        assert!(workflow.steps[1].scope.is_none());
+        assert_eq!(
+            summary.environment,
+            json!({
+                "authoredBy": [
+                    { "providerId": "example-provider", "modelId": "example-model", "effort": "xhigh" },
+                    { "providerId": "example-provider", "modelId": "other-model", "effort": null },
+                ],
+                "splitGroup": "invented-group",
+                "judgePanel": { "judges": [
+                    { "providerId": "judge-a", "modelId": "judge-model", "effort": "high" },
+                    { "providerId": "judge-b", "modelId": "judge-model", "effort": null },
+                ] },
+                "generator": { "family": "invented-generator" },
+            })
+        );
+
+        // A manifest from before the defaulted fields lists their defaults,
+        // and an environment without the listed keys lists none of them.
+        let mut legacy: Value = serde_json::from_str(&manifest).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        for key in ["workClassId", "roleContextHash", "entryState", "workflow"] {
+            object.remove(key);
+        }
+        object.insert("environment".into(), json!({ "mutants": [filler] }));
+        sqlx::query("UPDATE benchmark_definitions SET draft_json=? WHERE id='definition-1'")
+            .bind(legacy.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let listed = store.definition_summaries().await.unwrap();
+        let legacy = &listed
+            .iter()
+            .find(|d| d.id == "definition-1")
+            .unwrap()
+            .draft;
+        assert_eq!(legacy.work_class_id, "general");
+        assert_eq!(legacy.role_context_hash, "clean-v1");
+        assert!(legacy.entry_state.is_none() && legacy.workflow.is_none());
+        assert_eq!(legacy.environment, json!({}));
     }
 
     #[tokio::test]
