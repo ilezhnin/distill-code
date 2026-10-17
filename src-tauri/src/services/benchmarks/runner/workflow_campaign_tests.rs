@@ -991,3 +991,89 @@ async fn a_cost_weighted_fit_without_recorded_costs_refuses_before_any_execution
     assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
     dir.close().await;
 }
+
+/// A serial campaign admits its next cell while another run's turn keeps the
+/// runner's tick open, as nonstop measurement does; only a new tick used to.
+#[tokio::test]
+async fn a_serial_campaign_advances_while_another_run_flies() {
+    let dir = crate::test_support::TempRoot::new();
+    let backend = Arc::new(OfflineWorkers::default());
+    let service = open(&dir, backend.clone()).await;
+    let (train, fit) = training(&service).await;
+    let roots = roots(&service, &train, "held-pass").await;
+    let frozen = service
+        .freeze_workflow_campaign(request(&fit, &roots, "held-pass-campaign"))
+        .await
+        .unwrap();
+    // Another account, so the held turn takes no lane a campaign step needs.
+    let mut held = configurations().remove(0);
+    held.account_id = Some("held-account".into());
+    backend.hold_next.store(true, Ordering::SeqCst);
+    let holder = service
+        .start_run(RunRequest {
+            author_policy: None,
+            request_key: "held-pass-run".into(),
+            version_ids: vec![train[0].id.clone()],
+            configurations: vec![held],
+            repetitions: 1,
+            timeout_seconds: 10,
+            max_executions: 1,
+            preview: false,
+            parallelism: Some(1),
+            execution_limits: None,
+            workflow_policy: None,
+        })
+        .await
+        .unwrap();
+    let pass = tokio::spawn({
+        let service = service.clone();
+        async move { service.tick().await }
+    });
+    let phase = |run: BenchmarkRun| run.attempts[0].phase.clone();
+    let bound = std::time::Instant::now() + Duration::from_secs(15);
+    while phase(service.store.run(&holder.id).await.unwrap()) == "pending" {
+        assert!(
+            std::time::Instant::now() < bound,
+            "the held turn never flew"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let bound = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let campaign = service
+            .store
+            .workflow_campaign(&frozen.plan.id)
+            .await
+            .unwrap();
+        assert_eq!(campaign.state, "running", "{:?}", campaign.state_reason);
+        if campaign.next_cell >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < bound,
+            "the campaign stopped at cell {}",
+            campaign.next_cell
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        phase(service.store.run(&holder.id).await.unwrap()),
+        "preparing"
+    );
+    assert!(!pass.is_finished());
+    service
+        .control_workflow_campaign(&frozen.plan.id, "pause")
+        .await
+        .unwrap();
+    service.control(&holder.id, "cancel").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(60), pass)
+        .await
+        .expect("the tick ends once its turns land")
+        .unwrap()
+        .unwrap();
+    dir.close().await;
+}

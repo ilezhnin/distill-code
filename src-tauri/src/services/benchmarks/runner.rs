@@ -46,6 +46,14 @@ pub(super) const EVALUATION_RETRY: Duration = if cfg!(test) {
     Duration::from_secs(2)
 };
 
+/// How often a tick that lasts recovers, bakes and admits campaign work
+/// again, as it does when it starts.
+pub(super) const HOUSEKEEPING_EVERY: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(5)
+};
+
 /// Whether a panel stopped short in a way its run can take up again.
 fn judging_deferred(attempt: &Attempt) -> bool {
     matches!(
@@ -5357,16 +5365,15 @@ impl BenchmarkService {
         }
     }
     async fn tick(self: &Arc<Self>) -> Result<()> {
-        self.recover_interrupted().await?;
-        self.bake_closed_windows().await?;
-        super::campaigns::tick(self).await?;
-        super::workflow_campaign::tick(self).await?;
+        self.housekeeping().await?;
+        let mut kept = Instant::now();
         // Attempts and judge panels in flight, each its own task; each settles
         // its own attempt and frees its slot, and the next fill takes the slot
         // up again.
         let mut flights = tokio::task::JoinSet::new();
         // Each attempt and panel starts at most once a tick, so one that goes
-        // straight back to the queue waits for the next tick.
+        // straight back to the queue waits for the next tick; an attempt put
+        // back with a wait starts again once the wait is over.
         let mut tried = std::collections::HashSet::new();
         // A failed dispatch still lets what already flies land.
         let dispatched = self.fill(&mut flights, &mut tried).await;
@@ -5381,11 +5388,28 @@ impl BenchmarkService {
             if flights.is_empty() {
                 break;
             }
+            // Under nonstop measurement a tick hardly ends, so what starts one
+            // also runs on its own clock while it lasts.
+            if kept.elapsed() >= HOUSEKEEPING_EVERY {
+                kept = Instant::now();
+                if let Err(error) = self.housekeeping().await {
+                    log::warn!("[benchmarks] housekeeping paused: {}", error.message);
+                }
+            }
             if let Err(error) = self.fill(&mut flights, &mut tried).await {
                 log::warn!("[benchmarks] dispatch paused: {}", error.message);
             }
         }
         dispatched
+    }
+    /// Recovers interrupted attempts, bakes closed windows and admits due
+    /// campaign work: at the start of every tick, and every
+    /// [`HOUSEKEEPING_EVERY`] within one.
+    async fn housekeeping(self: &Arc<Self>) -> Result<()> {
+        self.recover_interrupted().await?;
+        self.bake_closed_windows().await?;
+        super::campaigns::tick(self).await?;
+        super::workflow_campaign::tick(self).await
     }
     /// Bakes every run whose window closed, once nothing of it flies. A
     /// rendering still before its judges keeps the run open until the
@@ -5628,7 +5652,10 @@ impl BenchmarkService {
             let mut started = false;
             for (run, ready) in &mut queues {
                 for (a, version) in ready.by_ref() {
-                    if tried.contains(&a.id) {
+                    // A tick lasts while anything of any run flies. A cell put
+                    // back with a wait starts again once it has waited it out;
+                    // one put straight back waits for the next tick.
+                    if tried.contains(&a.id) && !a.wait_until.is_some_and(|until| until <= now()) {
                         continue;
                     }
                     if self
@@ -5909,6 +5936,9 @@ impl BenchmarkService {
         tried.insert(a.id.clone());
         a.phase = "preparing".into();
         a.started_at = Some(now());
+        // A wait ends when its cell starts; only a new one lets it start
+        // again within this tick.
+        a.wait_until = None;
         self.store.save_attempt(&a).await?;
         if self.store.run_state(&run.id).await? != "running" {
             a.phase = "pending".into();
@@ -7101,6 +7131,9 @@ mod execution_limits_tests;
 
 #[cfg(test)]
 mod unstarted_admission_tests;
+
+#[cfg(test)]
+mod held_pass_tests;
 
 #[cfg(test)]
 mod evaluation_wait_tests;

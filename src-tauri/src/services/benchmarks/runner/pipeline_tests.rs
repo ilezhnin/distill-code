@@ -29,6 +29,8 @@ struct OfflineWorkers {
     wrong_ack: std::sync::atomic::AtomicBool,
     /// Workers whose usage reports no cost, like a runtime without prices.
     no_cost: std::sync::atomic::AtomicBool,
+    /// The next turn stays open until its run is cancelled.
+    hold_next: std::sync::atomic::AtomicBool,
 }
 
 /// Fits from the service's data. A refusal names every attempt of each cell
@@ -384,11 +386,22 @@ impl ExecutionBackend for OfflineWorkers {
         mut attempt: Attempt,
         version: BenchmarkVersion,
         _: u32,
-        _: watch::Receiver<bool>,
+        mut cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move {
             if let Some(code) = self.refuse_next.lock().unwrap().take() {
                 return Err(BenchmarkError::new(&code, "Offline pre-dispatch refusal"));
+            }
+            if self.hold_next.swap(false, Ordering::SeqCst) {
+                while !*cancel.borrow() {
+                    if cancel.changed().await.is_err() {
+                        break;
+                    }
+                }
+                return Err(BenchmarkError::new(
+                    "cancelled",
+                    "Held offline turn cancelled",
+                ));
             }
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             assert!(matches!(
