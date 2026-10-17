@@ -260,6 +260,19 @@ class BudgetTests(unittest.TestCase):
         pressure.write_text('some avg10=4.00 avg60=1.00 avg300=1.00 total=9\n')
         self.reserve('text', 'fictional-text')
         self.assertEqual(budget.guest_pressure('memory'), 0.04)
+        # Page cache is not in use: a wave's cache, reparented from finished
+        # jobs, fills the root's memory.current long before reclaim; anonymous,
+        # shared and kernel memory are what the guard counts.
+        (budget.ROOT / 'memory.current').write_text(str(18 * budget.GIB))
+        stat = budget.ROOT / 'memory.stat'
+        stat.write_text(f'anon {4 * budget.GIB}\nfile {13 * budget.GIB}\nkernel {budget.GIB // 2}\nshmem 1024\n')
+        self.reserve('text', 'fictional-cached')
+        stat.write_text(f'anon {16 * budget.GIB}\nfile {budget.GIB}\nkernel {budget.GIB // 2}\nshmem 1024\n')
+        with self.assertRaisesRegex(BlockingIOError, 'memory in use or memory pressure'):
+            self.reserve('text', 'fictional-anonymous')
+        # Kernels before 5.18 report kernel memory in parts.
+        stat.write_text(f'anon {15 * budget.GIB}\nfile 0\nkernel_stack {budget.GIB}\nslab {budget.GIB}\n')
+        self.assertEqual(budget.memory_in_use(), 17 * budget.GIB)
 
     def test_a_later_workflow_step_goes_ahead_of_new_attempts(self):
         # Its earlier steps are paid for: the priority holds, the ticket queue,

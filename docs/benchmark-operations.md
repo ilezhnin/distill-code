@@ -154,9 +154,11 @@ naming the line that holds it, while it does not:
   recorded, the ceiling itself, except a repository session, which claims
   3 GiB (half its ceiling) until then, so a wave starts at full parallelism.
   The claims and the new job's must fit 23 GiB, and an attempt must also leave
-  room for one check and one preparation. No attempt starts while the jobs use
-  more than 70 % of those 23 GiB or the guest's memory pressure over ten
-  seconds exceeds a tenth; learned peaks persist across deploys.
+  room for one check and one preparation. No attempt starts while the jobs'
+  anonymous, shared and kernel memory exceeds 70 % of those 23 GiB or the
+  guest's memory pressure over ten seconds exceeds a tenth; page cache, which
+  grows over a wave and is reclaimed first, does not count. Learned peaks
+  persist across deploys.
 - CPU. A repository session spends most of its time waiting for the remote
   model, so it is admitted by what the sandbox measures: the CPUs the jobs used
   over the last seconds, a burst allowance for every running session and the

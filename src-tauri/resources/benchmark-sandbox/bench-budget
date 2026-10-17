@@ -95,9 +95,9 @@ PEAK_SAMPLES = 8
 # session using more than it claims claims what it uses.
 INITIAL_MEMORY = {'repository': 3 * GIB}
 # What the smaller claims allow, a simultaneous spike, is caught by measure:
-# no new attempt starts while the jobs use more than this share of the
-# admission memory or the guest's memory pressure over ten seconds exceeds
-# a tenth.
+# no new attempt starts while the jobs' memory in use (memory_in_use: page
+# cache left out) exceeds this share of the admission memory or the guest's
+# memory pressure over ten seconds exceeds a tenth.
 MEMORY_GUARD = 0.70
 MEMORY_PRESSURE = 0.10
 # Checks whose share of time spent waiting for a CPU exceeds this tighten the
@@ -492,6 +492,21 @@ def read_number(path, pattern=None):
     return int(found.group(1)) if found else None
 
 
+def memory_in_use():
+    """What the jobs' memory holds that reclaim cannot simply drop: anonymous
+    and shared pages and kernel memory. Page cache is left out: it is charged
+    to the root too, includes pages reparented from finished jobs, grows for a
+    whole wave and is reclaimed under memory.high before it could push a job
+    out. memory.current where memory.stat cannot be read."""
+    try:
+        stat = dict(line.split()[:2] for line in (ROOT / 'memory.stat').read_text().splitlines() if line.strip())
+        kernel = int(stat['kernel']) if 'kernel' in stat else sum(
+            int(stat.get(key, 0)) for key in ('kernel_stack', 'slab', 'percpu', 'sock'))
+        return int(stat['anon']) + int(stat.get('shmem', 0)) + kernel
+    except (OSError, ValueError, KeyError):
+        return read_number(ROOT / 'memory.current') or 0
+
+
 def leaf_memory(row):
     """What a job's leaves use now; zero before its process tree started."""
     total = 0
@@ -815,7 +830,7 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False):
     if held:
         raise BlockingIOError('resource_busy: ' + held + '; no provider process started')
     if kind in ATTEMPTS:
-        in_use = read_number(ROOT / 'memory.current') or 0
+        in_use = memory_in_use()
         stalled_memory = guest_pressure('memory')
         if in_use > MEMORY_GUARD * ADMISSION_MEMORY or (stalled_memory is not None and stalled_memory > MEMORY_PRESSURE):
             raise BlockingIOError('resource_busy: sandbox memory in use or memory pressure is above its guard line; no provider process started')
