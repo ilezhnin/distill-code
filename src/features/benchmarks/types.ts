@@ -753,3 +753,68 @@ export interface RoutingEvidenceRow {
   latestEvidenceAt: number | null;
   attemptIds: string[];
 }
+/** A kind of rubric a judge pool entry judges. */
+export type JudgeInput = "text" | "visual";
+/**
+ * One judge the owner put in the judge pool (`benchmarks/settings.json`): a
+ * model at an effort, on whichever enabled account offers it. Without
+ * `inputs` it judges text and visual rubrics, visual ones only where its
+ * provider can judge images.
+ */
+export interface JudgePoolEntry {
+  providerId: string;
+  modelId: string;
+  effort?: string | null;
+  inputs?: JudgeInput[] | null;
+  /**
+   * The owner confirmed that this provider does not train on or keep the
+   * private rubrics and expected conditions a judge receives. Until then the
+   * entry neither takes seats nor can be calibrated; absent means false.
+   */
+  disclosureConfirmed?: boolean;
+}
+/** One control answer of a judge calibration, with what the judge made of it. */
+export interface JudgeCalibrationControl {
+  recordId: string;
+  controlId: string;
+  /** The verdict the control is known to deserve. */
+  expected: "pass" | "fail";
+  score: number | null;
+  /** Whether the score fell in the band the expected verdict allows. */
+  inBand: boolean;
+  reason: string;
+}
+export type JudgeCalibrationStatus =
+  | "running"
+  | "passed"
+  | "failed"
+  | "interrupted";
+/** A pool entry judging known accepted and rejected answers alone. */
+export interface JudgeCalibration {
+  entry: JudgePoolEntry;
+  /** The set of controls it ran over; a new set calls for a new calibration. */
+  recipe: string;
+  status: JudgeCalibrationStatus;
+  startedAt: number;
+  finishedAt: number | null;
+  accountId: string | null;
+  controls: JudgeCalibrationControl[];
+  failure: string | null;
+}
+/** A pool entry as the service reads it, and whether it can take seats now. */
+export interface JudgePoolRow {
+  entry: JudgePoolEntry;
+  vendor: string | null;
+  /** Its latest calibration for the current recipe. */
+  calibration: JudgeCalibration | null;
+  seats: boolean;
+  /** Why it takes no seats, when it takes none. */
+  reason: string | null;
+}
+export interface JudgePoolStatus {
+  /** The current calibration recipe. */
+  recipe: string;
+  pool: JudgePoolRow[];
+  /** Every stored calibration, of entries outside the pool too. */
+  calibrations: JudgeCalibration[];
+}

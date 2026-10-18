@@ -690,6 +690,73 @@
       "spentOfLimit": "Gastado hasta ahora: {{spent}} de {{limit}}",
       "unavailable": "No se pudo leer el gasto, así que las pruebas no usan créditos."
     },
+    "judges": {
+      "title": "Jueces",
+      "description": "Las pruebas con rúbrica solo las juzgan modelos de este grupo: nunca un modelo del mismo proveedor que el candidato, y solo cuando hayas confirmado que su proveedor no entrena con las tareas privadas que juzga ni las conserva, y después de superar una calibración con respuestas cuyo veredicto se conoce.",
+      "statusFailed": "No se pudo leer el estado de los jueces: {{message}}",
+      "empty": "Todavía no hay jueces",
+      "emptyDescription": "Añade un modelo abajo y luego calíbralo.",
+      "noEffort": "Sin ajuste de esfuerzo",
+      "inputs": {
+        "both": "Rúbricas de texto y visuales",
+        "text": "Solo rúbricas de texto",
+        "visual": "Solo rúbricas visuales",
+        "none": "Ninguna rúbrica"
+      },
+      "state": {
+        "none": "Sin calibrar",
+        "running": "Calibrando desde las {{time}}",
+        "passed_one": "Superada: {{inBand}} de {{count}} control dentro del margen",
+        "passed_other": "Superada: {{inBand}} de {{count}} controles dentro del margen",
+        "failed": "Fallida: {{failure}}",
+        "failedControls_one": "Fallida: {{outOfBand}} de {{count}} control fuera del margen",
+        "failedControls_other": "Fallida: {{outOfBand}} de {{count}} controles fuera del margen",
+        "interrupted": "Interrumpida: {{failure}}",
+        "interruptedPlain": "Se interrumpió antes de terminar. Vuelve a calibrar.",
+        "earlierRecipe": "Calibrado con un conjunto de controles anterior."
+      },
+      "control": {
+        "shouldPass": "{{control}}: debería aprobar, puntuación {{score}}",
+        "shouldFail": "{{control}}: debería suspender, puntuación {{score}}",
+        "shouldPassUnscored": "{{control}}: debería aprobar, sin puntuación",
+        "shouldFailUnscored": "{{control}}: debería suspender, sin puntuación",
+        "withReason": "{{line}}. {{reason}}",
+        "more_one": "y {{count}} más",
+        "more_other": "y {{count}} más"
+      },
+      "seats": "Ocupa puestos de juez",
+      "noSeats": "No ocupa puestos: {{reason}}",
+      "noSeatsPlain": "Todavía no ocupa puestos",
+      "calibrate": "Calibrar",
+      "starting": "Iniciando...",
+      "calibrateFailed": "No se inició la calibración: {{message}}",
+      "remove": "Quitar",
+      "disclosure": {
+        "label": "Uso de datos confirmado",
+        "off": "No juzga ni se puede calibrar hasta que confirmes que su proveedor no entrena con las tareas privadas que juzga ni las conserva.",
+        "offWithReason": "No juzga ni se puede calibrar: {{reason}}"
+      },
+      "add": {
+        "title": "Nuevo juez",
+        "description": "Un modelo que ofrece un proveedor, con uno de sus esfuerzos.",
+        "provider": "Proveedor",
+        "model": "Modelo",
+        "effort": "Esfuerzo",
+        "inputs": "Rúbricas",
+        "chooseProvider": "Elige un proveedor",
+        "chooseModel": "Elige un modelo",
+        "submit": "Añadir juez",
+        "duplicate": "Este modelo y este esfuerzo ya están en el grupo.",
+        "full": "El grupo admite como máximo {{max}} jueces.",
+        "loading": "Leyendo los modelos que ofrecen los proveedores...",
+        "noModels": "Todavía no hay modelos. Aparecen aquí cuando una ejecución de benchmarks ha listado los modelos de un proveedor.",
+        "unavailable": "No se pudieron leer los modelos que ofrecen los proveedores: {{message}}"
+      },
+      "others": {
+        "title": "Modelos calibrados fuera del grupo",
+        "addToPool": "Añadir al grupo"
+      }
+    },
     "sandboxKeys": {
       "title": "Claves de Z.ai en el entorno aislado de benchmarks",
       "description": "Las pruebas de Z.ai se ejecutan en el entorno aislado de benchmarks, que guarda su propia copia de la clave guardada de la cuenta. Vuelve a copiarla después de cambiar la clave.",

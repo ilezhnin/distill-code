@@ -14,6 +14,7 @@ pub mod generated;
 pub mod home_advantage;
 mod judge_checks;
 mod judge_panel;
+pub mod judge_pool;
 pub mod learned;
 pub mod model_catalog;
 pub mod promotion;
