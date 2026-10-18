@@ -1763,6 +1763,19 @@ fn learn_cache(tree: &str, held: bool) {
     }
 }
 
+/// `stdout` without the line in which bench-unpack said it kept `tree`.
+fn without_cache_line(stdout: &[u8], tree: &str) -> Vec<u8> {
+    let line = format!("cached {tree}\n");
+    let line = line.as_bytes();
+    let mut rest = Vec::with_capacity(stdout.len());
+    for piece in stdout.split_inclusive(|byte| *byte == b'\n') {
+        if piece != line {
+            rest.extend_from_slice(piece);
+        }
+    }
+    rest
+}
+
 /// Whether a helper that was sent the archive of `tree` kept it: bench-unpack
 /// says so when it does, and keeps nothing while scratch room is short.
 fn kept(out: &Output, tree: &str) -> bool {
@@ -2014,7 +2027,7 @@ pub(crate) async fn prepare_check(
     .await;
     // Preparing applies the answer in a checker cgroup, too.
     kill("check", id).await?;
-    let out = result?;
+    let mut out = result?;
     if !sent && not_cached(&out, tree) {
         learn_cache(tree, false);
         return Ok(None);
@@ -2023,6 +2036,9 @@ pub(crate) async fn prepare_check(
     if out.code == Some(2) || out.success() {
         learn_cache(tree, !sent || kept(&out, tree));
     }
+    // What the cache did is no part of the check's answer: a reason recorded
+    // for an answer that does not apply reads the same either way.
+    out.stdout = without_cache_line(&out.stdout, tree);
     if out.code == Some(2) {
         return Ok(Some(out));
     }
@@ -2381,6 +2397,36 @@ mod tests {
         // A miss forgets it again, so the next use sends the archive.
         learn_cache(&tree, false);
         assert!(!snapshot_cached(&tree));
+    }
+
+    #[test]
+    fn a_reason_reads_the_same_whether_the_snapshot_was_sent_or_cached() {
+        let tree = "d".repeat(40);
+        let answer = |stdout: Vec<u8>| Output {
+            code: Some(2),
+            stdout,
+            stderr: b"the answer does not apply to the snapshot\n".to_vec(),
+            truncated: false,
+            infrastructure: None,
+        };
+        let sent = answer(without_cache_line(
+            format!("cached {tree}\n").as_bytes(),
+            &tree,
+        ));
+        let cached = answer(without_cache_line(b"", &tree));
+        assert_eq!(sent.reason(), cached.reason());
+        // Only that exact line goes; every other byte stays.
+        assert_eq!(
+            without_cache_line(
+                format!("one\ncached {tree}\ncached {tree}x\nprepared id\n").as_bytes(),
+                &tree
+            ),
+            format!("one\ncached {tree}x\nprepared id\n").into_bytes()
+        );
+        assert_eq!(
+            without_cache_line(format!("cached {tree}").as_bytes(), &tree),
+            format!("cached {tree}").into_bytes()
+        );
     }
 
     #[test]

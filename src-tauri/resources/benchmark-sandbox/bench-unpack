@@ -5,10 +5,12 @@ bench-unpack DIR < archive
 bench-unpack --tree TREE DIR < snapshot.tar
     Also check that the archive holds TREE, Git's id of its files and their
     executable bits, then keep the archive in the snapshot cache and print
-    "cached TREE" (not when scratch room is short or the archive large).
+    "cached TREE" (not when scratch room is short, the archive large or the
+    cache directory unsafe).
 bench-unpack --cached TREE DIR
     Extract the cache's copy of TREE, checked against TREE first. Exits 3,
-    having written nothing, when the cache holds no intact copy.
+    having written nothing, when the cache holds no intact copy or its
+    directory is unsafe.
 
 The snapshot cache is root only and outside every run's view: bench-enter
 hides /srv/bench from sessions, checks and probes. Each entry is one
@@ -163,6 +165,19 @@ def cache_directory():
     return CACHE
 
 
+def usable_cache(say=False):
+    """The cache's directory, or None while it or its parent could be changed
+    by anyone but root: nothing is then read from it or kept in it, and a copy
+    comes from the archive the host sends, as before the cache. Only a miss
+    says so: a check's recorded reason must not depend on the cache."""
+    try:
+        return cache_directory()
+    except ValueError as error:
+        if say:
+            print(str(error) + '; copying without the cache', file=sys.stderr)
+        return None
+
+
 def intact(info):
     """An entry is used only as written: one root-owned read-only file."""
     return stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and trusted(info, 0o400)
@@ -180,9 +195,14 @@ def drop(path, info):
 
 
 def store(tree, root):
-    """Extract standard input into `root`, check it holds `tree` and keep it."""
+    """Extract standard input into `root`, check it holds `tree` and keep it
+    while the cache is usable."""
     algorithm = algorithm_of(tree)
-    cache = cache_directory()
+    cache = usable_cache()
+    if cache is None:
+        if unpack(sys.stdin.buffer, root, algorithm) != tree:
+            raise ValueError('benchmark snapshot archive does not hold its published tree')
+        return
     fd, name = tempfile.mkstemp(prefix=SPOOL, dir=cache)
     spool = Path(name)
     try:
@@ -216,7 +236,10 @@ def cached(tree, root):
     """Extract the cache's copy of `tree` into `root`; NOT_CACHED, with
     nothing written, when there is none or it is not intact."""
     algorithm = algorithm_of(tree)
-    path = cache_directory() / (tree + '.tar')
+    cache = usable_cache(say=True)
+    if cache is None:
+        return NOT_CACHED
+    path = cache / (tree + '.tar')
     if path.is_symlink():
         path.unlink(missing_ok=True)
     try:

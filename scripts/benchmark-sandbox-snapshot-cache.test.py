@@ -246,6 +246,38 @@ class CacheTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unsafe benchmark snapshot cache'):
                 unpack.cache_directory()
 
+    def test_an_unsafe_cache_directory_degrades_to_an_uncached_copy(self):
+        tree, data = git_tree(self.root, SNAPSHOT)
+        _, other = git_tree(self.root, {'decoy.txt': b'not the snapshot'})
+        if LINUX_ROOT:
+            # Writable by others: an entry in it could have been changed.
+            unpack.CACHE.mkdir(mode=0o755)
+            os.chmod(unpack.CACHE, 0o755)
+            planted = self.entry(tree)
+            planted.write_bytes(data)
+            os.chmod(planted, 0o400)
+        else:
+            unpack.trusted = lambda info, mode=None: False
+        # A sent archive is still checked and copied, and nothing is kept or
+        # said: a check's recorded reason must not depend on the cache.
+        target = self.directory('base')
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(self.run_main('--tree', tree, target, stdin=data), 0)
+        self.assertEqual(self.files(target), self.files_of(SNAPSHOT))
+        self.assertEqual((self.printed.getvalue(), said.getvalue()), ('', ''))
+        with self.assertRaisesRegex(ValueError, 'does not hold its published tree'):
+            self.run_main('--tree', tree, self.directory('wrong'), stdin=other)
+        # Nothing is read from it: a cached copy is a miss that writes nothing.
+        untouched = self.directory('cached')
+        self.assertEqual(self.run_main('--cached', tree, untouched), unpack.NOT_CACHED)
+        self.assertEqual(list(untouched.iterdir()), [])
+        if LINUX_ROOT:
+            self.assertEqual(sorted(path.name for path in unpack.CACHE.iterdir()), [tree + '.tar'])
+            self.assertEqual(planted.read_bytes(), data)
+        else:
+            self.assertFalse(unpack.CACHE.exists())
+
     def test_eviction_drops_old_and_least_recently_used_entries_only(self):
         cache = unpack.cache_directory()
         now = time.time()

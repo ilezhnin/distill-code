@@ -121,7 +121,9 @@ per published tree, named by the tree's id, which no run can see (sessions,
 checks and probes have `/srv/bench` hidden). An archive is kept only once
 its files hold that tree, and each use checks the tree again; an entry that
 fails the check, or that anyone but root could have changed, is removed and
-counts as absent. The controller asks the cache only for trees it found
+counts as absent. While the cache directory itself is not root's alone
+(mode 0700), nothing is read from it or kept in it, and every copy comes
+from the sent archive. The controller asks the cache only for trees it found
 there before since the application started; for any other tree, or when the
 cache no longer has it, the controller archives the snapshot on Windows and
 sends it, as every attempt did before, and the sandbox keeps it for the
