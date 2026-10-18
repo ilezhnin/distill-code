@@ -1134,7 +1134,7 @@ class BudgetTests(unittest.TestCase):
             def read_text(self, *args, **kwargs):
                 raise TimeoutError('benchmark resource owner cancelled')
         budget.USAGE = Interrupted(budget.USAGE.parent / 'interrupted-usage.jsonl')
-        budget.USAGE.write_text('{"kept": true}\n')
+        budget.USAGE.write_bytes(b'{"kept": true}\n')
         budget.record_usage('repository', 'fictional-done', ['session-fictional-done'], time.time() - 10)
         self.assertEqual(budget.USAGE.read_bytes(), b'{"kept": true}\n')
         self.assertIn('kept interrupted-usage.jsonl, it could not be read: TimeoutError', budget.REAPER_LOG.read_text())
