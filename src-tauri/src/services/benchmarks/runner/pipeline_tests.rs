@@ -581,6 +581,7 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
         configurations: configurations(),
         cutoff_at: now(),
         weights: RoleWeights::default(),
+        runtime_match: None,
     };
     // This is the same query/fit/save path as the application command.
     let artifact = fit_or_explain(&service, query).await;

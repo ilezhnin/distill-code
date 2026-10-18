@@ -19,7 +19,10 @@ vi.mock("../api/benchmarks", () => ({
   },
 }));
 vi.mock("../api/benchmarkGovernance", () => ({
-  benchmarkGovernanceApi: { listPromotions: vi.fn() },
+  benchmarkGovernanceApi: {
+    listPromotions: vi.fn(),
+    previewLearnedClass: vi.fn(),
+  },
 }));
 const learning = vi.fn();
 const comparison = vi.fn();
@@ -256,4 +259,60 @@ it("does not describe unreadable certificate evidence as an empty registry", asy
   show();
   expect(await screen.findByText("Certificate store unreadable")).toBeVisible();
   expect(screen.queryByText(/No issued certificates/)).toBeNull();
+});
+
+it("previews the learned choice of the category from its own training cells only", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.previewLearnedClass).mockResolvedValue({
+    modelId: "fit-preview",
+    workClassId: "debug",
+    createdAt: 3000,
+    recipe: "retrospective-exposed-holdout-preview-v1",
+    runtimeMatch: "model_identity",
+    trainingCases: 10,
+    trainingGroups: 10,
+    excludedProviders: ["kimi-acp", "zai-acp"],
+    candidates: [],
+    cases: Array.from({ length: 5 }, (_, index) => ({
+      versionId: `held-${index}`,
+      group: `group-${index}`,
+      learnedKey: "a",
+      aggregateKey: "a",
+      usedFallback: false,
+    })),
+    groups: 5,
+    fallbackCases: 0,
+    policies: [],
+    limitations: [],
+    status: "retrospective_preview",
+    dispatchAllowed: false,
+    artifactHash: "hash",
+  });
+  show();
+  await user.click(await screen.findByRole("tab", { name: "Training" }));
+  await user.click(
+    screen.getByRole("button", { name: "Preview learned choice" }),
+  );
+  expect(api.previewLearnedClass).toHaveBeenCalledWith({
+    workClassId: "debug",
+  });
+  expect(
+    await screen.findByText(/Preview saved: 5 held-out cases compared/),
+  ).toBeVisible();
+  expect(screen.getByText(/makes no model calls/)).toBeVisible();
+});
+
+it("shows why a preview could not fit the category", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.previewLearnedClass).mockRejectedValue(
+    new Error("Fewer than two candidates share eight complete training cases"),
+  );
+  show();
+  await user.click(await screen.findByRole("tab", { name: "Training" }));
+  await user.click(
+    screen.getByRole("button", { name: "Preview learned choice" }),
+  );
+  expect(
+    await screen.findByText(/Fewer than two candidates share eight/),
+  ).toBeVisible();
 });

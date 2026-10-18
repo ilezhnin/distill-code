@@ -753,6 +753,17 @@ pub async fn benchmark_fit_selector(
     s.store.save_selector_fit(&artifact).await
 }
 
+/// Fits a class from its training cells by a fixed candidate rule and previews
+/// the fit on the class's already measured held-out cases. Research only:
+/// no model call, routing change, reservation or certificate.
+#[tauri::command]
+pub async fn benchmark_preview_learned_class(
+    app: AppHandle,
+    request: benchmarks::learned::preview::PreviewRequest,
+) -> Result<benchmarks::learned::preview::LearnedPreview> {
+    service(&app).await?.preview_learned_class(request).await
+}
+
 #[tauri::command]
 pub async fn benchmark_list_selector_fits(
     app: AppHandle,

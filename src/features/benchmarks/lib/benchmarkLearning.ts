@@ -90,12 +90,15 @@ export function selectorTaskGroup(
   return draft.taskFamily;
 }
 
+/** Which runtimes training cells may come from; omitted means exact. */
+export type RuntimeMatch = "exact" | "model_identity";
 export interface SelectorFitRequest {
   workClassId: string;
   versionIds: string[];
   configurations: Configuration[];
   cutoffAt: number;
   weights: { quality: number; speed: number; cost: number };
+  runtimeMatch?: RuntimeMatch;
 }
 export interface SelectorFitSummary {
   id: string;
@@ -236,4 +239,63 @@ export interface SelectorHoldoutReport {
   limitations: string[];
   status: "research_only";
   dispatchAllowed: false;
+}
+
+export type SelectorPolicyResult = SelectorHoldoutReport["policies"][number];
+
+/** A class's learned choice replayed on already measured held-out cases. */
+export interface LearnedPreviewRequest {
+  workClassId: string;
+  excludedProviders?: string[];
+}
+export interface LearnedPreviewCandidate {
+  candidateKey: string;
+  providerId: string;
+  modelId: string;
+  modelName: string | null;
+  effort: string | null;
+  fastMode: boolean | null;
+  trainingQuality: number;
+  learnedCases: number;
+}
+export type LearnedPreviewStatus =
+  | "retrospective_preview"
+  | "no_held_out_cases";
+export interface LearnedPreviewSummary {
+  modelId: string;
+  createdAt: number;
+  status: LearnedPreviewStatus;
+  trainingCases: number;
+  heldOutCases: number;
+  groups: number;
+  fallbackCases: number;
+  candidates: LearnedPreviewCandidate[];
+  learned: SelectorPolicyResult | null;
+  bestFixed: SelectorPolicyResult | null;
+  aggregate: SelectorPolicyResult | null;
+}
+export interface LearnedPreview {
+  modelId: string;
+  workClassId: string;
+  createdAt: number;
+  recipe: string;
+  runtimeMatch: RuntimeMatch;
+  trainingCases: number;
+  trainingGroups: number;
+  excludedProviders: string[];
+  candidates: LearnedPreviewCandidate[];
+  cases: {
+    versionId: string;
+    group: string;
+    learnedKey: string;
+    aggregateKey: string;
+    usedFallback: boolean;
+  }[];
+  groups: number;
+  fallbackCases: number;
+  policies: SelectorPolicyResult[];
+  limitations: string[];
+  status: LearnedPreviewStatus;
+  dispatchAllowed: false;
+  artifactHash: string;
 }

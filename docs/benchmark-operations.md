@@ -746,6 +746,30 @@ unseen tasks. The native prediction API refuses known training families and
 groups; do not relabel them to bypass that check. Probabilities express relative
 preference, not calibrated probabilities of success.
 
+A fit request may set `runtimeMatch: "model_identity"`. The default (`exact`)
+counts only cells measured on each candidate's newest runtime revision. Runtime
+revisions include the sandbox helpers and the native harness, so every deploy
+starts a new one. Under `model_identity` a candidate is its leaderboard identity:
+cells from every recorded runtime count, as on the boards, and each cell lists
+the revisions it used. The column takes its configuration from the newest direct
+attempt, never from an auxiliary call inside a repository workflow. A silent
+vendor-side change inside one identity stays possible, so read the revision
+lists. Prospective held-out reports still require the exact frozen runtime.
+
+`benchmark_preview_learned_class({ request: { workClassId, excludedProviders } })`
+is a research shortcut for one class. It picks the class's largest public scope
+and, from training cells only, every candidate with at least eight complete
+training cases there. Vendors whose data use limits them to training tasks
+(Z.ai and Kimi) and any `excludedProviders` are left out. The fewest-measured
+candidates are then dropped until at least eight cases in two groups are common
+to all that remain. It fits with `model_identity` and replays the frozen fit on
+the class's held-out cases that already have complete cells for every candidate,
+using the holdout report arithmetic (learned, training aggregate, best fixed,
+oracle and each fixed candidate). Those families were measured before the fit,
+so the result is a `retrospective_preview`: it is not an unseen evaluation and
+grants no routing, reservation or certificate. The newest preview of each class
+appears in `benchmark_class_policies` and in the class status in Settings.
+
 If all candidates have indistinguishable utilities, labels are incomplete, or
 the selector simply reproduces one global winner without task-dependent evidence,
 keep the fit as research. Do not spend a held-out campaign to excuse unusable

@@ -1,5 +1,6 @@
 import { isWorkerLayerRole } from "@/features/conductor/roleLayers";
 import type { BenchmarkDraft, Evaluation } from "../types";
+import type { LearnedPreviewSummary } from "./benchmarkLearning";
 
 // Mirrors the native qualification and promotion wire contracts.
 export interface QualificationControl {
@@ -176,4 +177,6 @@ export interface ClassPolicy {
   heldOutWorkflows: number;
   fits: number;
   campaigns: number;
+  /** Newest research preview of the class's learned choice; never routing. */
+  preview?: LearnedPreviewSummary | null;
 }

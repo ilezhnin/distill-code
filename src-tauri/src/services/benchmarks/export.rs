@@ -155,6 +155,20 @@ pub fn ledger_rows(data: &QueryData, include_held_out: bool, salt: &str) -> Resu
     ledger_rows_at(data, include_held_out, salt, now())
 }
 
+/// Which runtimes a ledger column's cells may come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMatch {
+    /// Only cells measured on the column's newest runtime revision.
+    Exact,
+    /// Cells from every recorded runtime of the column's leaderboard identity
+    /// (provider, model, effort, speed, billing, profile), as the boards count
+    /// them. Sandbox helper and harness changes move the runtime revision of
+    /// every configuration at each deploy; a model's measured cells stay its
+    /// evidence. Each cell lists the revisions it used.
+    ModelIdentity,
+}
+
 /// Training labels have stricter conditions than a historical board row:
 /// one frozen runtime, complete planned repetitions and the published budget.
 pub fn ledger_rows_at(
@@ -162,6 +176,21 @@ pub fn ledger_rows_at(
     include_held_out: bool,
     salt: &str,
     cutoff: i64,
+) -> Result<Vec<Value>> {
+    ledger_rows_matching(data, include_held_out, salt, cutoff, RuntimeMatch::Exact)
+}
+
+/// [`ledger_rows_at`] with an explicit runtime rule. Under
+/// [`RuntimeMatch::ModelIdentity`] a column names the newest scored
+/// configuration of its own profile: the auxiliary text calls inside
+/// repository workflows share a text column's identity but run on the
+/// repository runtime, so they never name it while a direct attempt exists.
+pub fn ledger_rows_matching(
+    data: &QueryData,
+    include_held_out: bool,
+    salt: &str,
+    cutoff: i64,
+    runtime: RuntimeMatch,
 ) -> Result<Vec<Value>> {
     if cutoff < 0 || cutoff > now() {
         return Err(BenchmarkError::new(
@@ -180,7 +209,10 @@ pub fn ledger_rows_at(
     // A column needs one countable score on an exported case. Identities seen
     // only through unscored attempts (a changed model selection, failed
     // infrastructure) or only on withheld or self-authored cases are no candidates.
-    let order = |a: &Attempt| (runs[a.run_id.as_str()].created_at, a.started_at);
+    let order = |a: &Attempt| {
+        let direct = runtime == RuntimeMatch::Exact || !super::analysis::has_auxiliary_usage(a);
+        (direct, runs[a.run_id.as_str()].created_at, a.started_at)
+    };
     let mut newest: BTreeMap<String, &Attempt> = BTreeMap::new();
     for a in data.attempts.iter().filter(|a| {
         let c = super::analysis::execution_configuration(a);
@@ -285,8 +317,14 @@ pub fn ledger_rows_at(
                                 && run.request.timeout_seconds
                                     >= version.manifest.limits.timeout_seconds
                         })
-                        && a.observed.as_ref().is_some_and(|observed| {
-                            observed.inventory_revision == configuration.inventory_revision
+                        && a.observed.as_ref().is_some_and(|observed| match runtime {
+                            RuntimeMatch::Exact => {
+                                observed.inventory_revision == configuration.inventory_revision
+                            }
+                            RuntimeMatch::ModelIdentity => observed
+                                .inventory_revision
+                                .as_deref()
+                                .is_some_and(|revision| !revision.trim().is_empty()),
                         })
                         && super::analysis::leaderboard_key(
                             &super::analysis::execution_configuration(a),
@@ -338,13 +376,21 @@ pub fn ledger_rows_at(
             } else {
                 "observed"
             };
-            matrix.push(json!({"configuration":public_configuration(configuration,salt), "owed":owed, "observed":complete,
+            let mut cell = json!({"configuration":public_configuration(configuration,salt), "owed":owed, "observed":complete,
                 "notPlanned":not_planned,"observationStatus":observation_status,"requiredRepetitions":required_repetitions,
                 "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"authoredByCandidate":excluded,"outcomes":outcomes,
                 "meanCost":super::analysis::mean_case_cost(&selected,Some(cutoff)),
                 "runId":selected.first().map(|a|&a.run_id),
                 "effectiveTimeoutSeconds":selected.first().map(|a|super::runner::effective_timeout_seconds(runs[a.run_id.as_str()].request.timeout_seconds,&version.manifest)),
-                "repetitions":selected.len()}));
+                "repetitions":selected.len()});
+            if runtime == RuntimeMatch::ModelIdentity {
+                let revisions: BTreeSet<_> = selected
+                    .iter()
+                    .filter_map(|a| a.observed.as_ref()?.inventory_revision.as_deref())
+                    .collect();
+                cell["runtimeRevisions"] = json!(revisions);
+            }
+            matrix.push(cell);
         }
         // Complete means every owed cell is observed, and at least one is owed.
         let owed = matrix.iter().filter(|c| c["owed"] == true).count();
@@ -538,6 +584,67 @@ mod tests {
         assert_eq!(row["matrix"][0]["observed"], false);
         assert!(row["matrix"][0]["reward"].is_null());
         assert_eq!(row["completeMatrix"], false);
+    }
+
+    #[test]
+    fn model_identity_cells_keep_outcomes_of_every_recorded_runtime() {
+        let mut data = dataset();
+        for attempt in data.attempts.iter_mut().filter(|a| a.run_id == "before") {
+            attempt.observed.as_mut().unwrap().inventory_revision = Some("old-runtime".into());
+        }
+        data.attempts.retain(|a| a.id != "after-v0");
+        let exported =
+            ledger_rows_matching(&data, false, "training", now(), RuntimeMatch::ModelIdentity)
+                .unwrap();
+        let cell = |version: &str| {
+            exported
+                .iter()
+                .find(|r| r["taskVersion"] == version)
+                .unwrap()["matrix"][0]
+                .clone()
+        };
+        // The column still names its newest runtime; the old cell is counted.
+        assert_eq!(
+            cell("v0")["configuration"]["inventoryRevision"],
+            "runtime-hash"
+        );
+        assert_eq!(cell("v0")["observationStatus"], "observed");
+        assert_eq!(cell("v0")["reward"], 1.0);
+        assert_eq!(cell("v0")["runtimeRevisions"], json!(["old-runtime"]));
+        // A newer scoring run still replaces an older one, as on the boards.
+        assert_eq!(cell("v1")["reward"], 0.0);
+        assert_eq!(cell("v1")["runtimeRevisions"], json!(["runtime-hash"]));
+        // The exact rule is unchanged and lists no revisions.
+        let exact = ledger_rows(&data, false, "training").unwrap();
+        let row = exact.iter().find(|r| r["taskVersion"] == "v0").unwrap();
+        assert_eq!(row["matrix"][0]["observed"], false);
+        assert!(row["matrix"][0].get("runtimeRevisions").is_none());
+    }
+
+    #[test]
+    fn auxiliary_calls_never_name_a_model_identity_text_column() {
+        let mut data = dataset();
+        let mut auxiliary = data.attempts[0].configuration.clone();
+        auxiliary.execution_profile = "native_text_auxiliary".into();
+        auxiliary.inventory_revision = Some("repository-runtime".into());
+        add_run(&mut data, "auxiliary", &auxiliary, "pass", &["v0"]);
+        let column = |rows: &[Value]| {
+            rows.iter().find(|r| r["taskVersion"] == "v1").unwrap()["matrix"][0]["configuration"]
+                ["inventoryRevision"]
+                .clone()
+        };
+        // The exact rule lets the newest auxiliary call name the text column.
+        assert_eq!(
+            column(&ledger_rows(&data, false, "training").unwrap()),
+            "repository-runtime"
+        );
+        let identity =
+            ledger_rows_matching(&data, false, "training", now(), RuntimeMatch::ModelIdentity)
+                .unwrap();
+        assert_eq!(column(&identity), "runtime-hash");
+        assert!(identity
+            .iter()
+            .all(|row| row["matrix"].as_array().unwrap().len() == 1));
     }
 
     #[test]

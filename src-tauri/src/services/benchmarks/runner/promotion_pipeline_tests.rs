@@ -195,6 +195,7 @@ async fn fit(service: &BenchmarkService, training: &[BenchmarkVersion]) -> learn
             configurations: configurations(),
             cutoff_at: now(),
             weights: RoleWeights::default(),
+            runtime_match: None,
         },
     )
     .await;
@@ -1034,6 +1035,7 @@ async fn native_v2_auto_discovery_uses_qualified_pipeline_and_preserves_bound_re
             configurations: native_v2_configurations(),
             cutoff_at: now(),
             weights: RoleWeights::default(),
+            runtime_match: None,
         },
     )
     .await;
@@ -1229,6 +1231,7 @@ async fn qualified_class(
             configurations: configurations(),
             cutoff_at: now(),
             weights: RoleWeights::default(),
+            runtime_match: None,
         },
     )
     .await;
@@ -1555,6 +1558,7 @@ async fn native_class(
             configurations: native_v2_configurations(),
             cutoff_at: now(),
             weights: RoleWeights::default(),
+            runtime_match: None,
         },
     )
     .await;

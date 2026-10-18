@@ -288,6 +288,9 @@ pub struct ClassPolicy {
     pub held_out_workflows: usize,
     pub fits: usize,
     pub campaigns: usize,
+    /// The newest retrospective preview of the class's learned choice. It is
+    /// research only: a certificate alone changes routing.
+    pub preview: Option<learned::preview::PreviewSummary>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1262,6 +1265,7 @@ impl Store {
                 held_out_workflows: 0,
                 fits: 0,
                 campaigns: 0,
+                preview: None,
             })
             .collect();
         // Policies follow WORK_CLASSES order, so a class finds its row there.
@@ -1329,6 +1333,11 @@ impl Store {
                 if let Some(slot) = index(&class) {
                     policies[slot].campaigns += 1;
                 }
+            }
+        }
+        for preview in self.latest_selector_previews().await? {
+            if let Some(slot) = index(&preview.work_class_id) {
+                policies[slot].preview = Some(preview.summary());
             }
         }
         for (slot, policy) in policies.iter_mut().enumerate() {

@@ -48,6 +48,7 @@ async fn fitted(store: &Store) -> learned::FitArtifact {
             configurations: data.runs[0].request.configurations.clone(),
             cutoff_at: 10,
             weights: RoleWeights::default(),
+            runtime_match: None,
         },
     )
     .unwrap();

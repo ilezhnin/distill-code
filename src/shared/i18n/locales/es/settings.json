@@ -522,6 +522,7 @@
     "status": {
       "certified": "Certificada",
       "fallback": "Respaldo",
+      "fallbackPreview": "Respaldo · vista previa",
       "loading": "Cargando…",
       "unavailable": "No disponible"
     },
@@ -565,7 +566,11 @@
     "evidenceUnavailable": "No se pudo leer el estado de las políticas. No se confirma ninguna política aprendida.",
     "evidenceCertified": "Política certificada disponible. Se evalúa cada tarea con los modelos disponibles; si la política se abstiene, se usan las preferencias de respaldo.",
     "evidencePending": "Sin política certificada: se usan las preferencias de respaldo. Casos cualificados: {{training}} de entrenamiento, {{heldOut}} reservados; {{fits}} ajustes, {{campaigns}} comparaciones.",
-    "managePolicy": "Políticas y certificados"
+    "managePolicy": "Políticas y certificados",
+    "evidencePreview": "Vista previa aprendida del {{date}}, sin certificar: en {{cases}} casos reservados de {{groups}} grupos ya medidos, la elección aprendida alcanzó una utilidad de {{learned}} frente a {{best}} del mejor modelo único ({{bestModel}}), una diferencia de {{gain}}. Elige {{model}} en {{chosen}} de ellos. Ajustada con {{training}} casos de entrenamiento.",
+    "evidencePreviewInterval": "Intervalo pareado del 95 % de la diferencia: {{low}} a {{high}}.",
+    "evidencePreviewFewGroups": "Menos de {{minimum}} grupos, así que no se muestra intervalo.",
+    "evidencePreviewEmpty": "Vista previa aprendida del {{date}}, sin certificar: ajustada con {{training}} casos de entrenamiento y {{candidates}} modelos, pero aún ningún caso reservado medido de esta clase los cubre a todos."
   },
   "accounts": {
     "title": "Cuentas y límites",

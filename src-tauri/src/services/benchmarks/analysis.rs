@@ -321,7 +321,7 @@ fn ledger_profile(profile: &str) -> &str {
     profile.strip_suffix("_auxiliary").unwrap_or(profile)
 }
 
-fn has_auxiliary_usage(attempt: &Attempt) -> bool {
+pub(super) fn has_auxiliary_usage(attempt: &Attempt) -> bool {
     attempt.usage.schema.contains("auxiliary")
         || execution_configuration(attempt)
             .execution_profile

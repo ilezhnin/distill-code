@@ -33,6 +33,10 @@ fn canonical_request(mut request: FitRequest) -> Result<FitRequest> {
     {
         return Err(invalid("Fit versions must be distinct"));
     }
+    // The exact rule is the default; naming it must not change the hash.
+    if request.runtime_match == Some(super::super::export::RuntimeMatch::Exact) {
+        request.runtime_match = None;
+    }
     for configuration in &mut request.configurations {
         if configuration
             .inventory_revision
@@ -60,11 +64,14 @@ fn canonical_request(mut request: FitRequest) -> Result<FitRequest> {
 /// Never consult held-out rewards, even to discover the candidate inventory.
 pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
     let request = canonical_request(request)?;
-    let ledger = super::super::export::ledger_rows_at(
+    let ledger = super::super::export::ledger_rows_matching(
         data,
         false,
-        "learned-selector-v1",
+        LEDGER_SALT,
         request.cutoff_at,
+        request
+            .runtime_match
+            .unwrap_or(super::super::export::RuntimeMatch::Exact),
     )?;
     let rows: BTreeMap<_, _> = ledger
         .iter()
@@ -159,33 +166,13 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
                     "An observed training reward must be between zero and one",
                 ));
             }
-            let mean_duration_ms = if observed {
-                cell["outcomes"].as_array().and_then(|outcomes| {
-                    let durations: Option<Vec<f64>> = outcomes
-                        .iter()
-                        .map(|o| {
-                            o["durationMs"]
-                                .as_f64()
-                                .filter(|v| v.is_finite() && *v >= 0.0)
-                        })
-                        .collect();
-                    durations
-                        .filter(|v| !v.is_empty())
-                        .map(|v| v.iter().sum::<f64>() / v.len() as f64)
-                })
-            } else {
-                None
-            };
             targets.push(TrainingTarget {
                 candidate_key: configuration.id.clone(),
                 status: status.into(),
                 reward,
                 utility: None,
-                mean_duration_ms,
-                mean_cost: observed
-                    .then(|| cell["meanCost"].as_f64())
-                    .flatten()
-                    .filter(|v| v.is_finite() && *v >= 0.0),
+                mean_duration_ms: observed.then(|| mean_duration(cell)).flatten(),
+                mean_cost: observed.then(|| mean_cost(cell)).flatten(),
                 evidence: cell.clone(),
             });
         }
@@ -232,6 +219,30 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
         model,
         snapshot,
     })
+}
+
+/// A ledger cell's mean repetition duration, unknown if any repetition lacks one.
+pub(super) fn mean_duration(cell: &serde_json::Value) -> Option<f64> {
+    cell["outcomes"].as_array().and_then(|outcomes| {
+        let durations: Option<Vec<f64>> = outcomes
+            .iter()
+            .map(|o| {
+                o["durationMs"]
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+            })
+            .collect();
+        durations
+            .filter(|v| !v.is_empty())
+            .map(|v| v.iter().sum::<f64>() / v.len() as f64)
+    })
+}
+
+/// A ledger cell's mean reported cost, when every repetition reported one.
+pub(super) fn mean_cost(cell: &serde_json::Value) -> Option<f64> {
+    cell["meanCost"]
+        .as_f64()
+        .filter(|v| v.is_finite() && *v >= 0.0)
 }
 
 /// Unknown resources remove that objective for the entire comparison. A cheap
