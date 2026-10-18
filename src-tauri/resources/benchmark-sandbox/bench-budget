@@ -78,7 +78,7 @@ OUTCOME_TOKEN = None
 # process of the run can learn it or print the line.
 OUTCOME_NONCE = None
 DEVICE = None
-POLICY = 'dynamic-v2'
+POLICY = 'measured-load-v1'
 # The aggregate every admitted job shares. Admission leaves one GiB of the
 # memory ceiling to trusted supervisors, page tables and filesystem
 # bookkeeping; supervisors also keep their own CPU and 128 processes.
@@ -139,6 +139,27 @@ STALL_WINDOW = 900
 SUPERVISOR_CPUS = 1
 SESSION_BURST = 0.5
 SESSION_BURST_FLOOR = 0.25
+# CPU-heavy jobs start by the host's measured load, not by summed
+# reservations (owner, 10-18: cautious past 70 %, not around 40): while the
+# Windows host's CPU busy share, smoothed over LOAD_WINDOW seconds of gate
+# samples, stays below LOAD_LINE, the CPU pressure and check stalls are clean,
+# and fewer than RAMP_MAX heavy jobs started in the last LOAD_SETTLE seconds,
+# so a burst of starts cannot overshoot before the samples show their load.
+# Every job keeps its own CPU ceiling, and a timing-sensitive check still
+# starts only with its whole ceiling free. Without a gate sample in the
+# window the summed-ceilings rule below decides, as before.
+LOAD_LINE = 0.70
+LOAD_WINDOW = 30
+LOAD_SETTLE = 30
+RAMP_MAX = 3
+HOST_CPU = 'host-cpu.json'
+# Every admission decision with what it measured, newest last, for the
+# operator: JSON lines, trimmed to DECISION_LINES once past DECISION_BYTES.
+DECISIONS = 'decisions.jsonl'
+DECISION_LINES = 2000
+DECISION_BYTES = 1024 * 1024
+# What the decision being made measured so far; decide logs it either way.
+TRACE = {}
 SESSION_PRESSURE = 0.10
 # A session's use shows in the CPU samples only once it has run a while.
 # Until then it counts at its ceiling rather than its burst allowance, so a
@@ -902,6 +923,29 @@ def stall_total(groups):
     return None if any(value is None for value in totals) else sum(totals)
 
 
+# bench-judge's exit when a paired check runs past its own time limit; it
+# also leaves a marker by the pair's id (PAIR_TIMEOUTS), since a checker can
+# exit 124 itself, for a candidate that hung under its own `timeout`.
+PAIR_TIME_LIMIT = 124
+PAIR_TIMEOUTS = 'pair-timeouts'
+
+
+def pair_timeout_marker(identifier):
+    return STATE / PAIR_TIMEOUTS / identifier
+
+
+def timed_out_wait(groups, before, started):
+    """The share of its run a job's leaves still present waited for CPUs
+    other jobs held, None when it cannot be read (the probe leaf is gone by
+    then; the check leaf is what was timed)."""
+    waits = [leaf_wait(ROOT / name) for name in groups]
+    present = [value for value in waits if value is not None]
+    elapsed = time.time() - started
+    if not present or before is None or elapsed < 1:
+        return None
+    return max(0, sum(present) - before) / 1e6 / elapsed
+
+
 def stall_ring():
     """The recorded check stalls as [time, share] pairs, oldest first."""
     try:
@@ -1161,7 +1205,7 @@ def refused(reason, resource=None, need=0):
     return busy
 
 
-def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False, timing=False):
+def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False, timing=False, identifier=None):
     """Admit `kind` beside `active` or raise BlockingIOError naming the line
     that holds it. Returns the measurements it decided on. A check or
     preparation it refuses for room keeps that room from new attempts for
@@ -1170,9 +1214,11 @@ def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False, ti
     nothing: that line protects no other job's room. A `probe` reserves
     nothing, so an admitted repository attempt keeps its room from text
     sessions until its reservation."""
+    TRACE.clear()
     try:
         observed = admit_measured(active, kind, gate, host_buffers, continuing, timing)
     except BlockingIOError as busy:
+        log_decision(kind, identifier, 'refused', str(busy))
         resource = getattr(busy, 'resource', None)
         if (kind not in ATTEMPTS or continuing) and resource:
             hold(resource, time.time() + PRIORITY_HOLD, busy.need)
@@ -1186,7 +1232,79 @@ def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False, ti
             hold('repository-active', time.time() + REPOSITORY_ACTIVE)
     if kind == 'repository' and not probe:
         hold('repository')
+    log_decision(kind, identifier, 'admitted', observed.get('admittedBy'))
     return observed
+
+
+def log_decision(kind, identifier, outcome, reason):
+    """Appends one admission decision and what it measured (TRACE) to the
+    decision log; a log that cannot be written never blocks admission."""
+    entry = dict(at=round(time.time(), 1), kind=kind, id=identifier, outcome=outcome, reason=reason, **TRACE)
+    path = STATE / DECISIONS
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with open(path, 'a') as handle:
+            handle.write(json.dumps(entry, default=str) + '\n')
+        if path.stat().st_size > DECISION_BYTES:
+            kept = path.read_text().splitlines()[-DECISION_LINES:]
+            replace_private(path, '\n'.join(kept) + '\n')
+    except (OSError, ValueError):
+        pass
+
+
+def host_busy_smoothed(observed):
+    """The Windows host's CPU busy share, the mean of the gate samples of the
+    last LOAD_WINDOW seconds (each gate time once), this one included; None
+    without a sample in the window."""
+    now = time.time()
+    try:
+        ring = json.loads((STATE / HOST_CPU).read_text())
+    except (OSError, ValueError):
+        ring = []
+    if not isinstance(ring, list):
+        ring = []
+    ring = [entry for entry in ring if isinstance(entry, list) and len(entry) == 2
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in entry)
+            and now - LOAD_WINDOW <= entry[0] <= now + GATE_SKEW_MS / 1000]
+    busy, at = observed.get('hostCpuBusy'), observed.get('hostEvidenceAt')
+    if busy is not None and isinstance(at, int) and not any(entry[0] == at / 1000 for entry in ring):
+        ring.append([at / 1000, round(busy, 4)])
+        replace_private(STATE / HOST_CPU, json.dumps(ring))
+    return sum(value for _, value in ring) / len(ring) if ring else None
+
+
+def admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, continuing, timing):
+    """Admission of a CPU-heavy job by the host's measured load (see
+    LOAD_LINE). Returns how it was admitted or raises the refusal."""
+    logical = os.cpu_count() or 1
+    now = time.time()
+    fresh = [row for row in heavy if now - row.get('admitted', now) < LOAD_SETTLE]
+    fresh_cpus = sum(row['cpu'] for row in fresh)
+    TRACE.update(hostCpuSmoothed=round(smoothed, 3), loadLine=LOAD_LINE, freshHeavy=len(fresh),
+                 freshCpus=fresh_cpus, logicalCpus=logical)
+    # A timing-sensitive check times what it checks: it starts only when the
+    # measured load, and the jobs too new to show in it at their ceilings,
+    # leave its whole ceiling free.
+    if timing:
+        free = (1 - smoothed) * logical - fresh_cpus
+        TRACE['freeCpus'] = round(free, 2)
+        if free < cpu:
+            raise refused(f'the measured host load leaves a timing-sensitive check {free:.1f} free CPUs, '
+                          f'not its {cpu}', 'cpu', cpu)
+        return 'load'
+    if smoothed >= LOAD_LINE:
+        raise refused(f'the measured host CPU load ({smoothed:.0%}) is at or above the {LOAD_LINE:.0%} line',
+                      'cpu', cpu)
+    if len(fresh) >= RAMP_MAX:
+        raise refused(f'{len(fresh)} CPU-heavy jobs started in the last {LOAD_SETTLE} s and do not show '
+                      'in the measured load yet', 'cpu', cpu)
+    if kind == 'repository' and not continuing and (
+            (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE)):
+        raise refused('CPU pressure in the sandbox holds new repository sessions')
+    # A check refused CPUs moments ago starts before new attempts.
+    if kept_cpus and kind in ATTEMPTS:
+        raise refused('a check waits for CPUs first, and this attempt would take them')
+    return 'load'
 
 
 def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=False):
@@ -1206,6 +1324,7 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
     claims = sum(claim(row, recorded) for row in active)
     unused = sum(max(0, claim(row, recorded) - leaf_memory(row)) for row in active)
     needed = expected_memory(kind, recorded) + host_buffers
+    TRACE.update(claimedMemory=claims, expectedMemory=needed)
     if kind in ATTEMPTS and not continuing:
         kept_memory, kept_cpus, kept_repository = kept_room(kind, recorded)
     else:
@@ -1248,36 +1367,13 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
     pressure = job_pressure()
     stalled = recent_stall()
     admitted_by = None
+    TRACE.update(hostCpuBusy=observed.get('hostCpuBusy'), heavyJobs=len(heavy), heavyCpus=ceilings,
+                 cpuPressure=pressure, checkStall=stalled, keptCpus=kept_cpus)
     if kind in CPU_HEAVY:
         cap = heavy_cap()
         # A timed job waiting for CPUs takes the next place under the cap.
         if cap is not None and len(heavy) + (1 if kept_cpus else 0) >= cap:
             raise refused('the operator caps CPU-heavy benchmark jobs at ' + str(cap), 'cpu', cpu)
-        reserve = CHECK_CPUS if kind in ATTEMPTS else 0
-        # The running timed jobs count by their ceilings (`timed`), so the
-        # measured use leaves out what they use: counted twice, two checks
-        # left no room for any new session beside the owner's desktop load.
-        if measured is not None:
-            used = max(0.0, measured - timed_use(active))
-        else:
-            used = ceilings - timed
-
-        # Sessions admitted too recently for the samples to show their use
-        # count at their ceilings (SESSION_SETTLE). Without a sample their
-        # ceilings already stand in for their use.
-        now = time.time()
-        unsettled = 0 if measured is None else sum(
-            row['kind'] == 'repository' and now - row.get('admitted', now) < SESSION_SETTLE for row in active)
-        sessions_cpus = burst * (sessions - unsettled) + CLASSES['repository'][1] * unsettled
-
-        def admitted(kept):
-            if ceilings + cpu + reserve + kept <= line:
-                return 'ceilings'
-            if kind == 'repository':
-                fits = used + sessions_cpus + burst + timed + CHECK_CPUS + kept <= capacity
-            else:
-                fits = timed + cpu + sessions_cpus <= capacity
-            return 'measured' if fits else None
         # A timing-sensitive check times what it checks (a planning lab's
         # planner on a budget of seconds). While one runs no new CPU-heavy job
         # starts beside it, the running ones go on, and the hold ends with
@@ -1288,21 +1384,51 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
             # attempts meanwhile, as a check refused CPUs does.
             raise refused('a timing-sensitive check runs, and CPU-heavy jobs start after it',
                           'cpu' if timing else None, cpu if timing else 0)
-        # The samples lag: the measured use beside the running timed jobs,
-        # those jobs at their ceilings and sessions too new to show in the
-        # samples at theirs, added up. Without a sample, every ceiling.
-        occupied = used + CLASSES['repository'][1] * unsettled + timed
-        if timing and occupied + cpu > capacity:
-            raise refused('the measured CPU use leaves no timing-sensitive check its whole ceiling', 'cpu', cpu)
-        admitted_by = admitted(kept_cpus)
-        if kind == 'repository' and admitted_by != 'ceilings' and not continuing:
-            if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
-                raise refused('CPU pressure in the sandbox holds new repository sessions')
-        if admitted_by is None and kept_cpus and admitted(0) is not None:
-            raise refused('a check waits for CPUs first, and this attempt would take them')
-        if admitted_by is None:
-            raise refused('CPU cores the host leaves free cannot cover this job beside the running checks and sessions',
-                          'cpu', cpu)
+        smoothed = host_busy_smoothed(observed)
+        if smoothed is not None:
+            admitted_by = admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, continuing, timing)
+        else:
+            # No gate sample in the window: the summed-ceilings rule.
+            reserve = CHECK_CPUS if kind in ATTEMPTS else 0
+            # The running timed jobs count by their ceilings (`timed`), so the
+            # measured use leaves out what they use: counted twice, two checks
+            # left no room for any new session beside the owner's desktop load.
+            if measured is not None:
+                used = max(0.0, measured - timed_use(active))
+            else:
+                used = ceilings - timed
+
+            # Sessions admitted too recently for the samples to show their use
+            # count at their ceilings (SESSION_SETTLE). Without a sample their
+            # ceilings already stand in for their use.
+            now = time.time()
+            unsettled = 0 if measured is None else sum(
+                row['kind'] == 'repository' and now - row.get('admitted', now) < SESSION_SETTLE for row in active)
+            sessions_cpus = burst * (sessions - unsettled) + CLASSES['repository'][1] * unsettled
+
+            def admitted(kept):
+                if ceilings + cpu + reserve + kept <= line:
+                    return 'ceilings'
+                if kind == 'repository':
+                    fits = used + sessions_cpus + burst + timed + CHECK_CPUS + kept <= capacity
+                else:
+                    fits = timed + cpu + sessions_cpus <= capacity
+                return 'measured' if fits else None
+            # The samples lag: the measured use beside the running timed jobs,
+            # those jobs at their ceilings and sessions too new to show in the
+            # samples at theirs, added up. Without a sample, every ceiling.
+            occupied = used + CLASSES['repository'][1] * unsettled + timed
+            if timing and occupied + cpu > capacity:
+                raise refused('the measured CPU use leaves no timing-sensitive check its whole ceiling', 'cpu', cpu)
+            admitted_by = admitted(kept_cpus)
+            if kind == 'repository' and admitted_by != 'ceilings' and not continuing:
+                if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
+                    raise refused('CPU pressure in the sandbox holds new repository sessions')
+            if admitted_by is None and kept_cpus and admitted(0) is not None:
+                raise refused('a check waits for CPUs first, and this attempt would take them')
+            if admitted_by is None:
+                raise refused('CPU cores the host leaves free cannot cover this job beside the running checks and sessions',
+                              'cpu', cpu)
     else:
         busy = (measured if measured is not None else ceilings) + outside
         if busy + cpu > LIGHT_LOAD * (os.cpu_count() or 1) or (
@@ -1382,7 +1508,7 @@ def host_gate(gate, unused, memory):
     if guest.get('MemAvailable', 0) < 2 * GIB + additional:
         raise refused('shared WSL memory cannot cover benchmark reservations and its 2 GiB floor', 'memory', memory)
     return dict(hostAvailableRam=available_ram, hostAvailableCommit=commit,
-                guestMemAvailable=guest['MemAvailable'],
+                guestMemAvailable=guest['MemAvailable'], hostEvidenceAt=timestamp,
                 hostCpuBusy=None if not 0 <= busy <= 1000 else busy / 1000,
                 hostGateAgeMs=round(age))
 
@@ -1454,7 +1580,7 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
         # reservation. The one at the head keeps the room it was refused
         # from new attempts (kept_room); an attempt that leaves that room
         # starts beside the queue instead of waiting for it to empty.
-        observed = decide(active, kind, gate, host_buffers, continuing, probe, timing)
+        observed = decide(active, kind, gate, host_buffers, continuing, probe, timing, identifier)
         scratch_headroom(active, kind, gate)
         if probe:
             print(json.dumps({'id': identifier, 'class': kind, 'deadlineMs': deadline_ms, 'admits': True}))
@@ -1488,6 +1614,21 @@ def release(token):
 
 MEMORY_CEILING = 'infrastructure_error: benchmark process tree reached its memory ceiling'
 CANDIDATE_MEMORY = 'candidate_limit: the job reached its own memory ceiling while the candidate code ran'
+# A session runs the agent CLI and, through its shell tool, the commands it
+# runs for the candidate, in one leaf. Its own memory.max firing is the
+# candidate's only when the kernel's victim is such a command: a process
+# below a shell under the agent CLI, never the CLI itself or the confinement
+# that starts it (whose scripts' processes carry their names). The kernel
+# names its victim by the kernel's pid, and every WSL distro has its own pid
+# namespace, so the victim is matched by its name (comm).
+SESSION_KINDS = ('repository', 'text')
+CONFINEMENT = frozenset({'bench-run-inner', 'unshare', 'bench-enter', 'setpriv', 'env'})
+SHELLS = frozenset({'sh', 'bash', 'dash', 'zsh'})
+KMSG = Path('/dev/kmsg')
+PROC = Path('/proc')
+# Session verdicts by job id, for the host to read after a bridge died.
+VERDICTS = 'verdicts'
+VERDICT_DAYS = 2
 
 
 def event_counts(path):
@@ -1499,14 +1640,17 @@ def event_counts(path):
         return {}
 
 
-def memory_verdict(kind, identifier, groups):
+def memory_verdict(kind, identifier, groups, processes=None, found=None):
     """Why the kernel OOM-killed in a job's leaves, or None when it did not.
     The candidate's (CANDIDATE_MEMORY) only when a leaf's own memory.max
     caused it, which its memory.events.local counts as an oom (an ancestor's
     limit, the whole sandbox's pressure, counts in the ancestor alone), while
     the candidate's code ran: in a check or a pair from their start, in a
-    browser run once its worker marked the candidate's page started.
-    Anything else is the infrastructure's."""
+    browser run once its worker marked the candidate's page started, in a
+    session when the kernel's victim is a command the agent ran for the
+    candidate in the last snapshot of its leaf (`processes`; see
+    candidate_victim, whose name it puts in `found`). Anything else, a victim
+    unknown or the agent CLI itself, is the infrastructure's."""
     killed = own = False
     for name in groups:
         if event_counts(ROOT / name / 'memory.events').get('oom_kill', 0):
@@ -1516,7 +1660,133 @@ def memory_verdict(kind, identifier, groups):
         return None
     started = kind in ('check', 'pair') or (
         kind == 'browser' and (SCRATCH / 'checks' / identifier / 'candidate-started').is_file())
+    if kind in SESSION_KINDS and own and processes:
+        victim = candidate_victim(groups[0], processes)
+        started = victim is not None
+        if found is not None:
+            found['victim'] = victim
     return CANDIDATE_MEMORY if own and started else MEMORY_CEILING
+
+
+def candidate_victim(name, processes):
+    """The name of the task the kernel's OOM killer chose last for leaf
+    `name`, when it is a command the agent ran for the candidate: some
+    process of that name is in the last snapshot `processes`, and every one
+    of them is such a command. None otherwise: no record, no such process,
+    or one of them is the agent CLI, its own non-shell child or the
+    confinement, so a name the candidate shares with the agent never scores
+    it 0."""
+    victim = oom_victim(name)
+    if victim is None:
+        return None
+    named = [pid for pid, (_, comm) in processes.items() if comm == victim]
+    return victim if named and all(candidate_command(pid, processes) for pid in named) else None
+
+
+def leaf_processes(name):
+    """The processes of leaf `name` now, as {pid: (ppid, comm)}; empty when
+    it cannot be read. Read by root in the initial namespaces, so the pids
+    are the ones the kernel's OOM records name."""
+    processes = {}
+    try:
+        pids = [int(value) for value in (ROOT / name / 'cgroup.procs').read_text().split()]
+    except (OSError, ValueError):
+        return processes
+    for pid in pids:
+        try:
+            text = (PROC / str(pid) / 'stat').read_text()
+        except OSError:
+            continue
+        # comm sits in parentheses and may hold spaces or parentheses itself.
+        opened, closed = text.find('('), text.rfind(')')
+        fields = text[closed + 2:].split() if 0 <= opened < closed else []
+        if len(fields) > 1 and fields[1].isdigit():
+            processes[pid] = (int(fields[1]), text[opened + 1:closed])
+    return processes
+
+
+def candidate_command(victim, processes):
+    """Whether `victim` is a command the agent ran for the candidate: some
+    shell between it and the agent CLI, the topmost process of its chain in
+    the leaf that is not part of the confinement."""
+    chain, pid = [], victim
+    while pid in processes and pid not in chain:
+        chain.append(pid)
+        pid = processes[pid][0]
+    names = [processes[pid][1] for pid in chain]
+    agent = max((index for index, name in enumerate(names) if name not in CONFINEMENT), default=None)
+    return bool(agent) and any(name in SHELLS for name in names[:agent])
+
+
+def oom_victim(name):
+    """The name (comm) of the task the kernel's OOM killer chose last for
+    leaf `name`'s own memory.max, from its log; None without such a record.
+    A record reads `oom-kill:constraint=...,oom_memcg=PATH,task_memcg=PATH,
+    task=COMM,pid=PID,uid=UID`. The paths hold no comma, so the first
+    `,task=` is the kernel's; the comm is the task's own choice and may hold
+    anything, so pid and uid are read from the right."""
+    try:
+        memcg = '/' + str((ROOT / name).relative_to(ROOT.parent))
+    except ValueError:
+        return None
+    victim = None
+    try:
+        handle = os.open(KMSG, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        while True:
+            try:
+                chunk = os.read(handle, 65536)
+            except BlockingIOError:
+                break
+            except OSError as error:
+                # Records overwritten while reading: go on with the next.
+                if error.errno == errno.EPIPE:
+                    continue
+                break
+            if not chunk:
+                break
+            for line in chunk.decode('utf-8', 'replace').splitlines():
+                message = line.split(';', 1)[-1]
+                if not message.startswith('oom-kill:'):
+                    continue
+                head, delimited, tail = message.partition(',task=')
+                rest, _, uid = tail.rpartition(',uid=')
+                comm, _, pid = rest.rpartition(',pid=')
+                fields = dict(item.split('=', 1) for item in head[len('oom-kill:'):].split(',') if '=' in item)
+                if delimited and fields.get('oom_memcg') == memcg and fields.get('task_memcg') == memcg \
+                        and pid.isdigit() and uid.strip().isdigit():
+                    victim = comm
+    finally:
+        os.close(handle)
+    return victim
+
+
+def record_session_verdict(identifier, victim):
+    """Keeps a session's candidate verdict by its job id, for the host to read
+    after the bridge died with the leaf; verdicts older than VERDICT_DAYS go."""
+    directory = STATE / VERDICTS
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for old in directory.glob('*.json'):
+        try:
+            if old.stat().st_mtime < time.time() - VERDICT_DAYS * 86400:
+                old.unlink()
+        except OSError:
+            pass
+    replace_private(directory / (identifier + '.json'),
+                    json.dumps({'id': identifier, 'candidateLimit': 'memory', 'victim': victim,
+                                'at': round(time.time(), 1)}))
+
+
+def session_verdict(identifier):
+    """The candidate verdict kept for session job `identifier`, or {}."""
+    ident(identifier)
+    try:
+        value = json.loads((STATE / VERDICTS / (identifier + '.json')).read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) and value.get('id') == identifier else {}
 
 
 def memory_receipt(token, verdict):
@@ -1637,7 +1907,8 @@ def run(kind, identifier, command):
                 admitted = False
                 if queue and min(queue)[1] == ticket.name:
                     try:
-                        decide(active, kind, os.environ.get('DISTILL_BENCH_HOST_GATE'), host_buffers)
+                        decide(active, kind, os.environ.get('DISTILL_BENCH_HOST_GATE'), host_buffers,
+                               identifier=identifier)
                         admitted = True
                     except BlockingIOError as busy:
                         # Room may still open in the queue; stale Windows
@@ -1665,6 +1936,8 @@ def run(kind, identifier, command):
         print('resource_admitted: ' + kind, file=sys.stderr, flush=True)
         admitted_at = time.time()
         stalled_before = stall_total(groups)
+        if kind == 'pair':
+            pair_timeout_marker(identifier).unlink(missing_ok=True)
         owner_path = SCRATCH / 'owners' / (identifier + '.json')
         with locked():
             if owner_path.exists():
@@ -1683,17 +1956,34 @@ def run(kind, identifier, command):
             # inherited stdin is still consumed exclusively by the child.
             disconnect.register(0, select.POLLHUP | select.POLLERR)
             disconnect.register(1, select.POLLHUP | select.POLLERR)
+        processes = {}
         while True:
             scratch_runtime_floor()
             remaining = deadline - time.time()
             if remaining <= 0:
                 raise TimeoutError('benchmark owned execution deadline expired')
+            # Who is who in a session's leaf, kept from the last poll: once
+            # the kernel kills the leaf whole, nothing is left to read.
+            if kind in SESSION_KINDS:
+                processes = leaf_processes(groups[0]) or processes
             try:
                 code = child.wait(timeout=min(1, remaining))
                 scratch_runtime_floor()
-                verdict = memory_verdict(kind, identifier, groups)
+                found = {}
+                verdict = memory_verdict(kind, identifier, groups, processes, found)
+                if verdict == CANDIDATE_MEMORY and kind in SESSION_KINDS:
+                    record_session_verdict(identifier, found.get('victim'))
                 if verdict:
                     raise RuntimeError(verdict)
+                timed_out = kind == 'pair' and pair_timeout_marker(identifier).is_file()
+                if timed_out:
+                    pair_timeout_marker(identifier).unlink(missing_ok=True)
+                if timed_out and code == PAIR_TIME_LIMIT:
+                    waited = timed_out_wait(groups, stalled_before, admitted_at)
+                    if waited is not None and waited > STALL_LINE:
+                        raise RuntimeError(
+                            f'infrastructure_error: the paired check waited for CPUs {waited:.0%} of its run '
+                            'and hit its time limit; it runs again')
                 return code
             except subprocess.TimeoutExpired:
                 if disconnect.poll(0):
@@ -2009,6 +2299,9 @@ def main():
             fail('unsupported benchmark reservation flag')
         reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) >= 7 else 0,
                 'continuing' in flags, sys.argv[1] == 'admits', 'timing' in flags)
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == 'verdict':
+        print(json.dumps(session_verdict(sys.argv[2])))
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == 'outcome':
         token = sys.argv[2]

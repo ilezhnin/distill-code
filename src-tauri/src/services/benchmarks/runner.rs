@@ -1227,6 +1227,48 @@ fn record_sandbox_admission(attempt: &mut Attempt, evidence: &mut Value, sandbox
     }
 }
 
+/// A session's own memory ceiling that killed a command the agent ran for
+/// the candidate takes the bridge with the leaf, so the turn ends as an
+/// infrastructure failure. The broker keeps that verdict for the session's
+/// job `id`; with it the attempt is the candidate's answer past its budget,
+/// scored 0 like a check past its own ceiling. Returns the verdict to seal
+/// with the evidence; one that cannot be read leaves the outcome as it was.
+async fn settle_session_limit(attempt: &mut Attempt, id: &str) -> Option<Value> {
+    if attempt.outcome.as_deref() != Some("infrastructure_failure") {
+        return None;
+    }
+    let verdict = match sandbox::session_verdict(id).await {
+        Ok(verdict) => verdict?,
+        Err(error) => {
+            log::warn!("[benchmarks] cannot read the session verdict of sandbox {id}: {error}");
+            return None;
+        }
+    };
+    apply_session_limit(attempt, &verdict);
+    Some(json!(verdict))
+}
+
+fn apply_session_limit(attempt: &mut Attempt, verdict: &sandbox::SessionVerdict) {
+    if attempt.outcome.as_deref() != Some("infrastructure_failure") {
+        return;
+    }
+    let command = verdict
+        .victim
+        .as_deref()
+        .map(|name| format!(" ({name})"))
+        .unwrap_or_default();
+    let ended = attempt
+        .reason
+        .take()
+        .map(|reason| format!("; the session then ended with {reason}"))
+        .unwrap_or_default();
+    attempt.outcome = Some("budget_reached".into());
+    attempt.reason = Some(format!(
+        "A command the agent ran for the candidate{command} passed the session's own {} ceiling{ended}",
+        verdict.candidate_limit
+    ));
+}
+
 fn repository_collection_failure(attempt: &mut Attempt, error: &BenchmarkError) {
     if attempt
         .outcome
@@ -4153,6 +4195,14 @@ impl ExecutionBackend for NativeBackend {
             } else {
                 text_execution::attempt_id(&turn_owner(&attempt))
             }));
+            if let Some(id) = cleanup.0.as_deref() {
+                // The sandbox's cgroup leaf names no attempt; this line maps it.
+                log::info!(
+                    "[benchmarks] sandbox job session-{id} = attempt {} ({})",
+                    attempt.id,
+                    attempt.configuration.execution_profile
+                );
+            }
             // A later step of a workflow already running finishes on the grant
             // its workflow was admitted with; only new work waits for a
             // renewal that drains the account.
@@ -4442,6 +4492,7 @@ impl ExecutionBackend for NativeBackend {
             attempt.finished_at = Some(now());
             attempt.phase = "collecting".into();
             let mut artifact_error = None;
+            let mut session_limit = None;
             if let Some(id) = cleanup.0.as_deref() {
                 let collected = async {
                     host.stop_owned_sandbox(&session.session_id)
@@ -4464,6 +4515,7 @@ impl ExecutionBackend for NativeBackend {
                     repository_collection_failure(&mut attempt, &error);
                     artifact_error = Some(json!({"code":error.code,"message":error.message}));
                 }
+                session_limit = settle_session_limit(&mut attempt, id).await;
             }
             mark_auxiliary_profile(&mut attempt);
             let receipt = self
@@ -4473,6 +4525,9 @@ impl ExecutionBackend for NativeBackend {
             let mut evidence = native_receipt::sealed_events(evidence, receipt);
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
+            }
+            if let Some(verdict) = session_limit {
+                evidence["sessionLimit"] = verdict;
             }
             self.record_credit_use(&store.root, &mut attempt, &mut evidence, &credit)
                 .await;
@@ -4636,6 +4691,7 @@ impl ExecutionBackend for NativeBackend {
                 attempt.reason = Some(violation);
             }
             let mut artifact_error = None;
+            let mut session_limit = None;
             if let Some(id) = cleanup.0.as_deref() {
                 let collected = async {
                     host.stop_owned_sandbox(&status.session_id)
@@ -4661,6 +4717,7 @@ impl ExecutionBackend for NativeBackend {
                         artifact_error = Some(json!({"code":error.code,"message":error.message}));
                     }
                 }
+                session_limit = settle_session_limit(&mut attempt, id).await;
             }
             mark_auxiliary_profile(&mut attempt);
             let receipt = self
@@ -4670,6 +4727,9 @@ impl ExecutionBackend for NativeBackend {
             let mut evidence = native_receipt::sealed_events(evidence, receipt);
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
+            }
+            if let Some(verdict) = session_limit {
+                evidence["sessionLimit"] = verdict;
             }
             record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
             mark_phase(&mut attempt, "collected");
@@ -8293,6 +8353,38 @@ mod tests {
         let document = super::render_document(&preamble, Some("svg")).unwrap();
         assert!(document.contains("<body><svg xmlns='x'><rect/></svg></body>"));
         assert!(super::render_document("I cannot draw.", Some("svg")).is_none());
+    }
+    #[test]
+    fn a_session_s_own_memory_ceiling_on_the_candidate_s_command_is_its_budget() {
+        // A Grok session (10-18): the session's own memory.max killed the
+        // candidate's python3, the bridge died with the leaf, and the turn
+        // ended as an infrastructure failure the broker's verdict corrects.
+        let row = judge_row("sonnet");
+        let mut attempt =
+            super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        attempt.outcome = Some("infrastructure_failure".into());
+        attempt.reason = Some(r#"{"code":-32603,"message":"bridge exited"}"#.into());
+        let verdict = sandbox::SessionVerdict {
+            candidate_limit: "memory".into(),
+            victim: Some("python3".into()),
+        };
+        apply_session_limit(&mut attempt, &verdict);
+        assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
+        let reason = attempt.reason.as_deref().unwrap();
+        assert!(reason.contains("(python3) passed the session's own memory ceiling"), "{reason}");
+        assert!(reason.contains("bridge exited"), "{reason}");
+        // Only an infrastructure failure is the verdict's to settle.
+        for outcome in ["completed", "budget_timeout", "execution_violation"] {
+            attempt.outcome = Some(outcome.into());
+            attempt.reason = None;
+            apply_session_limit(&mut attempt, &verdict);
+            assert_eq!(attempt.outcome.as_deref(), Some(outcome));
+            assert!(attempt.reason.is_none());
+        }
+        assert_eq!(
+            json!(verdict),
+            json!({"candidateLimit": "memory", "victim": "python3"})
+        );
     }
     #[test]
     fn the_session_admission_is_sealed_with_its_attempt_once() {

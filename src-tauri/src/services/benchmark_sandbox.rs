@@ -64,7 +64,7 @@ fn resource_hash(bytes: &[u8]) -> String {
 }
 
 pub(crate) const RESOURCE_POLICY: &str =
-    "dynamic-v2-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8grow-inodes131072grow-weights10000-300-100-control1";
+    "measured-load-v1-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8grow-inodes131072grow-weights10000-300-100-control1";
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Budget lines the broker reports: the aggregate every admitted job shares
@@ -73,7 +73,7 @@ const GIB: u64 = 1024 * 1024 * 1024;
 /// dynamic policy no line depends on how many jobs run; admission measures
 /// that instead (see bench-budget).
 const FIXED_BUDGET: [&str; 9] = [
-    "budget admission dynamic-v2",
+    "budget admission measured-load-v1",
     "budget memory 25769803776",
     "budget cpu 1500000/100000",
     "budget pids 4224",
@@ -90,7 +90,8 @@ const FIXED_BUDGET: [&str; 9] = [
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Admission {
-    /// The admission policy (`dynamic-v2`: repository sessions by measured
+    /// The admission policy (`measured-load-v1`: CPU-heavy jobs by the host's
+    /// measured load under 70 %; `dynamic-v2`: repository sessions by measured
     /// use; `dynamic-v1`: every CPU-heavy job by its ceiling), or absent for
     /// the fixed heavy lanes before them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1396,6 +1397,53 @@ pub(crate) async fn invoke_reserved_bounded(
     Ok(out)
 }
 
+/// What the broker kept for a session job whose own memory ceiling killed a
+/// command the agent ran for the candidate (`bench-budget verdict ID`): the
+/// bridge dies with the session's leaf, so its run's receipt never reaches
+/// the host.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionVerdict {
+    /// The ceiling the candidate's command reached, e.g. `memory`.
+    pub(crate) candidate_limit: String,
+    /// The killed command's name, as the kernel knew it.
+    pub(crate) victim: Option<String>,
+}
+
+/// The broker's candidate verdict for session job `id`, or none. A helper
+/// from an earlier build has no such command and fails the call.
+pub(crate) async fn session_verdict(id: &str) -> io::Result<Option<SessionVerdict>> {
+    valid_id(id)?;
+    let out = invoke_raw(
+        "/usr/local/sbin/bench-budget",
+        &["verdict", id],
+        None,
+        4096,
+        Duration::from_secs(5),
+        None,
+    )
+    .await?
+    .require_success("session verdict")?;
+    parse_session_verdict(id, &out.stdout)
+}
+
+fn parse_session_verdict(id: &str, stdout: &[u8]) -> io::Result<Option<SessionVerdict>> {
+    let value: serde_json::Value = serde_json::from_slice(stdout)?;
+    let Some(limit) = value["candidateLimit"].as_str() else {
+        return Ok(None);
+    };
+    if value["id"] != id {
+        return Err(io::Error::other("Sandbox session verdict owner differs"));
+    }
+    Ok(Some(SessionVerdict {
+        candidate_limit: limit.to_owned(),
+        // A process the candidate's agent started chose its own name.
+        victim: value["victim"]
+            .as_str()
+            .map(|name| name.chars().filter(|c| !c.is_control()).take(16).collect()),
+    }))
+}
+
 /// The outcome receipt a leased run's supervisor printed last on stderr as
 /// `NONCE outcome JSON`, removed from `stderr`. Only that supervisor knows
 /// the nonce (it takes it out of the environment before starting anything),
@@ -2682,6 +2730,37 @@ mod tests {
     }
 
     #[test]
+    fn a_session_verdict_names_its_own_job_and_the_candidate_s_command() {
+        let id = "attempt-invented";
+        assert_eq!(
+            parse_session_verdict(
+                id,
+                br#"{"id": "attempt-invented", "candidateLimit": "memory", "victim": "python3", "at": 1.0}"#
+            )
+            .unwrap(),
+            Some(SessionVerdict {
+                candidate_limit: "memory".into(),
+                victim: Some("python3".into()),
+            })
+        );
+        // No verdict, a name the kernel never had, another job's verdict.
+        assert_eq!(parse_session_verdict(id, b"{}").unwrap(), None);
+        let named = parse_session_verdict(
+            id,
+            br#"{"id": "attempt-invented", "candidateLimit": "memory", "victim": "a\nb"}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(named.victim.as_deref(), Some("ab"));
+        assert!(parse_session_verdict(
+            id,
+            br#"{"id": "attempt-other", "candidateLimit": "memory", "victim": null}"#
+        )
+        .is_err());
+        assert!(parse_session_verdict(id, b"not json").is_err());
+    }
+
+    #[test]
     fn a_leased_run_s_outcome_comes_from_its_framed_last_stderr_line() {
         let nonce = "b".repeat(32);
         let token = "a".repeat(32);
@@ -2835,8 +2914,11 @@ mod tests {
             ),
             off.replace("budget heavy-cap off\n", ""),
             // The fixed policy's aggregate, or another policy, is not this one.
-            off.replace("budget admission dynamic-v2\n", ""),
-            off.replace("budget admission dynamic-v2", "budget admission dynamic-v1"),
+            off.replace("budget admission measured-load-v1\n", ""),
+            off.replace(
+                "budget admission measured-load-v1",
+                "budget admission dynamic-v2",
+            ),
             off.replace("budget memory 25769803776", "budget memory 19327352832"),
             off.replace("budget cpu 1500000/100000", "budget cpu 1450000/100000"),
             off.replace("light 33554432/8388608", "light 134217728/33554432"),
@@ -2855,7 +2937,7 @@ mod tests {
     fn a_dynamic_admission_record_keeps_what_admission_measured() {
         // The shape bench-budget prints beside a dynamic reservation token.
         let printed = serde_json::json!({
-            "policy": "dynamic-v2", "heavyCap": null, "lane": "light",
+            "policy": "measured-load-v1", "heavyCap": null, "lane": "light",
             "competing": {"repository": 2}, "competingHeavy": 2,
             "reservedMemory": 5 * GIB, "reservedCpu": 4, "memoryCurrent": 3 * GIB,
             "guestLoad": [0.8, 0.9, 0.7], "guestCpus": 16,
@@ -2866,7 +2948,7 @@ mod tests {
             "sessionBurst": 0.5, "repositorySessions": 2, "admittedBy": null,
         });
         let admission: Admission = serde_json::from_value(printed).unwrap();
-        assert_eq!(admission.policy.as_deref(), Some("dynamic-v2"));
+        assert_eq!(admission.policy.as_deref(), Some("measured-load-v1"));
         assert_eq!(
             (
                 admission.cpu_capacity,

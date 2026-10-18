@@ -220,6 +220,14 @@ def main():
             return judge.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
             print('The isolated check exceeded its time limit', file=sys.stderr)
+            # The broker tells this limit from a checker's own exit 124 by
+            # this root-only marker (bench-budget PAIR_TIMEOUTS).
+            try:
+                marker = Path('/run/distill-bench-budget/pair-timeouts') / identifier
+                marker.parent.mkdir(mode=0o700, exist_ok=True)
+                marker.write_text('')
+            except OSError:
+                pass
             return 124
     finally:
         judge_socket.close()

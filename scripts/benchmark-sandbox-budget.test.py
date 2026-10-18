@@ -27,6 +27,7 @@ source = Path(__file__).parent.parent / 'src-tauri/resources/benchmark-sandbox/b
 budget = importlib.machinery.SourceFileLoader('benchmark_budget_fixture', str(source)).load_module()
 unpack = importlib.machinery.SourceFileLoader('benchmark_unpack_fixture', str(source.with_name('bench-unpack'))).load_module()
 production_scratch_headroom = budget.scratch_headroom
+production_state = budget.STATE
 production_stop = budget.stop
 production_os = budget.os
 MIB = 1024 ** 2
@@ -107,6 +108,16 @@ class BudgetTests(unittest.TestCase):
         # What the benchmark jobs use now, as the CPU samples would show it.
         budget.sandbox_cores = lambda: cores
 
+    def load(self, share):
+        # The Windows host's CPU busy share the gate reports from now on, the
+        # smoothing ring started afresh so earlier samples do not average in.
+        self.busy = round(share * 1000)
+        (budget.STATE / budget.HOST_CPU).unlink(missing_ok=True)
+
+    def unmeasured(self):
+        # A host that reports no CPU sample: the summed-ceilings rule decides.
+        self.load(1.001)
+
     def settle(self, kinds=None):
         # Every running job (of `kinds`) was admitted long enough ago that its
         # scratch use shows in the free space instead of its reservation, and
@@ -131,7 +142,7 @@ class BudgetTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             budget.status()
         lines = output.getvalue().splitlines()
-        for line in ('budget admission dynamic-v2', 'budget heavy-cap off', 'budget memory 25769803776',
+        for line in ('budget admission measured-load-v1', 'budget heavy-cap off', 'budget memory 25769803776',
                      'budget cpu 1500000/100000', 'budget swap 0', 'budget pids 4224',
                      'budget disk dynamic 8589934592', 'budget inodes dynamic 131072',
                      'budget io 1073741824/268435456',
@@ -174,8 +185,9 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(BlockingIOError, 'measured CPU load'):
             self.reserve('text', 'fictional-text-over-load')
 
-    def test_sessions_using_their_cpus_still_get_todays_ceiling_rule(self):
+    def test_without_a_host_sample_the_summed_ceilings_rule_still_decides(self):
         self.roomy()
+        self.unmeasured()
         self.learn(repository=budget.GIB, check=budget.GIB, browser=512 * MIB)
         # Sessions busy with twelve CPUs leave the measured rule no room;
         # the ceiling rule of earlier builds still admits three on eight
@@ -190,26 +202,13 @@ class BudgetTests(unittest.TestCase):
         # the weights give them the CPU first.
         self.assertEqual(self.admit('check', 'fictional-check')['admission']['admittedBy'], 'ceilings')
         self.assertEqual(self.admit('browser', 'fictional-browser')['admission']['admittedBy'], 'measured')
-        for row in budget.receipts():
-            budget.release(next(path.name[6:-5] for path in budget.STATE.glob('lease-*.json')
-                                if json.loads(path.read_text())['id'] == row['id']))
-        # A host busy with four CPUs of its own and no sample yet: the
-        # sessions' ceilings stand in for their use. 11 logical CPUs are left.
-        self.measure(None)
-        self.busy = 250
-        admitted = [self.admit('repository', f'fictional-busy-{n}')['admission'] for n in range(4)]
-        self.assertEqual([record['admittedBy'] for record in admitted],
-                         ['ceilings', 'measured', 'measured', 'measured'])
-        self.assertEqual(admitted[0]['cpuCapacity'], 11)
-        with self.assertRaisesRegex(BlockingIOError, 'CPU cores'):
-            self.reserve('repository', 'fictional-busy-4')
-        # A browser check still finds its CPU beside them.
-        self.reserve('browser', 'fictional-browser')
 
     def test_repository_sessions_are_admitted_by_measured_use_without_a_count(self):
         # Owner decision 2026-10-17: no fixed number of sessions; the measured
         # CPUs, the memory claims and guard and the pressure lines decide.
+        # Without a host sample, by the summed-ceilings rule.
         self.roomy()
+        self.unmeasured()
         self.learn(repository=budget.GIB, check=budget.GIB, prep=256 * MIB)
         self.measure(1.0)
         records = []
@@ -226,36 +225,107 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(BlockingIOError, 'CPU cores'):
             self.reserve('check', 'fictional-check-5')
 
-    def test_sessions_too_new_to_be_measured_count_at_their_ceilings(self):
-        # A wave start admits what the CPUs cover at the new sessions'
-        # ceilings, not a burst of sessions admitted before any shows in the
-        # samples; once measured, each costs its burst allowance.
+    def test_heavy_jobs_start_while_the_smoothed_host_load_stays_below_seventy_percent(self):
+        # Owner, 10-18: not cautious around 40 %, cautious past 70 %. No sum
+        # of reservations: two checks and a session at 69 % still start.
+        self.roomy()
+        self.learn(repository=budget.GIB, check=budget.GIB)
+        self.load(0.69)
+        for kind, name in (('repository', 'fictional-a'), ('check', 'fictional-check'), ('repository', 'fictional-b')):
+            self.assertEqual(self.admit(kind, name)['admission']['admittedBy'], 'load')
+            self.settle()
+        self.load(0.70)
+        with self.assertRaisesRegex(BlockingIOError, r'\(70%\) is at or above the 70% line'):
+            self.reserve('repository', 'fictional-c')
+        # One busy second among quiet ones does not hold a start: the gate
+        # samples of the last 30 s are averaged.
+        self.load(0.40)
+        self.reserve('repository', 'fictional-quiet')
+        self.settle()
+        self.busy = 950
+        self.reserve('repository', 'fictional-spike')
+        self.settle()
+        self.assertAlmostEqual(budget.host_busy_smoothed({}), (0.40 + 0.95) / 2, places=3)
+        # A sample older than the window counts no more.
+        ring = json.loads((budget.STATE / budget.HOST_CPU).read_text())
+        (budget.STATE / budget.HOST_CPU).write_text(json.dumps(
+            [[at - budget.LOAD_WINDOW - 1, value] for at, value in ring]))
+        self.assertIsNone(budget.host_busy_smoothed({}))
+
+    def test_every_admission_decision_is_logged_with_what_it_measured(self):
+        self.roomy()
+        self.learn(repository=budget.GIB)
+        self.load(0.30)
+        self.reserve('repository', 'fictional-logged')
+        self.load(0.80)
+        with self.assertRaises(BlockingIOError):
+            self.reserve('repository', 'fictional-refused')
+        entries = [json.loads(line) for line in (budget.STATE / budget.DECISIONS).read_text().splitlines()]
+        admitted, refused = entries[-2], entries[-1]
+        self.assertEqual((admitted['id'], admitted['outcome'], admitted['reason']), ('fictional-logged', 'admitted', 'load'))
+        self.assertEqual((refused['id'], refused['outcome']), ('fictional-refused', 'refused'))
+        self.assertIn('at or above the 70% line', refused['reason'])
+        for entry, busy in ((admitted, 0.30), (refused, 0.80)):
+            self.assertEqual(entry['hostCpuSmoothed'], busy)
+            self.assertEqual(entry['loadLine'], budget.LOAD_LINE)
+            for key in ('freshHeavy', 'heavyJobs', 'claimedMemory', 'expectedMemory', 'hostCpuBusy'):
+                self.assertIn(key, entry)
+        # The log keeps its newest lines once it grows past its size.
+        budget.DECISION_BYTES, budget.DECISION_LINES = 2000, 3
+        try:
+            for n in range(20):
+                budget.log_decision('text', f'fictional-{n}', 'admitted', 'measured')
+            lines = (budget.STATE / budget.DECISIONS).read_text().splitlines()
+            self.assertLessEqual(len(lines), 3 + 20)
+            self.assertEqual(json.loads(lines[-1])['id'], 'fictional-19')
+        finally:
+            budget.DECISION_BYTES, budget.DECISION_LINES = 1024 * 1024, 2000
+
+    def test_a_paired_check_that_waited_for_cpus_past_its_limit_is_measured_as_the_hosts(self):
+        # Under more load a paired check may run past bench-judge's limit
+        # (exit 124, the candidate's fail). If its leaves waited for CPUs other
+        # jobs held more than a tenth of its run, the run was the host's.
+        leaf = budget.ROOT / 'check-fictional-pair'
+        leaf.mkdir()
+        (leaf / 'cpu.pressure').write_text('some avg10=0.00 avg60=0.00 avg300=0.00 total=3000000\n')
+        (leaf / 'cpu.max').write_text('max 100000\n')
+        (leaf / 'cpu.stat').write_text('usage_usec 1000000\nnr_throttled 0\nthrottled_usec 0\n')
+        started = time.time() - 10
+        waited = budget.timed_out_wait(['check-fictional-pair', 'probe-fictional-pair'], 0, started)
+        self.assertAlmostEqual(waited, 0.3, places=2)
+        self.assertGreater(waited, budget.STALL_LINE)
+        # Nothing readable: no verdict either way.
+        self.assertIsNone(budget.timed_out_wait(['probe-fictional-gone'], 0, started))
+        self.assertIsNone(budget.timed_out_wait(['check-fictional-pair'], None, started))
+
+    def test_a_burst_of_starts_ramps_three_at_a_time_until_the_samples_show_them(self):
+        # A wave start admits three heavy jobs, then waits until the samples
+        # can show what they take; jobs the samples show cost nothing more.
         self.roomy()
         self.learn(repository=budget.GIB, check=budget.GIB, prep=256 * MIB)
         self.measure(1.0)
-        self.busy = 375  # 6 of 16 busy, 5 outside the VM: 16 - 5 - 1 = 10
+        self.load(0.375)
         admitted = 0
         while True:
             try:
                 self.reserve('repository', f'fictional-new-{admitted}')
             except BlockingIOError as busy:
-                self.assertIn('CPU cores', str(busy))
+                self.assertIn('do not show in the measured load yet', str(busy))
                 break
             admitted += 1
-        # 1 used + the new one's 0.5 + 2 per unsettled session + a check's 2
-        # must fit 10: four sessions at once, then the settled ones cost 0.5.
-        self.assertEqual(admitted, 4)
+        self.assertEqual(admitted, budget.RAMP_MAX)
         self.settle()
         for n in range(8):
             self.reserve('repository', f'fictional-settled-{n}')
             self.settle()
 
-    def test_cpu_pressure_and_check_stalls_hold_new_sessions_above_the_ceiling_rule(self):
+    def test_cpu_pressure_and_check_stalls_hold_new_sessions(self):
         self.roomy()
         self.learn(repository=budget.GIB, check=budget.GIB, prep=256 * MIB)
         self.measure(1.0)
         for name in ('fictional-a', 'fictional-b', 'fictional-c'):
             self.reserve('repository', name)
+        self.settle()
         # A job whose tasks waited for CPUs other jobs held for more than a
         # tenth of the sampled seconds holds new sessions beyond the ceiling
         # rule.
@@ -270,7 +340,7 @@ class BudgetTests(unittest.TestCase):
         sampled(0, 500_000)
         self.assertAlmostEqual(budget.job_pressure(), 0.05 / 0.95, places=3)
         record = self.admit('repository', 'fictional-d')['admission']
-        self.assertEqual(record['admittedBy'], 'measured')
+        self.assertEqual(record['admittedBy'], 'load')
         # 10-17: a check at its own cpu.max ceiling (it starts as many workers
         # as the guest has CPUs) read as pressure and held every session,
         # preparation and text attempt. Its throttled time is its own.
@@ -757,6 +827,7 @@ class BudgetTests(unittest.TestCase):
                    browser=512 * MIB, prep=256 * MIB)
         for kind in ('repository', 'text', 'check', 'pair', 'browser', 'prep'):
             self.reserve(kind, f'fictional-{kind}')
+            self.settle()
         weights = {name: limits[-1] for name, limits in self.groups}
         self.assertEqual(weights, {
             'session-fictional-repository': 100, 'session-fictional-text': 100,
@@ -817,13 +888,15 @@ class BudgetTests(unittest.TestCase):
         for n in range(8):
             self.reserve('repository', f'fictional-{n}')
             self.settle()
+        # Five checks, the last three just started.
         for n in range(5):
             self.reserve('check', f'fictional-check-{n}')
-            self.settle()
-        # The next check waits for CPUs: repository attempts wait behind it,
-        # text attempts (no CPU ceiling counted) do not.
-        with self.assertRaisesRegex(BlockingIOError, 'CPU cores'):
-            self.reserve('check', 'fictional-check-5')
+            if n < 5 - budget.RAMP_MAX:
+                self.settle()
+        # The next check waits for CPUs (three heavy jobs just started):
+        # repository attempts wait behind it, text attempts do not.
+        with self.assertRaisesRegex(BlockingIOError, 'do not show in the measured load yet'):
+            self.reserve('check', 'fictional-check-next')
         self.reserve('text', 'fictional-text')
         self.assertTrue(budget.priority_waiting('repository'))
         self.assertFalse(budget.priority_waiting('text'))
@@ -946,7 +1019,7 @@ class BudgetTests(unittest.TestCase):
         # 1.5 used + 0.41 x 5 bursts + the running check's 2 + one check's
         # reserve of 2 = 7.55 of the 16 - 6 - 1 = 9 the host leaves.
         record = self.admit('repository', 'fictional-fifth')['admission']
-        self.assertEqual((record['cpuCapacity'], record['admittedBy']), (9, 'measured'))
+        self.assertEqual((record['cpuCapacity'], record['admittedBy']), (9, 'load'))
         self.assertEqual(record['outsideCpu'], 5.296)
         self.settle(('repository',))
         # A check that waits for CPUs keeps them: a sixth session would take
@@ -956,9 +1029,10 @@ class BudgetTests(unittest.TestCase):
             self.reserve('repository', 'fictional-sixth')
         self.reserve('check', 'fictional-check-waiting')
         budget.hold('cpu')
-        # Two checks running leave no room for a sixth session's burst and
-        # one more check: the checks keep their CPUs.
-        with self.assertRaisesRegex(BlockingIOError, 'CPU cores the host leaves free'):
+        # Past 70 % of the host's CPUs nothing heavy starts.
+        self.settle()
+        self.load(0.75)
+        with self.assertRaisesRegex(BlockingIOError, 'at or above the 70% line'):
             self.reserve('repository', 'fictional-sixth')
 
     def test_a_timing_sensitive_check_runs_with_no_new_cpu_heavy_job_beside_it(self):
@@ -998,16 +1072,16 @@ class BudgetTests(unittest.TestCase):
         # jobs; an ordinary check starts by its own line meanwhile.
         self.roomy()
         self.learn(check=budget.GIB)
-        self.measure(14.0)  # of the 15 the host leaves
+        self.load(0.9)  # 1.6 of 16 CPUs free
         deadline = int(time.time() * 1000) + 60000
-        with self.assertRaisesRegex(BlockingIOError, 'whole ceiling'):
+        with self.assertRaisesRegex(BlockingIOError, 'free CPUs, not its 2'):
             budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
         # Its refusal keeps its CPUs from new attempts, as a waiting check's.
         self.assertEqual(budget.kept_room('repository', budget.peaks())[1], budget.CHECK_CPUS)
+        # At half load an ordinary check starts, and the timing check beside
+        # it: 8 free less the new check's 2 still leave its 2.
+        self.load(0.5)
         self.reserve('check', 'fictional-ordinary')
-        # The ordinary check counts at its ceiling beside the measured use:
-        # 11 + 2 + 2 fits the 15.
-        self.measure(11.0)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             budget.reserve('check', 'fictional-timed-later', deadline, self.gate(), 0, False, False, True)
@@ -1022,12 +1096,12 @@ class BudgetTests(unittest.TestCase):
         self.roomy()
         self.learn(repository=budget.GIB, check=budget.GIB)
         self.measure(1.0)
-        for n in range(4):
+        for n in range(budget.RAMP_MAX):
             self.reserve('repository', f'fictional-new-{n}')
-        self.busy = 500  # now 8 of 16 busy, 7 outside the VM: 16 - 7 - 1 = 8
+        self.load(0.6)
         deadline = int(time.time() * 1000) + 60000
-        # 1 measured, plus four unsettled sessions at 2 CPUs: 1 + 8 + 2 > 8.
-        with self.assertRaisesRegex(BlockingIOError, 'whole ceiling'):
+        # 6.4 free less three new sessions at 2 CPUs leave 0.4 of its 2.
+        with self.assertRaisesRegex(BlockingIOError, 'free CPUs, not its 2'):
             budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
         self.settle(('repository',))
         output = io.StringIO()
@@ -1049,14 +1123,11 @@ class BudgetTests(unittest.TestCase):
             self.reserve('repository', f'fictional-settled-{n}')
         self.settle(('repository',))
         fresh = self.reserve('check', 'fictional-fresh')
-        self.measure(5.0)
-        self.busy = 750  # now 12 of 16 busy, 7 outside the VM: 16 - 7 - 1 = 8
+        self.load(0.8)
         deadline = int(time.time() * 1000) + 60000
-        # 5 measured + 2 for the fresh check + 2 > 8; the ordinary line would
-        # admit it (2 + 2 + 3 bursts of 0.5 <= 8).
-        with self.assertRaisesRegex(BlockingIOError, 'whole ceiling'):
+        # 16 x 0.2 free less the fresh check's 2 leaves 1.2 of its 2 CPUs.
+        with self.assertRaisesRegex(BlockingIOError, 'free CPUs, not its 2'):
             budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
-        budget.release(self.reserve('check', 'fictional-ordinary'))
         budget.release(fresh)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -1093,10 +1164,10 @@ class BudgetTests(unittest.TestCase):
         self.assertNotIn('cpu', budget.priority_state())
         self.assertNotIn('memory', budget.priority_state())
         self.assertIsNone(budget.priority_waiting('repository'))
-        # The repository line is the measured one: 1 used + one burst + one
-        # check's reserve fits the 16 - 11 - 1 = 4 the host leaves.
+        # Below the 70 % line a repository session starts by the measured load.
+        self.load(0.5)
         record = self.admit('repository', 'fictional-repository')['admission']
-        self.assertEqual(record['admittedBy'], 'measured')
+        self.assertEqual(record['admittedBy'], 'load')
 
     def test_a_cancellation_is_never_read_as_a_missing_file(self):
         # SIGHUP's exception used to be a TimeoutError, an OSError: inside a
@@ -1189,10 +1260,11 @@ class BudgetTests(unittest.TestCase):
         self.busy = 125
         record = self.admit('repository', 'fictional-measured', self.gate(ram=60, commit=60))['admission']
         self.assertLess(abs(record.pop('hostGateAgeMs')), 2000)
+        self.assertLess(abs(record.pop('hostEvidenceAt') - time.time() * 1000), 2000)
         # No memory.stat in the fixture: the guard read memory.current.
         self.assertEqual((record.pop('memoryInUse'), record.pop('memoryFile')), (3 * budget.GIB, None))
         self.assertEqual(record, {
-            'policy': 'dynamic-v2', 'heavyCap': None, 'lane': 'heavy',
+            'policy': 'measured-load-v1', 'heavyCap': None, 'lane': 'heavy',
             'competing': {'text': 1, 'repository': 1}, 'competingHeavy': 1,
             'reservedMemory': 5 * budget.GIB, 'reservedCpu': 2,
             'memoryCurrent': 3 * budget.GIB, 'guestLoad': [1.5, 0.75, 0.25], 'guestCpus': 16,
@@ -1201,7 +1273,7 @@ class BudgetTests(unittest.TestCase):
             'expectedMemory': 3 * budget.GIB, 'cpuLine': 6, 'sandboxCpu': None,
             'guestCpu': None, 'outsideCpu': 2.0, 'keptMemory': 0, 'keptCpus': 0,
             'cpuPressure': None, 'checkStall': None, 'cpuCapacity': 13, 'sessionBurst': 0.5,
-            'repositorySessions': 1, 'admittedBy': 'ceilings'})
+            'repositorySessions': 1, 'admittedBy': 'load'})
 
     def test_windows_floors_count_the_claims_not_yet_in_use(self):
         self.learn(repository=2 * budget.GIB)
@@ -1570,8 +1642,9 @@ class BudgetTests(unittest.TestCase):
         (scratch / 'checks' / 'fictional-page' / 'candidate-started').write_text('')
         self.assertEqual(budget.memory_verdict('browser', 'fictional-page', ['browser-fictional-page']),
                          budget.CANDIDATE_MEMORY)
-        # A model session's own ceiling stays the infrastructure's, a pair's
-        # either leaf is the candidate's, and no kill is no verdict.
+        # A model session's own ceiling without a snapshot of who ran what
+        # stays the infrastructure's, a pair's either leaf is the candidate's,
+        # and no kill is no verdict.
         leaf('session-own', 1, 1)
         self.assertEqual(budget.memory_verdict('repository', 'own', ['session-own']), budget.MEMORY_CEILING)
         leaf('probe-pair', 1, 1)
@@ -1581,6 +1654,102 @@ class BudgetTests(unittest.TestCase):
         self.assertIsNone(budget.memory_verdict('check', 'quiet', ['check-quiet']))
         self.assertEqual(budget.memory_receipt('t', budget.MEMORY_CEILING),
                          {'token': 't', 'infrastructureError': budget.MEMORY_CEILING})
+
+    def test_a_session_command_past_the_sessions_own_memory_ceiling_is_the_candidates(self):
+        # A Grok session (10-18): the session leaf's own memory.max killed the
+        # candidate's python3 under the agent's bash, and the group kill took
+        # the agent CLI and the bridge with it. Who ran what comes from the
+        # last snapshot of the leaf, the victim's name from the kernel's log,
+        # whose pids are the kernel's, never this distro's.
+        root = Path(self.temporary.name)
+        for name, value in (('PROC', root / 'proc'), ('KMSG', root / 'kmsg')):
+            self.addCleanup(setattr, budget, name, getattr(budget, name))
+            setattr(budget, name, value)
+        leaf = budget.ROOT / 'session-fictional-oom'
+        leaf.mkdir()
+        tree = {700: (1, 'unshare'), 701: (700, 'grok-native'), 702: (701, 'bash'),
+                703: (702, 'python3'), 704: (701, 'rg'), 705: (702, 'fictional (worker) x'),
+                706: (702, 'x,oom_memcg=/x'), 707: (702, 'node'), 708: (701, 'node')}
+        for pid, (parent, comm) in tree.items():
+            (budget.PROC / str(pid)).mkdir(parents=True)
+            (budget.PROC / str(pid) / 'stat').write_text(f'{pid} ({comm}) S {parent} {pid} {pid} 0 -1 4194560\n')
+        # A pid gone between the two reads is left out.
+        (leaf / 'cgroup.procs').write_text('\n'.join(map(str, [*tree, 709])) + '\n')
+        processes = budget.leaf_processes('session-fictional-oom')
+        self.assertEqual(processes, tree)
+        self.assertEqual(budget.leaf_processes('session-fictional-gone'), {})
+        (leaf / 'memory.events').write_text('oom 1\noom_kill 3\n')
+        (leaf / 'memory.events.local').write_text('oom 1\noom_kill 3\n')
+        memcg = '/' + str(leaf.relative_to(budget.ROOT.parent)).replace('\\', '/')
+
+        def killed(*victims, group=memcg):
+            # The kernel's pids (156000 and up) are not the distro's.
+            budget.KMSG.write_text(''.join(
+                f'6,{90 + index},1,-;oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,'
+                f'oom_memcg={group},task_memcg={group},task={comm},pid={156000 + index},uid=1000\n'
+                ' SUBSYSTEM=memory\n'
+                for index, comm in enumerate(victims)))
+            found = {}
+            verdict = budget.memory_verdict('repository', 'fictional-oom', ['session-fictional-oom'],
+                                            processes, found)
+            return verdict, found.get('victim')
+
+        self.assertEqual(killed('python3'), (budget.CANDIDATE_MEMORY, 'python3'))
+        self.assertEqual(killed('fictional (worker) x'), (budget.CANDIDATE_MEMORY, 'fictional (worker) x'))
+        # A comm that imitates the record's fields neither hides the real
+        # leaf nor names another task.
+        self.assertEqual(killed('x,oom_memcg=/x'), (budget.CANDIDATE_MEMORY, 'x,oom_memcg=/x'))
+        self.assertEqual(killed('python3,pid=1,uid=2')[0], budget.MEMORY_CEILING)
+        # The newest record decides.
+        self.assertEqual(killed('grok-native', 'python3')[0], budget.CANDIDATE_MEMORY)
+        self.assertEqual(killed('python3', 'grok-native')[0], budget.MEMORY_CEILING)
+        # The agent CLI, its own non-shell child, the confinement, a name the
+        # snapshot never saw, a name both a candidate command and the agent's
+        # own child carry, and a record of another leaf are ours.
+        for victim in ('grok-native', 'rg', 'unshare', 'cargo', 'node'):
+            self.assertEqual(killed(victim), (budget.MEMORY_CEILING, None), victim)
+        self.assertEqual(killed('python3', group=memcg + '-other')[0], budget.MEMORY_CEILING)
+        # No kernel record or no snapshot: doubt never scores the candidate.
+        budget.KMSG.write_text('6,1,1,-;fictional unrelated line\n')
+        self.assertEqual(budget.memory_verdict('repository', 'fictional-oom', ['session-fictional-oom'], processes),
+                         budget.MEMORY_CEILING)
+        budget.KMSG.unlink()
+        self.assertEqual(budget.memory_verdict('repository', 'fictional-oom', ['session-fictional-oom'], processes),
+                         budget.MEMORY_CEILING)
+        killed('python3')
+        self.assertEqual(budget.memory_verdict('text', 'fictional-oom', ['session-fictional-oom'], {}),
+                         budget.MEMORY_CEILING)
+        # Pressure from above the leaf counts no oom of its own: ours.
+        (leaf / 'memory.events.local').write_text('oom 0\noom_kill 3\n')
+        self.assertEqual(killed('python3')[0], budget.MEMORY_CEILING)
+
+    def test_only_bench_judges_own_limit_makes_a_paired_timeout_the_hosts(self):
+        # A checker may exit 124 itself (a candidate hung under its own
+        # timeout): only bench-judge's marker, in the broker's state, says the
+        # pair ran past bench-judge's limit.
+        marker = budget.pair_timeout_marker('fictional-pair')
+        self.assertEqual(marker.parent, budget.STATE / budget.PAIR_TIMEOUTS)
+        judge = (Path(budget.__file__).with_name('bench-judge')).read_text(encoding='utf-8')
+        self.assertIn(f"Path('{(production_state / budget.PAIR_TIMEOUTS).as_posix()}') / identifier", judge)
+
+    def test_a_sessions_candidate_verdict_is_kept_for_the_host_by_its_job_id(self):
+        budget.record_session_verdict('fictional-oom', 'python3')
+        verdict = budget.session_verdict('fictional-oom')
+        self.assertEqual({key: verdict[key] for key in ('id', 'candidateLimit', 'victim')},
+                         {'id': 'fictional-oom', 'candidateLimit': 'memory', 'victim': 'python3'})
+        self.assertEqual(budget.session_verdict('fictional-none'), {})
+        with self.assertRaisesRegex(RuntimeError, 'invalid benchmark resource owner'):
+            budget.session_verdict('../fictional')
+        # A file renamed to another job's name is not that job's verdict.
+        directory = budget.STATE / budget.VERDICTS
+        (directory / 'fictional-moved.json').write_text((directory / 'fictional-oom.json').read_text())
+        self.assertEqual(budget.session_verdict('fictional-moved'), {})
+        # Verdicts older than the window go when another is kept.
+        old = time.time() - budget.VERDICT_DAYS * 86400 - 60
+        os.utime(directory / 'fictional-oom.json', (old, old))
+        budget.record_session_verdict('fictional-next', None)
+        self.assertFalse((directory / 'fictional-oom.json').exists())
+        self.assertEqual(budget.session_verdict('fictional-next')['victim'], None)
 
     def test_scratch_grows_online_from_the_windows_volume_and_never_below_its_floor(self):
         from unittest import mock
