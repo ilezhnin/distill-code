@@ -12,11 +12,12 @@
 //! account for an hour, since providers limit by model: its turns fly no
 //! more at once than that while the account's other models grow on.
 //!
-//! The account's last stable level (the one it last finished a clean round
-//! at, or a refusal sent it to), whether it is still in slow start and its
-//! standing model ceilings are kept beside the store, so an app restart
-//! resumes there; a level older than a ceiling's hour resumes at half, in
-//! slow start again. Every move is logged. Every attempt records how many
+//! The account's level, its last stable level (the one it last finished a
+//! clean round at, or a refusal sent it to), when it last flew turns, whether
+//! it is still in slow start and its standing model ceilings are kept beside
+//! the store, so an app restart resumes there: an account that flew turns
+//! within a ceiling's hour goes on at its level, one idle for longer resumes
+//! at half its stable level, in slow start again. Every move is logged. Every attempt records how many
 //! turns its account had in flight when it was admitted, so speed results
 //! stay comparable across levels.
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,9 @@ const CEILING_MS: i64 = 60 * 60 * 1000;
 /// How long the pace holds after it changed (or was first used) before it
 /// may grow again.
 const HOLD_MS: i64 = 10 * 60 * 1000;
+/// When an account last flew turns is kept at this step, so its saving stays
+/// rare.
+const ACTIVE_STEP_MS: i64 = 60 * 1000;
 /// Speeds kept per concurrency level, and how many make a level comparable.
 const SPEEDS: usize = 20;
 const COMPARABLE: usize = 5;
@@ -52,8 +56,11 @@ pub(super) struct Pace {
     /// with every slot of the current level taken.
     full: usize,
     /// The level the account last finished a clean round at, or a refusal
-    /// sent it to, and when: what a restart resumes from.
+    /// sent it to, and when: what a restart after a long stop halves.
     stable: (usize, i64),
+    /// When the account last flew a turn (finished or refused), to the
+    /// minute: what a restart measures staleness from.
+    active: i64,
     /// By model, the level the provider last refused or slowed its turns at
     /// and since when: for CEILING_MS that model's turns fly no more at once.
     ceilings: BTreeMap<String, (usize, i64)>,
@@ -70,6 +77,14 @@ pub(super) struct Saved {
     slow_start: bool,
     #[serde(default)]
     ceilings: BTreeMap<String, (usize, i64)>,
+    /// The level the account was flying at; a file from before it was kept
+    /// resumes the stable level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    current: Option<usize>,
+    /// When the account last flew turns; a file from before it was kept dates
+    /// the stable level instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_at: Option<i64>,
 }
 
 impl Pace {
@@ -82,21 +97,36 @@ impl Pace {
             slow_start: true,
             full: 0,
             stable: (start, now),
+            active: now,
             ceilings: BTreeMap::new(),
             speeds: BTreeMap::new(),
         }
     }
 
-    /// The pace a restart resumes from `saved`: its level and slow start
-    /// while the level is younger than a ceiling's hour, else half the level
-    /// in slow start again, since the evidence that ended it has lapsed too;
-    /// the model ceilings still standing either way.
+    /// The pace a restart resumes from `saved`. Staleness runs from the last
+    /// time the account flew turns: a short stop (a restart, a build gap)
+    /// says nothing new about its provider, so within a ceiling's hour the
+    /// account goes on at the level it was flying, in the same slow start.
+    /// One idle for longer resumes at half its stable level, in slow start
+    /// again, since the evidence that ended it has lapsed too. The model
+    /// ceilings still standing hold either way.
     pub(super) fn resume(saved: &Saved, now: i64) -> Self {
-        let fresh = now - saved.at < CEILING_MS;
-        let level = if fresh { saved.level } else { saved.level / 2 }.max(1);
+        let active = saved.active_at.unwrap_or(saved.at);
+        let fresh = now - active < CEILING_MS;
+        let level = if fresh {
+            saved.current.unwrap_or(saved.level)
+        } else {
+            saved.level / 2
+        }
+        .max(1);
         let mut pace = Self::new(level, now);
         pace.slow_start = saved.slow_start || !fresh;
-        pace.stable = (level, if fresh { saved.at } else { now });
+        pace.stable = if fresh {
+            (saved.level.max(1), saved.at)
+        } else {
+            (level, now)
+        };
+        pace.active = if fresh { active } else { now };
         pace.ceilings = saved
             .ceilings
             .iter()
@@ -113,6 +143,15 @@ impl Pace {
             at: self.stable.1,
             slow_start: self.slow_start,
             ceilings: self.ceilings.clone(),
+            current: Some(self.limit),
+            active_at: Some(self.active),
+        }
+    }
+
+    /// The account flew a turn at `now`, kept to the minute.
+    fn flew(&mut self, now: i64) {
+        if now - self.active >= ACTIVE_STEP_MS {
+            self.active = now;
         }
     }
 
@@ -173,6 +212,7 @@ impl Pace {
     /// pace already answered, so concurrent refusals halve it once; one sent
     /// under the current limit (or not known) halves it again.
     pub(super) fn throttled(&mut self, model: &str, admitted_limit: Option<usize>, now: i64) {
+        self.flew(now);
         if admitted_limit.is_some_and(|limit| limit > self.limit) {
             return;
         }
@@ -186,6 +226,7 @@ impl Pace {
     /// finished cleanly that were admitted with all its slots taken; after
     /// it, the level grows by one per hold and stretch of clean turns.
     pub(super) fn finished(&mut self, model: &str, turns: u32, speed: Option<f64>, now: i64) {
+        self.flew(now);
         if let Some(speed) = speed.filter(|speed| speed.is_finite() && *speed > 0.0) {
             let ring = self.speeds.entry(turns.max(1)).or_default();
             ring.push(speed);
@@ -307,12 +348,17 @@ fn with_pace<T>(key: &str, apply: impl FnOnce(&mut Pace) -> T) -> T {
         match saved {
             Some(saved) => {
                 let pace = Pace::resume(&saved, now);
+                let idle = (now - saved.active_at.unwrap_or(saved.at)).max(0) / 1000;
                 log::info!(
-                    "[benchmarks] account pace {} resumed at {} turns at once (saved {} at {}, slow start {})",
+                    "[benchmarks] account pace {} resumed at {} turns at once: it last flew turns {idle} s ago ({}), stable level {}, slow start {}",
                     shown(key),
                     pace.limit(),
+                    if idle * 1000 < CEILING_MS {
+                        "within the hour, so it goes on where it was"
+                    } else {
+                        "over an hour ago, so at half its stable level"
+                    },
                     saved.level,
-                    saved.at,
                     pace.slow_start
                 );
                 pace
@@ -336,6 +382,12 @@ fn shown(key: &str) -> String {
         .next()
         .unwrap_or(key)
         .replace(char::from(0x1f), "/")
+}
+
+/// `account` starts a turn at `now`: it is flying, which a restart measures
+/// its pace's staleness from even before the turn ends.
+pub(super) fn record_flight(account: &str, now: i64) {
+    with_pace(account, |pace| pace.flew(now));
 }
 
 /// Turns `account` (its provider and id, as a seat names it) takes at once.
@@ -504,6 +556,8 @@ mod tests {
                 at: 3 * HOLD_MS,
                 slow_start: false,
                 ceilings: BTreeMap::from([("m".to_owned(), (16, 3 * HOLD_MS))]),
+                current: Some(8),
+                active_at: Some(3 * HOLD_MS),
             }
         );
         for _ in 0..3 {
@@ -542,6 +596,7 @@ mod tests {
 
     #[test]
     fn a_restart_resumes_the_saved_level_and_a_stale_one_at_half() {
+        // A file from before activity was kept: the stable level dates it.
         let saved = Saved {
             level: 16,
             at: 0,
@@ -550,6 +605,8 @@ mod tests {
                 ("m".to_owned(), (8, 0)),
                 ("lapsed".to_owned(), (4, -CEILING_MS)),
             ]),
+            current: None,
+            active_at: None,
         };
         let pace = Pace::resume(&saved, CEILING_MS - 1);
         assert_eq!(pace.limit(), 16);
@@ -565,6 +622,43 @@ mod tests {
         assert!(stale.ceilings.is_empty());
         let single = Saved { level: 1, ..saved };
         assert_eq!(Pace::resume(&single, CEILING_MS).limit(), 1);
+    }
+
+    #[test]
+    fn a_short_stop_resumes_at_the_level_the_account_was_flying() {
+        // Slow start at 16 with demand below a full round, for two hours: the
+        // stable level (8) was confirmed at the start, the account flew turns
+        // until a minute before the stop (10-18: a 25-minute gap sent b55a
+        // from 16 to 6, Codex from 19 to 9, Grok from 21 to 5).
+        let mut pace = Pace::new(4, 0);
+        round(&mut pace, "m", 0);
+        round(&mut pace, "m", 0);
+        assert_eq!(pace.limit(), 16);
+        for minute in 0..120 {
+            pace.finished("m", 3, None, minute * ACTIVE_STEP_MS);
+        }
+        let saved = pace.saved();
+        let last = 119 * ACTIVE_STEP_MS;
+        assert_eq!(
+            (saved.level, saved.at, saved.current, saved.active_at),
+            (8, 0, Some(16), Some(last))
+        );
+        // A 25-minute stop goes on at 16, in the same slow start.
+        let resumed = Pace::resume(&saved, last + 25 * ACTIVE_STEP_MS);
+        assert_eq!(resumed.limit(), 16);
+        assert!(resumed.slow_start);
+        assert_eq!(resumed.saved().active_at, Some(last));
+        // An account idle for more than a ceiling's hour resumes at half its
+        // stable level.
+        let idle = Pace::resume(&saved, last + CEILING_MS);
+        assert_eq!(idle.limit(), 4);
+        assert!(idle.slow_start);
+        // Activity is kept to the minute, so a burst of turns saves once.
+        let mut steady = Pace::new(4, 0);
+        steady.finished("m", 1, None, ACTIVE_STEP_MS);
+        let before = steady.saved();
+        steady.finished("m", 1, None, ACTIVE_STEP_MS + 30_000);
+        assert_eq!(steady.saved(), before);
     }
 
     #[test]
@@ -603,6 +697,8 @@ mod tests {
                 at: now - CEILING_MS - 1,
                 slow_start: false,
                 ceilings: BTreeMap::new(),
+                current: None,
+                active_at: None,
             },
         );
         std::fs::write(

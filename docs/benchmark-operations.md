@@ -550,26 +550,29 @@ No fixed number bounds how many attempts fly. A new ordinary run records
 pace and the sandbox admit. An operator may set a number instead, of any size,
 which then bounds the configuration; a saved run without one flies one at a
 time. An account with no history starts at four turns at once, in slow start:
-the level doubles after each clean round, as many clean turns as the level
-that were admitted with every slot taken, so an account its demand keeps below
-its level never grows. The first sign the provider limits the account ends
-slow start: a rate-limit answer to a sent prompt (HTTP 429, "rate limit", "too
-many requests", "overloaded") halves the level, and so does a level of
-concurrency whose turns stream clearly slower (below three quarters of the
-tokens per second) than turns with fewer beside them; since providers limit by
-model, the level refused or slowed at (two or more) then stands for an hour as
-the most turns of that model the account flies at once. After slow start the
-pace grows by one per stretch of clean turns, with no fixed most, never sooner
-than ten minutes after it last changed. Every configuration on the account
-shares its pace, and the app log records every move ("account pace ... -> ...
-turns at once, model ceiling ...") and every resume, so a wave's log shows how
-far each account climbed. Quota recovery imposes one turn until a turn lands.
-Each account's last stable level (the one it last finished a clean round at,
-or a refusal sent it to), whether it is still in slow start, and its standing
+the level doubles after each clean round, as many clean turns as the level that
+were admitted with every slot taken, so an account its demand keeps below its
+level never grows. The first sign the provider limits the account ends slow
+start: a rate-limit answer to a sent prompt (HTTP 429, "rate limit", "too many
+requests", "overloaded") halves the level, and so does a level of concurrency
+whose turns stream clearly slower (below three quarters of the tokens per
+second) than turns with fewer beside them; since providers limit by model, the
+level refused or slowed at (two or more) then stands for an hour as the most
+turns of that model the account flies at once. After slow start the pace grows
+by one per stretch of clean turns, with no fixed most, never sooner than ten
+minutes after it last changed. Every configuration on the account shares its
+pace, and the app log records every move ("account pace ... -> ... turns at
+once, model ceiling ...") and every resume, so a wave's log shows how far each
+account climbed. Quota recovery imposes one turn until a turn lands. Each
+account's level, its last stable level (the one it last finished a clean round
+at, or a refusal sent it to), when it last flew turns (to the minute, from the
+moment a turn is admitted), whether it is still in slow start, and its standing
 model ceilings are kept in `account-pace.json` beside the benchmark store, so an
-app restart (a gap's deploy) resumes there; a level saved more than an hour
-before the restart resumes at half, in slow start again. While the app keeps
-running, the pace stays as it is however long the account was idle.
+app restart (a gap's deploy) resumes there: an account that flew turns within
+the hour before the restart goes on at its level, in the same slow start; one
+idle for longer resumes at half its stable level, in slow start again. A file
+written before activity was kept dates the stable level instead. While the app
+keeps running, the pace stays as it is however long the account was idle.
 
 The app prepares only as many ordinary attempts at once as the sandbox's recent
 answers allow: one plus the attempts the sandbox admitted in the last minute
