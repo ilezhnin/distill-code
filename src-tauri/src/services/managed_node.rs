@@ -928,8 +928,14 @@ fn extract_zip(
         let mut entry = archive
             .by_index(index)
             .map_err(|error| ManagedNodeError::Io(format!("read zip entry: {error}")))?;
-        let relative = zip_entry_relative_path(entry.name())
-            .ok_or_else(|| ManagedNodeError::UnsafeArchiveEntry(entry.name().to_string()))?;
+        // zip 9 reads a name as text or refuses it; an unreadable name is
+        // no entry to extract.
+        let name = entry
+            .name()
+            .map_err(|error| ManagedNodeError::Io(format!("read zip entry name: {error}")))?
+            .into_owned();
+        let relative = zip_entry_relative_path(&name)
+            .ok_or_else(|| ManagedNodeError::UnsafeArchiveEntry(name.clone()))?;
         let out_path = dest_dir.join(&relative);
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path)
