@@ -144,6 +144,12 @@ struct OwnedBridge<'a> {
 
 /// How long a sandbox sign-in renewal session may take: opening one session.
 const RENEWAL_TURN_MS: u64 = 120_000;
+
+/// JSON-RPC error code of an owned text bridge the broker refused before
+/// reserving anything, in a sandbox cleared just before: setup has nothing to
+/// clean after it.
+const CLEAR_SANDBOX_REFUSAL: i64 = -32001;
+
 /// Why a test waits while the renewal of its sandbox sign-in waits for a free
 /// sandbox lane.
 const RENEWAL_LANE_BUSY: &str = "the Grok sign-in this test needs is renewed once a sandbox lane is free; this test starts then";
@@ -1431,7 +1437,7 @@ impl Inner {
                         })?;
                 }
                 if !repository {
-                    text_execution::prepare(&request.owner_id)
+                    text_execution::clear(&request.owner_id)
                         .await
                         .map_err(protocol::internal)?;
                 }
@@ -1485,8 +1491,20 @@ impl Inner {
                     let reason = message
                         .find("resource_busy:")
                         .map_or(message.as_str(), |start| &message[start..]);
-                    protocol::internal(reason)
+                    let code = if !repository
+                        && crate::services::benchmark_sandbox::reserved_nothing(&error)
+                    {
+                        CLEAR_SANDBOX_REFUSAL
+                    } else {
+                        protocol::INTERNAL_ERROR
+                    };
+                    protocol::error(code, reason)
                 })?;
+                if !repository {
+                    text_execution::prepare(&request.owner_id)
+                        .await
+                        .map_err(protocol::internal)?;
+                }
                 let separator = launch
                     .args
                     .iter()
@@ -1508,7 +1526,11 @@ impl Inner {
                 )
                 .await;
                 let bridge = match spawned {
-                    Ok(bridge) => bridge,
+                    Ok(bridge) => {
+                        // The session's bench-run owns the lease now.
+                        reservation.mark_claimed();
+                        bridge
+                    }
                     Err(error) => {
                         if let Some((id, _)) = &launch.sandbox {
                             let _ = crate::services::benchmark_sandbox::clean(id).await;
@@ -6298,6 +6320,7 @@ impl Inner {
                 "{}{BENCHMARK_ROUTE}{profile_key}",
                 account_route_key(&request.provider_id, Some(&request.account_id))
             );
+            let mut sandbox_clear = false;
             let result = async {
         let bridge = self
             .ensure_execution_bridge(
@@ -6313,7 +6336,10 @@ impl Inner {
                 }),
             )
             .await
-            .map_err(|e| error_text(&e))?;
+            .map_err(|e| {
+                sandbox_clear = e["code"] == CLEAR_SANDBOX_REFUSAL;
+                error_text(&e)
+            })?;
         let meta = if repository_revision.is_some() {
             repository_execution::session_meta(provider, &request.model_id)
         } else {
@@ -6465,9 +6491,14 @@ impl Inner {
                 if let Some(bridge) = self.bridges.lock().await.remove(&setup_route) {
                     bridge.kill();
                 }
-                if let Err(error) = crate::services::benchmark_sandbox::clean(&sandbox_id).await {
-                    log::warn!("[agent-host] owned setup cleanup failed: {error}");
-                    return result;
+                // A refusal that reserved nothing left the sandbox as it was
+                // cleared before asking: nothing to clean again here.
+                if !sandbox_clear {
+                    if let Err(error) = crate::services::benchmark_sandbox::clean(&sandbox_id).await
+                    {
+                        log::warn!("[agent-host] owned setup cleanup failed: {error}");
+                        return result;
+                    }
                 }
             }
             setup_cleanup.0 = None;

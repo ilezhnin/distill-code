@@ -1040,13 +1040,10 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
                     details,
                 ))
             }
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => Ok(evaluation(
-                manifest,
-                "fail",
-                0.0,
-                "The check exceeded its time limit".into(),
-                details,
-            )),
+            // bench-judge ends a check that runs past its own limit (exit
+            // 124, a failed check above). A timeout here is the broker's,
+            // the class lookup's, the kill's or a judge that did not stop:
+            // the infrastructure's, never the candidate's.
             Err(error) => Err(sandbox_error(error)),
         }
     }

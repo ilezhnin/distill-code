@@ -35,6 +35,7 @@ aggregate is shared by measured use, and every admission records what it
 measured; every finished job records its CPU seconds and memory peak.
 """
 import math
+import datetime
 import errno
 import fcntl
 import json
@@ -57,9 +58,15 @@ SCRATCH = Path('/srv/bench')
 IMAGE = Path('/var/lib/distill-bench/scratch.ext4')
 HEAVY_CAP = Path('/var/lib/distill-bench/heavy-cap')
 PEAKS = Path('/var/lib/distill-bench/admission-peaks.json')
+# The learned state before its last update, read when the current one cannot be.
+PEAKS_BACKUP = Path('/var/lib/distill-bench/admission-peaks.json.bak')
 DISK = 8 * GIB
 INODES = 131072
 OUTCOME_TOKEN = None
+# The host's framing for this run's outcome receipt, printed as the last
+# stderr line; taken out of the environment before anything starts, so no
+# process of the run can learn it or print the line.
+OUTCOME_NONCE = None
 DEVICE = None
 POLICY = 'dynamic-v2'
 # The aggregate every admitted job shares. Admission leaves one GiB of the
@@ -88,17 +95,26 @@ PEAK_SAMPLES = 8
 # half its ceiling and a wave starts at full parallelism instead of two
 # sessions at their 6 GiB ceilings. Its memory.max stays the ceiling, and a
 # session using more than it claims claims what it uses.
-INITIAL_MEMORY = {'repository': 3 * GIB}
+# A check was measured at 0.07-0.27 GiB (its expectation 0.33 GiB once
+# learned) but follows repository sessions only, so it may stay unlearned
+# for a long time: it claims a quarter of its ceiling meanwhile.
+INITIAL_MEMORY = {'repository': 3 * GIB, 'check': GIB}
+# Where the guest's CPU time is read, and its unit.
+PROC_STAT = Path('/proc/stat')
+CLOCK_TICKS = os.sysconf('SC_CLK_TCK') if hasattr(os, 'sysconf') else 100
 # What the smaller claims allow, a simultaneous spike, is caught by measure:
-# no new attempt starts while the jobs use more than this share of the
-# admission memory or the guest's memory pressure over ten seconds exceeds
-# a tenth.
+# no new attempt starts while the jobs' memory in use (memory_in_use: page
+# cache left out) exceeds this share of the admission memory or the guest's
+# memory pressure over ten seconds exceeds a tenth.
 MEMORY_GUARD = 0.70
 MEMORY_PRESSURE = 0.10
 # Checks whose share of time spent waiting for a CPU exceeds this tighten the
 # CPU line by one check while the recent median stays above it.
 STALL_LINE = 0.10
 STALL_RING = 20
+# A recorded check stall counts this long: checks follow repository sessions
+# only, so a stale median must not hold new sessions back for good.
+STALL_WINDOW = 900
 # Repository sessions spend most of their time waiting for the remote model,
 # so they are admitted by what the sandbox measures rather than by their
 # 2-CPU ceilings (see admit_measured): the measured use, a burst allowance
@@ -207,6 +223,22 @@ def cpu_max():
     return f"{(AGGREGATE_CPU + SUPERVISOR_CPUS) * 100000} 100000"
 
 
+def enable_controllers(parent):
+    """Turn on the job controllers below `parent`. The kernel refuses that
+    (EBUSY) while a process sits in `parent` itself, which lasts until someone
+    moves it: name it, so admissions fail visibly instead of waiting as if a
+    group were only busy for a moment."""
+    if {'memory', 'cpu', 'pids', 'io'} <= set((parent / 'cgroup.subtree_control').read_text().split()):
+        return
+    try:
+        write(parent / 'cgroup.subtree_control', '+memory +cpu +pids +io')
+    except OSError as error:
+        if error.errno != errno.EBUSY:
+            raise
+        fail(f'a process sits in {parent} itself, so the benchmark job controllers cannot be enabled there; '
+             'move it into a child group or stop it')
+
+
 def setup():
     global DEVICE
     if os.geteuid() != 0:
@@ -216,8 +248,7 @@ def setup():
         fail('WSL cgroup v2 memory, CPU, PID and IO controllers are required')
     for parent in (Path('/sys/fs/cgroup'), ROOT):
         parent.mkdir(exist_ok=True)
-        if not {'memory', 'cpu', 'pids', 'io'} <= set((parent / 'cgroup.subtree_control').read_text().split()):
-            write(parent / 'cgroup.subtree_control', '+memory +cpu +pids +io')
+        enable_controllers(parent)
     ensure(ROOT / 'memory.swap.max', 0)
     control = ROOT / 'control'
     control.mkdir(exist_ok=True)
@@ -262,10 +293,47 @@ def io_limit(group):
     return None, None
 
 
+# bench-net holds this lock while it sets the sandbox up, the scratch disk's
+# mount included, and marks its own children with DISTILL_BENCH_NET_LOCKED.
+NET_LOCK = Path('/run/lock/distill-bench-net')
+BOOT_SETUP_WAIT = 30
+
+
+def scratch_mount():
+    try:
+        return subprocess.check_output(['findmnt', '-rn', '-M', str(SCRATCH), '-o', 'FSTYPE,SOURCE,OPTIONS'],
+                                       text=True).strip().split()
+    except subprocess.CalledProcessError:
+        return []
+
+
+def wait_for_net_setup():
+    """Wait (bounded) while bench-net sets the sandbox up: right after the
+    distribution boots, its boot command may still be mounting the scratch
+    disk when the app's first admission arrives."""
+    if os.environ.get('DISTILL_BENCH_NET_LOCKED'):
+        return
+    try:
+        handle = open(NET_LOCK, 'r')
+    except FileNotFoundError:
+        return
+    with handle:
+        until = time.monotonic() + BOOT_SETUP_WAIT
+        while time.monotonic() < until:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                time.sleep(0.1)
+
+
 def scratch_device():
     # The device must be our protected, fixed-size loop image, never the distro
     # root filesystem. A missing loop/quota implementation fails closed.
-    mounts = subprocess.check_output(['findmnt', '-rn', '-M', str(SCRATCH), '-o', 'FSTYPE,SOURCE,OPTIONS'], text=True).strip().split()
+    mounts = scratch_mount()
+    if not mounts:
+        wait_for_net_setup()
+        mounts = scratch_mount()
     if len(mounts) != 3 or mounts[0] != 'ext4' or not {'nodev', 'nosuid'} <= set(mounts[2].split(',')):
         fail('bounded benchmark scratch is not mounted (run deploy-helpers)')
     backing = subprocess.check_output(['losetup', '--noheadings', '--raw', '-O', 'BACK-FILE', mounts[1]], text=True).strip()
@@ -344,29 +412,30 @@ def populated(path):
             return False
 
 
-def stop(groups):
-    """Kill and remove each group; True once every one is gone. A group that
-    still has exiting tasks after a short wait is left for the next reap: its
-    removal must not fail another job's admission."""
+def stop(groups, patient=True):
+    """Kill and remove each group; True once every one is gone. A group whose
+    tasks have not left after a short wait, exiting or stuck past the kill,
+    is left for the next reap: its removal must not fail or stall another
+    job's admission. Not `patient` (a group already found busy), each group
+    is checked once without waiting."""
     for name in groups:
         # A group removed meanwhile has stopped.
         try:
             write(ROOT / name / 'cgroup.kill', 1)
         except FileNotFoundError:
             pass
-    until = time.monotonic() + 5
+    until = time.monotonic() + (5 if patient else 0)
     removed = True
     for name in groups:
         path = ROOT / name
-        while path.exists() and populated(path) and time.monotonic() < until:
+        while populated(path) and time.monotonic() < until:
             time.sleep(0.05)
-        try:
-            left = (path / 'cgroup.procs').read_text().strip()
-        except FileNotFoundError:
+        if not path.exists():
             continue
-        if left:
-            fail('benchmark process tree did not stop')
-        retry = time.monotonic() + RMDIR_RETRY
+        if populated(path):
+            removed = False
+            continue
+        retry = time.monotonic() + (RMDIR_RETRY if patient else 0)
         while True:
             try:
                 path.rmdir()
@@ -392,12 +461,18 @@ def locked():
 def receipts():
     result = []
     for path in STATE.glob('lease-*.json'):
-        value = json.loads(path.read_text())
+        value = readable(path, LEASE_KEYS)
+        if value is None:
+            continue
         if not live(value):
             # A group still busy keeps its expired lease, so a later reap
-            # removes it.
-            if stop(value['groups']):
+            # removes it. Once found busy it is checked without waiting: a
+            # task stuck for minutes must not hold every broker call.
+            if stop(value['groups'], patient='busy_since' not in value):
                 path.unlink(missing_ok=True)
+            elif 'busy_since' not in value:
+                value['busy_since'] = time.time()
+                replace_private(path, json.dumps(value))
         else:
             result.append(value)
     return result
@@ -406,7 +481,9 @@ def receipts():
 def waiting():
     queue = []
     for path in STATE.glob('wait-*.json'):
-        row = json.loads(path.read_text())
+        row = readable(path, ('pid', 'start', 'deadline', 'created'))
+        if row is None:
+            continue
         if live(row):
             queue.append((row['created'], path.name))
         else:
@@ -426,6 +503,30 @@ def read_number(path, pattern=None):
     return int(found.group(1)) if found else None
 
 
+def memory_stat():
+    """The benchmark root's memory.stat as numbers, or None."""
+    try:
+        return {key: int(value) for key, value in
+                (line.split()[:2] for line in (ROOT / 'memory.stat').read_text().splitlines() if line.strip())}
+    except (OSError, ValueError):
+        return None
+
+
+def memory_in_use():
+    """What the jobs' memory holds that reclaim cannot simply drop: anonymous
+    and shared pages and kernel memory. Page cache is left out: it is charged
+    to the root too, includes pages reparented from finished jobs, grows for a
+    whole wave and is reclaimed under memory.high before it could push a job
+    out. memory.current where memory.stat cannot be read."""
+    try:
+        stat = memory_stat()
+        kernel = int(stat['kernel']) if 'kernel' in stat else sum(
+            int(stat.get(key, 0)) for key in ('kernel_stack', 'slab', 'percpu', 'sock'))
+        return int(stat['anon']) + int(stat.get('shmem', 0)) + kernel
+    except (OSError, ValueError, KeyError, TypeError):
+        return read_number(ROOT / 'memory.current') or 0
+
+
 def leaf_memory(row):
     """What a job's leaves use now; zero before its process tree started."""
     total = 0
@@ -434,12 +535,69 @@ def leaf_memory(row):
     return total
 
 
+class Cancelled(Exception):
+    """The run's owner cancelled it (SIGTERM, SIGHUP or SIGINT). Not an
+    OSError: raised at any point of a read, it must never read as a missing
+    or unreadable file, a dead owner's lease or an empty sample ring."""
+
+
+class Unreadable(Exception):
+    """Learned state exists but could not be read; it must not be replaced."""
+
+
+def learned_state():
+    """What admission learned, with the file it came from and that file's
+    text: the peaks file or, when that cannot be read, the copy kept before
+    its last update. Empty (no file) only when neither exists; Unreadable when
+    one exists but neither reads as a mapping. A file that parses as
+    something else stays for the operator, who deletes it (and its backup)
+    to start learning again."""
+    missing = True
+    failures = []
+    for path in (PEAKS, PEAKS_BACKUP):
+        try:
+            text = path.read_text()
+            saved = json.loads(text)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as error:
+            missing = False
+            failures.append(f'{path.name}: {type(error).__name__}: {error}')
+            continue
+        if isinstance(saved, dict):
+            return saved, path, text
+        missing = False
+        failures.append(f'{path.name}: not a mapping')
+    if missing:
+        return {}, None, None
+    raise Unreadable('; '.join(failures))
+
+
 def peaks():
+    """Learned state for decisions: empty (initial claims) when unreadable."""
     try:
-        saved = json.loads(PEAKS.read_text())
-    except (OSError, ValueError):
+        return learned_state()[0]
+    except Unreadable:
         return {}
-    return saved if isinstance(saved, dict) else {}
+
+
+def update_learned(change):
+    """Apply `change` to the learned state and save it. The version it
+    replaces becomes the backup; a state recovered from the backup replaces
+    the unreadable file and leaves the backup as it was. A state that cannot
+    be read at all is left alone and the reaper log says why: a failed read
+    never resets what was learned."""
+    try:
+        recorded, source, text = learned_state()
+    except Unreadable as error:
+        note_reaper(f'kept the learned admission state, it could not be read: {error}')
+        return
+    change(recorded)
+    if source == PEAKS:
+        replace_private(PEAKS_BACKUP, text)
+    elif source == PEAKS_BACKUP:
+        note_reaper(f'{PEAKS.name} could not be read; recovered it from {PEAKS_BACKUP.name}')
+    replace_private(PEAKS, json.dumps(recorded))
 
 
 def expected_memory(kind, recorded):
@@ -459,12 +617,44 @@ def claim(row, recorded):
 
 
 def replace_private(path, text):
-    """Write a root-only state file whole, never half."""
+    """Write a root-only state file whole, never half. The staging name is
+    the writer's own, so two writers of one file never mix their bytes."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    staged = path.with_name(path.name + '.new')
+    staged = path.with_name(f'{path.name}.{os.getpid()}.new')
     staged.write_text(text)
     os.chmod(staged, 0o600)
     os.replace(staged, path)
+
+
+# A state file that does not parse and is older than this was left half
+# written by a crash (every writer replaces files whole); it is set aside.
+TORN_AFTER = 60
+# What every reader of a lease needs: live() for a claimed or pending one, and
+# its groups for the reap.
+LEASE_KEYS = ('groups', 'deadline')
+
+
+def readable(path, required=()):
+    """The JSON state in `path`, or None when it is gone, does not parse or
+    lacks a `required` key. One like that and older than TORN_AFTER is
+    renamed `.unreadable` and noted in the reaper log, so it stops failing
+    every pass while staying there for the operator. Callers hold the broker
+    lock, which every writer of these files holds too."""
+    try:
+        value = json.loads(path.read_text())
+        if required and (not isinstance(value, dict) or any(key not in value for key in required)):
+            raise ValueError('state row without ' + ', '.join(required))
+        return value
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        try:
+            if path.stat().st_mtime < time.time() - TORN_AFTER:
+                path.rename(path.with_name(path.name + '.unreadable'))
+                note_reaper(f'set aside unreadable {path.name}')
+        except OSError:
+            pass
+        return None
 
 
 def record_peak(kind, groups):
@@ -472,10 +662,10 @@ def record_peak(kind, groups):
     peak = sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)
     if peak <= 0:
         return
-    recorded = peaks()
-    ring = [value for value in recorded.get(kind, []) if isinstance(value, int)][-(PEAK_RING - 1):]
-    recorded[kind] = ring + [peak]
-    replace_private(PEAKS, json.dumps(recorded))
+    def add(recorded):
+        ring = [value for value in recorded.get(kind, []) if isinstance(value, int)][-(PEAK_RING - 1):]
+        recorded[kind] = ring + [peak]
+    update_learned(add)
 
 
 def record_usage(kind, identifier, groups, admitted_at):
@@ -488,18 +678,23 @@ def record_usage(kind, identifier, groups, admitted_at):
         return
     seconds = sum(usage) / 1e6
     cores = round(seconds / wall, 4)
-    recorded = peaks()
     key = 'cpu-' + kind
-    ring = [value for value in recorded.get(key, []) if isinstance(value, (int, float))][-(PEAK_RING - 1):]
-    recorded[key] = ring + [cores]
-    replace_private(PEAKS, json.dumps(recorded))
+
+    def add(recorded):
+        ring = [value for value in recorded.get(key, []) if isinstance(value, (int, float))][-(PEAK_RING - 1):]
+        recorded[key] = ring + [cores]
+    update_learned(add)
     entry = json.dumps({'at': round(time.time(), 1), 'kind': kind, 'id': identifier, 'wallSeconds': round(wall, 1),
                         'cpuSeconds': round(seconds, 2), 'cores': cores,
                         'memoryPeak': sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)})
     try:
         kept = USAGE.read_text().splitlines()[-(USAGE_LINES - 1):]
-    except OSError:
+    except FileNotFoundError:
         kept = []
+    except (OSError, ValueError) as error:
+        # A log that cannot be read is kept, not started over.
+        note_reaper(f'kept {USAGE.name}, it could not be read: {type(error).__name__}: {error}')
+        return
     replace_private(USAGE, '\n'.join(kept + [entry]) + '\n')
 
 
@@ -518,93 +713,188 @@ def learned(kind, recorded):
     return sum(isinstance(value, int) and value > 0 for value in recorded.get(kind, [])) >= PEAK_SAMPLES
 
 
+def timed_use(active):
+    """CPUs the running timed jobs (checks, paired checks, browser runs) use:
+    their leaves' average since admission, never above their ceilings."""
+    now = time.time()
+    total = 0.0
+    for row in active:
+        if row.get('kind') not in SENSITIVE:
+            continue
+        usage = [read_number(ROOT / name / 'cpu.stat', r'usage_usec (\d+)') for name in row['groups']]
+        seconds = sum(value for value in usage if value) / 1e6
+        total += min(float(row['cpu']), seconds / max(1.0, now - row.get('admitted', now)))
+    return total
+
+
+def leaf_wait(path):
+    """Microseconds the leaf at `path` had runnable tasks waiting for a CPU
+    another job held: its CPU pressure's `some` total less a whole period
+    for each period its own cpu.max throttled it. A job that reached its
+    quota in a period got its CPUs, however long its tasks waited for itself
+    (a check sees all the guest's CPUs and starts that many workers on its
+    two); what it waited in the other periods counts. throttled_usec is no
+    measure of that: it adds up every CPU's runqueue, so for many workers it
+    exceeds the wall time. None without a pressure file."""
+    some = read_number(path / 'cpu.pressure', r'some [^\n]*total=(\d+)')
+    if some is None:
+        return None
+    throttled = read_number(path / 'cpu.stat', r'nr_throttled (\d+)') or 0
+    period = read_number(path / 'cpu.max', r'^\S+ (\d+)') or 100_000
+    return some - throttled * period
+
+
+def leaf_waits():
+    """leaf_wait of every running job's leaf by name, never the control
+    group's."""
+    try:
+        leaves = [path for path in ROOT.iterdir() if path.is_dir() and path.name != 'control']
+    except OSError:
+        return {}
+    waits = {}
+    for leaf in leaves:
+        waited = leaf_wait(leaf)
+        if waited is not None:
+            waits[leaf.name] = waited
+    return waits
+
+
 def stall_total(groups):
-    """Microseconds a job's leaves had runnable tasks waiting for a CPU."""
-    totals = [read_number(ROOT / name / 'cpu.pressure', r'some [^\n]*total=(\d+)') for name in groups]
+    """Microseconds a job's leaves waited for CPUs other jobs held."""
+    totals = [leaf_wait(ROOT / name) for name in groups]
     return None if any(value is None for value in totals) else sum(totals)
 
 
+def stall_ring():
+    """The recorded check stalls as [time, share] pairs, oldest first."""
+    try:
+        ring = json.loads((STATE / 'stalls.json').read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(ring, list):
+        return []
+    return [entry for entry in ring if isinstance(entry, list) and len(entry) == 2
+            and all(isinstance(value, (int, float)) for value in entry)]
+
+
 def record_stall(kind, groups, started, before):
-    """Keep a finished check's share of time spent waiting for a CPU."""
+    """Keep a finished check's share of time spent waiting for CPUs other
+    jobs held, with when it finished."""
     after = stall_total(groups)
     elapsed = time.time() - started
     if kind not in SENSITIVE or before is None or after is None or elapsed < 1:
         return
-    path = STATE / 'stalls.json'
-    try:
-        ring = json.loads(path.read_text())
-    except (OSError, ValueError):
-        ring = []
-    ring = [value for value in ring if isinstance(value, (int, float))][-(STALL_RING - 1):]
-    ring.append(round(max(0, after - before) / 1e6 / elapsed, 4))
-    path.write_text(json.dumps(ring))
+    ring = stall_ring()[-(STALL_RING - 1):]
+    ring.append([round(time.time(), 1), round(max(0, after - before) / 1e6 / elapsed, 4)])
+    replace_private(STATE / 'stalls.json', json.dumps(ring))
 
 
 def recent_stall():
-    try:
-        ring = [value for value in json.loads((STATE / 'stalls.json').read_text()) if isinstance(value, (int, float))]
-    except (OSError, ValueError):
-        return None
-    recent = sorted(ring[-10:])
+    """The median stall of the last ten checks that finished within
+    STALL_WINDOW, None without one."""
+    now = time.time()
+    recent = sorted(share for at, share in
+                    [entry for entry in stall_ring() if now - STALL_WINDOW < entry[0] <= now + 60][-10:])
     return recent[len(recent) // 2] if recent else None
 
 
 def cpu_samples():
+    """The recent CPU samples: [time, the jobs' usage and the guest's work in
+    microseconds (the latter None where it was not read), and each job
+    leaf's leaf_wait by name]."""
     try:
         ring = json.loads((STATE / 'cpu.json').read_text())
     except (OSError, ValueError):
         return []
+    if not isinstance(ring, list):
+        return []
     now = time.time()
-    return [sample for sample in ring if isinstance(sample, list) and len(sample) == 2
-            and isinstance(sample[0], (int, float)) and isinstance(sample[1], int) and now - 60 < sample[0] <= now + 1]
+    return [sample for sample in ring if isinstance(sample, list) and len(sample) in (2, 3, 4)
+            and isinstance(sample[0], (int, float)) and isinstance(sample[1], int)
+            and (len(sample) < 3 or sample[2] is None or isinstance(sample[2], int))
+            and (len(sample) < 4 or isinstance(sample[3], dict))
+            and now - 60 < sample[0] <= now + 1]
+
+
+def guest_work():
+    """Microseconds the guest's CPUs spent working since boot, from the
+    first line of /proc/stat: user, nice, system, irq and softirq time. That
+    is everything the VM runs, its kernel work for the jobs included; idle,
+    iowait and steal are not work. None where it cannot be read."""
+    try:
+        fields = PROC_STAT.read_text().split('\n', 1)[0].split()
+        if len(fields) < 8 or fields[0] != 'cpu':
+            return None
+        user, nice, system, _idle, _iowait, irq, softirq = (int(value) for value in fields[1:8])
+    except (OSError, ValueError):
+        return None
+    return (user + nice + system + irq + softirq) * 1_000_000 // CLOCK_TICKS
 
 
 def sample_cpu():
-    """Keep the aggregate's CPU use: at every admission decision and, from
-    the reaper, every few seconds; at most one sample a second."""
+    """Keep the jobs' and the guest's CPU use: at every admission decision
+    and, from the reaper, every few seconds; at most one sample a second."""
     usage = read_number(ROOT / 'cpu.stat', r'usage_usec (\d+)')
     if usage is None:
         return
     ring = cpu_samples()
     now = time.time()
     if not ring or now - ring[-1][0] >= 1:
-        ring = (ring + [[now, usage]])[-16:]
-        (STATE / 'cpu.json').write_text(json.dumps(ring))
+        ring = (ring + [[now, usage, guest_work(), leaf_waits()]])[-16:]
+        replace_private(STATE / 'cpu.json', json.dumps(ring))
 
 
-def sandbox_cores():
-    """CPUs the benchmark jobs used over the last few sampled seconds, None
-    without a recent sample and one at least three seconds older."""
+def sampled_cores(index):
+    """CPUs used over the last few sampled seconds by the counter at `index`
+    of the samples, None without a recent sample and one at least three
+    seconds older that both carry it."""
     ring = cpu_samples()
     if not ring or time.time() - ring[-1][0] > 20:
         return None
-    at, used = ring[-1]
-    older = [sample for sample in ring if at - sample[0] >= 3]
-    if not older or used < older[-1][1]:
+    latest = ring[-1]
+    if len(latest) <= index or latest[index] is None:
         return None
-    before, used_before = older[-1]
-    return (used - used_before) / 1e6 / (at - before)
+    older = [sample for sample in ring
+             if latest[0] - sample[0] >= 3 and len(sample) > index and sample[index] is not None]
+    if not older or latest[index] < older[-1][index]:
+        return None
+    before = older[-1]
+    return (latest[index] - before[index]) / 1e6 / (latest[0] - before[0])
+
+
+def sandbox_cores():
+    """CPUs the benchmark jobs used over the last few sampled seconds."""
+    return sampled_cores(1)
+
+
+def guest_cores():
+    """CPUs the whole guest worked over the last few sampled seconds."""
+    return sampled_cores(2)
 
 
 def job_pressure():
-    """The highest share of time, over ten seconds, that any running job's
-    tasks waited for a CPU: the jobs' own cgroups, never the supervisors'
-    control group (whose half-core ceiling throttles its own bursts of
-    status and cleanup work). None without a job."""
-    worst = None
-    try:
-        leaves = [path for path in ROOT.iterdir() if path.is_dir() and path.name != 'control']
-    except OSError:
+    """The highest share of time that any running job's tasks waited for a
+    CPU another job held (leaf_wait), over the sampled seconds nearest ten:
+    the jobs' own cgroups, never the supervisors' control group, and never
+    a job's own cpu.max throttling, which held every session, preparation
+    and text attempt back while any check ran at its ceiling. None without
+    two samples at least three seconds apart that both saw a job."""
+    ring = [sample for sample in cpu_samples() if len(sample) == 4]
+    if not ring or time.time() - ring[-1][0] > 20:
         return None
-    for leaf in leaves:
-        try:
-            text = (leaf / 'cpu.pressure').read_text()
-        except OSError:
+    latest = ring[-1]
+    older = [sample for sample in ring if latest[0] - sample[0] >= 3]
+    if not older:
+        return None
+    before = min(older, key=lambda sample: abs(latest[0] - sample[0] - 10))
+    span = latest[0] - before[0]
+    worst = None
+    for name, waited in latest[3].items():
+        earlier = before[3].get(name)
+        if not isinstance(waited, int) or not isinstance(earlier, int):
             continue
-        match = re.search(r'some avg10=([0-9.]+)', text)
-        if match:
-            value = float(match.group(1)) / 100
-            worst = value if worst is None else max(worst, value)
+        share = max(0.0, (waited - earlier) / 1e6 / span)
+        worst = share if worst is None else max(worst, share)
     return worst
 
 
@@ -618,25 +908,52 @@ def guest_pressure(resource='cpu'):
     return float(found.group(1)) / 100 if found else None
 
 
-def cpu_capacity(host_cores, measured):
+def outside_cores(host_cores, measured, guest=None):
+    """CPUs the host runs outside the VM: its busy CPUs less the guest's own
+    work. The VM's work besides the jobs (its kernel's work for them, the
+    supervisors, another distribution) is inside, never counted twice; the
+    pressure and stall guards see what it takes from the jobs. Without a
+    guest sample, the busy CPUs less the jobs' measured use."""
+    if host_cores is None:
+        return 0.0
+    inside = guest if guest is not None else (measured or 0.0)
+    return max(0.0, host_cores - inside)
+
+
+def cpu_capacity(host_cores, measured, guest=None):
     """Logical CPUs the host leaves the benchmark jobs, less the supervisors'
     own: the line repository sessions are admitted against by measured use."""
     cpus = os.cpu_count() or 2
-    outside = 0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0))
-    return cpus - math.ceil(outside) - SUPERVISOR_CPUS
+    return cpus - math.ceil(outside_cores(host_cores, measured, guest)) - SUPERVISOR_CPUS
 
 
-def cpu_line(host_cores, measured):
+def cpu_line(host_cores, measured, guest=None):
     """Physical cores the host leaves the CPU-heavy jobs counted by their
     ceilings: the guest's CPUs as cores (two threads each) less what the host
-    itself runs outside the sandbox, less one check while checks have been
-    waiting for CPU. Whatever this admits, admission never refuses."""
+    itself runs outside the VM, less one check while checks have been
+    waiting for CPU. Whatever this admits, admission never refuses. Jobs it
+    does not admit can still start by measured use (cpu_capacity)."""
     cpus = os.cpu_count() or 2
     physical = max(CHECK_CPUS, cpus // 2)
-    outside = 0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0))
+    outside = outside_cores(host_cores, measured, guest)
     stalled = recent_stall()
     tightening = CHECK_CPUS if stalled is not None and stalled > STALL_LINE else 0
     return max(CHECK_CPUS, physical - math.ceil(outside) - tightening)
+
+
+def priority_state():
+    """priority.json: the room kept for jobs refused moments ago (see hold)
+    and when a repository job last ran or asked."""
+    try:
+        state = json.loads((STATE / 'priority.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def kept_until(state, resource):
+    until = state.get(resource)
+    return isinstance(until, (int, float)) and until > time.time()
 
 
 def repository_active(active):
@@ -644,71 +961,93 @@ def repository_active(active):
     REPOSITORY_ACTIVE seconds."""
     if any(row['kind'] == 'repository' for row in active):
         return True
-    try:
-        held = json.loads((STATE / 'priority.json').read_text())
-    except (OSError, ValueError):
-        return False
-    return isinstance(held, dict) and held.get('repository-active', 0) > time.time()
+    return kept_until(priority_state(), 'repository-active')
+
+
+def kept_room(kind, recorded):
+    """What an attempt of `kind` leaves, beside its own claim and its own
+    check's room, for the jobs that go first and were refused moments ago,
+    as (memory bytes, CPUs, repository memory): a check or preparation
+    waiting for memory (every attempt), a timed job waiting for CPUs (the
+    CPU-heavy attempts) and, for a text attempt, a repository attempt
+    waiting for the memory text sessions claim. An attempt that fits beside
+    that room starts; one that would take it waits. Nothing else holds an
+    attempt back, so one waiting job never stops work that leaves it room."""
+    state = priority_state()
+
+    def need(resource, default):
+        if not kept_until(state, resource):
+            return 0
+        value = state.get(resource + '-need')
+        return value if isinstance(value, (int, float)) and value > 0 else default
+    memory = need('memory', expected_memory('check', recorded))
+    cpus = need('cpu', CHECK_CPUS) if kind in CPU_HEAVY else 0
+    repository = need('repository', expected_memory('repository', recorded)) if kind == 'text' else 0
+    return memory, cpus, repository
 
 
 def priority_waiting(kind):
-    """Who holds an attempt of `kind` back, if anyone (None): a check or
-    preparation refused, moments ago, the room it would take (memory holds
-    every attempt, CPUs only the CPU-heavy ones), or, for a text attempt, a
-    repository attempt refused the memory text sessions claim (see decide)."""
-    try:
-        held = json.loads((STATE / 'priority.json').read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(held, dict):
-        return None
-    now = time.time()
-    if held.get('memory', 0) > now or (kind in CPU_HEAVY and held.get('cpu', 0) > now):
+    """In words, what the room kept for jobs refused moments ago asks of an
+    attempt of `kind` (None: nothing); see kept_room."""
+    memory, cpus, repository = kept_room(kind, peaks())
+    if memory or cpus:
         return 'a check or preparation waits for room first'
-    if kind == 'text' and held.get('repository', 0) > now:
+    if repository:
         return 'a repository attempt waits for the memory text sessions claim'
     return None
 
 
-def hold(resource, until=None):
-    """Hold attempts back for `resource` until `until` (None: release it)."""
-    path = STATE / 'priority.json'
-    try:
-        held = json.loads(path.read_text())
-    except (OSError, ValueError):
-        held = {}
-    held = held if isinstance(held, dict) else {}
+def hold(resource, until=None, need=None):
+    """Keep `need` of `resource` from new attempts until `until` for a job it
+    was refused to, a later refusal within that time keeping the larger
+    need; until None releases it. Callers hold the broker lock."""
+    state = priority_state()
     if until is None:
-        if resource not in held:
+        if resource not in state:
             return
-        held.pop(resource)
+        state.pop(resource)
+        state.pop(resource + '-need', None)
     else:
-        held[resource] = until
-    path.write_text(json.dumps(held))
+        if need is not None:
+            current = state.get(resource + '-need') if kept_until(state, resource) else None
+            state[resource + '-need'] = max(need, current) if isinstance(current, (int, float)) else need
+        state[resource] = until
+    replace_private(STATE / 'priority.json', json.dumps(state))
 
 
-def decide(active, kind, gate, host_buffers=0, continuing=False):
+def refused(reason, resource=None, need=0):
+    """A refusal for `reason`: the BlockingIOError naming the line that holds
+    the job and, where a job that goes first keeps it (see decide), the
+    `resource` it lacks and how much it needs."""
+    busy = BlockingIOError('resource_busy: ' + reason + '; no provider process started')
+    busy.resource, busy.need = resource, need
+    return busy
+
+
+def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False):
     """Admit `kind` beside `active` or raise BlockingIOError naming the line
     that holds it. Returns the measurements it decided on. A check or
-    preparation it refuses holds new attempts back (see PRIORITY_HOLD)."""
+    preparation it refuses for room keeps that room from new attempts for
+    PRIORITY_HOLD (see kept_room); so does a later workflow step, whose
+    earlier steps are paid for. A refusal by the light-job line keeps
+    nothing: that line protects no other job's room. A `probe` reserves
+    nothing, so an admitted repository attempt keeps its room from text
+    sessions until its reservation."""
     try:
         observed = admit_measured(active, kind, gate, host_buffers, continuing)
     except BlockingIOError as busy:
-        reason = str(busy)
-        # A check the operator's cap refuses also holds sessions back, so it
-        # takes the next freed place instead of a new session; so does a
-        # later workflow step, whose earlier steps are paid for.
-        if (kind not in ATTEMPTS or continuing) and 'Windows headroom evidence expired' not in reason:
-            hold('cpu' if 'CPU' in reason else 'memory', time.time() + PRIORITY_HOLD)
+        resource = getattr(busy, 'resource', None)
+        if (kind not in ATTEMPTS or continuing) and resource:
+            hold(resource, time.time() + PRIORITY_HOLD, busy.need)
         elif getattr(busy, 'text_would_free', False):
             # Text sessions need less room and refill every few minutes, so
             # a repository attempt's larger claim would never fit beside them.
-            hold('repository', time.time() + PRIORITY_HOLD)
+            hold('repository', time.time() + PRIORITY_HOLD, busy.need)
         raise
     finally:
         if kind == 'repository':
             hold('repository-active', time.time() + REPOSITORY_ACTIVE)
-    if kind == 'repository':
+    if kind == 'repository' and not probe:
         hold('repository')
     return observed
 
@@ -716,45 +1055,55 @@ def decide(active, kind, gate, host_buffers=0, continuing=False):
 def admit_measured(active, kind, gate, host_buffers, continuing=False):
     """Admission of `kind`. A `continuing` session (a later step of a
     workflow already under way) is an attempt that goes ahead of new ones:
-    no priority hold, no CPU pressure or check-stall guard, no session cap,
-    no room kept for another repository claim; its ceilings, the memory
-    claims and guard, the CPU lines and the Windows floors still apply."""
+    no room kept for waiting jobs, no CPU pressure or check-stall guard, no
+    session cap, no room kept for another repository claim; its ceilings,
+    the memory claims and guard, the CPU lines and the Windows floors still
+    apply."""
     memory, cpu, pids, lane = CLASSES[kind]
-    held = priority_waiting(kind) if kind in ATTEMPTS and not continuing else None
-    if held:
-        raise BlockingIOError('resource_busy: ' + held + '; no provider process started')
     if kind in ATTEMPTS:
-        in_use = read_number(ROOT / 'memory.current') or 0
+        in_use = memory_in_use()
         stalled_memory = guest_pressure('memory')
         if in_use > MEMORY_GUARD * ADMISSION_MEMORY or (stalled_memory is not None and stalled_memory > MEMORY_PRESSURE):
-            raise BlockingIOError('resource_busy: sandbox memory in use or memory pressure is above its guard line; no provider process started')
+            raise refused('sandbox memory in use or memory pressure is above its guard line')
     sample_cpu()
     recorded = peaks()
     claims = sum(claim(row, recorded) for row in active)
     unused = sum(max(0, claim(row, recorded) - leaf_memory(row)) for row in active)
     needed = expected_memory(kind, recorded) + host_buffers
+    if kind in ATTEMPTS and not continuing:
+        kept_memory, kept_cpus, kept_repository = kept_room(kind, recorded)
+    else:
+        kept_memory, kept_cpus, kept_repository = 0, 0, 0
     if kind in ATTEMPTS:
         needed_room = needed + expected_memory('check', recorded) + expected_memory('prep', recorded)
     else:
         needed_room = needed
+    repository_room = 0
     if kind == 'text' and not continuing and learned('repository', recorded) and repository_active(active):
-        needed_room += expected_memory('repository', recorded)
-    if claims + needed_room > ADMISSION_MEMORY:
-        busy = BlockingIOError('resource_busy: sandbox memory the running jobs claim leaves no room for this job; no provider process started')
+        repository_room = expected_memory('repository', recorded)
+    own = claims + needed_room + repository_room
+    if own > ADMISSION_MEMORY:
+        busy = refused('sandbox memory the running jobs claim leaves no room for this job', 'memory', needed_room)
         # Whether the text sessions' leaving would make the room a refused
-        # repository attempt lacks (decide then holds new ones back).
-        lacking = claims + needed_room - ADMISSION_MEMORY
+        # repository attempt lacks (decide then keeps it from new ones).
+        lacking = own - ADMISSION_MEMORY
         busy.text_would_free = kind == 'repository' and sum(
             claim(row, recorded) for row in active if row['kind'] == 'text') >= lacking
         raise busy
+    if own + kept_memory > ADMISSION_MEMORY:
+        raise refused('a check or preparation waits for room first, and this attempt would take it')
+    if own + kept_memory + max(0, kept_repository - repository_room) > ADMISSION_MEMORY:
+        raise refused('a repository attempt waits for the memory text sessions claim')
     if (read_number(ROOT / 'pids.current') or 0) + pids > AGGREGATE_PIDS:
-        raise BlockingIOError('resource_busy: sandbox process budget leaves no room for this job; no provider process started')
+        raise refused('sandbox process budget leaves no room for this job')
     observed = host_gate(gate, unused, needed)
     measured = sandbox_cores()
+    guest = guest_cores()
     host_cores = observed.get('hostCpuBusy')
     host_cores = None if host_cores is None else host_cores * (os.cpu_count() or 1)
-    line = cpu_line(host_cores, measured)
-    capacity = cpu_capacity(host_cores, measured)
+    outside = outside_cores(host_cores, measured, guest)
+    line = cpu_line(host_cores, measured, guest)
+    capacity = cpu_capacity(host_cores, measured, guest)
     heavy = [row for row in active if row['kind'] in CPU_HEAVY]
     ceilings = sum(row['cpu'] for row in heavy)
     timed = sum(row['cpu'] for row in active if row['kind'] in SENSITIVE)
@@ -765,31 +1114,46 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False):
     admitted_by = None
     if kind in CPU_HEAVY:
         cap = heavy_cap()
-        if cap is not None and len(heavy) >= cap:
-            raise BlockingIOError('resource_busy: the operator caps CPU-heavy benchmark jobs at ' + str(cap) + '; no provider process started')
+        # A timed job waiting for CPUs takes the next place under the cap.
+        if cap is not None and len(heavy) + (1 if kept_cpus else 0) >= cap:
+            raise refused('the operator caps CPU-heavy benchmark jobs at ' + str(cap), 'cpu', cpu)
         reserve = CHECK_CPUS if kind in ATTEMPTS else 0
-        if ceilings + cpu + reserve <= line:
-            admitted_by = 'ceilings'
-        elif kind == 'repository':
-            if sessions >= REPOSITORY_SESSIONS and not continuing:
-                raise BlockingIOError('resource_busy: the sandbox runs its most repository sessions at once; no provider process started')
-            if not continuing and ((pressure is not None and pressure > SESSION_PRESSURE)
-                                   or (stalled is not None and stalled > STALL_LINE)):
-                raise BlockingIOError('resource_busy: CPU pressure in the sandbox holds new repository sessions; no provider process started')
-            used = measured if measured is not None else ceilings
-            if used + burst * (sessions + 1) + timed + CHECK_CPUS <= capacity:
-                admitted_by = 'measured'
-        elif timed + cpu + burst * sessions <= capacity:
-            admitted_by = 'measured'
+        # The running timed jobs count by their ceilings (`timed`), so the
+        # measured use leaves out what they use: counted twice, two checks
+        # left no room for any new session beside the owner's desktop load.
+        if measured is not None:
+            used = max(0.0, measured - timed_use(active))
+        else:
+            used = ceilings - timed
+
+        def admitted(kept):
+            if ceilings + cpu + reserve + kept <= line:
+                return 'ceilings'
+            if kind == 'repository':
+                fits = used + burst * (sessions + 1) + timed + CHECK_CPUS + kept <= capacity
+            else:
+                fits = timed + cpu + burst * sessions <= capacity
+            return 'measured' if fits else None
+        admitted_by = admitted(kept_cpus)
+        if kind == 'repository' and admitted_by != 'ceilings' and not continuing:
+            if sessions >= REPOSITORY_SESSIONS:
+                raise refused('the sandbox runs its most repository sessions at once')
+            if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
+                raise refused('CPU pressure in the sandbox holds new repository sessions')
+        if admitted_by is None and kept_cpus and admitted(0) is not None:
+            raise refused('a check waits for CPUs first, and this attempt would take them')
         if admitted_by is None:
-            raise BlockingIOError('resource_busy: CPU cores the host leaves free cannot cover this job beside the running checks and sessions; no provider process started')
+            raise refused('CPU cores the host leaves free cannot cover this job beside the running checks and sessions',
+                          'cpu', cpu)
     else:
-        busy = (measured if measured is not None else ceilings) + (0.0 if host_cores is None else max(0.0, host_cores - (measured or 0.0)))
+        busy = (measured if measured is not None else ceilings) + outside
         if busy + cpu > LIGHT_LOAD * (os.cpu_count() or 1) or (
                 not continuing and pressure is not None and pressure > LIGHT_PRESSURE):
-            raise BlockingIOError('resource_busy: measured CPU load is above the light-job admission line; no provider process started')
+            raise refused('measured CPU load is above the light-job admission line')
     observed.update(expectedMemory=needed, claimedMemory=claims, cpuLine=line, heavyCpus=ceilings,
                     sandboxCpu=None if measured is None else round(measured, 3),
+                    guestCpu=None if guest is None else round(guest, 3), outsideCpu=round(outside, 3),
+                    keptMemory=kept_memory + kept_repository, keptCpus=kept_cpus,
                     cpuPressure=pressure, checkStall=stalled, cpuCapacity=capacity,
                     sessionBurst=round(burst, 3), repositorySessions=sessions, admittedBy=admitted_by)
     if continuing:
@@ -809,8 +1173,24 @@ def admission(active, kind, observed):
                 reservedMemory=observed.pop('claimedMemory'),
                 reservedCpu=observed.pop('heavyCpus'),
                 memoryCurrent=int((ROOT / 'memory.current').read_text()),
+                memoryInUse=memory_in_use(), memoryFile=(memory_stat() or {}).get('file'),
                 guestLoad=[round(value, 2) for value in os.getloadavg()],
                 guestCpus=os.cpu_count(), **observed)
+
+
+# How far the Windows evidence's time may be from the sandbox clock. WSL2's
+# clock can fall behind Windows after sleep or hibernation until it is
+# resynchronised; a minute-old RAM figure is harmless beside the 12 GiB and
+# 8 GiB floors, while a refusal would stop every admission until then.
+GATE_SKEW_MS = 60_000
+
+
+def gate_age(gate):
+    """How old the Windows evidence is by the sandbox clock, in ms, or None."""
+    try:
+        return round(time.time() * 1000 - int(gate.split(',')[0]))
+    except (ValueError, AttributeError):
+        return None
 
 
 def host_gate(gate, unused, memory):
@@ -823,26 +1203,28 @@ def host_gate(gate, unused, memory):
     except (ValueError, AttributeError):
         fail('fresh Windows headroom evidence is required before benchmark admission')
     age = time.time() * 1000 - timestamp
-    # WSL/Windows clocks can differ slightly even on the same machine. Permit
-    # one second of future skew, retaining the five-second stale-evidence cap.
-    if not -1000 <= age <= 5000:
-        raise BlockingIOError('resource_busy: Windows headroom evidence expired before execution; no provider process started')
+    if not -GATE_SKEW_MS <= age <= GATE_SKEW_MS:
+        raise BlockingIOError(
+            f'resource_busy: Windows headroom evidence expired before execution: its time is {age / 1000:+.1f} s '
+            'from the sandbox clock, beyond 60 s either way (resynchronise the WSL clock if this lasts); '
+            'no provider process started')
     additional = memory + unused
     if available_ram < 12 * GIB + additional:
-        raise BlockingIOError('resource_busy: Windows available RAM cannot cover benchmark reservations and its 12 GiB desktop floor; no provider process started')
+        raise refused('Windows available RAM cannot cover benchmark reservations and its 12 GiB desktop floor', 'memory', memory)
     if commit < 8 * GIB + additional:
-        raise BlockingIOError('resource_busy: Windows commit headroom cannot cover benchmark reservations and its 8 GiB floor; no provider process started')
+        raise refused('Windows commit headroom cannot cover benchmark reservations and its 8 GiB floor', 'memory', memory)
     if disk < 30 * GIB:
-        raise BlockingIOError('resource_busy: the registered sandbox volume has less than 30 GiB free; no provider process started')
+        raise refused('the registered sandbox volume has less than 30 GiB free')
     # Other WSL distributions share the guest VM. Parent caps alone do not
     # protect an Ubuntu workload already occupying most guest memory.
     guest = {line.split(':', 1)[0]: int(line.split()[1]) * 1024
              for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')}
     if guest.get('MemAvailable', 0) < 2 * GIB + additional:
-        raise BlockingIOError('resource_busy: shared WSL memory cannot cover benchmark reservations and its 2 GiB floor; no provider process started')
+        raise refused('shared WSL memory cannot cover benchmark reservations and its 2 GiB floor', 'memory', memory)
     return dict(hostAvailableRam=available_ram, hostAvailableCommit=commit,
                 guestMemAvailable=guest['MemAvailable'],
-                hostCpuBusy=None if not 0 <= busy <= 1000 else busy / 1000)
+                hostCpuBusy=None if not 0 <= busy <= 1000 else busy / 1000,
+                hostGateAgeMs=round(age))
 
 
 def scratch_headroom(active, kind):
@@ -884,7 +1266,12 @@ def make_groups(kind, identifier):
     return groups
 
 
-def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=False):
+def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=False, probe=False):
+    """Reserve `kind` for `identifier`, or raise BlockingIOError. A `probe`
+    (`bench-budget admits`) runs the same checks and reserves nothing: a
+    session whose workspace is prepared before it opens asks first, so a
+    refused retry prepares nothing. Its admission leaves the priority holds
+    for the reservation that follows."""
     deadline = deadline_ms / 1000
     ident(identifier)
     if kind not in CLASSES or not time.time() < deadline <= time.time() + 86400 + 480 or not 0 <= host_buffers <= GIB + 65536:
@@ -892,12 +1279,15 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
     setup()
     with locked():
         active = receipts()
-        # Sign-ins and probes queue without a reservation; attempts wait
-        # behind them, checks and preparations go ahead.
-        if kind in ATTEMPTS and not continuing and waiting():
-            raise BlockingIOError('resource_busy: benchmark resource capacity is queued; no provider process started')
-        observed = decide(active, kind, gate, host_buffers, continuing)
+        # Checks, preparations, sign-ins and probes queue without a
+        # reservation. The one at the head keeps the room it was refused
+        # from new attempts (kept_room); an attempt that leaves that room
+        # starts beside the queue instead of waiting for it to empty.
+        observed = decide(active, kind, gate, host_buffers, continuing, probe)
         scratch_headroom(active, kind)
+        if probe:
+            print(json.dumps({'id': identifier, 'class': kind, 'deadlineMs': deadline_ms, 'admits': True}))
+            return
         record = admission(active, kind, observed)
         groups = make_groups(kind, identifier)
         token = secrets.token_hex(16)
@@ -907,7 +1297,7 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
                    groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane,
                    host_buffers=host_buffers, admitted=time.time())
         row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
-        (STATE / ('lease-' + token + '.json')).write_text(json.dumps(row))
+        replace_private(STATE / ('lease-' + token + '.json'), json.dumps(row))
         print(json.dumps({'token': token, 'id': identifier, 'class': kind, 'deadlineMs': deadline_ms,
                           'admission': record}))
 
@@ -939,10 +1329,10 @@ def observe(mode, identifier):
         return
     with locked():
         for path in STATE.glob('lease-*.json'):
-            row = json.loads(path.read_text())
-            if name in row['groups']:
+            row = readable(path, LEASE_KEYS)
+            if row is not None and name in row['groups']:
                 token = path.name[6:-5]
-                (STATE / 'outcomes' / (token + '.json')).write_text(json.dumps({
+                replace_private(STATE / 'outcomes' / (token + '.json'), json.dumps({
                     'token': token, 'infrastructureError': 'infrastructure_error: benchmark process tree reached its memory ceiling'}))
 
 
@@ -986,6 +1376,10 @@ def run(kind, identifier, command):
     setup()
     write(ROOT / 'control' / 'cgroup.procs', os.getpid())
     reserved = os.environ.pop('DISTILL_BENCH_RESERVATION', None)
+    global OUTCOME_NONCE
+    nonce = os.environ.pop('DISTILL_BENCH_OUTCOME_NONCE', None)
+    if nonce and re.fullmatch('[0-9a-f]{32}', nonce):
+        OUTCOME_NONCE = nonce
     token = reserved or secrets.token_hex(16)
     if not re.fullmatch('[0-9a-f]{32}', token):
         fail('invalid benchmark resource reservation')
@@ -998,14 +1392,14 @@ def run(kind, identifier, command):
     deadline = min(started + 86400 + 480, int(deadline_ms) / 1000) if deadline_ms else started + (120 if kind == 'prep' else 3600)
     if deadline <= started:
         raise TimeoutError('benchmark deadline expired before resource admission')
-    ticket.write_text(json.dumps({'pid': os.getpid(), 'start': proc_identity(os.getpid()),
-                                  'deadline': min(deadline, started + 300), 'created': time.time_ns()}))
+    replace_private(ticket, json.dumps({'pid': os.getpid(), 'start': proc_identity(os.getpid()),
+                                        'deadline': min(deadline, started + 300), 'created': time.time_ns()}))
     lease = STATE / ('lease-' + token + '.json')
     groups = []
     owned = False
     child = None
     def cancelled(_signal, _frame):
-        raise TimeoutError('benchmark resource owner cancelled')
+        raise Cancelled('benchmark resource owner cancelled')
     signal.signal(signal.SIGTERM, cancelled)
     signal.signal(signal.SIGHUP, cancelled)
     signal.signal(signal.SIGINT, cancelled)
@@ -1016,13 +1410,16 @@ def run(kind, identifier, command):
                 if not lease.is_file():
                     raise BlockingIOError('resource_busy: pending benchmark reservation expired before execution; no provider process started')
                 row = json.loads(lease.read_text())
-                if not row.get('pending') or not live(row) or row['id'] != identifier or row['kind'] != kind:
+                if not row.get('pending') or row['id'] != identifier or row['kind'] != kind:
                     fail('benchmark resource reservation differs from execution owner/class')
+                # Expired but not reaped yet: the same refusal as a reaped one.
+                if not live(row):
+                    raise BlockingIOError('resource_busy: pending benchmark reservation expired before execution; no provider process started')
                 # Claiming is not a second admission. The complete reservation
                 # already accounts for pending launchers without a race.
                 groups, deadline = row['groups'], row['deadline']
                 row.update(pending=False, pid=os.getpid(), start=proc_identity(os.getpid()))
-                lease.write_text(json.dumps(row))
+                replace_private(lease, json.dumps(row))
                 owned = True
                 OUTCOME_TOKEN = token
                 ticket.unlink(missing_ok=True)
@@ -1051,7 +1448,7 @@ def run(kind, identifier, command):
                                host_buffers=host_buffers, admitted=time.time())
                     scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
                     row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
-                    lease.write_text(json.dumps(row))
+                    replace_private(lease, json.dumps(row))
                     owned = True
                     OUTCOME_TOKEN = token
                     ticket.unlink(missing_ok=True)
@@ -1064,8 +1461,9 @@ def run(kind, identifier, command):
         admitted_at = time.time()
         stalled_before = stall_total(groups)
         owner_path = SCRATCH / 'owners' / (identifier + '.json')
-        if owner_path.exists():
-            owner_path.write_text(json.dumps({'id': identifier, 'deadline': max(deadline + 300, time.time() + 7200)}))
+        with locked():
+            if owner_path.exists():
+                replace_private(owner_path, json.dumps({'id': identifier, 'deadline': max(deadline + 300, time.time() + 7200)}))
         env = dict(os.environ, DISTILL_BENCH_BUNDLE=token)
         # Supervisors stay in the reserved control group; only actual workers
         # enter leaves. A paired supervisor must survive killing either child.
@@ -1099,22 +1497,41 @@ def run(kind, identifier, command):
                 if disconnect.poll(0):
                     raise TimeoutError('benchmark host transport disconnected')
     finally:
+        # The run ends here, whatever ended it. A signal now must not cut the
+        # bookkeeping below short: the host closing its transport sends
+        # SIGHUP, whose TimeoutError (an OSError, before Cancelled) inside a
+        # read reset what admission learned.
+        for number in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+            signal.signal(number, signal.SIG_IGN)
         ticket.unlink(missing_ok=True)
         if owned:
             with locked():
                 # What this job needed and how long it waited for CPUs teach
                 # admission before its leaves go.
-                try:
-                    if groups and 'admitted_at' in locals():
-                        record_peak(kind, groups)
-                        record_usage(kind, identifier, groups, admitted_at)
-                        record_stall(kind, groups, admitted_at, stalled_before)
-                except (OSError, ValueError):
-                    pass
+                if groups and 'admitted_at' in locals():
+                    for record in (lambda: record_peak(kind, groups),
+                                   lambda: record_usage(kind, identifier, groups, admitted_at),
+                                   lambda: record_stall(kind, groups, admitted_at, stalled_before)):
+                        try:
+                            record()
+                        except (OSError, ValueError):
+                            pass
                 # A group still busy keeps the lease for the next reap; this
                 # supervisor is gone by then, so the lease is not live.
                 if stop(groups):
                     lease.unlink(missing_ok=True)
+                else:
+                    # A tree that outlived its kill makes the run the
+                    # infrastructure's, not the candidate's; the reap that
+                    # follows checks the group without waiting again.
+                    row = readable(lease, LEASE_KEYS)
+                    if row is not None:
+                        row['busy_since'] = time.time()
+                        replace_private(lease, json.dumps(row))
+                    if OUTCOME_TOKEN:
+                        replace_private(STATE / 'outcomes' / (OUTCOME_TOKEN + '.json'), json.dumps({
+                            'token': OUTCOME_TOKEN,
+                            'infrastructureError': 'infrastructure_error: benchmark process tree did not stop'}))
         if child is not None:
             try:
                 child.wait(timeout=5)
@@ -1145,6 +1562,18 @@ def status():
         print('budget session-burst', session_burst(recorded))
         filesystem = os.statvfs(SCRATCH)
         print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
+        print('budget reaper', reaper_state())
+        # The sandbox clock minus the Windows evidence's time, transport
+        # included: a large value means the WSL clock drifted from Windows.
+        age = gate_age(os.environ.get('DISTILL_BENCH_HOST_GATE'))
+        if age is not None:
+            print('budget clock-offset', age)
+        try:
+            last = REAPER_LOG.read_text().splitlines()[-1]
+            if REAPER_LOG.stat().st_mtime > time.time() - 3600:
+                print('budget reaper-log', last)
+        except (OSError, IndexError):
+            pass
 
 
 def set_heavy_cap(text):
@@ -1164,8 +1593,43 @@ def set_heavy_cap(text):
     status()
 
 
-# The running reaper's pid. bench-net starts no process while it lives.
+# The running reaper's pid and start time (as proc_identity reads it).
+# bench-net starts no process while a process with both lives.
 REAPER_PID = Path('/run/distill-bench-reaper.pid')
+# Consecutive failed passes (a minute) after which the reaper gives way:
+# bench-net then starts a fresh one, and status shows the last error.
+REAPER_FAILURES = 12
+REAPER_LOG = STATE / 'reaper.err'
+REAPER_LOG_LINES = 20
+
+
+def note_reaper(message):
+    """Append a dated line (UTC) to the bounded reaper log; never raises.
+    Each line is one append, so writers with and without the broker lock never
+    lose each other's lines; past twice the bound it keeps the newest."""
+    try:
+        stamp = datetime.datetime.fromtimestamp(time.time(), datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        line = (stamp + ' ' + ' '.join(str(message).split()))[:400] + '\n'
+        REAPER_LOG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        handle = os.open(REAPER_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(handle, line.encode())
+        finally:
+            os.close(handle)
+        lines = REAPER_LOG.read_text().splitlines()
+        if len(lines) > 2 * REAPER_LOG_LINES:
+            replace_private(REAPER_LOG, '\n'.join(lines[-REAPER_LOG_LINES:]) + '\n')
+    except OSError:
+        pass
+
+
+def reaper_state():
+    """'ok' while the process the pid file names is the reaper, else 'down'."""
+    try:
+        pid, start = REAPER_PID.read_text().split()
+    except (OSError, ValueError):
+        return 'down'
+    return 'ok' if pid.isdigit() and proc_identity(int(pid)) == start else 'down'
 
 
 def reap_pass():
@@ -1179,8 +1643,57 @@ def reap_pass():
     expire_scratch({row['id'] for row in active})
 
 
+REAPER_ARGV = [b'/usr/local/sbin/bench-budget', b'reap', b'--daemon']
+
+
+def stop_reaper():
+    """End every running reaper and wait until its lock is free. A reaper
+    keeps the helpers it started with in memory and holds its lock, so after
+    new helpers are installed the fresh reaper bench-net starts would exit at
+    once and leave the old code reaping. Reapers are found by their command
+    line, so those from before the pid file named itself stop too."""
+    found = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            argv = (entry / 'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        if argv[1:4] == REAPER_ARGV:
+            found.append(int(entry.name))
+    for pid in found:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    with open(STATE / 'reaper-lock', 'a+') as handle:
+        for stubborn in (False, True):
+            until = time.monotonic() + 5
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    REAPER_PID.unlink(missing_ok=True)
+                    return len(found)
+                except BlockingIOError:
+                    if time.monotonic() >= until:
+                        break
+                    time.sleep(0.05)
+            if stubborn:
+                fail('the running benchmark reaper did not stop')
+            for pid in found:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
 def reap():
     # A detached independent owner watchdog survives Windows app termination.
+    if sys.argv[2:] == ['--stop']:
+        print('stopped reapers', stop_reaper())
+        return 0
     setup()
     write(ROOT / 'control' / 'cgroup.procs', os.getpid())
     handle = open(STATE / 'reaper-lock', 'a+')
@@ -1189,15 +1702,23 @@ def reap():
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        REAPER_PID.write_text(f'{os.getpid()}\n')
+        replace_private(REAPER_PID, f'{os.getpid()} {proc_identity(os.getpid())}\n')
+        failures = 0
         while True:
-            # One failed pass (a ticket read while it is written, a group
-            # still stopping, a slow cleanup) must not end the watchdog: once
-            # the sandbox is up, bench-net restarts it only after it is gone.
+            # One failed pass (a group still stopping, a slow cleanup) must
+            # not end the watchdog; a failure that lasts a minute ends it, so
+            # bench-net starts a fresh one and status names the error.
             try:
                 reap_pass()
-            except Exception:
-                pass
+                if failures:
+                    note_reaper(f'recovered after {failures} failed passes')
+                failures = 0
+            except Exception as error:
+                failures += 1
+                note_reaper(f'pass failed ({failures}/{REAPER_FAILURES}): {type(error).__name__}: {error}')
+                if failures >= REAPER_FAILURES:
+                    REAPER_PID.unlink(missing_ok=True)
+                    return 70
             time.sleep(5)
     with locked():
         receipts()
@@ -1215,17 +1736,29 @@ def own(identifier):
     # A bounded independent retention deadline applies even after app crash.
     # The credential save helper retains ambiguous refresh evidence before
     # this owner can be removed; failure deliberately prevents deletion.
-    path.write_text(json.dumps({'id': identifier, 'deadline': time.time() + 7200}))
+    with locked():
+        replace_private(path, json.dumps({'id': identifier, 'deadline': time.time() + 7200}))
 
 
 def expire_scratch(active):
-    for path in (SCRATCH / 'owners').glob('*.json'):
-        row = json.loads(path.read_text())
-        identifier = ident(row['id'])
-        if identifier not in active and row['deadline'] < time.time():
-            result = subprocess.run(['/usr/local/sbin/bench-clean', identifier],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, timeout=30)
+    # Read under the broker lock, as the owners are written; clean outside it.
+    with locked():
+        owners = [(path, readable(path, ('id', 'deadline'))) for path in (SCRATCH / 'owners').glob('*.json')]
+    for path, row in owners:
+        # One owner that cannot be read or cleaned must not keep the others.
+        try:
+            identifier = ident(row['id'])
+            expired = row['deadline'] < time.time()
+        except (TypeError, KeyError, RuntimeError):
+            continue
+        if identifier not in active and expired:
+            try:
+                result = subprocess.run(['/usr/local/sbin/bench-clean', identifier],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=30)
+            except subprocess.TimeoutExpired:
+                note_reaper(f'cleanup of {identifier} did not finish in 30 s')
+                continue
             if result.returncode == 0:
                 path.unlink(missing_ok=True)
 
@@ -1256,18 +1789,17 @@ def main():
         except OSError:
             pass
         return 0
-    if len(sys.argv) in (6, 7, 8) and sys.argv[1] == 'reserve':
+    if len(sys.argv) in (6, 7, 8) and sys.argv[1] in ('reserve', 'admits'):
         if len(sys.argv) == 8 and sys.argv[7] != 'continuing':
             fail('unsupported benchmark reservation flag')
         reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) >= 7 else 0,
-                len(sys.argv) == 8)
+                len(sys.argv) == 8, sys.argv[1] == 'admits')
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == 'outcome':
         token = sys.argv[2]
         if not re.fullmatch('[0-9a-f]{32}', token):
             fail('invalid resource outcome token')
-        path = STATE / 'outcomes' / (token + '.json')
-        print(path.read_text() if path.exists() else json.dumps({'token': token, 'infrastructureError': None}))
+        print(json.dumps(outcome_receipt(token)))
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == 'check-class':
         setup()
@@ -1299,18 +1831,44 @@ def main():
     return run(kind, identifier, command)
 
 
+def outcome_receipt(token):
+    """What `bench-budget outcome TOKEN` prints: the receipt, or none."""
+    path = STATE / 'outcomes' / (token + '.json')
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return {'token': token, 'infrastructureError': None}
+
+
+def print_outcome():
+    """The run's receipt as the last stderr line, framed by the host's nonce,
+    so the host needs no second call for it."""
+    if OUTCOME_TOKEN and OUTCOME_NONCE:
+        try:
+            print(OUTCOME_NONCE, 'outcome', json.dumps(outcome_receipt(OUTCOME_TOKEN)), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+
+
 if __name__ == '__main__':
     try:
-        raise SystemExit(main())
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        code = main()
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, Cancelled) as error:
         if OUTCOME_TOKEN:
             try:
                 reason = str(error)
                 if not reason.startswith(('infrastructure_error:', 'benchmark owned execution deadline', 'benchmark host transport')):
                     reason = 'infrastructure_error: trusted sandbox resource supervision or cleanup failed'
-                (STATE / 'outcomes' / (OUTCOME_TOKEN + '.json')).write_text(json.dumps({
+                replace_private(STATE / 'outcomes' / (OUTCOME_TOKEN + '.json'), json.dumps({
                     'token': OUTCOME_TOKEN, 'infrastructureError': reason}))
             except OSError:
                 pass
-        print(str(error), file=sys.stderr)
+        try:
+            # The host may have closed the pipe already; the receipt is written.
+            print(str(error), file=sys.stderr)
+        except OSError:
+            pass
+        print_outcome()
         raise SystemExit(70)
+    print_outcome()
+    raise SystemExit(code)

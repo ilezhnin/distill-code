@@ -200,15 +200,27 @@ async fn verify_proof(provider: NativeProvider, status: &sandbox::Status) -> Res
     serde_json::from_slice(&output.stdout).map_err(admission_error)
 }
 
+/// Clears the sandbox of `owner`'s attempt before its admission. Only an
+/// owner with no live bridge/dispatch reaches this, and a prior failed
+/// handshake may have left an empty workspace or credential copy. It comes
+/// before the reservation, whose groups bench-clean would end.
+pub(crate) async fn clear(owner: &str) -> Result<(), String> {
+    sandbox::clean(&attempt_id(owner))
+        .await
+        .map_err(admission_error)
+}
+
+/// The admitted session's empty workspace, made only once the broker
+/// reserved the session, so a refused retry prepares nothing. Its lease is
+/// asked for within the session's pending lease; past that, the refusal is
+/// the queue's and the session is asked for again.
 pub(crate) async fn prepare(owner: &str) -> Result<(), String> {
-    let id = attempt_id(owner);
-    // Only an owner with no live bridge/dispatch reaches preparation. A prior
-    // failed handshake may have left an empty workspace or credential copy.
-    sandbox::clean(&id).await.map_err(admission_error)?;
     let archive = tar::Builder::new(Vec::new())
         .into_inner()
         .map_err(|e| e.to_string())?;
-    sandbox::copy(&id, &archive).await.map_err(admission_error)
+    sandbox::copy_within(&attempt_id(owner), &archive, sandbox::PENDING_PREPARATION)
+        .await
+        .map_err(admission_error)
 }
 
 fn environment(provider: NativeProvider) -> Vec<(String, String)> {

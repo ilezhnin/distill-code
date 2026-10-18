@@ -154,6 +154,16 @@ pub struct Admission {
     pub host_cpu_busy: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_cpus: Option<u32>,
+    /// What the memory guard counted (anonymous, shared and kernel memory)
+    /// and the page cache beside it, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_in_use: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_file: Option<u64>,
+    /// The sandbox clock minus the gate evidence's Windows time, transport
+    /// included: a WSL clock drifted from Windows shows here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_gate_age_ms: Option<i64>,
 }
 
 type PendingAdmissions = BTreeMap<String, (std::time::Instant, Admission)>;
@@ -360,9 +370,26 @@ pub(crate) struct Reservation {
     pub token: String,
     class: ResourceClass,
     admission: Admission,
+    /// Framing for the run's outcome receipt on its stderr (see
+    /// [`take_outcome_trailer`]); only the run's root supervisor sees it.
+    nonce: String,
+    /// Set once the lease is known to be claimed (its run printed the outcome
+    /// receipt, or a session's agent answered): bench-budget run removes it
+    /// itself, and dropping this one starts no release. Otherwise the drop
+    /// releases it, as a helper that failed before claiming leaves it pending.
+    claimed: std::sync::atomic::AtomicBool,
+}
+impl Reservation {
+    pub(crate) fn mark_claimed(&self) {
+        self.claimed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
+        if self.claimed.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let mut command = std::process::Command::new("wsl.exe");
         command
             .args([
@@ -425,13 +452,45 @@ pub(crate) fn continues(owner: &str) -> bool {
         .contains(owner)
 }
 
+const GROUP_BUSY: &str =
+    "resource_busy: a sandbox control group was busy during admission; no provider process started";
+
+const RESERVATION_UNANSWERED: &str =
+    "resource_busy: the sandbox broker did not answer the reservation in time; no provider process started";
+
+/// Whether `error` from [`reserve`] refused the session before anything of
+/// it existed in Linux: the host's own refusals and the broker's, which it
+/// raises before making the session's groups or lease. A busy control group
+/// can interrupt groups being made, and a broker that did not answer may
+/// have made them, so neither refusal is one.
+pub(crate) fn reserved_nothing(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        && error.to_string() != GROUP_BUSY
+        && error.to_string() != RESERVATION_UNANSWERED
+}
+
+/// Reserves a session. A broker too slow to answer before `deadline_ms`
+/// started no provider process, so it is a refusal (WouldBlock): the attempt
+/// is asked for again, never lost as an infrastructure failure. A lease the
+/// broker may still have written stays pending and expires unclaimed.
 pub(crate) async fn reserve(
     class: ResourceClass,
     id: &str,
     deadline_ms: u64,
     continuing: bool,
 ) -> io::Result<Reservation> {
-    let mut reservation = reserve_with_buffers_for(class, id, deadline_ms, 0, continuing).await?;
+    let mut reservation =
+        match reserve_with_buffers_for(class, id, deadline_ms, 0, continuing).await {
+            Err(error)
+                if error.kind() == io::ErrorKind::TimedOut && remaining_ms(deadline_ms).is_ok() =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    RESERVATION_UNANSWERED,
+                ))
+            }
+            answer => answer?,
+        };
     reservation.admission.host_cpus = std::thread::available_parallelism()
         .ok()
         .and_then(|count| u32::try_from(count.get()).ok());
@@ -448,20 +507,24 @@ async fn reserve_with_buffers(
     reserve_with_buffers_for(class, id, deadline_ms, host_buffers, false).await
 }
 
-async fn reserve_with_buffers_for(
+/// Asks the broker to admit `class` for `id`: `reserve`, or `admits` for the
+/// same checks without a reservation. Its answer, or the refusal as
+/// WouldBlock.
+async fn admission_answer(
+    command: &str,
     class: ResourceClass,
     id: &str,
     deadline_ms: u64,
     host_buffers: usize,
     continuing: bool,
-) -> io::Result<Reservation> {
+) -> io::Result<serde_json::Value> {
     valid_id(id)?;
     remaining_ms(deadline_ms)?;
     host_admission_for(class).await?;
     let gate = host_gate()?;
     let deadline = deadline_ms.to_string();
     let host_buffers = host_buffers.to_string();
-    let mut args: Vec<&str> = vec!["reserve", class.key(), id, &deadline, &gate, &host_buffers];
+    let mut args: Vec<&str> = vec![command, class.key(), id, &deadline, &gate, &host_buffers];
     if continuing {
         args.push("continuing");
     }
@@ -475,19 +538,68 @@ async fn reserve_with_buffers_for(
     )
     .await?;
     if !out.success() && out.reason().contains("resource_busy:") {
-        return Err(io::Error::new(io::ErrorKind::WouldBlock, out.reason()));
+        return Err(admission_refusal(out.reason()));
     }
-    // A cgroup busy for a moment (EBUSY while another job's group is reaped)
-    // refused this admission before anything started: wait like any other
-    // local refusal instead of failing the run's storage.
-    if !out.success() && out.reason().contains("[Errno 16]") {
-        return Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "resource_busy: a sandbox control group was busy during admission; no provider process started",
-        ));
+    // A cgroup busy for a moment (EBUSY while another job's group is reaped,
+    // EEXIST while an expired lease of the same name is) refused this
+    // admission before anything started: wait like any other local refusal
+    // instead of failing the run's storage.
+    let reason = out.reason();
+    if !out.success() && (reason.contains("[Errno 16]") || reason.contains("[Errno 17]")) {
+        return Err(io::Error::new(io::ErrorKind::WouldBlock, GROUP_BUSY));
     }
     let out = out.require_success("resource admission")?;
-    let value: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    Ok(serde_json::from_slice(&out.stdout)?)
+}
+
+/// A broker refusal from `reason`, the output tail: from its `resource_busy:`
+/// on, so that output before it never hides that nothing started.
+fn admission_refusal(reason: String) -> io::Error {
+    let reason = match reason.find("resource_busy:") {
+        Some(start) => reason[start..].to_owned(),
+        None => reason,
+    };
+    io::Error::new(io::ErrorKind::WouldBlock, reason)
+}
+
+/// Whether the broker would admit `class` for `id` now, reserving nothing.
+/// A session whose workspace is verified and copied before it opens asks
+/// first, so a refused retry runs none of those preparation jobs; the
+/// reservation when the session opens still decides. A refusal is
+/// WouldBlock, as from [`reserve`]; so is a broker too slow to answer
+/// before `deadline_ms`: the check makes nothing, so nothing started.
+pub(crate) async fn admits(
+    class: ResourceClass,
+    id: &str,
+    deadline_ms: u64,
+    continuing: bool,
+) -> io::Result<()> {
+    let value = match admission_answer("admits", class, id, deadline_ms, 0, continuing).await {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut && remaining_ms(deadline_ms).is_ok() => {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "resource_busy: the sandbox admission check did not answer in time; no provider process started",
+            ))
+        }
+        answer => answer?,
+    };
+    if value["admits"] != true || value["id"] != id || value["class"] != class.key() {
+        return Err(io::Error::other(
+            "capability_missing: malformed sandbox admission answer",
+        ));
+    }
+    Ok(())
+}
+
+async fn reserve_with_buffers_for(
+    class: ResourceClass,
+    id: &str,
+    deadline_ms: u64,
+    host_buffers: usize,
+    continuing: bool,
+) -> io::Result<Reservation> {
+    let value =
+        admission_answer("reserve", class, id, deadline_ms, host_buffers, continuing).await?;
     let token = value["token"]
         .as_str()
         .filter(|token| {
@@ -513,6 +625,8 @@ async fn reserve_with_buffers_for(
         token: token.to_owned(),
         class,
         admission,
+        nonce: uuid::Uuid::new_v4().simple().to_string(),
+        claimed: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -928,6 +1042,7 @@ fn command_with_host_buffers(
     cmd.arg(format!("DISTILL_BENCH_HOST_BUFFER_BYTES={host_buffers}"));
     if let Some(reservation) = reservation {
         cmd.arg(format!("DISTILL_BENCH_RESERVATION={}", reservation.token));
+        cmd.arg(format!("DISTILL_BENCH_OUTCOME_NONCE={}", reservation.nonce));
     }
     cmd.arg(program)
         .args(args)
@@ -1150,17 +1265,29 @@ pub(crate) async fn invoke_reserved_bounded(
     timeout: Duration,
 ) -> io::Result<Output> {
     let mut out = invoke_raw(program, args, input, cap, timeout, Some(reservation)).await?;
-    let receipt = invoke_raw(
-        "/usr/local/sbin/bench-budget",
-        &["outcome", &reservation.token],
-        None,
-        4096,
-        Duration::from_secs(5),
-        None,
-    )
-    .await?
-    .require_success("resource outcome")?;
-    let value: serde_json::Value = serde_json::from_slice(&receipt.stdout)?;
+    // The run's supervisor prints its receipt as the last stderr line; a
+    // helper from an earlier build, or a run cut short, needs the call.
+    let value: serde_json::Value = match take_outcome_trailer(&mut out.stderr, &reservation.nonce) {
+        // Only the run's supervisor, which claimed the lease and removes it
+        // itself, prints the receipt; without it the drop releases the lease.
+        Some(value) => {
+            reservation.mark_claimed();
+            value
+        }
+        None => {
+            let receipt = invoke_raw(
+                "/usr/local/sbin/bench-budget",
+                &["outcome", &reservation.token],
+                None,
+                4096,
+                Duration::from_secs(5),
+                None,
+            )
+            .await?
+            .require_success("resource outcome")?;
+            serde_json::from_slice(&receipt.stdout)?
+        }
+    };
     if let Some(reason) = value["infrastructureError"].as_str() {
         if value["token"] != reservation.token {
             return Err(io::Error::other("Sandbox resource outcome owner differs"));
@@ -1168,6 +1295,28 @@ pub(crate) async fn invoke_reserved_bounded(
         out.infrastructure = Some(reason.to_owned());
     }
     Ok(out)
+}
+
+/// The outcome receipt a leased run's supervisor printed last on stderr as
+/// `NONCE outcome JSON`, removed from `stderr`. Only that supervisor knows
+/// the nonce (it takes it out of the environment before starting anything),
+/// so nothing the run starts can print the line.
+fn take_outcome_trailer(stderr: &mut Vec<u8>, nonce: &str) -> Option<serde_json::Value> {
+    let marker = format!("{nonce} outcome ");
+    // Only the last line is read: the tail before it may hold any bytes, or
+    // start mid-character where the host's bounded tail cut it.
+    let mut end = stderr.len();
+    while end > 0 && matches!(stderr[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+    let start = stderr[..end]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
+    let line = std::str::from_utf8(&stderr[start..end]).ok()?;
+    let value = serde_json::from_str(line.strip_prefix(marker.as_str())?).ok()?;
+    stderr.truncate(start);
+    Some(value)
 }
 
 pub(crate) async fn invoke_bounded(
@@ -1339,6 +1488,14 @@ where
                     && remaining_ms(admission_deadline).is_err() =>
             {
                 return Err(admission_queue_expired())
+            }
+            // A broker too slow to answer gave this asker nothing: a lease it
+            // may have written stays pending and expires, and its groups
+            // refuse a new one as busy until reaped. Ask again in the window.
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                let remaining =
+                    remaining_ms(admission_deadline).map_err(|_| admission_queue_expired())?;
+                tokio::time::sleep(Duration::from_millis(remaining.min(1000))).await;
             }
             Err(error) => return Err(error),
         }
@@ -1704,6 +1861,33 @@ pub(crate) async fn copy(id: &str, archive: &[u8]) -> io::Result<()> {
         Some(archive),
         TAIL_BYTES,
         CONTROL_TIMEOUT,
+    )
+    .await?
+    .require_success("copy")?;
+    Ok(())
+}
+
+/// How long an admitted session's own preparation may ask for its lease:
+/// with the last ask's up to 15 s, the copy and the spawn after it, still
+/// inside the sixty seconds the session's pending lease lasts in Linux.
+pub(crate) const PENDING_PREPARATION: Duration = Duration::from_secs(30);
+
+/// [`copy`] for a session already reserved: its preparation lease is asked
+/// for only within `window`, so a lease that does not come in time is the
+/// queue's refusal (`resource_busy`) while the session's pending lease still
+/// lives, and dropping the session's reservation releases it.
+pub(crate) async fn copy_within(id: &str, archive: &[u8], window: Duration) -> io::Result<()> {
+    valid_id(id)?;
+    let admit_until = now_ms()?.saturating_add(window.as_millis().min(u64::MAX as u128) as u64);
+    invoke_once_admitted(
+        (ResourceClass::Preparation, id),
+        "/usr/local/sbin/bench-copy",
+        &[id],
+        Some(archive),
+        TAIL_BYTES,
+        CONTROL_TIMEOUT,
+        admit_until,
+        None,
     )
     .await?
     .require_success("copy")?;
@@ -2262,6 +2446,46 @@ mod tests {
         lines.push("netns up".into());
         lines.extend(budget("off"));
         lines.join("\n")
+    }
+
+    #[test]
+    fn a_leased_run_s_outcome_comes_from_its_framed_last_stderr_line() {
+        let nonce = "b".repeat(32);
+        let token = "a".repeat(32);
+        let mut stderr = format!(
+            "resource_admitted: prep\ncopied invented\n{nonce} outcome {{\"token\": \"{token}\", \"infrastructureError\": null}}\n"
+        )
+        .into_bytes();
+        let value = take_outcome_trailer(&mut stderr, &nonce).unwrap();
+        assert_eq!(value["token"], token);
+        assert!(value["infrastructureError"].is_null());
+        assert_eq!(stderr, b"resource_admitted: prep\ncopied invented\n");
+        // A tail that starts mid-character, or holds other bytes, before it.
+        let mut cut = "\u{2713} checked\n".as_bytes()[1..].to_vec();
+        cut.extend_from_slice(&[0xff, b'\n']);
+        cut.extend_from_slice(
+            format!(
+                "{nonce} outcome {{\"token\": \"{token}\", \"infrastructureError\": null}}\r\n"
+            )
+            .as_bytes(),
+        );
+        assert!(take_outcome_trailer(&mut cut, &nonce).is_some());
+        assert_eq!(
+            cut,
+            [&"\u{2713} checked\n".as_bytes()[1..], &[0xff, b'\n'][..]].concat()
+        );
+        // A line with another nonce, or not the last one, is not the receipt:
+        // the separate outcome call decides then.
+        let forged = "c".repeat(32);
+        for text in [
+            format!("{forged} outcome {{\"token\": \"{token}\", \"infrastructureError\": \"x\"}}\n"),
+            format!("{nonce} outcome {{\"token\": \"{token}\", \"infrastructureError\": null}}\nlater\n"),
+            "no receipt at all\n".to_owned(),
+        ] {
+            let mut stderr = text.clone().into_bytes();
+            assert!(take_outcome_trailer(&mut stderr, &nonce).is_none(), "{text}");
+            assert_eq!(stderr, text.into_bytes());
+        }
     }
 
     #[test]
@@ -3005,6 +3229,43 @@ mod tests {
         assert_eq!(late.kind(), io::ErrorKind::TimedOut);
     }
 
+    /// Output before the broker's refusal never hides it: the runner and the
+    /// host read an unstarted refusal from the message's start.
+    #[test]
+    fn a_refusal_names_its_line_whatever_was_printed_before_it() {
+        let refused = admission_refusal(
+            "warning: fictional noise\nresource_busy: sandbox process budget leaves no room for this job; no provider process started".into(),
+        );
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(
+            refused.to_string(),
+            "resource_busy: sandbox process budget leaves no room for this job; no provider process started"
+        );
+    }
+
+    /// A refused retry skips the setup's second clean only when the refusal
+    /// came before the broker made anything of the session.
+    #[test]
+    fn only_a_refusal_before_any_group_reserved_nothing() {
+        let queued = io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "resource_busy: benchmark resource capacity is queued; no provider process started",
+        );
+        assert!(reserved_nothing(&queued));
+        assert!(!reserved_nothing(&io::Error::new(
+            io::ErrorKind::WouldBlock,
+            GROUP_BUSY
+        )));
+        assert!(!reserved_nothing(&io::Error::new(
+            io::ErrorKind::WouldBlock,
+            RESERVATION_UNANSWERED
+        )));
+        assert!(!reserved_nothing(&io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Sandbox command timed out"
+        )));
+    }
+
     /// A lease that waits in a busy queue until its window closes is refused
     /// as busy, never as an expired native deadline, however the closing is
     /// seen; a deadline that fires while the window is still open stays one.
@@ -3053,18 +3314,27 @@ mod tests {
                 "resource_busy: benchmark preparation queue expired before worker startup"
             );
         }
-        // A helper's own time limit inside an open window is not the queue's.
-        let refused = admit::<(), _>(now() + 60_000, || async {
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Sandbox operation exceeded its time limit",
-            ))
+        // A broker too slow to answer inside an open window gave nothing: it
+        // is asked again, never reported as the job's own timeout (a check's
+        // verdict once read it as the candidate's).
+        let mut asks = 0;
+        let granted = admit(now() + 60_000, || {
+            asks += 1;
+            let first = asks == 1;
+            async move {
+                if first {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Sandbox operation exceeded its time limit",
+                    ))
+                } else {
+                    Ok(7)
+                }
+            }
         })
         .await
-        .unwrap_err();
-        assert_eq!(refused.kind(), io::ErrorKind::TimedOut);
-        let granted = admit(now() + 60_000, || async { Ok(7) }).await.unwrap();
-        assert_eq!(granted, 7);
+        .unwrap();
+        assert_eq!((granted, asks), (7, 2));
     }
 
     /// A collection, check or later step that waits for room keeps its whole
