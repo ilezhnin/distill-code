@@ -82,7 +82,7 @@ pub(super) fn frozen(
                 ));
             }
         }
-        let model = runner::concrete_model(&judge.provider_id, &judge.model_id)
+        let model = runner::model_identity(&judge.provider_id, &judge.model_id)
             .ok_or_else(|| invalid("Judge model must resolve to a concrete identity"))?;
         if !seats.insert((judge.provider_id.clone(), model))
             || judge.execution_profile != "native_text"

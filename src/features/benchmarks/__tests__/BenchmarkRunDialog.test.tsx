@@ -34,6 +34,7 @@ vi.mock("../api/benchmarks", () => ({
     getInventory: vi.fn(),
     previewRun: vi.fn(),
     startRun: vi.fn(),
+    providerDataUse: vi.fn(),
   },
 }));
 
@@ -67,8 +68,66 @@ beforeEach(() => {
     costReason: "Provider does not report cost",
   });
   vi.mocked(benchmarkApi.startRun).mockResolvedValue(run);
+  vi.mocked(benchmarkApi.providerDataUse).mockResolvedValue([
+    {
+      providerId: "claude-acp",
+      name: "Anthropic",
+      trainsOnSubmissions: false,
+      stated: false,
+    },
+  ]);
 });
 afterEach(cleanup);
+
+it("marks a chosen model whose provider may train on submitted data and leaves the refusal to the plan check", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.providerDataUse).mockResolvedValue([
+    {
+      providerId: "claude-acp",
+      name: "Anthropic",
+      trainsOnSubmissions: true,
+      stated: true,
+    },
+  ]);
+  const refusal =
+    "model-1 on Test: Anthropic may train on submitted data, so it runs only train tasks, not held_out ones";
+  vi.mocked(benchmarkApi.previewRun).mockResolvedValue({
+    valid: false,
+    issues: [refusal],
+    executionCount: 1,
+    estimatedCost: null,
+    costReason: "",
+  });
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={[definition.versions[0].id]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  await user.click(screen.getByRole("option", { name: "Test account" }));
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  await user.click(screen.getByRole("option", { name: "Test model" }));
+  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  const label = await screen.findByText("Train tasks only");
+  expect(label).toHaveAttribute(
+    "title",
+    "Anthropic may train on submitted data, so it runs only train tasks. Check plan names each test it cannot run.",
+  );
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(refusal);
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+});
 
 it("offers only the latest publication and discards stale preselected versions", async () => {
   const user = userEvent.setup();

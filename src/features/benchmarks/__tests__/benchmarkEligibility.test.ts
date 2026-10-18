@@ -43,6 +43,31 @@ describe("authoredByCandidate", () => {
       false,
     );
   });
+  it("treats a context window variant as the same model", () => {
+    const environment = {
+      authoredBy: [
+        { providerId: "claude-acp", modelId: "opus[1m]", effort: "high" },
+      ],
+    };
+    for (const modelId of ["opus", "OPUS[1M]", "default"])
+      expect(
+        authoredByCandidate(environment, {
+          providerId: "claude-acp",
+          modelId,
+          effort: "high",
+        }),
+      ).toBe(true);
+    expect(
+      authoredByCandidate(
+        {
+          authoredBy: [
+            { providerId: "claude-acp", modelId: "[1m]", effort: "high" },
+          ],
+        },
+        { providerId: "claude-acp", modelId: "opus", effort: "high" },
+      ),
+    ).toBe(false);
+  });
   it("treats a declared alias as the model it stands for", () => {
     const environment = {
       authoredBy: [

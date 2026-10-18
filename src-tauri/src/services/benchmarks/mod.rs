@@ -3,6 +3,7 @@ pub mod artifact_context;
 pub mod campaigns;
 pub mod catalog;
 pub mod credits;
+pub mod data_use;
 pub mod effort;
 pub mod evaluation;
 pub mod evidence;
@@ -551,12 +552,23 @@ impl BenchmarkService {
                 ));
             }
         }
+        let data_use = data_use::DataUse::load(&self.store.root).await;
         for version in &versions {
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
                 .await?;
             for config in workers {
                 if let Some(reason) = self.backend.unsupported(config, &version.manifest) {
                     issues.push(reason);
+                }
+                // Before anything is sent: a provider that may train on
+                // submitted data gets train versions only.
+                if let Some(reason) = data_use.refusal(&config.provider_id, &version.manifest.split)
+                {
+                    issues.push(format!(
+                        "{} on {}: {reason}",
+                        config.model_name.as_deref().unwrap_or(&config.model_id),
+                        version.manifest.name
+                    ));
                 }
             }
         }
@@ -853,6 +865,29 @@ impl BenchmarkService {
             .map(|a| (a.version_id.clone(), a.configuration.id.clone()))
             .collect();
         let mut request = run.request.clone();
+        // Nothing is added when one new cell would send a provider that may
+        // train on submitted data more than train versions.
+        let data_use = data_use::DataUse::load(&self.store.root).await;
+        for version_id in version_ids {
+            let version = self.store.version(version_id).await?;
+            for configuration in &run.request.configurations {
+                if let Some(reason) =
+                    data_use.refusal(&configuration.provider_id, &version.manifest.split)
+                {
+                    return Err(BenchmarkError::new(
+                        "capability_missing",
+                        format!(
+                            "{} on {}: {reason}",
+                            configuration
+                                .model_name
+                                .as_deref()
+                                .unwrap_or(&configuration.model_id),
+                            version.manifest.name
+                        ),
+                    ));
+                }
+            }
+        }
         for version_id in version_ids {
             let version = self.store.version(version_id).await?;
             for configuration in &run.request.configurations {

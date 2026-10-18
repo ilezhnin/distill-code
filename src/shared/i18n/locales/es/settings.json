@@ -690,9 +690,19 @@
       "spentOfLimit": "Gastado hasta ahora: {{spent}} de {{limit}}",
       "unavailable": "No se pudo leer el gasto, así que las pruebas no usan créditos."
     },
+    "dataUse": {
+      "title": "Uso de datos de los proveedores",
+      "description": "Un proveedor que puede entrenar con los datos enviados solo recibe tareas de entrenamiento, nunca las reservadas, y sus modelos nunca juzgan. Antes de cambiarlo aquí, comprueba en la configuración de su cuenta qué hace el proveedor con los datos enviados.",
+      "trains": "Puede entrenar con los datos enviados",
+      "default": "Predeterminado",
+      "stated": "Indicado por ti",
+      "useDefault": "Usar el predeterminado",
+      "loading": "Leyendo qué pueden hacer los proveedores con los datos enviados...",
+      "failed": "No se pudo leer el uso de datos de los proveedores: {{message}}"
+    },
     "judges": {
       "title": "Jueces",
-      "description": "Las pruebas con rúbrica solo las juzgan modelos de este grupo: nunca un modelo del mismo proveedor que el candidato, y solo cuando hayas confirmado que su proveedor no entrena con las tareas privadas que juzga ni las conserva, y después de superar una calibración con respuestas cuyo veredicto se conoce.",
+      "description": "Las pruebas con rúbrica las juzga un modelo por laboratorio de este grupo, incluido el del candidato, cuya nota diluyen los otros laboratorios: nunca el autor de la prueba, nunca uno cuyo proveedor pueda entrenar con los datos enviados, y solo después de superar una calibración con respuestas cuyo veredicto se conoce.",
       "statusFailed": "No se pudo leer el estado de los jueces: {{message}}",
       "empty": "Todavía no hay jueces",
       "emptyDescription": "Añade un modelo abajo y luego calíbralo.",
@@ -731,11 +741,7 @@
       "starting": "Iniciando...",
       "calibrateFailed": "No se inició la calibración: {{message}}",
       "remove": "Quitar",
-      "disclosure": {
-        "label": "Uso de datos confirmado",
-        "off": "No juzga ni se puede calibrar hasta que confirmes que su proveedor no entrena con las tareas privadas que juzga ni las conserva.",
-        "offWithReason": "No juzga ni se puede calibrar: {{reason}}"
-      },
+      "neverJudges": "Nunca juzga ni se puede calibrar: {{vendor}} puede entrenar con los datos enviados.",
       "add": {
         "title": "Nuevo juez",
         "description": "Un modelo que ofrece un proveedor, con uno de sus esfuerzos.",

@@ -766,12 +766,26 @@ export interface JudgePoolEntry {
   modelId: string;
   effort?: string | null;
   inputs?: JudgeInput[] | null;
-  /**
-   * The owner confirmed that this provider does not train on or keep the
-   * private rubrics and expected conditions a judge receives. Until then the
-   * entry neither takes seats nor can be calibrated; absent means false.
-   */
-  disclosureConfirmed?: boolean;
+}
+/**
+ * The owner's word on one provider in the benchmark settings document
+ * (`providerDataUse`): whether it may train on what benchmark turns send it.
+ */
+export interface ProviderDataUseSetting {
+  trainsOnSubmissions: boolean;
+}
+/**
+ * What holds for one native provider, as the service reads the settings
+ * document: a provider that may train on submitted data runs only train
+ * tasks and never judges. Mirrors `benchmarks::data_use::ProviderDataUse`.
+ */
+export interface ProviderDataUse {
+  providerId: string;
+  /** The provider's vendor, as the service names it. */
+  name: string;
+  trainsOnSubmissions: boolean;
+  /** The owner stated it; false when it holds by the backend's default. */
+  stated: boolean;
 }
 /** One control answer of a judge calibration, with what the judge made of it. */
 export interface JudgeCalibrationControl {

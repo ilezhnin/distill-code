@@ -73,12 +73,14 @@ pub fn candidate_key(c: &Configuration) -> String {
     hash(super::analysis::leaderboard_key(c).as_bytes())
 }
 /// Whether `configuration` is the candidate an author identity names: the
-/// same provider, concrete model and reasoning effort. Account, speed and
-/// execution profile are not part of authorship.
+/// same provider, model (aliases resolved, a context window variant such as
+/// `opus[1m]` the same model as `opus`, see `runner::model_identity`) and
+/// reasoning effort. Account, speed and execution profile are not part of
+/// authorship.
 pub fn is_author(author: &BenchmarkAuthor, configuration: &Configuration) -> bool {
     let normalize = |value: &str| value.trim().to_lowercase();
     let concrete = |provider: &str, model: &str| {
-        super::runner::concrete_model(provider, model).unwrap_or_else(|| model.into())
+        super::runner::model_identity(provider, model).unwrap_or_else(|| model.into())
     };
     let provider = normalize(&configuration.provider_id);
     let model = concrete(&provider, &normalize(&configuration.model_id));
@@ -1155,6 +1157,9 @@ mod tests {
         let mut alias = config("low");
         alias.provider_id = "claude-acp".into();
         alias.model_id = "default".into();
+        assert!(authored_by_candidate(&draft, &alias));
+        // The model without its context window variant wrote it too.
+        alias.model_id = "opus".into();
         assert!(authored_by_candidate(&draft, &alias));
         alias.model_id = "sonnet".into();
         assert!(!authored_by_candidate(&draft, &alias));

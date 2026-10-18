@@ -31,14 +31,12 @@ const alpha: JudgePoolEntry = {
   providerId: "codex-acp",
   modelId: "judge-alpha",
   effort: "high",
-  disclosureConfirmed: true,
 };
 const gamma: JudgePoolEntry = {
   providerId: "grok-acp",
   modelId: "judge-gamma",
   effort: null,
   inputs: ["text"],
-  disclosureConfirmed: false,
 };
 
 /** `count` distinct entries of one provider. */
@@ -51,6 +49,10 @@ function entries(count: number) {
 
 function pool(judgePool: unknown) {
   return parseBenchmarkSettings({ judgePool }).judgePool;
+}
+
+function dataUse(providerDataUse: unknown) {
+  return parseBenchmarkSettings({ providerDataUse }).providerDataUse;
 }
 
 /** The last document written, parsed. */
@@ -80,11 +82,13 @@ describe("benchmark settings", () => {
       timeLimitMinutes: 90,
       creditLimit: null,
       judgePool: [],
+      providerDataUse: {},
     });
     expect(parseBenchmarkSettings(null)).toEqual({
       timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES,
       creditLimit: null,
       judgePool: [],
+      providerDataUse: {},
     });
     for (const stored of ["500", -1, Number.NaN, null]) {
       expect(parseBenchmarkSettings({ creditLimit: stored }).creditLimit).toBe(
@@ -113,12 +117,7 @@ describe("benchmark judge pool", () => {
   it("keeps valid entries, trimmed, and drops the rest", () => {
     const long = "x".repeat(257);
     const kept = pool([
-      {
-        providerId: " codex-acp ",
-        modelId: " judge-alpha ",
-        effort: "high",
-        disclosureConfirmed: true,
-      },
+      { providerId: " codex-acp ", modelId: " judge-alpha ", effort: "high" },
       null,
       "judge-alpha",
       ["codex-acp", "judge-alpha"],
@@ -160,27 +159,21 @@ describe("benchmark judge pool", () => {
         modelId: "judge-delta",
         effort: "medium",
         inputs: ["text", "visual"],
-        disclosureConfirmed: false,
       },
-      {
-        providerId: "zai-acp",
-        modelId: "judge-epsilon",
-        effort: null,
-        disclosureConfirmed: false,
-      },
+      { providerId: "zai-acp", modelId: "judge-epsilon", effort: null },
       {
         providerId: "codex-acp",
         modelId: "x".repeat(256),
         effort: "e".repeat(64),
-        disclosureConfirmed: false,
       },
     ]);
     // Absent and null inputs both mean text and visual: no key is kept.
     expect(kept[3]).not.toHaveProperty("inputs");
   });
 
-  it("confirms data use only on an explicit true", () => {
-    const stored = [true, "true", 1, null, undefined, {}];
+  it("reads past the old per-entry data-use flag and never writes it", () => {
+    // Whether a provider's models judge is its data use, not the entry's.
+    const stored = [true, "true", false, null, undefined];
     const kept = pool(
       stored.map((disclosureConfirmed, i) => ({
         providerId: "codex-acp",
@@ -189,14 +182,22 @@ describe("benchmark judge pool", () => {
       })),
     );
 
-    expect(kept.map((entry) => entry.disclosureConfirmed)).toEqual([
-      true,
-      false,
-      false,
-      false,
-      false,
-      false,
+    expect(kept.map((entry) => entry.modelId)).toEqual([
+      "judge-0",
+      "judge-1",
+      "judge-2",
+      "judge-3",
+      "judge-4",
     ]);
+    for (const entry of kept) {
+      expect(entry).not.toHaveProperty("disclosureConfirmed");
+    }
+    const written = serializeBenchmarkSettings(
+      parseBenchmarkSettings({ judgePool: kept }),
+    );
+    for (const entry of written.judgePool) {
+      expect(entry).not.toHaveProperty("disclosureConfirmed");
+    }
   });
 
   it("keeps the first of entries with the same model and effort", () => {
@@ -205,17 +206,17 @@ describe("benchmark judge pool", () => {
     const kept = pool([
       alpha,
       { ...alpha, inputs: ["visual"] },
-      { ...alpha, disclosureConfirmed: false },
+      { ...alpha, disclosureConfirmed: true },
       { ...alpha, effort: "medium" },
       beta,
-      { ...beta, effort: null, disclosureConfirmed: true },
+      { ...beta, effort: null, inputs: ["text"] },
       other,
     ]);
 
     expect(kept).toEqual([
       alpha,
       { ...alpha, effort: "medium" },
-      { ...beta, effort: null, disclosureConfirmed: false },
+      { ...beta, effort: null },
       other,
     ]);
   });
@@ -242,16 +243,11 @@ describe("benchmark judge pool", () => {
       JSON.stringify(serializeBenchmarkSettings(settings)),
     );
 
-    // The confirmation is written even when off, so the backend never has
-    // to guess what a missing one means.
     expect(written).toEqual({
       timeLimitMinutes: 75,
       creditLimit: 40,
-      judgePool: [
-        alpha,
-        gamma,
-        { ...epsilon, effort: null, disclosureConfirmed: false },
-      ],
+      judgePool: [alpha, gamma, { ...epsilon, effort: null }],
+      providerDataUse: {},
     });
     expect(parseBenchmarkSettings(written)).toEqual(settings);
   });
@@ -273,6 +269,7 @@ describe("benchmark judge pool", () => {
       timeLimitMinutes: 90,
       creditLimit: null,
       judgePool: [alpha, gamma],
+      providerDataUse: {},
     });
 
     useBenchmarkSettingsStore.getState().setCreditLimit(12);
@@ -282,6 +279,7 @@ describe("benchmark judge pool", () => {
       timeLimitMinutes: 90,
       creditLimit: 12,
       judgePool: [alpha, gamma],
+      providerDataUse: {},
     });
   });
 
@@ -303,6 +301,7 @@ describe("benchmark judge pool", () => {
       timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES,
       creditLimit: null,
       judgePool: [alpha, gamma],
+      providerDataUse: {},
     });
 
     store.removeJudgePoolEntry({ ...alpha, effort: "medium" });
@@ -316,25 +315,6 @@ describe("benchmark judge pool", () => {
 
     store.setJudgePool([gamma, gamma, alpha, { providerId: "", modelId: "" }]);
     expect(settings().judgePool).toEqual([gamma, alpha]);
-  });
-
-  it("records the data-use confirmation of one entry", async () => {
-    await hydrateBenchmarkSettingsStore();
-    const store = useBenchmarkSettingsStore.getState();
-    const settings = () => useBenchmarkSettingsStore.getState().settings;
-    store.setJudgePool([alpha, gamma]);
-
-    store.setJudgeDisclosureConfirmed({ ...gamma, inputs: null }, true);
-    store.setJudgeDisclosureConfirmed(alpha, false);
-    await flushBenchmarkSettings();
-
-    const confirmed = { ...gamma, disclosureConfirmed: true };
-    const unconfirmed = { ...alpha, disclosureConfirmed: false };
-    expect(settings().judgePool).toEqual([unconfirmed, confirmed]);
-    expect(lastWrite()).toMatchObject({ judgePool: [unconfirmed, confirmed] });
-
-    store.setJudgeDisclosureConfirmed({ ...alpha, effort: "low" }, true);
-    expect(settings().judgePool).toEqual([unconfirmed, confirmed]);
   });
 
   it("refuses an entry once the pool is full", () => {
@@ -351,13 +331,177 @@ describe("benchmark judge pool", () => {
     const store = useBenchmarkSettingsStore.getState();
     store.addJudgePoolEntry(alpha);
     store.setTimeLimitMinutes(30);
+    store.setProviderTrainsOnSubmissions("zai-acp", false);
     await flushBenchmarkSettings();
 
     expect(useBenchmarkSettingsStore.getState().settings).toEqual({
       timeLimitMinutes: 30,
       creditLimit: null,
       judgePool: [alpha],
+      providerDataUse: { "zai-acp": { trainsOnSubmissions: false } },
     });
     expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
+  });
+});
+
+describe("benchmark provider data use", () => {
+  it("starts with no word on any provider and reads anything but an object as none", () => {
+    expect(DEFAULT_BENCHMARK_SETTINGS.providerDataUse).toEqual({});
+    for (const stored of [
+      undefined,
+      null,
+      "zai-acp",
+      3,
+      true,
+      [{ trainsOnSubmissions: true }],
+    ]) {
+      expect(dataUse(stored)).toEqual({});
+    }
+  });
+
+  it("keeps each provider's boolean word, trimmed, and drops the rest", () => {
+    const long = "p".repeat(129);
+    const kept = dataUse({
+      " zai-acp ": { trainsOnSubmissions: false },
+      "kimi-acp": { trainsOnSubmissions: true, note: "kept out" },
+      "grok-acp": { trainsOnSubmissions: "yes" },
+      "codex-acp": { trainsOnSubmissions: null },
+      "claude-acp": {},
+      "invented-a": true,
+      "invented-b": [{ trainsOnSubmissions: true }],
+      "invented-c": null,
+      "   ": { trainsOnSubmissions: true },
+      "": { trainsOnSubmissions: true },
+      [long]: { trainsOnSubmissions: true },
+      ["q".repeat(128)]: { trainsOnSubmissions: true },
+      // Equal once trimmed: the first one counts.
+      "zai-acp": { trainsOnSubmissions: true },
+    });
+
+    expect(kept).toEqual({
+      "zai-acp": { trainsOnSubmissions: false },
+      "kimi-acp": { trainsOnSubmissions: true },
+      ["q".repeat(128)]: { trainsOnSubmissions: true },
+    });
+  });
+
+  it("keeps an id like __proto__ as an ordinary key", () => {
+    const kept = dataUse(
+      JSON.parse('{"__proto__": {"trainsOnSubmissions": true}}'),
+    );
+
+    expect(Object.keys(kept)).toEqual(["__proto__"]);
+    expect(Object.getPrototypeOf(kept)).toBe(Object.prototype);
+  });
+
+  it("writes the word back exactly as it reads it", () => {
+    const settings = parseBenchmarkSettings({
+      providerDataUse: {
+        "zai-acp": { trainsOnSubmissions: false },
+        "grok-acp": { trainsOnSubmissions: true, extra: 1 },
+        "kimi-acp": { trainsOnSubmissions: "no" },
+      },
+    });
+    const written = JSON.parse(
+      JSON.stringify(serializeBenchmarkSettings(settings)),
+    );
+
+    expect(written.providerDataUse).toEqual({
+      "zai-acp": { trainsOnSubmissions: false },
+      "grok-acp": { trainsOnSubmissions: true },
+    });
+    expect(parseBenchmarkSettings(written)).toEqual(settings);
+  });
+
+  it("keeps the word when the time limit or the pool is written", async () => {
+    mocks.readDistillDocument.mockResolvedValue(
+      JSON.stringify({
+        timeLimitMinutes: 240,
+        creditLimit: null,
+        judgePool: [alpha],
+        providerDataUse: {
+          "zai-acp": { trainsOnSubmissions: false },
+          "codex-acp": { trainsOnSubmissions: true },
+          "kimi-acp": { trainsOnSubmissions: "maybe" },
+        },
+      }),
+    );
+    await hydrateBenchmarkSettingsStore();
+    const stated = {
+      "zai-acp": { trainsOnSubmissions: false },
+      "codex-acp": { trainsOnSubmissions: true },
+    };
+
+    useBenchmarkSettingsStore.getState().setTimeLimitMinutes(45);
+    await flushBenchmarkSettings();
+
+    expect(lastWrite()).toEqual({
+      timeLimitMinutes: 45,
+      creditLimit: null,
+      judgePool: [alpha],
+      providerDataUse: stated,
+    });
+
+    useBenchmarkSettingsStore.getState().addJudgePoolEntry(gamma);
+    await flushBenchmarkSettings();
+
+    expect(lastWrite()).toMatchObject({
+      judgePool: [alpha, gamma],
+      providerDataUse: stated,
+    });
+  });
+
+  it("sets and clears one provider's word and writes the whole document", async () => {
+    await hydrateBenchmarkSettingsStore();
+    const store = useBenchmarkSettingsStore.getState();
+    const stated = () =>
+      useBenchmarkSettingsStore.getState().settings.providerDataUse;
+
+    store.setProviderTrainsOnSubmissions(" zai-acp ", false);
+    store.setProviderTrainsOnSubmissions("grok-acp", true);
+    await flushBenchmarkSettings();
+
+    expect(stated()).toEqual({
+      "zai-acp": { trainsOnSubmissions: false },
+      "grok-acp": { trainsOnSubmissions: true },
+    });
+    expect(lastWrite()).toEqual({
+      timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES,
+      creditLimit: null,
+      judgePool: [],
+      providerDataUse: {
+        "zai-acp": { trainsOnSubmissions: false },
+        "grok-acp": { trainsOnSubmissions: true },
+      },
+    });
+
+    // A change of mind keeps the provider in its place.
+    store.setProviderTrainsOnSubmissions("zai-acp", true);
+    expect(Object.entries(stated())).toEqual([
+      ["zai-acp", { trainsOnSubmissions: true }],
+      ["grok-acp", { trainsOnSubmissions: true }],
+    ]);
+
+    // Back to the default: the provider is no longer named at all.
+    store.clearProviderDataUse("grok-acp");
+    await flushBenchmarkSettings();
+
+    expect(stated()).toEqual({ "zai-acp": { trainsOnSubmissions: true } });
+    expect(lastWrite()).toMatchObject({
+      providerDataUse: { "zai-acp": { trainsOnSubmissions: true } },
+    });
+    expect(
+      (lastWrite() as { providerDataUse: object }).providerDataUse,
+    ).not.toHaveProperty("grok-acp");
+
+    // Ids the document would not keep change nothing.
+    const writes = mocks.writeDistillDocument.mock.calls.length;
+    store.setProviderTrainsOnSubmissions("  ", true);
+    store.setProviderTrainsOnSubmissions("p".repeat(129), true);
+    store.clearProviderDataUse("kimi-acp");
+    await flushBenchmarkSettings();
+
+    expect(stated()).toEqual({ "zai-acp": { trainsOnSubmissions: true } });
+    expect(mocks.writeDistillDocument).toHaveBeenCalledTimes(writes);
   });
 });

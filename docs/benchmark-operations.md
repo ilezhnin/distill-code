@@ -116,6 +116,22 @@ stages declared task inputs and the selected provider's credential material.
 Provider inference sends those inputs to its endpoint under the account's
 existing data-use policy.
 
+A provider that may train on submitted data would learn the private tasks, so
+it receives only `train` versions and never judges. The owner states each
+provider's data use in Settings > Benchmarks > Provider data use
+(`providerDataUse` in the benchmark settings document,
+`{"<providerId>": {"trainsOnSubmissions": true|false}}`); a provider it does not
+name keeps its default: Anthropic, OpenAI and xAI, whose accounts the owner
+confirmed (10-18), do not train, and every other native provider is assumed
+to, Z.ai and Moonshot today. A settings document that cannot be read counts
+every native provider as training. The rule holds before anything is sent: a
+run preview refuses each such cell with the reason, adding tests to a run
+refuses, a pending cell planned before is settled `excluded` unsent, a workflow
+step or policy pick never goes to such a worker, a workflow campaign (held-out
+cases) refuses such a candidate, and the judge pool, its calibrations and
+frozen judge seats refuse such a judge. `benchmark_get_provider_data_use` lists
+what holds for every native provider.
+
 A repository attempt works in its own copy of the published snapshot, with a
 pristine root-only base beside it from which its answer is read. Every check
 gets its own copy too. Nothing unpacked is shared, but the archives they
@@ -159,7 +175,7 @@ who gets a CPU first when jobs want more than there is:
 | Text session | light attempt | 2 GiB | 1 | 256 | 32/8 MiB/s | 100 |
 | Sign-in or model probe | light | 2 GiB | 1 | 256 | 32/8 MiB/s | 100 |
 
-Admission is dynamic (policy dynamic-v2): no number of lanes is fixed. The next
+Admission is dynamic (policy measured-load-v1): no number of lanes is fixed. The next
 job starts while what the sandbox measures leaves room for it, and waits,
 naming the line that holds it, while it does not:
 
@@ -178,62 +194,86 @@ naming the line that holds it, while it does not:
   guest's memory pressure over ten seconds exceeds a tenth; page cache, which
   grows over a wave and is reclaimed first, does not count. Learned peaks
   persist across deploys.
-- CPU. A repository session spends most of its time waiting for the remote
-  model, so it is admitted by what the sandbox measures: the CPUs the jobs used
-  over the last seconds, a burst allowance for every running session and the
-  new one, the ceilings of the running timed jobs (checks, paired checks,
-  browser runs) and one check's two CPUs must fit the guest's logical CPUs
-  less what the host runs outside the VM and one CPU for the supervisors.
-  Outside is the host's busy CPUs less the work of the whole guest
-  (`/proc/stat`), so the VM's own work for the jobs is not counted twice;
-  the pressure and stall guards below see what it takes from them. The allowance is half a core until eight sessions finished,
-  then the 95th percentile of their average use, between a quarter core and
-  the session's ceiling. A session admitted in the last fifteen seconds,
-  before the samples show its use, counts at its two-CPU ceiling instead, so
-  a wave start admits what the CPUs cover at the new sessions' ceilings and
-  the rest as their measured use frees room. New sessions also wait while the
-  jobs' CPU pressure exceeds a tenth or recent checks spent more than a tenth
-  of their time waiting for a CPU. No number bounds the sessions: as many run
-  as these lines, the memory claims and the memory guard admit. A timed job
-  starts while its ceiling, the other timed jobs' ceilings and the sessions'
-  allowances fit the same CPUs; with its CPU weight it takes a CPU before any
-  session that bursts beside it. The ceiling rule of earlier builds still
-  admits whatever it admitted: every CPU-heavy job by its ceiling within the
-  physical cores (half the guest's CPUs) less the host's own use, an attempt
-  leaving one check's two CPUs, the line dropping by one check while checks
-  waited for CPUs. Light jobs and preparations need the jobs' measured load
-  plus the host's load outside the VM below three quarters of the guest's
+- CPU. CPU-heavy jobs (repository sessions, checks, paired checks, browser
+  runs) start by the host's measured load, not by summed reservations (owner,
+  10-18: cautious past 70 %, not around 40): while the Windows host's CPU busy
+  share, the mean of the gate samples of the last thirty seconds, stays below
+  70 %, the jobs' CPU pressure and recent check stalls stay at or under a
+  tenth (for new repository sessions), and fewer than three heavy jobs started
+  in the last thirty seconds, so a burst of starts cannot overshoot before the
+  samples show their load. One busy second among quiet ones does not hold a
+  start. Every job keeps its own CPU ceiling (two CPUs a session), and with
+  its CPU weight a timed job takes a CPU before any session beside it. A
+  timing-sensitive check starts only when the measured load, with the jobs
+  started in the last thirty seconds at their ceilings, leaves its whole
+  ceiling free, and no other heavy job starts while it runs. Without a gate
+  sample in the window the rule of earlier builds decides: the sessions'
+  measured use and burst allowance, the timed jobs' ceilings and one check's
+  two CPUs within the logical CPUs the host leaves, or every heavy job by its
+  ceiling within the physical cores. Every admission decision, admitted or
+  refused, is appended with what it measured (smoothed host load, the line,
+  the new heavy jobs, pressure, stall, memory claims) to `decisions.jsonl` in
+  the broker's state, its newest 2000 kept. More load slows checks: a check
+  past its time limit is stopped by the broker's deadline as the
+  infrastructure's and runs again; a paired check that bench-judge stops at
+  its own limit (which it marks, so a checker's own exit 124 stays the
+  candidate's fail) stays the candidate's fail unless its leaves waited for
+  CPUs other jobs held more than a tenth of its run, which makes it the
+  infrastructure's too. Light jobs and preparations need the jobs' measured
+  load plus the host's load outside the VM below three quarters of the guest's
   CPUs and, where Linux reports it, CPU pressure below a quarter. CPU pressure
   and check stalls count only the time a job's tasks waited for CPUs another
   job held, never its own `cpu.max` throttling (a check sees all the guest's
   CPUs and starts that many workers on its two); a check's recorded stall
-  counts for fifteen minutes. The measured use the repository line adds to
-  the running timed jobs' ceilings leaves out what those jobs use. The CPU pressure these lines read is the highest of the
-  running jobs' own, never the supervisors' control group. Every finished job
-  records its CPU seconds, average cores, memory peak and wall time;
-  `bench-budget usage` lists the latest.
+  counts for fifteen minutes. The measured use the repository line adds to the
+  running timed jobs' ceilings leaves out what those jobs use. The CPU
+  pressure these lines read is the highest of the running jobs' own, never the
+  supervisors' control group. Every finished job records its CPU seconds,
+  average cores, memory peak and wall time; `bench-budget usage` lists the
+  latest.
 - Priority. A check or a preparation refused memory, and a timed job refused
   CPUs, keeps what it needs from new attempts for ten seconds after each
   refusal: an attempt starts only if it fits beside that room as well as its
   own check's, so neither starves behind attempts, and an attempt that leaves
-  the room starts instead of waiting for the queue to empty. A refusal by the
-  light-job line keeps nothing, since that line protects no other job's
-  room. A check the operator's cap refuses takes the next place a session
-  frees the same way. While a repository attempt waits for memory that the
-  running text sessions claim, a new text attempt starts only beside that
-  room, so the smaller text claims cannot keep refilling it; and once
-  repository peaks are learned, a text attempt leaves room for one more
-  repository claim while a repository job ran in the last five minutes.
-  A later step of a workflow whose earlier steps a provider already worked on
-  goes ahead of new attempts like a check: no kept room, CPU pressure or
-  check-stall guard holds it, only its ceilings, the memory
-  claims and guard, the CPU lines and the Windows floors; when it is refused
-  room, new attempts leave that room for it.
+  the room starts instead of waiting for the queue to empty. Under the
+  measured-load rule there is no CPU room to fit beside: a timed job refused
+  CPUs holds every new attempt until it starts, checks first, which at a
+  wave's start can pause session starts for up to the thirty seconds the ramp
+  holds the check. A refusal by the light-job line keeps nothing, since that
+  line protects no other job's room. A check the operator's cap refuses takes
+  the next place a session frees the same way. While a repository attempt
+  waits for memory that the running text sessions claim, a new text attempt
+  starts only beside that room, so the smaller text claims cannot keep
+  refilling it; and once repository peaks are learned, a text attempt leaves
+  room for one more repository claim while a repository job ran in the last
+  five minutes. A later step of a workflow whose earlier steps a provider
+  already worked on goes ahead of new attempts like a check: no kept room, CPU
+  pressure or check-stall guard holds it, only its ceilings, the memory claims
+  and guard, the CPU lines and the Windows floors; when it is refused room,
+  new attempts leave that room for it.
 - Scratch. The filesystem's free space must cover the new job's scratch
   reservation (1 GiB and 16384 inodes for a repository session), half a GiB,
   and the reservations of jobs admitted in the last two minutes; an older
   job's use already shows in the free space. A job that
   fills the scratch while it runs ends as unscored infrastructure failure.
+- Own memory ceilings. A check, a paired check, or a browser run whose
+  candidate page started that its own memory ceiling stopped (the leaf's
+  `memory.events.local` counts the oom; pressure from above the leaf is the
+  infrastructure's) is the candidate's answer past its budget,
+  `budget_reached`, scored 0. A session's leaf holds the agent CLI and the
+  commands it runs, and the group kill takes the bridge with it: the broker
+  keeps the leaf's processes from its last one-second poll and reads the
+  kernel's OOM record (`/dev/kmsg`) for the victim. The record's pid is the
+  kernel's and every WSL distro has its own pid namespace, so the victim is
+  matched by its name: when every process of that name in the last poll ran
+  below a shell under the agent CLI, the broker keeps a verdict by the
+  session's job id (`bench-budget verdict ID`, for two days), and the attempt
+  the bridge's exit ended as an infrastructure failure settles
+  `budget_reached` instead, the verdict sealed in its evidence. The agent CLI
+  itself, its other children, the confinement, a name the agent's own process
+  shares, a victim the last poll did not see, or no kernel record stay the
+  infrastructure's. The app logs `sandbox job session-ID = attempt ATTEMPT
+  (PROFILE)` once per try, so a cgroup name maps to its attempt.
 - Windows and the guest. The controller preserves at least 12 GiB of Windows
   available memory, 8 GiB of commit headroom and 30 GiB free on the registered
   sandbox volume, and 2 GiB free in the WSL guest. Each memory floor must also
@@ -507,21 +547,20 @@ coverage, verifier isolation and task usefulness before paying for model runs.
 
 The same rubric controls calibrate the ordinary judges. `benchmark_judge_pool`
 returns the pool from the benchmark settings (`judgePool`: `providerId`,
-`modelId`, `effort`, optional `inputs`, `disclosureConfirmed`), each entry with
-its newest calibration
+`modelId`, `effort`, optional `inputs`), each entry with its newest calibration
 and whether it takes seats, plus every stored calibration.
 `benchmark_calibrate_judge` with one such `entry` starts a calibration in the
 background: the roomiest enabled account offering that model and effort judges
 each control alone, under the ordinary protocol, and the calibration fails at
-the first control outside its band. It costs one judge call per control. Only
-a pool entry whose data use the owner confirmed is calibrated, whatever the
-request says. Calibrations live in `judge-calibrations.json` beside the
-benchmark database; one cut off by a restart, or by a judge that gave no
-answer at all (a spent quota, a failed bridge, judges busy for half an hour),
-reads as interrupted. Settings >
+the first control outside its band. It costs one judge call per control. Only a
+pool entry is calibrated, and never one of a provider that may train on
+submitted data (see the provider data use above). Calibrations live in
+`judge-calibrations.json` beside the benchmark database; one cut off by a
+restart, or by a judge that gave no answer at all (a spent quota, a failed
+bridge, judges busy for half an hour), reads as interrupted. Settings >
 Benchmarks shows the pool and starts calibrations too. After the pool changes
-the panel, rescore ordinary rubric attempts so every candidate is judged by
-the pool's recipe; their outputs are reused.
+the panel, rescore ordinary rubric attempts so every candidate is judged by the
+pool's recipe; their outputs are reused.
 
 ## 4. Freeze and run the measurement matrix
 
@@ -617,7 +656,8 @@ policy and any operator cap, the jobs already running by class, the memory
 they claimed and the CPU ceilings of the CPU-heavy ones, what this job was
 expected to need, the CPU line, the logical CPUs left for the jobs, the
 repository sessions running and the burst allowance counted for each, which
-rule admitted it (by ceilings or by measured use), the CPUs the sandbox used
+rule admitted it (`load` by the host's measured load, or, without a host
+sample, by ceilings or by measured use), the time of the host's evidence, the CPUs the sandbox used
 over the last sampled seconds and the guest's CPU pressure, how long recent
 checks waited for CPUs,
 the sandbox's memory in use, the WSL guest's load averages, CPUs and free

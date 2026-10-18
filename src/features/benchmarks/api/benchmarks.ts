@@ -41,6 +41,7 @@ import type {
   JudgePoolEntry,
   JudgePoolStatus,
   PoolRelease,
+  ProviderDataUse,
   RunPreview,
   RunRequest,
   WorkflowPolicyRunRequest,
@@ -274,6 +275,14 @@ export const benchmarkApi = {
    */
   calibrateJudge: (entry: JudgePoolEntry) =>
     invoke<JudgeCalibration>("benchmark_calibrate_judge", { entry }),
+  /**
+   * What each native provider may do with what benchmark turns send it, as
+   * the settings document states or the backend's default holds: one that
+   * may train on submitted data runs only train tasks and never judges.
+   * Reads the document without starting the benchmark service.
+   */
+  providerDataUse: () =>
+    invoke<ProviderDataUse[]>("benchmark_get_provider_data_use"),
   getHistory: (configuration: Configuration, model = false) =>
     invoke<HistorySnapshot[]>("benchmark_get_history", {
       configuration,

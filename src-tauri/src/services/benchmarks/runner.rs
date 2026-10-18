@@ -650,7 +650,40 @@ impl NativeBackend {
 /// their history, so it happens once per run, provider and account, and
 /// again only once the executable serving them changes.
 #[derive(Default)]
-struct RunInventories(std::sync::Mutex<std::collections::HashMap<(String, String, String), Value>>);
+struct RunInventories {
+    runs: std::sync::Mutex<std::collections::HashMap<(String, String, String), Value>>,
+    /// The newest listing of each provider and account, whichever run or
+    /// inventory probe made it, when, and when a refresh of it was last
+    /// refused: what judges sit on (see [`judge_inventory`]).
+    latest: std::sync::Mutex<std::collections::HashMap<(String, String), KeptListing>>,
+}
+
+/// An account's newest listing, as [`RunInventories::latest`] hands it out.
+#[derive(Clone, Debug)]
+struct KeptListing {
+    listed_at: Instant,
+    inventory: Value,
+    refused_at: Option<Instant>,
+}
+
+/// A kept listing as a judge weighs it: its age, and how long ago a refresh
+/// of it was refused.
+#[derive(Clone, Debug)]
+struct ListingAge {
+    age: Duration,
+    refused_ago: Option<Duration>,
+    inventory: Value,
+}
+
+impl KeptListing {
+    fn aged(self) -> ListingAge {
+        ListingAge {
+            age: self.listed_at.elapsed(),
+            refused_ago: self.refused_at.map(|at| at.elapsed()),
+            inventory: self.inventory,
+        }
+    }
+}
 
 impl RunInventories {
     /// How many inventories are kept before those of other runs are dropped.
@@ -660,17 +693,18 @@ impl RunInventories {
     /// executable `serving` them now is the one that listed it.
     fn current(&self, run: &str, provider: &str, account: &str, serving: &Value) -> Option<Value> {
         let kept = self
-            .0
+            .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         kept.get(&(run.to_owned(), provider.to_owned(), account.to_owned()))
-            .filter(|inventory| !serving.is_null() && inventory.get("executable") == Some(serving))
+            .filter(|inventory| listed_by(inventory, serving))
             .cloned()
     }
 
     fn keep(&self, run: &str, provider: &str, account: &str, inventory: Value) {
+        self.observe(provider, account, inventory.clone());
         let mut kept = self
-            .0
+            .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if kept.len() >= Self::LIMIT {
@@ -680,6 +714,89 @@ impl RunInventories {
             (run.to_owned(), provider.to_owned(), account.to_owned()),
             inventory,
         );
+    }
+
+    /// Records a listing of `provider` on `account` made now, for any run.
+    fn observe(&self, provider: &str, account: &str, inventory: Value) {
+        self.latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                (provider.to_owned(), account.to_owned()),
+                KeptListing {
+                    listed_at: Instant::now(),
+                    inventory,
+                    refused_at: None,
+                },
+            );
+    }
+
+    /// The newest listing of `provider` on `account`, if the executable
+    /// `serving` them now is the one that listed it.
+    fn latest(&self, provider: &str, account: &str, serving: &Value) -> Option<KeptListing> {
+        self.latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(provider.to_owned(), account.to_owned()))
+            .filter(|kept| listed_by(&kept.inventory, serving))
+            .cloned()
+    }
+
+    /// Notes that a refresh of the newest listing was refused just now.
+    fn refused(&self, provider: &str, account: &str) {
+        if let Some(kept) = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&(provider.to_owned(), account.to_owned()))
+        {
+            kept.refused_at = Some(Instant::now());
+        }
+    }
+}
+
+/// Whether the executable `serving` an account now listed `inventory`;
+/// nothing serving is never a match.
+fn listed_by(inventory: &Value, serving: &Value) -> bool {
+    !serving.is_null() && inventory.get("executable") == Some(serving)
+}
+
+/// A judge sits on its account's newest listing without listing again while
+/// the listing is this young.
+const JUDGE_LISTING_FRESH: Duration = Duration::from_secs(3600);
+/// The oldest listing a judge falls back to when a refresh is refused.
+const JUDGE_LISTING_MAX_AGE: Duration = Duration::from_secs(12 * 3600);
+/// How long a refused refresh is not tried again; the listing stands.
+const JUDGE_REFRESH_RETRY: Duration = Duration::from_secs(600);
+
+/// The inventory a judge's account is seated from, and, when it fell back,
+/// the age of that listing and why the refresh failed. A live listing
+/// spawns a provider process the sandbox admits as a light job, which it
+/// refuses under wave load, so a judge sits on the account's newest listing
+/// (the candidates' own, an inventory probe's or an earlier judge's, by the
+/// executable serving it now): without listing while it is fresh or a
+/// refresh was refused moments ago, and when a refresh (`list`) is refused,
+/// while it is younger than [`JUDGE_LISTING_MAX_AGE`]. Only an account with
+/// no such listing depends on a live one.
+async fn judge_inventory(
+    kept: Option<ListingAge>,
+    list: impl std::future::Future<Output = Result<Value>>,
+) -> Result<(Value, Option<(Duration, BenchmarkError)>)> {
+    let usable = kept.filter(|kept| kept.age < JUDGE_LISTING_MAX_AGE);
+    if let Some(kept) = &usable {
+        let refused_lately = kept
+            .refused_ago
+            .is_some_and(|ago| ago < JUDGE_REFRESH_RETRY);
+        if kept.age < JUDGE_LISTING_FRESH || refused_lately {
+            return Ok((kept.inventory.clone(), None));
+        }
+    }
+    match list.await {
+        Ok(inventory) => Ok((inventory, None)),
+        Err(error) => match usable {
+            Some(kept) => Ok((kept.inventory, Some((kept.age, error)))),
+            None => Err(error),
+        },
     }
 }
 /// Host errors read "code: reason". Any other text, such as a provider's own
@@ -705,6 +822,28 @@ pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
         None if matches!(model.to_lowercase().as_str(), "default" | "current") => None,
         None => Some(model.to_lowercase()),
     }
+}
+
+/// The model a model id names whatever context window it asks for, aliases
+/// resolved as [`concrete_model`] resolves them: Claude Code's `[1m]` suffix
+/// (`opus[1m]`, `claude-fable-5-1[1m]`) asks the same model for a longer
+/// context, so `opus`, `opus[1m]` and `default` are one Opus. A judge never
+/// sits on its own model's output by this identity, an author is matched by
+/// it, and a panel seats each such model once.
+pub(crate) fn model_identity(provider: &str, model: &str) -> Option<String> {
+    let concrete = concrete_model(provider, model)?;
+    if NativeProvider::for_harness(provider) != Some(NativeProvider::Claude) {
+        return Some(concrete);
+    }
+    Some(
+        match concrete
+            .strip_suffix(']')
+            .and_then(|rest| rest.rsplit_once('['))
+        {
+            Some((base, _)) if !base.is_empty() => base.to_owned(),
+            _ => concrete,
+        },
+    )
 }
 
 /// The accounts a judge may sit on: every enabled stored account of a
@@ -748,45 +887,40 @@ pub(crate) fn by_headroom(mut offered: Vec<(Option<f64>, Configuration)>) -> Vec
 }
 
 /// The ordinary panel for a rendering from the judge pool's offered rows,
-/// each with its account's headroom: up to three seats, the roomiest first,
-/// never a candidate's own model or an author of the case (see
-/// [`select_judges`]), and preferably no model of a candidate's vendor (an
-/// unknown vendor admits no judge). When fewer than two judges of other
-/// vendors are offered, judges of a candidate's vendor fill the panel to two,
-/// and [`same_vendor`] marks it. A text rubric seats one judge per vendor; a
-/// visual one, one per model, since one vendor's models judge images today.
+/// each with its account's headroom: one calibrated judge per lab (vendor),
+/// the roomiest first, up to three (owner, 10-18, after BuseyBench's fixed
+/// three-lab ensemble). A judge of a candidate's own lab or model may sit:
+/// the other labs dilute its score, and [`same_vendor`] and [`own_model`]
+/// mark the panel. An exact author of the case never sits (see
+/// [`select_judges`]); an author's lab with no other calibrated judge leaves
+/// the panel to the other labs. With fewer than two labs offered, more
+/// models of the seated labs fill it to two (a visual rubric's Opus and
+/// Sonnet while only Claude passed a visual calibration). A candidate of no
+/// known vendor admits no judge.
 pub(crate) fn ordinary_judges(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
     offered: Vec<(Option<f64>, Configuration)>,
 ) -> Vec<Configuration> {
-    let Some(excluded) = candidate_vendors(candidates) else {
+    if candidate_vendors(candidates).is_none() {
         return Vec::new();
-    };
-    let per_vendor = text_judged(draft);
-    let admitted: Vec<(Configuration, &'static str)> =
-        admissible(candidates, draft, by_headroom(offered))
-            .into_iter()
-            .filter_map(|(judge, _)| {
-                let vendor = super::judge_pool::vendor(&judge.provider_id)?;
-                Some((judge, vendor))
-            })
-            .collect();
-    let mut vendors = std::collections::BTreeSet::new();
+    }
+    let admitted: Vec<(Configuration, &'static str)> = seatable(draft, by_headroom(offered), &[])
+        .into_iter()
+        .filter_map(|(judge, _)| {
+            let vendor = super::judge_pool::vendor(&judge.provider_id)?;
+            Some((judge, vendor))
+        })
+        .collect();
+    let mut labs = std::collections::BTreeSet::new();
     let mut panel: Vec<Configuration> = Vec::new();
     for (judge, vendor) in &admitted {
-        if panel.len() < MAX_JUDGES
-            && !excluded.contains(vendor)
-            && (!per_vendor || vendors.insert(*vendor))
-        {
+        if panel.len() < MAX_JUDGES && labs.insert(*vendor) {
             panel.push(judge.clone());
         }
     }
-    for (judge, vendor) in &admitted {
-        if panel.len() < MIN_JUDGES
-            && excluded.contains(vendor)
-            && (!per_vendor || vendors.insert(*vendor))
-        {
+    for (judge, _) in &admitted {
+        if panel.len() < MIN_JUDGES && !panel.iter().any(|seated| seated.id == judge.id) {
             panel.push(judge.clone());
         }
     }
@@ -820,8 +954,22 @@ pub(crate) fn author_model_judges(draft: &BenchmarkDraft, panel: &[Configuration
     })
 }
 
-/// Whether an ordinary panel seats a judge of a candidate's vendor, which it
-/// does only when too few judges of other vendors were offered.
+/// Whether a panel seats a candidate's own model on the same provider
+/// (aliases and context window variants resolved), which an ordinary panel
+/// may: the board can leave such scores out.
+pub(crate) fn own_model(candidates: &[&Configuration], panel: &[Configuration]) -> bool {
+    panel.iter().any(|judge| {
+        let model = model_identity(&judge.provider_id, &judge.model_id);
+        candidates.iter().any(|candidate| {
+            candidate.provider_id == judge.provider_id
+                && model.is_some()
+                && model_identity(&candidate.provider_id, &candidate.model_id) == model
+        })
+    })
+}
+
+/// Whether an ordinary panel seats a judge of a candidate's vendor (lab),
+/// which a three-lab panel does for every candidate of those labs.
 pub(crate) fn same_vendor(candidates: &[&Configuration], panel: &[Configuration]) -> bool {
     candidate_vendors(candidates).is_some_and(|vendors| {
         panel.iter().any(|judge| {
@@ -849,32 +997,44 @@ pub(crate) fn select_judges(
 }
 
 /// The offered judges, in order, that may judge the candidates' rendering,
-/// with their resolved models: no candidate model, no author, one row per
-/// model of a provider.
+/// with their models ([`model_identity`]): no candidate model, no author, one
+/// row per model of a provider.
 fn admissible(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
-    mut offered: Vec<Configuration>,
+    offered: Vec<Configuration>,
 ) -> Vec<(Configuration, String)> {
     let excluded: Option<Vec<String>> = candidates
         .iter()
-        .map(|c| concrete_model(&c.provider_id, &c.model_id))
+        .map(|c| model_identity(&c.provider_id, &c.model_id))
         .collect();
     let Some(excluded) = excluded else {
         return Vec::new();
     };
+    seatable(draft, offered, &excluded)
+}
+
+/// The offered judges, in order, with their models: none of the `excluded`
+/// models, no author of the case, one row per model of a provider.
+fn seatable(
+    draft: &BenchmarkDraft,
+    mut offered: Vec<Configuration>,
+    excluded: &[String],
+) -> Vec<(Configuration, String)> {
     // Concrete rows first, so an alias never takes its own target's seat.
     offered.sort_by_key(|c| {
         concrete_model(&c.provider_id, &c.model_id).as_deref() != Some(&c.model_id.to_lowercase())
     });
     let mut panel: Vec<(Configuration, String)> = Vec::new();
     for configuration in offered {
-        let Some(model) = concrete_model(&configuration.provider_id, &configuration.model_id)
-        else {
+        let (Some(concrete), Some(model)) = (
+            concrete_model(&configuration.provider_id, &configuration.model_id),
+            model_identity(&configuration.provider_id, &configuration.model_id),
+        ) else {
             continue;
         };
         let mut resolved = configuration.clone();
-        resolved.model_id = model.clone();
+        resolved.model_id = concrete;
         if excluded.contains(&model)
             || super::routing::authored_by_candidate(draft, &configuration)
             || super::routing::authored_by_candidate(draft, &resolved)
@@ -1225,6 +1385,48 @@ fn record_sandbox_admission(attempt: &mut Attempt, evidence: &mut Value, sandbox
         evidence["sandboxAdmission"] = json!(admission);
         attempt.sandbox_admission = Some(admission);
     }
+}
+
+/// A session's own memory ceiling that killed a command the agent ran for
+/// the candidate takes the bridge with the leaf, so the turn ends as an
+/// infrastructure failure. The broker keeps that verdict for the session's
+/// job `id`; with it the attempt is the candidate's answer past its budget,
+/// scored 0 like a check past its own ceiling. Returns the verdict to seal
+/// with the evidence; one that cannot be read leaves the outcome as it was.
+async fn settle_session_limit(attempt: &mut Attempt, id: &str) -> Option<Value> {
+    if attempt.outcome.as_deref() != Some("infrastructure_failure") {
+        return None;
+    }
+    let verdict = match sandbox::session_verdict(id).await {
+        Ok(verdict) => verdict?,
+        Err(error) => {
+            log::warn!("[benchmarks] cannot read the session verdict of sandbox {id}: {error}");
+            return None;
+        }
+    };
+    apply_session_limit(attempt, &verdict);
+    Some(json!(verdict))
+}
+
+fn apply_session_limit(attempt: &mut Attempt, verdict: &sandbox::SessionVerdict) {
+    if attempt.outcome.as_deref() != Some("infrastructure_failure") {
+        return;
+    }
+    let command = verdict
+        .victim
+        .as_deref()
+        .map(|name| format!(" ({name})"))
+        .unwrap_or_default();
+    let ended = attempt
+        .reason
+        .take()
+        .map(|reason| format!("; the session then ended with {reason}"))
+        .unwrap_or_default();
+    attempt.outcome = Some("budget_reached".into());
+    attempt.reason = Some(format!(
+        "A command the agent ran for the candidate{command} passed the session's own {} ceiling{ended}",
+        verdict.candidate_limit
+    ));
 }
 
 fn repository_collection_failure(attempt: &mut Attempt, error: &BenchmarkError) {
@@ -2448,6 +2650,47 @@ impl NativeBackend {
         if let Some(inventory) = self.inventories.current(run, provider, account, &serving) {
             return Ok(inventory);
         }
+        self.list_inventory(host, run, provider, account).await
+    }
+
+    /// A judge account's model listing: its newest kept one, a live one only
+    /// when none is usable (see [`judge_inventory`]); a live listing spawns a
+    /// provider process the sandbox may refuse under load, and that refusal
+    /// must not drop a judge listed lately.
+    async fn judge_listing(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        run: &str,
+        subject: &str,
+        provider: &str,
+        account: &str,
+    ) -> Result<Value> {
+        let serving = host.benchmark_serving_executable(provider, account).await;
+        let kept = self
+            .inventories
+            .latest(provider, account, &serving)
+            .map(KeptListing::aged);
+        let (listed, refused) =
+            judge_inventory(kept, self.list_inventory(host, run, provider, account)).await?;
+        if let Some((age, error)) = refused {
+            self.inventories.refused(provider, account);
+            log::info!(
+                "[benchmarks] {subject} seats account {account} from its listing of {} s ago: listing it again failed: {}",
+                age.as_secs(),
+                error.message
+            );
+        }
+        Ok(listed)
+    }
+
+    /// Lists `provider`'s models on `account` now and keeps them for `run`.
+    async fn list_inventory(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        run: &str,
+        provider: &str,
+        account: &str,
+    ) -> Result<Value> {
         let inventory = host
             .benchmark_inventory(provider, account, true)
             .await
@@ -2458,8 +2701,8 @@ impl NativeBackend {
     }
 
     /// The panel for one rendering: the judge pool's calibrated entries on
-    /// the enabled accounts that offer them, one per vendor, never the
-    /// candidate's vendor (see [`super::judge_pool`]). A frozen panel names
+    /// the enabled accounts that offer them, one per lab (see
+    /// [`ordinary_judges`] and [`super::judge_pool`]). A frozen panel names
     /// its own seats.
     async fn judge_panel(
         &self,
@@ -2478,10 +2721,9 @@ impl NativeBackend {
             .offered_judges(
                 &attempt.run_id,
                 &format!("attempt {}", attempt.id),
-                |provider| {
-                    pool.iter().any(|entry| entry.provider_id == provider)
-                        && (textual || judge_provider_allowed(provider))
-                },
+                // The pool holds only entries that may judge this rubric, a
+                // visual one's those that see images.
+                |provider| pool.iter().any(|entry| entry.provider_id == provider),
             )
             .await?;
         let offered = super::judge_pool::seat_rows(&pool, offered);
@@ -2576,9 +2818,14 @@ impl NativeBackend {
                 );
                 continue;
             }
-            // Listed once per run, like the candidates' own bridges.
             let listed = self
-                .run_inventory(&host, run, &account.provider_id, &account.id)
+                .judge_listing(
+                    &host,
+                    run,
+                    &format!("judge panel for {subject}"),
+                    &account.provider_id,
+                    &account.id,
+                )
                 .await;
             let models = match listed {
                 Ok(listed) => {
@@ -2670,6 +2917,14 @@ impl NativeBackend {
                 "Judge has no managed account".into(),
             ));
         };
+        // A judge reads the brief, the rubric and the response, so a provider
+        // that may train on submitted data never judges, frozen seats too.
+        if let Some(reason) = super::data_use::DataUse::load(&store.root)
+            .await
+            .judge_refusal(&judge.provider_id)
+        {
+            return Ok(judge_abstention(version, judge, batch, reason));
+        }
         let activity = host
             .account_activity(&judge.provider_id, &account)
             .await
@@ -2707,9 +2962,22 @@ impl NativeBackend {
                     "Frozen judge account has no remaining usage",
                 ));
             }
+            // From the account's newest listing, as for ordinary seats.
+            let listing = (
+                &host,
+                attempt.run_id.as_str(),
+                judge.provider_id.as_str(),
+                account.as_str(),
+            );
             let offered =
                 with_sign_in_renewal(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
-                    self.inventory(&judge.provider_id, Some(&account), true)
+                    let (host, run, provider, account) = listing;
+                    async move {
+                        let listed = self
+                            .judge_listing(host, run, "frozen judge", provider, account)
+                            .await?;
+                        self.inventory_rows(provider, account, &listed).await
+                    }
                 })
                 .await?;
             if !offered
@@ -3120,15 +3388,19 @@ impl NativeBackend {
                     JudgeEvidence::Calibration { judge, .. } => vec![judge.as_ref().clone()],
                     _ => self.judge_panel(store, &attempt, &version.manifest).await?,
                 };
-                // An ordinary panel a candidate's vendor filled is marked, so
-                // boards can show or leave out its scores.
-                let same_vendor_panel = match &evidence {
-                    JudgeEvidence::Calibration { .. } => false,
-                    _ if version.manifest.environment.get("judgePanel").is_some() => false,
+                // An ordinary panel that seats a candidate's lab or own model
+                // is marked, so boards can show or leave out its scores.
+                let (same_vendor_panel, own_model_panel) = match &evidence {
+                    JudgeEvidence::Calibration { .. } => (false, false),
+                    _ if version.manifest.environment.get("judgePanel").is_some() => (false, false),
                     _ => {
                         let contributing =
                             super::workflow::judge_candidates(store, &attempt).await?;
-                        same_vendor(&contributing.iter().collect::<Vec<_>>(), &panel)
+                        let candidates: Vec<_> = contributing.iter().collect();
+                        (
+                            same_vendor(&candidates, &panel),
+                            own_model(&candidates, &panel),
+                        )
                     }
                 };
                 if let Some(issue) = panel_issue(&panel)
@@ -3202,6 +3474,9 @@ impl NativeBackend {
                             "protocol": protocol});
                         if same_vendor_panel {
                             details["sameVendor"] = json!(true);
+                        }
+                        if own_model_panel {
+                            details["ownModel"] = json!(true);
                         }
                         if !matches!(evidence, JudgeEvidence::Calibration { .. })
                             && author_model_judges(&version.manifest, &panel)
@@ -4045,6 +4320,8 @@ impl ExecutionBackend for NativeBackend {
                 .benchmark_inventory(provider, account, refresh)
                 .await
                 .map_err(host_error)?;
+            // The probe candidates are checked against seats judges too.
+            self.inventories.observe(provider, account, result.clone());
             self.inventory_rows(provider, account, &result).await
         })
     }
@@ -4070,6 +4347,15 @@ impl ExecutionBackend for NativeBackend {
             }
             let run_request = store.run(&attempt.run_id).await?.request;
             run_request.require_dispatch_admission(now())?;
+            // The last line before anything of the task is sent, for workflow
+            // steps and policy picks too: a provider that may train on
+            // submitted data gets train versions only.
+            if let Some(reason) = super::data_use::DataUse::load(&store.root)
+                .await
+                .refusal(&attempt.configuration.provider_id, &version.manifest.split)
+            {
+                return Err(BenchmarkError::new("capability_missing", reason));
+            }
             if requires_browser_runtime(&version.manifest) {
                 super::worker::ready_for_attempt().await?;
             }
@@ -4136,6 +4422,14 @@ impl ExecutionBackend for NativeBackend {
             } else {
                 text_execution::attempt_id(&turn_owner(&attempt))
             }));
+            if let Some(id) = cleanup.0.as_deref() {
+                // The sandbox's cgroup leaf names no attempt; this line maps it.
+                log::info!(
+                    "[benchmarks] sandbox job session-{id} = attempt {} ({})",
+                    attempt.id,
+                    attempt.configuration.execution_profile
+                );
+            }
             // A later step of a workflow already running finishes on the grant
             // its workflow was admitted with; only new work waits for a
             // renewal that drains the account.
@@ -4425,6 +4719,7 @@ impl ExecutionBackend for NativeBackend {
             attempt.finished_at = Some(now());
             attempt.phase = "collecting".into();
             let mut artifact_error = None;
+            let mut session_limit = None;
             if let Some(id) = cleanup.0.as_deref() {
                 let collected = async {
                     host.stop_owned_sandbox(&session.session_id)
@@ -4447,6 +4742,7 @@ impl ExecutionBackend for NativeBackend {
                     repository_collection_failure(&mut attempt, &error);
                     artifact_error = Some(json!({"code":error.code,"message":error.message}));
                 }
+                session_limit = settle_session_limit(&mut attempt, id).await;
             }
             mark_auxiliary_profile(&mut attempt);
             let receipt = self
@@ -4456,6 +4752,9 @@ impl ExecutionBackend for NativeBackend {
             let mut evidence = native_receipt::sealed_events(evidence, receipt);
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
+            }
+            if let Some(verdict) = session_limit {
+                evidence["sessionLimit"] = verdict;
             }
             self.record_credit_use(&store.root, &mut attempt, &mut evidence, &credit)
                 .await;
@@ -4619,6 +4918,7 @@ impl ExecutionBackend for NativeBackend {
                 attempt.reason = Some(violation);
             }
             let mut artifact_error = None;
+            let mut session_limit = None;
             if let Some(id) = cleanup.0.as_deref() {
                 let collected = async {
                     host.stop_owned_sandbox(&status.session_id)
@@ -4644,6 +4944,7 @@ impl ExecutionBackend for NativeBackend {
                         artifact_error = Some(json!({"code":error.code,"message":error.message}));
                     }
                 }
+                session_limit = settle_session_limit(&mut attempt, id).await;
             }
             mark_auxiliary_profile(&mut attempt);
             let receipt = self
@@ -4653,6 +4954,9 @@ impl ExecutionBackend for NativeBackend {
             let mut evidence = native_receipt::sealed_events(evidence, receipt);
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
+            }
+            if let Some(verdict) = session_limit {
+                evidence["sessionLimit"] = verdict;
             }
             record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
             mark_phase(&mut attempt, "collected");
@@ -5782,14 +6086,14 @@ fn ordinary_recipe(draft: &BenchmarkDraft) -> Option<&'static str> {
         .environment
         .get("judgePanel")
         .is_none()
-        .then_some(super::judge_pool::RECIPE)
+        .then_some(super::judge_pool::PANEL_RECIPE)
 }
 
 /// What a judge batch's scores are comparable by. A frozen panel's hash
 /// names its judges and stays as it was. An ordinary panel's names its
-/// `recipe` instead: the pool's calibrated seats rotate by usage headroom, so
-/// one recipe is one ruler, and pool scores never compare with the panels
-/// before it.
+/// `recipe` and the labs it seated instead: the pool's calibrated seats
+/// rotate by usage headroom, so one recipe, panel size and set of labs is
+/// one ruler, and pool scores never compare with the panels before it.
 pub(crate) fn judge_protocol_hash(
     panel: &[Configuration],
     prompt: &str,
@@ -5815,8 +6119,17 @@ pub(crate) fn judge_protocol_hash(
     let identity = match recipe {
         None => json!({"judges": judges, "prompt": prompt, "renderer": renderer,
             "samplesPerJudge": 1, "expectedJudges": panel.len()}),
-        Some(recipe) => json!({"recipe": recipe, "prompt": prompt, "renderer": renderer,
-            "samplesPerJudge": 1, "expectedJudges": panel.len()}),
+        Some(recipe) => {
+            let labs: std::collections::BTreeSet<&str> = panel
+                .iter()
+                .map(|judge| {
+                    super::judge_pool::vendor(&judge.provider_id)
+                        .unwrap_or(judge.provider_id.as_str())
+                })
+                .collect();
+            json!({"recipe": recipe, "labs": labs, "prompt": prompt, "renderer": renderer,
+                "samplesPerJudge": 1, "expectedJudges": panel.len()})
+        }
     };
     hex::encode(Sha256::digest(identity.to_string().as_bytes()))
 }
@@ -5833,7 +6146,8 @@ pub(super) fn judge_protocol(draft: &BenchmarkDraft, panel: &[Configuration]) ->
         protocol["panelRecipe"] = json!(super::judge_panel::RECIPE);
         protocol["panelBinding"] = json!(super::judge_panel::binding(panel, &prompt, &renderer));
     } else {
-        protocol["ordinaryPanelRecipe"] = json!(super::judge_pool::RECIPE);
+        protocol["ordinaryPanelRecipe"] = json!(super::judge_pool::PANEL_RECIPE);
+        protocol["calibrationRecipe"] = json!(super::judge_pool::RECIPE);
     }
     protocol
 }
@@ -7257,6 +7571,7 @@ impl BenchmarkService {
         }
         let mut versions: std::collections::HashMap<String, Arc<BenchmarkVersion>> =
             std::collections::HashMap::new();
+        let data_use = super::data_use::DataUse::load(&self.store.root).await;
         for pending in run.attempts.iter().filter(|a| {
             a.phase == "pending"
                 && !provider_held(&run.id, &a.configuration.provider_id)
@@ -7268,16 +7583,20 @@ impl BenchmarkService {
                 versions.insert(pending.version_id.clone(), version);
             }
             let version = &versions[&pending.version_id];
-            if run.request.measures_author_cells()
-                || !super::routing::authored_by_candidate(&version.manifest, &pending.configuration)
-            {
+            // A cell planned before its provider's data use was known, or
+            // through a path that did not ask, is settled here unsent.
+            let refused =
+                data_use.refusal(&pending.configuration.provider_id, &version.manifest.split);
+            let authored = !run.request.measures_author_cells()
+                && super::routing::authored_by_candidate(&version.manifest, &pending.configuration);
+            if refused.is_none() && !authored {
                 ready.push((pending.clone(), version.clone()));
                 continue;
             }
             let mut excluded = pending.clone();
             excluded.phase = "terminal".into();
             excluded.outcome = Some("excluded".into());
-            excluded.reason = Some("authored by this candidate".into());
+            excluded.reason = Some(refused.unwrap_or_else(|| "authored by this candidate".into()));
             excluded.finished_at = Some(now());
             self.store.save_attempt(&excluded).await?;
             self.changed().await;
@@ -8270,6 +8589,41 @@ mod tests {
         assert!(super::render_document("I cannot draw.", Some("svg")).is_none());
     }
     #[test]
+    fn a_session_s_own_memory_ceiling_on_the_candidate_s_command_is_its_budget() {
+        // A Grok session (10-18): the session's own memory.max killed the
+        // candidate's python3, the bridge died with the leaf, and the turn
+        // ended as an infrastructure failure the broker's verdict corrects.
+        let row = judge_row("sonnet");
+        let mut attempt =
+            super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        attempt.outcome = Some("infrastructure_failure".into());
+        attempt.reason = Some(r#"{"code":-32603,"message":"bridge exited"}"#.into());
+        let verdict = sandbox::SessionVerdict {
+            candidate_limit: "memory".into(),
+            victim: Some("python3".into()),
+        };
+        apply_session_limit(&mut attempt, &verdict);
+        assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
+        let reason = attempt.reason.as_deref().unwrap();
+        assert!(
+            reason.contains("(python3) passed the session's own memory ceiling"),
+            "{reason}"
+        );
+        assert!(reason.contains("bridge exited"), "{reason}");
+        // Only an infrastructure failure is the verdict's to settle.
+        for outcome in ["completed", "budget_timeout", "execution_violation"] {
+            attempt.outcome = Some(outcome.into());
+            attempt.reason = None;
+            apply_session_limit(&mut attempt, &verdict);
+            assert_eq!(attempt.outcome.as_deref(), Some(outcome));
+            assert!(attempt.reason.is_none());
+        }
+        assert_eq!(
+            json!(verdict),
+            json!({"candidateLimit": "memory", "victim": "python3"})
+        );
+    }
+    #[test]
     fn the_session_admission_is_sealed_with_its_attempt_once() {
         let row = judge_row("sonnet");
         let mut attempt =
@@ -8590,12 +8944,25 @@ mod tests {
                 panel,
                 "prompt",
                 JUDGE_RENDERER,
-                Some(super::super::judge_pool::RECIPE),
+                Some(super::super::judge_pool::PANEL_RECIPE),
             )
         };
         assert_ne!(pool(&panel), hash);
         assert_eq!(pool(&replaced), pool(&panel));
         assert_ne!(pool(&panel[..1]), pool(&panel));
+        // Another set of labs is another ruler, and so is the old recipe.
+        let mut labs = panel.clone();
+        labs[1].provider_id = "codex-acp".into();
+        assert_ne!(pool(&labs), pool(&panel));
+        assert_ne!(
+            judge_protocol_hash(
+                &panel,
+                "prompt",
+                JUDGE_RENDERER,
+                Some(super::super::judge_pool::RECIPE)
+            ),
+            pool(&panel)
+        );
     }
 
     #[tokio::test]
@@ -8980,6 +9347,77 @@ mod tests {
         }
     }
     #[test]
+    fn a_context_window_variant_of_a_model_is_that_model() {
+        // 10-18: the old Opus candidate column (`opus`, effort default) was
+        // judged by `opus[1m]` high, Opus judging its own output.
+        for (model, identity) in [
+            ("opus[1m]", "opus"),
+            ("OPUS[1M]", "opus"),
+            ("opus", "opus"),
+            ("default", "opus"),
+            ("claude-fable-5-1[1m]", "claude-fable-5-1"),
+            ("sonnet", "sonnet"),
+            ("[1m]", "[1m]"),
+        ] {
+            assert_eq!(
+                model_identity("claude-acp", model).as_deref(),
+                Some(identity),
+                "{model}"
+            );
+        }
+        assert_eq!(model_identity("claude-acp", "current"), None);
+        // Only Claude Code's ids carry a context window suffix.
+        assert_eq!(
+            model_identity("codex-acp", "invented[1m]").as_deref(),
+            Some("invented[1m]")
+        );
+        let ids =
+            |panel: &[Configuration]| panel.iter().map(|c| c.model_id.clone()).collect::<Vec<_>>();
+        let offered = || ["opus[1m]", "sonnet", "haiku"].map(judge_row).to_vec();
+        let mut draft = creative();
+        draft.environment["authoredBy"] = json!([]);
+        let opus = judge_row("opus");
+        assert_eq!(
+            ids(&select_judges(&[&opus], &draft, offered())),
+            ["sonnet", "haiku"]
+        );
+        // An ordinary panel may seat the candidate's own model, and marks it
+        // by the same identity.
+        let rows = offered().into_iter().map(|judge| (None, judge)).collect();
+        let panel = ordinary_judges(&[&opus], &draft, rows);
+        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
+        assert!(own_model(&[&opus], &panel));
+        assert!(!own_model(&[&opus], &panel[1..]));
+        // The other way round, and one seat for one model offered twice.
+        let both = ["opus", "opus[1m]", "sonnet"].map(judge_row).to_vec();
+        assert_eq!(
+            ids(&select_judges(
+                &[&judge_row("opus[1m]")],
+                &draft,
+                both.clone()
+            )),
+            ["sonnet"]
+        );
+        assert_eq!(
+            ids(&select_judges(&[&judge_row("haiku")], &draft, both)),
+            ["opus", "sonnet"]
+        );
+        // An author is matched by the same identity, and its model at another
+        // effort is marked.
+        draft.environment["authoredBy"] =
+            json!([{"providerId": "claude-acp", "modelId": "opus[1m]", "effort": "high"}]);
+        let mut author = judge_row("opus");
+        author.effort = Some("high".into());
+        assert!(super::super::routing::authored_by_candidate(
+            &draft, &author
+        ));
+        assert_eq!(
+            ids(&select_judges(&[&judge_row("haiku")], &draft, offered())),
+            ["opus[1m]", "sonnet"]
+        );
+        assert!(author_model_judges(&draft, &[judge_row("opus")]));
+    }
+    #[test]
     fn a_panel_with_an_authors_model_at_another_effort_is_marked() {
         let mut opus = judge_row("opus[1m]");
         opus.effort = Some("high".into());
@@ -9127,7 +9565,9 @@ mod tests {
             .all(|judge| judge.effort.as_deref() == Some("high")));
     }
     #[test]
-    fn ordinary_seats_are_one_per_vendor_and_never_the_candidates_vendor() {
+    fn ordinary_seats_are_one_per_lab_whoever_the_candidate_is() {
+        // Owner, 10-18: every ordinary panel seats one calibrated judge per
+        // lab, the candidate's own lab and model included, marked.
         let row = |provider: &str, model: &str| {
             let mut judge = judge_row(model);
             judge.provider_id = provider.into();
@@ -9140,8 +9580,6 @@ mod tests {
                 (Some(80.0), row("claude-acp", "sonnet")),
                 (Some(70.0), row("codex-acp", "invented-sol")),
                 (Some(60.0), row("grok-acp", "invented-grok")),
-                (Some(50.0), row("zai-acp", "invented-glm")),
-                (None, row("kimi-acp", "invented-kimi")),
             ]
         };
         let ids =
@@ -9152,64 +9590,65 @@ mod tests {
         let seat = |candidate: Configuration, draft: &BenchmarkDraft| {
             ordinary_judges(&[&candidate], draft, offered())
         };
-        // Every judge of the candidate's vendor is out, not only its model;
-        // the roomiest vendors take the three seats, one each.
+        let labs = ["opus[1m]", "invented-sol", "invented-grok"];
         let haiku = row("claude-acp", "haiku");
         let panel = seat(haiku.clone(), &text);
-        assert_eq!(
-            ids(&panel),
-            ["invented-sol", "invented-grok", "invented-glm"]
-        );
-        assert!(!same_vendor(&[&haiku], &panel));
-        assert_eq!(
-            ids(&seat(row("codex-acp", "invented-luna"), &text)),
-            ["opus[1m]", "invented-grok", "invented-glm"]
-        );
-        assert_eq!(
-            ids(&seat(row("grok-acp", "invented-grok-fast"), &text)),
-            ["opus[1m]", "invented-sol", "invented-glm"]
-        );
-        // A workflow's candidates exclude every vendor among them.
+        assert_eq!(ids(&panel), labs);
+        assert!(same_vendor(&[&haiku], &panel));
+        assert!(!own_model(&[&haiku], &panel));
+        let opus = row("claude-acp", "opus");
+        let panel = seat(opus.clone(), &text);
+        assert_eq!(ids(&panel), labs);
+        assert!(own_model(&[&opus], &panel));
+        for candidate in [
+            row("codex-acp", "invented-sol"),
+            row("grok-acp", "invented-grok-fast"),
+        ] {
+            assert_eq!(ids(&seat(candidate.clone(), &text)), labs);
+        }
+        // A workflow's candidates change nothing either.
         let both = [
             row("codex-acp", "invented-luna"),
-            row("zai-acp", "invented-glm-air"),
+            row("grok-acp", "invented-grok"),
         ];
         let panel = ordinary_judges(&[&both[0], &both[1]], &text, offered());
-        assert_eq!(ids(&panel), ["opus[1m]", "invented-grok", "invented-kimi"]);
-        // An author still never judges.
+        assert_eq!(ids(&panel), labs);
+        assert!(own_model(&[&both[0], &both[1]], &panel));
+        // An author never judges; its lab without another calibrated judge
+        // leaves the panel to the other two, and with one it sits instead.
         text.environment["authoredBy"] = json!([row("codex-acp", "invented-sol")]);
         assert_eq!(
-            ids(&seat(row("claude-acp", "haiku"), &text)),
-            ["invented-grok", "invented-glm", "invented-kimi"]
+            ids(&seat(haiku.clone(), &text)),
+            ["opus[1m]", "invented-grok"]
+        );
+        text.environment["authoredBy"] = json!([row("claude-acp", "opus[1m]")]);
+        assert_eq!(
+            ids(&seat(haiku.clone(), &text)),
+            ["sonnet", "invented-sol", "invented-grok"]
         );
         // A candidate of no known vendor admits no judge.
-        assert!(seat(row("invented-provider", "model"), &text).is_empty());
-        // With fewer than two judges of other vendors, the candidate's vendor
-        // fills the panel to two, never with the candidate's own model, and
-        // the panel is marked.
         text.environment["authoredBy"] = json!([]);
-        let two_vendors = || offered().into_iter().take(3).collect::<Vec<_>>();
-        let panel = ordinary_judges(&[&haiku], &text, two_vendors());
-        assert_eq!(ids(&panel), ["invented-sol", "opus[1m]"]);
-        assert!(same_vendor(&[&haiku], &panel));
-        let opus = row("claude-acp", "opus[1m]");
-        let panel = ordinary_judges(&[&opus], &text, two_vendors());
-        assert_eq!(ids(&panel), ["invented-sol", "sonnet"]);
-        assert!(same_vendor(&[&opus], &panel));
-        // A visual rubric, judged by one vendor's models today, seats one
-        // judge per model, still never of the candidate's vendor.
+        assert!(seat(row("invented-provider", "model"), &text).is_empty());
+        // Two labs offered: one each, no fill needed.
+        let two_labs = || offered().into_iter().take(3).collect::<Vec<_>>();
+        assert_eq!(
+            ids(&ordinary_judges(&[&haiku], &text, two_labs())),
+            ["opus[1m]", "invented-sol"]
+        );
+        // One lab offered (a visual rubric while only Claude passed a visual
+        // calibration): its models fill the panel to two, marked.
         let mut visual = creative();
         visual.environment["authoredBy"] = json!([]);
         let claude_only = || offered().into_iter().take(2).collect::<Vec<_>>();
-        let candidate = row("codex-acp", "invented-luna");
-        assert_eq!(
-            ids(&ordinary_judges(&[&candidate], &visual, claude_only())),
-            ["opus[1m]", "sonnet"]
-        );
-        let candidate = row("claude-acp", "haiku");
-        let panel = ordinary_judges(&[&candidate], &visual, claude_only());
+        let luna = row("codex-acp", "invented-luna");
+        let panel = ordinary_judges(&[&luna], &visual, claude_only());
         assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
-        assert!(same_vendor(&[&candidate], &panel));
+        assert!(!same_vendor(&[&luna], &panel));
+        let panel = ordinary_judges(&[&haiku], &visual, claude_only());
+        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
+        assert!(same_vendor(&[&haiku], &panel));
+        // Every lab passed visual: the same three labs.
+        assert_eq!(ids(&ordinary_judges(&[&haiku], &visual, offered())), labs);
     }
     #[test]
     fn a_judge_seat_goes_to_the_account_with_the_most_headroom() {
@@ -9372,6 +9811,46 @@ mod tests {
             execution_limits: None,
             workflow_policy: None,
         }
+    }
+    #[tokio::test]
+    async fn a_provider_that_may_train_on_submitted_data_is_planned_train_versions_only() {
+        let (dir, s, _backend) = setup().await;
+        let mut req = request(&s).await;
+        let train = req.version_ids[0].clone();
+        let mut draft = seed_definitions().remove(0);
+        draft.split = "held_out".into();
+        draft.task_family = "invented-held-out-family".into();
+        let held_out = s.store.save_draft(None, None, draft).await.unwrap();
+        let held_out = s.store.publish(&held_out.id, 1).await.unwrap().id;
+        req.configurations[0].provider_id = "zai-acp".into();
+        req.version_ids = vec![train.clone(), held_out.clone()];
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(!preview.valid);
+        assert!(preview
+            .issues
+            .iter()
+            .any(|issue| issue.contains("Z.ai may train on submitted data")
+                && issue.contains("not held_out")));
+        // Train versions only: nothing to refuse.
+        req.version_ids = vec![train.clone()];
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        // The owner's word changes the rule, both ways.
+        let settings = s.store.root.join("settings.json");
+        std::fs::write(
+            &settings,
+            json!({"providerDataUse": {"zai-acp": {"trainsOnSubmissions": false}}}).to_string(),
+        )
+        .unwrap();
+        req.version_ids = vec![held_out.clone()];
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        req.configurations[0].provider_id = "codex-acp".into();
+        std::fs::write(
+            &settings,
+            json!({"providerDataUse": {"codex-acp": {"trainsOnSubmissions": true}}}).to_string(),
+        )
+        .unwrap();
+        assert!(!s.preview_run(&req).await.unwrap().valid);
+        dir.close().await;
     }
     /// [`request`] flown one attempt at a time, so a refused turn is the
     /// only one sent before the run reacts to it.
@@ -11050,6 +11529,92 @@ mod tests {
         kept.keep("run", "p", "b", inventory.clone());
         assert_eq!(kept.current("old-0", "p", "a", &on(1)), None);
         assert!(kept.current("run", "p", "b", &on(1)).is_some());
+        // Whichever run listed an account last, judges see that listing, by
+        // the executable that serves it now.
+        let newest = json!({"executable": on(1), "models": [{"modelId":"newer"}]});
+        kept.keep("another-run", "p", "a", newest.clone());
+        let latest = kept.latest("p", "a", &on(1)).unwrap();
+        assert_eq!(latest.inventory, newest);
+        assert!(latest.listed_at.elapsed() < Duration::from_secs(60));
+        assert!(latest.refused_at.is_none());
+        assert!(kept.latest("p", "a", &on(2)).is_none());
+        assert!(kept.latest("p", "a", &Value::Null).is_none());
+        assert!(kept.latest("p", "c", &on(1)).is_none());
+        kept.refused("p", "a");
+        assert!(kept.latest("p", "a", &on(1)).unwrap().refused_at.is_some());
+        // An inventory probe counts as a listing too, and clears the refusal.
+        kept.observe("p", "a", inventory.clone());
+        let probed = kept.latest("p", "a", &on(1)).unwrap();
+        assert_eq!(probed.inventory, inventory);
+        assert!(probed.refused_at.is_none());
+    }
+    /// 10-18: under wave load the sandbox refused the live listing of the
+    /// Sol and Grok judge accounts as light jobs, leaving one judge, and the
+    /// rescore's rubric cells could not form a panel.
+    #[tokio::test]
+    async fn a_refused_live_listing_still_seats_the_judge_from_its_newest_listing() {
+        let listing = json!({"executable": {"path": "bridge.js"}, "models": [{"modelId": "m"}]});
+        // Ages, not instants: a Windows Instant counts from boot.
+        let kept = |listed: u64, refused: Option<u64>| ListingAge {
+            age: Duration::from_secs(listed),
+            refused_ago: refused.map(Duration::from_secs),
+            inventory: listing.clone(),
+        };
+        let refusal = || {
+            BenchmarkError::new(
+                "capability_missing",
+                "measured CPU load is above the light-job admission line",
+            )
+        };
+        let never = async { panic!("a fresh listing is not listed again") };
+        // Fresh: no live listing at all.
+        let (seated, refused) = judge_inventory(Some(kept(60, None)), never).await.unwrap();
+        assert_eq!(seated, listing);
+        assert!(refused.is_none());
+        // Older: a refresh is tried; refused, the listing still seats.
+        let (seated, refused) =
+            judge_inventory(Some(kept(2 * 3600, None)), async { Err(refusal()) })
+                .await
+                .unwrap();
+        assert_eq!(seated, listing);
+        let (age, error) = refused.unwrap();
+        assert!(age >= Duration::from_secs(2 * 3600));
+        assert!(error.message.contains("light-job admission line"));
+        // A refresh refused moments ago is not tried again.
+        let never = async { panic!("a refused refresh is not retried at once") };
+        let (seated, _) = judge_inventory(Some(kept(2 * 3600, Some(30))), never)
+            .await
+            .unwrap();
+        assert_eq!(seated, listing);
+        // A refresh that answers wins.
+        let newer = json!({"executable": {"path": "bridge.js"}, "models": [{"modelId": "n"}]});
+        let answered = newer.clone();
+        let (seated, refused) =
+            judge_inventory(
+                Some(kept(2 * 3600, Some(3600))),
+                async move { Ok(answered) },
+            )
+            .await
+            .unwrap();
+        assert_eq!(seated, newer);
+        assert!(refused.is_none());
+        // Too old, or never listed: only a live listing seats.
+        assert!(
+            judge_inventory(Some(kept(13 * 3600, None)), async { Err(refusal()) })
+                .await
+                .is_err()
+        );
+        assert!(judge_inventory(None, async { Err(refusal()) })
+            .await
+            .is_err());
+        let answered = newer.clone();
+        assert_eq!(
+            judge_inventory(None, async move { Ok(answered) })
+                .await
+                .unwrap()
+                .0,
+            newer
+        );
     }
     #[test]
     fn only_a_turn_the_provider_never_saw_returns_to_the_queue() {

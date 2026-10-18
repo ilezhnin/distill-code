@@ -10,21 +10,24 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{qualification, runner, store::now, store::Store, types::*, BenchmarkService};
+use super::{
+    data_use::DataUse, qualification, runner, store::now, store::Store, types::*, BenchmarkService,
+};
 use crate::services::agent_host::execution::NativeProvider;
 use crate::services::provider_account_status::Headroom;
 
-/// The ordinary panel's recipe. It enters the judge protocol and its hash,
-/// and a calibration counts for this recipe only.
+/// The calibration recipe: a calibration counts for this recipe only.
 pub(crate) const RECIPE: &str = "strong-pool-v1";
+/// How an ordinary panel seats the pool's calibrated judges (owner, 10-18):
+/// one per lab, a candidate's own lab and model included (see
+/// `runner::ordinary_judges`). It enters the judge protocol and its hash.
+pub(crate) const PANEL_RECIPE: &str = "three-lab-v1";
 /// The benchmark settings document the renderer writes.
 const SETTINGS: &str = "settings.json";
 const CALIBRATIONS: &str = "judge-calibrations.json";
 const MAX_ENTRIES: usize = 32;
 /// Calibrations kept, newest first; older ones are dropped.
 const KEPT: usize = 256;
-/// Why an entry whose provider's data use is not confirmed does not judge.
-const UNCONFIRMED: &str = "Its provider's data use is not confirmed";
 /// How long one control waits for a busy judge account or renderer.
 const BUSY_WAIT_MS: i64 = 30 * 60 * 1000;
 
@@ -52,10 +55,9 @@ pub struct Entry {
     /// The rubrics it judges, `text` and `visual`; both when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<String>>,
-    /// The owner confirmed that this provider's account neither trains on
-    /// nor keeps what it judges: a judge reads private rubrics and the
-    /// conditions a right answer meets. Without it the entry neither seats
-    /// nor is calibrated.
+    /// Read and ignored: whether a provider may judge is its data use
+    /// (see [`super::data_use`]), one rule for judges and candidates. Kept
+    /// so pools written before that still read.
     #[serde(default)]
     pub disclosure_confirmed: bool,
 }
@@ -178,6 +180,34 @@ pub struct Calibration {
     pub account_id: Option<String>,
     pub controls: Vec<ControlScore>,
     pub failure: Option<String>,
+    /// For a judge whose provider has not been checked to see images: its
+    /// visual controls, judged once the text ones passed (see
+    /// [`VisualCalibration`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual: Option<VisualCalibration>,
+}
+
+/// Whether a judge of a provider not yet checked to see images judges them:
+/// the visual rubrics' controls, accepted and rejected renderings with their
+/// bands, which a judge that does not see the image cannot score inside
+/// both, so they are also the image probe. Passing seats the entry on visual
+/// rubrics; failing leaves its text seats as they are.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualCalibration {
+    /// `running`, `passed`, `failed` or `interrupted` (a restart cut it off).
+    pub status: String,
+    pub controls: Vec<ControlScore>,
+    pub failure: Option<String>,
+}
+
+/// Whether the entry's provider is checked to see images, or its newest
+/// calibration passed the visual controls.
+fn sees_images(entry: &Entry, calibration: Option<&Calibration>) -> bool {
+    runner::judge_provider_allowed(&entry.provider_id)
+        || calibration
+            .and_then(|calibration| calibration.visual.as_ref())
+            .is_some_and(|visual| visual.status == "passed")
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -209,8 +239,16 @@ pub async fn calibrations(root: &Path) -> Result<Vec<Calibration>> {
     let mut all = read(root).await?;
     let live: Vec<String> = running().iter().map(|(id, _)| id.clone()).collect();
     for calibration in &mut all {
-        if calibration.status == "running" && !live.contains(&calibration.id) {
+        let cut = !live.contains(&calibration.id);
+        if calibration.status == "running" && cut {
             calibration.status = "interrupted".into();
+        }
+        if let Some(visual) = calibration
+            .visual
+            .as_mut()
+            .filter(|visual| visual.status == "running" && cut)
+        {
+            visual.status = "interrupted".into();
         }
     }
     all.sort_by_key(|calibration| std::cmp::Reverse(calibration.started_at));
@@ -248,13 +286,15 @@ fn latest<'a>(all: &'a [Calibration], entry: &Entry) -> Option<&'a Calibration> 
         .max_by_key(|calibration| calibration.started_at)
 }
 
-/// Why a pool entry cannot take seats now, or nothing when it can.
-fn refusal(entry: &Entry, calibration: Option<&Calibration>) -> Option<String> {
+/// Why a pool entry cannot take seats now, or nothing when it can. A judge
+/// reads private rubrics and the conditions a right answer meets, so a
+/// provider that may train on submitted data never judges.
+fn refusal(entry: &Entry, calibration: Option<&Calibration>, data_use: &DataUse) -> Option<String> {
     if vendor(&entry.provider_id).is_none() {
         return Some("Its provider has no native judge profile".into());
     }
-    if !entry.disclosure_confirmed {
-        return Some(UNCONFIRMED.into());
+    if let Some(reason) = data_use.judge_refusal(&entry.provider_id) {
+        return Some(reason);
     }
     let Some(calibration) = calibration else {
         return Some("Not calibrated yet".into());
@@ -285,10 +325,16 @@ pub async fn seatable(root: &Path, textual: bool) -> Result<Vec<Entry>> {
             Vec::new()
         }
     };
+    let data_use = DataUse::load(root).await;
     Ok(pool(root)
         .await
         .into_iter()
-        .filter(|entry| entry.judges(textual) && refusal(entry, latest(&all, entry)).is_none())
+        .filter(|entry| {
+            let calibration = latest(&all, entry);
+            entry.judges(textual)
+                && refusal(entry, calibration, &data_use).is_none()
+                && (textual || sees_images(entry, calibration))
+        })
         .collect())
 }
 
@@ -331,6 +377,8 @@ pub struct Row {
     pub vendor: Option<&'static str>,
     pub calibration: Option<Calibration>,
     pub seats: bool,
+    /// Whether it also seats on visual rubrics (see [`sees_images`]).
+    pub seats_visual: bool,
     pub reason: Option<String>,
 }
 
@@ -346,15 +394,19 @@ pub struct Status {
 
 pub async fn status(root: &Path) -> Result<Status> {
     let calibrations = calibrations(root).await?;
+    let data_use = DataUse::load(root).await;
     let pool = pool(root)
         .await
         .into_iter()
         .map(|entry| {
             let calibration = latest(&calibrations, &entry).cloned();
-            let reason = refusal(&entry, calibration.as_ref());
+            let reason = refusal(&entry, calibration.as_ref(), &data_use);
             Row {
                 vendor: vendor(&entry.provider_id),
                 seats: reason.is_none(),
+                seats_visual: reason.is_none()
+                    && entry.judges(false)
+                    && sees_images(&entry, calibration.as_ref()),
                 entry,
                 calibration,
                 reason,
@@ -368,35 +420,37 @@ pub async fn status(root: &Path) -> Result<Status> {
     })
 }
 
+type ControlSets = Vec<(qualification::Record, BenchmarkVersion)>;
+
 /// The rubric qualification records whose controls `entry` is calibrated on,
 /// with their versions: every text rubric's, and a visual rubric's when the
-/// entry judges visual rubrics and its provider's models see images.
-async fn control_sets(
-    store: &Store,
-    entry: &Entry,
-) -> Result<Vec<(qualification::Record, BenchmarkVersion)>> {
+/// entry judges visual rubrics and its provider is checked to see images.
+/// Second, for an entry that judges visual rubrics on a provider not yet
+/// checked, the visual rubrics' records its visual calibration judges.
+async fn control_sets(store: &Store, entry: &Entry) -> Result<(ControlSets, ControlSets)> {
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM selector_qualifications WHERE revoked_at IS NULL ORDER BY created_at,id",
     )
     .fetch_all(&store.pool)
     .await?;
-    let mut sets = Vec::new();
+    let checked = runner::judge_provider_allowed(&entry.provider_id);
+    let (mut sets, mut visual) = (Vec::new(), Vec::new());
     for id in ids {
         let record = store.qualification(&id).await?;
         if record.request.rubric.is_none() || record.request.controls.is_empty() {
             continue;
         }
         let version = store.version(&record.request.version_id).await?;
-        let textual = runner::text_judged(&version.manifest);
-        if version.manifest.evaluator.kind != "rubric"
-            || !(textual
-                || (entry.judges(false) && runner::judge_provider_allowed(&entry.provider_id)))
-        {
+        if version.manifest.evaluator.kind != "rubric" {
             continue;
         }
-        sets.push((record, version));
+        if runner::text_judged(&version.manifest) || (entry.judges(false) && checked) {
+            sets.push((record, version));
+        } else if entry.judges(false) {
+            visual.push((record, version));
+        }
     }
-    Ok(sets)
+    Ok((sets, visual))
 }
 
 /// Why a calibration stopped without a verdict on the judge.
@@ -412,18 +466,69 @@ fn judged_itself(evaluation: &Evaluation) -> bool {
 }
 
 /// Judges every control of `sets` with the entry's seat and records each
-/// score; the calibration fails on the first control out of its band.
+/// score; the calibration fails on the first control out of its band. Once
+/// the text controls passed, a judge of a provider not yet checked to see
+/// images judges `visual`, whose verdict only decides its visual seats.
 async fn run(
     store: &Store,
     backend: &dyn runner::ExecutionBackend,
     calibration: &mut Calibration,
     sets: &[(qualification::Record, BenchmarkVersion)],
+    visual: &[(qualification::Record, BenchmarkVersion)],
 ) -> Result<()> {
     let judge = backend
         .calibration_judge(&calibration.entry, &calibration.id)
         .await?;
     calibration.account_id = judge.account_id.clone();
     save(&store.root, calibration).await?;
+    calibration.failure = judge_controls(store, backend, calibration, &judge, sets, false).await?;
+    if calibration.failure.is_some() || visual.is_empty() {
+        return Ok(());
+    }
+    // The text verdict stands whatever happens to the visual phase, a
+    // restart included.
+    calibration.status = "passed".into();
+    calibration.visual = Some(VisualCalibration {
+        status: "running".into(),
+        controls: Vec::new(),
+        failure: None,
+    });
+    save(&store.root, calibration).await?;
+    let judged = judge_controls(store, backend, calibration, &judge, visual, true).await;
+    let settled = calibration
+        .visual
+        .as_mut()
+        .expect("visual calibration started");
+    match judged {
+        Ok(None) => settled.status = "passed".into(),
+        Ok(Some(failure)) => {
+            settled.status = "failed".into();
+            settled.failure = Some(failure);
+        }
+        // A judge that cannot take a rendering at all fails the probe; a
+        // passing one needs a calibration again.
+        Err(error) => {
+            settled.status = "failed".into();
+            settled.failure = Some(format!(
+                "The judge gave no answer on a rendering: {}: {}",
+                error.code, error.message
+            ));
+        }
+    }
+    save(&store.root, calibration).await
+}
+
+/// Judges every control of `sets` with `judge`, recording each score in the
+/// calibration's text controls or, for `visual`, its visual ones, and
+/// returns the first control out of its band as the failure.
+async fn judge_controls(
+    store: &Store,
+    backend: &dyn runner::ExecutionBackend,
+    calibration: &mut Calibration,
+    judge: &Configuration,
+    sets: &[(qualification::Record, BenchmarkVersion)],
+    visual: bool,
+) -> Result<Option<String>> {
     for (record, version) in sets {
         let Some(band) = record.request.rubric.as_ref() else {
             continue;
@@ -437,7 +542,7 @@ async fn run(
             let asked = now();
             let judged = loop {
                 let judged = backend
-                    .calibrate_control(store, version, record, index, &judge, directory.clone())
+                    .calibrate_control(store, version, record, index, judge, directory.clone())
                     .await?;
                 let busy = matches!(
                     judged.reason.as_deref(),
@@ -468,32 +573,40 @@ async fn run(
                 .map(|evaluation| evaluation.reason.clone())
                 .or_else(|| judged.reason.clone())
                 .unwrap_or_default();
-            calibration.controls.push(ControlScore {
+            let scored = ControlScore {
                 record_id: record.id.clone(),
                 control_id: control.id.clone(),
                 expected: control.expected.clone(),
                 score,
                 in_band: qualification::in_band(band, &control.expected, score),
                 reason: reason.chars().take(500).collect(),
-            });
+            };
+            let miss = (!scored.in_band).then(|| control_failure(&scored));
+            match calibration.visual.as_mut().filter(|_| visual) {
+                Some(visual) => visual.controls.push(scored),
+                None => calibration.controls.push(scored),
+            }
             save(&store.root, calibration).await?;
-            if let Some(miss) = calibration.controls.last().filter(|scored| !scored.in_band) {
-                calibration.failure = Some(format!(
-                    "Control {} expected {} and scored {}",
-                    miss.control_id,
-                    if miss.expected == "pass" {
-                        "an accepted answer"
-                    } else {
-                        "a rejected answer"
-                    },
-                    miss.score
-                        .map_or("no valid sheet".to_owned(), |score| format!("{score:.2}"))
-                ));
-                return Ok(());
+            if miss.is_some() {
+                return Ok(miss);
             }
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+fn control_failure(miss: &ControlScore) -> String {
+    format!(
+        "Control {} expected {} and scored {}",
+        miss.control_id,
+        if miss.expected == "pass" {
+            "an accepted answer"
+        } else {
+            "a rejected answer"
+        },
+        miss.score
+            .map_or("no valid sheet".to_owned(), |score| format!("{score:.2}"))
+    )
 }
 
 impl BenchmarkService {
@@ -512,8 +625,8 @@ impl BenchmarkService {
             ));
         }
         // A calibration sends private rubric controls to the provider too, so
-        // only a pool entry whose data use the owner confirmed is calibrated,
-        // whatever the request says.
+        // only a pool entry of a provider that does not train on submitted
+        // data is calibrated.
         let Some(entry) = pool(&self.store.root)
             .await
             .into_iter()
@@ -524,10 +637,13 @@ impl BenchmarkService {
                 "Add this judge to the pool before calibrating it",
             ));
         };
-        if !entry.disclosure_confirmed {
-            return Err(BenchmarkError::new("validation", UNCONFIRMED));
+        if let Some(reason) = DataUse::load(&self.store.root)
+            .await
+            .judge_refusal(&entry.provider_id)
+        {
+            return Err(BenchmarkError::new("validation", reason));
         }
-        let sets = control_sets(&self.store, &entry).await?;
+        let (sets, visual) = control_sets(&self.store, &entry).await?;
         if sets.is_empty() {
             return Err(BenchmarkError::new(
                 "validation",
@@ -544,6 +660,7 @@ impl BenchmarkService {
             account_id: None,
             controls: Vec::new(),
             failure: None,
+            visual: None,
         };
         {
             let mut live = running();
@@ -565,7 +682,7 @@ impl BenchmarkService {
         let mut settled = calibration.clone();
         tokio::spawn(async move {
             let interrupted =
-                match Box::pin(run(&store, backend.as_ref(), &mut settled, &sets)).await {
+                match Box::pin(run(&store, backend.as_ref(), &mut settled, &sets, &visual)).await {
                     Ok(()) => false,
                     Err(error) => {
                         settled.failure = Some(format!("{}: {}", error.code, error.message));
@@ -590,7 +707,7 @@ impl BenchmarkService {
             }
             running().retain(|(live, _)| live != &settled.id);
             log::info!(
-                "[benchmarks] judge calibration {} of {} {} at {}: {} ({} controls{})",
+                "[benchmarks] judge calibration {} of {} {} at {}: {} ({} controls{}){}",
                 settled.id,
                 settled.entry.provider_id,
                 settled.entry.model_id,
@@ -601,6 +718,20 @@ impl BenchmarkService {
                     .failure
                     .as_deref()
                     .map(|failure| format!("; {failure}"))
+                    .unwrap_or_default(),
+                settled
+                    .visual
+                    .as_ref()
+                    .map(|visual| format!(
+                        "; visual {} ({} controls{})",
+                        visual.status,
+                        visual.controls.len(),
+                        visual
+                            .failure
+                            .as_deref()
+                            .map(|failure| format!("; {failure}"))
+                            .unwrap_or_default()
+                    ))
                     .unwrap_or_default()
             );
             super::notify_changed(&store, app.as_ref()).await;
@@ -636,6 +767,7 @@ mod tests {
             controls: Vec::new(),
             failure: (status == "failed")
                 .then(|| "Control c expected a rejected answer and scored 0.41".into()),
+            visual: None,
         }
     }
 
@@ -669,12 +801,11 @@ mod tests {
             ]
         );
         assert!(pool[1].judges(true) && !pool[1].judges(false));
-        // Data use is unconfirmed unless the owner said so.
-        assert!(pool.iter().all(|entry| !entry.disclosure_confirmed));
-        let confirmed = entries(&json!({"judgePool": [
+        // A pool written with the old per-entry flag still reads.
+        let older = entries(&json!({"judgePool": [
             {"providerId": "claude-acp", "modelId": "opus", "disclosureConfirmed": true}
         ]}));
-        assert!(confirmed[0].disclosure_confirmed);
+        assert_eq!(older.len(), 1);
         assert!(pool[0].judges(true) && pool[0].judges(false));
         assert!(entries(&json!({})).is_empty());
         let many: Vec<_> = (0..40)
@@ -708,24 +839,28 @@ mod tests {
             other_recipe,
             calibration(entry("claude-acp", "opus", Some("max")), "passed", 5),
         ];
-        assert!(refusal(&opus, latest(&all, &opus)).is_none());
-        assert!(refusal(&sol, latest(&all, &sol))
+        let defaults = DataUse::from_settings(&json!({}));
+        assert!(refusal(&opus, latest(&all, &opus), &defaults).is_none());
+        assert!(refusal(&sol, latest(&all, &sol), &defaults)
             .unwrap()
             .starts_with("Its calibration failed: Control c"));
         assert_eq!(
-            refusal(&grok, latest(&all, &grok)).as_deref(),
+            refusal(&grok, latest(&all, &grok), &defaults).as_deref(),
             Some("Not calibrated yet")
         );
         let unknown = entry("invented-provider", "model", None);
-        assert!(refusal(&unknown, None).is_some());
-        // A passed calibration does not seat a provider whose data use the
-        // owner has not confirmed.
-        let mut unconfirmed = opus.clone();
-        unconfirmed.disclosure_confirmed = false;
-        assert_eq!(
-            refusal(&unconfirmed, latest(&all, &unconfirmed)).as_deref(),
-            Some(UNCONFIRMED)
+        assert!(refusal(&unknown, None, &defaults).is_some());
+        // A passed calibration never seats a provider that may train on
+        // submitted data, by default or by the owner's word.
+        let glm = entry("zai-acp", "invented-glm", Some("high"));
+        let passed = calibration(glm.clone(), "passed", 6);
+        assert!(refusal(&glm, Some(&passed), &defaults)
+            .unwrap()
+            .contains("may train on submitted data"));
+        let opus_trains = DataUse::from_settings(
+            &json!({"providerDataUse": {"claude-acp": {"trainsOnSubmissions": true}}}),
         );
+        assert!(refusal(&opus, latest(&all, &opus), &opus_trains).is_some());
     }
 
     #[tokio::test]
@@ -775,7 +910,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(calibrations(root.path()).await.unwrap().len(), 3);
-        assert_eq!(seatable(root.path(), true).await.unwrap(), [opus, sol]);
+        assert_eq!(
+            seatable(root.path(), true).await.unwrap(),
+            [opus.clone(), sol.clone()]
+        );
+        // A provider not checked to see images seats on visual rubrics only
+        // once its calibration passed the visual controls, which leave its
+        // text seat alone when they fail.
+        assert_eq!(
+            seatable(root.path(), false).await.unwrap(),
+            [opus.clone(), visual.clone()]
+        );
+        let mut probed = calibration(sol.clone(), "passed", 3);
+        probed.visual = Some(VisualCalibration {
+            status: "failed".into(),
+            controls: Vec::new(),
+            failure: Some("Control v expected an accepted answer and scored 0.20".into()),
+        });
+        save(root.path(), &probed).await.unwrap();
+        assert_eq!(
+            seatable(root.path(), true).await.unwrap(),
+            [opus.clone(), sol.clone()]
+        );
+        assert_eq!(
+            seatable(root.path(), false).await.unwrap(),
+            [opus.clone(), visual.clone()]
+        );
+        probed.visual.as_mut().unwrap().status = "passed".into();
+        save(root.path(), &probed).await.unwrap();
+        assert_eq!(
+            seatable(root.path(), false).await.unwrap(),
+            [opus.clone(), visual, sol.clone()]
+        );
+        let status = super::status(root.path()).await.unwrap();
+        assert!(status.pool.iter().all(|row| row.seats_visual));
+        // A restart during the visual phase keeps the passed text verdict
+        // and reads the visual phase as interrupted: text seats only.
+        probed.visual.as_mut().unwrap().status = "running".into();
+        save(root.path(), &probed).await.unwrap();
+        let stored = calibrations(root.path()).await.unwrap();
+        let cut = stored.iter().find(|stored| stored.id == probed.id).unwrap();
+        assert_eq!(cut.status, "passed");
+        assert_eq!(cut.visual.as_ref().unwrap().status, "interrupted");
+        assert!(seatable(root.path(), true).await.unwrap().contains(&sol));
+        assert!(!seatable(root.path(), false).await.unwrap().contains(&sol));
         // Calibrations that cannot be read seat nobody.
         std::fs::write(root.path().join(CALIBRATIONS), "{").unwrap();
         assert!(seatable(root.path(), true).await.unwrap().is_empty());
@@ -801,19 +979,19 @@ mod tests {
             refusal(service.calibrate_judge(sol.clone()).await),
             "Add this judge to the pool before calibrating it"
         );
-        // In the pool without the owner's confirmation: the request's own
-        // flag does not count.
-        let mut stored = sol.clone();
-        stored.disclosure_confirmed = false;
+        // In the pool, but its provider may train on submitted data: no
+        // private control is sent, whatever the entry or the request says.
         std::fs::write(
             root.path().join(SETTINGS),
-            json!({ "judgePool": [stored] }).to_string(),
+            json!({
+                "judgePool": [sol.clone()],
+                "providerDataUse": {"codex-acp": {"trainsOnSubmissions": true}},
+            })
+            .to_string(),
         )
         .unwrap();
-        assert_eq!(
-            refusal(service.calibrate_judge(sol.clone()).await),
-            UNCONFIRMED
-        );
+        assert!(refusal(service.calibrate_judge(sol.clone()).await)
+            .contains("may train on submitted data"));
         // Confirmed, but no rubric qualification has controls yet.
         std::fs::write(
             root.path().join(SETTINGS),

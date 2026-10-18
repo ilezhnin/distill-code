@@ -15,6 +15,7 @@ import type {
   JudgePoolEntry,
   JudgePoolRow,
   JudgePoolStatus,
+  ProviderDataUse,
 } from "@/features/benchmarks/types";
 import type { ProviderAccount } from "@/features/providers/api/providerAccounts";
 import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   judgePool: vi.fn(),
   calibrateJudge: vi.fn(),
   getCandidateObservations: vi.fn(),
+  providerDataUse: vi.fn(),
 }));
 
 vi.mock("@/features/benchmarks/api/benchmarks", async (importOriginal) => {
@@ -44,6 +46,7 @@ vi.mock("@/features/benchmarks/api/benchmarks", async (importOriginal) => {
       judgePool: mocks.judgePool,
       calibrateJudge: mocks.calibrateJudge,
       getCandidateObservations: mocks.getCandidateObservations,
+      providerDataUse: mocks.providerDataUse,
     },
   };
 });
@@ -106,6 +109,27 @@ function row(label: string) {
   return within(element);
 }
 
+/** One provider's data use as the service reports it. */
+function provider(
+  providerId: string,
+  name: string,
+  trainsOnSubmissions: boolean,
+  stated = false,
+): ProviderDataUse {
+  return { providerId, name, trainsOnSubmissions, stated };
+}
+
+/** What holds when the owner has named no provider. */
+const defaultDataUse: ProviderDataUse[] = [
+  provider("claude-acp", "Anthropic", false),
+  provider("codex-acp", "OpenAI", false),
+  provider("grok-acp", "xAI", false),
+  provider("kimi-acp", "Moonshot AI", true),
+  provider("zai-acp", "Z.ai", true),
+];
+
+const TRAINS = "May train on submitted data";
+
 const RECIPE = "controls-v1";
 const STARTED_AT = Date.UTC(2026, 9, 18, 16, 0);
 
@@ -115,7 +139,7 @@ function judge(
   effort: string | null,
   extra: Partial<JudgePoolEntry> = {},
 ): JudgePoolEntry {
-  return { providerId, modelId, effort, disclosureConfirmed: true, ...extra };
+  return { providerId, modelId, effort, ...extra };
 }
 
 const alpha = judge("codex-acp", "judge-alpha", "high");
@@ -123,9 +147,6 @@ const beta = judge("codex-acp", "judge-beta", null);
 const gamma = judge("grok-acp", "judge-gamma", "medium");
 const delta = judge("kimi-acp", "judge-delta", "high");
 const epsilon = judge("zai-acp", "judge-epsilon", null, { inputs: ["text"] });
-const theta = judge("codex-acp", "judge-theta", "high", {
-  disclosureConfirmed: false,
-});
 const zeta = judge("codex-acp", "judge-zeta", "low");
 
 function control(
@@ -162,6 +183,7 @@ const passed = calibration(alpha, "passed", [
   control("rejected-1", "fail", 0.1, true),
 ]);
 const running = calibration(gamma, "running");
+// Calibrated before its provider's data use ruled it out.
 const failed = calibration(delta, "failed", [
   control("accepted-1", "pass", 0.9, true),
   control("accepted-2", "pass", 0.3, false, "Missed the second requirement"),
@@ -192,9 +214,18 @@ const status: JudgePoolStatus = {
     poolRow(alpha, "OpenAI", passed, null),
     poolRow(beta, "OpenAI", null, "It has not passed calibration."),
     poolRow(gamma, "xAI", running, "It is calibrating."),
-    poolRow(delta, "Moonshot AI", failed, "Its calibration failed."),
-    { ...poolRow(epsilon, "Z.ai", interrupted, null), seats: false },
-    poolRow(theta, "OpenAI", null, "Its provider's data use is not confirmed"),
+    poolRow(
+      delta,
+      "Moonshot AI",
+      failed,
+      "Moonshot AI may train on submitted data, so its models never judge",
+    ),
+    poolRow(
+      epsilon,
+      "Z.ai",
+      interrupted,
+      "Z.ai may train on submitted data, so its models never judge",
+    ),
   ],
   calibrations: [passed, running, failed, interrupted, outside],
 };
@@ -253,7 +284,6 @@ const observations = [
       "medium",
       "high",
     ]),
-    model("codex-acp", "judge-theta", "Judge Theta", ["high"]),
     model("codex-acp", "judge-zeta", "Judge Zeta", ["low"]),
   ]),
   observation("grok-acp", 2, [
@@ -267,7 +297,8 @@ const observations = [
   ]),
 ];
 
-const pool = () => useBenchmarkSettingsStore.getState().settings.judgePool;
+const settings = () => useBenchmarkSettingsStore.getState().settings;
+const pool = () => settings().judgePool;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -280,6 +311,7 @@ beforeEach(() => {
     calibrations: [],
   });
   mocks.getCandidateObservations.mockResolvedValue([]);
+  mocks.providerDataUse.mockResolvedValue(defaultDataUse);
   useBenchmarkSettingsStore.setState({
     settings: { ...DEFAULT_BENCHMARK_SETTINGS },
     hydrated: false,
@@ -378,13 +410,178 @@ describe("BenchmarkSettings Z.ai sandbox keys", () => {
   });
 });
 
+describe("BenchmarkSettings provider data use", () => {
+  /** The service's rows once the owner named xAI and Z.ai. */
+  const stated: ProviderDataUse[] = [
+    provider("claude-acp", "Anthropic", false),
+    provider("codex-acp", "OpenAI", false),
+    provider("grok-acp", "xAI", true, true),
+    provider("kimi-acp", "Moonshot AI", true),
+    provider("zai-acp", "Z.ai", false, true),
+  ];
+
+  /** Shows the page once the service's rows are in. */
+  async function showDataUse(rows: ProviderDataUse[]) {
+    mocks.providerDataUse.mockResolvedValue(rows);
+    showAccounts([]);
+    show();
+    await screen.findByText("Moonshot AI");
+  }
+
+  it("lists every provider the service names, stated and default, and what that means", async () => {
+    await showDataUse(stated);
+
+    expect(
+      screen.getByRole("heading", { name: "Provider data use" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/receives only train tasks, never held-out ones/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/its models never judge/, { selector: "p" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/in its account settings/)).toBeInTheDocument();
+
+    // The owner said xAI may train: shown as set, with the way back.
+    const xai = row("xAI");
+    expect(xai.getByText("Grok · Set by you")).toBeInTheDocument();
+    expect(xai.getByRole("switch", { name: TRAINS })).toBeChecked();
+    expect(xai.getByRole("button", { name: "Use default" })).toBeEnabled();
+
+    // Moonshot AI trains by the backend's default.
+    const moonshot = row("Moonshot AI");
+    expect(moonshot.getByText("Kimi Code · Default")).toBeInTheDocument();
+    expect(moonshot.getByRole("switch", { name: TRAINS })).toBeChecked();
+    expect(
+      moonshot.queryByRole("button", { name: "Use default" }),
+    ).not.toBeInTheDocument();
+
+    // The owner said Z.ai does not train; the provider is its vendor.
+    const zai = row("Z.ai");
+    expect(zai.getByText("Set by you")).toBeInTheDocument();
+    expect(zai.getByRole("switch", { name: TRAINS })).not.toBeChecked();
+
+    const openai = row("OpenAI");
+    expect(openai.getByText("Codex · Default")).toBeInTheDocument();
+    expect(openai.getByRole("switch", { name: TRAINS })).not.toBeChecked();
+    expect(row("Anthropic").getByText("Claude Code · Default")).toBeVisible();
+  });
+
+  it("writes a change to the settings and reads the service again", async () => {
+    const user = userEvent.setup();
+    useBenchmarkSettingsStore.setState({
+      settings: {
+        ...DEFAULT_BENCHMARK_SETTINGS,
+        providerDataUse: {
+          "grok-acp": { trainsOnSubmissions: true },
+          "zai-acp": { trainsOnSubmissions: false },
+        },
+      },
+      hydrated: true,
+    });
+    await showDataUse(stated);
+    expect(mocks.providerDataUse).toHaveBeenCalledTimes(1);
+    const judgeReads = mocks.judgePool.mock.calls.length;
+    // What the service says once the edit is on disk.
+    mocks.providerDataUse.mockResolvedValue(
+      stated.map((entry) =>
+        entry.providerId === "kimi-acp"
+          ? { ...entry, trainsOnSubmissions: false, stated: true }
+          : entry,
+      ),
+    );
+
+    await user.click(row("Moonshot AI").getByRole("switch", { name: TRAINS }));
+
+    expect(settings().providerDataUse).toEqual({
+      "grok-acp": { trainsOnSubmissions: true },
+      "zai-acp": { trainsOnSubmissions: false },
+      "kimi-acp": { trainsOnSubmissions: false },
+    });
+    // Outside the desktop the document lands in browser storage.
+    const written = JSON.parse(
+      window.localStorage.getItem("distill:benchmark-settings") ?? "null",
+    );
+    expect(written).toMatchObject({
+      providerDataUse: {
+        "grok-acp": { trainsOnSubmissions: true },
+        "zai-acp": { trainsOnSubmissions: false },
+        "kimi-acp": { trainsOnSubmissions: false },
+      },
+    });
+    await waitFor(() => expect(mocks.providerDataUse).toHaveBeenCalledTimes(2));
+    // Whether a judge seats follows its provider's data use.
+    await waitFor(() =>
+      expect(mocks.judgePool.mock.calls.length).toBeGreaterThan(judgeReads),
+    );
+    expect(
+      await row("Moonshot AI").findByText("Kimi Code · Set by you"),
+    ).toBeInTheDocument();
+    // The row waits for the service's read before it takes another change.
+    await waitFor(() =>
+      expect(
+        row("Moonshot AI").getByRole("switch", { name: TRAINS }),
+      ).toBeEnabled(),
+    );
+    expect(
+      row("Moonshot AI").getByRole("switch", { name: TRAINS }),
+    ).not.toBeChecked();
+
+    // Back to the default: the owner's word on xAI is taken out.
+    mocks.providerDataUse.mockResolvedValue(
+      stated.map((entry) =>
+        entry.providerId === "grok-acp"
+          ? { ...entry, trainsOnSubmissions: false, stated: false }
+          : entry.providerId === "kimi-acp"
+            ? { ...entry, trainsOnSubmissions: false, stated: true }
+            : entry,
+      ),
+    );
+    await user.click(row("xAI").getByRole("button", { name: "Use default" }));
+
+    expect(settings().providerDataUse).toEqual({
+      "zai-acp": { trainsOnSubmissions: false },
+      "kimi-acp": { trainsOnSubmissions: false },
+    });
+    await waitFor(() => expect(mocks.providerDataUse).toHaveBeenCalledTimes(3));
+    expect(await row("xAI").findByText("Grok · Default")).toBeInTheDocument();
+    // What the default holds is the service's word, read back.
+    await waitFor(() => {
+      const switched = row("xAI").getByRole("switch", { name: TRAINS });
+      expect(switched).not.toBeChecked();
+      expect(switched).toBeEnabled();
+    });
+    expect(
+      row("xAI").queryByRole("button", { name: "Use default" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says when the service could not be read", async () => {
+    mocks.providerDataUse.mockRejectedValue({
+      code: "storage_unavailable",
+      message: "The Distill folder is not ready",
+    });
+    showAccounts([]);
+    show();
+
+    expect(
+      await screen.findByText(
+        "Provider data use could not be read: The Distill folder is not ready",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: TRAINS }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("BenchmarkSettings judges", () => {
   /** Shows the page once the pool's status and the model names are in. */
   async function showJudges() {
     useBenchmarkSettingsStore.setState({
       settings: {
         ...DEFAULT_BENCHMARK_SETTINGS,
-        judgePool: [alpha, beta, gamma, delta, epsilon, theta],
+        judgePool: [alpha, beta, gamma, delta, epsilon],
       },
     });
     mocks.judgePool.mockResolvedValue(status);
@@ -393,13 +590,17 @@ describe("BenchmarkSettings judges", () => {
     show();
     await screen.findByText("Judge Alpha");
     await screen.findByText("Takes judge seats");
+    await screen.findAllByText(/^Never judges/);
   }
 
   it("says where judges come from and that the pool starts empty", async () => {
     show();
 
     expect(
-      screen.getByText(/never by a model from the candidate's own vendor/),
+      screen.getByText(/one model per lab from this pool/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/never by one whose provider may train/),
     ).toBeInTheDocument();
     expect(row("No judges yet").getByText(/then calibrate it/)).toBeVisible();
     expect(
@@ -410,15 +611,15 @@ describe("BenchmarkSettings judges", () => {
   it("shows each judge's calibration and whether it takes seats", async () => {
     await showJudges();
 
+    // Data use is the provider's, so no entry asks for a confirmation.
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+
     const ready = row("Judge Alpha");
     expect(ready.getByText("OpenAI · Codex · high")).toBeInTheDocument();
     expect(
       ready.getByText("Passed: 3 of 3 controls in band"),
     ).toBeInTheDocument();
     expect(ready.getByText("Takes judge seats")).toBeInTheDocument();
-    expect(
-      ready.getByRole("checkbox", { name: "Data use confirmed" }),
-    ).toBeChecked();
     expect(ready.getByRole("button", { name: "Calibrate" })).toBeEnabled();
 
     const fresh = row("Judge Beta");
@@ -439,6 +640,8 @@ describe("BenchmarkSettings judges", () => {
       calibrating.getByRole("button", { name: "Calibrate" }),
     ).toBeDisabled();
 
+    // Calibrated before its provider was known to train: the old result
+    // stands, but the provider decides.
     const rejected = row("Judge Delta");
     expect(
       rejected.getByText("Failed: 1 of 2 controls out of band"),
@@ -457,20 +660,6 @@ describe("BenchmarkSettings judges", () => {
     expect(
       cut.getByText("Interrupted: The app closed during the calibration"),
     ).toBeInTheDocument();
-    expect(cut.getByText("Takes no seats yet")).toBeInTheDocument();
-
-    const unconfirmed = row("Judge Theta");
-    expect(
-      unconfirmed.getByText(
-        "Does not judge and cannot be calibrated: Its provider's data use is not confirmed",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      unconfirmed.getByRole("checkbox", { name: "Data use confirmed" }),
-    ).not.toBeChecked();
-    expect(
-      unconfirmed.getByRole("button", { name: "Calibrate" }),
-    ).toBeDisabled();
 
     expect(
       screen.getByRole("heading", {
@@ -487,6 +676,28 @@ describe("BenchmarkSettings judges", () => {
     expect(
       compared.queryByRole("button", { name: "Remove" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("never seats or calibrates a judge whose provider may train on submitted data", async () => {
+    await showJudges();
+
+    for (const [label, vendor] of [
+      ["Judge Delta", "Moonshot AI"],
+      ["Judge Epsilon", "Z.ai"],
+    ]) {
+      const training = row(label);
+      expect(
+        training.getByText(
+          `Never judges and cannot be calibrated: ${vendor} may train on submitted data.`,
+        ),
+      ).toBeInTheDocument();
+      expect(training.queryByText(/^Takes/)).not.toBeInTheDocument();
+      expect(
+        training.getByRole("button", { name: "Calibrate" }),
+      ).toBeDisabled();
+      expect(training.getByRole("button", { name: "Remove" })).toBeEnabled();
+    }
+    expect(mocks.calibrateJudge).not.toHaveBeenCalled();
   });
 
   it("calibrates the entry and shows it running", async () => {
@@ -537,7 +748,7 @@ describe("BenchmarkSettings judges", () => {
       row("Judge Alpha").getByRole("button", { name: "Remove" }),
     );
 
-    expect(pool()).toEqual([beta, gamma, delta, epsilon, theta]);
+    expect(pool()).toEqual([beta, gamma, delta, epsilon]);
     // Its calibration stays, so it is listed among the models outside.
     expect(
       row("Judge Alpha").getByRole("button", { name: "Add to pool" }),
@@ -545,7 +756,7 @@ describe("BenchmarkSettings judges", () => {
     await waitFor(() => expect(mocks.judgePool).toHaveBeenCalledTimes(2));
   });
 
-  it("adds a calibrated model back to the pool, unconfirmed", async () => {
+  it("adds a calibrated model back to the pool without any data-use flag", async () => {
     const user = userEvent.setup();
     await showJudges();
 
@@ -553,33 +764,16 @@ describe("BenchmarkSettings judges", () => {
       row("Judge Zeta").getByRole("button", { name: "Add to pool" }),
     );
 
-    expect(pool().at(-1)).toEqual({ ...zeta, disclosureConfirmed: false });
+    expect(pool().at(-1)).toEqual(zeta);
+    expect(pool().at(-1)).not.toHaveProperty("disclosureConfirmed");
     const added = row("Judge Zeta");
     expect(added.getByRole("button", { name: "Remove" })).toBeInTheDocument();
-    expect(
-      added.getByRole("checkbox", { name: "Data use confirmed" }),
-    ).not.toBeChecked();
-    expect(added.getByRole("button", { name: "Calibrate" })).toBeDisabled();
+    expect(added.queryByRole("checkbox")).not.toBeInTheDocument();
+    // OpenAI does not train on submitted data, so it may be calibrated.
+    expect(added.getByRole("button", { name: "Calibrate" })).toBeEnabled();
   });
 
-  it("confirms a provider's data use before the entry calibrates", async () => {
-    const user = userEvent.setup();
-    await showJudges();
-
-    await user.click(
-      row("Judge Theta").getByRole("checkbox", { name: "Data use confirmed" }),
-    );
-
-    expect(pool().at(-1)).toEqual({ ...theta, disclosureConfirmed: true });
-    expect(
-      row("Judge Theta").getByRole("button", { name: "Calibrate" }),
-    ).toBeEnabled();
-    expect(
-      row("Judge Theta").queryByText(/Does not judge/),
-    ).not.toBeInTheDocument();
-  });
-
-  it("adds a listed model at a chosen effort, unconfirmed", async () => {
+  it("adds a listed model at a chosen effort", async () => {
     const user = userEvent.setup();
     await showJudges();
 
@@ -620,16 +814,13 @@ describe("BenchmarkSettings judges", () => {
       modelId: "judge-eta",
       effort: "medium",
       inputs: ["text"],
-      disclosureConfirmed: false,
     });
     const added = row("Judge Eta");
     expect(
       added.getByText("OpenAI · Codex · medium · Text rubrics only"),
     ).toBeInTheDocument();
-    expect(
-      added.getByText(/Does not judge and cannot be calibrated until/),
-    ).toBeInTheDocument();
-    expect(added.getByRole("button", { name: "Calibrate" })).toBeDisabled();
+    expect(added.getByText("Not calibrated")).toBeInTheDocument();
+    expect(added.getByRole("button", { name: "Calibrate" })).toBeEnabled();
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveTextContent(
       "Choose a model",
     );
