@@ -283,6 +283,70 @@ impl Store {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn manifests_and_drafts_are_parsed_once_and_read_again_when_they_change() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let mut published = Vec::new();
+        for name in ["Invented first case", "Invented second case"] {
+            let mut draft = super::super::seeds::definitions().remove(0);
+            draft.name = name.into();
+            draft.facets.difficulty = Some("medium".into());
+            let definition = store.save_draft(None, None, draft).await.unwrap();
+            published.push(store.publish(&definition.id, 1).await.unwrap());
+        }
+        let first = &published[0];
+        let a = store.version_shared(&first.id).await.unwrap();
+        let b = store.version_shared(&first.id).await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        // A changed column reads the version again.
+        sqlx::query("UPDATE benchmark_versions SET published_at=published_at+1 WHERE id=?")
+            .bind(&first.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let c = store.version_shared(&first.id).await.unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&a, &c));
+        assert_eq!(c.published_at, a.published_at + 1);
+        // A new draft revision is read with its own content.
+        let definition = store.definition(&first.definition_id).await.unwrap();
+        let mut draft = definition.draft.clone();
+        draft.name = "Invented first case, revised".into();
+        store
+            .save_draft(Some(&definition.id), Some(definition.draft_revision), draft)
+            .await
+            .unwrap();
+        let revised = store.definition(&first.definition_id).await.unwrap();
+        assert_eq!(revised.draft.name, "Invented first case, revised");
+        assert_eq!(revised.draft_revision, definition.draft_revision + 1);
+        // Published versions in the order the catalog lists them, and the
+        // definitions' archive state without their drafts.
+        let listed: Vec<String> = store
+            .all_definitions()
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|d| d.versions.iter().map(|v| v.id.clone()))
+            .collect();
+        let all: Vec<String> = store
+            .all_versions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(listed, all);
+        store
+            .archive(&published[1].definition_id, true)
+            .await
+            .unwrap();
+        let states = store.definition_states().await.unwrap();
+        assert_eq!(states.len(), 2);
+        assert!(!states[0].archived && states[1].archived);
+        assert_eq!(states[1].id, published[1].definition_id);
+        directory.close().await;
+    }
+    #[tokio::test]
     async fn publication_and_new_work_require_explicit_difficulty() {
         let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
@@ -309,6 +373,7 @@ mod tests {
             .unwrap();
         // Simulate a legacy publication made before difficulty was mandatory.
         sqlx::query("UPDATE benchmark_versions SET manifest_json=json_remove(manifest_json,'$.facets.difficulty') WHERE id=?").bind(&version.id).execute(&store.pool).await.unwrap();
+        store.forget_parsed();
         assert!(store
             .version(&version.id)
             .await
@@ -426,14 +491,10 @@ mod tests {
     }
     /// The catalog and runs as the evidence queries read them.
     async fn query_data(store: &Store) -> QueryData {
-        let definitions = store.all_definitions().await.unwrap();
         QueryData {
             releases: Vec::new(),
-            versions: definitions
-                .iter()
-                .flat_map(|d| d.versions.clone())
-                .collect(),
-            definitions,
+            versions: store.all_versions().await.unwrap(),
+            definitions: store.definition_states().await.unwrap(),
             runs: store.all_runs().await.unwrap(),
             attempts: vec![],
             required_repetitions: 1,

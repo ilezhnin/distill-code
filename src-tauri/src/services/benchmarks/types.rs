@@ -662,8 +662,9 @@ pub struct Attempt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_context: Option<super::runner::collection_context::Context>,
     /// The sandbox heavy-lane setting and competing load when the candidate
-    /// session was admitted, also sealed in the evidence. Absent on attempts
-    /// recorded before it was kept or recovered after an app restart.
+    /// session was admitted, also sealed in the evidence; on a workflow root,
+    /// its most loaded step's. Absent on attempts recorded before it was kept
+    /// or recovered after an app restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_admission: Option<crate::services::benchmark_sandbox::Admission>,
     /// Purchased credits the turn drew on, also sealed in the evidence.
@@ -1122,9 +1123,20 @@ pub struct PoolRelease {
     pub created_at: i64,
     pub version_ids: Vec<String>,
 }
+/// What the analyses read of a definition: whether and when it was archived.
+/// Its draft stays in the store, and [`QueryData::versions`] carries every
+/// published manifest.
+#[derive(Debug, Clone, Default)]
+pub struct DefinitionState {
+    pub id: String,
+    pub archived: bool,
+    pub archived_at: Option<i64>,
+    /// Earlier archive periods a restore closed, as (archived_at, restored_at).
+    pub archive_history: Vec<(i64, i64)>,
+}
 #[derive(Debug, Clone)]
 pub struct QueryData {
-    pub definitions: Vec<BenchmarkDefinition>,
+    pub definitions: Vec<DefinitionState>,
     pub versions: Vec<BenchmarkVersion>,
     pub runs: Vec<BenchmarkRun>,
     pub attempts: Vec<Attempt>,

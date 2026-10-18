@@ -211,6 +211,7 @@ async fn frozen_rubric_campaign_reserves_and_scores_one_final_panel_per_trajecto
         backend: backend.clone(),
         wake: Default::default(),
         active: Default::default(),
+        queries: Default::default(),
         app: None,
     });
     dir.register(&service.store.pool);

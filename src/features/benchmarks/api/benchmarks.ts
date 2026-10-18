@@ -23,6 +23,7 @@ import type {
   DesignEntry,
   BenchmarkDefinition,
   BenchmarkDefinitionSummary,
+  BenchmarkChange,
   BenchmarkDraft,
   BenchmarkEvent,
   BenchmarkRun,
@@ -300,8 +301,8 @@ export const benchmarkApi = {
    */
   copyKeyToSandbox: (providerId: string, accountId: string) =>
     invoke<void>("benchmark_sandbox_sign_in", { providerId, accountId }),
-  listen: (callback: (event: Pick<BenchmarkEvent, "sequence">) => void) =>
-    listen<Pick<BenchmarkEvent, "sequence">>("benchmark-changed", (event) =>
+  listen: (callback: (change: BenchmarkChange) => void) =>
+    listen<BenchmarkChange>("benchmark-changed", (event) =>
       callback(event.payload),
     ),
 };

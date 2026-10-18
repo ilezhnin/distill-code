@@ -185,6 +185,18 @@ turn. Rust changes reach the app on the next launch; pass `-Watch` to get the
 rebuild-on-save back. `just dev-windows` keeps the watcher, and
 `DISTILL_DEV_NO_WATCH=1` turns it off there too.
 
+For an app that runs benchmark waves, `-Optimized` builds the app's own crates
+at opt-level 2, as the dependencies already are, under the same dev identity,
+app folders and distillctl endpoint. The setting goes on that launch's cargo
+command line (`scripts\windows\cargo-optimized.cmd` as the Tauri runner), not
+into the environment, so builds and tests started from the app's terminals and
+agents keep the unoptimized profile, where the debug stack-depth checks run.
+The first optimized launch, and each one after a change to the app crate,
+compiles that crate again: a heavy build, so keep it out of measurement runs.
+Both modes write the same app binary and library files, so switching between
+optimized and plain launches compiles the app crate again too (from that
+mode's incremental cache). `-Optimized` cannot be combined with `-Watch`.
+
 ## Build An Installer
 
 ```powershell

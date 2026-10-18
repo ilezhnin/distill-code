@@ -37,6 +37,15 @@
     relaunches the app. Off by default: a relaunch kills every running turn,
     including the one of an agent that made the change from inside this app.
 
+.PARAMETER Optimized
+    Build the app's own crates optimized (opt-level 2), as dependencies already
+    are, for an app that runs benchmark waves. The identity, app folders and
+    distillctl endpoint stay the dev app's. The setting is on this launch's
+    cargo command line only, never in the environment the app's shells and
+    agents inherit, so their builds and tests keep the unoptimized profile;
+    the first optimized launch, and each one after a change to the app crate,
+    compiles that crate again.
+
 .EXAMPLE
     pwsh -File scripts\windows\Launch-Distill.ps1 -InstallShortcut
     pwsh -File scripts\windows\Launch-Distill.ps1
@@ -46,7 +55,8 @@ param(
     [switch]$InstallShortcut,
     [switch]$SkipSetup,
     [switch]$NoPause,
-    [switch]$Watch
+    [switch]$Watch,
+    [switch]$Optimized
 )
 
 $ErrorActionPreference = "Stop"
@@ -277,6 +287,11 @@ try {
         Write-Host "Shortcut written: $link" -ForegroundColor Green
         exit 0
     }
+    # The optimized runner is a batch file; a watcher rebuild through it would
+    # leave its cargo behind when the app relaunches.
+    if ($Optimized -and $Watch) {
+        throw "-Optimized and -Watch cannot be combined; launch optimized without the Rust watcher."
+    }
 
     try { $Host.UI.RawUI.WindowTitle = "Distill Code (dev)" } catch {}
     Write-Host "Distill Code dev launcher" -ForegroundColor Green
@@ -424,6 +439,34 @@ try {
     if (-not $Watch) {
         $tauriArguments += "--no-watch"
     }
+
+    # Dependencies are opt-level 2 by [profile.dev.package."*"]; an optimized
+    # launch lifts the app's own crates to match on the cargo command line of
+    # this launch alone (not the environment, which the app's shells inherit).
+    if ($Optimized) {
+        $tauriArguments += @("--runner", (Join-Path $repoRoot "scripts\windows\cargo-optimized.cmd"))
+        Write-WindowsDevInfo "profile: app crates optimized (opt-level 2)"
+    }
+    # Both modes write the same Distill.exe and the same app library files (the
+    # crate also builds a cdylib, so its outputs carry no per-mode hash), and
+    # cargo would take the other mode's as fresh: after a switch, remove them,
+    # so this mode compiles the app crate again, from its own incremental
+    # cache, and links it. The mode is recorded only once they are gone.
+    $mode = if ($Optimized) { "optimized" } else { "plain" }
+    $modeFile = Join-Path $tauriTargetDir "distill-launch-mode"
+    $lastMode = if (Test-Path -LiteralPath $modeFile) { (Get-Content -LiteralPath $modeFile -Raw).Trim() } else { "plain" }
+    if ($lastMode -ne $mode) {
+        $outputs = @("Distill.exe", "Distill.pdb", "libdistill_lib.rlib", "distill_lib.dll", "distill_lib.dll.lib",
+            "distill_lib.dll.exp", "distill_lib.lib", "distill_lib.pdb")
+        foreach ($output in $outputs) {
+            $path = Join-Path $tauriTargetDir "debug\deps\$output"
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+            }
+        }
+        Write-WindowsDevInfo "launch mode changed ($lastMode -> $mode): the app crate compiles again"
+    }
+    [System.IO.File]::WriteAllText($modeFile, $mode)
 
     $launched = $true
     & $pnpm @tauriArguments

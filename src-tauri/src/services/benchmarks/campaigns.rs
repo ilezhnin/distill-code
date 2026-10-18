@@ -512,6 +512,7 @@ mod tests {
             backend,
             wake: tokio::sync::Notify::new(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         };
         directory.register(&service.store.pool);
@@ -570,6 +571,7 @@ mod tests {
             backend: Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         };
         directory.register(&service.store.pool);
@@ -630,6 +632,7 @@ mod tests {
             backend: Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         };
         directory.register(&service.store.pool);
@@ -687,6 +690,7 @@ mod tests {
             backend: Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         };
         directory.register(&service.store.pool);

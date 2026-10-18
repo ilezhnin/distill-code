@@ -3,12 +3,24 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     Row, SqlitePool,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct Store {
     pub pool: SqlitePool,
     pub root: PathBuf,
+    parsed: Arc<Parsed>,
+}
+/// Parsed copies of what is read most and changes least: published versions
+/// by id and drafts by definition. A version's columns and a draft's revision
+/// are read from the database every time, and a change in any of them parses
+/// it again; a manifest itself never changes under its content hash.
+#[derive(Default)]
+struct Parsed {
+    versions: Mutex<HashMap<String, Arc<BenchmarkVersion>>>,
+    drafts: Mutex<HashMap<String, (i64, Arc<BenchmarkDraft>)>>,
 }
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -72,6 +84,7 @@ impl Store {
         let store = Self {
             pool,
             root: root.to_owned(),
+            parsed: Arc::default(),
         };
         store.reclassify_legacy_work_classes().await?;
         Ok(store)
@@ -227,21 +240,96 @@ impl Store {
     }
     pub async fn definition(&self, id: &str) -> Result<BenchmarkDefinition> {
         let r = sqlx::query(
-            "SELECT draft_json,revision,archived,archived_at FROM benchmark_definitions WHERE id=?",
+            "SELECT revision,archived,archived_at FROM benchmark_definitions WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| BenchmarkError::new("validation", "Definition not found"))?;
+        let (draft_revision, draft) = self.draft(id, r.get(0)).await?;
         Ok(BenchmarkDefinition {
             id: id.into(),
-            draft: serde_json::from_str(r.get(0))?,
-            draft_revision: r.get(1),
-            archived: r.get(2),
-            archived_at: r.get(3),
+            draft: Arc::unwrap_or_clone(draft),
+            draft_revision,
+            archived: r.get(1),
+            archived_at: r.get(2),
             archive_history: self.archive_history(id).await?,
             versions: self.versions_for(id).await?,
         })
+    }
+    /// `id`'s draft at `revision`, parsed once per revision; a newer revision
+    /// is read together with its own number.
+    async fn draft(&self, id: &str, revision: i64) -> Result<(i64, Arc<BenchmarkDraft>)> {
+        let cached = self.parsed.drafts.lock().unwrap().get(id).cloned();
+        if let Some((at, draft)) = cached.filter(|(at, _)| *at == revision) {
+            return Ok((at, draft));
+        }
+        let r = sqlx::query("SELECT revision,draft_json FROM benchmark_definitions WHERE id=?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| BenchmarkError::new("validation", "Definition not found"))?;
+        let revision: i64 = r.get(0);
+        let draft = Arc::new(serde_json::from_str::<BenchmarkDraft>(r.get(1))?);
+        self.parsed
+            .drafts
+            .lock()
+            .unwrap()
+            .insert(id.into(), (revision, draft.clone()));
+        Ok((revision, draft))
+    }
+    /// What the analyses read of every definition, in catalog order: whether
+    /// and when it was archived. No draft or manifest is read.
+    pub async fn definition_states(&self) -> Result<Vec<DefinitionState>> {
+        let mut history: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
+        for r in sqlx::query(
+            "SELECT definition_id,archived_at,restored_at FROM benchmark_definition_archives ORDER BY archived_at",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        {
+            history
+                .entry(r.get(0))
+                .or_default()
+                .push((r.get(1), r.get(2)));
+        }
+        let rows =
+            sqlx::query("SELECT id,archived,archived_at FROM benchmark_definitions ORDER BY rowid")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let id: String = r.get(0);
+                DefinitionState {
+                    archive_history: history.remove(&id).unwrap_or_default(),
+                    id,
+                    archived: r.get(1),
+                    archived_at: r.get(2),
+                }
+            })
+            .collect())
+    }
+    /// Every published version: definitions in catalog order, each one's
+    /// newest first, as [`Self::all_definitions`] lists them.
+    pub async fn all_versions(&self) -> Result<Vec<BenchmarkVersion>> {
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT v.id FROM benchmark_versions v JOIN benchmark_definitions d ON d.id=v.definition_id ORDER BY d.rowid,v.published_at DESC,v.rowid DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            out.push(Arc::unwrap_or_clone(self.version_shared(&id).await?));
+        }
+        Ok(out)
+    }
+    /// Drops the parsed copies, for fixtures that rewrite a stored manifest
+    /// or draft in place behind the store.
+    #[cfg(test)]
+    pub(crate) fn forget_parsed(&self) {
+        self.parsed.versions.lock().unwrap().clear();
+        self.parsed.drafts.lock().unwrap().clear();
     }
     /// Archive periods a restore closed, oldest first.
     async fn archive_history(&self, id: &str) -> Result<Vec<(i64, i64)>> {
@@ -254,19 +342,17 @@ impl Store {
         Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
     pub async fn versions_for(&self, id: &str) -> Result<Vec<BenchmarkVersion>> {
-        let rows=sqlx::query("SELECT id,content_hash,manifest_json,published_at,carries_from FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC,rowid DESC").bind(id).fetch_all(&self.pool).await?;
-        rows.into_iter()
-            .map(|r| {
-                Ok(BenchmarkVersion {
-                    id: r.get(0),
-                    definition_id: id.into(),
-                    content_hash: r.get(1),
-                    manifest: serde_json::from_str(r.get(2))?,
-                    published_at: r.get(3),
-                    carries_from: r.get(4),
-                })
-            })
-            .collect()
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC,rowid DESC",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for version in ids {
+            out.push(Arc::unwrap_or_clone(self.version_shared(&version).await?));
+        }
+        Ok(out)
     }
     /// Historical manifests stay readable; only current versions accept new work.
     pub async fn require_current_versions(&self, ids: &[String]) -> Result<()> {
@@ -296,15 +382,46 @@ impl Store {
         Ok(())
     }
     pub async fn version(&self, id: &str) -> Result<BenchmarkVersion> {
-        let r=sqlx::query("SELECT definition_id,content_hash,manifest_json,published_at,carries_from FROM benchmark_versions WHERE id=?").bind(id).fetch_optional(&self.pool).await?.ok_or_else(||BenchmarkError::new("validation","Published version not found"))?;
-        Ok(BenchmarkVersion {
+        Ok(Arc::unwrap_or_clone(self.version_shared(id).await?))
+    }
+    /// A published version, its manifest parsed once: the small columns are
+    /// read every time, and the cached copy is used while they all match.
+    pub async fn version_shared(&self, id: &str) -> Result<Arc<BenchmarkVersion>> {
+        let r=sqlx::query("SELECT definition_id,content_hash,published_at,carries_from FROM benchmark_versions WHERE id=?").bind(id).fetch_optional(&self.pool).await?.ok_or_else(||BenchmarkError::new("validation","Published version not found"))?;
+        let (definition_id, content_hash, published_at, carries_from): (
+            String,
+            String,
+            i64,
+            Option<String>,
+        ) = (r.get(0), r.get(1), r.get(2), r.get(3));
+        let cached = self.parsed.versions.lock().unwrap().get(id).cloned();
+        if let Some(version) = cached.filter(|v| {
+            v.definition_id == definition_id
+                && v.content_hash == content_hash
+                && v.published_at == published_at
+                && v.carries_from == carries_from
+        }) {
+            return Ok(version);
+        }
+        let manifest: String =
+            sqlx::query_scalar("SELECT manifest_json FROM benchmark_versions WHERE id=?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?;
+        let version = Arc::new(BenchmarkVersion {
             id: id.into(),
-            definition_id: r.get(0),
-            content_hash: r.get(1),
-            manifest: serde_json::from_str(r.get(2))?,
-            published_at: r.get(3),
-            carries_from: r.get(4),
-        })
+            definition_id,
+            content_hash,
+            manifest: serde_json::from_str(&manifest)?,
+            published_at,
+            carries_from,
+        });
+        self.parsed
+            .versions
+            .lock()
+            .unwrap()
+            .insert(id.into(), version.clone());
+        Ok(version)
     }
     /// The version that carries `id`'s cells now: the end of its chain of
     /// evaluator-only republications, or `id` itself.
@@ -486,8 +603,10 @@ impl Store {
             .map(|r| {
                 let finished_at: Option<i64> = r.get(7);
                 let started_at: Option<i64> = r.get(12);
-                // An unreported cost is priced from the catalog (see `model_catalog`).
-                let cost = r.get::<Option<f64>, _>(10).or_else(|| {
+                // Priced as every board, the points and the evidence price it:
+                // the catalog's list price of the day, the provider's own
+                // figure only where the catalog has none (see `model_catalog`).
+                let priced = || {
                     let configuration: Configuration =
                         serde_json::from_str(r.get::<Option<&str>, _>(14)?).ok()?;
                     let usage: TokenUsage =
@@ -498,7 +617,8 @@ impl Store {
                         &usage,
                         finished_at.or(started_at),
                     )
-                });
+                };
+                let cost = priced().or_else(|| r.get::<Option<f64>, _>(10));
                 let outcome: Option<&str> = r.get(5);
                 let evaluations = serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
                     .unwrap_or_default();
@@ -724,8 +844,11 @@ impl Store {
         }
         Ok(out)
     }
+    /// Runs the dispatcher acts on: running, pausing or cancelling, oldest
+    /// first. Paused runs and runs that need attention wait for the operator
+    /// and are not loaded.
     pub async fn active_runs(&self) -> Result<Vec<BenchmarkRun>> {
-        let ids=sqlx::query_scalar::<_,String>("SELECT id FROM run_plans WHERE state NOT IN ('completed','cancelled') ORDER BY created_at,rowid").fetch_all(&self.pool).await?;
+        let ids=sqlx::query_scalar::<_,String>("SELECT id FROM run_plans WHERE state IN ('running','pausing','cancelling') ORDER BY created_at,rowid").fetch_all(&self.pool).await?;
         let mut out = Vec::new();
         for id in ids {
             out.push(self.run(&id).await?);
@@ -1851,6 +1974,7 @@ mod tests {
             let store = Store {
                 pool,
                 root: directory.path().to_owned(),
+                parsed: Arc::default(),
             };
             let (_, anthropic) = super::super::model_catalog::seed_sets().remove(0);
             for entry in anthropic.iter().skip(1) {
@@ -2053,6 +2177,68 @@ mod tests {
         directory.close().await;
     }
 
+    /// The Attempts table and the model-page grid price an attempt as the
+    /// boards, the points and the evidence do: list price first, the
+    /// provider's own figure only for a model the catalog does not price.
+    #[tokio::test]
+    async fn the_attempts_table_prices_list_first_like_the_boards() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let definition = store
+            .save_draft(None, None, super::super::seeds::definitions().remove(0))
+            .await
+            .unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        store
+            .save_catalog_entry(&CatalogEntry {
+                id: "invented-list-price".into(),
+                kind: "model".into(),
+                provider_id: Some("invented-provider".into()),
+                needle: "invented-priced-model".into(),
+                display_name: None,
+                vendor: None,
+                input_per_million: Some(3.0),
+                output_per_million: Some(15.0),
+                cache_read_per_million: None,
+                cache_write_per_million: None,
+                context_tokens: None,
+                effective_from: 1,
+                checked_at: 1,
+                source: "https://example.test".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        let request = json!({"requestKey":"pricing","versionIds":[version.id],"configurations":[],"repetitions":1,"timeoutSeconds":30,"maxExecutions":2,"preview":false});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','pricing','completed',1,1,1,?)")
+            .bind(request.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        // The provider reports a third of the list price for the priced model.
+        for (id, model, reported) in [
+            ("priced", "invented-priced-model", 1.0),
+            ("unpriced", "invented-unpriced-model", 0.25),
+        ] {
+            let configuration = json!({"id":id,"providerId":"invented-provider","accountId":null,"modelId":model,"effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+            let attempt = json!({"id":id,"runId":"run","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pass","finishedAt":1000,"usage":{"input":1_000_000,"output":0,"cost":reported,"schema":"provider_turn_usage_v1"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,?,0,'terminal',?)")
+                .bind(id)
+                .bind(&version.id)
+                .bind(id)
+                .bind(attempt.to_string())
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        let listed = store.list_attempts(&ResultQuery::default()).await.unwrap();
+        let cost = |id: &str| listed.iter().find(|a| a.id == id).unwrap().cost;
+        assert_eq!(cost("priced"), Some(3.0));
+        assert_eq!(cost("unpriced"), Some(0.25));
+        directory.close().await;
+    }
+
     #[tokio::test]
     async fn history_summaries_and_result_pages_do_not_load_attempt_evidence() {
         let directory = crate::test_support::TempRoot::new();
@@ -2235,7 +2421,8 @@ mod tests {
         let listed = store.list_attempts(&ResultQuery::default()).await.unwrap();
         let cost = |id: &str| listed.iter().find(|a| a.id == id).unwrap().cost;
         assert!((cost("unpriced").unwrap() - 4.5).abs() < 1e-9);
-        assert_eq!(cost("reported"), Some(0.42));
+        // A reported figure gives way to the list price, as on every board.
+        assert!((cost("reported").unwrap() - 4.5).abs() < 1e-9);
         directory.close().await;
     }
 

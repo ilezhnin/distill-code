@@ -48,8 +48,14 @@ impl Pace {
         self.limit
     }
 
-    /// The provider refused or cut a sent prompt for its rate.
-    pub(super) fn throttled(&mut self, now: i64) {
+    /// The provider refused or cut a sent prompt for its rate. A turn sent
+    /// under a higher limit than the pace holds now belongs to a burst the
+    /// pace already answered, so concurrent refusals halve it once; one sent
+    /// under the current limit (or not known) halves it again.
+    pub(super) fn throttled(&mut self, admitted_limit: Option<usize>, now: i64) {
+        if admitted_limit.is_some_and(|limit| limit > self.limit) {
+            return;
+        }
         self.limit = (self.limit / 2).max(1);
         self.clean = 0;
         self.hold_until = now + HOLD_MS;
@@ -124,8 +130,8 @@ pub(super) fn limit(account: &str) -> usize {
     with_pace(account, |pace| pace.limit())
 }
 
-pub(super) fn record_throttle(account: &str, now: i64) {
-    with_pace(account, |pace| pace.throttled(now));
+pub(super) fn record_throttle(account: &str, admitted_limit: Option<usize>, now: i64) {
+    with_pace(account, |pace| pace.throttled(admitted_limit, now));
 }
 
 pub(super) fn record_turn(account: &str, turns: u32, speed: Option<f64>, now: i64) {
@@ -203,10 +209,16 @@ mod tests {
             pace.finished(1, None, HOLD_MS - 1);
         }
         assert_eq!(pace.limit(), 4);
-        pace.throttled(0);
+        pace.throttled(Some(4), 0);
         assert_eq!(pace.limit(), 2);
-        pace.throttled(1);
-        pace.throttled(2);
+        // The rest of the burst sent at four answers nothing new.
+        pace.throttled(Some(4), 1);
+        pace.throttled(Some(4), 1);
+        assert_eq!(pace.limit(), 2);
+        // A turn sent at two that is refused too halves it again.
+        pace.throttled(Some(2), 2);
+        assert_eq!(pace.limit(), 1);
+        pace.throttled(None, 2);
         assert_eq!(pace.limit(), 1);
         // Clean turns inside the hold do not grow it.
         for _ in 0..10 {
@@ -313,7 +325,7 @@ mod tests {
             "invented-acp\u{1f}pace-second",
         );
         assert_eq!(limit(first), super::super::ACCOUNT_SLOTS);
-        record_throttle(first, 0);
+        record_throttle(first, None, 0);
         assert_eq!(limit(first), super::super::ACCOUNT_SLOTS / 2);
         assert_eq!(limit(second), super::super::ACCOUNT_SLOTS);
         record_turn(second, 1, Some(50.0), 0);

@@ -8,7 +8,7 @@ use std::{
     io,
     process::Stdio,
     sync::{Arc, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
@@ -223,12 +223,41 @@ impl ResourceClass {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct HostHeadroom {
     available_ram: u64,
     available_commit: u64,
     sandbox_volume_free: u64,
 }
+
+/// How long one measurement of the host's headroom answers admission. The
+/// dispatcher asks for every waiting cell on each pass, about once a second,
+/// so it measures the host once per pass instead of once per cell.
+const HEADROOM_REUSE: Duration = Duration::from_secs(1);
+
+/// The last measurement of the host's headroom and when it was taken.
+#[derive(Default)]
+struct RecentHeadroom(std::sync::Mutex<Option<(Instant, HostHeadroom)>>);
+
+impl RecentHeadroom {
+    fn reuse(&self, now: Instant) -> Option<HostHeadroom> {
+        let last = *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        last.filter(|(at, _)| now.saturating_duration_since(*at) < HEADROOM_REUSE)
+            .map(|(_, headroom)| headroom)
+    }
+    fn keep(&self, at: Instant, headroom: HostHeadroom) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((at, headroom));
+    }
+}
+
+static HEADROOM: std::sync::LazyLock<RecentHeadroom> =
+    std::sync::LazyLock::new(RecentHeadroom::default);
 
 fn check_headroom(headroom: &HostHeadroom, additional_memory: u64) -> io::Result<()> {
     if headroom.available_ram < 12 * GIB + additional_memory {
@@ -255,9 +284,17 @@ pub(crate) async fn host_admission() -> io::Result<()> {
 }
 
 pub(crate) async fn host_admission_for(class: ResourceClass) -> io::Result<()> {
-    tokio::task::spawn_blocking(move || check_headroom(&host_headroom()?, class.memory()))
-        .await
-        .map_err(io::Error::other)?
+    if let Some(headroom) = HEADROOM.reuse(Instant::now()) {
+        return check_headroom(&headroom, class.memory());
+    }
+    tokio::task::spawn_blocking(move || {
+        let at = Instant::now();
+        let headroom = host_headroom()?;
+        HEADROOM.keep(at, headroom);
+        check_headroom(&headroom, class.memory())
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 static HOST_PREPARATION: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
@@ -2319,6 +2356,26 @@ mod tests {
             assert!(take_outcome_trailer(&mut stderr, &nonce).is_none(), "{text}");
             assert_eq!(stderr, text.into_bytes());
         }
+    }
+
+    #[test]
+    fn one_host_measurement_answers_admission_for_a_second() {
+        let recent = RecentHeadroom::default();
+        let at = Instant::now();
+        assert!(recent.reuse(at).is_none());
+        recent.keep(
+            at,
+            HostHeadroom {
+                available_ram: 20 * GIB,
+                available_commit: 30 * GIB,
+                sandbox_volume_free: 100 * GIB,
+            },
+        );
+        let reused = recent.reuse(at + Duration::from_millis(900)).unwrap();
+        assert_eq!(reused.available_ram, 20 * GIB);
+        assert!(check_headroom(&reused, ResourceClass::Repository.memory()).is_ok());
+        // A second later the host is measured again.
+        assert!(recent.reuse(at + HEADROOM_REUSE).is_none());
     }
 
     fn budget(cap: &str) -> Vec<String> {

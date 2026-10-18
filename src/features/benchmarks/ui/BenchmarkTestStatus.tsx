@@ -65,6 +65,16 @@ export type TestStatus =
     }
   | { kind: "unscored"; outcome: string | null; durationMs: number | null };
 
+/**
+ * The outcomes that fail a repetition before its score arrives, as the
+ * service scores them; every other settled outcome leaves a gap.
+ */
+export const FAILING_OUTCOMES = new Set([
+  "fail",
+  "budget_reached",
+  "budget_timeout",
+]);
+
 /** One repetition's state, as a dot: grey never started, blue works, green passed, red failed. */
 export type DotState = "queued" | "running" | "passed" | "failed" | "stopped";
 
@@ -185,11 +195,7 @@ export function testStatus(
     const score = scores.get(a.id);
     if (score != null) return [score];
     if (a.outcome === "pass") return [1];
-    return a.outcome === "fail" ||
-      a.outcome === "budget_reached" ||
-      a.outcome === "budget_timeout"
-      ? [0]
-      : [];
+    return a.outcome != null && FAILING_OUTCOMES.has(a.outcome) ? [0] : [];
   });
   if (values.length > 0)
     return {

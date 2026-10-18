@@ -100,6 +100,7 @@ async fn fixture(
             backend: Arc::new(NoProvider),
             wake: Default::default(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         },
         request,

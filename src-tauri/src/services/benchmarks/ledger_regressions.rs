@@ -810,14 +810,11 @@ fn later_publications_and_archives_never_rewrite_the_dated_archive() {
     added.definition_id = "d6".into();
     added.published_at = 10;
     data.versions.extend([republished, added]);
-    data.definitions.push(BenchmarkDefinition {
+    data.definitions.push(DefinitionState {
         id: "d0".into(),
-        draft_revision: 2,
         archived: true,
         archived_at: None,
         archive_history: vec![],
-        draft: data.versions[0].manifest.clone(),
-        versions: vec![],
     });
     assert_eq!(recorded(&data), first);
     // Today's board uses today's pool and shows its gaps.
@@ -1487,14 +1484,11 @@ fn a_recorded_archive_time_retires_the_case_from_that_date_on() {
         .iter()
         .any(|v| v.id == "v0")
     };
-    data.definitions.push(BenchmarkDefinition {
+    data.definitions.push(DefinitionState {
         id: "d0".into(),
-        draft_revision: 2,
         archived: true,
         archived_at: Some(20),
         archive_history: vec![],
-        draft: data.versions[0].manifest.clone(),
-        versions: vec![],
     });
     // The last run that planned d0 ended at 6; d0 was archived at 20.
     assert!(dated(&data, 10));

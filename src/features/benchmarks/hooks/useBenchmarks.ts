@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type Query, useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
 import { benchmarkProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
@@ -15,10 +15,15 @@ import type {
 export const benchmarkKeys = ["benchmarks"] as const;
 
 /**
- * History recomputes a leaderboard per observation and the catalog reads
- * every manifest, while a running batch saves an attempt every few seconds,
- * so events refresh them at most this often. The app's own catalog edits
- * still refresh at once.
+ * A running batch saves an attempt every few seconds and each save sends an
+ * event, so events refresh the views at most this often: the first at once,
+ * those that follow together once the interval since the last refresh ends.
+ */
+export const COALESCED_REFRESH_MS = 1_500;
+/**
+ * History, boards and the other analyses read the whole ledger, the catalog
+ * reads every manifest and the usage ledger every attempt, so events refresh
+ * them at most this often. The app's own edits still refresh at once.
  */
 export const THROTTLED_REFRESH_MS = 15_000;
 const THROTTLED_QUERIES = new Set([
@@ -26,9 +31,26 @@ const THROTTLED_QUERIES = new Set([
   "definitions",
   "definition",
   "version",
+  "leaderboard",
+  "learning-candidates",
+  "case-stats",
+  "selector-harness",
+  "class-policies",
+  "designs",
+  "usage-ledger",
 ]);
 const throttled = (query: { queryKey: readonly unknown[] }) =>
   THROTTLED_QUERIES.has(String(query.queryKey[1]));
+/** Views of one run, keyed by its id; a notice names the runs it changed. */
+const RUN_QUERIES = new Set(["run", "run-attempts"]);
+/** Whether a notice naming `changed` (null: anything) touches `query`. */
+const touched = (
+  query: { queryKey: readonly unknown[] },
+  changed: ReadonlySet<string> | null,
+) =>
+  changed === null ||
+  !RUN_QUERIES.has(String(query.queryKey[1])) ||
+  changed.has(String(query.queryKey[2]));
 
 function useBenchmarkInvalidation(enabled: boolean) {
   const client = useQueryClient();
@@ -38,27 +60,79 @@ function useBenchmarkInvalidation(enabled: boolean) {
     let unlisten: (() => void) | undefined;
     let sequence = 0;
     let throttledTimer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => {
-      void client.invalidateQueries({
-        queryKey: benchmarkKeys,
-        predicate: (query) => !throttled(query),
-      });
+    let coalescedTimer: ReturnType<typeof setTimeout> | undefined;
+    let refreshedAt = -Infinity;
+    // What the notices since the last refresh changed; null: anything.
+    let changed: Set<string> | null = new Set();
+    // A refresh already running finishes rather than being dropped for a new
+    // one: the service would compute the dropped request anyway, and the next
+    // notice refreshes again.
+    const keepRunning = { cancelRefetch: false } as const;
+    // A query fetching already keeps that fetch, which may have started
+    // before the change: it fetches once more when that fetch settles. The
+    // heavy throttled queries wait for their next interval instead.
+    const invalidate = (
+      predicate: (query: Query) => boolean,
+      again: boolean,
+    ) => {
+      const running = again
+        ? client.getQueryCache().findAll({
+            queryKey: benchmarkKeys,
+            fetchStatus: "fetching",
+            predicate,
+          })
+        : [];
+      void client
+        .invalidateQueries({ queryKey: benchmarkKeys, predicate }, keepRunning)
+        .then(() => {
+          if (cancelled || running.length === 0) return;
+          void client.refetchQueries(
+            {
+              queryKey: benchmarkKeys,
+              type: "active",
+              predicate: (query) => running.includes(query),
+            },
+            keepRunning,
+          );
+        });
+    };
+    const refresh = (scope: ReadonlySet<string> | null) => {
+      invalidate((query) => !throttled(query) && touched(query, scope), true);
       if (throttledTimer !== undefined) return;
       throttledTimer = setTimeout(() => {
         throttledTimer = undefined;
         if (cancelled) return;
-        void client.invalidateQueries({
-          queryKey: benchmarkKeys,
-          predicate: throttled,
-        });
+        invalidate(throttled, false);
       }, THROTTLED_REFRESH_MS);
     };
+    const flush = () => {
+      coalescedTimer = undefined;
+      if (cancelled) return;
+      refreshedAt = Date.now();
+      const scope = changed;
+      changed = new Set();
+      refresh(scope);
+    };
+    const note = (entityIds: readonly string[] | undefined) => {
+      // A notice that names nothing committed since the one before changed
+      // nothing.
+      if (Array.isArray(entityIds) && entityIds.length === 0) return;
+      if (!Array.isArray(entityIds) || changed === null) changed = null;
+      else for (const id of entityIds) changed.add(id);
+      if (coalescedTimer !== undefined) return;
+      const wait = refreshedAt + COALESCED_REFRESH_MS - Date.now();
+      if (wait <= 0) flush();
+      else coalescedTimer = setTimeout(flush, wait);
+    };
+    const refreshAll = () => note(undefined);
     // Subscribe first, then reconcile committed events to close the mount gap.
     void benchmarkApi
-      .listen((event) => {
-        if (event.sequence <= sequence) return;
-        sequence = event.sequence;
-        refresh();
+      .listen((change) => {
+        // Notices can arrive out of order, and each names only its own
+        // changes, so none is dropped; the sequence marks how far the
+        // reconcile below reached.
+        sequence = Math.max(sequence, change.sequence);
+        note(change.entityIds);
       })
       .then((stop) => {
         if (cancelled) {
@@ -74,15 +148,16 @@ function useBenchmarkInvalidation(enabled: boolean) {
                 sequence,
                 ...events.map((event) => event.sequence),
               );
-              refresh();
+              refreshAll();
             }
           })
-          .catch(refresh);
+          .catch(refreshAll);
       })
-      .catch(refresh);
+      .catch(refreshAll);
     return () => {
       cancelled = true;
       clearTimeout(throttledTimer);
+      clearTimeout(coalescedTimer);
       unlisten?.();
     };
   }, [client, enabled]);

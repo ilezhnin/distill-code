@@ -217,6 +217,26 @@ describe("catch-up cases", () => {
     });
   });
 
+  it("counts a run on another account of the provider as planning the row", () => {
+    const moved = active(
+      { id: "moved-run" },
+      {
+        configurations: [
+          {
+            ...configuration,
+            accountId: "account-2",
+            effort: null,
+            fastMode: null,
+          },
+        ],
+      },
+    );
+    expect(catchUpCases(row, [moved])).toEqual({
+      owed: ["version-2", "version-3"],
+      queuedRunId: "moved-run",
+    });
+  });
+
   it("offers every gap when no unfinished run plans it", () => {
     const result = catchUpCases(row, [
       active({ id: "done", state: "completed" }),

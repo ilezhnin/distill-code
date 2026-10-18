@@ -207,6 +207,7 @@ async fn fixture(
             backend: backend.clone(),
             wake: Default::default(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         },
         backend,
@@ -430,6 +431,7 @@ async fn objective_fixture(
         backend: backend.clone(),
         wake: Default::default(),
         active: Default::default(),
+        queries: Default::default(),
         app: None,
     });
     (service, backend, request)

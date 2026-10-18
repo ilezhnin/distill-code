@@ -543,6 +543,28 @@ pub(super) struct CaseCell {
     /// short of them still reads, as a preliminary measurement; a case
     /// counts for a rank only once complete.
     pub complete: bool,
+    /// The most loaded admission band among its repetitions (see
+    /// [`admission_band`]): its speed compares only within that band.
+    pub band: u8,
+}
+
+/// The admission bands speed is compared within, by the CPU-heavy jobs the
+/// sandbox had already admitted beside a repetition: none, one or two, three
+/// or more; an attempt admitted before the admission was recorded is a band
+/// of its own. Higher is more loaded, and unknown counts as most.
+pub(super) const BAND_UNRECORDED: u8 = 3;
+
+pub(super) fn admission_band(attempt: &Attempt) -> u8 {
+    match attempt
+        .sandbox_admission
+        .as_ref()
+        .map(|admission| admission.competing_heavy)
+    {
+        None => BAND_UNRECORDED,
+        Some(0) => 0,
+        Some(1..=2) => 1,
+        Some(_) => 2,
+    }
 }
 
 /// How the pool reads a case: the repetitions its cell needs, and whether it
@@ -600,16 +622,25 @@ pub(super) fn case_cells<'a>(
                     cost: costs.map(|c| c.iter().sum::<f64>() / c.len() as f64),
                     repetitions: scores.len() as u32,
                     complete: scores.len() as u32 >= required(version),
+                    band: list.iter().copied().map(admission_band).max().unwrap_or(0),
                 },
             ))
         })
         .collect()
 }
 
-/// The fastest and cheapest solved cell of each case: what speed and cost are
-/// measured against. Every settled cell of every candidate counts, so the
-/// record does not depend on which rows a report happens to hold.
-pub(super) type CaseRecords = BTreeMap<String, (Option<f64>, Option<f64>)>;
+/// What speed and cost are measured against: the fastest solved cell of each
+/// case within each admission band, and the cheapest of the case across
+/// bands. Every settled cell of every candidate counts, so the record does
+/// not depend on which rows a report happens to hold.
+#[derive(Default)]
+pub(super) struct CaseRecords {
+    /// Cases with at least one solve.
+    solved: BTreeSet<String>,
+    durations: BTreeMap<(String, u8), f64>,
+    /// The cheapest solve with a known, positive spend.
+    costs: BTreeMap<String, f64>,
+}
 
 pub(super) fn case_records(
     attempts: &[Attempt],
@@ -630,18 +661,46 @@ pub(super) fn case_records(
             .or_default()
             .push(attempt);
     }
-    let mut records = CaseRecords::new();
+    let mut records = CaseRecords::default();
+    let least = |best: Option<&f64>, value: Option<f64>| min_of(best.copied(), value);
     for list in cells.values() {
         for (version, cell) in case_cells(list, as_of, protocol) {
             if (cell.reward < 1.0 && !graded(version)) || cell.reward <= 0.0 {
                 continue;
             }
-            let entry = records.entry(version.to_owned()).or_insert((None, None));
-            entry.0 = min_of(entry.0, cell.duration_ms);
-            entry.1 = min_of(entry.1, cell.cost);
+            records.solved.insert(version.to_owned());
+            let key = (version.to_owned(), cell.band);
+            if let Some(duration) = least(records.durations.get(&key), cell.duration_ms) {
+                records.durations.insert(key, duration);
+            }
+            // A solve that reported no spend at all is no price to beat.
+            let spend = cell.cost.filter(|cost| *cost > 0.0);
+            if let Some(cost) = least(records.costs.get(version), spend) {
+                records.costs.insert(version.to_owned(), cost);
+            }
         }
     }
     records
+}
+
+/// The record a cell's speed and cost compare with: its band's fastest solve
+/// of the case and the case's cheapest. A solved cell no record holds in its
+/// band (its repetitions a subset of a more loaded cell, as after an account
+/// move) is alone in that band and sets it.
+pub(super) fn record_of(
+    records: &CaseRecords,
+    version: &str,
+    cell: &CaseCell,
+) -> Option<(Option<f64>, Option<f64>)> {
+    if !records.solved.contains(version) {
+        return None;
+    }
+    let duration = records
+        .durations
+        .get(&(version.to_owned(), cell.band))
+        .copied()
+        .or(cell.duration_ms);
+    Some((duration, records.costs.get(version).copied()))
 }
 
 fn min_of(a: Option<f64>, b: Option<f64>) -> Option<f64> {
@@ -671,9 +730,9 @@ pub(super) struct CasePoints {
 
 pub(super) fn case_points(
     cell: &CaseCell,
-    record: Option<&(Option<f64>, Option<f64>)>,
+    record: Option<(Option<f64>, Option<f64>)>,
 ) -> CasePoints {
-    let (best_duration, best_cost) = record.copied().unwrap_or((None, None));
+    let (best_duration, best_cost) = record.unwrap_or((None, None));
     let speed = share_of_record(best_duration, cell.duration_ms);
     let cost = share_of_record(best_cost, cell.cost);
     if cell.reward <= 0.0 {
@@ -731,7 +790,7 @@ pub(super) fn board_stats(cells: &BTreeMap<&str, CaseCell>, records: &CaseRecord
     let mut speeds = Vec::new();
     let mut costs = Vec::new();
     for (version, cell) in cells {
-        let case = case_points(cell, records.get(*version));
+        let case = case_points(cell, record_of(records, version, cell));
         points += case.points;
         speeds.extend(case.speed);
         costs.extend(case.cost);
@@ -1947,6 +2006,105 @@ pub(super) mod tests {
         assert_eq!(share_of_record(Some(2000.0), Some(0.0)), Some(1.0));
         assert_eq!(share_of_record(None, Some(2000.0)), None);
     }
+    /// Speed compares a solve with solves of its case in the same admission
+    /// band only: none, one or two, three or more CPU-heavy jobs beside it,
+    /// or no recorded admission. A cell takes its most loaded repetition's
+    /// band. Cost compares across bands, and a solve with no spend at all is
+    /// no price to beat.
+    #[test]
+    fn speed_compares_within_the_admission_band_and_cost_across_bands() {
+        let data = dataset();
+        let runs: BTreeMap<&str, &BenchmarkRun> =
+            data.runs.iter().map(|run| (run.id.as_str(), run)).collect();
+        let base = data
+            .attempts
+            .iter()
+            .find(|a| a.id == "before-v0")
+            .unwrap()
+            .clone();
+        let admitted = |heavy: u32| {
+            serde_json::from_value(serde_json::json!({
+                "lane":"heavy","competing":{},"competingHeavy":heavy,"reservedMemory":0,
+                "reservedCpu":0,"memoryCurrent":0,"guestLoad":[0.0,0.0,0.0],"guestCpus":16,
+                "guestMemAvailable":0,"hostAvailableRam":0,"hostAvailableCommit":0
+            }))
+            .unwrap()
+        };
+        let solve = |model: &str, repetition: u32, heavy: Option<u32>, ms: u64, cost: f64| {
+            let mut attempt = base.clone();
+            attempt.id = format!("{model}-{repetition}");
+            attempt.configuration.model_id = model.into();
+            attempt.observed = Some(attempt.configuration.clone());
+            attempt.repetition = repetition;
+            attempt.duration_ms = Some(ms);
+            attempt.usage.cost = Some(cost);
+            attempt.sandbox_admission = heavy.map(admitted);
+            attempt
+        };
+        let attempts = vec![
+            solve("alone", 0, Some(0), 60_000, 1.0),
+            solve("alone", 1, Some(0), 60_000, 1.0),
+            solve("crowded", 0, Some(5), 180_000, 3.0),
+            solve("crowded", 1, Some(3), 180_000, 3.0),
+            solve("mixed", 0, Some(0), 120_000, 2.0),
+            solve("mixed", 1, Some(2), 120_000, 2.0),
+            solve("unrecorded", 0, None, 240_000, 0.0),
+            solve("unrecorded", 1, Some(0), 240_000, 0.0),
+        ];
+        let protocol = CaseProtocol {
+            required: &|_| 2,
+            graded: &|_| false,
+        };
+        let records = case_records(&attempts, &runs, None, protocol);
+        let cell = |model: &str| {
+            let list: Vec<&Attempt> = attempts
+                .iter()
+                .filter(|a| a.configuration.model_id == model)
+                .collect();
+            case_cells(&list, None, protocol)["v0"]
+        };
+        let share = |model: &str| {
+            let cell = cell(model);
+            case_points(&cell, record_of(&records, "v0", &cell))
+        };
+        // The fast solve on an idle sandbox and the slow one beside three or
+        // more heavy jobs each set their band's record.
+        assert_eq!(cell("alone").band, 0);
+        assert_eq!(cell("crowded").band, 2);
+        assert_eq!(share("alone").speed, Some(1.0));
+        assert_eq!(share("crowded").speed, Some(1.0));
+        // A cell spanning bands takes the most loaded one.
+        assert_eq!(cell("mixed").band, 1);
+        // No recorded admission is a band of its own, whatever its other
+        // repetitions recorded.
+        assert_eq!(cell("unrecorded").band, BAND_UNRECORDED);
+        assert_eq!(share("unrecorded").speed, Some(1.0));
+        // Cost compares across bands; the spend-free solve sets no record.
+        for model in ["alone", "crowded", "mixed", "unrecorded"] {
+            let record = record_of(&records, "v0", &cell(model)).unwrap();
+            assert_eq!(record.1, Some(1.0), "{model}");
+        }
+        // A solved cell whose band holds no record (its repetitions part of
+        // a more loaded cell, as after an account move) is alone in it, and
+        // still compares its cost with the case's cheapest solve.
+        let crowded: Vec<Attempt> = attempts
+            .iter()
+            .filter(|a| a.configuration.model_id == "crowded")
+            .cloned()
+            .collect();
+        let fewer = case_records(&crowded, &runs, None, protocol);
+        let idle = cell("alone");
+        assert_eq!(
+            record_of(&fewer, "v0", &idle),
+            Some((Some(60_000.0), Some(3.0)))
+        );
+        assert_eq!(
+            case_points(&idle, record_of(&fewer, "v0", &idle)).speed,
+            Some(1.0)
+        );
+        assert_eq!(share("crowded").cost, Some(1.0 / 3.0));
+        assert_eq!(share("mixed").cost, Some(0.5));
+    }
     /// A solved case: reliability outweighs speed and cost, and a missing
     /// measurement gives up its weight instead of counting as the worst.
     #[test]
@@ -1957,9 +2115,10 @@ pub(super) mod tests {
             cost,
             repetitions: 3,
             complete: true,
+            band: 0,
         };
         let record = (Some(60_000.0), Some(140.0));
-        let points = |c: &CaseCell| case_points(c, Some(&record)).points;
+        let points = |c: &CaseCell| case_points(c, Some(record)).points;
         assert_eq!(points(&cell(1.0, Some(60_000.0), Some(140.0))), 1.0);
         let slower = points(&cell(1.0, Some(180_000.0), Some(300.0)));
         assert!((slower - (0.8 + 0.15 / 3.0 + 0.05 * 140.0 / 300.0)).abs() < 1e-9);
@@ -2396,14 +2555,11 @@ pub(super) mod tests {
         assert_eq!(row.points, Some(0));
         assert_eq!(row.speed_share, None);
         // Archiving a definition retires its case from the pool.
-        data.definitions.push(BenchmarkDefinition {
+        data.definitions.push(DefinitionState {
             id: "d6".into(),
-            draft_revision: 1,
             archived: true,
             archived_at: None,
             archive_history: vec![],
-            draft: data.versions[6].manifest.clone(),
-            versions: vec![],
         });
         assert_eq!(
             leaderboard(&data, &ResultQuery::default()).rows[0].status,

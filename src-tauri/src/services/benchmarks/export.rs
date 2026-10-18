@@ -399,12 +399,12 @@ fn jsonl(rows: &[Value]) -> Result<String> {
 
 pub async fn export(
     store: &Store,
-    data: QueryData,
+    data: &QueryData,
     include_held_out: bool,
 ) -> Result<ExportResult> {
     let cutoff = now();
     let id = uuid::Uuid::new_v4().to_string();
-    let mut rows = rows(&data, include_held_out, &id)?;
+    let mut rows = rows(data, include_held_out, &id)?;
     let snapshots = store.decision_snapshots().await?;
     for row in &mut rows {
         let snapshot = snapshots
@@ -430,12 +430,12 @@ pub async fn export(
             "batchPercentagePoints":if sample.attribution=="controlled_batch"{sample.used_percentage_points}else{None},
             "reason":sample.reason,"perTaskCharge":null})
     }).collect();
-    let workflow_rows = workflow::rows(store, &data, &rows, &id, cutoff).await?;
+    let workflow_rows = workflow::rows(store, data, &rows, &id, cutoff).await?;
     let workflow_jsonl = jsonl(&workflow_rows)?;
     let workflow_hash = format!("{:x}", Sha256::digest(workflow_jsonl.as_bytes()));
     let outcomes_jsonl = jsonl(&rows)?;
     let hash = format!("{:x}", Sha256::digest(outcomes_jsonl.as_bytes()));
-    let prepared = ledger_rows_at(&data, include_held_out, &id, cutoff)?;
+    let prepared = ledger_rows_at(data, include_held_out, &id, cutoff)?;
     let ledger_jsonl = jsonl(&prepared)?;
     let ledger_hash = format!("{:x}", Sha256::digest(ledger_jsonl.as_bytes()));
     let manifest = json!({"schemaVersion":4,"id":id,"createdAt":now(),"cutoffAt":cutoff,"rowCount":rows.len(),"contentHash":hash,"catalogDefinitions":data.definitions.len(),
@@ -993,7 +993,7 @@ mod tests {
             attempts: vec![],
             required_repetitions: 1,
         };
-        let result = export(&store, data, false).await.unwrap();
+        let result = export(&store, &data, false).await.unwrap();
         let ledger = std::path::Path::new(&result.path).with_file_name("ledger.jsonl");
         assert_eq!(tokio::fs::read_to_string(&ledger).await.unwrap(), "");
         assert_eq!(tokio::fs::read_to_string(&result.path).await.unwrap(), "");
@@ -1059,6 +1059,7 @@ mod tests {
             backend: std::sync::Arc::new(super::super::runner::FakeBackend::default()),
             wake: tokio::sync::Notify::new(),
             active: Default::default(),
+            queries: Default::default(),
             app: None,
         };
         directory.register(&service.store.pool);
@@ -1112,7 +1113,7 @@ mod tests {
             serde_json::to_value(service.store.decision_snapshots().await.unwrap().remove(0))
                 .unwrap()
         );
-        let result = export(&service.store, service.query_data().await.unwrap(), false)
+        let result = export(&service.store, &service.query_data().await.unwrap(), false)
             .await
             .unwrap();
         let body = tokio::fs::read_to_string(&result.path).await.unwrap();
