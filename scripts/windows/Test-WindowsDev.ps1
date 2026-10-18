@@ -83,7 +83,14 @@ try {
     # Only an optimized launch lifts the app crates' opt-level, and only in its
     # own process: every other build keeps the fast dev profile.
     Assert-Equal "desktop launcher optimizes the app crates only when asked" `
-        ($launchDistill -match '(?ms)if \(\$Optimized\) \{\r?\n\s+\$env:CARGO_PROFILE_DEV_OPT_LEVEL = "2"') $true
+        ($launchDistill -match '(?ms)if \(\$Optimized\) \{\r?\n\s+\$tauriArguments \+= @\("--runner", \(Join-Path \$repoRoot "scripts\\windows\\cargo-optimized\.cmd"\)\)') $true
+    Assert-Equal "an optimized launch leaves the environment its shells inherit alone" `
+        ($launchDistill -match 'CARGO_PROFILE_DEV_OPT_LEVEL') $false
+    Assert-Equal "an optimized launch refuses the Rust watcher" `
+        ($launchDistill -match '(?m)if \(\$Optimized -and \$Watch\) \{') $true
+    $optimizedCargo = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts/windows/cargo-optimized.cmd")
+    Assert-Equal "the optimized cargo sets opt-level on its command line" `
+        ($optimizedCargo -match '(?m)^cargo --config profile\.dev\.opt-level=2 %\*\r?$') $true
 
     $justfile = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "justfile")
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true

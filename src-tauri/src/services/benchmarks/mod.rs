@@ -299,14 +299,19 @@ async fn changed_notice(
     if since == 0 {
         return Ok(serde_json::json!({ "sequence": sequence }));
     }
-    let ids = sqlx::query_scalar::<_, String>(
+    // The range is this notice's now; if its names cannot be read, it still
+    // goes out, naming nothing, so the app refreshes everything.
+    let Ok(ids) = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT entity_id FROM benchmark_events WHERE sequence>? AND sequence<=? LIMIT ?",
     )
     .bind(since)
     .bind(sequence)
     .bind(NOTICE_ENTITIES + 1)
     .fetch_all(&store.pool)
-    .await?;
+    .await
+    else {
+        return Ok(serde_json::json!({ "sequence": sequence }));
+    };
     if ids.len() as i64 > NOTICE_ENTITIES {
         return Ok(serde_json::json!({ "sequence": sequence }));
     }

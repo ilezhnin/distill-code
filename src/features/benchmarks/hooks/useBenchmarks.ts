@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type Query, useQuery, useQueryClient } from "@tanstack/react-query";
 import { benchmarkApi } from "../api/benchmarks";
 import { benchmarkProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
@@ -64,19 +64,45 @@ function useBenchmarkInvalidation(enabled: boolean) {
     let refreshedAt = -Infinity;
     // What the notices since the last refresh changed; null: anything.
     let changed: Set<string> | null = new Set();
+    // A refresh already running finishes rather than being dropped for a new
+    // one: the service would compute the dropped request anyway, and the next
+    // notice refreshes again.
+    const keepRunning = { cancelRefetch: false } as const;
+    // A query fetching already keeps that fetch, which may have started
+    // before the change: it fetches once more when that fetch settles. The
+    // heavy throttled queries wait for their next interval instead.
+    const invalidate = (
+      predicate: (query: Query) => boolean,
+      again: boolean,
+    ) => {
+      const running = again
+        ? client.getQueryCache().findAll({
+            queryKey: benchmarkKeys,
+            fetchStatus: "fetching",
+            predicate,
+          })
+        : [];
+      void client
+        .invalidateQueries({ queryKey: benchmarkKeys, predicate }, keepRunning)
+        .then(() => {
+          if (cancelled || running.length === 0) return;
+          void client.refetchQueries(
+            {
+              queryKey: benchmarkKeys,
+              type: "active",
+              predicate: (query) => running.includes(query),
+            },
+            keepRunning,
+          );
+        });
+    };
     const refresh = (scope: ReadonlySet<string> | null) => {
-      void client.invalidateQueries({
-        queryKey: benchmarkKeys,
-        predicate: (query) => !throttled(query) && touched(query, scope),
-      });
+      invalidate((query) => !throttled(query) && touched(query, scope), true);
       if (throttledTimer !== undefined) return;
       throttledTimer = setTimeout(() => {
         throttledTimer = undefined;
         if (cancelled) return;
-        void client.invalidateQueries({
-          queryKey: benchmarkKeys,
-          predicate: throttled,
-        });
+        invalidate(throttled, false);
       }, THROTTLED_REFRESH_MS);
     };
     const flush = () => {
@@ -88,6 +114,9 @@ function useBenchmarkInvalidation(enabled: boolean) {
       refresh(scope);
     };
     const note = (entityIds: readonly string[] | undefined) => {
+      // A notice that names nothing committed since the one before changed
+      // nothing.
+      if (Array.isArray(entityIds) && entityIds.length === 0) return;
       if (!Array.isArray(entityIds) || changed === null) changed = null;
       else for (const id of entityIds) changed.add(id);
       if (coalescedTimer !== undefined) return;
@@ -99,8 +128,10 @@ function useBenchmarkInvalidation(enabled: boolean) {
     // Subscribe first, then reconcile committed events to close the mount gap.
     void benchmarkApi
       .listen((change) => {
-        if (change.sequence <= sequence) return;
-        sequence = change.sequence;
+        // Notices can arrive out of order, and each names only its own
+        // changes, so none is dropped; the sequence marks how far the
+        // reconcile below reached.
+        sequence = Math.max(sequence, change.sequence);
         note(change.entityIds);
       })
       .then((stop) => {

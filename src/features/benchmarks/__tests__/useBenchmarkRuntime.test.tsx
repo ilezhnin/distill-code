@@ -1,5 +1,9 @@
 import { act, cleanup, render, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import {
@@ -233,6 +237,63 @@ describe("persistent benchmark runtime", () => {
     } finally {
       vi.useRealTimers();
     }
+    client.clear();
+  });
+
+  it("applies a notice that arrives after a later one, and ignores an empty one", async () => {
+    const { client, stale, notice } = await mounted();
+    const runA = ["benchmarks", "run", "run-a"];
+    const runB = ["benchmarks", "run", "run-b"];
+    const runs = ["benchmarks", "runs"];
+    for (const key of [runA, runB, runs]) client.setQueryData(key, []);
+    vi.useFakeTimers();
+    try {
+      // The service can emit two notices in the other order; each names
+      // only its own runs, so the earlier one still counts.
+      notice({ sequence: 11, entityIds: ["run-b"] });
+      notice({ sequence: 10, entityIds: ["run-a"] });
+      await act(() => vi.advanceTimersByTimeAsync(COALESCED_REFRESH_MS));
+      expect(stale(runA)).toBe(true);
+      expect(stale(runB)).toBe(true);
+      // A notice with nothing committed since the last one changes nothing.
+      for (const key of [runA, runB, runs]) client.setQueryData(key, []);
+      await act(() => vi.advanceTimersByTimeAsync(COALESCED_REFRESH_MS));
+      notice({ sequence: 12, entityIds: [] });
+      expect(stale(runs)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+    client.clear();
+  });
+
+  it("fetches a run again when its change lands during its fetch", async () => {
+    const { client, notice } = await mounted();
+    const key = ["benchmarks", "run", "run-a"];
+    let settle: (value: string) => void = () => {};
+    const getRun = vi
+      .fn<() => Promise<string>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((done) => {
+            settle = done;
+          }),
+      )
+      .mockResolvedValue("after the change");
+    const observer = new QueryObserver(client, {
+      queryKey: key,
+      queryFn: getRun,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(1));
+    // The fetch in flight started before the change; it is kept, and the run
+    // fetches once more after it.
+    notice({ sequence: 1, entityIds: ["run-a"] });
+    settle("before the change");
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(client.getQueryData(key)).toBe("after the change"),
+    );
+    unsubscribe();
     client.clear();
   });
 });
