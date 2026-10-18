@@ -95,9 +95,10 @@ export function requests(
   row: Configuration,
   run: RunSummary,
 ): boolean {
+  // A row stands for a model on every account of its provider, so a run
+  // that went on on another account still plans the row's gaps.
   if (
     requested.providerId !== row.providerId ||
-    (requested.accountId ?? null) !== (row.accountId ?? null) ||
     requested.modelId !== row.modelId ||
     executionProfile(requested.executionProfile) !==
       executionProfile(row.executionProfile)

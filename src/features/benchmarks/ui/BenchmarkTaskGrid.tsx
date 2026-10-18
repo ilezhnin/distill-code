@@ -15,6 +15,7 @@ import type {
 } from "../types";
 import {
   type DotState,
+  FAILING_OUTCOMES,
   passed,
   RepetitionDots,
   TestStatusMark,
@@ -81,7 +82,15 @@ function verdictOf(
   status: TestStatus | null,
 ): TaskCell["verdict"] {
   if (dots.includes("running") || status?.kind === "waiting") return "running";
-  if (dots.includes("failed") || status?.kind === "unscored") return "failed";
+  // An unscored test failed only on a quality outcome; one that stopped on
+  // infrastructure or admission is not done yet.
+  if (
+    dots.includes("failed") ||
+    (status?.kind === "unscored" &&
+      status.outcome != null &&
+      FAILING_OUTCOMES.has(status.outcome))
+  )
+    return "failed";
   if (dots.length > 0 && dots.every((dot) => dot === "passed")) return "solved";
   return "queued";
 }
@@ -152,12 +161,14 @@ export function taskCells(
         a.outcome === "pending_review"
       )
         return "running";
-      // Before its score arrives a settled attempt reads by its outcome; one
-      // that never started, or was cancelled, never did.
+      // Before its score arrives a settled attempt reads by its outcome, as
+      // the ledger counts it; one that never started, was cancelled or
+      // stopped on infrastructure is a gap, not a failure.
       if (a.phase !== "terminal") return "queued";
-      if (a.outcome == null || a.outcome === "cancelled") return "stopped";
       if (a.outcome === "pass") return "passed";
-      return "failed";
+      return a.outcome != null && FAILING_OUTCOMES.has(a.outcome)
+        ? "failed"
+        : "stopped";
     });
     while (dots.length < minimumRepetitions) dots.push("queued");
     const status =

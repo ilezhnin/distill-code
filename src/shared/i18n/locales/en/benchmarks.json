@@ -471,7 +471,7 @@
     "task": "Task {{number}}",
     "inProgress": "In progress",
     "queued": "Not started",
-    "stopped": "Stopped",
+    "stopped": "Not counted",
     "passed": "Passed",
     "solved": "Solved",
     "attention": "Failed"

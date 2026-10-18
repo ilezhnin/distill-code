@@ -662,8 +662,9 @@ pub struct Attempt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_context: Option<super::runner::collection_context::Context>,
     /// The sandbox heavy-lane setting and competing load when the candidate
-    /// session was admitted, also sealed in the evidence. Absent on attempts
-    /// recorded before it was kept or recovered after an app restart.
+    /// session was admitted, also sealed in the evidence; on a workflow root,
+    /// its most loaded step's. Absent on attempts recorded before it was kept
+    /// or recovered after an app restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_admission: Option<crate::services::benchmark_sandbox::Admission>,
     /// Purchased credits the turn drew on, also sealed in the evidence.

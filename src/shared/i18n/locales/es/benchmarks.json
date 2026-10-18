@@ -471,7 +471,7 @@
     "task": "Tarea {{number}}",
     "inProgress": "En curso",
     "queued": "Sin iniciar",
-    "stopped": "Detenidos",
+    "stopped": "No contados",
     "passed": "Superados",
     "solved": "Resueltas",
     "attention": "Fallidas"

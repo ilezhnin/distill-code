@@ -1059,7 +1059,7 @@ async fn prepare_step_admitted(
             &root_request,
             super::runner::account_slots_within(
                 &root.run_id,
-                &chosen.provider_id,
+                &super::runner::quota_scope(&chosen),
                 concurrency.account_slots,
             ),
             cancel,
@@ -1227,6 +1227,12 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
         root.observed = last.attempt.observed.clone();
         root.event_cursor = last.attempt.event_cursor;
     }
+    // A root's speed is measured under its most loaded step's admission.
+    root.sandbox_admission = executed
+        .iter()
+        .filter_map(|step| step.attempt.sandbox_admission.as_ref())
+        .max_by_key(|admission| admission.competing_heavy)
+        .cloned();
     if let Some(auxiliary) = executed
         .iter()
         .find(|step| step.attempt.usage.schema == "provider_turn_with_auxiliary_v2")
@@ -2248,6 +2254,36 @@ mod tests {
             "native_text_auxiliary"
         );
         assert_eq!(result.usage.input, Some(20));
+        directory.close().await;
+    }
+
+    /// A workflow root's speed is compared under its most loaded step's
+    /// admission, so a root carries that step's record.
+    #[tokio::test]
+    async fn a_root_carries_its_most_loaded_steps_admission() {
+        let (directory, service, _, root, version) = setup().await;
+        let (_tx, cancel) = watch::channel(false);
+        let mut result = execute(&service, root, version, 30, cancel).await.unwrap();
+        let mut steps = saved_steps(&service.store, &result.id).await.unwrap();
+        aggregate(&mut result, &steps);
+        assert_eq!(result.sandbox_admission, None);
+        for (step, heavy) in steps.iter_mut().zip([4, 1]) {
+            step.attempt.sandbox_admission = Some(
+                serde_json::from_value(json!({
+                    "lane":"heavy","competing":{},"competingHeavy":heavy,"reservedMemory":0,
+                    "reservedCpu":0,"memoryCurrent":0,"guestLoad":[0.0,0.0,0.0],"guestCpus":16,
+                    "guestMemAvailable":0,"hostAvailableRam":0,"hostAvailableCommit":0
+                }))
+                .unwrap(),
+            );
+        }
+        aggregate(&mut result, &steps);
+        assert_eq!(
+            result
+                .sandbox_admission
+                .map(|admission| admission.competing_heavy),
+            Some(4)
+        );
         directory.close().await;
     }
 

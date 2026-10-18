@@ -763,6 +763,8 @@ impl BenchmarkService {
                         "Every case of this run is complete",
                     ));
                 }
+                // The operator's resume asks every waiting account again.
+                runner::forget_quota_waits(id);
                 "running"
             }
             ("cancel", "running" | "pausing" | "paused" | "needs_attention") => "cancelling",
@@ -908,6 +910,9 @@ impl BenchmarkService {
             ));
         }
         if run.state != "running" {
+            // A stopped run going on again asks every waiting account again;
+            // one still running keeps what its turns learned.
+            runner::forget_quota_waits(id);
             self.store.set_run_state(id, "running").await?;
         }
         self.wake.notify_one();

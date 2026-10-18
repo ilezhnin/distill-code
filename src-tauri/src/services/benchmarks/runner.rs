@@ -860,6 +860,27 @@ async fn collect_repository(attempt: &mut Attempt, id: &str, cap: u64) -> Result
     collect_repository_until(attempt, id, cap, None).await
 }
 
+/// Removes the sandbox of an attempt whose answer is already sealed and
+/// saved. A clean that fails (a credential conflict, its time limit on a large
+/// tree, a process stuck in the kernel, a second clean of the same id) is
+/// logged and left armed, so the guard's drop and the reaper try again; it
+/// never turns a paid, scored attempt into a storage failure.
+async fn clean_sealed<F, Fut>(cleanup: &mut sandbox::Cleanup, clean: F)
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<()>>,
+{
+    let Some(id) = cleanup.0.clone() else {
+        return;
+    };
+    match clean(id.clone()).await {
+        Ok(()) => cleanup.0 = None,
+        Err(error) => {
+            log::warn!("[benchmarks] sealed attempt sandbox {id} not cleaned yet: {error}")
+        }
+    }
+}
+
 /// A `*_until` helper reports `TimedOut` only once the native deadline has
 /// passed. Without a deadline a timeout is the helper's own control limit,
 /// an infrastructure failure rather than budget exhaustion.
@@ -1249,11 +1270,11 @@ fn resource_waiting(attempt: &Attempt) -> bool {
 }
 
 /// How many attempts of `run_id` fly at once on `account` (its provider and
-/// id, as a seat names it): one while the run waits out that provider's usage
-/// limit, so a single turn finds out whether the limit reset, else what the
-/// account's pace allows (see [`account_pace`]).
-fn account_slots(run_id: &str, provider_id: &str, account: &str) -> usize {
-    account_slots_within(run_id, provider_id, account_pace::limit(account))
+/// id, as a seat names it): one while the run waits out that account's usage
+/// limit (`scope`, see [`quota_scope`]), so a single turn finds out whether
+/// the limit reset, else what the account's pace allows (see [`account_pace`]).
+fn account_slots(run_id: &str, scope: &str, account: &str) -> usize {
+    account_slots_within(run_id, scope, account_pace::limit(account))
 }
 
 /// The key an account's pace is kept under: the store it measures for (each
@@ -1270,22 +1291,29 @@ fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
         return;
     }
     // A turn that ran out of its own time or was stopped says nothing about
-    // the provider's rate, whatever its reason quotes.
+    // the provider's rate, whatever its reason quotes; nor does a usage limit
+    // or a sign-in wait, which have their own holds.
     let ended = error.map_or(attempt.outcome.as_deref(), |error| {
         Some(error.code.as_str())
     });
-    let throttled = !matches!(ended, Some("budget_timeout" | "cancelled"))
-        && error
-            .map(|error| account_pace::throttle_signal(&error.message))
-            .unwrap_or_else(|| {
-                attempt.outcome.as_deref() != Some("completed")
-                    && attempt
-                        .reason
-                        .as_deref()
-                        .is_some_and(account_pace::throttle_signal)
-            });
+    let throttled = !matches!(
+        ended,
+        Some("budget_timeout" | "cancelled" | QUOTA_WAIT | SIGN_IN_WAIT)
+    ) && error
+        .map(|error| account_pace::throttle_signal(&error.message))
+        .unwrap_or_else(|| {
+            attempt.outcome.as_deref() != Some("completed")
+                && attempt
+                    .reason
+                    .as_deref()
+                    .is_some_and(account_pace::throttle_signal)
+        });
     if throttled {
-        account_pace::record_throttle(account, now());
+        let admitted = attempt
+            .account_load
+            .as_ref()
+            .map(|load| load.limit as usize);
+        account_pace::record_throttle(account, admitted, now());
     } else if error.is_none() && attempt.outcome.as_deref() == Some("completed") {
         let turns = attempt.account_load.as_ref().map_or(1, |load| load.turns);
         // Only a text turn's native time is the provider streaming; a
@@ -1303,8 +1331,8 @@ fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
     }
 }
 /// [`account_slots`] under a campaign's own frozen per-account bound.
-pub(super) fn account_slots_within(run_id: &str, provider_id: &str, configured: usize) -> usize {
-    if quota_waiting(run_id, provider_id) {
+pub(super) fn account_slots_within(run_id: &str, scope: &str, configured: usize) -> usize {
+    if quota_waiting(run_id, scope) {
         1
     } else {
         configured
@@ -1389,8 +1417,30 @@ fn refused_for_quota(error: &Value, output: &str, usage: &TokenUsage) -> bool {
 /// are a limit the run cannot wait out.
 const QUOTA_WAIT_LIMIT_MS: i64 = (5 * 60 + 15) * 60 * 1000;
 
-/// When each run's provider first refused for quota, while the run waits on
-/// it. Kept in memory: a restart begins the wait again.
+/// The usage limit a quota refusal speaks for: the provider account the turn
+/// was sent on, so a second account of the provider keeps its own pace and
+/// its cells while the first waits for its reset.
+pub(super) fn quota_scope(configuration: &Configuration) -> String {
+    format!(
+        "{}\u{1f}{}",
+        configuration.provider_id,
+        configuration.account_id.as_deref().unwrap_or_default()
+    )
+}
+
+/// Forgets what `run_id` learned about usage limits and sign-ins: the
+/// operator resumed it, so its cells ask again, and a refusal from before a
+/// long pause neither holds a healthy account nor counts toward giving up.
+pub(super) fn forget_quota_waits(run_id: &str) {
+    for held in [&EXHAUSTED, &QUOTA_SINCE, &PROVIDER_HOLDS] {
+        held.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(run, _), _| run != run_id);
+    }
+}
+
+/// When each run's account first refused for quota (see [`quota_scope`]),
+/// while the run waits on it. Kept in memory: a restart begins the wait again.
 static QUOTA_SINCE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
 > = std::sync::LazyLock::new(Default::default);
@@ -1413,7 +1463,7 @@ enum QuotaPlan {
 /// [`QUOTA_WAIT_LIMIT_MS`], or, with no time named, a retry every
 /// [`QUOTA_RETRY_MS`] while the refusals last no longer than that. A weekly or
 /// longer window, a reset further off, or refusals past the limit stop it.
-fn quota_plan(run_id: &str, provider_id: &str, error: &str, at: i64) -> QuotaPlan {
+fn quota_plan(run_id: &str, scope: &str, error: &str, at: i64) -> QuotaPlan {
     let parsed = serde_json::from_str::<Value>(error).ok();
     let next_reset = parsed
         .as_ref()
@@ -1434,7 +1484,7 @@ fn quota_plan(run_id: &str, provider_id: &str, error: &str, at: i64) -> QuotaPla
     ]
     .iter()
     .any(|window| words.contains(window));
-    let key = (run_id.to_owned(), provider_id.to_owned());
+    let key = (run_id.to_owned(), scope.to_owned());
     let mut since = QUOTA_SINCE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1449,13 +1499,13 @@ fn quota_plan(run_id: &str, provider_id: &str, error: &str, at: i64) -> QuotaPla
     QuotaPlan::WaitUntil(next_reset.unwrap_or(at + QUOTA_RETRY_MS))
 }
 
-/// Whether `run_id` still waits out `provider_id`'s usage limit: refused for
-/// quota, and no turn of that provider finished since.
-fn quota_waiting(run_id: &str, provider_id: &str) -> bool {
+/// Whether `run_id` still waits out the usage limit of `scope` (see
+/// [`quota_scope`]): refused for quota, and no turn there finished since.
+fn quota_waiting(run_id: &str, scope: &str) -> bool {
     QUOTA_SINCE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains_key(&(run_id.to_owned(), provider_id.to_owned()))
+        .contains_key(&(run_id.to_owned(), scope.to_owned()))
 }
 
 /// Accounts whose usage limit ran out under a run, until their reset.
@@ -1499,12 +1549,13 @@ fn quota_reset(error: &str) -> Option<i64> {
 const MOVED_ACCOUNT: &str =
     "The usage limit of its account ran out; it goes on on another account of the provider";
 
-/// A turn of `provider_id` finished: the run no longer waits on its limit.
-fn quota_recovered(run_id: &str, provider_id: &str) {
+/// A turn on `scope` (see [`quota_scope`]) finished: the run no longer waits
+/// on its limit.
+fn quota_recovered(run_id: &str, scope: &str) {
     QUOTA_SINCE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&(run_id.to_owned(), provider_id.to_owned()));
+        .remove(&(run_id.to_owned(), scope.to_owned()));
 }
 
 /// The error code of a Grok turn held back, before any session, until the
@@ -3870,10 +3921,7 @@ impl ExecutionBackend for NativeBackend {
             mark_phase(&mut attempt, "collected");
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             store.save_attempt(&attempt).await?;
-            if let Some(id) = cleanup.0.as_deref() {
-                sandbox::clean(id).await?;
-                cleanup.0 = None;
-            }
+            clean_sealed(&mut cleanup, |id| async move { sandbox::clean(&id).await }).await;
             Ok(attempt)
         })
     }
@@ -3899,10 +3947,7 @@ impl ExecutionBackend for NativeBackend {
                     .as_deref()
                     .is_some_and(|outcome| !matches!(outcome, "interrupted" | "dispatch_uncertain"))
             {
-                if let Some(id) = cleanup.0.as_deref() {
-                    sandbox::clean(id).await?;
-                    cleanup.0 = None;
-                }
+                clean_sealed(&mut cleanup, |id| async move { sandbox::clean(&id).await }).await;
                 return Ok(Some(attempt));
             }
             let host = self
@@ -4073,10 +4118,7 @@ impl ExecutionBackend for NativeBackend {
             // Persist the patch before removing its only working copy. Recovery
             // can repeat cleanup if the process exits between these operations.
             store.save_attempt(&attempt).await?;
-            if let Some(id) = cleanup.0.as_deref() {
-                sandbox::clean(id).await?;
-                cleanup.0 = None;
-            }
+            clean_sealed(&mut cleanup, |id| async move { sandbox::clean(&id).await }).await;
             Ok(Some(attempt))
         })
     }
@@ -5729,6 +5771,7 @@ impl BenchmarkService {
                 let held = run.attempts.iter().any(|a| {
                     (a.phase == "pending"
                         && (provider_held(&run.id, &a.configuration.provider_id)
+                            || provider_held(&run.id, &quota_scope(&a.configuration))
                             || resource_waiting(a)))
                         || a.phase == "interrupted"
                 });
@@ -5907,7 +5950,11 @@ impl BenchmarkService {
             lane: &lane,
             lane_slots: attempts_at_once(&run.request, &a.configuration) as usize,
             account: &account,
-            account_slots: account_slots(&run.id, provider, &pace_key(&self.store, &account)),
+            account_slots: account_slots(
+                &run.id,
+                &quota_scope(&a.configuration),
+                &pace_key(&self.store, &account),
+            ),
         };
         // A v3 root holds every worker its policy may select for the whole
         // trajectory. A v4 root holds none here: each step takes its decided
@@ -5940,7 +5987,7 @@ impl BenchmarkService {
                     lane_slots: attempts_at_once(&worker_request, candidate) as usize,
                     account_slots: account_slots_within(
                         &run.id,
-                        &candidate.provider_id,
+                        &quota_scope(candidate),
                         concurrency.account_slots,
                     ),
                 })
@@ -6002,7 +6049,7 @@ impl BenchmarkService {
                 turns: u32::try_from(turns).unwrap_or(u32::MAX),
                 limit: u32::try_from(account_slots(
                     &run.id,
-                    provider,
+                    &quota_scope(&a.configuration),
                     &pace_key(&self.store, &account),
                 ))
                 .unwrap_or(u32::MAX),
@@ -6075,7 +6122,7 @@ impl BenchmarkService {
         let lane_slots = attempts_at_once(&request, &attempt.configuration) as usize;
         let account_slots = account_slots_within(
             &attempt.run_id,
-            &attempt.configuration.provider_id,
+            &quota_scope(&attempt.configuration),
             concurrency.account_slots,
         );
         let budget = if concurrent {
@@ -6387,7 +6434,7 @@ impl BenchmarkService {
         match result {
             Ok(mut completed) => {
                 local_refusals_cleared(&a.id);
-                quota_recovered(&run.id, &a.configuration.provider_id);
+                quota_recovered(&run.id, &quota_scope(&a.configuration));
                 completed.phase = self.settled_phase(run, &completed).await?.into();
                 self.store.save_attempt(&completed).await?;
             }
@@ -6476,7 +6523,12 @@ impl BenchmarkService {
                     // turn; the run waits for a reset it can reach, or stops
                     // for the operator with the reason on the test.
                     let plan = (error.code == QUOTA_WAIT).then(|| {
-                        quota_plan(&run.id, &a.configuration.provider_id, &error.message, now())
+                        quota_plan(
+                            &run.id,
+                            &quota_scope(&a.configuration),
+                            &error.message,
+                            now(),
+                        )
                     });
                     let reason = if plan == Some(QuotaPlan::Stop) {
                         format!("{QUOTA_STOPPED}. {}", error.message)
@@ -6497,7 +6549,7 @@ impl BenchmarkService {
                     let mut stop = false;
                     match plan {
                         Some(QuotaPlan::WaitUntil(until)) => {
-                            hold_provider_until(&run.id, provider, until);
+                            hold_provider_until(&run.id, &quota_scope(&a.configuration), until);
                             failed.wait_until = Some(until);
                         }
                         Some(QuotaPlan::Stop) => stop = true,
@@ -6599,6 +6651,7 @@ impl BenchmarkService {
         for pending in run.attempts.iter().filter(|a| {
             a.phase == "pending"
                 && !provider_held(&run.id, &a.configuration.provider_id)
+                && !provider_held(&run.id, &quota_scope(&a.configuration))
                 && !resource_waiting(a)
         }) {
             if !versions.contains_key(&pending.version_id) {
@@ -7626,6 +7679,22 @@ mod tests {
         assert!(later.sandbox_admission.is_none());
         assert!(empty.get("sandboxAdmission").is_none());
     }
+    /// A sealed attempt whose sandbox will not clean stays armed for the
+    /// guard's drop and the reaper, and the clean's failure is no error of
+    /// the attempt, so it keeps its score and its run goes on.
+    #[tokio::test]
+    async fn a_sandbox_that_will_not_clean_after_sealing_costs_no_score() {
+        // An id the guard's drop never sends to the sandbox.
+        let id = "invented/never-sent";
+        let mut cleanup = sandbox::Cleanup(Some(id.into()));
+        clean_sealed(&mut cleanup, |_| async {
+            Err(std::io::Error::other("bench-clean timed out after 25 s"))
+        })
+        .await;
+        assert_eq!(cleanup.0.as_deref(), Some(id));
+        clean_sealed(&mut cleanup, |_| async { Ok(()) }).await;
+        assert!(cleanup.0.is_none());
+    }
     /// The pace learns speeds from text turns only (a repository turn's
     /// native time includes its tools), and a turn that ran out of its own
     /// time or was stopped is no rate-limit signal, whatever its reason says.
@@ -7671,9 +7740,26 @@ mod tests {
                 "HTTP 429 rate limit",
             )),
         );
+        // A usage limit or a sign-in wait has its own hold, whatever its JSON
+        // says about rates.
+        for code in [QUOTA_WAIT, SIGN_IN_WAIT] {
+            pace_turn(
+                account,
+                &timed,
+                Some(&BenchmarkError::new(
+                    code,
+                    "{\"error\":{\"type\":\"rate_limit_error\"},\"dispatchStarted\":true}",
+                )),
+            );
+        }
         assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS);
         let mut limited = timed.clone();
         limited.outcome = Some("provider_error".into());
+        pace_turn(account, &limited, None);
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS / 2);
+        // The other turns of that burst, sent under the old limit, halve
+        // nothing more.
+        pace_turn(account, &limited, None);
         pace_turn(account, &limited, None);
         assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS / 2);
     }
@@ -9199,22 +9285,64 @@ mod tests {
     }
     #[test]
     fn a_quota_wait_leaves_one_flight_on_the_account_until_a_turn_lands() {
-        let (run, provider) = ("quota-slots-run", "kimi-acp");
+        let run = "quota-slots-run";
+        let mut spent = judge_row("kimi");
+        spent.provider_id = "kimi-acp".into();
+        spent.account_id = Some("quota-slots-account".into());
+        let mut healthy = spent.clone();
+        healthy.account_id = Some("quota-slots-second".into());
+        let (scope, other) = (quota_scope(&spent), quota_scope(&healthy));
         let account = "kimi-acp\u{1f}quota-slots-account";
-        assert_eq!(account_slots(run, provider, account), ACCOUNT_SLOTS);
+        assert_eq!(account_slots(run, &scope, account), ACCOUNT_SLOTS);
         let error = json!({"data":{"kind":QUOTA_WAIT,"nextReset":now() + 60_000}}).to_string();
         assert!(matches!(
-            quota_plan(run, provider, &error, now()),
+            quota_plan(run, &scope, &error, now()),
             QuotaPlan::WaitUntil(_)
         ));
-        assert_eq!(account_slots(run, provider, account), 1);
-        // Another run on the provider flies as before.
-        assert_eq!(
-            account_slots("another-run", provider, account),
-            ACCOUNT_SLOTS
-        );
-        quota_recovered(run, provider);
-        assert_eq!(account_slots(run, provider, account), ACCOUNT_SLOTS);
+        assert_eq!(account_slots(run, &scope, account), 1);
+        // The provider's other account keeps its own pace, and another run on
+        // the provider flies as before.
+        assert_eq!(account_slots(run, &other, account), ACCOUNT_SLOTS);
+        assert_eq!(account_slots("another-run", &scope, account), ACCOUNT_SLOTS);
+        quota_recovered(run, &scope);
+        assert_eq!(account_slots(run, &scope, account), ACCOUNT_SLOTS);
+    }
+    /// A run the operator resumes asks every account again: a quota hold, an
+    /// exhausted account and a first refusal from before a long pause are
+    /// forgotten, so one refusal after the pause waits instead of stopping
+    /// the run, and a healthy account's cells are not held.
+    #[tokio::test]
+    async fn resuming_a_run_forgets_its_usage_limit_waits() {
+        let (dir, s, _) = setup().await;
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        let configuration = run.attempts[0].configuration.clone();
+        let scope = quota_scope(&configuration);
+        let error = json!({"data":{"kind":QUOTA_WAIT}}).to_string();
+        let long_ago = now() - QUOTA_WAIT_LIMIT_MS - 60_000;
+        assert!(matches!(
+            quota_plan(&run.id, &scope, &error, long_ago),
+            QuotaPlan::WaitUntil(_)
+        ));
+        exhaust(&run.id, "isolated", now() + QUOTA_WAIT_LIMIT_MS);
+        hold_provider_until(&run.id, &scope, now() + QUOTA_WAIT_LIMIT_MS);
+        assert!(s.dispatchable(&run).await.unwrap().is_empty());
+        // Adding cases to a run still going on keeps what its turns learned.
+        s.extend_run(&run.id, &[]).await.unwrap();
+        assert!(quota_waiting(&run.id, &scope));
+        assert!(exhausted(&run.id, "isolated"));
+        assert!(provider_held(&run.id, &scope));
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        assert!(!quota_waiting(&run.id, &scope));
+        assert!(!exhausted(&run.id, "isolated"));
+        assert!(!provider_held(&run.id, &scope));
+        let resumed = s.store.run(&run.id).await.unwrap();
+        assert_eq!(s.dispatchable(&resumed).await.unwrap().len(), 2);
+        assert!(matches!(
+            quota_plan(&run.id, &scope, &error, now()),
+            QuotaPlan::WaitUntil(_)
+        ));
+        dir.close().await;
     }
     #[tokio::test]
     async fn parallelism_outside_the_slots_is_refused() {

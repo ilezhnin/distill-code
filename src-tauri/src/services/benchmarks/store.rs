@@ -603,8 +603,10 @@ impl Store {
             .map(|r| {
                 let finished_at: Option<i64> = r.get(7);
                 let started_at: Option<i64> = r.get(12);
-                // An unreported cost is priced from the catalog (see `model_catalog`).
-                let cost = r.get::<Option<f64>, _>(10).or_else(|| {
+                // Priced as every board, the points and the evidence price it:
+                // the catalog's list price of the day, the provider's own
+                // figure only where the catalog has none (see `model_catalog`).
+                let priced = || {
                     let configuration: Configuration =
                         serde_json::from_str(r.get::<Option<&str>, _>(14)?).ok()?;
                     let usage: TokenUsage =
@@ -615,7 +617,8 @@ impl Store {
                         &usage,
                         finished_at.or(started_at),
                     )
-                });
+                };
+                let cost = priced().or_else(|| r.get::<Option<f64>, _>(10));
                 let outcome: Option<&str> = r.get(5);
                 let evaluations = serde_json::from_str::<Vec<Evaluation>>(r.get::<&str, _>(11))
                     .unwrap_or_default();
@@ -2174,6 +2177,68 @@ mod tests {
         directory.close().await;
     }
 
+    /// The Attempts table and the model-page grid price an attempt as the
+    /// boards, the points and the evidence do: list price first, the
+    /// provider's own figure only for a model the catalog does not price.
+    #[tokio::test]
+    async fn the_attempts_table_prices_list_first_like_the_boards() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let definition = store
+            .save_draft(None, None, super::super::seeds::definitions().remove(0))
+            .await
+            .unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        store
+            .save_catalog_entry(&CatalogEntry {
+                id: "invented-list-price".into(),
+                kind: "model".into(),
+                provider_id: Some("invented-provider".into()),
+                needle: "invented-priced-model".into(),
+                display_name: None,
+                vendor: None,
+                input_per_million: Some(3.0),
+                output_per_million: Some(15.0),
+                cache_read_per_million: None,
+                cache_write_per_million: None,
+                context_tokens: None,
+                effective_from: 1,
+                checked_at: 1,
+                source: "https://example.test".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        let request = json!({"requestKey":"pricing","versionIds":[version.id],"configurations":[],"repetitions":1,"timeoutSeconds":30,"maxExecutions":2,"preview":false});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','pricing','completed',1,1,1,?)")
+            .bind(request.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        // The provider reports a third of the list price for the priced model.
+        for (id, model, reported) in [
+            ("priced", "invented-priced-model", 1.0),
+            ("unpriced", "invented-unpriced-model", 0.25),
+        ] {
+            let configuration = json!({"id":id,"providerId":"invented-provider","accountId":null,"modelId":model,"effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+            let attempt = json!({"id":id,"runId":"run","versionId":version.id,"configuration":configuration,"repetition":0,"phase":"terminal","outcome":"pass","finishedAt":1000,"usage":{"input":1_000_000,"output":0,"cost":reported,"schema":"provider_turn_usage_v1"},"evaluations":[],"eventCursor":0,"workflowSteps":[]});
+            sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'run',?,?,0,'terminal',?)")
+                .bind(id)
+                .bind(&version.id)
+                .bind(id)
+                .bind(attempt.to_string())
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        let listed = store.list_attempts(&ResultQuery::default()).await.unwrap();
+        let cost = |id: &str| listed.iter().find(|a| a.id == id).unwrap().cost;
+        assert_eq!(cost("priced"), Some(3.0));
+        assert_eq!(cost("unpriced"), Some(0.25));
+        directory.close().await;
+    }
+
     #[tokio::test]
     async fn history_summaries_and_result_pages_do_not_load_attempt_evidence() {
         let directory = crate::test_support::TempRoot::new();
@@ -2356,7 +2421,8 @@ mod tests {
         let listed = store.list_attempts(&ResultQuery::default()).await.unwrap();
         let cost = |id: &str| listed.iter().find(|a| a.id == id).unwrap().cost;
         assert!((cost("unpriced").unwrap() - 4.5).abs() < 1e-9);
-        assert_eq!(cost("reported"), Some(0.42));
+        // A reported figure gives way to the list price, as on every board.
+        assert!((cost("reported").unwrap() - 4.5).abs() < 1e-9);
         directory.close().await;
     }
 

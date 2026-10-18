@@ -130,7 +130,7 @@ against the same relative measure on other authors' tests (recipe
 `author-home-advantage-v1`). Only complete cells count, related tests are
 resampled together as one group, and fewer than two independent groups on
 either side give an estimate without an interval. Speed and cost compare as
-logarithms of ratios. Use the report before deciding whether own cells may
+logarithms of ratios, across admission bands. Use the report before deciding whether own cells may
 enter quality or training; the defaults above do not change on their own.
 
 The editor offers Training and Held-out evaluation. Development remains a
@@ -352,7 +352,14 @@ Coverage labels count measured tests against the full eligible pool; hover
 details separate passed, not passed and untested cases. Scores with incomplete
 coverage are preliminary; untested cases are not failed cases. Speed and cost
 percentages compare solved cases with their best measurements and are not test
-pass rates.
+pass rates. Speed compares a solved case with the fastest solve of that case
+measured in the same recorded admission band: no CPU-heavy job beside it, one or
+two, or three or more, by the most loaded of the cell's repetitions; a
+repetition without a recorded admission (one measured before admissions were
+recorded, or recovered after a restart) puts its cell in a band of its own. A
+workflow takes its most loaded step's admission. A cell alone in its band sets
+that band's record. Cost compares with every solve
+of the case, and a solve that reported no spend at all sets no cost record.
 
 The model chart uses one history recalculated against the current pool, with
 each observation anchored to its original measurement date. Runs without scored

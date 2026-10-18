@@ -11,7 +11,11 @@ import { explicitEffort } from "../lib/benchmarkEffort";
 import { modelDisplayName, stateLabel } from "../lib/benchmarkLabels";
 import type { Attempt } from "../types";
 import { compactElapsed } from "./BenchmarkTaskGrid";
-import { RepetitionDots, type DotState } from "./BenchmarkTestStatus";
+import {
+  FAILING_OUTCOMES,
+  RepetitionDots,
+  type DotState,
+} from "./BenchmarkTestStatus";
 
 function useClock() {
   const [now, setNow] = useState(Date.now);
@@ -128,9 +132,9 @@ function WorkflowAttemptProgress({
       : root.phase === "terminal"
         ? root.outcome === "pass"
           ? "passed"
-          : root.outcome === "cancelled" || root.outcome == null
-            ? "stopped"
-            : "failed"
+          : root.outcome != null && FAILING_OUTCOMES.has(root.outcome)
+            ? "failed"
+            : "stopped"
         : steps.some(
               (step) => step.hostRunId != null || step.phase === "terminal",
             )
