@@ -346,7 +346,9 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
             "--",
             "sh",
             "-c",
-            "ls -A /srv/bench; test -e /srv/bench/cache && echo seen",
+            // /srv/bench is a root-only tmpfs in every run: listing it is
+            // refused, which shows nothing, as an empty listing would.
+            `ls -A /srv/bench 2>/dev/null; cat ${entry(tree)} >/dev/null 2>&1 && echo seen; exit 0`,
           ],
           "text",
           undefined,
@@ -369,7 +371,9 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
         ["answer.patch", patch],
         [
           "hidden/check.py",
-          "from pathlib import Path\nassert Path('file.txt').read_text() == 'two\\n'\nassert not Path('/srv/bench/cache').exists()\n",
+          // os.path.exists is False where /srv/bench refuses access;
+          // Path.exists would raise instead.
+          `import os\nfrom pathlib import Path\nassert Path('file.txt').read_text() == 'two\\n'\nassert not os.path.exists('${entry(tree)}')\n`,
         ],
       ]);
       work(
