@@ -46,18 +46,35 @@ export interface HistoryPoint {
   planned: number;
   backfilled?: number;
   revised?: number;
+  /**
+   * Cases whose cell holds every repetition it requires, borrowed ones
+   * included; absent, every scored case counts as whole.
+   */
+  complete?: number;
   /** Cases measured here and not at the previous point, and the reverse. */
   added?: number;
   removed?: number;
 }
 
+/** Cases the point's rating stands on, borrowed ones included. */
+function coveredCases(point: HistoryPoint): number {
+  return point.scored + (point.backfilled ?? 0);
+}
+
+/** Scored cases whose cell still lacks repetitions it requires. */
+export function owedRepetitions(point: HistoryPoint): number {
+  return point.complete == null
+    ? 0
+    : Math.max(0, coveredCases(point) - point.complete);
+}
+
 /**
- * Whether a point's rating stands on only part of the pool. Its points then
- * average the cases measured so far, and move as more join, so they are no
- * trend of the model on their own.
+ * Whether a point's rating stands on less than the whole pool with every
+ * repetition: its points then move as more cases and repetitions land, so
+ * they are no trend of the model on their own.
  */
 export function partialCoverage(point: HistoryPoint): boolean {
-  return point.scored + (point.backfilled ?? 0) < point.planned;
+  return coveredCases(point) < point.planned || owedRepetitions(point) > 0;
 }
 
 /** Never bridge a missing result or a change in measured versions or runtime. */
@@ -134,7 +151,7 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
  * ranges, a plot whose hover band snaps to the nearest measurement, and a
  * navigator over the whole history. Every measurement is a point that selects
  * it for the page; lines connect only the same measured case set, and a
- * point measured on part of the pool shows as a faded ring.
+ * point short of the whole pool or of its repetitions shows as a dashed ring.
  */
 export function PointsHistoryChart({
   points,
@@ -389,7 +406,10 @@ export function PointsHistoryChart({
   const tooltipId = `${ids}-tooltip`;
   const later = active
     ? [
-        partialCoverage(active) ? t("history.partial") : null,
+        coveredCases(active) < active.planned ? t("history.partial") : null,
+        owedRepetitions(active)
+          ? t("history.owedRepetitions", { count: owedRepetitions(active) })
+          : null,
         active.added ? t("history.addedCases", { count: active.added }) : null,
         active.removed
           ? t("history.removedCases", { count: active.removed })
@@ -668,10 +688,17 @@ export function PointsHistoryChart({
             {visible.map((point) => {
               const selected = point.id === selectedId;
               const lifted = selected || point.id === active?.id;
-              // A point on the whole pool is solid; one on part of it is a
-              // faded ring, so a campaign's growing coverage never reads as
-              // the model's trend.
+              // A point on the whole pool with every repetition is solid; any
+              // other is a dashed ring, selected or not, so a campaign's
+              // growing coverage never reads as the model's trend.
               const partial = partialCoverage(point);
+              const outside = band.get(point.id)?.outside;
+              const tone =
+                outside === "below"
+                  ? "var(--destructive)"
+                  : outside === "above"
+                    ? "var(--success)"
+                    : "var(--chart-1)";
               return (
                 // biome-ignore lint/a11y/useSemanticElements: a point on an SVG line cannot be a <button> element
                 <circle
@@ -685,27 +712,19 @@ export function PointsHistoryChart({
                   cy={y(point.points as number)}
                   r={selected ? 6 : lifted ? 5 : 3.5}
                   fill={
-                    selected || !partial
-                      ? "var(--chart-1)"
-                      : "var(--background)"
+                    partial
+                      ? "var(--background)"
+                      : selected
+                        ? "var(--chart-1)"
+                        : tone
                   }
                   data-coverage={partial ? "partial" : "complete"}
-                  strokeOpacity={partial && !lifted ? 0.55 : 1}
-                  stroke={
-                    selected
-                      ? "var(--background)"
-                      : band.get(point.id)?.outside === "below"
-                        ? "var(--destructive)"
-                        : band.get(point.id)?.outside === "above"
-                          ? "var(--success)"
-                          : "var(--chart-1)"
-                  }
-                  data-outside-band={band.get(point.id)?.outside ?? undefined}
+                  strokeDasharray={partial ? "2 2" : undefined}
+                  stroke={selected && !partial ? "var(--background)" : tone}
+                  data-outside-band={outside ?? undefined}
                   strokeWidth={2}
                   // A point outside the model's own band always shows.
-                  opacity={
-                    sparse || lifted || band.get(point.id)?.outside ? 1 : 0
-                  }
+                  opacity={sparse || lifted || outside ? 1 : 0}
                   role="button"
                   tabIndex={point.id === tabStop ? 0 : -1}
                   aria-pressed={selected}
@@ -794,7 +813,14 @@ export function PointsHistoryChart({
                       cx={xs[0]}
                       cy={navY(segment[0].points as number)}
                       r={2}
-                      fill="var(--chart-1)"
+                      // A ring here too when the point is short of the pool.
+                      fill={
+                        partialCoverage(segment[0])
+                          ? "var(--background)"
+                          : "var(--chart-1)"
+                      }
+                      stroke="var(--chart-1)"
+                      strokeWidth={partialCoverage(segment[0]) ? 1 : 0}
                       className="pointer-events-none"
                     />
                   );

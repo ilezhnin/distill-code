@@ -434,7 +434,7 @@ describe("points history navigator", () => {
 });
 
 describe("points history coverage", () => {
-  it("draws a point on part of the pool as a faded ring and says why", () => {
+  it("draws a point on part of the pool as a dashed ring and says why", () => {
     chart([
       point({ id: "partial", at: start, scored: 23, planned: 66 }),
       point({
@@ -443,6 +443,7 @@ describe("points history coverage", () => {
         series: "whole",
         scored: 66,
         planned: 66,
+        complete: 66,
       }),
       point({
         id: "borrowed",
@@ -452,29 +453,68 @@ describe("points history coverage", () => {
         backfilled: 6,
         planned: 66,
       }),
+      point({
+        id: "settling",
+        at: start + 3 * DAY,
+        series: "settling",
+        scored: 66,
+        planned: 66,
+        complete: 60,
+      }),
     ]);
     expect(marker("partial")).toHaveAttribute("data-coverage", "partial");
     expect(marker("partial")).toHaveAttribute("fill", "var(--background)");
-    expect(
-      Number(marker("partial").getAttribute("stroke-opacity")),
-    ).toBeLessThan(1);
+    expect(marker("partial")).toHaveAttribute("stroke-dasharray", "2 2");
     expect(marker("whole")).toHaveAttribute("data-coverage", "complete");
     expect(marker("whole")).toHaveAttribute("fill", "var(--chart-1)");
-    expect(marker("whole")).toHaveAttribute("stroke-opacity", "1");
+    expect(marker("whole")).not.toHaveAttribute("stroke-dasharray");
     // Cases the rating borrows from later results still cover the pool.
     expect(marker("borrowed")).toHaveAttribute("data-coverage", "complete");
+    // Every case scored, but some still owe repetitions: the points can move.
+    expect(marker("settling")).toHaveAttribute("data-coverage", "partial");
     act(() => marker("partial").focus());
     const tooltip = screen.getByRole("tooltip");
     expect(tooltip).toHaveTextContent("23/66 cases");
     expect(
       within(tooltip).getByText(
-        "Partial coverage: the points average only the cases measured by then.",
+        "Partial coverage: the points average only the measured cases, not the whole pool.",
       ),
     ).toBeInTheDocument();
     act(() => marker("partial").blur());
     act(() => marker("whole").focus());
     expect(screen.getByRole("tooltip")).toHaveTextContent("66/66 cases");
     expect(screen.getByRole("tooltip")).not.toHaveTextContent(/Partial/);
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(/repetitions/);
+    act(() => marker("whole").blur());
+    act(() => marker("settling").focus());
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(/Partial/);
+    expect(
+      within(screen.getByRole("tooltip")).getByText(
+        "6 cases still have repetitions to run",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a selected partial point a ring", () => {
+    render(
+      <PointsHistoryChart
+        points={[
+          point({ id: "partial", at: start }),
+          point({
+            id: "whole",
+            at: start + DAY,
+            series: "whole",
+            scored: 66,
+            planned: 66,
+          }),
+        ]}
+        selectedId="partial"
+        onSelect={() => {}}
+      />,
+    );
+    expect(marker("partial")).toHaveAttribute("aria-pressed", "true");
+    expect(marker("partial")).toHaveAttribute("fill", "var(--background)");
+    expect(marker("partial")).toHaveAttribute("stroke-dasharray", "2 2");
   });
 
   it("names the cases a point gained or lost since the previous one", async () => {

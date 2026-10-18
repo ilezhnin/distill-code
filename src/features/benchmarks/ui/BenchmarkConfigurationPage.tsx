@@ -431,6 +431,8 @@ export function BenchmarkConfigurationPage({
                 planned: entry.row.planned,
                 backfilled,
                 revised: entry.snapshot.revisedVersionIds?.length ?? 0,
+                // A case with a repetition still to run moves the points too.
+                complete: entry.row.complete,
                 added: entry.change?.added,
                 removed: entry.change?.removed,
               };

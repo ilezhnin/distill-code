@@ -2021,20 +2021,32 @@ describe("configuration history", () => {
     client.clear();
   });
 
-  it("marks points on part of the pool and names the cases each one added", async () => {
+  it("marks points short of the pool or its repetitions and names the cases each one added", async () => {
     const partial = leaderboardRow({
       points: 950,
       scored: 1,
       planned: 2,
+      complete: 1,
       status: "preliminary",
       scoredVersionIds: ["version-1"],
+    });
+    // Every case scored, one still owing repetitions.
+    const settling = leaderboardRow({
+      points: 700,
+      scored: 2,
+      planned: 2,
+      complete: 1,
+      status: "preliminary",
+      scoredVersionIds: ["version-1", "version-2"],
+      attemptIds: ["attempt-1", "attempt-2"],
     });
     const whole = leaderboardRow({
       points: 800,
       scored: 2,
       planned: 2,
+      complete: 2,
       scoredVersionIds: ["version-1", "version-2"],
-      attemptIds: ["attempt-1", "attempt-2"],
+      attemptIds: ["attempt-1", "attempt-2", "attempt-3"],
     });
     vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
       {
@@ -2044,7 +2056,13 @@ describe("configuration history", () => {
         report: { cohort, rows: [partial] },
       },
       {
-        id: "second",
+        id: "settling",
+        runId: runSummary.id,
+        createdAt: 1_500,
+        report: { cohort, rows: [settling] },
+      },
+      {
+        id: "whole",
         runId: runSummary.id,
         createdAt: 2_000,
         report: { cohort, rows: [whole] },
@@ -2066,19 +2084,31 @@ describe("configuration history", () => {
       name: /: 950 points · 1\/2 cases$/,
     });
     const second = screen.getByRole("button", {
+      name: /: 700 points · 2\/2 cases$/,
+    });
+    const third = screen.getByRole("button", {
       name: /: 800 points · 2\/2 cases$/,
     });
     expect(first).toHaveAttribute("data-coverage", "partial");
-    expect(second).toHaveAttribute("data-coverage", "complete");
+    expect(second).toHaveAttribute("data-coverage", "partial");
+    expect(third).toHaveAttribute("data-coverage", "complete");
     act(() => second.focus());
     expect(screen.getByRole("tooltip")).toHaveTextContent(
       "1 case added since the previous point",
     );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "1 case still has repetitions to run",
+    );
     expect(screen.getByRole("tooltip")).not.toHaveTextContent(/Partial/);
     act(() => second.blur());
+    act(() => third.focus());
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(
+      /since the previous point|repetitions|Partial/,
+    );
+    act(() => third.blur());
     act(() => first.focus());
     expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "Partial coverage: the points average only the cases measured by then.",
+      "Partial coverage: the points average only the measured cases, not the whole pool.",
     );
     expect(screen.getByRole("tooltip")).not.toHaveTextContent(
       /since the previous point/,
@@ -2120,9 +2150,9 @@ describe("model page effort", () => {
     const title = page(null);
     await userEvent.hover(title.getByText("No effort setting"));
     expect(
-      await screen.findByRole("tooltip", {}, { timeout: 2_000 }),
+      await screen.findByRole("tooltip", {}, { timeout: 4_000 }),
     ).toHaveTextContent(
-      "This model offers no reasoning effort levels, so the benchmark measured it without one.",
+      "Measured without an effort setting. Models that offer no reasoning effort levels run this way.",
     );
   });
 
