@@ -650,7 +650,40 @@ impl NativeBackend {
 /// their history, so it happens once per run, provider and account, and
 /// again only once the executable serving them changes.
 #[derive(Default)]
-struct RunInventories(std::sync::Mutex<std::collections::HashMap<(String, String, String), Value>>);
+struct RunInventories {
+    runs: std::sync::Mutex<std::collections::HashMap<(String, String, String), Value>>,
+    /// The newest listing of each provider and account, whichever run or
+    /// inventory probe made it, when, and when a refresh of it was last
+    /// refused: what judges sit on (see [`judge_inventory`]).
+    latest: std::sync::Mutex<std::collections::HashMap<(String, String), KeptListing>>,
+}
+
+/// An account's newest listing, as [`RunInventories::latest`] hands it out.
+#[derive(Clone, Debug)]
+struct KeptListing {
+    listed_at: Instant,
+    inventory: Value,
+    refused_at: Option<Instant>,
+}
+
+/// A kept listing as a judge weighs it: its age, and how long ago a refresh
+/// of it was refused.
+#[derive(Clone, Debug)]
+struct ListingAge {
+    age: Duration,
+    refused_ago: Option<Duration>,
+    inventory: Value,
+}
+
+impl KeptListing {
+    fn aged(self) -> ListingAge {
+        ListingAge {
+            age: self.listed_at.elapsed(),
+            refused_ago: self.refused_at.map(|at| at.elapsed()),
+            inventory: self.inventory,
+        }
+    }
+}
 
 impl RunInventories {
     /// How many inventories are kept before those of other runs are dropped.
@@ -660,17 +693,18 @@ impl RunInventories {
     /// executable `serving` them now is the one that listed it.
     fn current(&self, run: &str, provider: &str, account: &str, serving: &Value) -> Option<Value> {
         let kept = self
-            .0
+            .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         kept.get(&(run.to_owned(), provider.to_owned(), account.to_owned()))
-            .filter(|inventory| !serving.is_null() && inventory.get("executable") == Some(serving))
+            .filter(|inventory| listed_by(inventory, serving))
             .cloned()
     }
 
     fn keep(&self, run: &str, provider: &str, account: &str, inventory: Value) {
+        self.observe(provider, account, inventory.clone());
         let mut kept = self
-            .0
+            .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if kept.len() >= Self::LIMIT {
@@ -680,6 +714,89 @@ impl RunInventories {
             (run.to_owned(), provider.to_owned(), account.to_owned()),
             inventory,
         );
+    }
+
+    /// Records a listing of `provider` on `account` made now, for any run.
+    fn observe(&self, provider: &str, account: &str, inventory: Value) {
+        self.latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                (provider.to_owned(), account.to_owned()),
+                KeptListing {
+                    listed_at: Instant::now(),
+                    inventory,
+                    refused_at: None,
+                },
+            );
+    }
+
+    /// The newest listing of `provider` on `account`, if the executable
+    /// `serving` them now is the one that listed it.
+    fn latest(&self, provider: &str, account: &str, serving: &Value) -> Option<KeptListing> {
+        self.latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(provider.to_owned(), account.to_owned()))
+            .filter(|kept| listed_by(&kept.inventory, serving))
+            .cloned()
+    }
+
+    /// Notes that a refresh of the newest listing was refused just now.
+    fn refused(&self, provider: &str, account: &str) {
+        if let Some(kept) = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&(provider.to_owned(), account.to_owned()))
+        {
+            kept.refused_at = Some(Instant::now());
+        }
+    }
+}
+
+/// Whether the executable `serving` an account now listed `inventory`;
+/// nothing serving is never a match.
+fn listed_by(inventory: &Value, serving: &Value) -> bool {
+    !serving.is_null() && inventory.get("executable") == Some(serving)
+}
+
+/// A judge sits on its account's newest listing without listing again while
+/// the listing is this young.
+const JUDGE_LISTING_FRESH: Duration = Duration::from_secs(3600);
+/// The oldest listing a judge falls back to when a refresh is refused.
+const JUDGE_LISTING_MAX_AGE: Duration = Duration::from_secs(12 * 3600);
+/// How long a refused refresh is not tried again; the listing stands.
+const JUDGE_REFRESH_RETRY: Duration = Duration::from_secs(600);
+
+/// The inventory a judge's account is seated from, and, when it fell back,
+/// the age of that listing and why the refresh failed. A live listing
+/// spawns a provider process the sandbox admits as a light job, which it
+/// refuses under wave load, so a judge sits on the account's newest listing
+/// (the candidates' own, an inventory probe's or an earlier judge's, by the
+/// executable serving it now): without listing while it is fresh or a
+/// refresh was refused moments ago, and when a refresh (`list`) is refused,
+/// while it is younger than [`JUDGE_LISTING_MAX_AGE`]. Only an account with
+/// no such listing depends on a live one.
+async fn judge_inventory(
+    kept: Option<ListingAge>,
+    list: impl std::future::Future<Output = Result<Value>>,
+) -> Result<(Value, Option<(Duration, BenchmarkError)>)> {
+    let usable = kept.filter(|kept| kept.age < JUDGE_LISTING_MAX_AGE);
+    if let Some(kept) = &usable {
+        let refused_lately = kept
+            .refused_ago
+            .is_some_and(|ago| ago < JUDGE_REFRESH_RETRY);
+        if kept.age < JUDGE_LISTING_FRESH || refused_lately {
+            return Ok((kept.inventory.clone(), None));
+        }
+    }
+    match list.await {
+        Ok(inventory) => Ok((inventory, None)),
+        Err(error) => match usable {
+            Some(kept) => Ok((kept.inventory, Some((kept.age, error)))),
+            None => Err(error),
+        },
     }
 }
 /// Host errors read "code: reason". Any other text, such as a provider's own
@@ -705,6 +822,28 @@ pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
         None if matches!(model.to_lowercase().as_str(), "default" | "current") => None,
         None => Some(model.to_lowercase()),
     }
+}
+
+/// The model a model id names whatever context window it asks for, aliases
+/// resolved as [`concrete_model`] resolves them: Claude Code's `[1m]` suffix
+/// (`opus[1m]`, `claude-fable-5-1[1m]`) asks the same model for a longer
+/// context, so `opus`, `opus[1m]` and `default` are one Opus. A judge never
+/// sits on its own model's output by this identity, an author is matched by
+/// it, and a panel seats each such model once.
+pub(crate) fn model_identity(provider: &str, model: &str) -> Option<String> {
+    let concrete = concrete_model(provider, model)?;
+    if NativeProvider::for_harness(provider) != Some(NativeProvider::Claude) {
+        return Some(concrete);
+    }
+    Some(
+        match concrete
+            .strip_suffix(']')
+            .and_then(|rest| rest.rsplit_once('['))
+        {
+            Some((base, _)) if !base.is_empty() => base.to_owned(),
+            _ => concrete,
+        },
+    )
 }
 
 /// The accounts a judge may sit on: every enabled stored account of a
@@ -849,8 +988,8 @@ pub(crate) fn select_judges(
 }
 
 /// The offered judges, in order, that may judge the candidates' rendering,
-/// with their resolved models: no candidate model, no author, one row per
-/// model of a provider.
+/// with their models ([`model_identity`]): no candidate model, no author, one
+/// row per model of a provider.
 fn admissible(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
@@ -858,7 +997,7 @@ fn admissible(
 ) -> Vec<(Configuration, String)> {
     let excluded: Option<Vec<String>> = candidates
         .iter()
-        .map(|c| concrete_model(&c.provider_id, &c.model_id))
+        .map(|c| model_identity(&c.provider_id, &c.model_id))
         .collect();
     let Some(excluded) = excluded else {
         return Vec::new();
@@ -869,12 +1008,14 @@ fn admissible(
     });
     let mut panel: Vec<(Configuration, String)> = Vec::new();
     for configuration in offered {
-        let Some(model) = concrete_model(&configuration.provider_id, &configuration.model_id)
-        else {
+        let (Some(concrete), Some(model)) = (
+            concrete_model(&configuration.provider_id, &configuration.model_id),
+            model_identity(&configuration.provider_id, &configuration.model_id),
+        ) else {
             continue;
         };
         let mut resolved = configuration.clone();
-        resolved.model_id = model.clone();
+        resolved.model_id = concrete;
         if excluded.contains(&model)
             || super::routing::authored_by_candidate(draft, &configuration)
             || super::routing::authored_by_candidate(draft, &resolved)
@@ -2490,6 +2631,47 @@ impl NativeBackend {
         if let Some(inventory) = self.inventories.current(run, provider, account, &serving) {
             return Ok(inventory);
         }
+        self.list_inventory(host, run, provider, account).await
+    }
+
+    /// A judge account's model listing: its newest kept one, a live one only
+    /// when none is usable (see [`judge_inventory`]); a live listing spawns a
+    /// provider process the sandbox may refuse under load, and that refusal
+    /// must not drop a judge listed lately.
+    async fn judge_listing(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        run: &str,
+        subject: &str,
+        provider: &str,
+        account: &str,
+    ) -> Result<Value> {
+        let serving = host.benchmark_serving_executable(provider, account).await;
+        let kept = self
+            .inventories
+            .latest(provider, account, &serving)
+            .map(KeptListing::aged);
+        let (listed, refused) =
+            judge_inventory(kept, self.list_inventory(host, run, provider, account)).await?;
+        if let Some((age, error)) = refused {
+            self.inventories.refused(provider, account);
+            log::info!(
+                "[benchmarks] {subject} seats account {account} from its listing of {} s ago: listing it again failed: {}",
+                age.as_secs(),
+                error.message
+            );
+        }
+        Ok(listed)
+    }
+
+    /// Lists `provider`'s models on `account` now and keeps them for `run`.
+    async fn list_inventory(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        run: &str,
+        provider: &str,
+        account: &str,
+    ) -> Result<Value> {
         let inventory = host
             .benchmark_inventory(provider, account, true)
             .await
@@ -2618,9 +2800,14 @@ impl NativeBackend {
                 );
                 continue;
             }
-            // Listed once per run, like the candidates' own bridges.
             let listed = self
-                .run_inventory(&host, run, &account.provider_id, &account.id)
+                .judge_listing(
+                    &host,
+                    run,
+                    &format!("judge panel for {subject}"),
+                    &account.provider_id,
+                    &account.id,
+                )
                 .await;
             let models = match listed {
                 Ok(listed) => {
@@ -2757,9 +2944,22 @@ impl NativeBackend {
                     "Frozen judge account has no remaining usage",
                 ));
             }
+            // From the account's newest listing, as for ordinary seats.
+            let listing = (
+                &host,
+                attempt.run_id.as_str(),
+                judge.provider_id.as_str(),
+                account.as_str(),
+            );
             let offered =
                 with_sign_in_renewal(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
-                    self.inventory(&judge.provider_id, Some(&account), true)
+                    let (host, run, provider, account) = listing;
+                    async move {
+                        let listed = self
+                            .judge_listing(host, run, "frozen judge", provider, account)
+                            .await?;
+                        self.inventory_rows(provider, account, &listed).await
+                    }
                 })
                 .await?;
             if !offered
@@ -4095,6 +4295,8 @@ impl ExecutionBackend for NativeBackend {
                 .benchmark_inventory(provider, account, refresh)
                 .await
                 .map_err(host_error)?;
+            // The probe candidates are checked against seats judges too.
+            self.inventories.observe(provider, account, result.clone());
             self.inventory_rows(provider, account, &result).await
         })
     }
@@ -9097,6 +9299,69 @@ mod tests {
         }
     }
     #[test]
+    fn a_context_window_variant_of_a_model_is_that_model() {
+        // 10-18: the old Opus candidate column (`opus`, effort default) was
+        // judged by `opus[1m]` high, Opus judging its own output.
+        for (model, identity) in [
+            ("opus[1m]", "opus"),
+            ("OPUS[1M]", "opus"),
+            ("opus", "opus"),
+            ("default", "opus"),
+            ("claude-fable-5-1[1m]", "claude-fable-5-1"),
+            ("sonnet", "sonnet"),
+            ("[1m]", "[1m]"),
+        ] {
+            assert_eq!(
+                model_identity("claude-acp", model).as_deref(),
+                Some(identity),
+                "{model}"
+            );
+        }
+        assert_eq!(model_identity("claude-acp", "current"), None);
+        // Only Claude Code's ids carry a context window suffix.
+        assert_eq!(
+            model_identity("codex-acp", "invented[1m]").as_deref(),
+            Some("invented[1m]")
+        );
+        let ids =
+            |panel: &[Configuration]| panel.iter().map(|c| c.model_id.clone()).collect::<Vec<_>>();
+        let offered = || ["opus[1m]", "sonnet", "haiku"].map(judge_row).to_vec();
+        let mut draft = creative();
+        draft.environment["authoredBy"] = json!([]);
+        let opus = judge_row("opus");
+        assert_eq!(
+            ids(&select_judges(&[&opus], &draft, offered())),
+            ["sonnet", "haiku"]
+        );
+        let rows = offered().into_iter().map(|judge| (None, judge)).collect();
+        assert_eq!(
+            ids(&ordinary_judges(&[&opus], &draft, rows)),
+            ["sonnet", "haiku"]
+        );
+        // The other way round, and one seat for one model offered twice.
+        let both = ["opus", "opus[1m]", "sonnet"].map(judge_row).to_vec();
+        assert_eq!(
+            ids(&select_judges(&[&judge_row("opus[1m]")], &draft, both.clone())),
+            ["sonnet"]
+        );
+        assert_eq!(
+            ids(&select_judges(&[&judge_row("haiku")], &draft, both)),
+            ["opus", "sonnet"]
+        );
+        // An author is matched by the same identity, and its model at another
+        // effort is marked.
+        draft.environment["authoredBy"] =
+            json!([{"providerId": "claude-acp", "modelId": "opus[1m]", "effort": "high"}]);
+        let mut author = judge_row("opus");
+        author.effort = Some("high".into());
+        assert!(super::super::routing::authored_by_candidate(&draft, &author));
+        assert_eq!(
+            ids(&select_judges(&[&judge_row("haiku")], &draft, offered())),
+            ["opus[1m]", "sonnet"]
+        );
+        assert!(author_model_judges(&draft, &[judge_row("opus")]));
+    }
+    #[test]
     fn a_panel_with_an_authors_model_at_another_effort_is_marked() {
         let mut opus = judge_row("opus[1m]");
         opus.effort = Some("high".into());
@@ -11211,6 +11476,81 @@ mod tests {
         kept.keep("run", "p", "b", inventory.clone());
         assert_eq!(kept.current("old-0", "p", "a", &on(1)), None);
         assert!(kept.current("run", "p", "b", &on(1)).is_some());
+        // Whichever run listed an account last, judges see that listing, by
+        // the executable that serves it now.
+        let newest = json!({"executable": on(1), "models": [{"modelId":"newer"}]});
+        kept.keep("another-run", "p", "a", newest.clone());
+        let latest = kept.latest("p", "a", &on(1)).unwrap();
+        assert_eq!(latest.inventory, newest);
+        assert!(latest.listed_at.elapsed() < Duration::from_secs(60));
+        assert!(latest.refused_at.is_none());
+        assert!(kept.latest("p", "a", &on(2)).is_none());
+        assert!(kept.latest("p", "a", &Value::Null).is_none());
+        assert!(kept.latest("p", "c", &on(1)).is_none());
+        kept.refused("p", "a");
+        assert!(kept.latest("p", "a", &on(1)).unwrap().refused_at.is_some());
+        // An inventory probe counts as a listing too, and clears the refusal.
+        kept.observe("p", "a", inventory.clone());
+        let probed = kept.latest("p", "a", &on(1)).unwrap();
+        assert_eq!(probed.inventory, inventory);
+        assert!(probed.refused_at.is_none());
+    }
+    /// 10-18: under wave load the sandbox refused the live listing of the
+    /// Sol and Grok judge accounts as light jobs, leaving one judge, and the
+    /// rescore's rubric cells could not form a panel.
+    #[tokio::test]
+    async fn a_refused_live_listing_still_seats_the_judge_from_its_newest_listing() {
+        let listing = json!({"executable": {"path": "bridge.js"}, "models": [{"modelId": "m"}]});
+        // Ages, not instants: a Windows Instant counts from boot.
+        let kept = |listed: u64, refused: Option<u64>| ListingAge {
+            age: Duration::from_secs(listed),
+            refused_ago: refused.map(Duration::from_secs),
+            inventory: listing.clone(),
+        };
+        let refusal = || {
+            BenchmarkError::new(
+                "capability_missing",
+                "measured CPU load is above the light-job admission line",
+            )
+        };
+        let never = async { panic!("a fresh listing is not listed again") };
+        // Fresh: no live listing at all.
+        let (seated, refused) = judge_inventory(Some(kept(60, None)), never).await.unwrap();
+        assert_eq!(seated, listing);
+        assert!(refused.is_none());
+        // Older: a refresh is tried; refused, the listing still seats.
+        let (seated, refused) = judge_inventory(Some(kept(2 * 3600, None)), async { Err(refusal()) })
+            .await
+            .unwrap();
+        assert_eq!(seated, listing);
+        let (age, error) = refused.unwrap();
+        assert!(age >= Duration::from_secs(2 * 3600));
+        assert!(error.message.contains("light-job admission line"));
+        // A refresh refused moments ago is not tried again.
+        let never = async { panic!("a refused refresh is not retried at once") };
+        let (seated, _) = judge_inventory(Some(kept(2 * 3600, Some(30))), never)
+            .await
+            .unwrap();
+        assert_eq!(seated, listing);
+        // A refresh that answers wins.
+        let newer = json!({"executable": {"path": "bridge.js"}, "models": [{"modelId": "n"}]});
+        let answered = newer.clone();
+        let (seated, refused) =
+            judge_inventory(Some(kept(2 * 3600, Some(3600))), async move { Ok(answered) })
+                .await
+                .unwrap();
+        assert_eq!(seated, newer);
+        assert!(refused.is_none());
+        // Too old, or never listed: only a live listing seats.
+        assert!(judge_inventory(Some(kept(13 * 3600, None)), async { Err(refusal()) })
+            .await
+            .is_err());
+        assert!(judge_inventory(None, async { Err(refusal()) }).await.is_err());
+        let answered = newer.clone();
+        assert_eq!(
+            judge_inventory(None, async move { Ok(answered) }).await.unwrap().0,
+            newer
+        );
     }
     #[test]
     fn only_a_turn_the_provider_never_saw_returns_to_the_queue() {

@@ -91,12 +91,13 @@ struct Observation<'a> {
     comparators: Vec<&'a str>,
 }
 
-/// Normalized author identity, so aliases and letter case name one author.
+/// Normalized author identity, so aliases, context window variants and
+/// letter case name one author.
 fn identity(author: &BenchmarkAuthor) -> (String, String, Option<String>) {
     let normalize = |value: &str| value.trim().to_lowercase();
     let provider = normalize(&author.provider_id);
     let model = normalize(&author.model_id);
-    let model = super::runner::concrete_model(&provider, &model).unwrap_or(model);
+    let model = super::runner::model_identity(&provider, &model).unwrap_or(model);
     (provider, model, author.effort.as_deref().map(normalize))
 }
 

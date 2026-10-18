@@ -104,7 +104,8 @@ installed identity requires new compatible qualification evidence. See
 
 Only a candidate with the same provider, concrete model and reasoning effort
 is an author of that test. Declared model aliases resolve to their concrete
-target before comparison. Account, speed and execution profile are not part
+target before comparison, and a context window variant names the same model
+(`opus[1m]` is `opus`). Account, speed and execution profile are not part
 of authorship. Use an explicit effort, or `null` only for a model without
 reasoning control. Another effort of the same model is not an author.
 Legacy string tags are provenance, not wildcard matches; convert them using
@@ -287,8 +288,9 @@ abstention is out of band. A visual rubric's controls count only for an entry
 whose provider's models see images; until visual controls exist, a visual seat
 rests on the text calibration. A rendering gets up to three judges, the roomiest
 accounts first (usage left in the windows the model draws on, the last good read
-when the current one fails), never a candidate's own model or the exact
-configuration that authored the case (provider, model and effort, as for
+when the current one fails), never a candidate's own model (aliases and
+context window variants resolved, so `opus[1m]` never judges `opus`) or the
+exact configuration that authored the case (provider, model and effort, as for
 candidates), and preferably no model of a candidate's vendor (Anthropic, OpenAI,
 xAI, Z.ai or Moonshot AI, by provider): when fewer than two judges of other
 vendors are offered, judges of a candidate's vendor fill the panel to two, and

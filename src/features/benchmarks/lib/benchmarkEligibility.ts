@@ -16,6 +16,15 @@ const MODEL_ALIASES: Record<string, Record<string, string>> = {
   "claude-acp": { default: "opus[1m]" },
 };
 
+// The model an id names whatever context window it asks for
+// (runner::model_identity): Claude Code's `opus[1m]` is `opus`.
+function modelIdentity(provider: string, modelId: string): string {
+  const concrete = MODEL_ALIASES[provider]?.[modelId] ?? modelId;
+  if (provider !== "claude-acp") return concrete;
+  const variant = /^(.+)\[[^[]*\]$/.exec(concrete);
+  return variant ? variant[1] : concrete;
+}
+
 export function authoredByCandidate(
   environment: unknown,
   configuration: Pick<Configuration, "modelId" | "providerId" | "effort">,
@@ -25,8 +34,7 @@ export function authoredByCandidate(
   if (!Array.isArray(authors)) return false;
   const normalize = (value: string) => value.trim().toLowerCase();
   const provider = normalize(configuration.providerId);
-  const modelId = normalize(configuration.modelId);
-  const model = MODEL_ALIASES[provider]?.[modelId] ?? modelId;
+  const model = modelIdentity(provider, normalize(configuration.modelId));
   return authors.some((author) => {
     if (!author || typeof author !== "object" || Array.isArray(author))
       return false;
@@ -38,9 +46,7 @@ export function authoredByCandidate(
     )
       return false;
     const authorProvider = normalize(providerId);
-    const authorModelId = normalize(modelId);
-    const authorModel =
-      MODEL_ALIASES[authorProvider]?.[authorModelId] ?? authorModelId;
+    const authorModel = modelIdentity(authorProvider, normalize(modelId));
     return (
       authorProvider.length > 0 &&
       authorModel.length > 0 &&
