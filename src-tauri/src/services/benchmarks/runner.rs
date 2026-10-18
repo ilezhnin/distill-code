@@ -30,8 +30,8 @@ pub(crate) const MIN_JUDGES: usize = 2;
 pub(crate) const MAX_JUDGES: usize = 3;
 pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 180;
 const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
-const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
-const RENDERER_BUSY: &str =
+pub(super) const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
+pub(super) const RENDERER_BUSY: &str =
     "Waiting for local resources to render for the judge panel; evaluate again later";
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.
@@ -294,6 +294,38 @@ pub trait ExecutionBackend: Send + Sync {
             Err(BenchmarkError::new(
                 "capability_missing",
                 "This backend cannot calibrate a rubric panel",
+            ))
+        })
+    }
+    /// The judge a judge pool calibration of `entry` asks: the roomiest
+    /// enabled account that offers its model and effort.
+    fn calibration_judge<'a>(
+        &'a self,
+        _entry: &'a super::judge_pool::Entry,
+        _calibration: &'a str,
+    ) -> BoxFuture<'a, Result<Configuration>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend cannot calibrate a judge",
+            ))
+        })
+    }
+    /// One rubric qualification control judged by `judge` alone, for a judge
+    /// pool calibration: the judged carrier, kept out of the record.
+    fn calibrate_control<'a>(
+        &'a self,
+        _store: &'a Store,
+        _version: &'a BenchmarkVersion,
+        _record: &'a super::qualification::Record,
+        _index: usize,
+        _judge: &'a Configuration,
+        _directory: std::path::PathBuf,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async {
+            Err(BenchmarkError::new(
+                "capability_missing",
+                "This backend cannot calibrate a judge",
             ))
         })
     }
@@ -675,28 +707,6 @@ pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
     }
 }
 
-/// Model families that never take an ordinary judge seat (a frozen panel names
-/// its own seats): the tier kept for high-risk work, whose allowance a wave of
-/// judge turns would spend, and the small, fast tiers, too weak a judge to rank
-/// by (owner, 2026-10-18). A family matches within the resolved model id.
-pub(crate) const RESERVED_JUDGE_FAMILIES: &[&str] = &["fable"];
-pub(crate) const SMALL_JUDGE_FAMILIES: &[&str] = &["haiku"];
-/// Efforts too small for a judge on any model.
-pub(crate) const SMALL_JUDGE_EFFORTS: &[&str] = &["none", "minimal", "low"];
-
-/// Whether `configuration`, its model resolved to `model`, may take an
-/// ordinary judge seat (see [`RESERVED_JUDGE_FAMILIES`]).
-pub(crate) fn may_judge(configuration: &Configuration, model: &str) -> bool {
-    let model = model.to_lowercase();
-    let of = |families: &[&str]| families.iter().any(|family| model.contains(*family));
-    !of(RESERVED_JUDGE_FAMILIES)
-        && !of(SMALL_JUDGE_FAMILIES)
-        && !configuration
-            .effort
-            .as_deref()
-            .is_some_and(|effort| SMALL_JUDGE_EFFORTS.contains(&effort.to_lowercase().as_str()))
-}
-
 /// The offered judges with the most usage headroom first (percent left on
 /// their account, unknown last), so a seat goes to the eligible account that
 /// can spare it most rather than always to the first account listed.
@@ -711,34 +721,115 @@ pub(crate) fn by_headroom(mut offered: Vec<(Option<f64>, Configuration)>) -> Vec
         .collect()
 }
 
-/// The ordinary panel for a rendering from the offered rows, each with its
-/// account's headroom: [`select_judges`] over the rows [`may_judge`] admits,
-/// roomiest account first. A frozen panel names its own seats and is checked
-/// by [`select_judges`] alone.
+/// The ordinary panel for a rendering from the judge pool's offered rows,
+/// each with its account's headroom: up to three seats, the roomiest first,
+/// never a candidate's own model or an author of the case (see
+/// [`select_judges`]), and preferably no model of a candidate's vendor (an
+/// unknown vendor admits no judge). When fewer than two judges of other
+/// vendors are offered, judges of a candidate's vendor fill the panel to two,
+/// and [`same_vendor`] marks it. A text rubric seats one judge per vendor; a
+/// visual one, one per model, since one vendor's models judge images today.
 pub(crate) fn ordinary_judges(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
     offered: Vec<(Option<f64>, Configuration)>,
 ) -> Vec<Configuration> {
-    let eligible = offered
-        .into_iter()
-        .filter(|(_, judge)| {
-            concrete_model(&judge.provider_id, &judge.model_id)
-                .is_some_and(|model| may_judge(judge, &model))
-        })
-        .collect();
-    select_judges(candidates, draft, by_headroom(eligible))
+    let Some(excluded) = candidate_vendors(candidates) else {
+        return Vec::new();
+    };
+    let per_vendor = text_judged(draft);
+    let admitted: Vec<(Configuration, &'static str)> =
+        admissible(candidates, draft, by_headroom(offered))
+            .into_iter()
+            .filter_map(|(judge, _)| {
+                let vendor = super::judge_pool::vendor(&judge.provider_id)?;
+                Some((judge, vendor))
+            })
+            .collect();
+    let mut vendors = std::collections::BTreeSet::new();
+    let mut panel: Vec<Configuration> = Vec::new();
+    for (judge, vendor) in &admitted {
+        if panel.len() < MAX_JUDGES
+            && !excluded.contains(vendor)
+            && (!per_vendor || vendors.insert(*vendor))
+        {
+            panel.push(judge.clone());
+        }
+    }
+    for (judge, vendor) in &admitted {
+        if panel.len() < MIN_JUDGES
+            && excluded.contains(vendor)
+            && (!per_vendor || vendors.insert(*vendor))
+        {
+            panel.push(judge.clone());
+        }
+    }
+    panel
 }
 
-/// Up to three judges for a rendering, other providers first. A judge is never
-/// the candidate's own model (aliases resolved; an unresolved candidate alias
-/// admits no judge) and never an author of the case. Of one model offered on
-/// several accounts, the first offered takes the seat.
+/// The vendors of the candidates, or none when one is unknown.
+fn candidate_vendors(
+    candidates: &[&Configuration],
+) -> Option<std::collections::BTreeSet<&'static str>> {
+    candidates
+        .iter()
+        .map(|candidate| super::judge_pool::vendor(&candidate.provider_id))
+        .collect()
+}
+
+/// Whether a judge is the concrete model of one of the case's exact authors
+/// at another effort. The exact author never judges (the 10-14 rule), but
+/// the same model at another effort may, and its panel is marked.
+pub(crate) fn author_model_judges(draft: &BenchmarkDraft, panel: &[Configuration]) -> bool {
+    let authors = super::routing::exact_authors(draft);
+    panel.iter().any(|judge| {
+        authors.iter().any(|author| {
+            let at_its_effort = BenchmarkAuthor {
+                provider_id: author.provider_id.clone(),
+                model_id: author.model_id.clone(),
+                effort: judge.effort.clone(),
+            };
+            super::routing::is_author(&at_its_effort, judge)
+        })
+    })
+}
+
+/// Whether an ordinary panel seats a judge of a candidate's vendor, which it
+/// does only when too few judges of other vendors were offered.
+pub(crate) fn same_vendor(candidates: &[&Configuration], panel: &[Configuration]) -> bool {
+    candidate_vendors(candidates).is_some_and(|vendors| {
+        panel.iter().any(|judge| {
+            super::judge_pool::vendor(&judge.provider_id)
+                .is_some_and(|vendor| vendors.contains(vendor))
+        })
+    })
+}
+
+/// Up to three judges for a rendering, other providers first: the check of a
+/// frozen panel's seats. A judge is never the candidate's own model (aliases
+/// resolved; an unresolved candidate alias admits no judge) and never an
+/// author of the case. Of one model offered on several accounts, the first
+/// offered takes the seat.
 pub(crate) fn select_judges(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
-    mut offered: Vec<Configuration>,
+    offered: Vec<Configuration>,
 ) -> Vec<Configuration> {
+    let mut panel = admissible(candidates, draft, offered);
+    let provider = candidates.first().map(|c| c.provider_id.as_str());
+    panel.sort_by_key(|(judge, _)| Some(judge.provider_id.as_str()) == provider);
+    panel.truncate(MAX_JUDGES);
+    panel.into_iter().map(|(judge, _)| judge).collect()
+}
+
+/// The offered judges, in order, that may judge the candidates' rendering,
+/// with their resolved models: no candidate model, no author, one row per
+/// model of a provider.
+fn admissible(
+    candidates: &[&Configuration],
+    draft: &BenchmarkDraft,
+    mut offered: Vec<Configuration>,
+) -> Vec<(Configuration, String)> {
     let excluded: Option<Vec<String>> = candidates
         .iter()
         .map(|c| concrete_model(&c.provider_id, &c.model_id))
@@ -769,10 +860,7 @@ pub(crate) fn select_judges(
         }
         panel.push((configuration, model));
     }
-    let provider = candidates.first().map(|c| c.provider_id.as_str());
-    panel.sort_by_key(|(judge, _)| Some(judge.provider_id.as_str()) == provider);
-    panel.truncate(MAX_JUDGES);
-    panel.into_iter().map(|(judge, _)| judge).collect()
+    panel
 }
 
 /// Whether a provider's models may judge renderings (see
@@ -2081,6 +2169,12 @@ enum JudgeEvidence<'a> {
         record: &'a mut super::qualification::Record,
         index: usize,
     },
+    /// A judge pool calibration: one named judge, evidence kept in memory
+    /// and on disk under `directory`, never in an attempt or a record.
+    Calibration {
+        judge: Box<Configuration>,
+        directory: std::path::PathBuf,
+    },
 }
 impl JudgeEvidence<'_> {
     fn directory(&self, store: &Store, attempt: &Attempt) -> std::path::PathBuf {
@@ -2095,6 +2189,7 @@ impl JudgeEvidence<'_> {
                 .join("qualifications")
                 .join(&record.id)
                 .join(format!("control-{index}")),
+            Self::Calibration { directory, .. } => directory.clone(),
         }
     }
     async fn save(&mut self, store: &Store, attempt: &Attempt) -> Result<()> {
@@ -2104,6 +2199,7 @@ impl JudgeEvidence<'_> {
                 record.controls[*index].judge_evaluations = attempt.evaluations.clone();
                 store.save_qualification_progress(record).await
             }
+            Self::Calibration { .. } => Ok(()),
         }
     }
 }
@@ -2313,7 +2409,10 @@ impl NativeBackend {
         Ok(inventory)
     }
 
-    /// The panel for one rendering from every enabled account's available models.
+    /// The panel for one rendering: the judge pool's calibrated entries on
+    /// the enabled accounts that offer them, one per vendor, never the
+    /// candidate's vendor (see [`super::judge_pool`]). A frozen panel names
+    /// its own seats.
     async fn judge_panel(
         &self,
         store: &Store,
@@ -2325,78 +2424,19 @@ impl NativeBackend {
         if let Some(panel) = super::judge_panel::frozen(draft, &candidates)? {
             return Ok(panel);
         }
-        let snapshot =
-            crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
-        let host = self
-            .app
-            .state::<AgentHost>()
-            .get_or_start(&self.app)
-            .await
-            .map_err(host_error)?;
-        let mut offered = Vec::new();
-        for account in snapshot
-            .accounts
-            .iter()
-            .filter(|account| account.enabled && judge_provider_allowed(&account.provider_id))
-        {
-            // A judge on an account whose limit is spent could only abstain
-            // and leave the panel incomplete. Judges never draw on credits.
-            let skipped = if exhausted(&attempt.run_id, &account.id) {
-                Some("its usage ran out in this run".to_owned())
-            } else if crate::services::provider_account_status::usage_spent(
-                &self.app,
-                &account.id,
-                false,
+        let textual = text_judged(draft);
+        let pool = super::judge_pool::seatable(&store.root, textual).await?;
+        let offered = self
+            .offered_judges(
+                &attempt.run_id,
+                &format!("attempt {}", attempt.id),
+                |provider| {
+                    pool.iter().any(|entry| entry.provider_id == provider)
+                        && (textual || judge_provider_allowed(provider))
+                },
             )
-            .await
-            {
-                Some("its usage limit is spent".to_owned())
-            } else {
-                None
-            };
-            if let Some(reason) = skipped {
-                log::info!(
-                    "[benchmarks] judge panel for attempt {} skips account {}: {reason}",
-                    attempt.id,
-                    account.id
-                );
-                continue;
-            }
-            // Listed once per run, like the candidates' own bridges.
-            let listed = self
-                .run_inventory(&host, &attempt.run_id, &account.provider_id, &account.id)
-                .await;
-            let models = match listed {
-                Ok(listed) => {
-                    self.inventory_rows(&account.provider_id, &account.id, &listed)
-                        .await
-                }
-                Err(error) => Err(error),
-            };
-            let models = match models {
-                Ok(models) => models,
-                Err(error) => {
-                    log::info!(
-                        "[benchmarks] judge panel for attempt {} skips account {}: its model list failed: {}",
-                        attempt.id,
-                        account.id,
-                        error.message
-                    );
-                    continue;
-                }
-            };
-            for model in models {
-                if model.available && model.configuration.execution_profile == "native_text" {
-                    let headroom = crate::services::provider_account_status::usage_headroom(
-                        &self.app,
-                        &account.id,
-                        Some(model.configuration.model_id.as_str()),
-                    )
-                    .await;
-                    offered.push((headroom, model.configuration));
-                }
-            }
-        }
+            .await?;
+        let offered = super::judge_pool::seat_rows(&pool, offered);
         let seats: Vec<String> = offered
             .iter()
             .map(|(headroom, judge)| {
@@ -2437,6 +2477,92 @@ impl NativeBackend {
             seats.join(", ")
         );
         Ok(panel)
+    }
+
+    /// Every enabled account's available native text models of the providers
+    /// `admit` takes, with their account's usage headroom. An account whose
+    /// usage is spent, or ran out in `run`, could only abstain and is skipped;
+    /// judges never draw on credits.
+    async fn offered_judges(
+        &self,
+        run: &str,
+        subject: &str,
+        admit: impl Fn(&str) -> bool,
+    ) -> Result<
+        Vec<(
+            Option<crate::services::provider_account_status::Headroom>,
+            InventoryModel,
+        )>,
+    > {
+        let snapshot =
+            crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
+        let host = self
+            .app
+            .state::<AgentHost>()
+            .get_or_start(&self.app)
+            .await
+            .map_err(host_error)?;
+        let mut offered = Vec::new();
+        for account in snapshot
+            .accounts
+            .iter()
+            .filter(|account| account.enabled && admit(&account.provider_id))
+        {
+            let skipped = if exhausted(run, &account.id) {
+                Some("its usage ran out in this run".to_owned())
+            } else if crate::services::provider_account_status::usage_spent(
+                &self.app,
+                &account.id,
+                false,
+            )
+            .await
+            {
+                Some("its usage limit is spent".to_owned())
+            } else {
+                None
+            };
+            if let Some(reason) = skipped {
+                log::info!(
+                    "[benchmarks] judge panel for {subject} skips account {}: {reason}",
+                    account.id
+                );
+                continue;
+            }
+            // Listed once per run, like the candidates' own bridges.
+            let listed = self
+                .run_inventory(&host, run, &account.provider_id, &account.id)
+                .await;
+            let models = match listed {
+                Ok(listed) => {
+                    self.inventory_rows(&account.provider_id, &account.id, &listed)
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            let models = match models {
+                Ok(models) => models,
+                Err(error) => {
+                    log::info!(
+                        "[benchmarks] judge panel for {subject} skips account {}: its model list failed: {}",
+                        account.id,
+                        error.message
+                    );
+                    continue;
+                }
+            };
+            for model in models {
+                if model.available && model.configuration.execution_profile == "native_text" {
+                    let headroom = crate::services::provider_account_status::usage_headroom(
+                        &self.app,
+                        &account.id,
+                        Some(model.configuration.model_id.as_str()),
+                    )
+                    .await;
+                    offered.push((headroom, model));
+                }
+            }
+        }
+        Ok(offered)
     }
 
     /// Whether every judge's account is free before a batch starts or
@@ -2938,8 +3064,25 @@ impl NativeBackend {
                 (open.id, judges, open.expected, open.asked.len(), png)
             }
             None => {
-                let panel = self.judge_panel(store, &attempt, &version.manifest).await?;
-                if let Some(issue) = panel_issue(&panel) {
+                // A calibration seats its one judge; a panel needs two.
+                let panel = match &evidence {
+                    JudgeEvidence::Calibration { judge, .. } => vec![judge.as_ref().clone()],
+                    _ => self.judge_panel(store, &attempt, &version.manifest).await?,
+                };
+                // An ordinary panel a candidate's vendor filled is marked, so
+                // boards can show or leave out its scores.
+                let same_vendor_panel = match &evidence {
+                    JudgeEvidence::Calibration { .. } => false,
+                    _ if version.manifest.environment.get("judgePanel").is_some() => false,
+                    _ => {
+                        let contributing =
+                            super::workflow::judge_candidates(store, &attempt).await?;
+                        same_vendor(&contributing.iter().collect::<Vec<_>>(), &panel)
+                    }
+                };
+                if let Some(issue) = panel_issue(&panel)
+                    .filter(|_| !matches!(evidence, JudgeEvidence::Calibration { .. }))
+                {
                     attempt.reason = Some(issue);
                     return Ok(attempt);
                 }
@@ -2973,7 +3116,12 @@ impl NativeBackend {
                 if let Some(installed) = &installed_renderer {
                     protocol["installedRendererRevision"] = json!(installed);
                 }
-                let protocol_hash = judge_protocol_hash(&panel, &prompt, &renderer);
+                let protocol_hash = judge_protocol_hash(
+                    &panel,
+                    &prompt,
+                    &renderer,
+                    ordinary_recipe(&version.manifest),
+                );
                 let extension = if textual { "txt" } else { "png" };
                 let path = directory.join(format!("rendering-{batch}.{extension}"));
                 tokio::fs::write(&path, &png).await?;
@@ -2997,8 +3145,20 @@ impl NativeBackend {
                         hash: hex::encode(Sha256::digest(&png)),
                         label: if textual { "Response" } else { "Rendering" }.into(),
                     }],
-                    details: Some(json!({"judgeBatchId": batch, "expectedJudges": expected,
-                        "protocolHash": protocol_hash, "protocol": protocol})),
+                    details: Some({
+                        let mut details = json!({"judgeBatchId": batch,
+                            "expectedJudges": expected, "protocolHash": protocol_hash,
+                            "protocol": protocol});
+                        if same_vendor_panel {
+                            details["sameVendor"] = json!(true);
+                        }
+                        if !matches!(evidence, JudgeEvidence::Calibration { .. })
+                            && author_model_judges(&version.manifest, &panel)
+                        {
+                            details["authorModel"] = json!(true);
+                        }
+                        details
+                    }),
                     judge: None,
                     usage: None,
                 });
@@ -3085,6 +3245,69 @@ pub(super) fn qualification_carrier(
 }
 
 impl ExecutionBackend for NativeBackend {
+    fn calibration_judge<'a>(
+        &'a self,
+        entry: &'a super::judge_pool::Entry,
+        calibration: &'a str,
+    ) -> BoxFuture<'a, Result<Configuration>> {
+        Box::pin(async move {
+            let offered = self
+                .offered_judges(
+                    &format!("judge-calibration:{calibration}"),
+                    &format!("judge calibration {calibration}"),
+                    |provider| provider == entry.provider_id,
+                )
+                .await?;
+            let rows = super::judge_pool::seat_rows(std::slice::from_ref(entry), offered);
+            by_headroom(
+                rows.into_iter()
+                    .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
+                    .collect(),
+            )
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                BenchmarkError::new(
+                    "capability_missing",
+                    format!(
+                        "No enabled account with usage left offers {} at {} effort to judge",
+                        entry.model_id,
+                        entry.effort.as_deref().unwrap_or("its default")
+                    ),
+                )
+            })
+        })
+    }
+    fn calibrate_control<'a>(
+        &'a self,
+        store: &'a Store,
+        version: &'a BenchmarkVersion,
+        record: &'a super::qualification::Record,
+        index: usize,
+        judge: &'a Configuration,
+        directory: std::path::PathBuf,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move {
+            // Calibrated under the ordinary protocol: a task's frozen seats
+            // are not this judge's.
+            let mut version = version.clone();
+            if let Some(environment) = version.manifest.environment.as_object_mut() {
+                environment.remove("judgePanel");
+            }
+            let carrier = qualification_carrier(record, &version, index);
+            self.judge_response(
+                store,
+                carrier,
+                &version,
+                JudgeStop::manual(),
+                JudgeEvidence::Calibration {
+                    judge: Box::new(judge.clone()),
+                    directory,
+                },
+            )
+            .await
+        })
+    }
     fn judge_control<'a>(
         &'a self,
         store: &'a Store,
@@ -5502,7 +5725,26 @@ fn text_judge_prompt(protocol: &str, response: &str) -> String {
 /// mode, the prompt, the renderer and the panel size. Accounts and runtime
 /// probes do not change a verdict, so they stay out of the hash that the
 /// leaderboard and the history chart compare.
-pub(crate) fn judge_protocol_hash(panel: &[Configuration], prompt: &str, renderer: &str) -> String {
+/// The ordinary panel's recipe, which a frozen panel does not use.
+fn ordinary_recipe(draft: &BenchmarkDraft) -> Option<&'static str> {
+    draft
+        .environment
+        .get("judgePanel")
+        .is_none()
+        .then_some(super::judge_pool::RECIPE)
+}
+
+/// What a judge batch's scores are comparable by. A frozen panel's hash
+/// names its judges and stays as it was. An ordinary panel's names its
+/// `recipe` instead: the pool's calibrated seats rotate by usage headroom, so
+/// one recipe is one ruler, and pool scores never compare with the panels
+/// before it.
+pub(crate) fn judge_protocol_hash(
+    panel: &[Configuration],
+    prompt: &str,
+    renderer: &str,
+    recipe: Option<&str>,
+) -> String {
     let mut judges: Vec<(&str, &str, &str, bool)> = panel
         .iter()
         .map(|judge| {
@@ -5519,8 +5761,12 @@ pub(crate) fn judge_protocol_hash(panel: &[Configuration], prompt: &str, rendere
         })
         .collect();
     judges.sort();
-    let identity = json!({"judges": judges, "prompt": prompt, "renderer": renderer,
-        "samplesPerJudge": 1, "expectedJudges": panel.len()});
+    let identity = match recipe {
+        None => json!({"judges": judges, "prompt": prompt, "renderer": renderer,
+            "samplesPerJudge": 1, "expectedJudges": panel.len()}),
+        Some(recipe) => json!({"recipe": recipe, "prompt": prompt, "renderer": renderer,
+            "samplesPerJudge": 1, "expectedJudges": panel.len()}),
+    };
     hex::encode(Sha256::digest(identity.to_string().as_bytes()))
 }
 
@@ -5535,6 +5781,8 @@ pub(super) fn judge_protocol(draft: &BenchmarkDraft, panel: &[Configuration]) ->
     if draft.environment.get("judgePanel").is_some() {
         protocol["panelRecipe"] = json!(super::judge_panel::RECIPE);
         protocol["panelBinding"] = json!(super::judge_panel::binding(panel, &prompt, &renderer));
+    } else {
+        protocol["ordinaryPanelRecipe"] = json!(super::judge_pool::RECIPE);
     }
     protocol
 }
@@ -8249,35 +8497,51 @@ mod tests {
     #[test]
     fn a_runtime_probe_or_account_never_changes_the_judge_protocol() {
         let panel = vec![judge_row("sonnet"), judge_row("haiku")];
-        let hash = judge_protocol_hash(&panel, "prompt", JUDGE_RENDERER);
+        let hash = judge_protocol_hash(&panel, "prompt", JUDGE_RENDERER, None);
         let mut probed = panel.clone();
         probed[0].inventory_revision = Some("re-probed".into());
         probed[1].account_id = Some("other-account".into());
         probed[1].id = "relabelled".into();
         probed.reverse();
-        assert_eq!(judge_protocol_hash(&probed, "prompt", JUDGE_RENDERER), hash);
+        assert_eq!(
+            judge_protocol_hash(&probed, "prompt", JUDGE_RENDERER, None),
+            hash
+        );
         let mut replaced = panel.clone();
         replaced[1].model_id = "opus".into();
         assert_ne!(
-            judge_protocol_hash(&replaced, "prompt", JUDGE_RENDERER),
+            judge_protocol_hash(&replaced, "prompt", JUDGE_RENDERER, None),
             hash
         );
         assert_ne!(
-            judge_protocol_hash(&panel[..1], "prompt", JUDGE_RENDERER),
+            judge_protocol_hash(&panel[..1], "prompt", JUDGE_RENDERER, None),
             hash
         );
         assert_ne!(
-            judge_protocol_hash(&panel, "another prompt", JUDGE_RENDERER),
+            judge_protocol_hash(&panel, "another prompt", JUDGE_RENDERER, None),
             hash
         );
         assert_ne!(
-            judge_protocol_hash(&panel, "prompt", "text-evidence-v1"),
+            judge_protocol_hash(&panel, "prompt", "text-evidence-v1", None),
             hash
         );
         assert_ne!(
-            judge_protocol_hash(&panel, "prompt", "chromium-1280x800-v1"),
+            judge_protocol_hash(&panel, "prompt", "chromium-1280x800-v1", None),
             hash
         );
+        // Seats from the judge pool never compare with the panels before it,
+        // and compare with each other whichever calibrated judges sat.
+        let pool = |panel: &[Configuration]| {
+            judge_protocol_hash(
+                panel,
+                "prompt",
+                JUDGE_RENDERER,
+                Some(super::super::judge_pool::RECIPE),
+            )
+        };
+        assert_ne!(pool(&panel), hash);
+        assert_eq!(pool(&replaced), pool(&panel));
+        assert_ne!(pool(&panel[..1]), pool(&panel));
     }
 
     #[tokio::test]
@@ -8515,6 +8779,7 @@ mod tests {
                 &panel,
                 &judge_prompt(draft, &rubric_criteria(draft)),
                 &judge_renderer(draft),
+                None,
             )
         };
         let original = identity(&draft);
@@ -8617,7 +8882,7 @@ mod tests {
         assert!(!validate_judge_input(&draft).is_empty());
     }
     #[test]
-    fn judge_panels_skip_the_candidate_its_alias_and_the_cases_authors() {
+    fn judge_seats_skip_the_candidate_its_alias_and_the_cases_authors() {
         let offered = || {
             [
                 "default",
@@ -8631,42 +8896,28 @@ mod tests {
         };
         let ids =
             |panel: &[Configuration]| panel.iter().map(|c| c.model_id.clone()).collect::<Vec<_>>();
-        let ordinary = |candidate: &Configuration, draft: &BenchmarkDraft| {
-            let offered = offered().into_iter().map(|judge| (None, judge)).collect();
-            ordinary_judges(&[candidate], draft, offered)
-        };
         let mut draft = creative();
         draft.environment["authoredBy"] = json!([]);
-        // Opus and Sonnet judge a case nobody here wrote: Fable and Haiku never
-        // take an ordinary seat, and the alias never takes its target's seat.
-        let panel = ordinary(&judge_row("haiku"), &draft);
-        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
-        assert!(panel_issue(&panel).is_none());
-        // A frozen panel names its own seats: its check is `select_judges`
-        // alone, which seats them all.
+        // A frozen panel's seats are checked by `select_judges` alone, which
+        // seats every model but the candidate's.
         let frozen = select_judges(&[&judge_row("sonnet")], &draft, offered());
         assert_eq!(ids(&frozen), ["opus[1m]", "claude-fable-5-1[1m]", "haiku"]);
-        // A candidate that is one of them leaves one judge, who cannot settle
-        // anything: the rendering stays unjudged.
-        let panel = ordinary(&judge_row("sonnet"), &draft);
-        assert_eq!(ids(&panel), ["opus[1m]"]);
-        assert!(panel_issue(&panel).is_some());
         // The default alias is Opus, so Opus never judges it.
-        let panel = ordinary(&judge_row("default"), &draft);
-        assert_eq!(ids(&panel), ["sonnet"]);
-        // An author of the case never judges it.
+        let panel = select_judges(&[&judge_row("default")], &draft, offered());
+        assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "sonnet", "haiku"]);
+        // An author of the case never judges it, nor through its alias.
         draft.environment["authoredBy"] = json!([judge_row("sonnet")]);
-        let panel = ordinary(&judge_row("haiku"), &draft);
-        assert_eq!(ids(&panel), ["opus[1m]"]);
-        // An author never judges through its alias either.
+        let panel = select_judges(&[&judge_row("haiku")], &draft, offered());
+        assert_eq!(ids(&panel), ["opus[1m]", "claude-fable-5-1[1m]"]);
         draft.environment["authoredBy"] = json!([judge_row("opus[1m]")]);
-        let panel = ordinary(&judge_row("haiku"), &draft);
-        assert_eq!(ids(&panel), ["sonnet"]);
+        let panel = select_judges(&[&judge_row("haiku")], &draft, offered());
+        assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "sonnet"]);
         // A candidate alias with an unknown target admits no judge.
         let mut moving = judge_row("current");
         moving.provider_id = "other-provider".into();
-        assert!(ordinary(&moving, &draft).is_empty());
         assert!(select_judges(&[&moving], &draft, offered()).is_empty());
+        let rows = offered().into_iter().map(|judge| (None, judge)).collect();
+        assert!(ordinary_judges(&[&moving], &draft, rows).is_empty());
         // Generic examples without an exact author still exclude their candidate from judging.
         let seeded = creative();
         for candidate in ["opus[1m]", "sonnet", "haiku", "claude-fable-5-1[1m]"] {
@@ -8675,24 +8926,107 @@ mod tests {
         }
     }
     #[test]
-    fn the_judge_rule_keeps_reserved_and_small_tiers_off_ordinary_seats() {
-        let row = |model: &str, effort: Option<&str>| {
+    fn a_panel_with_an_authors_model_at_another_effort_is_marked() {
+        let mut opus = judge_row("opus[1m]");
+        opus.effort = Some("high".into());
+        let mut draft = creative();
+        draft.environment["authoredBy"] = json!([
+            {"providerId": "claude-acp", "modelId": "opus[1m]", "effort": "xhigh"},
+            "legacy-author-name",
+        ]);
+        assert!(author_model_judges(&draft, std::slice::from_ref(&opus)));
+        assert!(!author_model_judges(&draft, &[judge_row("sonnet")]));
+        // Another provider's model of the same name is not the author's.
+        let mut elsewhere = opus.clone();
+        elsewhere.provider_id = "codex-acp".into();
+        assert!(!author_model_judges(&draft, &[elsewhere]));
+        draft.environment["authoredBy"] = json!(["legacy-author-name"]);
+        assert!(!author_model_judges(&draft, &[opus]));
+    }
+    #[test]
+    fn ordinary_seats_are_one_per_vendor_and_never_the_candidates_vendor() {
+        let row = |provider: &str, model: &str| {
             let mut judge = judge_row(model);
-            judge.effort = effort.map(str::to_owned);
-            (judge, model.to_owned())
+            judge.provider_id = provider.into();
+            judge.id = format!("{provider}:account:{model}");
+            judge
         };
-        let may = |(judge, model): (Configuration, String)| may_judge(&judge, &model);
-        assert!(may(row("opus[1m]", None)));
-        assert!(may(row("sonnet", Some("high"))));
-        assert!(!may(row("claude-fable-5-1[1m]", None)));
-        assert!(!may(row("claude-Fable-5[1m]", None)));
-        assert!(!may(row("haiku", None)));
-        assert!(!may(row("claude-haiku-4-5", None)));
-        // A small effort is a small tier on any model.
-        assert!(!may(row("invented-luna", Some("low"))));
-        assert!(!may(row("invented-luna", Some("Minimal"))));
-        assert!(!may(row("opus[1m]", Some("none"))));
-        assert!(may(row("invented-luna", Some("xhigh"))));
+        let offered = || {
+            vec![
+                (Some(90.0), row("claude-acp", "opus[1m]")),
+                (Some(80.0), row("claude-acp", "sonnet")),
+                (Some(70.0), row("codex-acp", "invented-sol")),
+                (Some(60.0), row("grok-acp", "invented-grok")),
+                (Some(50.0), row("zai-acp", "invented-glm")),
+                (None, row("kimi-acp", "invented-kimi")),
+            ]
+        };
+        let ids =
+            |panel: &[Configuration]| panel.iter().map(|c| c.model_id.clone()).collect::<Vec<_>>();
+        let mut text = creative();
+        text.environment["authoredBy"] = json!([]);
+        text.environment["judgeInput"] = json!("text");
+        let seat = |candidate: Configuration, draft: &BenchmarkDraft| {
+            ordinary_judges(&[&candidate], draft, offered())
+        };
+        // Every judge of the candidate's vendor is out, not only its model;
+        // the roomiest vendors take the three seats, one each.
+        let haiku = row("claude-acp", "haiku");
+        let panel = seat(haiku.clone(), &text);
+        assert_eq!(
+            ids(&panel),
+            ["invented-sol", "invented-grok", "invented-glm"]
+        );
+        assert!(!same_vendor(&[&haiku], &panel));
+        assert_eq!(
+            ids(&seat(row("codex-acp", "invented-luna"), &text)),
+            ["opus[1m]", "invented-grok", "invented-glm"]
+        );
+        assert_eq!(
+            ids(&seat(row("grok-acp", "invented-grok-fast"), &text)),
+            ["opus[1m]", "invented-sol", "invented-glm"]
+        );
+        // A workflow's candidates exclude every vendor among them.
+        let both = [
+            row("codex-acp", "invented-luna"),
+            row("zai-acp", "invented-glm-air"),
+        ];
+        let panel = ordinary_judges(&[&both[0], &both[1]], &text, offered());
+        assert_eq!(ids(&panel), ["opus[1m]", "invented-grok", "invented-kimi"]);
+        // An author still never judges.
+        text.environment["authoredBy"] = json!([row("codex-acp", "invented-sol")]);
+        assert_eq!(
+            ids(&seat(row("claude-acp", "haiku"), &text)),
+            ["invented-grok", "invented-glm", "invented-kimi"]
+        );
+        // A candidate of no known vendor admits no judge.
+        assert!(seat(row("invented-provider", "model"), &text).is_empty());
+        // With fewer than two judges of other vendors, the candidate's vendor
+        // fills the panel to two, never with the candidate's own model, and
+        // the panel is marked.
+        text.environment["authoredBy"] = json!([]);
+        let two_vendors = || offered().into_iter().take(3).collect::<Vec<_>>();
+        let panel = ordinary_judges(&[&haiku], &text, two_vendors());
+        assert_eq!(ids(&panel), ["invented-sol", "opus[1m]"]);
+        assert!(same_vendor(&[&haiku], &panel));
+        let opus = row("claude-acp", "opus[1m]");
+        let panel = ordinary_judges(&[&opus], &text, two_vendors());
+        assert_eq!(ids(&panel), ["invented-sol", "sonnet"]);
+        assert!(same_vendor(&[&opus], &panel));
+        // A visual rubric, judged by one vendor's models today, seats one
+        // judge per model, still never of the candidate's vendor.
+        let mut visual = creative();
+        visual.environment["authoredBy"] = json!([]);
+        let claude_only = || offered().into_iter().take(2).collect::<Vec<_>>();
+        let candidate = row("codex-acp", "invented-luna");
+        assert_eq!(
+            ids(&ordinary_judges(&[&candidate], &visual, claude_only())),
+            ["opus[1m]", "sonnet"]
+        );
+        let candidate = row("claude-acp", "haiku");
+        let panel = ordinary_judges(&[&candidate], &visual, claude_only());
+        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
+        assert!(same_vendor(&[&candidate], &panel));
     }
     #[test]
     fn a_judge_seat_goes_to_the_account_with_the_most_headroom() {
@@ -8722,8 +9056,10 @@ mod tests {
         // account's concrete row, not its alias of it.
         let mut alias = on("roomier");
         alias.model_id = "default".into();
+        let mut candidate = judge_row("invented-luna");
+        candidate.provider_id = "codex-acp".into();
         let panel = ordinary_judges(
-            &[&judge_row("haiku")],
+            &[&candidate],
             &draft,
             vec![
                 (Some(50.0), on("spare")),

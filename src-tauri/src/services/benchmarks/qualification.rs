@@ -445,7 +445,7 @@ impl BenchmarkService {
     }
 }
 
-fn in_band(rubric: &RubricCalibration, expected: &str, score: Option<f64>) -> bool {
+pub(super) fn in_band(rubric: &RubricCalibration, expected: &str, score: Option<f64>) -> bool {
     score.is_some_and(|score| {
         score.is_finite()
             && (0.0..=1.0).contains(&score)

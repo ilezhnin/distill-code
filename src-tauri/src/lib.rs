@@ -391,6 +391,8 @@ pub fn run() {
             commands::benchmarks::benchmark_create_release,
             commands::benchmarks::benchmark_submit_review,
             commands::benchmarks::benchmark_rescore,
+            commands::benchmarks::benchmark_judge_pool,
+            commands::benchmarks::benchmark_calibrate_judge,
             commands::benchmarks::benchmark_export_dataset,
             commands::benchmarks::benchmark_list_schedules,
             commands::benchmarks::benchmark_save_schedule,

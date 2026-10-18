@@ -505,6 +505,24 @@ not merely malformed output. Details and bounds are in
 Finite controls establish agreement on reviewed examples. Independently assess
 coverage, verifier isolation and task usefulness before paying for model runs.
 
+The same rubric controls calibrate the ordinary judges. `benchmark_judge_pool`
+returns the pool from the benchmark settings (`judgePool`: `providerId`,
+`modelId`, `effort`, optional `inputs`, `disclosureConfirmed`), each entry with
+its newest calibration
+and whether it takes seats, plus every stored calibration.
+`benchmark_calibrate_judge` with one such `entry` starts a calibration in the
+background: the roomiest enabled account offering that model and effort judges
+each control alone, under the ordinary protocol, and the calibration fails at
+the first control outside its band. It costs one judge call per control. Only
+a pool entry whose data use the owner confirmed is calibrated, whatever the
+request says. Calibrations live in `judge-calibrations.json` beside the
+benchmark database; one cut off by a restart, or by a judge that gave no
+answer at all (a spent quota, a failed bridge, judges busy for half an hour),
+reads as interrupted. Settings >
+Benchmarks shows the pool and starts calibrations too. After the pool changes
+the panel, rescore ordinary rubric attempts so every candidate is judged by
+the pool's recipe; their outputs are reused.
+
 ## 4. Freeze and run the measurement matrix
 
 Select immutable versions and complete live `Configuration` records. Freeze

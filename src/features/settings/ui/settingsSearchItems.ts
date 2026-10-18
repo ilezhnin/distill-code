@@ -148,6 +148,11 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     labelKey: "benchmarks.timeLimit.label",
   },
   {
+    id: "benchmarks-judges",
+    sectionId: "benchmarks",
+    labelKey: "benchmarks.judges.title",
+  },
+  {
     id: "benchmarks-sandbox-keys",
     sectionId: "benchmarks",
     labelKey: "benchmarks.sandboxKeys.title",

@@ -1049,6 +1049,22 @@ pub async fn benchmark_submit_review(
     s.changed().await;
     Ok(value)
 }
+/// The ordinary judge pool, each entry with its calibration.
+#[tauri::command]
+pub async fn benchmark_judge_pool(app: AppHandle) -> Result<benchmarks::judge_pool::Status> {
+    service(&app).await?.judge_pool().await
+}
+/// Starts a calibration of one judge on the rubric controls.
+#[tauri::command]
+pub async fn benchmark_calibrate_judge(
+    app: AppHandle,
+    entry: benchmarks::judge_pool::Entry,
+) -> Result<benchmarks::judge_pool::Calibration> {
+    let s = service(&app).await?;
+    let value = s.calibrate_judge(entry).await?;
+    s.changed().await;
+    Ok(value)
+}
 #[tauri::command]
 pub async fn benchmark_rescore(app: AppHandle, id: String) -> Result<Attempt> {
     let s = service(&app).await?;

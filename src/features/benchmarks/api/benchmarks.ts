@@ -37,6 +37,9 @@ import type {
   Configuration,
   CatalogEntry,
   InventoryModel,
+  JudgeCalibration,
+  JudgePoolEntry,
+  JudgePoolStatus,
   PoolRelease,
   RunPreview,
   RunRequest,
@@ -259,6 +262,18 @@ export const benchmarkApi = {
     invoke<{ limit: number | null; spent: number }>(
       "benchmark_get_credit_spend",
     ),
+  /**
+   * The judge pool as the service reads it from the settings document, each
+   * entry with its latest calibration for the current recipe and whether it
+   * can take seats now, plus every stored calibration.
+   */
+  judgePool: () => invoke<JudgePoolStatus>("benchmark_judge_pool"),
+  /**
+   * Starts a calibration of `entry` in the background and returns it running;
+   * a change notice follows when it finishes.
+   */
+  calibrateJudge: (entry: JudgePoolEntry) =>
+    invoke<JudgeCalibration>("benchmark_calibrate_judge", { entry }),
   getHistory: (configuration: Configuration, model = false) =>
     invoke<HistorySnapshot[]>("benchmark_get_history", {
       configuration,

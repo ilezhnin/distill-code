@@ -690,6 +690,73 @@
       "spentOfLimit": "Spent so far: {{spent}} of {{limit}}",
       "unavailable": "Spending could not be read, so tests do not use credits."
     },
+    "judges": {
+      "title": "Judges",
+      "description": "Rubric tests are judged only by models in this pool: never by a model from the candidate's own vendor, and only once you confirmed that its provider does not train on or keep the private tasks it judges and it passed a calibration on answers whose verdict is known.",
+      "statusFailed": "Judge status could not be read: {{message}}",
+      "empty": "No judges yet",
+      "emptyDescription": "Add a model below, then calibrate it.",
+      "noEffort": "No effort setting",
+      "inputs": {
+        "both": "Text and visual rubrics",
+        "text": "Text rubrics only",
+        "visual": "Visual rubrics only",
+        "none": "No rubrics"
+      },
+      "state": {
+        "none": "Not calibrated",
+        "running": "Calibrating since {{time}}",
+        "passed_one": "Passed: {{inBand}} of {{count}} control in band",
+        "passed_other": "Passed: {{inBand}} of {{count}} controls in band",
+        "failed": "Failed: {{failure}}",
+        "failedControls_one": "Failed: {{outOfBand}} of {{count}} control out of band",
+        "failedControls_other": "Failed: {{outOfBand}} of {{count}} controls out of band",
+        "interrupted": "Interrupted: {{failure}}",
+        "interruptedPlain": "Interrupted before it finished. Calibrate again.",
+        "earlierRecipe": "Calibrated on an earlier set of controls."
+      },
+      "control": {
+        "shouldPass": "{{control}}: should pass, scored {{score}}",
+        "shouldFail": "{{control}}: should fail, scored {{score}}",
+        "shouldPassUnscored": "{{control}}: should pass, no score",
+        "shouldFailUnscored": "{{control}}: should fail, no score",
+        "withReason": "{{line}}. {{reason}}",
+        "more_one": "and {{count}} more",
+        "more_other": "and {{count}} more"
+      },
+      "seats": "Takes judge seats",
+      "noSeats": "Takes no seats: {{reason}}",
+      "noSeatsPlain": "Takes no seats yet",
+      "calibrate": "Calibrate",
+      "starting": "Starting...",
+      "calibrateFailed": "Calibration not started: {{message}}",
+      "remove": "Remove",
+      "disclosure": {
+        "label": "Data use confirmed",
+        "off": "Does not judge and cannot be calibrated until you confirm that its provider does not train on or keep the private tasks it judges.",
+        "offWithReason": "Does not judge and cannot be calibrated: {{reason}}"
+      },
+      "add": {
+        "title": "New judge",
+        "description": "A model a provider lists, at one of its efforts.",
+        "provider": "Provider",
+        "model": "Model",
+        "effort": "Effort",
+        "inputs": "Rubrics",
+        "chooseProvider": "Choose a provider",
+        "chooseModel": "Choose a model",
+        "submit": "Add judge",
+        "duplicate": "This model and effort are already in the pool.",
+        "full": "The pool holds at most {{max}} judges.",
+        "loading": "Reading the models providers list...",
+        "noModels": "No models listed yet. They appear here once a benchmark run has listed a provider's models.",
+        "unavailable": "The models providers list could not be read: {{message}}"
+      },
+      "others": {
+        "title": "Calibrated models outside the pool",
+        "addToPool": "Add to pool"
+      }
+    },
     "sandboxKeys": {
       "title": "Z.ai keys in the benchmark sandbox",
       "description": "Z.ai tests run in the benchmark sandbox, which keeps its own copy of the account's saved key. Copy it again after you change the key.",
