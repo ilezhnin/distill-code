@@ -290,6 +290,16 @@ impl BenchmarkService {
         if let Some(existing) = self.store.holdout_retry(&request).await? {
             return Ok(existing);
         }
+        // Held-out cases never go to a provider that may train on them.
+        let configurations: Vec<_> = model
+            .candidates
+            .iter()
+            .map(|c| c.configuration.clone())
+            .collect();
+        require_held_out_pool(
+            &configurations,
+            &super::super::data_use::DataUse::load(&self.store.root).await,
+        )?;
         self.store
             .require_current_versions(&request.version_ids)
             .await?;

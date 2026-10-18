@@ -48,6 +48,11 @@ fn measured() -> QueryData {
     data
 }
 
+/// The default provider data use: Z.ai and Kimi may train on submissions.
+fn data_use() -> DataUse {
+    DataUse::from_settings(&serde_json::Value::Null)
+}
+
 fn request() -> PreviewRequest {
     PreviewRequest {
         work_class_id: "debug".into(),
@@ -58,7 +63,7 @@ fn request() -> PreviewRequest {
 #[test]
 fn candidates_come_from_training_cells_and_skip_train_only_vendors() {
     let data = measured();
-    let fit_request = training_request(&data, &request(), 10).unwrap();
+    let fit_request = training_request(&data, &request(), 10, &data_use()).unwrap();
     let models: BTreeSet<_> = fit_request
         .configurations
         .iter()
@@ -71,6 +76,9 @@ fn candidates_come_from_training_cells_and_skip_train_only_vendors() {
         .iter()
         .any(|v| &v.id == id && v.manifest.split == "train")));
     assert_eq!(fit_request.runtime_match, Some(RuntimeMatch::ModelIdentity));
+    // The same vendor list guards every held-out comparison pool.
+    assert!(require_held_out_pool(&fit_request.configurations, &data_use()).is_ok());
+    assert!(require_held_out_pool(&data.runs[0].request.configurations, &data_use()).is_err());
     assert!(
         fit_request
             .configurations
@@ -82,12 +90,14 @@ fn candidates_come_from_training_cells_and_skip_train_only_vendors() {
     let mut excluded = request();
     excluded.excluded_providers = vec![" claude ".into()];
     assert_eq!(
-        training_request(&data, &excluded, 10).unwrap_err().code,
+        training_request(&data, &excluded, 10, &data_use())
+            .unwrap_err()
+            .code,
         "insufficient_training_evidence"
     );
     let mut unknown = request();
     unknown.work_class_id = "invented-class".into();
-    assert!(training_request(&data, &unknown, 10).is_err());
+    assert!(training_request(&data, &unknown, 10, &data_use()).is_err());
 }
 
 #[test]
@@ -97,14 +107,14 @@ fn a_frozen_fit_previews_only_complete_held_out_cases_without_authority() {
     data.attempts.retain(|a| {
         !(a.version_id == "held-7" && a.configuration.model_id == "painter" && a.repetition == 2)
     });
-    let fit_request = training_request(&data, &request(), 10).unwrap();
+    let fit_request = training_request(&data, &request(), 10, &data_use()).unwrap();
     let artifact = fit(&data, fit_request).unwrap();
     assert!(artifact
         .model
         .training_families
         .iter()
         .all(|family| family.starts_with("family-")));
-    let preview = preview(&data, &artifact, &request(), 10).unwrap();
+    let preview = preview(&data, &artifact, &request(), 10, &data_use()).unwrap();
     assert_eq!(preview.status, "retrospective_preview");
     assert!(!preview.dispatch_allowed);
     assert_eq!(preview.cases.len(), 7);
@@ -126,7 +136,11 @@ fn a_frozen_fit_previews_only_complete_held_out_cases_without_authority() {
     // The task-conditioned choice transfers to unseen prompts of each kind.
     for case in &preview.cases {
         let index: usize = case.version_id["held-".len()..].parse().unwrap();
-        let expected = if index % 2 == 0 { "parser" } else { "painter" };
+        let expected = if index.is_multiple_of(2) {
+            "parser"
+        } else {
+            "painter"
+        };
         assert_eq!(model_of(&case.learned_key), expected, "{}", case.version_id);
         assert_eq!(case.cells.len(), 2);
     }
@@ -151,8 +165,12 @@ fn a_frozen_fit_previews_only_complete_held_out_cases_without_authority() {
 #[test]
 fn a_class_without_measured_held_out_cases_says_so() {
     let data = data();
-    let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
-    let preview = preview(&data, &artifact, &request(), 10).unwrap();
+    let artifact = fit(
+        &data,
+        training_request(&data, &request(), 10, &data_use()).unwrap(),
+    )
+    .unwrap();
+    let preview = preview(&data, &artifact, &request(), 10, &data_use()).unwrap();
     assert_eq!(preview.status, "no_held_out_cases");
     assert!(preview.cases.is_empty() && preview.policies.is_empty());
 }
@@ -160,8 +178,12 @@ fn a_class_without_measured_held_out_cases_says_so() {
 #[tokio::test]
 async fn the_newest_preview_of_a_class_reaches_its_policy_and_resists_tampering() {
     let data = measured();
-    let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
-    let first = preview(&data, &artifact, &request(), 10).unwrap();
+    let artifact = fit(
+        &data,
+        training_request(&data, &request(), 10, &data_use()).unwrap(),
+    )
+    .unwrap();
+    let first = preview(&data, &artifact, &request(), 10, &data_use()).unwrap();
     let mut second = first.clone();
     second.created_at = first.created_at + 1;
     second.artifact_hash.clear();

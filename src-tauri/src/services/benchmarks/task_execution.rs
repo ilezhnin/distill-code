@@ -282,6 +282,11 @@ impl Store {
             return Ok(None);
         };
         let certificate = self.require_active_promotion(id).await?;
+        if certificate.source.is_some() {
+            return Err(invalid(
+                "A class certificate from an executor holdout covers ordinary chats and waves only, not an owned task",
+            ));
+        }
         if certificate.trajectory.is_some() {
             return Err(invalid(
                 "A trajectory certificate authorizes only its exact step sequence, not a single task",
@@ -784,6 +789,7 @@ impl BenchmarkService {
         let certificate = state.certificate;
         if certificate.artifact_hash != request.acknowledged_certificate_hash
             || certificate.trajectory.is_some()
+            || certificate.source.is_some()
         {
             return Err(invalid(
                 "The operator has not acknowledged this exact native execution contract",

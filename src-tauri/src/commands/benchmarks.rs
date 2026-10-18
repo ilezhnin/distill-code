@@ -214,6 +214,37 @@ pub async fn benchmark_register_promotion_rule(
     s.changed().await;
     Ok(value)
 }
+/// Preregister the acceptance rule of a frozen executor holdout before any of
+/// its held-out cases is measured.
+#[tauri::command]
+pub async fn benchmark_register_holdout_rule(
+    app: AppHandle,
+    request: benchmarks::promotion::HoldoutRegistration,
+) -> Result<benchmarks::promotion::RegisteredHoldoutRule> {
+    let s = service(&app).await?;
+    let value = s.store.register_holdout_rule(request).await?;
+    s.changed().await;
+    Ok(value)
+}
+#[tauri::command]
+pub async fn benchmark_get_holdout_rule(
+    app: AppHandle,
+    plan_id: String,
+) -> Result<Option<benchmarks::promotion::RegisteredHoldoutRule>> {
+    service(&app).await?.store.holdout_rule(&plan_id).await
+}
+/// Issue a class certificate from a completely measured executor holdout that
+/// passes its registered rule. It covers ordinary chats and waves of the class.
+#[tauri::command]
+pub async fn benchmark_promote_holdout_selector(
+    app: AppHandle,
+    plan_id: String,
+) -> Result<benchmarks::promotion::State> {
+    let s = service(&app).await?;
+    let value = s.store.promote_holdout_selector(&plan_id).await?;
+    s.changed().await;
+    Ok(value)
+}
 /// Learned selection state of every work class: its certificate, or how far
 /// its qualified evidence still is from one.
 #[tauri::command]

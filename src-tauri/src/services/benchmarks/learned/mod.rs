@@ -29,6 +29,20 @@ const MAX_CASES: usize = 256;
 const MAX_CANDIDATES: usize = 32;
 /// Pseudonym salt of the training ledger; it names no account in the result.
 const LEDGER_SALT: &str = "learned-selector-v1";
+/// Refuses a held-out comparison pool with a provider that may train on what
+/// it is sent: the provider data-use rule keeps it on training tasks.
+pub(in crate::services::benchmarks) fn require_held_out_pool(
+    configurations: &[Configuration],
+    data_use: &super::data_use::DataUse,
+) -> Result<()> {
+    match configurations
+        .iter()
+        .find_map(|c| data_use.refusal(&c.provider_id, "held_out"))
+    {
+        Some(reason) => Err(invalid(reason)),
+        None => Ok(()),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

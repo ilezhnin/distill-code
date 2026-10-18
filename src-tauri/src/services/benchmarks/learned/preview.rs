@@ -5,6 +5,7 @@
 //! families are exposed, so this is a retrospective comparison: it grants no
 //! routing, no reservation and no promotion.
 use super::super::{
+    data_use::DataUse,
     export::{self, RuntimeMatch},
     store::{now, Store},
     workflow_campaign, BenchmarkService,
@@ -18,9 +19,6 @@ use std::collections::BTreeMap;
 const RECIPE: &str = "retrospective-exposed-holdout-preview-v1";
 /// The quality floor a preview's predictions use, as a frozen comparison would.
 const MIN_QUALITY: f64 = 0.5;
-/// Vendors whose data-use terms keep them on training tasks: they never join
-/// a pool whose policy is compared on held-out tasks.
-pub const TRAIN_ONLY_PROVIDERS: [&str; 2] = ["zai-acp", "kimi-acp"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -108,10 +106,15 @@ fn coverage(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("insufficient_training_evidence", message)
 }
 
-fn excluded(request: &PreviewRequest) -> Vec<String> {
-    let mut providers: BTreeSet<String> = TRAIN_ONLY_PROVIDERS
-        .iter()
-        .map(|provider| (*provider).to_owned())
+/// The user's exclusions and every provider that may train on submitted
+/// data: those see training tasks only, so they never join a pool compared on
+/// held-out tasks.
+fn excluded(request: &PreviewRequest, data_use: &DataUse) -> Vec<String> {
+    let mut providers: BTreeSet<String> = data_use
+        .providers()
+        .into_iter()
+        .filter(|provider| provider.trains_on_submissions)
+        .map(|provider| provider.provider_id)
         .collect();
     providers.extend(
         request
@@ -156,6 +159,7 @@ pub(super) fn training_request(
     data: &QueryData,
     request: &PreviewRequest,
     cutoff: i64,
+    data_use: &DataUse,
 ) -> Result<FitRequest> {
     if !routing::WORK_CLASSES.contains(&request.work_class_id.as_str())
         || request.excluded_providers.len() > 64
@@ -164,7 +168,7 @@ pub(super) fn training_request(
             "A preview needs a known work class and at most 64 excluded providers",
         ));
     }
-    let excluded = excluded(request);
+    let excluded = excluded(request, data_use);
     let rows = export::ledger_rows_matching(
         data,
         false,
@@ -273,6 +277,7 @@ pub(super) fn preview(
     artifact: &FitArtifact,
     request: &PreviewRequest,
     cutoff: i64,
+    data_use: &DataUse,
 ) -> Result<LearnedPreview> {
     let model = &artifact.model;
     validate_model(model)?;
@@ -453,7 +458,7 @@ pub(super) fn preview(
         runtime_match: RuntimeMatch::ModelIdentity,
         training_cases: model.training_cases,
         training_groups: model.training_groups.len(),
-        excluded_providers: excluded(request),
+        excluded_providers: excluded(request, data_use),
         candidates,
         groups: cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),
         fallback_cases: cases.iter().filter(|c| c.used_fallback).count(),
@@ -484,10 +489,11 @@ impl BenchmarkService {
     /// class's measured held-out cases. Makes no model call.
     pub async fn preview_learned_class(&self, request: PreviewRequest) -> Result<LearnedPreview> {
         let data = self.query_data().await?;
+        let data_use = DataUse::load(&self.store.root).await;
         let (artifact, preview) = tauri::async_runtime::spawn_blocking(move || {
             let cutoff = now();
-            let artifact = fit(&data, training_request(&data, &request, cutoff)?)?;
-            let preview = preview(&data, &artifact, &request, cutoff)?;
+            let artifact = fit(&data, training_request(&data, &request, cutoff, &data_use)?)?;
+            let preview = preview(&data, &artifact, &request, cutoff, &data_use)?;
             Ok::<_, BenchmarkError>((artifact, preview))
         })
         .await

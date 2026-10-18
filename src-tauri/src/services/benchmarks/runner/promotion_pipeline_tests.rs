@@ -140,7 +140,10 @@ fn revoke_at_ordinary_handoff<'a>(
     })
 }
 
-async fn qualify(service: &BenchmarkService, versions: &[BenchmarkVersion]) -> Vec<String> {
+pub(super) async fn qualify(
+    service: &BenchmarkService,
+    versions: &[BenchmarkVersion],
+) -> Vec<String> {
     let mut ids = vec![];
     for version in versions {
         let record = service
@@ -283,6 +286,7 @@ fn registration(
             alpha: 0.05,
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 1.0,
+            non_inferiority_margin: None,
         },
         contract: Contract::from_task(&learned::PublicTask::from(&training[0].manifest)),
         qualification_ids: ids,
@@ -859,6 +863,7 @@ async fn exposed_replacement_reports_cannot_promote_even_when_acceptance_passes(
         artifact_hash: String::new(),
         native_inventory: None,
         trajectory: None,
+        source: None,
     };
     legacy.id = fixtures::hash(&serde_json::to_vec(&legacy).unwrap());
     legacy.artifact_hash = fixtures::hash(&serde_json::to_vec(&legacy).unwrap());
@@ -1359,6 +1364,7 @@ async fn a_mixed_role_trajectory_certificate_covers_only_its_exact_step_sequence
             alpha: 0.05,
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 1.0,
+            non_inferiority_margin: None,
         },
         contract: deployment.contract.clone(),
         qualification_ids: ids.to_vec(),
@@ -1669,6 +1675,7 @@ async fn a_wave_root_finds_its_certified_trajectory_and_later_steps_keep_their_p
                 alpha: 0.05,
                 minimum_group_utility_gain: 0.0,
                 minimum_observed_quality: 1.0,
+                non_inferiority_margin: None,
             },
             contract: deployment.contract.clone(),
             qualification_ids: ids,

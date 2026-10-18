@@ -65,10 +65,15 @@ export interface QualificationRecord {
   limitations: string[];
 }
 export interface PromotionRule {
-  recipe: "independent-group-sign-holm-v1";
+  /** The selection recipe tests a per-task selector against the declared
+   * and training orders (superiority) and every worker (non-inferiority). */
+  recipe:
+    | "independent-group-sign-holm-v1"
+    | "superiority-noninferiority-sign-holm-v1";
   alpha: number;
   minimumGroupUtilityGain: number;
   minimumObservedQuality: number;
+  nonInferiorityMargin?: number;
 }
 export interface DeploymentContract {
   workClassId: string;
@@ -107,12 +112,29 @@ export interface RegisteredPromotionRule {
   qualificationHashes: string[];
   artifactHash: string;
 }
+/** The acceptance rule of a frozen executor holdout, before measurement. */
+export interface HoldoutRegistration {
+  requestKey: string;
+  planId: string;
+  operator: string;
+  rule: PromotionRule;
+  qualificationIds: string[];
+}
+export interface RegisteredHoldoutRule {
+  request: HoldoutRegistration;
+  createdAt: number;
+  planHash: string;
+  qualificationHashes: string[];
+  artifactHash: string;
+}
 export interface PromotionAssessment {
   rule: PromotionRule;
   groups: number;
   observedQuality: number;
   comparisons: {
     baseline: string;
+    test?: "superiority" | "non_inferiority";
+    tiedGroups?: number;
     winningGroups: number;
     meanUtilityGain: number;
     pValue: number;
@@ -138,6 +160,8 @@ export interface PromotionCertificate {
   priorKeys: string[];
   minPredictionQuality: number;
   artifactHash: string;
+  /** Present for a class certificate issued from an executor holdout. */
+  source?: "executor_holdout";
   trajectory?: {
     rootBudgetSeconds: number;
     steps: {

@@ -934,7 +934,7 @@
     "reviewCase": "Review and qualify",
     "trainingHint": "The selector learns task-dependent provider, model and effort preferences from scored training evidence using soft targets and KL loss. A saved fit does not enable certified routing.",
     "prepareFit": "Prepare training",
-    "previewHint": "Preview fits this category from training measurements only, with every model that has at least eight complete training cases (train-only vendors left out), then replays the fit on held-out cases that were already measured. It makes no model calls and does not change routing.",
+    "previewHint": "Preview fits this category from training measurements only, with every model that has at least eight complete training cases (providers that may train on submitted data left out), then replays the fit on held-out cases that were already measured. It makes no model calls and does not change routing.",
     "previewLearned": "Preview learned choice",
     "previewRunning": "Fitting and comparing on measured cases...",
     "previewSaved": "Preview saved: {{cases}} held-out cases compared. The status under this category shows the result.",
