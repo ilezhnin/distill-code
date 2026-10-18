@@ -244,6 +244,23 @@ export function useBenchmarkReleases() {
 }
 const EMPTY_RELEASES: PoolRelease[] = [];
 
+/** Every native provider's data use, as the service reads the settings. */
+export const PROVIDER_DATA_USE_KEY = [
+  ...benchmarkKeys,
+  "provider-data-use",
+] as const;
+
+/**
+ * What each native provider may do with what benchmark turns send it. The
+ * defaults live in the backend, so the rows are read from it rather than
+ * worked out here.
+ */
+export const useProviderDataUse = () =>
+  useQuery({
+    queryKey: PROVIDER_DATA_USE_KEY,
+    queryFn: () => benchmarkApi.providerDataUse(),
+  });
+
 /** Dated vendor facts; an empty catalog is seeded by the service on first read. */
 export function useModelCatalog() {
   const catalog = useQuery({

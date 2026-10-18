@@ -690,9 +690,19 @@
       "spentOfLimit": "Spent so far: {{spent}} of {{limit}}",
       "unavailable": "Spending could not be read, so tests do not use credits."
     },
+    "dataUse": {
+      "title": "Provider data use",
+      "description": "A provider that may train on submitted data receives only train tasks, never held-out ones, and its models never judge. Check what a provider does with submitted data in its account settings before you change it here.",
+      "trains": "May train on submitted data",
+      "default": "Default",
+      "stated": "Set by you",
+      "useDefault": "Use default",
+      "loading": "Reading what providers may do with submitted data...",
+      "failed": "Provider data use could not be read: {{message}}"
+    },
     "judges": {
       "title": "Judges",
-      "description": "Rubric tests are judged only by models in this pool: never by a model from the candidate's own vendor, and only once you confirmed that its provider does not train on or keep the private tasks it judges and it passed a calibration on answers whose verdict is known.",
+      "description": "Rubric tests are judged only by models in this pool: never by a model from the candidate's own vendor, never by one whose provider may train on submitted data, and only once it passed a calibration on answers whose verdict is known.",
       "statusFailed": "Judge status could not be read: {{message}}",
       "empty": "No judges yet",
       "emptyDescription": "Add a model below, then calibrate it.",
@@ -731,11 +741,7 @@
       "starting": "Starting...",
       "calibrateFailed": "Calibration not started: {{message}}",
       "remove": "Remove",
-      "disclosure": {
-        "label": "Data use confirmed",
-        "off": "Does not judge and cannot be calibrated until you confirm that its provider does not train on or keep the private tasks it judges.",
-        "offWithReason": "Does not judge and cannot be calibrated: {{reason}}"
-      },
+      "neverJudges": "Never judges and cannot be calibrated: {{vendor}} may train on submitted data.",
       "add": {
         "title": "New judge",
         "description": "A model a provider lists, at one of its efforts.",

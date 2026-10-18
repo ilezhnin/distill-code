@@ -116,6 +116,22 @@ stages declared task inputs and the selected provider's credential material.
 Provider inference sends those inputs to its endpoint under the account's
 existing data-use policy.
 
+A provider that may train on submitted data would learn the private tasks, so
+it receives only `train` versions and never judges. The owner states each
+provider's data use in Settings > Benchmarks > Provider data use
+(`providerDataUse` in the benchmark settings document,
+`{"<providerId>": {"trainsOnSubmissions": true|false}}`); a provider it does not
+name keeps its default: Anthropic, OpenAI and xAI, whose accounts the owner
+confirmed (10-18), do not train, and every other native provider is assumed
+to, Z.ai and Moonshot today. A settings document that cannot be read counts
+every native provider as training. The rule holds before anything is sent: a
+run preview refuses each such cell with the reason, adding tests to a run
+refuses, a pending cell planned before is settled `excluded` unsent, a workflow
+step or policy pick never goes to such a worker, a workflow campaign (held-out
+cases) refuses such a candidate, and the judge pool, its calibrations and
+frozen judge seats refuse such a judge. `benchmark_get_provider_data_use` lists
+what holds for every native provider.
+
 A repository attempt works in its own copy of the published snapshot, with a
 pristine root-only base beside it from which its answer is read. Every check
 gets its own copy too. Nothing unpacked is shared, but the archives they
@@ -507,21 +523,20 @@ coverage, verifier isolation and task usefulness before paying for model runs.
 
 The same rubric controls calibrate the ordinary judges. `benchmark_judge_pool`
 returns the pool from the benchmark settings (`judgePool`: `providerId`,
-`modelId`, `effort`, optional `inputs`, `disclosureConfirmed`), each entry with
-its newest calibration
+`modelId`, `effort`, optional `inputs`), each entry with its newest calibration
 and whether it takes seats, plus every stored calibration.
 `benchmark_calibrate_judge` with one such `entry` starts a calibration in the
 background: the roomiest enabled account offering that model and effort judges
 each control alone, under the ordinary protocol, and the calibration fails at
-the first control outside its band. It costs one judge call per control. Only
-a pool entry whose data use the owner confirmed is calibrated, whatever the
-request says. Calibrations live in `judge-calibrations.json` beside the
-benchmark database; one cut off by a restart, or by a judge that gave no
-answer at all (a spent quota, a failed bridge, judges busy for half an hour),
-reads as interrupted. Settings >
+the first control outside its band. It costs one judge call per control. Only a
+pool entry is calibrated, and never one of a provider that may train on
+submitted data (see the provider data use above). Calibrations live in
+`judge-calibrations.json` beside the benchmark database; one cut off by a
+restart, or by a judge that gave no answer at all (a spent quota, a failed
+bridge, judges busy for half an hour), reads as interrupted. Settings >
 Benchmarks shows the pool and starts calibrations too. After the pool changes
-the panel, rescore ordinary rubric attempts so every candidate is judged by
-the pool's recipe; their outputs are reused.
+the panel, rescore ordinary rubric attempts so every candidate is judged by the
+pool's recipe; their outputs are reused.
 
 ## 4. Freeze and run the measurement matrix
 

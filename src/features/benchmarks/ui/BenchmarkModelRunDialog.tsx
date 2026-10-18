@@ -17,7 +17,7 @@ import {
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Label } from "@/shared/ui/label";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
-import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { benchmarkKeys, useProviderDataUse } from "../hooks/useBenchmarks";
 import { resolveCatchUpConfiguration } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
@@ -30,6 +30,10 @@ import {
   runWindowCloses,
   runWindowOpen,
 } from "../lib/benchmarkPlan";
+import {
+  trainingProvider,
+  trainingProviderReceives,
+} from "../lib/providerDataUse";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   Attempt,
@@ -110,6 +114,25 @@ export function BenchmarkModelRunDialog({
       ),
     };
   }, [definitions, configuration]);
+  // A provider that may train on submitted data receives train tests only:
+  // the others stay listed, unchecked and closed, so the default selection
+  // is one the runner accepts.
+  const dataUse = useProviderDataUse();
+  const training = trainingProvider(dataUse.data, configuration.providerId);
+  const refused = useMemo(
+    () =>
+      new Set(
+        training
+          ? eligible
+              .filter(
+                (version) => !trainingProviderReceives(version.manifest.split),
+              )
+              .map((version) => version.id)
+          : [],
+      ),
+    [eligible, training],
+  );
+  const selectable = eligible.filter((version) => !refused.has(version.id));
   // A click overrides a test's default until a run finishes.
   const [overrides, setOverrides] = useState<Map<string, boolean>>(
     () => new Map(),
@@ -253,7 +276,9 @@ export function BenchmarkModelRunDialog({
   // The dialog's clock: a running test's timer and the window check.
   const clock = useNow(run.data != null);
   // The run's cells: a test is finished once every planned repetition
-  // scored; one short of that starts over when the run goes on.
+  // scored; one short of that starts over when the run goes on. A test its
+  // provider may not receive, planned before that was known, is settled
+  // unsent and never left to measure.
   const cells = useMemo(() => {
     const planned = Math.max(
       run.data?.request.repetitions ?? REQUIRED_REPETITIONS,
@@ -262,6 +287,7 @@ export function BenchmarkModelRunDialog({
     const byVersion = new Map<string, number>();
     const inRun = new Set<string>();
     for (const attempt of mine) {
+      if (refused.has(attempt.versionId)) continue;
       inRun.add(attempt.versionId);
       if (scores.get(attempt.id) != null)
         byVersion.set(
@@ -278,7 +304,7 @@ export function BenchmarkModelRunDialog({
       if (scored > 0) restart += 1;
     }
     return { left, restart, measured: inRun.size - left };
-  }, [mine, scores, run.data]);
+  }, [mine, scores, run.data, refused]);
   const windowOpen = run.data ? runWindowOpen(run.data, clock) : false;
   const resolvingRun =
     runId != null &&
@@ -290,8 +316,9 @@ export function BenchmarkModelRunDialog({
     () => new Set(mine.map((attempt) => attempt.versionId)),
     [mine],
   );
-  // Tests the run never planned: inside its window they join it.
-  const missing = eligible.filter((version) => !inRunIds.has(version.id));
+  // Tests the run never planned: inside its window they join it. One its
+  // provider never receives is never missing.
+  const missing = selectable.filter((version) => !inRunIds.has(version.id));
   const stopped =
     windowOpen &&
     !legacyRun &&
@@ -305,10 +332,14 @@ export function BenchmarkModelRunDialog({
   const finishing = stopped && (cells.left > 0 || missing.length > 0);
   const complete = stopped && cells.left === 0 && missing.length === 0;
   const following = (runActive || finishing) && mine.length > 0;
+  // What a test the run does not hold yet starts as: checked, unless its
+  // provider may not receive it.
+  const chosenByDefault = (versionId: string) =>
+    !refused.has(versionId) && (overrides.get(versionId) ?? true);
   const isChecked = (versionId: string) => {
-    if (!following) return overrides.get(versionId) ?? true;
+    if (!following) return chosenByDefault(versionId);
     if (inRunIds.has(versionId)) return true;
-    return finishing ? (overrides.get(versionId) ?? true) : false;
+    return finishing ? chosenByDefault(versionId) : false;
   };
   const chosen = eligible.filter((version) => isChecked(version.id));
   // The tests a finish adds to the run.
@@ -409,7 +440,7 @@ export function BenchmarkModelRunDialog({
       setBusy(false);
     }
   };
-  const allChecked = chosen.length === eligible.length;
+  const allChecked = selectable.every((version) => isChecked(version.id));
   return (
     <Dialog
       open
@@ -432,6 +463,11 @@ export function BenchmarkModelRunDialog({
           <DialogDescription>
             {providerVendor(configuration.providerId)}
           </DialogDescription>
+          {training ? (
+            <p className="text-sm text-muted-foreground">
+              {t("modelRun.trainOnly", { vendor: training.name })}
+            </p>
+          ) : null}
         </DialogHeader>
         <DialogBody className="space-y-3">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
@@ -472,10 +508,10 @@ export function BenchmarkModelRunDialog({
           ) : null}
           <Label className="flex items-center gap-3 border-b border-border px-2 pb-2 text-sm font-medium">
             <Checkbox
-              disabled={runActive || eligible.length === 0}
+              disabled={runActive || selectable.length === 0}
               checked={
                 allChecked
-                  ? eligible.length > 0
+                  ? selectable.length > 0
                   : chosen.length === 0
                     ? false
                     : "indeterminate"
@@ -483,7 +519,7 @@ export function BenchmarkModelRunDialog({
               onCheckedChange={(checked) =>
                 setOverrides(
                   new Map(
-                    eligible.map((version) => [version.id, checked === true]),
+                    selectable.map((version) => [version.id, checked === true]),
                   ),
                 )
               }
@@ -518,7 +554,9 @@ export function BenchmarkModelRunDialog({
                   <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
                     <Checkbox
                       disabled={
-                        runActive || (finishing && inRunIds.has(version.id))
+                        runActive ||
+                        (finishing && inRunIds.has(version.id)) ||
+                        refused.has(version.id)
                       }
                       checked={isChecked(version.id)}
                       onCheckedChange={(checked) =>
@@ -536,6 +574,16 @@ export function BenchmarkModelRunDialog({
                         title={t("modelRun.authoredHint")}
                       >
                         {t("modelRun.authored")}
+                      </span>
+                    ) : null}
+                    {training && refused.has(version.id) ? (
+                      <span
+                        className="shrink-0 text-xs text-muted-foreground"
+                        title={t("modelRun.heldOutHint", {
+                          vendor: training.name,
+                        })}
+                      >
+                        {t("modelRun.heldOut")}
                       </span>
                     ) : null}
                     {status ? (
@@ -582,6 +630,9 @@ export function BenchmarkModelRunDialog({
                 !pinned ||
                 resolvingStanding ||
                 resolvingRun ||
+                // Until it is read, the checks may hold tests its provider
+                // never receives.
+                dataUse.isPending ||
                 chosen.length === 0
               }
               onClick={() => void start()}

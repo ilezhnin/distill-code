@@ -74,6 +74,7 @@ vi.mock("../api/benchmarks", () => ({
     getInventory: vi.fn(),
     getCapabilities: vi.fn(),
     getCandidateObservations: vi.fn(),
+    providerDataUse: vi.fn().mockResolvedValue([]),
     listCatalog: vi.fn(),
     startRun: vi.fn(),
     previewRun: vi.fn(),

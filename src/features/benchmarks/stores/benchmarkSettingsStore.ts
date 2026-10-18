@@ -11,7 +11,11 @@ import { create } from "zustand";
 
 import { distillDocument } from "@/shared/lib/distillDocument";
 
-import type { JudgeInput, JudgePoolEntry } from "../types";
+import type {
+  JudgeInput,
+  JudgePoolEntry,
+  ProviderDataUseSetting,
+} from "../types";
 
 export const BENCHMARK_SETTINGS_DOCUMENT = "benchmarks/settings.json";
 
@@ -33,6 +37,8 @@ export const MAX_JUDGE_ID_LENGTH = 256;
 export const MAX_JUDGE_EFFORT_LENGTH = 64;
 /** Every kind of rubric a judge can be limited to, in stored order. */
 export const JUDGE_INPUTS: readonly JudgeInput[] = ["text", "visual"];
+/** The longest provider id the owner's data-use word is kept for. */
+export const MAX_DATA_USE_PROVIDER_ID_LENGTH = 128;
 
 export interface BenchmarkSettings {
   timeLimitMinutes: number;
@@ -46,10 +52,17 @@ export interface BenchmarkSettings {
    * The models rubric judges are drawn from. The backend reads it from this
    * document and seats an entry only after it passed a judge calibration;
    * empty until the owner adds one. Normalized: ids trimmed, `effort` null
-   * when the model has no effort control, `inputs` absent for both kinds,
-   * `disclosureConfirmed` always set.
+   * when the model has no effort control, `inputs` absent for both kinds.
+   * Whether an entry may judge at all is its provider's data use.
    */
   judgePool: JudgePoolEntry[];
+  /**
+   * The owner's word on what each provider may do with what benchmark turns
+   * send it, by provider id. A provider that may train on submitted data
+   * runs only train tasks and never judges. A provider not named here keeps
+   * the default the backend owns, so this holds only what the owner stated.
+   */
+  providerDataUse: Record<string, ProviderDataUseSetting>;
 }
 
 export function clampTimeLimitMinutes(minutes: number): number {
@@ -78,12 +91,13 @@ function isJudgeInput(value: unknown): value is JudgeInput {
 /** One pool entry as stored, or null when it is not one. */
 export function normalizeJudgePoolEntry(raw: unknown): JudgePoolEntry | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  // A pool written before provider data use may carry a per-entry
+  // `disclosureConfirmed`: it is read past and never written back.
   const stored = raw as {
     providerId?: unknown;
     modelId?: unknown;
     effort?: unknown;
     inputs?: unknown;
-    disclosureConfirmed?: unknown;
   };
   const providerId = boundedText(stored.providerId, MAX_JUDGE_ID_LENGTH);
   const modelId = boundedText(stored.modelId, MAX_JUDGE_ID_LENGTH);
@@ -93,13 +107,7 @@ export function normalizeJudgePoolEntry(raw: unknown): JudgePoolEntry | null {
     effort = boundedText(stored.effort, MAX_JUDGE_EFFORT_LENGTH);
     if (!effort) return null;
   }
-  const entry: JudgePoolEntry = {
-    providerId,
-    modelId,
-    effort,
-    // Private rubrics reach a judge only on the owner's explicit word.
-    disclosureConfirmed: stored.disclosureConfirmed === true,
-  };
+  const entry: JudgePoolEntry = { providerId, modelId, effort };
   if (stored.inputs !== undefined && stored.inputs !== null) {
     const inputs = stored.inputs;
     // The backend drops an entry that judges nothing, so this does too.
@@ -116,7 +124,7 @@ export function normalizeJudgePoolEntry(raw: unknown): JudgePoolEntry | null {
 
 /**
  * The identity of a pool entry: one model at one effort. Entries that differ
- * only in what they judge or in the data-use confirmation are duplicates.
+ * only in what they judge are duplicates.
  */
 export function judgePoolEntryKey(
   entry: Pick<JudgePoolEntry, "providerId" | "modelId" | "effort">,
@@ -148,6 +156,35 @@ export function normalizeJudgePool(raw: unknown): JudgePoolEntry[] {
   return pool;
 }
 
+/** A provider id as the data-use word is kept under, or null. */
+export function normalizeDataUseProviderId(raw: unknown): string | null {
+  return boundedText(raw, MAX_DATA_USE_PROVIDER_ID_LENGTH);
+}
+
+/**
+ * The owner's data-use word as stored: each provider id that is nonempty
+ * once trimmed and at most {@link MAX_DATA_USE_PROVIDER_ID_LENGTH} long,
+ * whose value is an object with a boolean `trainsOnSubmissions`, the first
+ * of ids equal once trimmed. Anything else is dropped, and anything but an
+ * object reads as empty: every provider then keeps its default.
+ */
+export function normalizeProviderDataUse(
+  raw: unknown,
+): Record<string, ProviderDataUseSetting> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const stated = new Map<string, ProviderDataUseSetting>();
+  for (const [key, value] of Object.entries(raw)) {
+    const providerId = normalizeDataUseProviderId(key);
+    if (!providerId || stated.has(providerId)) continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const { trainsOnSubmissions } = value as { trainsOnSubmissions?: unknown };
+    if (typeof trainsOnSubmissions !== "boolean") continue;
+    stated.set(providerId, { trainsOnSubmissions });
+  }
+  // Own data properties, so no id can reach the prototype.
+  return Object.fromEntries(stated);
+}
+
 export function parseBenchmarkSettings(raw: unknown): BenchmarkSettings {
   const stored =
     raw && typeof raw === "object"
@@ -155,6 +192,7 @@ export function parseBenchmarkSettings(raw: unknown): BenchmarkSettings {
           timeLimitMinutes?: unknown;
           creditLimit?: unknown;
           judgePool?: unknown;
+          providerDataUse?: unknown;
         })
       : {};
   return {
@@ -164,13 +202,15 @@ export function parseBenchmarkSettings(raw: unknown): BenchmarkSettings {
         : DEFAULT_TIME_LIMIT_MINUTES,
     creditLimit: normalizeCreditLimit(stored.creditLimit),
     judgePool: normalizeJudgePool(stored.judgePool),
+    providerDataUse: normalizeProviderDataUse(stored.providerDataUse),
   };
 }
 
 /**
- * The document as written. Every write carries the whole pool: the backend
- * reads its judges from this file, so a change of the time limit must never
- * drop them.
+ * The document as written. Every write carries the whole pool and the whole
+ * data-use word: the backend reads its judges, and what each provider may
+ * receive, from this file, so a change of the time limit must never drop
+ * them.
  */
 export function serializeBenchmarkSettings(settings: BenchmarkSettings) {
   return {
@@ -181,8 +221,13 @@ export function serializeBenchmarkSettings(settings: BenchmarkSettings) {
       modelId: entry.modelId,
       effort: entry.effort ?? null,
       ...(entry.inputs ? { inputs: [...entry.inputs] } : {}),
-      disclosureConfirmed: entry.disclosureConfirmed === true,
     })),
+    providerDataUse: Object.fromEntries(
+      Object.entries(settings.providerDataUse).map(([providerId, stated]) => [
+        providerId,
+        { trainsOnSubmissions: stated.trainsOnSubmissions },
+      ]),
+    ),
   };
 }
 
@@ -209,19 +254,25 @@ interface BenchmarkSettingsState {
   /** Takes the entry with `entry`'s model and effort out of the pool. */
   removeJudgePoolEntry: (entry: JudgePoolEntry) => void;
   /**
-   * Records whether the owner confirmed the data use of the provider of the
-   * entry with `entry`'s model and effort.
+   * Records the owner's word on whether `providerId` may train on submitted
+   * data. Nothing changes for an id the document would not keep.
    */
-  setJudgeDisclosureConfirmed: (
-    entry: JudgePoolEntry,
-    confirmed: boolean,
+  setProviderTrainsOnSubmissions: (
+    providerId: string,
+    trainsOnSubmissions: boolean,
   ) => void;
+  /**
+   * Takes the owner's word on `providerId` back: the provider keeps the
+   * default the backend owns again.
+   */
+  clearProviderDataUse: (providerId: string) => void;
 }
 
 export const DEFAULT_BENCHMARK_SETTINGS: BenchmarkSettings = {
   timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES,
   creditLimit: null,
   judgePool: [],
+  providerDataUse: {},
 };
 
 export const useBenchmarkSettingsStore = create<BenchmarkSettingsState>(
@@ -267,15 +318,30 @@ export const useBenchmarkSettingsStore = create<BenchmarkSettingsState>(
           judgePool: pool.filter((other) => judgePoolEntryKey(other) !== key),
         });
       },
-      setJudgeDisclosureConfirmed: (entry, confirmed) => {
-        const key = judgePoolEntryKey(entry);
-        const pool = get().settings.judgePool;
-        if (!pool.some((other) => judgePoolEntryKey(other) === key)) return;
+      setProviderTrainsOnSubmissions: (providerId, trainsOnSubmissions) => {
+        const id = normalizeDataUseProviderId(providerId);
+        if (!id) return;
+        const stated = get().settings.providerDataUse;
+        const known = Object.hasOwn(stated, id);
+        if (known && stated[id].trainsOnSubmissions === trainsOnSubmissions)
+          return;
+        // Rebuilt from entries rather than assigned, so an id such as
+        // `__proto__` stays an ordinary key.
+        const entries: [string, ProviderDataUseSetting][] = known
+          ? Object.entries(stated).map(([other, value]) => [
+              other,
+              other === id ? { trainsOnSubmissions } : value,
+            ])
+          : [...Object.entries(stated), [id, { trainsOnSubmissions }]];
+        save({ providerDataUse: Object.fromEntries(entries) });
+      },
+      clearProviderDataUse: (providerId) => {
+        const id = normalizeDataUseProviderId(providerId);
+        const stated = get().settings.providerDataUse;
+        if (!id || !Object.hasOwn(stated, id)) return;
         save({
-          judgePool: pool.map((other) =>
-            judgePoolEntryKey(other) === key
-              ? { ...other, disclosureConfirmed: confirmed }
-              : other,
+          providerDataUse: Object.fromEntries(
+            Object.entries(stated).filter(([other]) => other !== id),
           ),
         });
       },
@@ -292,8 +358,9 @@ export async function hydrateBenchmarkSettingsStore(): Promise<void> {
 }
 
 /**
- * Writes a queued change now. The backend reads the judge pool from the
- * document, so what it makes of the pool is read again after this.
+ * Writes a queued change now. The backend reads the judge pool and the
+ * provider data use from the document, so what it makes of them is read
+ * again after this.
  */
 export function flushBenchmarkSettings(): Promise<void> {
   return document.flush();

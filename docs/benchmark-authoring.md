@@ -277,9 +277,9 @@ beside it (see benchmark operations).
 Without a frozen panel, a rendering's judges come from the judge pool: the
 owner's list of models and efforts (`judgePool` in the benchmark settings
 document, edited in Settings > Benchmarks), not a rule in code. A judge reads
-private rubrics and the conditions a right answer meets, so an entry neither
-seats nor is calibrated until the owner confirms its provider's data use
-(`disclosureConfirmed`). An entry takes seats only after it passed judge
+private rubrics and the conditions a right answer meets, so a provider that may
+train on submitted data never judges and is never calibrated (provider data use,
+in benchmark operations). An entry takes seats only after it passed judge
 calibration: alone, it judged every accepted and rejected control of the rubric
 qualification records and scored each inside the record's bands
 (`minimumAcceptedScore`, `maximumRejectedScore`); an invalid sheet or an

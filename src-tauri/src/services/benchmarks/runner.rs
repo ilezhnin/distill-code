@@ -2670,6 +2670,14 @@ impl NativeBackend {
                 "Judge has no managed account".into(),
             ));
         };
+        // A judge reads the brief, the rubric and the response, so a provider
+        // that may train on submitted data never judges, frozen seats too.
+        if let Some(reason) = super::data_use::DataUse::load(&store.root)
+            .await
+            .judge_refusal(&judge.provider_id)
+        {
+            return Ok(judge_abstention(version, judge, batch, reason));
+        }
         let activity = host
             .account_activity(&judge.provider_id, &account)
             .await
@@ -4070,6 +4078,15 @@ impl ExecutionBackend for NativeBackend {
             }
             let run_request = store.run(&attempt.run_id).await?.request;
             run_request.require_dispatch_admission(now())?;
+            // The last line before anything of the task is sent, for workflow
+            // steps and policy picks too: a provider that may train on
+            // submitted data gets train versions only.
+            if let Some(reason) = super::data_use::DataUse::load(&store.root)
+                .await
+                .refusal(&attempt.configuration.provider_id, &version.manifest.split)
+            {
+                return Err(BenchmarkError::new("capability_missing", reason));
+            }
             if requires_browser_runtime(&version.manifest) {
                 super::worker::ready_for_attempt().await?;
             }
@@ -7257,6 +7274,7 @@ impl BenchmarkService {
         }
         let mut versions: std::collections::HashMap<String, Arc<BenchmarkVersion>> =
             std::collections::HashMap::new();
+        let data_use = super::data_use::DataUse::load(&self.store.root).await;
         for pending in run.attempts.iter().filter(|a| {
             a.phase == "pending"
                 && !provider_held(&run.id, &a.configuration.provider_id)
@@ -7268,16 +7286,23 @@ impl BenchmarkService {
                 versions.insert(pending.version_id.clone(), version);
             }
             let version = &versions[&pending.version_id];
-            if run.request.measures_author_cells()
-                || !super::routing::authored_by_candidate(&version.manifest, &pending.configuration)
-            {
+            // A cell planned before its provider's data use was known, or
+            // through a path that did not ask, is settled here unsent.
+            let refused = data_use.refusal(
+                &pending.configuration.provider_id,
+                &version.manifest.split,
+            );
+            let authored = !run.request.measures_author_cells()
+                && super::routing::authored_by_candidate(&version.manifest, &pending.configuration);
+            if refused.is_none() && !authored {
                 ready.push((pending.clone(), version.clone()));
                 continue;
             }
             let mut excluded = pending.clone();
             excluded.phase = "terminal".into();
             excluded.outcome = Some("excluded".into());
-            excluded.reason = Some("authored by this candidate".into());
+            excluded.reason =
+                Some(refused.unwrap_or_else(|| "authored by this candidate".into()));
             excluded.finished_at = Some(now());
             self.store.save_attempt(&excluded).await?;
             self.changed().await;
@@ -9372,6 +9397,50 @@ mod tests {
             execution_limits: None,
             workflow_policy: None,
         }
+    }
+    #[tokio::test]
+    async fn a_provider_that_may_train_on_submitted_data_is_planned_train_versions_only() {
+        let (dir, s, _backend) = setup().await;
+        let mut req = request(&s).await;
+        let train = req.version_ids[0].clone();
+        let mut draft = seed_definitions().remove(0);
+        draft.split = "held_out".into();
+        draft.task_family = "invented-held-out-family".into();
+        let held_out = s
+            .store
+            .save_draft(None, None, draft)
+            .await
+            .unwrap();
+        let held_out = s.store.publish(&held_out.id, 1).await.unwrap().id;
+        req.configurations[0].provider_id = "zai-acp".into();
+        req.version_ids = vec![train.clone(), held_out.clone()];
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(!preview.valid);
+        assert!(preview
+            .issues
+            .iter()
+            .any(|issue| issue.contains("Z.ai may train on submitted data")
+                && issue.contains("not held_out")));
+        // Train versions only: nothing to refuse.
+        req.version_ids = vec![train.clone()];
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        // The owner's word changes the rule, both ways.
+        let settings = s.store.root.join("settings.json");
+        std::fs::write(
+            &settings,
+            json!({"providerDataUse": {"zai-acp": {"trainsOnSubmissions": false}}}).to_string(),
+        )
+        .unwrap();
+        req.version_ids = vec![held_out.clone()];
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        req.configurations[0].provider_id = "codex-acp".into();
+        std::fs::write(
+            &settings,
+            json!({"providerDataUse": {"codex-acp": {"trainsOnSubmissions": true}}}).to_string(),
+        )
+        .unwrap();
+        assert!(!s.preview_run(&req).await.unwrap().valid);
+        dir.close().await;
     }
     /// [`request`] flown one attempt at a time, so a refused turn is the
     /// only one sent before the run reacts to it.

@@ -10,7 +10,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{qualification, runner, store::now, store::Store, types::*, BenchmarkService};
+use super::{
+    data_use::DataUse, qualification, runner, store::now, store::Store, types::*, BenchmarkService,
+};
 use crate::services::agent_host::execution::NativeProvider;
 use crate::services::provider_account_status::Headroom;
 
@@ -23,8 +25,6 @@ const CALIBRATIONS: &str = "judge-calibrations.json";
 const MAX_ENTRIES: usize = 32;
 /// Calibrations kept, newest first; older ones are dropped.
 const KEPT: usize = 256;
-/// Why an entry whose provider's data use is not confirmed does not judge.
-const UNCONFIRMED: &str = "Its provider's data use is not confirmed";
 /// How long one control waits for a busy judge account or renderer.
 const BUSY_WAIT_MS: i64 = 30 * 60 * 1000;
 
@@ -52,10 +52,9 @@ pub struct Entry {
     /// The rubrics it judges, `text` and `visual`; both when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<String>>,
-    /// The owner confirmed that this provider's account neither trains on
-    /// nor keeps what it judges: a judge reads private rubrics and the
-    /// conditions a right answer meets. Without it the entry neither seats
-    /// nor is calibrated.
+    /// Read and ignored: whether a provider may judge is its data use
+    /// (see [`super::data_use`]), one rule for judges and candidates. Kept
+    /// so pools written before that still read.
     #[serde(default)]
     pub disclosure_confirmed: bool,
 }
@@ -248,13 +247,15 @@ fn latest<'a>(all: &'a [Calibration], entry: &Entry) -> Option<&'a Calibration> 
         .max_by_key(|calibration| calibration.started_at)
 }
 
-/// Why a pool entry cannot take seats now, or nothing when it can.
-fn refusal(entry: &Entry, calibration: Option<&Calibration>) -> Option<String> {
+/// Why a pool entry cannot take seats now, or nothing when it can. A judge
+/// reads private rubrics and the conditions a right answer meets, so a
+/// provider that may train on submitted data never judges.
+fn refusal(entry: &Entry, calibration: Option<&Calibration>, data_use: &DataUse) -> Option<String> {
     if vendor(&entry.provider_id).is_none() {
         return Some("Its provider has no native judge profile".into());
     }
-    if !entry.disclosure_confirmed {
-        return Some(UNCONFIRMED.into());
+    if let Some(reason) = data_use.judge_refusal(&entry.provider_id) {
+        return Some(reason);
     }
     let Some(calibration) = calibration else {
         return Some("Not calibrated yet".into());
@@ -285,10 +286,13 @@ pub async fn seatable(root: &Path, textual: bool) -> Result<Vec<Entry>> {
             Vec::new()
         }
     };
+    let data_use = DataUse::load(root).await;
     Ok(pool(root)
         .await
         .into_iter()
-        .filter(|entry| entry.judges(textual) && refusal(entry, latest(&all, entry)).is_none())
+        .filter(|entry| {
+            entry.judges(textual) && refusal(entry, latest(&all, entry), &data_use).is_none()
+        })
         .collect())
 }
 
@@ -346,12 +350,13 @@ pub struct Status {
 
 pub async fn status(root: &Path) -> Result<Status> {
     let calibrations = calibrations(root).await?;
+    let data_use = DataUse::load(root).await;
     let pool = pool(root)
         .await
         .into_iter()
         .map(|entry| {
             let calibration = latest(&calibrations, &entry).cloned();
-            let reason = refusal(&entry, calibration.as_ref());
+            let reason = refusal(&entry, calibration.as_ref(), &data_use);
             Row {
                 vendor: vendor(&entry.provider_id),
                 seats: reason.is_none(),
@@ -512,8 +517,8 @@ impl BenchmarkService {
             ));
         }
         // A calibration sends private rubric controls to the provider too, so
-        // only a pool entry whose data use the owner confirmed is calibrated,
-        // whatever the request says.
+        // only a pool entry of a provider that does not train on submitted
+        // data is calibrated.
         let Some(entry) = pool(&self.store.root)
             .await
             .into_iter()
@@ -524,8 +529,11 @@ impl BenchmarkService {
                 "Add this judge to the pool before calibrating it",
             ));
         };
-        if !entry.disclosure_confirmed {
-            return Err(BenchmarkError::new("validation", UNCONFIRMED));
+        if let Some(reason) = DataUse::load(&self.store.root)
+            .await
+            .judge_refusal(&entry.provider_id)
+        {
+            return Err(BenchmarkError::new("validation", reason));
         }
         let sets = control_sets(&self.store, &entry).await?;
         if sets.is_empty() {
@@ -669,12 +677,11 @@ mod tests {
             ]
         );
         assert!(pool[1].judges(true) && !pool[1].judges(false));
-        // Data use is unconfirmed unless the owner said so.
-        assert!(pool.iter().all(|entry| !entry.disclosure_confirmed));
-        let confirmed = entries(&json!({"judgePool": [
+        // A pool written with the old per-entry flag still reads.
+        let older = entries(&json!({"judgePool": [
             {"providerId": "claude-acp", "modelId": "opus", "disclosureConfirmed": true}
         ]}));
-        assert!(confirmed[0].disclosure_confirmed);
+        assert_eq!(older.len(), 1);
         assert!(pool[0].judges(true) && pool[0].judges(false));
         assert!(entries(&json!({})).is_empty());
         let many: Vec<_> = (0..40)
@@ -708,24 +715,28 @@ mod tests {
             other_recipe,
             calibration(entry("claude-acp", "opus", Some("max")), "passed", 5),
         ];
-        assert!(refusal(&opus, latest(&all, &opus)).is_none());
-        assert!(refusal(&sol, latest(&all, &sol))
+        let defaults = DataUse::from_settings(&json!({}));
+        assert!(refusal(&opus, latest(&all, &opus), &defaults).is_none());
+        assert!(refusal(&sol, latest(&all, &sol), &defaults)
             .unwrap()
             .starts_with("Its calibration failed: Control c"));
         assert_eq!(
-            refusal(&grok, latest(&all, &grok)).as_deref(),
+            refusal(&grok, latest(&all, &grok), &defaults).as_deref(),
             Some("Not calibrated yet")
         );
         let unknown = entry("invented-provider", "model", None);
-        assert!(refusal(&unknown, None).is_some());
-        // A passed calibration does not seat a provider whose data use the
-        // owner has not confirmed.
-        let mut unconfirmed = opus.clone();
-        unconfirmed.disclosure_confirmed = false;
-        assert_eq!(
-            refusal(&unconfirmed, latest(&all, &unconfirmed)).as_deref(),
-            Some(UNCONFIRMED)
+        assert!(refusal(&unknown, None, &defaults).is_some());
+        // A passed calibration never seats a provider that may train on
+        // submitted data, by default or by the owner's word.
+        let glm = entry("zai-acp", "invented-glm", Some("high"));
+        let passed = calibration(glm.clone(), "passed", 6);
+        assert!(refusal(&glm, Some(&passed), &defaults)
+            .unwrap()
+            .contains("may train on submitted data"));
+        let opus_trains = DataUse::from_settings(
+            &json!({"providerDataUse": {"claude-acp": {"trainsOnSubmissions": true}}}),
         );
+        assert!(refusal(&opus, latest(&all, &opus), &opus_trains).is_some());
     }
 
     #[tokio::test]
@@ -801,19 +812,19 @@ mod tests {
             refusal(service.calibrate_judge(sol.clone()).await),
             "Add this judge to the pool before calibrating it"
         );
-        // In the pool without the owner's confirmation: the request's own
-        // flag does not count.
-        let mut stored = sol.clone();
-        stored.disclosure_confirmed = false;
+        // In the pool, but its provider may train on submitted data: no
+        // private control is sent, whatever the entry or the request says.
         std::fs::write(
             root.path().join(SETTINGS),
-            json!({ "judgePool": [stored] }).to_string(),
+            json!({
+                "judgePool": [sol.clone()],
+                "providerDataUse": {"codex-acp": {"trainsOnSubmissions": true}},
+            })
+            .to_string(),
         )
         .unwrap();
-        assert_eq!(
-            refusal(service.calibrate_judge(sol.clone()).await),
-            UNCONFIRMED
-        );
+        assert!(refusal(service.calibrate_judge(sol.clone()).await)
+            .contains("may train on submitted data"));
         // Confirmed, but no rubric qualification has controls yet.
         std::fs::write(
             root.path().join(SETTINGS),

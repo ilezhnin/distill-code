@@ -20,11 +20,12 @@ import {
 import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
-import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { benchmarkKeys, useProviderDataUse } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
 import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import { currentVersions } from "../lib/benchmarkReleases";
+import { trainingProvider } from "../lib/providerDataUse";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   BenchmarkDefinitionSummary,
@@ -68,6 +69,9 @@ export function BenchmarkRunDialog({
     queryKey: [...benchmarkKeys, "capabilities"],
     queryFn: benchmarkApi.getCapabilities,
   });
+  // A provider that may train on submitted data runs train tests only; the
+  // plan check names each test it refuses.
+  const dataUse = useProviderDataUse();
   const [providerId, setProviderId] = useState("");
   const [accountId, setAccountId] = useState("none");
   const [modelIndex, setModelIndex] = useState("none");
@@ -401,32 +405,48 @@ export function BenchmarkRunDialog({
               </p>
             ) : configurations.length > 0 ? (
               <ul className="divide-y divide-border">
-                {configurations.map((entry) => (
-                  <li
-                    key={entry.id}
-                    className="flex items-center justify-between gap-2 py-1.5 text-sm"
-                  >
-                    <span className="min-w-0 truncate">
-                      {configurationLabel(entry)}
-                      {entry.executionProfile === "protected_repository"
-                        ? ` (${t("run.repositoryTools")})`
-                        : ""}
-                    </span>
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost"
-                      aria-label={t("actions.remove")}
-                      onClick={() =>
-                        setConfigurations((previous) =>
-                          previous.filter((config) => config.id !== entry.id),
-                        )
-                      }
+                {configurations.map((entry) => {
+                  const training = trainingProvider(
+                    dataUse.data,
+                    entry.providerId,
+                  );
+                  return (
+                    <li
+                      key={entry.id}
+                      className="flex items-center justify-between gap-2 py-1.5 text-sm"
                     >
-                      <IconX />
-                    </Button>
-                  </li>
-                ))}
+                      <span className="min-w-0 truncate">
+                        {configurationLabel(entry)}
+                        {entry.executionProfile === "protected_repository"
+                          ? ` (${t("run.repositoryTools")})`
+                          : ""}
+                      </span>
+                      {training ? (
+                        <span
+                          className="ml-auto shrink-0 text-xs text-muted-foreground"
+                          title={t("run.trainOnlyHint", {
+                            vendor: training.name,
+                          })}
+                        >
+                          {t("run.trainOnly")}
+                        </span>
+                      ) : null}
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={t("actions.remove")}
+                        onClick={() =>
+                          setConfigurations((previous) =>
+                            previous.filter((config) => config.id !== entry.id),
+                          )
+                        }
+                      >
+                        <IconX />
+                      </Button>
+                    </li>
+                  );
+                })}
               </ul>
             ) : null}
           </Card>

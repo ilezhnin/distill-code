@@ -704,6 +704,18 @@ pub async fn benchmark_get_credit_spend(
         .join("benchmarks");
     benchmarks::credits::spend(&root).await
 }
+/// What each native provider may do with what benchmark turns send it: a
+/// provider that may train on submitted data runs only train tasks and never
+/// judges.
+#[tauri::command]
+pub async fn benchmark_get_provider_data_use(
+    app: AppHandle,
+) -> Result<Vec<benchmarks::data_use::ProviderDataUse>> {
+    let root = crate::services::distill_root::app_root(&app)
+        .map_err(|error| BenchmarkError::new("storage_unavailable", error))?
+        .join("benchmarks");
+    Ok(benchmarks::data_use::DataUse::load(&root).await.providers())
+}
 #[tauri::command]
 pub async fn benchmark_get_case_stats(app: AppHandle) -> Result<Vec<CaseStats>> {
     let s = service(&app).await?;
