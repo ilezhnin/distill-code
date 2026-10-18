@@ -171,8 +171,8 @@ export function runSelftest(resources) {
           "budget pids 4224",
           "budget io 1073741824/268435456",
           "budget swap 0",
-          "budget disk 8589934592",
-          "budget inodes 131072",
+          "budget disk dynamic 8589934592",
+          "budget inodes dynamic 131072",
           "budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608",
         ].every((line) => status.includes(line)),
     );
@@ -454,6 +454,30 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
       authTests,
     );
     pass("invented credential merge/privacy regressions", true);
+    // A Claude renewal of an account with no stored sign-in refuses before
+    // any session (exit 65), and only Claude renews this way (exit 64).
+    pass(
+      "Claude renewal needs a stored sign-in",
+      call("/usr/local/sbin/bench-login", [
+        "claude",
+        `selftest-${randomUUID().slice(0, 8)}`,
+        "--renew",
+      ]).status === 65,
+    );
+    pass(
+      "only a Claude sign-in renews",
+      call("/usr/local/sbin/bench-login", ["codex", "selftest-x", "--renew"])
+        .status === 64,
+    );
+    pass(
+      "a Claude renewal deadline is Unix milliseconds",
+      call("/usr/local/sbin/bench-login", [
+        "claude",
+        "selftest-x",
+        "--renew",
+        "soon",
+      ]).status === 64,
+    );
     // Readiness digests: a pass from the record reports exactly what a cold
     // pass reads, the record is root's alone, and a changed file is read again.
     const identity = (text) =>

@@ -1065,6 +1065,14 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
                 if let Some(reason) = output.infrastructure_error() {
                     return Err(BenchmarkError::new("infrastructure_failure", reason));
                 }
+                if let Some(limit) = output.candidate_limit() {
+                    return Err(BenchmarkError::new(
+                        super::runner::CANDIDATE_LIMIT,
+                        format!(
+                            "The candidate's code drove its check past the job's {limit} ceiling"
+                        ),
+                    ));
+                }
                 // A missing executable is an evaluator defect, not a model failure.
                 if matches!(output.code, Some(126 | 127)) {
                     return Err(BenchmarkError::new("evaluation_error", output.reason()));

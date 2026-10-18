@@ -1635,10 +1635,17 @@ pub fn execute(
                         )
                         .await;
                     drop(continuing);
+                    // A later step refused before any provider saw it, for
+                    // sandbox room or for a sign-in renewal that waits for
+                    // the account's other sessions, waits here for its own
+                    // turn: nothing of its workflow is sent again.
                     let retry = match &result {
                         Err(error)
                             if !untouched
-                                && error.code == "resource_busy"
+                                && matches!(
+                                    error.code.as_str(),
+                                    "resource_busy" | super::runner::SIGN_IN_WAIT
+                                )
                                 && later_step_may_wait(first_try, allowance, now()) =>
                         {
                             let current = service.store.attempt(&saved.attempt.id).await?;

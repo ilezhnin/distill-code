@@ -122,17 +122,21 @@ pub(crate) async fn renewal_readiness(
     Ok((with_artifacts(status, &artifacts), expiry))
 }
 
-/// Whether `provider`'s CLI can renew its sandbox sign-in early, in a
-/// renewal session (see [`renewal_env`]).
+/// Whether `provider`'s sandbox sign-in renews early, before a session needs
+/// it: Grok's in a renewal session (see [`renewal_env`]); Claude's by
+/// `bench-login claude ACCOUNT --renew`, which hands the grant's own stored
+/// refresh token to `claude auth login`, since the Claude CLI itself renews
+/// only in the last five minutes of a sign-in, a window admission keeps every
+/// session out of. Codex and Kimi renew inside their sessions, and admission
+/// checks no expiry of theirs; a Z.ai key does not expire.
 pub(crate) fn renews_sign_in(provider: NativeProvider) -> bool {
-    renewal_env(provider, 0, 0).is_some()
+    renewal_env(provider, 0, 0).is_some() || provider == NativeProvider::Claude
 }
 
 /// What starts `provider`'s CLI so that it renews the sandbox sign-in that
 /// expires at `expires_at_ms` before its first request, at `now`. Only Grok
-/// has such a setting. The Claude CLI renews only in the last five minutes of
-/// a sign-in, a window admission keeps every session out of; Codex and Kimi
-/// renew inside their sessions, and admission checks no expiry of theirs.
+/// has such a setting (Claude renews by a sign-in command instead, see
+/// [`renews_sign_in`]).
 pub(crate) fn renewal_env(
     provider: NativeProvider,
     expires_at_ms: i64,
@@ -443,7 +447,14 @@ mod tests {
                 .args
                 .iter()
                 .any(|arg| arg.starts_with("GROK_AUTH_EARLY_INVALIDATION_SECS=")));
-            assert_eq!(renews_sign_in(provider), provider == NativeProvider::Grok);
+            assert_eq!(
+                renews_sign_in(provider),
+                matches!(provider, NativeProvider::Grok | NativeProvider::Claude)
+            );
+            assert_eq!(
+                renewal_env(provider, 1, 0).is_some(),
+                provider == NativeProvider::Grok
+            );
         }
         let now = 1_800_000_000_000;
         let renewal = renewal_env(NativeProvider::Grok, now + 3_600_000, now).unwrap();

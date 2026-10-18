@@ -152,7 +152,7 @@ const CLEAR_SANDBOX_REFUSAL: i64 = -32001;
 
 /// Why a test waits while the renewal of its sandbox sign-in waits for a free
 /// sandbox lane.
-const RENEWAL_LANE_BUSY: &str = "the Grok sign-in this test needs is renewed once a sandbox lane is free; this test starts then";
+const RENEWAL_LANE_BUSY: &str = "the sandbox sign-in this test needs is renewed once a sandbox lane is free; this test starts then";
 
 /// Where owned bridges of every provider kept their runtime files, under the
 /// Distill root `root`.
@@ -7266,10 +7266,15 @@ impl Inner {
                 Step::Renew => {}
             }
             log::info!("[agent-host] renewing the sandbox {provider} sign-in of {account}");
-            match self
-                .sandbox_renewal_session(native, account, &status, expiry)
-                .await
-            {
+            // Claude's CLI has no early renewal: its grant is renewed by a
+            // sign-in command from the grant's own stored refresh token.
+            let renewed = if native == NativeProvider::Claude {
+                crate::services::benchmark_sandbox::renew_claude_sign_in(account).await
+            } else {
+                self.sandbox_renewal_session(native, account, &status, expiry)
+                    .await
+            };
+            match renewed {
                 Ok(()) => self.sign_in_renewals.settle(&key),
                 // No sandbox lane was free and nothing started: it runs
                 // with a later admission of the account, which waits for it

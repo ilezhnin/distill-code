@@ -64,10 +64,13 @@ node scripts/benchmark-sandbox.mjs selftest
 ```
 
 Provisioning installs dependencies and restarts that distribution. Schedule it
-before measurement, not during a run. Sign in to the selected account through
-`bench-login` inside the sandbox, following the command described at the top of
-[the provisioning script](../scripts/benchmark-sandbox.mjs). Use the account ID
-from the application and the provider's normal login flow. Never put credentials
+before measurement, not during a run. Sign in to the selected account with
+`node scripts/benchmark-sandbox.mjs login claude|codex|grok|kimi ACCOUNT-ID`
+(see the top of [the provisioning script](../scripts/benchmark-sandbox.mjs)).
+It samples the Windows headroom the sandbox admits work against and runs
+`bench-login` in your terminal with it; a bare `wsl ... bench-login` carries no
+headroom sample and is refused. Use the account ID from the application and the
+provider's normal login flow. Never put credentials
 in a task, command transcript intended for publication, or source file. A Z.ai
 Coding Plan account has no login flow: **Copy key to benchmark sandbox** in
 Settings > Benchmarks (the `benchmark_sandbox_sign_in` command) copies its saved
@@ -133,9 +136,17 @@ go, and beyond 256 MiB or 512 entries the least recently used go first; an
 archive is kept only while 3 GiB of scratch stay free. Removing
 `/srv/bench/cache` while no job runs is always safe.
 
-Benchmark jobs share an 8 GiB scratch filesystem with 131072 inodes. Every job
-keeps its own memory, CPU, process and scratch I/O ceiling, and admission never
-changes it; the aggregate is shared by measured use. The CPU weight decides
+Benchmark jobs share a scratch filesystem that starts at 8 GiB with 131072
+inodes and grows online. When a job's scratch claim does not fit, the broker
+grows the image by the shortfall in whole GiB, at least 4 GiB, with inodes in
+proportion, while the Windows volume the sandbox lives on keeps 30 GiB (the
+host gate's floor) and an 8 GiB margin free after it; it never shrinks
+(`bench-status` reports `budget scratch-size`). A class's scratch claim is
+learned like its memory: what its finished jobs wrote (allocated bytes and
+inodes of their scratch directories), the 95th percentile plus a quarter once
+eight are recorded, until then its initial claim (`budget scratch-claims`).
+Every job keeps its own memory, CPU, process and scratch I/O ceiling, and
+admission never changes it; the aggregate is shared by measured use. The CPU weight decides
 who gets a CPU first when jobs want more than there is:
 
 | Job | Kind | Memory | CPUs | Processes | Scratch read/write | CPU weight |
@@ -155,8 +166,10 @@ naming the line that holds it, while it does not:
 - Memory. Every admitted job claims the larger of what its process tree uses
   now and what jobs of its kind needed before: the 95th percentile of their
   recorded peaks plus a quarter, never above the ceiling and, until eight are
-  recorded, the ceiling itself, except a repository session, which claims
-  3 GiB (half its ceiling) until then, so a wave starts at full parallelism,
+  recorded (a job its own memory ceiling stopped records no peak, and a
+  recorded peak at or above the ceiling is ignored), the ceiling itself,
+  except a repository session, which claims 3 GiB (half its ceiling) until
+  then, so a wave starts at full parallelism,
   and a check, which claims 1 GiB (a quarter of its ceiling): checks follow
   repository sessions only, so they can stay unlearned for a long time.
   The claims and the new job's must fit 23 GiB, and an attempt must also leave
@@ -376,8 +389,10 @@ renewal waits until none of them is alive. Meanwhile the account's new tests
 return to the queue ("Waits for a running Grok test") as unstarted
 admissions, under every retry policy, while later steps of workflows already
 running finish on the sign-in they were admitted with. A later step whose own
-limit needs the renewal waits only under automatic retry; a run without it
-stops for the operator. The renewal then starts
+limit needs the renewal waits for it inside its workflow, under every retry
+policy, as for sandbox room: nothing of the workflow is sent again. It waits
+for at most a quarter of the step's time limit; past that, a run without
+automatic retry stops for the operator as before. The renewal then starts
 one short session on the account, admitted as a text session under the same
 rules as every other job (a host build that keeps the measured load above the
 light line defers it), whose Grok CLI begins with
@@ -388,8 +403,18 @@ refreshed OAuth file. Admission then reads the renewed grant under the
 unchanged rule. If the CLI does not renew it, the run stops with the reason,
 and the account needs `bench-login` again. The Claude CLI renews a sign-in
 only in its last five minutes and has no such setting, so a sandbox Claude
-sign-in still needs `bench-login` once it no longer covers an attempt. Codex
-and Kimi renew inside their own sessions and have no expiry check here.
+sign-in renews the same way through `bench-login claude ACCOUNT-ID --renew`
+instead: under the same drain, the login confinement hands the account's own
+stored refresh token to `claude auth login` in its environment (never as an
+argument, never printed), and the CLI saves the renewed grant to the account.
+The grant before it stays in a private copy until what the CLI left reads as
+a grant at least as long; otherwise the copy is put back, so a renewal that
+breaks, refuses or is killed never signs an account out early. The app gives
+the renewal a deadline of 510 seconds and waits 570: a renewal still queued
+for a lane ends as the broker's `resource_busy` and waits again, not as a
+stop. If the provider refuses that token, the run stops with the reason and
+the account needs one `bench-login`. Codex and Kimi renew inside their own sessions
+and have no expiry check here; a Z.ai key does not expire.
 
 `benchmark_get_capabilities` reports supported execution profiles and reasons
 for refusals. Resolve the reported prerequisite; do not substitute a different

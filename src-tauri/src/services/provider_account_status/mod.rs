@@ -69,6 +69,9 @@ impl ProviderAccountStatusState {
 struct AccountStatusCache {
     cache: Mutex<HashMap<String, ProviderAccountStatus>>,
     refreshes: Mutex<HashMap<String, Arc<AccountRefresh>>>,
+    /// This runtime's last good usage reads, kept through later failed reads
+    /// (see [`usage_headroom`]); an account's is forgotten with its status.
+    good_reads: std::sync::Mutex<GoodReads>,
 }
 
 #[derive(Default)]
@@ -129,6 +132,7 @@ impl AccountStatusCache {
             }
         };
         cache.insert(account.id.clone(), status.clone());
+        self.remember_good_read(&status);
         slot.completed.fetch_add(1, Ordering::SeqCst);
         status
     }
@@ -173,6 +177,7 @@ impl AccountStatusCache {
         let slot = self.refresh_slot(account_id).await;
         let _guard = slot.gate.lock().await;
         self.cache.lock().await.remove(account_id);
+        self.forget_good_read(account_id);
         claude_resets::clear_backoff(account_id);
         slot.observations.fetch_add(1, Ordering::SeqCst);
     }
@@ -240,6 +245,7 @@ pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
             .lock()
             .await
             .insert(account.id.clone(), status);
+        state.native.forget_good_read(&account.id);
         slot.observations.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -262,17 +268,73 @@ pub(crate) async fn usage_headroom(
     app: &AppHandle,
     account_id: &str,
     model_id: Option<&str>,
-) -> Option<f64> {
+) -> Option<Headroom> {
     let state = app.state::<ProviderAccountStatusState>();
     let cache = state.native.cache.lock().await;
-    cache
-        .get(account_id)
-        .and_then(|status| headroom(status, model_id))
+    let status = cache.get(account_id);
+    if let Some(status) = status.filter(|status| !status.limits.is_empty()) {
+        return headroom(status, model_id).map(|share| Headroom {
+            share,
+            read_at: status.last_updated_at,
+        });
+    }
+    drop(cache);
+    // A status with no usage windows (an error before any read since the
+    // status was replaced) falls back to this runtime's last read that had
+    // them, while that read is recent enough to rank by.
+    let (limits, read_at) = state
+        .native
+        .good_read(account_id)
+        .filter(|(_, read_at)| now_ms() - read_at < GOOD_READ_MAX_AGE_MS)?;
+    windows_headroom(&limits, model_id).map(|share| Headroom { share, read_at })
+}
+
+/// How long a last good usage read may stand in for a status without usage
+/// windows: past it the account's headroom is unknown.
+const GOOD_READ_MAX_AGE_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// The share left on an account (see [`usage_headroom`]) and when the usage
+/// it comes from was read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Headroom {
+    pub share: f64,
+    pub read_at: i64,
+}
+
+/// By account, the usage windows of its last good read and when it was taken.
+type GoodReads = HashMap<String, (Vec<AccountLimitWindow>, i64)>;
+
+impl AccountStatusCache {
+    fn good_reads(&self) -> std::sync::MutexGuard<'_, GoodReads> {
+        self.good_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn remember_good_read(&self, status: &ProviderAccountStatus) {
+        if status.state != AccountState::Error && !status.stale && !status.limits.is_empty() {
+            self.good_reads().insert(
+                status.account_id.clone(),
+                (status.limits.clone(), status.last_updated_at),
+            );
+        }
+    }
+
+    fn forget_good_read(&self, account_id: &str) {
+        self.good_reads().remove(account_id);
+    }
+
+    fn good_read(&self, account_id: &str) -> Option<(Vec<AccountLimitWindow>, i64)> {
+        self.good_reads().get(account_id).cloned()
+    }
 }
 
 fn headroom(status: &ProviderAccountStatus, model_id: Option<&str>) -> Option<f64> {
-    status
-        .limits
+    windows_headroom(&status.limits, model_id)
+}
+
+fn windows_headroom(limits: &[AccountLimitWindow], model_id: Option<&str>) -> Option<f64> {
+    limits
         .iter()
         .filter(|window| applies(window, model_id))
         .filter_map(|window| window.used_percent)

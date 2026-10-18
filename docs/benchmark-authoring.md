@@ -289,6 +289,25 @@ judge. Of one model on several accounts, the account with the most usage left
 in the windows that model draws on takes the seat. A frozen panel names its
 own seats and is not subject to this rule.
 
+A text rubric's critical checks (`environment.criticalChecks`, policy
+`critical-text-v1`) need from each judge a verdict and a reason for every
+condition. A fail must quote the violation from the response. A pass may carry
+no quote, since a condition the response meets by leaving something out has
+nothing to quote, but a sheet that passes anything must quote the response
+somewhere: passes without a single quote in the sheet are no verdict. Every
+quote a judge gives must occur in the response, or the sheet is invalid.
+Judges copy rendered text, so the comparison ignores case, white space,
+Markdown emphasis and code marks, and typographic quotes and dashes, and an
+ellipsis may join pieces of the response that occur in order; other or
+reordered words are no quote. Each
+judge evaluation records its quote-less passes (`quoteLessPasses`, split into
+conditions that read as omissions and the others), and the app log names the
+judge model, so their share can be watched. A failed condition scores that judge zero; an unknown one
+makes it abstain. The judge instructions still ask for quotes on a pass, so the
+judge protocol and its hash stayed the same when the parser began accepting a
+pass without one, and when it began accepting quotes copied from the rendered
+response.
+
 Rubric tasks can freeze their judge seats in `environment.judgePanel`, with
 `recipe: "frozen-native-panel-v1"` and a `judges` array of two or three complete
 configurations. Each seat pins its account, model, effort, fast mode, billing

@@ -108,11 +108,12 @@ async fn a_workflow_waiting_for_a_renewal_at_its_first_step_starts_afresh() {
 
 /// A later step is never held back by a renewal that drains the account; it
 /// meets the wait only when its own limit needs a renewal while other
-/// sessions run. With automatic retry the workflow keeps its first step and
-/// goes on. A run without automatic retry never sends a started workflow
-/// again, so it stops for the operator as any refused later step does.
+/// sessions run. Refused before any provider saw it, it waits in its step
+/// loop for the renewal, as for sandbox room, under either retry policy:
+/// the workflow keeps its paid first step, sends nothing again and goes on
+/// (the overnight Grok workflow df5f6555 stopped here for the operator).
 #[tokio::test]
-async fn a_later_step_waiting_for_a_renewal_keeps_the_rules_of_its_retry_policy() {
+async fn a_later_step_waiting_for_a_renewal_waits_in_its_workflow() {
     for retry_policy in [RunRetryPolicy::Automatic, RunRetryPolicy::None] {
         let (dir, service, backend) = setup().await;
         backend.busy_sign_in_after.store(1, Ordering::SeqCst);
@@ -120,30 +121,18 @@ async fn a_later_step_waiting_for_a_renewal_keeps_the_rules_of_its_retry_policy(
             .start_run(workflow_request(&service, retry_policy).await)
             .await
             .unwrap();
-        service.tick().await.unwrap();
-        let after = service.store.run(&run.id).await.unwrap();
-        let root = &after.attempts[0];
-        assert!(root.workflow_steps[0].host_run_id.is_some());
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-        if retry_policy == RunRetryPolicy::None {
-            assert_eq!(after.state, "needs_attention");
-            assert_eq!(root.phase, "terminal");
-            assert_eq!(root.outcome.as_deref(), Some(SIGN_IN_WAIT));
-            dir.close().await;
-            continue;
-        }
-        assert_eq!(after.state, "running");
-        assert_eq!(root.phase, "pending");
-        release(&run.id);
         for _ in 0..3 {
             service.tick().await.unwrap();
         }
         let done = service.store.run(&run.id).await.unwrap();
-        assert_eq!(done.state, "completed");
+        assert_eq!(done.state, "completed", "{retry_policy:?}");
         let root = &done.attempts[0];
-        assert_eq!(root.outcome.as_deref(), Some("pass"));
+        assert_eq!(root.outcome.as_deref(), Some("pass"), "{retry_policy:?}");
         assert_eq!(root.workflow_steps.len(), 2);
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert!(root.workflow_steps[0].host_run_id.is_some());
+        // The first step ran once; the refused try of the second sent
+        // nothing, and its next try ran.
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2, "{retry_policy:?}");
         dir.close().await;
     }
 }

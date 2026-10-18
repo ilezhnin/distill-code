@@ -61,8 +61,17 @@ HEAVY_CAP = Path('/var/lib/distill-bench/heavy-cap')
 PEAKS = Path('/var/lib/distill-bench/admission-peaks.json')
 # The learned state before its last update, read when the current one cannot be.
 PEAKS_BACKUP = Path('/var/lib/distill-bench/admission-peaks.json.bak')
+# The scratch image starts at DISK with INODES inodes and grows online, a
+# whole number of GiB at a time (inodes in proportion), while the Windows
+# volume it lives on keeps SCRATCH_VOLUME_FLOOR (the host gate's own floor)
+# and SCRATCH_GROW_MARGIN free after it (see grow_scratch).
 DISK = 8 * GIB
 INODES = 131072
+SCRATCH_VOLUME_FLOOR = 30 * GIB
+SCRATCH_GROW_MARGIN = 8 * GIB
+SCRATCH_GROW_STEP = 4 * GIB
+# The scratch directories a job's files live in, by its identifier.
+SCRATCH_JOB_DIRS = ('work', 'base', 'checks', 'staging', 'probes', 'pairs', 'submissions', 'artifacts')
 OUTCOME_TOKEN = None
 # The host's framing for this run's outcome receipt, printed as the last
 # stderr line; taken out of the environment before anything starts, so no
@@ -333,6 +342,102 @@ def wait_for_net_setup():
                 time.sleep(0.1)
 
 
+def image_size_valid(size):
+    """The scratch image is its initial DISK or grown by whole GiB."""
+    return size >= DISK and size % GIB == 0
+
+
+def inode_budget(size):
+    """Inodes a scratch image of `size` may hold: INODES per DISK, as mkfs
+    sets them and an online grow adds them, with one block group of slack."""
+    return INODES * size // DISK + 4096
+
+
+def grow_scratch(short_bytes, short_inodes, gate):
+    """Grow the mounted scratch image online by what a job lacks (whole GiB,
+    at least SCRATCH_GROW_STEP), when the Windows volume the sandbox lives on
+    (the host gate's fourth field) keeps SCRATCH_VOLUME_FLOOR and
+    SCRATCH_GROW_MARGIN free after it. The image is sparse: the volume pays
+    as the jobs write, and the host gate's floor still refuses admissions
+    below it. Returns whether it grew; it never shrinks."""
+    try:
+        volume_free = int(gate.split(',')[3])
+    except (AttributeError, IndexError, ValueError):
+        return False
+    inodes_per_gib = max(1, INODES // (DISK // GIB))
+    grow = GIB * max(SCRATCH_GROW_STEP // GIB, -(-max(short_bytes, 0) // GIB),
+                     -(-max(short_inodes, 0) // inodes_per_gib))
+    if volume_free - grow < SCRATCH_VOLUME_FLOOR + SCRATCH_GROW_MARGIN:
+        return False
+    try:
+        mounts = scratch_mount()
+    except OSError:
+        return False
+    if len(mounts) != 3 or mounts[0] != 'ext4':
+        return False
+    size = IMAGE.stat().st_size
+    try:
+        os.truncate(IMAGE, size + grow)
+        subprocess.run(['losetup', '-c', mounts[1]], check=True, timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['resize2fs', mounts[1]], check=True, timeout=300,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        # A larger image under an unchanged filesystem is still bounded:
+        # admission reads the filesystem, and the next grow resizes it.
+        note_reaper(f'could not grow the benchmark scratch past {size} bytes: {type(error).__name__}')
+        return False
+    note_reaper(f'grew the benchmark scratch from {size} to {size + grow} bytes')
+    return True
+
+
+def scratch_use(identifier):
+    """Bytes allocated and inodes used under a job's scratch directories."""
+    used = inodes = 0
+    for name in SCRATCH_JOB_DIRS:
+        top = SCRATCH / name / identifier
+        if top.is_symlink() or not top.is_dir():
+            continue
+        for root, directories, files in os.walk(top, followlinks=False):
+            inodes += len(directories) + len(files)
+            for file in files:
+                try:
+                    used += os.lstat(os.path.join(root, file)).st_blocks * 512
+                except OSError:
+                    pass
+    return used, inodes
+
+
+def expected_scratch(kind, recorded):
+    """What a job of `kind` is expected to write to scratch, bytes and
+    inodes: its initial claim until enough of its class are recorded, then
+    their 95th percentile plus a quarter, as memory is learned."""
+    initial_bytes, initial_inodes = SCRATCH_RESERVATIONS[kind]
+
+    def learned_value(key, initial, floor):
+        seen = sorted(value for value in recorded.get(key, []) if isinstance(value, int) and value >= 0)
+        if len(seen) < PEAK_SAMPLES:
+            return initial
+        p95 = seen[min(len(seen) - 1, math.ceil(0.95 * len(seen)) - 1)]
+        return max(floor, p95 + p95 // 4)
+
+    return (learned_value('disk-' + kind, initial_bytes, 16 * MIB),
+            learned_value('inodes-' + kind, initial_inodes, 256))
+
+
+def record_scratch(kind, used):
+    """Keep what a finished job wrote to scratch for its class's claim."""
+    if used is None:
+        return
+    used_bytes, used_inodes = used
+
+    def add(recorded):
+        for key, value in (('disk-' + kind, used_bytes), ('inodes-' + kind, used_inodes)):
+            ring = [item for item in recorded.get(key, []) if isinstance(item, int)][-(PEAK_RING - 1):]
+            recorded[key] = ring + [int(value)]
+    update_learned(add)
+
+
 def scratch_device():
     # The device must be our protected, fixed-size loop image, never the distro
     # root filesystem. A missing loop/quota implementation fails closed.
@@ -343,10 +448,12 @@ def scratch_device():
     if len(mounts) != 3 or mounts[0] != 'ext4' or not {'nodev', 'nosuid'} <= set(mounts[2].split(',')):
         fail('bounded benchmark scratch is not mounted (run deploy-helpers)')
     backing = subprocess.check_output(['losetup', '--noheadings', '--raw', '-O', 'BACK-FILE', mounts[1]], text=True).strip()
-    if backing != str(IMAGE) or IMAGE.is_symlink() or IMAGE.stat().st_uid != 0 or IMAGE.stat().st_mode & 0o077 or IMAGE.stat().st_size != DISK:
-        fail('benchmark scratch backing store differs from the fixed disk budget')
+    size = IMAGE.stat().st_size
+    if (backing != str(IMAGE) or IMAGE.is_symlink() or IMAGE.stat().st_uid != 0 or IMAGE.stat().st_mode & 0o077
+            or not image_size_valid(size)):
+        fail('benchmark scratch backing store differs from the disk budget')
     filesystem = os.statvfs(SCRATCH)
-    if filesystem.f_blocks * filesystem.f_frsize > DISK or filesystem.f_files > INODES:
+    if filesystem.f_blocks * filesystem.f_frsize > size or filesystem.f_files > inode_budget(size):
         fail('benchmark scratch byte/inode limit differs from policy')
     if (filesystem.f_bfree - filesystem.f_bavail) * filesystem.f_frsize < 128 * 1024 ** 2:
         fail('benchmark scratch must retain protected root blocks for credential recovery and cleanup')
@@ -371,7 +478,8 @@ def mount_scratch():
         # Root-only reserved blocks retain credential evidence and cleanup
         # receipts even if an unprivileged candidate fills ordinary storage.
         subprocess.run(['mkfs.ext4', '-q', '-m', '3', '-N', str(INODES), str(IMAGE)], check=True)
-    if IMAGE.is_symlink() or IMAGE.stat().st_uid != 0 or IMAGE.stat().st_mode & 0o077 or IMAGE.stat().st_size != DISK:
+    if (IMAGE.is_symlink() or IMAGE.stat().st_uid != 0 or IMAGE.stat().st_mode & 0o077
+            or not image_size_valid(IMAGE.stat().st_size)):
         fail('unsafe existing benchmark scratch image')
     SCRATCH.mkdir(mode=0o700, parents=True, exist_ok=True)
     if any(SCRATCH.iterdir()):
@@ -606,12 +714,23 @@ def update_learned(change):
     replace_private(PEAKS, json.dumps(recorded))
 
 
+def peak_samples(kind, recorded):
+    """The recorded peaks of `kind` that teach its claim: positive and below
+    its ceiling. A peak at or above the ceiling is a job its own limit
+    stopped, not what one needs (record_peak keeps none since 10-18; the ones
+    written before stay in the ring, ignored, until newer peaks push them
+    out)."""
+    ceiling = CLASSES[kind][0]
+    return [value for value in recorded.get(kind, [])
+            if isinstance(value, int) and not isinstance(value, bool) and 0 < value < ceiling]
+
+
 def expected_memory(kind, recorded):
     """What a job of `kind` is expected to need: its initial claim (the
     ceiling for most classes) until enough of its class are recorded, then
     their 95th percentile plus a quarter."""
     ceiling = CLASSES[kind][0]
-    seen = sorted(value for value in recorded.get(kind, []) if isinstance(value, int) and value > 0)
+    seen = sorted(peak_samples(kind, recorded))
     if len(seen) < PEAK_SAMPLES:
         return min(ceiling, INITIAL_MEMORY.get(kind, ceiling))
     p95 = seen[min(len(seen) - 1, math.ceil(0.95 * len(seen)) - 1)]
@@ -663,8 +782,20 @@ def readable(path, required=()):
         return None
 
 
+def own_ceiling_fired(groups):
+    """Whether a job's own memory.max fired in any of its leaves (their
+    memory.events.local counts an oom only for their own limit)."""
+    return any(event_counts(ROOT / name / 'memory.events.local').get('oom', 0) > 0 for name in groups)
+
+
 def record_peak(kind, groups):
-    """Keep the peak memory of a finished job for its class's expectation."""
+    """Keep the peak memory of a finished job for its class's expectation.
+    A job its own memory.max stopped teaches nothing: its peak is the limit,
+    not what it needed. Three OOM-killed repository sessions at exactly
+    6 GiB (10-18) made every repository job claim its ceiling, so only three
+    fit and inventory probes were refused at under a tenth of real use."""
+    if own_ceiling_fired(groups):
+        return
     peak = sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)
     if peak <= 0:
         return
@@ -716,7 +847,7 @@ def session_burst(recorded):
 
 
 def learned(kind, recorded):
-    return sum(isinstance(value, int) and value > 0 for value in recorded.get(kind, [])) >= PEAK_SAMPLES
+    return len(peak_samples(kind, recorded)) >= PEAK_SAMPLES
 
 
 def timed_use(active):
@@ -1256,16 +1387,24 @@ def host_gate(gate, unused, memory):
                 hostGateAgeMs=round(age))
 
 
-def scratch_headroom(active, kind):
-    filesystem = os.statvfs(SCRATCH)
-    needed_bytes, needed_inodes = SCRATCH_RESERVATIONS[kind]
+def scratch_headroom(active, kind, gate=None):
+    """Whether scratch can hold a new job of `kind` beside the young ones; a
+    shortfall grows the image first when the Windows volume allows it."""
+    needed_bytes, needed_inodes = expected_scratch(kind, peaks())
     # Jobs admitted in the last moments may not have written yet; older ones
     # already show in the free space (rows without an admission time count).
     young = [row for row in active if time.time() - row.get('admitted', 0) < SCRATCH_SETTLE]
     needed_bytes += SCRATCH_MARGIN + sum(row.get('scratch_bytes', 0) for row in young)
     needed_inodes += 4096 + sum(row.get('scratch_inodes', 0) for row in young)
-    if filesystem.f_bavail * filesystem.f_frsize < needed_bytes or filesystem.f_favail < needed_inodes:
-        raise BlockingIOError('resource_busy: bounded benchmark scratch has insufficient free bytes/inodes for committed phases; no provider process started')
+    for grown in (False, True):
+        filesystem = os.statvfs(SCRATCH)
+        short_bytes = needed_bytes - filesystem.f_bavail * filesystem.f_frsize
+        short_inodes = needed_inodes - filesystem.f_favail
+        if short_bytes <= 0 and short_inodes <= 0:
+            return
+        if grown or not grow_scratch(short_bytes, short_inodes, gate):
+            break
+    raise BlockingIOError('resource_busy: bounded benchmark scratch has insufficient free bytes/inodes for committed phases; no provider process started')
 
 
 def scratch_runtime_floor():
@@ -1316,7 +1455,7 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
         # from new attempts (kept_room); an attempt that leaves that room
         # starts beside the queue instead of waiting for it to empty.
         observed = decide(active, kind, gate, host_buffers, continuing, probe, timing)
-        scratch_headroom(active, kind)
+        scratch_headroom(active, kind, gate)
         if probe:
             print(json.dumps({'id': identifier, 'class': kind, 'deadlineMs': deadline_ms, 'admits': True}))
             return
@@ -1324,7 +1463,7 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
         groups = make_groups(kind, identifier)
         token = secrets.token_hex(16)
         memory, cpu, pids, lane = CLASSES[kind]
-        scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
+        scratch_bytes, scratch_inodes = expected_scratch(kind, peaks())
         row = dict(pending=True, pending_until=time.time() + 60, kind=kind, id=identifier,
                    groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane,
                    host_buffers=host_buffers, admitted=time.time())
@@ -1347,27 +1486,59 @@ def release(token):
                 path.unlink()
 
 
+MEMORY_CEILING = 'infrastructure_error: benchmark process tree reached its memory ceiling'
+CANDIDATE_MEMORY = 'candidate_limit: the job reached its own memory ceiling while the candidate code ran'
+
+
+def event_counts(path):
+    """A cgroup events file as counters; empty when it is gone or unreadable
+    (the job's supervisor and the reaper remove groups)."""
+    try:
+        return {key: int(value) for key, value in (line.split() for line in path.read_text().splitlines())}
+    except (OSError, ValueError):
+        return {}
+
+
+def memory_verdict(kind, identifier, groups):
+    """Why the kernel OOM-killed in a job's leaves, or None when it did not.
+    The candidate's (CANDIDATE_MEMORY) only when a leaf's own memory.max
+    caused it, which its memory.events.local counts as an oom (an ancestor's
+    limit, the whole sandbox's pressure, counts in the ancestor alone), while
+    the candidate's code ran: in a check or a pair from their start, in a
+    browser run once its worker marked the candidate's page started.
+    Anything else is the infrastructure's."""
+    killed = own = False
+    for name in groups:
+        if event_counts(ROOT / name / 'memory.events').get('oom_kill', 0):
+            killed = True
+            own = own or event_counts(ROOT / name / 'memory.events.local').get('oom', 0) > 0
+    if not killed:
+        return None
+    started = kind in ('check', 'pair') or (
+        kind == 'browser' and (SCRATCH / 'checks' / identifier / 'candidate-started').is_file())
+    return CANDIDATE_MEMORY if own and started else MEMORY_CEILING
+
+
+def memory_receipt(token, verdict):
+    if verdict == CANDIDATE_MEMORY:
+        return {'token': token, 'infrastructureError': None, 'candidateLimit': 'memory'}
+    return {'token': token, 'infrastructureError': verdict}
+
+
 def observe(mode, identifier):
     ident(identifier)
     if mode not in ('session', 'check', 'probe', 'login', 'browser', 'prep'):
         fail('invalid sandbox observation mode')
     name = mode + '-' + identifier
-    events = ROOT / name / 'memory.events'
-    # The job's supervisor and the reaper remove groups: one that is gone,
-    # before or while it is read, has nothing left to observe.
-    try:
-        counters = dict(line.split() for line in events.read_text().splitlines())
-    except FileNotFoundError:
-        return
-    if not int(counters.get('oom_kill', 0)):
+    verdict = memory_verdict(mode, identifier, [name])
+    if verdict is None:
         return
     with locked():
         for path in STATE.glob('lease-*.json'):
             row = readable(path, LEASE_KEYS)
             if row is not None and name in row['groups']:
                 token = path.name[6:-5]
-                replace_private(STATE / 'outcomes' / (token + '.json'), json.dumps({
-                    'token': token, 'infrastructureError': 'infrastructure_error: benchmark process tree reached its memory ceiling'}))
+                replace_private(STATE / 'outcomes' / (token + '.json'), json.dumps(memory_receipt(token, verdict)))
 
 
 def child_group(name, memory, cpu, pids, read, written, weight):
@@ -1474,13 +1645,13 @@ def run(kind, identifier, command):
                         if 'Windows headroom evidence expired' in str(busy):
                             raise
                 if admitted:
-                    scratch_headroom(active, kind)
+                    scratch_headroom(active, kind, os.environ.get('DISTILL_BENCH_HOST_GATE'))
                     memory, cpu, pids, lane = CLASSES[kind]
                     groups = make_groups(kind, identifier)
                     row = dict(pid=os.getpid(), start=proc_identity(os.getpid()), deadline=deadline, kind=kind,
                                id=identifier, groups=groups, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane,
                                host_buffers=host_buffers, admitted=time.time())
-                    scratch_bytes, scratch_inodes = SCRATCH_RESERVATIONS[kind]
+                    scratch_bytes, scratch_inodes = expected_scratch(kind, peaks())
                     row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
                     replace_private(lease, json.dumps(row))
                     owned = True
@@ -1520,12 +1691,9 @@ def run(kind, identifier, command):
             try:
                 code = child.wait(timeout=min(1, remaining))
                 scratch_runtime_floor()
-                for name in groups:
-                    events = ROOT / name / 'memory.events'
-                    if events.exists():
-                        counters = dict(line.split() for line in events.read_text().splitlines())
-                        if int(counters.get('oom_kill', 0)):
-                            raise RuntimeError('infrastructure_error: benchmark process tree reached its memory ceiling')
+                verdict = memory_verdict(kind, identifier, groups)
+                if verdict:
+                    raise RuntimeError(verdict)
                 return code
             except subprocess.TimeoutExpired:
                 if disconnect.poll(0):
@@ -1539,13 +1707,22 @@ def run(kind, identifier, command):
             signal.signal(number, signal.SIG_IGN)
         ticket.unlink(missing_ok=True)
         if owned:
+            # What the job wrote to scratch, read before its cleanup and
+            # outside the broker lock (a large workspace takes a moment).
+            written = None
+            if groups and 'admitted_at' in locals():
+                try:
+                    written = scratch_use(identifier)
+                except (OSError, ValueError):
+                    pass
             with locked():
                 # What this job needed and how long it waited for CPUs teach
                 # admission before its leaves go.
                 if groups and 'admitted_at' in locals():
                     for record in (lambda: record_peak(kind, groups),
                                    lambda: record_usage(kind, identifier, groups, admitted_at),
-                                   lambda: record_stall(kind, groups, admitted_at, stalled_before)):
+                                   lambda: record_stall(kind, groups, admitted_at, stalled_before),
+                                   lambda: record_scratch(kind, written)):
                         try:
                             record()
                         except (OSError, ValueError):
@@ -1586,8 +1763,9 @@ def status():
         print('budget cpu', cpu_max().replace(' ', '/'))
         print('budget swap 0')
         print('budget pids', AGGREGATE_PIDS + 128)
-        print('budget disk', DISK)
-        print('budget inodes', INODES)
+        # The policy: the image starts at DISK and INODES and grows online.
+        print('budget disk dynamic', DISK)
+        print('budget inodes dynamic', INODES)
         print(f"budget io {AGGREGATE_IO[0]}/{AGGREGATE_IO[1]}")
         print('budget job-io', ' '.join(f'{lane} {read}/{written}' for lane, (read, written) in JOB_IO.items()))
         print('budget reserved', sum(claim(row, recorded) for row in active))
@@ -1595,7 +1773,9 @@ def status():
         print('budget expected', ' '.join(f'{kind} {expected_memory(kind, recorded)}' for kind in CLASSES))
         print('budget session-burst', session_burst(recorded))
         filesystem = os.statvfs(SCRATCH)
+        print('budget scratch-size', filesystem.f_blocks * filesystem.f_frsize, filesystem.f_files)
         print('budget scratch-free', filesystem.f_bavail * filesystem.f_frsize, filesystem.f_favail)
+        print('budget scratch-claims', ' '.join(f'{kind} {expected_scratch(kind, recorded)[0]}' for kind in CLASSES))
         print('budget reaper', reaper_state())
         # The sandbox clock minus the Windows evidence's time, transport
         # included: a large value means the WSL clock drifted from Windows.
@@ -1892,10 +2072,11 @@ if __name__ == '__main__':
         if OUTCOME_TOKEN:
             try:
                 reason = str(error)
-                if not reason.startswith(('infrastructure_error:', 'benchmark owned execution deadline', 'benchmark host transport')):
+                if not reason.startswith(('infrastructure_error:', 'candidate_limit:', 'benchmark owned execution deadline',
+                                          'benchmark host transport')):
                     reason = 'infrastructure_error: trusted sandbox resource supervision or cleanup failed'
-                replace_private(STATE / 'outcomes' / (OUTCOME_TOKEN + '.json'), json.dumps({
-                    'token': OUTCOME_TOKEN, 'infrastructureError': reason}))
+                replace_private(STATE / 'outcomes' / (OUTCOME_TOKEN + '.json'),
+                                json.dumps(memory_receipt(OUTCOME_TOKEN, reason)))
             except OSError:
                 pass
         try:

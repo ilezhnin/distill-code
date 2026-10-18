@@ -1678,6 +1678,22 @@ fn quota_recovered(run_id: &str, scope: &str) {
 /// cells of that provider wait on their own, as for a quota wait, while its
 /// other providers' cells go on.
 pub(super) const SIGN_IN_WAIT: &str = "sign_in_wait";
+/// An evaluator error meaning the candidate's own code drove its check or
+/// browser job into the job's own ceiling (a root-owned receipt says so,
+/// see `benchmark_sandbox::Output::candidate_limit`): the answer past its
+/// budget, which settles as `budget_reached`, scored 0.
+pub(super) const CANDIDATE_LIMIT: &str = "candidate_limit";
+
+/// The outcome of an answer whose evaluation failed with `error`: the
+/// candidate's own past its job's ceiling (scored 0), else an evaluator
+/// error (unscored).
+fn evaluation_failure_outcome(error: &BenchmarkError) -> &'static str {
+    if error.code == CANDIDATE_LIMIT {
+        "budget_reached"
+    } else {
+        "evaluation_error"
+    }
+}
 /// A sign-in too short for the turn that the Grok CLI renews only later: the
 /// user's environment keeps its renewal window narrower than a turn needs
 /// (see [`grok::cli_renewal_window_ms`]).
@@ -2325,28 +2341,49 @@ impl NativeBackend {
         {
             // A judge on an account whose limit is spent could only abstain
             // and leave the panel incomplete. Judges never draw on credits.
-            if exhausted(&attempt.run_id, &account.id)
-                || crate::services::provider_account_status::usage_spent(
-                    &self.app,
-                    &account.id,
-                    false,
-                )
-                .await
+            let skipped = if exhausted(&attempt.run_id, &account.id) {
+                Some("its usage ran out in this run".to_owned())
+            } else if crate::services::provider_account_status::usage_spent(
+                &self.app,
+                &account.id,
+                false,
+            )
+            .await
             {
+                Some("its usage limit is spent".to_owned())
+            } else {
+                None
+            };
+            if let Some(reason) = skipped {
+                log::info!(
+                    "[benchmarks] judge panel for attempt {} skips account {}: {reason}",
+                    attempt.id,
+                    account.id
+                );
                 continue;
             }
             // Listed once per run, like the candidates' own bridges.
             let listed = self
                 .run_inventory(&host, &attempt.run_id, &account.provider_id, &account.id)
                 .await;
-            let Ok(models) = (match listed {
+            let models = match listed {
                 Ok(listed) => {
                     self.inventory_rows(&account.provider_id, &account.id, &listed)
                         .await
                 }
                 Err(error) => Err(error),
-            }) else {
-                continue;
+            };
+            let models = match models {
+                Ok(models) => models,
+                Err(error) => {
+                    log::info!(
+                        "[benchmarks] judge panel for attempt {} skips account {}: its model list failed: {}",
+                        attempt.id,
+                        account.id,
+                        error.message
+                    );
+                    continue;
+                }
             };
             for model in models {
                 if model.available && model.configuration.execution_profile == "native_text" {
@@ -2360,7 +2397,46 @@ impl NativeBackend {
                 }
             }
         }
-        Ok(ordinary_judges(&candidates, draft, offered))
+        let seats: Vec<String> = offered
+            .iter()
+            .map(|(headroom, judge)| {
+                let left = headroom.map_or("unknown".to_owned(), |h| {
+                    format!(
+                        "{:.0} % left, read {} s ago",
+                        h.share,
+                        (now() - h.read_at).max(0) / 1000
+                    )
+                });
+                format!(
+                    "{}@{} ({left})",
+                    judge.model_id,
+                    judge.account_id.as_deref().unwrap_or_default()
+                )
+            })
+            .collect();
+        let panel = ordinary_judges(
+            &candidates,
+            draft,
+            offered
+                .into_iter()
+                .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
+                .collect(),
+        );
+        log::info!(
+            "[benchmarks] judge panel for attempt {}: {} of offered {}",
+            attempt.id,
+            panel
+                .iter()
+                .map(|judge| format!(
+                    "{}@{}",
+                    judge.model_id,
+                    judge.account_id.as_deref().unwrap_or_default()
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+            seats.join(", ")
+        );
+        Ok(panel)
     }
 
     /// Whether every judge's account is free before a batch starts or
@@ -2648,6 +2724,20 @@ impl NativeBackend {
             .then(|| judge_score_sheet(&version.manifest, &reply, response, criteria))
             .flatten();
         let score = parsed.as_ref().and_then(|sheet| sheet.score);
+        // The monitor of quote-less passes: they are valid on any condition,
+        // and their share by judge model and kind of condition is watched.
+        let quote_less = parsed
+            .as_ref()
+            .and_then(|sheet| sheet.critical.as_ref())
+            .map(|critical| critical.quote_less);
+        if let Some(counts) = quote_less.filter(|q| q.omission + q.positive > 0) {
+            log::info!(
+                "[benchmarks] judge {} passed conditions without a quote: {} omission, {} positive",
+                judge.model_id,
+                counts.omission,
+                counts.positive
+            );
+        }
         let reason = match &parsed {
             Some(sheet) if !sheet.reason.is_empty() => sheet.reason.clone(),
             Some(_) => "Scored by the judge panel".into(),
@@ -2679,7 +2769,8 @@ impl NativeBackend {
                 "criteria": parsed.as_ref().map(|sheet| &sheet.shares),
                 "criticalCheckPolicy": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|_| judge_checks::POLICY)),
                 "criticalCheckStatus": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|check| check.status)),
-                "criticalChecks": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|check| &check.checks))}),
+                "criticalChecks": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|check| &check.checks)),
+                "quoteLessPasses": quote_less.map(|q| json!({"omission": q.omission, "positive": q.positive}))}),
             ),
             judge: Some(judge.clone()),
             usage: Some(usage),
@@ -6926,7 +7017,7 @@ impl BenchmarkService {
                     tokio::time::sleep(EVALUATION_RETRY).await;
                 }
                 Err(error) => {
-                    completed.outcome = Some("evaluation_error".into());
+                    completed.outcome = Some(evaluation_failure_outcome(&error).into());
                     completed.reason = Some(error.message);
                     return Ok(completed);
                 }
@@ -8074,6 +8165,22 @@ mod tests {
         }
         assert_eq!(account_pace::limit(account), 2 * ACCOUNT_SLOTS);
     }
+    /// A check or browser job the candidate's own code drove past its own
+    /// ceiling is the answer past its budget, scored 0; any other evaluator
+    /// failure stays unscored.
+    #[test]
+    fn a_candidate_past_its_jobs_own_ceiling_is_scored_like_any_budget() {
+        let limit = BenchmarkError::new(CANDIDATE_LIMIT, "past the job's memory ceiling");
+        assert_eq!(evaluation_failure_outcome(&limit), "budget_reached");
+        for code in [
+            "infrastructure_failure",
+            "evaluation_error",
+            "capability_missing",
+        ] {
+            let error = BenchmarkError::new(code, "invented");
+            assert_eq!(evaluation_failure_outcome(&error), "evaluation_error");
+        }
+    }
     #[test]
     fn a_workflow_root_that_fails_otherwise_neither_grows_nor_halves_the_pace() {
         let account = "invented-acp\u{1f}pace-workflow-failure";
@@ -8261,17 +8368,111 @@ mod tests {
         );
     }
 
+    /// A sheet of a few thousand characters is read whole, and a condition
+    /// the response meets by leaving something out passes without a quote,
+    /// as judges answer it; a quote it does give is still checked.
+    #[test]
+    fn a_long_sheet_passing_an_omission_condition_without_a_quote_is_valid() {
+        let mut draft = critical_text();
+        draft.environment["criticalChecks"] = json!([
+            {"id":"retention","requirement":"An old acknowledgement cannot remove a newer pending write."},
+            {"id":"no-consensus","requirement":"The letter does not compare results with analyst estimates. Fail if it does."}
+        ]);
+        let criteria = rubric_criteria(&draft);
+        let response = "Remove only the acknowledged revision. Wait for every participant.";
+        let reason =
+            "The trace keeps the newer revision queued after the old acknowledgement. ".repeat(25);
+        let reply = json!({"scores":{"quality":8},"notes":"Concrete and complete. ".repeat(80).trim(),
+        "checks":{
+            "retention":{"verdict":"pass","evidence":["Remove only the acknowledged revision."],"reason":reason.trim()},
+            "no-consensus":{"verdict":"pass","evidence":[],"reason":"Neither part mentions analyst estimates or consensus. ".repeat(20).trim()}
+        }})
+        .to_string();
+        assert!(reply.len() > 4400, "{}", reply.len());
+        let sheet = judge_score_sheet(&draft, &reply, Some(response), &criteria).unwrap();
+        assert_eq!(sheet.score, Some(0.8));
+        // The monitor counts the quote-less pass as an omission condition's.
+        assert!(judge_checks::omission(
+            "Parts B and C do not mention litigation. Fail if they do."
+        ));
+        assert!(judge_checks::omission(
+            "No efficacy data appears in Part C."
+        ));
+        assert!(!judge_checks::omission(
+            "The letter states the restated second-quarter revenue."
+        ));
+        assert!(!judge_checks::omission(
+            "The letter states the restated figure. Fail if it does not."
+        ));
+        let counts = |sheet: &JudgeScoreSheet| sheet.critical.as_ref().unwrap().quote_less;
+        let omission = judge_checks::QuoteLess {
+            omission: 1,
+            positive: 0,
+        };
+        assert_eq!(counts(&sheet), omission);
+        // A quote-less pass on a positive condition is valid beside a quoted
+        // check, and counted as positive.
+        let mut positive: Value = serde_json::from_str(&reply).unwrap();
+        positive["checks"]["retention"]["evidence"] = json!([]);
+        positive["checks"]["no-consensus"]["evidence"] = json!(["Wait for every participant."]);
+        let sheet =
+            judge_score_sheet(&draft, &positive.to_string(), Some(response), &criteria).unwrap();
+        assert_eq!(
+            counts(&sheet),
+            judge_checks::QuoteLess {
+                omission: 0,
+                positive: 1
+            }
+        );
+        // Passes without a single quote in the sheet are no verdict; a sheet
+        // of unknowns without quotes still abstains.
+        let mut unanchored: Value = serde_json::from_str(&reply).unwrap();
+        unanchored["checks"]["retention"]["evidence"] = json!([]);
+        assert!(
+            judge_score_sheet(&draft, &unanchored.to_string(), Some(response), &criteria).is_none()
+        );
+        for check in ["retention", "no-consensus"] {
+            unanchored["checks"][check]["verdict"] = json!("unknown");
+        }
+        let abstained =
+            judge_score_sheet(&draft, &unanchored.to_string(), Some(response), &criteria).unwrap();
+        assert_eq!(abstained.score, None);
+        // The quote-less pass changes nothing else: a fabricated quote still
+        // invalidates the sheet, and a quote-less fail is still no verdict.
+        let mut fabricated: Value = serde_json::from_str(&reply).unwrap();
+        fabricated["checks"]["no-consensus"]["evidence"] = json!(["Analysts expected more."]);
+        assert!(
+            judge_score_sheet(&draft, &fabricated.to_string(), Some(response), &criteria).is_none()
+        );
+        let mut failed: Value = serde_json::from_str(&reply).unwrap();
+        failed["checks"]["no-consensus"]["verdict"] = json!("fail");
+        assert!(
+            judge_score_sheet(&draft, &failed.to_string(), Some(response), &criteria).is_none()
+        );
+    }
     #[test]
     fn critical_judgments_reject_incomplete_or_fabricated_evidence_without_repair() {
         let draft = critical_text();
         let criteria = rubric_criteria(&draft);
         let response = "Remove only the acknowledged revision. Wait for every participant.";
+        let failed_without_quote = {
+            let mut reply = critical_reply();
+            reply["checks"]["retention"]["verdict"] = json!("fail");
+            reply["checks"]["retention"]["evidence"] = json!([]);
+            reply
+        };
+        assert!(judge_score_sheet(
+            &draft,
+            &failed_without_quote.to_string(),
+            Some(response),
+            &criteria
+        )
+        .is_none());
         for (path, value) in [
             (
                 "/checks/retention/evidence",
                 json!(["Quote from a source, not the response."]),
             ),
-            ("/checks/retention/evidence", json!([])),
             ("/checks/retention/reason", json!(" ")),
             ("/checks/retention/verdict", json!("mostly_pass")),
             ("/checks/retention", json!(null)),

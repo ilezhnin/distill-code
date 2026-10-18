@@ -628,6 +628,36 @@ fn scoped_model_limit_does_not_block_other_models() {
 }
 
 #[test]
+fn the_last_good_usage_read_is_kept_through_failed_reads_until_the_account_changes() {
+    let native = AccountStatusCache::default();
+    let good = status("invented-good-read", 40.0, 5000);
+    native.remember_good_read(&good);
+    let read = || native.good_read("invented-good-read");
+    let (limits, at) = read().unwrap();
+    assert_eq!(windows_headroom(&limits, None), Some(60.0));
+    assert_eq!(at, good.last_updated_at);
+    // A failed, stale or windowless read replaces nothing.
+    let mut failed = status("invented-good-read", 90.0, 5000);
+    failed.state = AccountState::Error;
+    native.remember_good_read(&failed);
+    let mut stale = status("invented-good-read", 95.0, 5000);
+    stale.stale = true;
+    native.remember_good_read(&stale);
+    let mut empty = status("invented-good-read", 0.0, 5000);
+    empty.limits.clear();
+    native.remember_good_read(&empty);
+    assert_eq!(windows_headroom(&read().unwrap().0, None), Some(60.0));
+    // Each runtime keeps its own reads: the sandbox's sign-in is another
+    // identity than the Windows one judges are ranked by.
+    let repository = AccountStatusCache::default();
+    repository.remember_good_read(&status("invented-good-read", 99.0, 5000));
+    assert_eq!(windows_headroom(&read().unwrap().0, None), Some(60.0));
+    native.forget_good_read("invented-good-read");
+    assert!(read().is_none());
+    assert!(repository.good_read("invented-good-read").is_some());
+}
+
+#[test]
 fn headroom_is_the_least_share_left_in_the_windows_a_model_draws_on() {
     let mut a = status("a", 30.0, 5000);
     let mut weekly = a.limits[0].clone();
