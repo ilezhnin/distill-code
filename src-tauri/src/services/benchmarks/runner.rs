@@ -707,6 +707,32 @@ pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
     }
 }
 
+/// The accounts a judge may sit on: every enabled stored account of a
+/// provider `admit` takes, and the CLI sign-in Grok and Kimi keep for
+/// themselves (`cli-login-<provider>`), which no store lists but candidates
+/// already run on through the inventory.
+pub(crate) fn judge_accounts(
+    stored: &[crate::services::provider_accounts::ProviderAccount],
+    admit: impl Fn(&str) -> bool,
+    cli_login: impl Fn(&str) -> Option<crate::services::provider_accounts::ProviderAccount>,
+) -> Vec<crate::services::provider_accounts::ProviderAccount> {
+    let mut accounts: Vec<_> = stored
+        .iter()
+        .filter(|account| account.enabled && admit(&account.provider_id))
+        .cloned()
+        .collect();
+    for native in NativeProvider::ALL {
+        let provider = native.harness_id();
+        let Some(identity) = admit(provider).then(|| cli_login(provider)).flatten() else {
+            continue;
+        };
+        if !accounts.iter().any(|account| account.id == identity.id) {
+            accounts.push(identity);
+        }
+    }
+    accounts
+}
+
 /// The offered judges with the most usage headroom first (percent left on
 /// their account, unknown last), so a seat goes to the eligible account that
 /// can spare it most rather than always to the first account listed.
@@ -1740,6 +1766,28 @@ fn exhausted(run_id: &str, account: &str) -> bool {
     }
 }
 
+/// A judge turn its account's usage limit refused: the account leaves this
+/// run's panels until the reset, as a candidate's does. A CLI sign-in has no
+/// usage reads that would show it spent, so without this every later panel
+/// that seats it would get one more abstention.
+fn exhaust_judge_on_quota(
+    run_id: &str,
+    account: &str,
+    error: &Value,
+    reply: &str,
+    usage: &TokenUsage,
+) -> bool {
+    let refused = is_quota_wait(error) || refused_for_quota(error, reply, usage);
+    if refused {
+        exhaust(
+            run_id,
+            account,
+            quota_reset(&error.to_string()).unwrap_or(now() + QUOTA_RETRY_MS),
+        );
+    }
+    refused
+}
+
 /// When a quota refusal says the account's limit resets.
 fn quota_reset(error: &str) -> Option<i64> {
     serde_json::from_str::<Value>(error)
@@ -2496,6 +2544,10 @@ impl NativeBackend {
     > {
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
+        let accounts = judge_accounts(&snapshot.accounts, &admit, |provider| {
+            crate::services::provider_accounts::cli_login_account_id(provider)
+                .and_then(|id| crate::services::provider_accounts::account(&self.app, &id).ok())
+        });
         let host = self
             .app
             .state::<AgentHost>()
@@ -2503,11 +2555,7 @@ impl NativeBackend {
             .await
             .map_err(host_error)?;
         let mut offered = Vec::new();
-        for account in snapshot
-            .accounts
-            .iter()
-            .filter(|account| account.enabled && admit(&account.provider_id))
-        {
+        for account in &accounts {
             let skipped = if exhausted(run, &account.id) {
                 Some("its usage ran out in this run".to_owned())
             } else if crate::services::provider_account_status::usage_spent(
@@ -2684,7 +2732,7 @@ impl NativeBackend {
                 OwnedSessionRequest {
                     owner_id: judge_owner,
                     provider_id: judge.provider_id.clone(),
-                    account_id: account,
+                    account_id: account.clone(),
                     model_id: judge.model_id.clone(),
                     reasoning_effort: judge.effort.clone(),
                     fast_mode: judge.fast_mode,
@@ -2820,6 +2868,9 @@ impl NativeBackend {
                 {
                     // A flagged or substituted turn abstains; its spend still counts.
                     turn_failure = judge_turn_failure(judge, &status);
+                    if let Some(error) = status.error.as_ref() {
+                        exhaust_judge_on_quota(&attempt.run_id, &account, error, &reply, &usage);
+                    }
                     if frozen_panel
                         && status.result.as_ref().and_then(|result| {
                             result
@@ -8942,6 +8993,135 @@ mod tests {
         assert!(!author_model_judges(&draft, &[elsewhere]));
         draft.environment["authoredBy"] = json!(["legacy-author-name"]);
         assert!(!author_model_judges(&draft, &[opus]));
+    }
+    #[test]
+    fn a_judge_account_its_limit_refused_leaves_the_runs_panels_until_its_reset() {
+        let reset = now() + 60_000;
+        let quota =
+            json!({"data": {"kind": QUOTA_WAIT, "dispatchStarted": false, "nextReset": reset}});
+        assert!(exhaust_judge_on_quota(
+            "invented-run",
+            "cli-login-grok-acp",
+            &quota,
+            "",
+            &TokenUsage::default()
+        ));
+        assert!(exhausted("invented-run", "cli-login-grok-acp"));
+        // Another run, or another account, is not held.
+        assert!(!exhausted("other-run", "cli-login-grok-acp"));
+        assert!(!exhausted("invented-run", "invented-claude"));
+        // Any other failure leaves the account in the panels.
+        let other = json!({"data": {"kind": "bridge_exited", "dispatchStarted": true}});
+        assert!(!exhaust_judge_on_quota(
+            "second-run",
+            "cli-login-grok-acp",
+            &other,
+            "",
+            &TokenUsage::default()
+        ));
+        assert!(!exhausted("second-run", "cli-login-grok-acp"));
+    }
+    #[test]
+    fn a_pool_judge_sits_on_the_cli_sign_in_candidates_run_on() {
+        use crate::services::provider_accounts::{AuthMethod, ProviderAccount};
+        let account = |id: &str, provider: &str, enabled: bool| ProviderAccount {
+            id: id.into(),
+            provider_id: provider.into(),
+            label: id.into(),
+            auth_method: AuthMethod::OAuth,
+            enabled,
+            auto_switch: false,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let stored = vec![
+            account("invented-claude", "claude-acp", true),
+            account("invented-claude-off", "claude-acp", false),
+            account("invented-codex", "codex-acp", true),
+            account("invented-zai", "zai-acp", true),
+        ];
+        // The pool names Claude, Codex and Grok: Grok's only account is the
+        // CLI sign-in no store lists; Kimi's is never asked for.
+        let pool = super::super::judge_pool::entries(&json!({"judgePool": [
+            {"providerId": "claude-acp", "modelId": "opus[1m]", "effort": "high"},
+            {"providerId": "codex-acp", "modelId": "invented-sol", "effort": "high"},
+            {"providerId": "grok-acp", "modelId": "invented-grok", "effort": "high"},
+        ]}));
+        let admit = |provider: &str| pool.iter().any(|entry| entry.provider_id == provider);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let accounts = judge_accounts(&stored, admit, |provider| {
+            asked.borrow_mut().push(provider.to_owned());
+            crate::services::provider_accounts::cli_login_account_id(provider)
+                .map(|id| account(&id, provider, true))
+        });
+        let ids: Vec<_> = accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["invented-claude", "invented-codex", "cli-login-grok-acp"]
+        );
+        assert!(!asked.borrow().iter().any(|provider| provider == "kimi-acp"));
+        // A CLI sign-in already stored is not listed twice.
+        let mut with_identity = stored.clone();
+        with_identity.push(account("cli-login-grok-acp", "grok-acp", true));
+        assert_eq!(
+            judge_accounts(&with_identity, admit, |provider| {
+                crate::services::provider_accounts::cli_login_account_id(provider)
+                    .map(|id| account(&id, provider, true))
+            })
+            .len(),
+            3
+        );
+        // The Grok entry seats on that sign-in at its effort, beside Opus,
+        // for a candidate of a third vendor.
+        let row = |provider: &str, model: &str, account_id: &str| InventoryModel {
+            configuration: Configuration {
+                id: format!("{provider}:{account_id}:{model}"),
+                provider_id: provider.into(),
+                account_id: Some(account_id.into()),
+                model_id: model.into(),
+                effort: None,
+                fast_mode: Some(false),
+                billing_mode: "subscription".into(),
+                execution_profile: "native_text".into(),
+                inventory_revision: Some("runtime".into()),
+                model_name: None,
+            },
+            name: model.into(),
+            efforts: vec!["high".into()],
+            supports_fast_mode: false,
+            available: true,
+            reason: None,
+        };
+        let seats = super::super::judge_pool::seat_rows(
+            &pool,
+            vec![
+                (None, row("claude-acp", "opus[1m]", "invented-claude")),
+                (None, row("grok-acp", "invented-grok", "cli-login-grok-acp")),
+            ],
+        );
+        let mut text = creative();
+        text.environment["authoredBy"] = json!([]);
+        text.environment["judgeInput"] = json!("text");
+        let mut luna = judge_row("invented-luna");
+        luna.provider_id = "codex-acp".into();
+        let panel = ordinary_judges(
+            &[&luna],
+            &text,
+            seats.into_iter().map(|(_, judge)| (None, judge)).collect(),
+        );
+        assert_eq!(
+            panel
+                .iter()
+                .map(|judge| (judge.model_id.as_str(), judge.account_id.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("opus[1m]", Some("invented-claude")),
+                ("invented-grok", Some("cli-login-grok-acp"))
+            ]
+        );
+        assert!(panel
+            .iter()
+            .all(|judge| judge.effort.as_deref() == Some("high")));
     }
     #[test]
     fn ordinary_seats_are_one_per_vendor_and_never_the_candidates_vendor() {
