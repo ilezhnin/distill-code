@@ -208,6 +208,10 @@ export function testStatus(
   return { kind: "unscored", outcome: attempts[0].outcome, durationMs };
 }
 
+/** What a sign-in renewal that waits for other tests records as its reason. */
+const SIGN_IN_BUSY =
+  /still runs on the sign-in|renewed once a sandbox lane is free/i;
+
 /**
  * What a returned test waits for, from the reason the runner recorded; with
  * `timed`, the wording that names when the runner tries it again.
@@ -227,6 +231,9 @@ function waitingLabel(
     return timed ? "modelRun.waitingQuotaUntil" : "modelRun.waitingQuota";
   }
   if (stopped) return "modelRun.stopped";
+  // A renewal that waits for other tests on its sign-in names what it waits
+  // for; the time it records is only when the runner asks again.
+  if (SIGN_IN_BUSY.test(reason)) return "modelRun.waitingSignIn";
   if (/sign-in/i.test(reason))
     return timed ? "modelRun.waitingSignInUntil" : "modelRun.waitingSignIn";
   return "modelRun.waiting";

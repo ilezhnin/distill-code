@@ -799,6 +799,11 @@ pub(crate) struct Status {
     pub revision: String,
     accounts: Vec<(String, String)>,
     account_health: BTreeMap<(String, String), AccountHealth>,
+    /// Refreshes bench-auth could not settle, kept for the operator, by
+    /// provider and account: how many attempts left one.
+    conflicts: BTreeMap<(String, String), u32>,
+    /// Credential copies bench-clean kept aside after a failed save.
+    unsaved: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -1473,7 +1478,9 @@ async fn observe_status() -> io::Result<Status> {
     if out.truncated {
         return Err(io::Error::other("Sandbox status exceeded its limit"));
     }
-    parse_status(&String::from_utf8_lossy(&out.stdout))
+    let status = parse_status(&String::from_utf8_lossy(&out.stdout))?;
+    report_conflicts(&status);
+    Ok(status)
 }
 
 fn parse_status(text: &str) -> io::Result<Status> {
@@ -1586,11 +1593,71 @@ fn parse_status(text: &str) -> io::Result<Status> {
             return Err(io::Error::other("Conflicting sandbox credential health"));
         }
     }
+    let mut conflicts = BTreeMap::new();
+    for parts in &lines {
+        if parts.first() != Some(&"account-conflict") {
+            continue;
+        }
+        let [_, provider, account, count] = parts.as_slice() else {
+            return Err(io::Error::other("Malformed sandbox credential conflict"));
+        };
+        valid_id(provider)?;
+        valid_id(account)?;
+        let count = count
+            .parse::<u32>()
+            .ok()
+            .filter(|count| *count > 0)
+            .ok_or_else(|| io::Error::other("Malformed sandbox credential conflict"))?;
+        if conflicts
+            .insert((provider.to_string(), account.to_string()), count)
+            .is_some()
+        {
+            return Err(io::Error::other("Malformed sandbox credential conflict"));
+        }
+    }
+    // Reported for the operator, never a reason to refuse the status.
+    let unsaved = lines
+        .iter()
+        .find_map(|parts| match parts.as_slice() {
+            ["auth-unsaved", count] => count.parse::<u32>().ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
     Ok(Status {
         revision: hex::encode(Sha256::digest(serde_json::to_vec(&identity)?)),
         accounts,
         account_health,
+        conflicts,
+        unsaved,
     })
+}
+
+/// Logs each sandbox account with credential conflicts once per count, and
+/// the credential copies bench-clean kept aside after a failed save once per
+/// count: the operator inspects what was kept and removes it (see the
+/// benchmark operations guide). Admission goes on with the stored grant.
+fn report_conflicts(status: &Status) {
+    static UNSAVED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let unsaved = status.unsaved;
+    if UNSAVED.swap(unsaved, std::sync::atomic::Ordering::Relaxed) != unsaved && unsaved > 0 {
+        log::warn!(
+            "[benchmarks] {unsaved} credential copies of attempts whose save failed are kept in {DISTRIBUTION}:/srv/bench/auth-unsaved; recover them and remove them"
+        );
+    }
+    static REPORTED: OnceLock<std::sync::Mutex<BTreeMap<(String, String), u32>>> = OnceLock::new();
+    let mut reported = REPORTED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Records the operator removed are forgotten, so new ones are logged.
+    reported.retain(|key, _| status.conflicts.contains_key(key));
+    for ((provider, account), count) in &status.conflicts {
+        if reported.insert((provider.clone(), account.clone()), *count) != Some(*count) {
+            log::warn!(
+                "[benchmarks] sandbox {provider} account {account} has {count} credential refresh conflict(s) kept in {DISTRIBUTION}:/var/lib/distill-bench/auth-conflicts/{account}/{provider}; inspect them and remove the records"
+            );
+        }
+    }
 }
 
 /// What `bench-login zai` reads on standard input: the key as one printable
@@ -2729,6 +2796,55 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(!error.contains("secret-value"));
+        }
+    }
+
+    /// A refresh bench-auth could not settle is reported per account, apart
+    /// from runtime identity; the account stays admissible on its stored
+    /// grant, and a malformed report refuses the status like bad health.
+    #[test]
+    fn credential_conflicts_are_reported_per_account_outside_runtime_identity() {
+        let base = format!(
+            "{}\naccount grok account-1 yes\naccount-health grok account-1 oauth current 1800009000000",
+            status()
+        );
+        let clean = parse_status(&base).unwrap();
+        assert!(clean.conflicts.is_empty());
+        let conflicted =
+            parse_status(&format!("{base}\naccount-conflict grok account-1 2")).unwrap();
+        assert_eq!(conflicted.revision, clean.revision);
+        assert_eq!(
+            conflicted
+                .conflicts
+                .get(&("grok".to_owned(), "account-1".to_owned())),
+            Some(&2)
+        );
+        assert!(conflicted
+            .require_account_window("grok", "account-1", 1_800_000_000_000, 600)
+            .is_ok());
+        report_conflicts(&conflicted);
+        // Copies kept aside after a failed save are counted, never refused.
+        assert_eq!(clean.unsaved, 0);
+        let unsaved = parse_status(&format!("{base}\nauth-unsaved 2")).unwrap();
+        assert_eq!(
+            (unsaved.unsaved, unsaved.revision.as_str()),
+            (2, clean.revision.as_str())
+        );
+        assert_eq!(
+            parse_status(&format!("{base}\nauth-unsaved two"))
+                .unwrap()
+                .unsaved,
+            0
+        );
+        report_conflicts(&unsaved);
+        for line in [
+            "account-conflict grok account-1",
+            "account-conflict grok account-1 0",
+            "account-conflict grok account-1 two",
+            "account-conflict grok ../account 1",
+            "account-conflict grok account-1 1\naccount-conflict grok account-1 2",
+        ] {
+            assert!(parse_status(&format!("{base}\n{line}")).is_err(), "{line}");
         }
     }
     #[test]

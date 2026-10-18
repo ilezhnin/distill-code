@@ -12,8 +12,21 @@ fi
 /usr/local/sbin/bench-kill check "$id"
 /usr/local/sbin/bench-kill browser "$id"
 /usr/local/sbin/bench-kill prep "$id"
-[[ ! -d /srv/bench/auth/$id ]] || /usr/local/sbin/bench-auth save "$id"
+# bench-auth keeps what it cannot settle in a conflict record and succeeds.
+# Should the save itself fail, the attempt's credential copy is kept aside,
+# root's alone, the rest is removed, and the failure is this cleanup's exit
+# status, so its caller reports it.
+saved=0
+[[ ! -d /srv/bench/auth/$id ]] || /usr/local/sbin/bench-auth save "$id" || saved=$?
+if ((saved)); then
+  install -d -m 700 /srv/bench/auth-unsaved
+  # Another cleanup of the same attempt may have kept a copy already.
+  kept=/srv/bench/auth-unsaved/$id
+  [[ ! -e $kept ]] || kept=$kept.$(date +%s%N)
+  mv -T "/srv/bench/auth/$id" "$kept" || true
+fi
 /usr/local/sbin/bench-network "$id" clean
 rm -rf "/srv/bench/work/$id" "/srv/bench/base/$id" "/srv/bench/checks/$id" "/srv/bench/staging/$id" "/srv/bench/auth/$id" "/srv/bench/probes/$id" "/srv/bench/submissions/$id"
 rm -f "/srv/bench/pairs/$id.json"
 rm -f "/srv/bench/owners/$id.json"
+exit "$saved"

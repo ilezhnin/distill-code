@@ -3,6 +3,12 @@
 
 A Z.ai account holds one API key that Distill copied in with bench-login.
 Attempts get a private copy and nothing they write is ever saved back.
+
+What a save cannot settle (a refresh that cannot be ordered against the
+stored grant, an unreadable or linked file) is kept for the operator in a
+conflict record, root's alone, and the save still succeeds, so the attempt's
+cleanup goes on. bench-status reports an account with records as
+`account-conflict PROVIDER ACCOUNT COUNT` until the operator removes them.
 """
 import fcntl
 import hashlib
@@ -19,6 +25,11 @@ ROOT = Path("/srv/bench/auth")
 ACCOUNTS = Path("/home/candidate/accounts")
 CANDIDATE = pwd.getpwnam("candidate")
 LIMIT = 1024 * 1024
+# Outside every session, sign-in and account home: no candidate process
+# sees it, and the account tree holds account homes alone.
+CONFLICTS = Path("/var/lib/distill-bench/auth-conflicts")
+# Records of one account that also keep the refreshed grant itself.
+CONFLICT_EVIDENCE = 20
 
 
 def regular_bytes(path):
@@ -60,6 +71,14 @@ def account_path(value):
     return path
 
 
+def replace_private(path, data):
+    """write_private by rename, so a stopped writer leaves the old file or
+    the new one, never half of one."""
+    temporary = path.with_name(path.name + ".new")
+    write_private(temporary, data)
+    os.replace(temporary, path)
+
+
 def write_private(path, data, candidate=False):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -86,13 +105,15 @@ def prepare(value):
         if source.resolve(strict=True) != source:
             raise ValueError("unsafe credential path")
         write_private(home / "api-key", api_key(regular_bytes(source)), True)
-        write_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": {}}).encode())
+        replace_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": {}}).encode())
         return
     if provider == "kimi":
         credentials = account / "credentials"
         if credentials.resolve(strict=True) != credentials:
             raise ValueError("unsafe credential directory")
-        names = [p.relative_to(account) for p in credentials.rglob("*") if not p.is_dir()]
+        # A save's own temporary file is never a credential.
+        names = [p.relative_to(account) for p in credentials.rglob("*")
+                 if not p.is_dir() and not p.name.endswith(".bench-refresh")]
         if not 0 < len(names) <= 32:
             raise ValueError("invalid credential count")
         config = tomllib.loads(regular_bytes(account / "config.toml").decode())
@@ -113,7 +134,7 @@ def prepare(value):
         settings = json.loads(regular_bytes(account / ".claude.json"))
         settings = {k: settings[k] for k in ("oauthAccount", "userID", "machineID") if k in settings}
         write_private(home / ".claude.json", json.dumps(settings).encode(), True)
-    write_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": originals}).encode())
+    replace_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": originals}).encode())
 
 
 def grant_expiry(provider, value):
@@ -264,54 +285,144 @@ def account_status(value):
     print(f"account-health {provider} {account.parent.name} {mode} {state} {expiry if expiry is not None else '-'}")
 
 
-def save():
-    receipt_file = directory / "receipt.json"
-    if not receipt_file.exists():
-        return
-    receipt = json.loads(regular_bytes(receipt_file))
-    account = account_path(receipt["account"])
-    pending = []
-    for name, before in receipt["originals"].items():
-        source = directory / "home" / name
+def failure_reason(error):
+    # Never include provider data or parser excerpts: a helper's own
+    # ValueError carries its message first, any document after it.
+    if type(error) is ValueError and error.args:
+        return str(error.args[0])
+    return type(error).__name__
+
+
+def refreshed_file(account, name, before):
+    """What a save does with one credential file of the attempt: None when
+    the stored grant stays, else (target, data, digest) to import. Raises
+    ValueError for what it cannot settle; a conflict carries the refreshed
+    document as `error.args[1]`."""
+    source = directory / "home" / name
+    # A link is never followed, even one that points nowhere.
+    if os.path.islink(source):
+        raise ValueError("unsafe refreshed credential path")
+    try:
+        if not os.path.lexists(source):
+            return None
         if source.resolve(strict=True) != source:
             raise ValueError("unsafe refreshed credential path")
         data = regular_bytes(source)
-        after = digest(data)
-        if after == before:
+    except FileNotFoundError:
+        # The attempt removed its copy, or another cleanup of the same
+        # attempt did: nothing to import.
+        return None
+    after = digest(data)
+    if after == before:
+        return None
+    updated = credential_json(data)
+    if account.name in ("claude", "grok"):
+        # Validate structure only, not freshness or remote acceptance. An
+        # expired but well-formed grant still belongs to the evidence.
+        mode, state, _ = local_credential_health(account.name, updated, 0)
+        if state != "current" and mode != "unbounded":
+            raise ValueError("unreadable refreshed credential; inspect sandbox account before retrying")
+    target = account / name
+    if target.resolve(strict=True) != target:
+        raise ValueError("unsafe account credential path")
+    current_data = regular_bytes(target)
+    if digest(current_data) not in (before, after):
+        try:
+            newer = prefer_refreshed_grant(account.name, credential_json(current_data), updated)
+        except ValueError as error:
+            raise ValueError(str(error), data) from None
+        if not newer:
+            return None
+    return target, data, after
+
+
+def record_conflicts(account, attempt, failures):
+    """Keep what the save of `attempt` could not settle, as (name, reason,
+    refreshed document or None) per credential file: one record per attempt,
+    root's alone. While the account holds fewer than CONFLICT_EVIDENCE
+    records, a refreshed grant is kept with its reason; it may be the newest
+    the provider issued."""
+    import shutil
+    import time
+    CONFLICTS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    records = CONFLICTS / account.parent.name / account.name
+    others = [path for path in records.glob("*/conflict.json") if path.parent.name != attempt]
+    kept = len(others) < CONFLICT_EVIDENCE
+    # A save of the same attempt again replaces its record and evidence.
+    shutil.rmtree(records / attempt, ignore_errors=True)
+    files = []
+    for name, reason, data in failures:
+        keep = kept and data is not None
+        if keep:
+            write_private(records / attempt / "evidence" / name, data)
+        files.append({"name": name, "reason": reason, "kept": keep})
+    record = {"attempt": attempt, "at": int(time.time()), "files": files}
+    replace_private(records / attempt / "conflict.json", json.dumps(record).encode())
+
+
+def save():
+    """Settle the attempt's credential files. The cleanup's time limit stops
+    it with SIGTERM; that is held until the save is complete, so it never
+    leaves half an import, a temporary file or half a record behind."""
+    import signal
+    receipt_file = directory / "receipt.json"
+    if not receipt_file.exists():
+        return
+    held = hasattr(signal, "pthread_sigmask")
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM}) if held else None
+    try:
+        settle(receipt_file)
+    finally:
+        if held:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def settle(receipt_file):
+    try:
+        receipt = json.loads(regular_bytes(receipt_file))
+    except FileNotFoundError:
+        # Another cleanup of the same attempt removed it: nothing to save.
+        return
+    account = account_path(receipt["account"])
+    failures = []
+    pending = []
+    for name, before in receipt["originals"].items():
+        try:
+            refreshed = refreshed_file(account, name, before)
+        except Exception as error:
+            evidence = error.args[1] if type(error) is ValueError and len(error.args) == 2 else None
+            failures.append((name, failure_reason(error), evidence))
             continue
-        updated = credential_json(data)
-        if account.name in ("claude", "grok"):
-            # Validate structure only, not freshness or remote acceptance. An
-            # expired but well-formed grant still belongs to the evidence.
-            mode, state, _ = local_credential_health(account.name, updated, 0)
-            if state != "current" and mode != "unbounded":
-                raise ValueError("unreadable refreshed credential; inspect sandbox account before retrying")
-        target = account / name
-        if target.resolve(strict=True) != target:
-            raise ValueError("unsafe account credential path")
-        current_data = regular_bytes(target)
-        current = digest(current_data)
-        if current not in (before, after):
-            if not prefer_refreshed_grant(account.name, credential_json(current_data), updated):
-                receipt["originals"][name] = after
-                continue
-        pending.append((name, target, data, after))
+        if refreshed:
+            pending.append((name, *refreshed))
     for name, target, data, after in pending:
         # Import only the OAuth files present at admission, never sessions,
         # logs, settings or files invented by a turn. Reject stale refreshes.
         temporary = target.with_name(target.name + ".bench-refresh")
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            with os.fdopen(fd, "wb") as output:
-                output.write(data)
-                output.flush()
-                os.fsync(output.fileno())
-            os.chown(temporary, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
-            os.replace(temporary, target)
-        finally:
+            # Under the exclusive lock no other save owns it: one a killed
+            # writer left behind goes.
             temporary.unlink(missing_ok=True)
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as output:
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.chown(temporary, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except Exception as error:
+            failures.append((name, failure_reason(error), data))
+            continue
         receipt["originals"][name] = after
-    write_private(receipt_file, json.dumps(receipt).encode())
+    if failures:
+        # One record per attempt: saving the attempt again rewrites it.
+        record_conflicts(account, directory.name, failures)
+    # Another cleanup of the same attempt may have removed it meanwhile.
+    if directory.exists():
+        replace_private(receipt_file, json.dumps(receipt).encode())
 
 
 def account_statuses(values):
@@ -350,7 +461,5 @@ try:
         else:
             raise ValueError("invalid operation")
 except Exception as error:
-    # Never include provider data or parser excerpts in diagnostics.
-    message = str(error) if type(error) is ValueError else type(error).__name__
-    print("bench-auth: " + message, file=sys.stderr)
+    print("bench-auth: " + failure_reason(error), file=sys.stderr)
     sys.exit(70)

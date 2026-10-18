@@ -97,11 +97,20 @@ if ((${#read_by_auth[@]})); then
     health["$provider/$id"]+="$line"$'\n'
   done < <(/usr/local/sbin/bench-auth status "${read_by_auth[@]}" 2>/dev/null)
 fi
+# Credential copies of attempts whose save failed, kept aside by bench-clean.
+unsaved=$(find /srv/bench/auth-unsaved -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+((unsaved == 0)) || echo "auth-unsaved $unsaved"
 for account in /home/candidate/accounts/*/*; do
   [[ -d $account ]] || continue
   provider=${account##*/}
   id=${account%/*}
   id=${id##*/}
+  # Refreshes bench-auth could not settle, kept for the operator.
+  conflicts=/var/lib/distill-bench/auth-conflicts/$id/$provider
+  if [[ -d $conflicts ]]; then
+    count=$(find "$conflicts" -mindepth 2 -maxdepth 2 -name conflict.json 2>/dev/null | wc -l)
+    ((count == 0)) || echo "account-conflict $provider $id $count"
+  fi
   if [[ $provider == claude || $provider == grok || $provider == zai ]]; then
     if [[ -n ${health["$provider/$id"]:-} ]]; then
       printf '%s' "${health["$provider/$id"]}"

@@ -1573,6 +1573,22 @@ const SIGN_IN_WAIT_REASON: &str = "The Grok sign-in expires too soon for this te
 /// How soon a Grok turn that waits for another to leave the sign-in asks
 /// again.
 const SIGN_IN_RETRY_MS: i64 = 15 * 1000;
+/// How soon a test refused because interactive work holds its account asks
+/// again.
+const ACCOUNT_BUSY_RETRY_MS: i64 = 15 * 1000;
+
+/// When a sign-in wait of `provider`'s cells in `run_id` asks again: at the
+/// hold the backend set for a renewal it knows the time of, else shortly, for
+/// a renewal that waits for the account's running sessions. The cell records
+/// it as its wait: a tick lasts while anything of any run flies, and a cell
+/// put back without a time would wait for the next tick, for hours.
+fn sign_in_retry(run_id: &str, provider: &str) -> i64 {
+    provider_hold(run_id, provider).unwrap_or_else(|| {
+        let until = now() + SIGN_IN_RETRY_MS;
+        hold_provider_until(run_id, provider, until);
+        until
+    })
+}
 
 /// One provider's cells of a run, held until a time the runner knows: a Grok
 /// sign-in the Grok CLI renews only later holds the run's Grok cells, and
@@ -6451,17 +6467,8 @@ impl BenchmarkService {
                     // and the cell is neither an attempt nor a failure.
                     if error.code == SIGN_IN_WAIT {
                         requeue(&mut failed, error.message.clone());
-                        // A renewal the backend knows the time of already
-                        // holds the provider's cells. One that waits for the
-                        // account's running sessions names no time: ask
-                        // again shortly.
-                        let provider = &a.configuration.provider_id;
-                        match provider_hold(&run.id, provider) {
-                            Some(until) => failed.wait_until = Some(until),
-                            None => {
-                                hold_provider_until(&run.id, provider, now() + SIGN_IN_RETRY_MS)
-                            }
-                        }
+                        failed.wait_until =
+                            Some(sign_in_retry(&run.id, &a.configuration.provider_id));
                     } else {
                         requeue(
                             &mut failed,
@@ -6480,6 +6487,9 @@ impl BenchmarkService {
                 if retry_allowed && error.code == "account_busy" {
                     failed.phase = "pending".into();
                     failed.started_at = None;
+                    // Asked again shortly, within this tick: interactive work
+                    // ends long before every other run's turns land.
+                    failed.wait_until = Some(now() + ACCOUNT_BUSY_RETRY_MS);
                     self.store.save_attempt(&failed).await?;
                     return Ok(());
                 }
@@ -6511,6 +6521,9 @@ impl BenchmarkService {
                             requeue(&mut failed, reason);
                         }
                         failed.configuration.account_id = Some(other);
+                        // It goes on at once on the other account, within
+                        // this tick, while the spent one is held.
+                        failed.wait_until = Some(now());
                         self.store.save_attempt(&failed).await?;
                         self.changed().await;
                         return Ok(());
@@ -6555,16 +6568,7 @@ impl BenchmarkService {
                         }
                         Some(QuotaPlan::Stop) => stop = true,
                         None if error.code != SIGN_IN_WAIT => stop = true,
-                        // A sign-in the Grok CLI renews later already held
-                        // its provider's cells in the backend, which knows
-                        // when. One that another turn still runs on names no
-                        // time: ask again shortly.
-                        None => match provider_hold(&run.id, provider) {
-                            Some(until) => failed.wait_until = Some(until),
-                            None => {
-                                hold_provider_until(&run.id, provider, now() + SIGN_IN_RETRY_MS)
-                            }
-                        },
+                        None => failed.wait_until = Some(sign_in_retry(&run.id, provider)),
                     }
                     self.store.save_attempt(&failed).await?;
                     if stop {
@@ -6958,6 +6962,8 @@ pub struct FakeBackend {
     pub sign_in_waits: std::sync::atomic::AtomicU64,
     /// Turns held back while another still runs on the due sign-in.
     pub busy_sign_ins: std::sync::atomic::AtomicU64,
+    /// Turns refused because interactive work holds the account.
+    pub busy_accounts: std::sync::atomic::AtomicU64,
     /// The effort levels every fake model lists: none, so no effort control,
     /// unless a test gives them some.
     pub effort_levels: std::sync::Mutex<Vec<String>>,
@@ -7169,6 +7175,12 @@ impl ExecutionBackend for FakeBackend {
                 return Err(BenchmarkError::new(
                     SIGN_IN_WAIT,
                     crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
+                ));
+            }
+            if take(&self.busy_accounts) {
+                return Err(BenchmarkError::new(
+                    ACCOUNT_BUSY,
+                    "Interactive work has priority; account is active",
                 ));
             }
             if take(&self.refused_selections) {
@@ -9591,8 +9603,8 @@ mod tests {
         dir.close().await;
     }
     /// A Grok turn that finds another still running on the due sign-in goes
-    /// back to the queue without the operator and without a time to show,
-    /// and is asked again shortly.
+    /// back to the queue without the operator and is asked again shortly:
+    /// its wait records when, so the runner retries it within the tick.
     #[tokio::test]
     async fn a_turn_waits_for_another_on_the_due_sign_in() {
         let (dir, s, fake) = setup().await;
@@ -9611,9 +9623,9 @@ mod tests {
             waiting.reason.as_deref(),
             Some(crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY)
         );
-        assert_eq!(waiting.wait_until, None);
         let until = provider_hold(&run.id, "fake").expect("a short hold");
         assert!(until <= now() + SIGN_IN_RETRY_MS);
+        assert_eq!(waiting.wait_until, Some(until));
         PROVIDER_HOLDS
             .lock()
             .unwrap()

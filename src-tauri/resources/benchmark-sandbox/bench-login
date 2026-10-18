@@ -49,5 +49,6 @@ if [[ $provider == codex && ! -e $home/config.toml ]]; then
   echo 'cli_auth_credentials_store = "file"' >"$home/config.toml"
   chown candidate:candidate "$home/config.toml"
 fi
-exec /usr/local/sbin/bench-run login "login-$provider" "$variable=$home" "TERM=${TERM:-xterm-256color}" \
-  -- "${command[@]}"
+# The CLI sees this account's home alone, never another account's sign-in.
+exec /usr/local/sbin/bench-run login "login-$provider" "DISTILL_BENCH_LOGIN_HOME=$home" "$variable=$home" \
+  "TERM=${TERM:-xterm-256color}" -- "${command[@]}"

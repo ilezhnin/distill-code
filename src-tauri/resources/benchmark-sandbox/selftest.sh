@@ -136,7 +136,7 @@ class TestOS:
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
 scope = dict(Path=Path, os=TestOS(), stat=stat, json=json, re=re,
-             hashlib=hashlib, tomllib=tomllib, LIMIT=1024 * 1024,
+             hashlib=hashlib, tomllib=tomllib, LIMIT=1024 * 1024, CONFLICT_EVIDENCE=20,
              CANDIDATE=types.SimpleNamespace(pw_uid=0, pw_gid=0))
 exec(compile(ast.Module(body=functions, type_ignores=[]), "bench-auth-functions", "exec"), scope)
 
@@ -158,6 +158,8 @@ class CredentialTests(unittest.TestCase):
         root = Path(self.temporary.name).resolve()
         scope["ROOT"] = root / "attempts"
         scope["ACCOUNTS"] = root / "accounts"
+        scope["CONFLICTS"] = root / "conflicts"
+        scope["CONFLICT_EVIDENCE"] = 20
         scope["ROOT"].mkdir()
 
     def tearDown(self):
@@ -216,26 +218,141 @@ class CredentialTests(unittest.TestCase):
         self.save("unrenewed")
         self.assertEqual(json.loads(target.read_text()), grok(now + 21600, "renewed"))
 
+    def conflict(self, provider, attempt):
+        path = scope["CONFLICTS"] / "invented-account" / provider / attempt / "conflict.json"
+        return json.loads(path.read_text())
+
     def test_equal_expiry_conflicts_preserve_stored_and_candidate_grants(self):
+        # The save settles: the stored grant stays, the other one is kept in a
+        # conflict record for the operator, and the attempt can be removed.
         for provider, document in (("claude", claude), ("grok", grok)):
             account, target = self.account(provider, document(100, "original"))
             self.prepare(account, target, provider + "a", document(200, "first"))
             self.prepare(account, target, provider + "b", document(200, "second"))
             self.save(provider + "a")
-            with self.assertRaisesRegex(ValueError, "concurrent credential refresh"):
-                self.save(provider + "b")
+            self.save(provider + "b")
             self.assertEqual(json.loads(target.read_text()), document(200, "first"))
-            retained = scope["ROOT"] / (provider + "b") / "home" / target.name
-            self.assertEqual(json.loads(retained.read_text()), document(200, "second"))
+            record = self.conflict(provider, provider + "b")
+            self.assertEqual(record["attempt"], provider + "b")
+            self.assertEqual(record["files"], [{"name": target.name, "kept": True,
+                "reason": "concurrent credential refresh; inspect sandbox account before retrying"}])
+            evidence = (scope["CONFLICTS"] / "invented-account" / provider / (provider + "b")
+                        / "evidence" / target.name)
+            self.assertEqual(json.loads(evidence.read_text()), document(200, "second"))
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(scope["CONFLICTS"].stat().st_mode), 0o700)
+            self.assertFalse((scope["CONFLICTS"] / "invented-account" / provider / (provider + "a")).exists())
 
     def test_malformed_refreshed_credentials_do_not_overwrite_account(self):
         for provider, document in (("claude", claude), ("grok", grok)):
             original = document(100, "original")
             account, target = self.account(provider, original)
             self.prepare(account, target, provider, {"unreadable": "invented-secret"})
-            with self.assertRaisesRegex(ValueError, "unreadable refreshed credential"):
-                self.save(provider)
+            self.save(provider)
             self.assertEqual(json.loads(target.read_text()), original)
+            record = self.conflict(provider, provider)
+            self.assertEqual([entry["kept"] for entry in record["files"]], [False])
+            self.assertIn("unreadable refreshed credential", record["files"][0]["reason"])
+            records = scope["CONFLICTS"] / "invented-account" / provider
+            self.assertNotIn("invented-secret", "".join(
+                path.read_text() for path in records.rglob("*") if path.is_file()))
+
+    def test_an_unparsable_or_removed_copy_never_stops_the_save(self):
+        account, target = self.account("codex", {"token": "original"})
+        self.prepare(account, target, "unparsable", {"token": "x"})
+        (scope["ROOT"] / "unparsable" / "home" / "auth.json").write_text("invented {", encoding="utf-8")
+        self.save("unparsable")
+        record = self.conflict("codex", "unparsable")
+        self.assertEqual(record["files"], [{"name": "auth.json", "reason": "JSONDecodeError", "kept": False}])
+        # A copy the attempt deleted is nothing to import, and no conflict.
+        self.prepare(account, target, "removed", {"token": "x"})
+        (scope["ROOT"] / "removed" / "home" / "auth.json").unlink()
+        self.save("removed")
+        self.assertFalse((scope["CONFLICTS"] / "invented-account" / "codex" / "removed").exists())
+        self.assertEqual(json.loads(target.read_text()), {"token": "original"})
+
+    def test_a_linked_copy_is_recorded_without_reading_its_target(self):
+        account, target = self.account("codex", {"token": "original"})
+        self.prepare(account, target, "linked", {"token": "x"})
+        copy = scope["ROOT"] / "linked" / "home" / "auth.json"
+        outside = scope["ROOT"] / "outside.json"
+        outside.write_text('{"token": "invented-outside"}', encoding="utf-8")
+        copy.unlink()
+        try:
+            copy.symlink_to(outside)
+        except OSError:
+            self.skipTest("symbolic links need privileges on this host")
+        self.save("linked")
+        record = self.conflict("codex", "linked")
+        self.assertEqual(record["files"][0]["kept"], False)
+        self.assertEqual(json.loads(target.read_text()), {"token": "original"})
+        # A link that points nowhere is recorded the same way.
+        outside.unlink()
+        self.save("linked")
+        self.assertEqual(self.conflict("codex", "linked")["files"][0]["reason"],
+                         "unsafe refreshed credential path")
+
+    def test_a_temporary_file_a_killed_save_left_never_blocks_the_account(self):
+        account, target = self.account("codex", {"token": "original"})
+        stale = target.with_name("auth.json.bench-refresh")
+        stale.write_text("", encoding="utf-8")
+        self.prepare(account, target, "after-kill", {"token": "refreshed"})
+        self.save("after-kill")
+        self.assertEqual(json.loads(target.read_text()), {"token": "refreshed"})
+        self.assertFalse(stale.exists())
+        self.assertFalse((scope["CONFLICTS"] / "invented-account" / "codex").exists())
+        # Nor is one a credential of a Kimi account.
+        kimi = scope["ACCOUNTS"] / "invented-account" / "kimi"
+        (kimi / "credentials").mkdir(parents=True)
+        (kimi / "config.toml").write_text('default_provider = "invented"\n', encoding="utf-8")
+        (kimi / "credentials" / "kimi-code.json").write_text(
+            '{"access_token": "invented", "expires_at": 100}', encoding="utf-8")
+        (kimi / "credentials" / "kimi-code.json.bench-refresh").write_text("", encoding="utf-8")
+        scope["directory"] = scope["ROOT"] / "kimi"
+        scope["prepare"](str(kimi))
+        receipt = json.loads((scope["directory"] / "receipt.json").read_text())
+        self.assertEqual(list(receipt["originals"]), [str(Path("credentials") / "kimi-code.json")])
+
+    def test_an_attempt_another_cleanup_removed_has_nothing_to_save(self):
+        account, target = self.account("codex", {"token": "original"})
+        self.prepare(account, target, "removed", {"token": "refreshed"})
+        (scope["ROOT"] / "removed" / "receipt.json").unlink()
+        # As when the other cleanup removes it between the check and the read.
+        scope["directory"] = scope["ROOT"] / "removed"
+        scope["settle"](scope["directory"] / "receipt.json")
+        self.save("removed")
+        self.assertEqual(json.loads(target.read_text()), {"token": "original"})
+        self.assertFalse((scope["CONFLICTS"] / "invented-account" / "codex").exists())
+
+    def test_saving_an_attempt_again_replaces_its_record(self):
+        account, target = self.account("codex", {"token": "original"})
+        self.prepare(account, target, "a", {"token": "a"})
+        self.prepare(account, target, "b", {"token": "b"})
+        self.save("a")
+        self.save("b")
+        records = scope["CONFLICTS"] / "invented-account" / "codex" / "b"
+        self.assertTrue((records / "evidence" / "auth.json").exists())
+        (scope["ROOT"] / "b" / "home" / "auth.json").write_text("invented {", encoding="utf-8")
+        self.save("b")
+        self.assertEqual(self.conflict("codex", "b")["files"],
+                         [{"name": "auth.json", "reason": "JSONDecodeError", "kept": False}])
+        self.assertFalse((records / "evidence").exists())
+        self.assertEqual(json.loads(target.read_text()), {"token": "a"})
+
+    def test_conflict_evidence_is_bounded_per_account(self):
+        scope["CONFLICT_EVIDENCE"] = 1
+        account, target = self.account("codex", {"token": "original"})
+        for attempt in ("a", "b", "c"):
+            self.prepare(account, target, attempt, {"token": attempt})
+        self.save("a")
+        self.save("b")
+        self.save("c")
+        self.assertEqual(json.loads(target.read_text()), {"token": "a"})
+        self.assertEqual(self.conflict("codex", "b")["files"][0]["kept"], True)
+        self.assertEqual(self.conflict("codex", "c")["files"][0]["kept"], False)
+        records = scope["CONFLICTS"] / "invented-account" / "codex"
+        self.assertFalse((records / "c" / "evidence").exists())
 
     def test_grok_issuer_maximum_cannot_mask_a_regressing_grant(self):
         previous = grok(300, "newer-a", "a") | grok(100, "older-b", "b")
@@ -411,18 +528,31 @@ check "next attempt cannot read previous state" "$(run session selftest-b "DISTI
 ')" private
 /usr/local/sbin/bench-kill session selftest-b
 
-# A stale or linked credential must never overwrite the selected account.
+# A stale or linked credential must never overwrite the selected account. The
+# save keeps it in a conflict record for the operator and the attempt is
+# still removed.
+auth_id=$(basename "$auth_account")
+conflicts=/var/lib/distill-bench/auth-conflicts/$auth_id
 /usr/local/sbin/bench-auth prepare selftest-auth-a "$auth_home"
 /usr/local/sbin/bench-auth prepare selftest-auth-b "$auth_home"
 printf '{"token":"first"}\n' >/srv/bench/auth/selftest-auth-a/home/auth.json
 printf '{"token":"second"}\n' >/srv/bench/auth/selftest-auth-b/home/auth.json
 /usr/local/sbin/bench-auth save selftest-auth-a
-check "concurrent refresh refuses a stale overwrite" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?)" 70
+check "concurrent refresh settles without an overwrite" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?)" 0
+check "the other refresh is kept for the operator" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$conflicts/codex/selftest-auth-b/evidence/auth.json")" second
+check "conflict records are root's alone" "$(stat -c '%u %a' /var/lib/distill-bench/auth-conflicts "$conflicts/codex/selftest-auth-b/conflict.json" | tr '\n' ' ')" "0 700 0 600 "
+check "status reports the conflicted account" "$(/usr/local/sbin/bench-status 2>/dev/null | grep -c "^account-conflict codex $auth_id 1$")" 1
 rm /srv/bench/auth/selftest-auth-b/home/auth.json
 ln -s "$auth_home/auth.json" /srv/bench/auth/selftest-auth-b/home/auth.json
-check "credential links are refused" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?)" 70
+check "credential links are recorded, never followed" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?) $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["files"][0]["reason"])' "$conflicts/codex/selftest-auth-b/conflict.json")" "0 unsafe refreshed credential path"
 check "refused refresh preserves the newer credential" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$auth_home/auth.json")" first
-rm -rf /srv/bench/auth/selftest-auth-a /srv/bench/auth/selftest-auth-b
+check "a conflicted attempt is still removed" "$(/usr/local/sbin/bench-clean selftest-auth-b >/dev/null 2>&1; echo $?)$(test -e /srv/bench/auth/selftest-auth-b && echo kept)" 0
+# A save that fails outright keeps the attempt's copy aside and says so.
+/usr/local/sbin/bench-auth prepare selftest-auth-c "$auth_home"
+printf 'invented {' >/srv/bench/auth/selftest-auth-c/receipt.json
+check "a failed save keeps the attempt's copy aside" "$(/usr/local/sbin/bench-clean selftest-auth-c >/dev/null 2>&1; echo $?) $(test -d /srv/bench/auth-unsaved/selftest-auth-c && echo kept)$(test -e /srv/bench/auth/selftest-auth-c && echo left)" "70 kept"
+check "status counts copies kept aside" "$(/usr/local/sbin/bench-status 2>/dev/null | grep -c '^auth-unsaved [1-9][0-9]*$')" 1
+rm -rf /srv/bench/auth/selftest-auth-a /srv/bench/auth/selftest-auth-b /srv/bench/auth-unsaved/selftest-auth-c* "$conflicts"
 
 kimi_home=$auth_account/kimi
 install -d -m 700 -o candidate -g candidate "$kimi_home/credentials"
@@ -442,6 +572,20 @@ printf '{"access_token":"older","refresh_token":"older","expires_at":400}\n' >/s
 /usr/local/sbin/bench-auth save selftest-kimi-a
 check "newer Kimi refresh replaces an older completed grant" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["expires_at"])' "$kimi_home/credentials/kimi-code.json")" 500
 for item in a b; do /usr/local/sbin/bench-clean "selftest-kimi-$item"; done
+
+# A sign-in or account service sees the one account home it names, writable,
+# over an empty /home and a read-only root; every other account stays hidden.
+login_other=$(mktemp -d /home/candidate/accounts/selftest-other-XXXXXXXX)
+login() { run login selftest-login "DISTILL_BENCH_LOGIN_HOME=$auth_home" "CODEX_HOME=$auth_home" -- "$@"; }
+check "a sign-in sees its account home alone" "$(login bash -c 'ls -A /home/candidate/accounts /home/candidate/accounts/*' | tr '\n' ' ')" \
+  "/home/candidate/accounts: $auth_id  /home/candidate/accounts/$auth_id: codex "
+check "a sign-in writes its account home" "$(login bash -c 'printf signed >"$CODEX_HOME/selftest-login"'; cat "$auth_home/selftest-login" 2>/dev/null)" signed
+check "a sign-in runs on a read-only root" "$(login awk '$5 == "/" {split($6, o, ","); print o[1]}' /proc/self/mountinfo)" ro
+check "a sign-in home is temporary" "$(login bash -c 'touch ~/.selftest-login && echo ok'; test -e /home/candidate/.selftest-login && echo kept)" ok
+check "a login home must be an account home" "$(run login selftest-login DISTILL_BENCH_LOGIN_HOME=/home/candidate -- true && echo ran)" ""
+check "a session cannot name a login home" "$(run session selftest-a "DISTILL_BENCH_LOGIN_HOME=$auth_home" -- true && echo ran)" ""
+rm -f "$auth_home/selftest-login"
+rm -rf "$login_other"
 
 # Z.ai: an invented key, piped in as the host pipes the real one.
 zai_home=$auth_account/zai

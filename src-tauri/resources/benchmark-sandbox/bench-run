@@ -4,7 +4,8 @@
 #   session ID  as candidate, /workspace = /srv/bench/work/ID, public internet only
 #   check ID    as checker, /workspace = /srv/bench/checks/ID, no network
 #   probe ID    as candidate, /workspace = /srv/bench/probes/ID, no network
-#   login ID    as candidate, no workspace, public internet only (provider sign-in)
+#   login ID    as candidate, no workspace, public internet only (provider sign-in);
+#               DISTILL_BENCH_LOGIN_HOME names the one account home it sees
 #
 # Every mode runs in its own cgroup (memory and process caps; bench-kill ends
 # it whole), in a private mount namespace that hides /mnt, the WSL sockets

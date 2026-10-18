@@ -14,6 +14,9 @@ for variable in "${vars[@]}"; do
     /usr/local/sbin/bench-auth prepare "$id" "${variable#*=}"
     # A Z.ai session may reach the Z.ai API alone.
     [[ ${variable#*=} != */zai ]] || egress=zai
+  elif [[ $variable == DISTILL_BENCH_LOGIN_HOME=* ]]; then
+    # The one persistent account home a sign-in or account service sees.
+    [[ $mode == login ]] || exit 64
   fi
 done
 if [[ $net == session ]]; then

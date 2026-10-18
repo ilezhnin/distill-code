@@ -301,6 +301,27 @@ expiry does not prove remote acceptance or refreshability; non-expiring key
 accounts make no expiry claim and retain their existing usage-policy checks.
 Providers without an expiry adapter retain their existing account checks.
 
+When an attempt ends, bench-auth saves a refreshed credential file back to its
+account only when it can order it against the stored grant. What it cannot
+settle (two refreshes it cannot order, an unreadable, linked or oversized
+file) is kept in a conflict record under
+`/var/lib/distill-bench/auth-conflicts/<account>/<provider>/<attempt>/`,
+readable by root alone: `conflict.json` names each file and the reason, and
+`evidence/` holds a refreshed grant itself while the account has fewer than 20
+records. The stored grant stays, the attempt is still removed, and
+`bench-status` (and so `node scripts/benchmark-sandbox.mjs status`) prints
+`account-conflict <provider> <account> <count>`; the application logs it once
+per count. Admission goes on with the stored grant. Inspect the records, keep
+or sign in again as needed, then remove the account's conflict directory as
+root. Should a save fail outright, bench-clean still removes the attempt but
+keeps its credential copy in `/srv/bench/auth-unsaved/<attempt>/` (root only),
+and `bench-status` prints `auth-unsaved <count>`, which the application logs
+once per count; remove the copy once it is recovered.
+
+A sign-in (`bench-login`) and the application's sandbox account service see
+only the account home they name, writable, over an empty `/home` and a
+read-only root, never another account's sign-in.
+
 Distill renews a sandbox Grok sign-in itself when an attempt, judge turn or
 model listing needs it to last longer than it does, or when it has expired.
 Every session of the account runs on a private copy of that sign-in, so the

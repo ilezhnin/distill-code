@@ -280,7 +280,9 @@ it("says when a waiting test is tried again, where the runner knows", async () =
         reason: "The Grok sign-in expires too soon for this test",
         waitUntil: until,
       }),
-      waitingOn("a-3", "version-c", { reason: busy }),
+      // The runner records when it asks again; the label still names the
+      // test it waits for.
+      waitingOn("a-3", "version-c", { reason: busy, waitUntil: until }),
     ],
   });
   expect(await found("Charlie")).toBeInTheDocument();
