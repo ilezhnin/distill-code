@@ -1678,6 +1678,22 @@ fn quota_recovered(run_id: &str, scope: &str) {
 /// cells of that provider wait on their own, as for a quota wait, while its
 /// other providers' cells go on.
 pub(super) const SIGN_IN_WAIT: &str = "sign_in_wait";
+/// An evaluator error meaning the candidate's own code drove its check or
+/// browser job into the job's own ceiling (a root-owned receipt says so,
+/// see `benchmark_sandbox::Output::candidate_limit`): the answer past its
+/// budget, which settles as `budget_reached`, scored 0.
+pub(super) const CANDIDATE_LIMIT: &str = "candidate_limit";
+
+/// The outcome of an answer whose evaluation failed with `error`: the
+/// candidate's own past its job's ceiling (scored 0), else an evaluator
+/// error (unscored).
+fn evaluation_failure_outcome(error: &BenchmarkError) -> &'static str {
+    if error.code == CANDIDATE_LIMIT {
+        "budget_reached"
+    } else {
+        "evaluation_error"
+    }
+}
 /// A sign-in too short for the turn that the Grok CLI renews only later: the
 /// user's environment keeps its renewal window narrower than a turn needs
 /// (see [`grok::cli_renewal_window_ms`]).
@@ -7001,7 +7017,7 @@ impl BenchmarkService {
                     tokio::time::sleep(EVALUATION_RETRY).await;
                 }
                 Err(error) => {
-                    completed.outcome = Some("evaluation_error".into());
+                    completed.outcome = Some(evaluation_failure_outcome(&error).into());
                     completed.reason = Some(error.message);
                     return Ok(completed);
                 }
@@ -8148,6 +8164,22 @@ mod tests {
             pace_workflow(account, &beside, None);
         }
         assert_eq!(account_pace::limit(account), 2 * ACCOUNT_SLOTS);
+    }
+    /// A check or browser job the candidate's own code drove past its own
+    /// ceiling is the answer past its budget, scored 0; any other evaluator
+    /// failure stays unscored.
+    #[test]
+    fn a_candidate_past_its_jobs_own_ceiling_is_scored_like_any_budget() {
+        let limit = BenchmarkError::new(CANDIDATE_LIMIT, "past the job's memory ceiling");
+        assert_eq!(evaluation_failure_outcome(&limit), "budget_reached");
+        for code in [
+            "infrastructure_failure",
+            "evaluation_error",
+            "capability_missing",
+        ] {
+            let error = BenchmarkError::new(code, "invented");
+            assert_eq!(evaluation_failure_outcome(&error), "evaluation_error");
+        }
     }
     #[test]
     fn a_workflow_root_that_fails_otherwise_neither_grows_nor_halves_the_pace() {

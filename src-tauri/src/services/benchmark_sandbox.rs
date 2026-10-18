@@ -64,7 +64,7 @@ fn resource_hash(bytes: &[u8]) -> String {
 }
 
 pub(crate) const RESOURCE_POLICY: &str =
-    "dynamic-v2-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8-inodes131072-weights10000-300-100-control1";
+    "dynamic-v2-linux-memory23-cpu14-pids4096-io1024-256-job-read128-write32-light-read32-write8-disk8grow-inodes131072grow-weights10000-300-100-control1";
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Budget lines the broker reports: the aggregate every admitted job shares
@@ -79,8 +79,8 @@ const FIXED_BUDGET: [&str; 9] = [
     "budget pids 4224",
     "budget io 1073741824/268435456",
     "budget swap 0",
-    "budget disk 8589934592",
-    "budget inodes 131072",
+    "budget disk dynamic 8589934592",
+    "budget inodes dynamic 131072",
     "budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608",
 ];
 
@@ -1146,6 +1146,7 @@ pub(crate) struct Output {
     pub stderr: Vec<u8>,
     pub truncated: bool,
     infrastructure: Option<String>,
+    candidate_limit: Option<String>,
 }
 
 impl Output {
@@ -1154,8 +1155,14 @@ impl Output {
     pub(crate) fn infrastructure_error(&self) -> Option<&str> {
         self.infrastructure.as_deref()
     }
+    /// A root-owned receipt that the job's own ceiling stopped the
+    /// candidate's code (`candidateLimit`, e.g. `memory`): the answer past
+    /// its budget, not the sandbox failing.
+    pub(crate) fn candidate_limit(&self) -> Option<&str> {
+        self.candidate_limit.as_deref()
+    }
     pub fn success(&self) -> bool {
-        self.code == Some(0) && self.infrastructure.is_none()
+        self.code == Some(0) && self.infrastructure.is_none() && self.candidate_limit.is_none()
     }
     pub fn reason(&self) -> String {
         let out_start = self.stdout.len().saturating_sub(TAIL_BYTES);
@@ -1307,6 +1314,7 @@ fn invoke_raw<'a>(
                 stderr,
                 truncated,
                 infrastructure: None,
+                candidate_limit: None,
             })
         };
         match tokio::time::timeout(timeout, run).await {
@@ -1378,6 +1386,12 @@ pub(crate) async fn invoke_reserved_bounded(
             return Err(io::Error::other("Sandbox resource outcome owner differs"));
         }
         out.infrastructure = Some(reason.to_owned());
+    }
+    if let Some(limit) = value["candidateLimit"].as_str() {
+        if value["token"] != reservation.token {
+            return Err(io::Error::other("Sandbox resource outcome owner differs"));
+        }
+        out.candidate_limit = Some(limit.to_owned());
     }
     Ok(out)
 }
@@ -1967,6 +1981,62 @@ pub(crate) async fn store_api_key(account: &str, key: &str) -> io::Result<()> {
     // The account is signed in from now on, not after the reuse window.
     STATUS.forget();
     Ok(())
+}
+
+/// How long a Claude renewal may wait for a lane and run, as the broker's
+/// deadline: 300 s of queue, 120 s of CLI and 60 s for the WSL clock to drift
+/// by (the gate refuses one further off). The host waits a minute longer, so a
+/// renewal still queued ends as the broker's `resource_busy` (deferred), never
+/// as this call's own timeout (a stop).
+const RENEWAL_WINDOW: Duration = Duration::from_secs(510);
+const RENEWAL_HOST_TIMEOUT: Duration = Duration::from_secs(570);
+
+/// Renews the sandbox Claude sign-in of `account` from its own stored
+/// refresh token (`bench-login claude ACCOUNT --renew DEADLINE-MS`). The
+/// token never leaves the sandbox: the helper's login confinement reads it
+/// from the account's grant and hands it to `claude auth login` in its
+/// environment, and keeps the grant before it until the new one reads as a
+/// grant. The error names what to do: `resource_busy:` when the broker had no
+/// room (nothing ran), `needs bench-login:` when the provider refused the
+/// token or none is stored.
+pub(crate) async fn renew_claude_sign_in(account: &str) -> Result<(), String> {
+    valid_id(account).map_err(|error| error.to_string())?;
+    let deadline = now_ms().map_err(|error| error.to_string())? + RENEWAL_WINDOW.as_millis() as u64;
+    let deadline = deadline.to_string();
+    let out = invoke_raw(
+        "/usr/local/sbin/bench-login",
+        &["claude", account, "--renew", &deadline],
+        None,
+        TAIL_BYTES,
+        RENEWAL_HOST_TIMEOUT,
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if out.success() {
+        // Readiness reads the renewed expiry now, not after the reuse window.
+        STATUS.forget();
+        return Ok(());
+    }
+    Err(claude_renewal_error(out.code, &out.reason()))
+}
+
+/// What a refused `bench-login claude ACCOUNT --renew` tells its caller.
+fn claude_renewal_error(code: Option<i32>, reason: &str) -> String {
+    // The broker's queue lines come first; only the last says how it ended.
+    let last = reason
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    match code {
+        Some(65 | 66) => format!("needs bench-login: {reason}"),
+        _ if last.contains("resource_busy") || last.contains("resource_waiting") => {
+            format!("resource_busy: {reason}")
+        }
+        _ => reason.to_owned(),
+    }
 }
 
 pub(crate) async fn copy(id: &str, archive: &[u8]) -> io::Result<()> {
@@ -2652,6 +2722,37 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_claude_renewal_names_what_to_do() {
+        for code in [65, 66] {
+            assert!(claude_renewal_error(Some(code), "refused").starts_with("needs bench-login:"));
+        }
+        assert!(claude_renewal_error(
+            Some(75),
+            "resource_busy: the sandbox has no room for a login"
+        )
+        .starts_with("resource_busy:"));
+        assert_eq!(claude_renewal_error(Some(1), "other"), "other");
+        // A renewal that queued and then failed is a failure, not a wait.
+        let failed = "resource_waiting: benchmark queued for login capacity\n\
+            bench-login: the Claude renewal failed (OSError); the stored sign-in is kept";
+        assert_eq!(claude_renewal_error(Some(70), failed), failed);
+        assert!(claude_renewal_error(
+            Some(70),
+            "resource_waiting: benchmark queued for login capacity\n\
+             resource_busy: benchmark resource queue expired before execution"
+        )
+        .starts_with("resource_busy:"));
+    }
+
+    #[test]
+    fn a_queued_claude_renewal_ends_with_the_brokers_refusal_before_the_host_gives_up() {
+        // The broker's queue (300 s) and the CLI's own limit (120 s) fit the
+        // window, and the host outlasts it by more than a drifted WSL clock.
+        assert!(RENEWAL_WINDOW >= Duration::from_secs(300 + 120 + 60));
+        assert!(RENEWAL_HOST_TIMEOUT >= RENEWAL_WINDOW + Duration::from_secs(60));
+    }
+
+    #[test]
     fn an_artifact_the_helper_refuses_for_size_is_the_answer_past_its_cap() {
         // A candidate's canonical patch past the published cap,
         // after the admitting supervisor's own line.
@@ -2838,6 +2939,7 @@ mod tests {
             stderr: Vec::new(),
             truncated: false,
             infrastructure: infrastructure.map(str::to_owned),
+            candidate_limit: None,
         };
         assert!(not_cached(
             &answer(3, &format!("not cached {tree}\n"), None),
@@ -2876,6 +2978,7 @@ mod tests {
             stderr: Vec::new(),
             truncated: false,
             infrastructure: None,
+            candidate_limit: None,
         };
         assert!(!snapshot_cached(&tree));
         // A sent archive counts only when bench-unpack says it kept it.
@@ -2900,6 +3003,7 @@ mod tests {
             stderr: b"the answer does not apply to the snapshot\n".to_vec(),
             truncated: false,
             infrastructure: None,
+            candidate_limit: None,
         };
         let sent = answer(without_cache_line(
             format!("cached {tree}\n").as_bytes(),

@@ -67,7 +67,8 @@ class BudgetTests(unittest.TestCase):
         self.busy = 0
         self.applied = []
         budget.apply_limits = lambda: self.applied.append('applied')
-        self.pool = types.SimpleNamespace(f_bavail=8*budget.GIB//4096, f_frsize=4096, f_favail=131072)
+        self.pool = types.SimpleNamespace(f_bavail=8*budget.GIB//4096, f_frsize=4096, f_favail=131072,
+                                          f_blocks=8*budget.GIB//4096, f_files=131072)
         budget.os = types.SimpleNamespace(**vars(production_os))
         budget.os.statvfs = lambda _path: self.pool
         budget.os.getloadavg = lambda: (1.5, 0.75, 0.25)
@@ -132,7 +133,8 @@ class BudgetTests(unittest.TestCase):
         lines = output.getvalue().splitlines()
         for line in ('budget admission dynamic-v2', 'budget heavy-cap off', 'budget memory 25769803776',
                      'budget cpu 1500000/100000', 'budget swap 0', 'budget pids 4224',
-                     'budget disk 8589934592', 'budget inodes 131072', 'budget io 1073741824/268435456',
+                     'budget disk dynamic 8589934592', 'budget inodes dynamic 131072',
+                     'budget io 1073741824/268435456',
                      'budget job-io heavy 134217728/33554432 prep 134217728/33554432 light 33554432/8388608'):
             self.assertIn(line, lines)
 
@@ -1241,6 +1243,39 @@ class BudgetTests(unittest.TestCase):
         # An unlearned check claims its initial quarter, not its ceiling.
         self.assertEqual(budget.expected_memory('check', budget.peaks()), budget.GIB)
 
+    def test_a_job_its_own_ceiling_stopped_teaches_no_peak(self):
+        leaf = budget.ROOT / 'session-fictional-killed'
+        leaf.mkdir()
+        (leaf / 'memory.peak').write_text(str(6 * budget.GIB))
+        (leaf / 'memory.events.local').write_text('low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n')
+        budget.record_peak('repository', [leaf.name])
+        self.assertNotIn('repository', budget.peaks())
+        # Killed by an ancestor's limit, or not at all, a job's peak counts.
+        (leaf / 'memory.events.local').write_text('low 0\nhigh 0\nmax 0\noom 0\noom_kill 1\n')
+        (leaf / 'memory.peak').write_text(str(2 * budget.GIB))
+        budget.record_peak('repository', [leaf.name])
+        self.assertEqual(budget.peaks()['repository'], [2 * budget.GIB])
+        # A pair whose probe leaf hit its own limit teaches nothing either.
+        probe = budget.ROOT / 'probe-fictional-killed'
+        probe.mkdir()
+        (probe / 'memory.peak').write_text(str(4 * budget.GIB))
+        (probe / 'memory.events.local').write_text('oom 2\noom_kill 1\n')
+        budget.record_peak('pair', [leaf.name, probe.name])
+        self.assertNotIn('pair', budget.peaks())
+
+    def test_peaks_at_the_class_ceiling_are_ignored_where_they_stand(self):
+        # The live ring of 10-18: 29 sessions near 1 GiB and three OOM-killed
+        # ones at exactly the 6 GiB ceiling. Their maximum made every
+        # repository job claim 6 GiB.
+        ring = [budget.GIB] * 29 + [6 * budget.GIB] * 3
+        budget.PEAKS.write_text(json.dumps({'repository': ring}))
+        self.assertTrue(budget.learned('repository', budget.peaks()))
+        self.assertEqual(budget.expected_memory('repository', budget.peaks()), budget.GIB + budget.GIB // 4)
+        # Above the ceiling too, and a ring of nothing else teaches nothing.
+        budget.PEAKS.write_text(json.dumps({'repository': [6 * budget.GIB, 7 * budget.GIB] * 8}))
+        self.assertFalse(budget.learned('repository', budget.peaks()))
+        self.assertEqual(budget.expected_memory('repository', budget.peaks()), 3 * budget.GIB)
+
     def test_a_failed_read_never_resets_what_admission_learned(self):
         # 10-17 19:05:56: a supervisor that could not read the learned state
         # wrote a fresh one, and every class went back to its initial claim.
@@ -1498,6 +1533,112 @@ class BudgetTests(unittest.TestCase):
         self.assertIn('memory ceiling', receipt['infrastructureError'])
         self.assertFalse(events.exists())
 
+    def test_a_check_past_its_own_memory_ceiling_is_the_candidates(self):
+        # The leaf's own memory.max: its local events count the oom.
+        token = self.reserve('check', 'fictional-own-oom')
+        outcomes = budget.STATE / 'outcomes'
+        outcomes.mkdir(exist_ok=True)
+        leaf = budget.ROOT / 'check-fictional-own-oom'
+        (leaf / 'memory.events').write_text('oom 1\noom_kill 1\n')
+        (leaf / 'memory.events.local').write_text('oom 1\noom_kill 1\n')
+        budget.observe('check', 'fictional-own-oom')
+        receipt = json.loads((outcomes / (token + '.json')).read_text())
+        self.assertEqual(receipt, {'token': token, 'infrastructureError': None, 'candidateLimit': 'memory'})
+
+    def test_memory_verdicts_separate_the_candidate_from_the_sandbox(self):
+        scratch = Path(self.temporary.name) / 'scratch'
+        (scratch / 'checks' / 'fictional-page').mkdir(parents=True)
+        production = budget.SCRATCH
+        budget.SCRATCH = scratch
+        self.addCleanup(setattr, budget, 'SCRATCH', production)
+
+        def leaf(name, kill, own):
+            path = budget.ROOT / name
+            path.mkdir(exist_ok=True)
+            (path / 'memory.events').write_text(f'oom {own}\noom_kill {kill}\n')
+            (path / 'memory.events.local').write_text(f'oom {own}\noom_kill {kill}\n')
+
+        leaf('check-own', 1, 1)
+        self.assertEqual(budget.memory_verdict('check', 'own', ['check-own']), budget.CANDIDATE_MEMORY)
+        # The whole sandbox's pressure: the victim's leaf counts no oom of its own.
+        leaf('check-pressure', 1, 0)
+        self.assertEqual(budget.memory_verdict('check', 'pressure', ['check-pressure']), budget.MEMORY_CEILING)
+        # A browser run before its worker started the candidate's page is ours.
+        leaf('browser-fictional-page', 1, 1)
+        self.assertEqual(budget.memory_verdict('browser', 'fictional-page', ['browser-fictional-page']),
+                         budget.MEMORY_CEILING)
+        (scratch / 'checks' / 'fictional-page' / 'candidate-started').write_text('')
+        self.assertEqual(budget.memory_verdict('browser', 'fictional-page', ['browser-fictional-page']),
+                         budget.CANDIDATE_MEMORY)
+        # A model session's own ceiling stays the infrastructure's, a pair's
+        # either leaf is the candidate's, and no kill is no verdict.
+        leaf('session-own', 1, 1)
+        self.assertEqual(budget.memory_verdict('repository', 'own', ['session-own']), budget.MEMORY_CEILING)
+        leaf('probe-pair', 1, 1)
+        leaf('check-pair', 0, 0)
+        self.assertEqual(budget.memory_verdict('pair', 'pair', ['check-pair', 'probe-pair']), budget.CANDIDATE_MEMORY)
+        leaf('check-quiet', 0, 0)
+        self.assertIsNone(budget.memory_verdict('check', 'quiet', ['check-quiet']))
+        self.assertEqual(budget.memory_receipt('t', budget.MEMORY_CEILING),
+                         {'token': 't', 'infrastructureError': budget.MEMORY_CEILING})
+
+    def test_scratch_grows_online_from_the_windows_volume_and_never_below_its_floor(self):
+        from unittest import mock
+        image = Path(self.temporary.name) / 'scratch.ext4'
+        with open(image, 'wb') as handle:
+            handle.truncate(budget.DISK)
+        production = (budget.IMAGE, budget.scratch_mount)
+        budget.IMAGE = image
+        budget.scratch_mount = lambda: ['ext4', '/dev/loop7', 'rw,nodev,nosuid']
+        self.addCleanup(setattr, budget, 'IMAGE', production[0])
+        self.addCleanup(setattr, budget, 'scratch_mount', production[1])
+        calls = []
+        with mock.patch.object(budget.subprocess, 'run', side_effect=lambda args, **_: calls.append(args)):
+            # 1 GiB short with 50 GiB free on the volume: one step of 4 GiB.
+            self.assertTrue(budget.grow_scratch(budget.GIB, 0, self.gate(disk=50)))
+            self.assertEqual(image.stat().st_size, budget.DISK + 4 * budget.GIB)
+            self.assertEqual(calls, [['losetup', '-c', '/dev/loop7'], ['resize2fs', '/dev/loop7']])
+            # Short by almost 10 GiB: the shortfall in whole GiB.
+            self.assertTrue(budget.grow_scratch(10 * budget.GIB - 1, 0, self.gate(disk=60)))
+            self.assertEqual(image.stat().st_size, budget.DISK + 14 * budget.GIB)
+            # Short of inodes alone: enough GiB for them at the mkfs ratio.
+            self.assertTrue(budget.grow_scratch(0, 5 * budget.INODES // 8, self.gate(disk=60)))
+            self.assertEqual(image.stat().st_size, budget.DISK + 19 * budget.GIB)
+            # Never below the volume's floor and margin, never without evidence.
+            self.assertFalse(budget.grow_scratch(budget.GIB, 0, self.gate(disk=40)))
+            self.assertFalse(budget.grow_scratch(budget.GIB, 0, None))
+        self.assertEqual(image.stat().st_size, budget.DISK + 19 * budget.GIB)
+        self.assertTrue(budget.image_size_valid(budget.DISK + 19 * budget.GIB))
+        self.assertFalse(budget.image_size_valid(budget.DISK - budget.GIB))
+        self.assertFalse(budget.image_size_valid(budget.DISK + 1))
+        self.assertEqual(budget.inode_budget(2 * budget.DISK), 2 * budget.INODES + 4096)
+
+    def test_scratch_claims_are_learned_from_what_jobs_wrote(self):
+        initial = budget.SCRATCH_RESERVATIONS['repository']
+        self.assertEqual(budget.expected_scratch('repository', {}), initial)
+        for _ in range(budget.PEAK_SAMPLES):
+            budget.record_scratch('repository', (200 * budget.MIB, 3000))
+        self.assertEqual(budget.expected_scratch('repository', budget.peaks()), (250 * budget.MIB, 3750))
+        # Other classes keep their initial claims; a job that wrote nothing
+        # still teaches its class a floor, not zero.
+        self.assertEqual(budget.expected_scratch('check', budget.peaks()), budget.SCRATCH_RESERVATIONS['check'])
+        for _ in range(budget.PEAK_SAMPLES):
+            budget.record_scratch('text', (0, 0))
+        self.assertEqual(budget.expected_scratch('text', budget.peaks()), (16 * budget.MIB, 256))
+        # What a job used: the blocks of its files and its inodes.
+        scratch = Path(self.temporary.name) / 'scratch'
+        (scratch / 'work' / 'fictional-job' / 'src').mkdir(parents=True)
+        (scratch / 'work' / 'fictional-job' / 'src' / 'a.txt').write_bytes(b'x' * 10000)
+        (scratch / 'checks' / 'fictional-job').mkdir(parents=True)
+        (scratch / 'checks' / 'fictional-job' / 'b.txt').write_bytes(b'y')
+        production = budget.SCRATCH
+        budget.SCRATCH = scratch
+        self.addCleanup(setattr, budget, 'SCRATCH', production)
+        used, inodes = budget.scratch_use('fictional-job')
+        self.assertEqual(inodes, 3)
+        self.assertGreaterEqual(used, 10001)
+        self.assertEqual(budget.scratch_use('fictional-other'), (0, 0))
+
     def test_execution_scratch_floor_is_an_infrastructure_error(self):
         self.pool.f_bavail = 32 * 1024 ** 2 // 4096
         with self.assertRaisesRegex(RuntimeError, 'infrastructure_error:'):
@@ -1553,6 +1694,85 @@ class ArchiveTests(unittest.TestCase):
                         [('same', b'a', tarfile.REGTYPE), ('same', b'b', tarfile.REGTYPE)]):
             with self.assertRaises(ValueError):
                 self.extract(entries)
+
+
+@unittest.skipIf(sys.platform == 'win32', 'the renewal runs inside the Linux sandbox')
+class ClaudeRenewalTests(unittest.TestCase):
+    """bench-login's renewal program with an invented CLI: a renewal that
+    goes wrong never costs the stored grant, and the token is never printed."""
+
+    def setUp(self):
+        text = source.with_name('bench-login').read_text()
+        self.program = text.split("/usr/bin/python3 -c '\n", 1)[1].split("\n'\nfi\n", 1)[0]
+        self.assertIn('CLAUDE_CODE_OAUTH_REFRESH_TOKEN', self.program)
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.home = root / 'home'
+        self.bin = root / 'bin'
+        self.home.mkdir()
+        self.bin.mkdir()
+        self.credentials = self.home / '.credentials.json'
+        self.copy = self.home / '.credentials.renewal-copy.json'
+        self.stored = json.dumps({'claudeAiOauth': {'accessToken': 'invented-access', 'refreshToken': 'invented-refresh',
+                                                    'expiresAt': 1000, 'scopes': ['user:inference', 'user:profile']}})
+        self.credentials.write_text(self.stored)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def renew(self, cli):
+        claude = self.bin / 'claude'
+        claude.write_text('#!/bin/sh\n' + cli + '\n')
+        claude.chmod(0o755)
+        env = {'PATH': str(self.bin) + os.pathsep + os.environ.get('PATH', ''), 'CLAUDE_CONFIG_DIR': str(self.home)}
+        done = subprocess.run([sys.executable, '-c', self.program], env=env, capture_output=True, text=True, timeout=60)
+        self.assertNotIn('invented-refresh', done.stdout + done.stderr)
+        return done
+
+    def write(self, expires):
+        return ('printf %s \'{"claudeAiOauth":{"accessToken":"renewed","refreshToken":"rotated","expiresAt":'
+                + str(expires) + '}}\' > "$CLAUDE_CONFIG_DIR/.credentials.json"')
+
+    def test_a_renewed_grant_replaces_the_stored_one(self):
+        done = self.renew('[ "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" = invented-refresh ] || exit 3\n'
+                          '[ "$CLAUDE_CODE_OAUTH_SCOPES" = "user:inference user:profile" ] || exit 3\n'
+                          '[ "$(stat -c %a "$CLAUDE_CONFIG_DIR/.credentials.renewal-copy.json")" = 600 ] || exit 3\n'
+                          + self.write(2000))
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, 'renewed 2000'))
+        self.assertEqual(json.loads(self.credentials.read_text())['claudeAiOauth']['expiresAt'], 2000)
+        self.assertFalse(self.copy.exists())
+
+    def test_a_renewal_that_breaks_refuses_or_shortens_the_grant_keeps_the_stored_one(self):
+        for cli in [': > "$CLAUDE_CONFIG_DIR/.credentials.json"', 'rm "$CLAUDE_CONFIG_DIR/.credentials.json"',
+                    'exit 1', self.write(500),
+                    'printf %s \'{"claudeAiOauth":{"expiresAt":9000}}\' > "$CLAUDE_CONFIG_DIR/.credentials.json"']:
+            with self.subTest(cli=cli):
+                self.credentials.write_text(self.stored)
+                done = self.renew(cli)
+                self.assertEqual(done.returncode, 66)
+                self.assertEqual(self.credentials.read_text(), self.stored)
+                self.assertFalse(self.copy.exists())
+
+    def test_the_grant_a_killed_renewal_left_in_its_copy_comes_back(self):
+        self.copy.write_text(self.stored)
+        self.credentials.write_text('{"claudeAiOauth":')
+        done = self.renew('exit 0')
+        self.assertEqual(done.returncode, 66)
+        self.assertEqual(self.credentials.read_text(), self.stored)
+        self.assertFalse(self.copy.exists())
+        # A grant the killed renewal's CLI did write stays.
+        self.copy.write_text(self.stored)
+        renewed = '{"claudeAiOauth":{"accessToken":"renewed","refreshToken":"rotated","expiresAt":3000}}'
+        self.credentials.write_text(renewed)
+        self.assertEqual(self.renew('exit 0').returncode, 66)
+        self.assertEqual(self.credentials.read_text(), renewed)
+        self.assertFalse(self.copy.exists())
+
+    def test_a_sign_in_without_a_refresh_token_needs_a_person(self):
+        self.credentials.write_text('{"claudeAiOauth":{"accessToken":"invented-access","expiresAt":1000}}')
+        done = self.renew('exit 0')
+        self.assertEqual(done.returncode, 65)
+        self.assertFalse(self.copy.exists())
 
 
 if __name__ == '__main__':

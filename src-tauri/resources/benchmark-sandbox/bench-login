@@ -8,11 +8,119 @@
 # Z.ai accounts have no sign-in flow: Distill pipes the account's saved API
 # key to `bench-login zai ACCOUNT-ID` on standard input. The key is never an
 # argument, never typed into a terminal and never printed.
+#
+# `bench-login claude ACCOUNT-ID --renew` renews the stored Claude sign-in
+# without a person: inside the same login confinement, the account's own
+# stored refresh token goes to `claude auth login` in its environment (the
+# CLI itself renews only in the last five minutes of a grant). The token is
+# never an argument, never in a root process's environment, never printed.
+# The grant before the renewal stays in a 0600 copy until what the CLI left
+# reads as a grant at least as long; otherwise the copy is put back. An
+# optional DEADLINE-MS (Unix milliseconds) bounds the broker's queue and the
+# run, so a renewal still waiting for a lane ends resource_busy before its
+# caller's own time limit. Exit 0 renewed, 65 no refresh token stored, 66 the
+# provider refused it: then the account needs `bench-login claude ACCOUNT-ID`
+# again; 70 the renewal failed and the stored sign-in is kept.
 set -euo pipefail
 provider=${1:-}
 account=${2:-}
-[[ $account =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "usage: bench-login claude|codex|grok|kimi|zai ACCOUNT-ID" >&2; exit 64; }
+[[ $account =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "usage: bench-login claude|codex|grok|kimi|zai ACCOUNT-ID [--renew]" >&2; exit 64; }
 home=/home/candidate/accounts/$account/$provider
+if [[ ${3:-} == --renew ]]; then
+  [[ $provider == claude && ($# == 3 || ($# == 4 && ${4:-} =~ ^[0-9]{1,16}$)) ]] || { echo "bench-login: only a Claude sign-in renews with --renew [DEADLINE-MS]" >&2; exit 64; }
+  [[ -f $home/.credentials.json && ! -L $home/.credentials.json ]] || { echo "bench-login: no Claude sign-in to renew for $account; run bench-login claude $account" >&2; exit 65; }
+  # The broker refuses before its caller gives up: a renewal that waited for
+  # a lane past its deadline is resource_busy (deferred), never a timeout.
+  # Default: 300 s of queue, 120 s of CLI and 60 s of clock drift.
+  deadline=${4:-$(($(date +%s%3N) + 510000))}
+  exec /usr/local/sbin/bench-run login "renew-${account:0:70}" "DISTILL_BENCH_DEADLINE_MS=$deadline" \
+    "DISTILL_BENCH_LOGIN_HOME=$home" "CLAUDE_CONFIG_DIR=$home" "TERM=dumb" -- /usr/bin/python3 -c '
+import json, os, signal, subprocess, sys
+home = os.environ["CLAUDE_CONFIG_DIR"]
+path = os.path.join(home, ".credentials.json")
+# The grant before the CLI rewrites it. Sessions never take this file (they
+# copy .credentials.json and .claude.json only), and it lives only while a
+# renewal runs or after one was killed.
+copy = os.path.join(home, ".credentials.renewal-copy.json")
+def oauth(name):
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as handle:
+            value = json.loads(handle.read(1 << 20))
+    except (OSError, ValueError):
+        return None
+    found = value.get("claudeAiOauth") if isinstance(value, dict) else None
+    return found if isinstance(found, dict) else None
+def expiry(found):
+    """The expiry of a usable grant, or None for a document that is not one."""
+    token = found.get("accessToken") if found else None
+    expires = found.get("expiresAt") if found else None
+    if isinstance(token, str) and token and isinstance(expires, int) and not isinstance(expires, bool):
+        return expires
+    return None
+def settle(before):
+    """Keep what the CLI left only if it is a grant at least as long as the
+    one before; else put the earlier grant back, by rename."""
+    left = expiry(oauth(path))
+    if left is not None and left >= before:
+        os.unlink(copy)
+        return left
+    os.replace(copy, path)
+    return None
+def stop(_signal, _frame):
+    raise SystemExit(70)
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGHUP, stop)
+try:
+    if os.path.lexists(copy):
+        # A renewal was killed before it settled. A grant the CLI left
+        # stays; a document that is no grant gives way to the earlier one.
+        if expiry(oauth(path)) is None and expiry(oauth(copy)) is not None:
+            os.replace(copy, path)
+        else:
+            os.unlink(copy)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as handle:
+        document = handle.read(1 << 20)
+    try:
+        value = json.loads(document)
+    except ValueError:
+        value = None
+    found = value.get("claudeAiOauth") if isinstance(value, dict) else None
+    token = found.get("refreshToken") if isinstance(found, dict) else None
+    if not isinstance(token, str) or not token:
+        print("bench-login: the stored Claude sign-in holds no refresh token", file=sys.stderr)
+        sys.exit(65)
+    before = expiry(found) or 0
+    scopes = " ".join(s for s in found.get("scopes") or [] if isinstance(s, str))
+    fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(document)
+        handle.flush()
+        os.fsync(handle.fileno())
+    del document, value, found
+    env = dict(os.environ, CLAUDE_CODE_OAUTH_REFRESH_TOKEN=token, CLAUDE_CODE_OAUTH_SCOPES=scopes)
+    del token
+    try:
+        try:
+            subprocess.run(["claude", "auth", "login"], env=env, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        del env
+        renewed = settle(before)
+    if renewed is not None and renewed > before:
+        print("renewed", renewed)
+        sys.exit(0)
+    print("bench-login: the provider refused the stored Claude refresh token; sign in again", file=sys.stderr)
+    sys.exit(66)
+except Exception as error:
+    # Never a traceback: it could carry part of the document.
+    print("bench-login: the Claude renewal failed (" + type(error).__name__ + "); the stored sign-in is kept", file=sys.stderr)
+    sys.exit(70)
+'
+fi
 if [[ $provider == zai ]]; then
   [[ ! -t 0 ]] || { echo "bench-login: Distill supplies the Z.ai key; do not type it here" >&2; exit 64; }
   install -d -o candidate -g candidate -m 700 "/home/candidate/accounts/$account" "$home"

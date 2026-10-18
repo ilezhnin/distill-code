@@ -227,6 +227,12 @@ async fn execute(request: Value, timeout: Duration) -> Result<Value> {
     if let Some(reason) = outcome.infrastructure_error() {
         return Err(BenchmarkError::new("infrastructure_failure", reason));
     }
+    if let Some(limit) = outcome.candidate_limit() {
+        return Err(BenchmarkError::new(
+            super::runner::CANDIDATE_LIMIT,
+            format!("The candidate's page drove its browser job past the job's {limit} ceiling"),
+        ));
+    }
     if outcome.truncated {
         return Err(BenchmarkError::new(
             "budget_reached",
