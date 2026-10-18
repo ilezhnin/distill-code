@@ -26,7 +26,7 @@ import {
 import { reportModels, modelKey, modelActivity } from "../lib/benchmarkModels";
 import { rowOpenRun } from "../lib/benchmarkActivity";
 import { catchUpCases } from "../lib/benchmarkCatchUp";
-import { explicitEffort } from "../lib/benchmarkEffort";
+import { effortUnset, explicitEffort } from "../lib/benchmarkEffort";
 import { historyMeasurements } from "../lib/benchmarkHistory";
 import {
   boardDescription,
@@ -303,7 +303,23 @@ export function BenchmarkConfigurationPage({
               <h2 className="font-display text-2xl font-medium tracking-tight">
                 {name}
               </h2>
-              {effort ? <Badge variant="outline">{effort}</Badge> : null}
+              {/* The effort the measurement used: a level, or none on a model
+                  without levels. The CLI's "default" is neither and never
+                  reaches a board, so it is never named as an effort. */}
+              {effort ? (
+                <Badge variant="outline">{effort}</Badge>
+              ) : effortUnset(shownRow.configuration.effort) ? (
+                <Tooltip delayDuration={TOOLTIP_DELAY.restedHover}>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex">
+                      <Badge variant="outline">{t("run.noEffort")}</Badge>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-72">
+                    {t("configuration.noEffortHint")}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
               {shownRow.configuration.fastMode ? (
                 <Badge variant="outline">{t("fastMode")}</Badge>
               ) : null}
@@ -415,6 +431,8 @@ export function BenchmarkConfigurationPage({
                 planned: entry.row.planned,
                 backfilled,
                 revised: entry.snapshot.revisedVersionIds?.length ?? 0,
+                added: entry.change?.added,
+                removed: entry.change?.removed,
               };
             })}
             selectedId={selected ? pointId(selected.snapshot) : null}

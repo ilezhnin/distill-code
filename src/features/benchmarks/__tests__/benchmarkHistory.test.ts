@@ -71,6 +71,25 @@ describe("ledger history comparability", () => {
     first.recalculatedReport = { cohort, rows: [] };
     expect(historyMeasurements([first, later], key)).toHaveLength(1);
   });
+  it("counts the cases each point gained or lost since the previous point", () => {
+    const missing = snapshot("3", [], 0);
+    missing.report.rows[0].points = null;
+    const changes = historyMeasurements(
+      [
+        snapshot("1", ["a"], 500),
+        snapshot("2", ["a", "b", "c"], 450),
+        missing,
+        snapshot("4", ["b", "c", "d"], 400),
+      ],
+      key,
+    ).map((entry) => entry.change);
+    // A missing result breaks the line, not the comparison with the last point.
+    expect(changes).toEqual([
+      null,
+      { added: 2, removed: 0 },
+      { added: 1, removed: 1 },
+    ]);
+  });
   it("does not draw through a snapshot with no score", () => {
     const missing = snapshot("2", [], 0);
     missing.report.rows[0].points = null;

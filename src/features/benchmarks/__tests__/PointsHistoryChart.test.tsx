@@ -433,6 +433,86 @@ describe("points history navigator", () => {
   });
 });
 
+describe("points history coverage", () => {
+  it("draws a point on part of the pool as a faded ring and says why", () => {
+    chart([
+      point({ id: "partial", at: start, scored: 23, planned: 66 }),
+      point({
+        id: "whole",
+        at: start + DAY,
+        series: "whole",
+        scored: 66,
+        planned: 66,
+      }),
+      point({
+        id: "borrowed",
+        at: start + 2 * DAY,
+        series: "borrowed",
+        scored: 60,
+        backfilled: 6,
+        planned: 66,
+      }),
+    ]);
+    expect(marker("partial")).toHaveAttribute("data-coverage", "partial");
+    expect(marker("partial")).toHaveAttribute("fill", "var(--background)");
+    expect(
+      Number(marker("partial").getAttribute("stroke-opacity")),
+    ).toBeLessThan(1);
+    expect(marker("whole")).toHaveAttribute("data-coverage", "complete");
+    expect(marker("whole")).toHaveAttribute("fill", "var(--chart-1)");
+    expect(marker("whole")).toHaveAttribute("stroke-opacity", "1");
+    // Cases the rating borrows from later results still cover the pool.
+    expect(marker("borrowed")).toHaveAttribute("data-coverage", "complete");
+    act(() => marker("partial").focus());
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toHaveTextContent("23/66 cases");
+    expect(
+      within(tooltip).getByText(
+        "Partial coverage: the points average only the cases measured by then.",
+      ),
+    ).toBeInTheDocument();
+    act(() => marker("partial").blur());
+    act(() => marker("whole").focus());
+    expect(screen.getByRole("tooltip")).toHaveTextContent("66/66 cases");
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(/Partial/);
+  });
+
+  it("names the cases a point gained or lost since the previous one", async () => {
+    chart([
+      point({ id: "first", at: start }),
+      point({
+        id: "second",
+        at: start + DAY,
+        series: "more",
+        added: 12,
+        removed: 1,
+      }),
+    ]);
+    act(() => marker("second").focus());
+    const tooltip = screen.getByRole("tooltip");
+    expect(
+      within(tooltip).getByText("12 cases added since the previous point"),
+    ).toBeInTheDocument();
+    expect(
+      within(tooltip).getByText(
+        "1 case no longer counted since the previous point",
+      ),
+    ).toBeInTheDocument();
+    act(() => marker("second").blur());
+    act(() => marker("first").focus());
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(
+      /since the previous point/,
+    );
+    act(() => marker("first").blur());
+    await act(() => i18n.changeLanguage("es"));
+    act(() => marker("second").focus());
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "12 casos añadidos desde el punto anterior",
+    );
+    await act(() => i18n.changeLanguage("en"));
+  });
+});
+
 describe("points history labels", () => {
   it("counts later evidence with plural forms and leaves out zero counts", async () => {
     chart([

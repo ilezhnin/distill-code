@@ -2020,6 +2020,117 @@ describe("configuration history", () => {
     ).toHaveAttribute("aria-pressed", "true");
     client.clear();
   });
+
+  it("marks points on part of the pool and names the cases each one added", async () => {
+    const partial = leaderboardRow({
+      points: 950,
+      scored: 1,
+      planned: 2,
+      status: "preliminary",
+      scoredVersionIds: ["version-1"],
+    });
+    const whole = leaderboardRow({
+      points: 800,
+      scored: 2,
+      planned: 2,
+      scoredVersionIds: ["version-1", "version-2"],
+      attemptIds: ["attempt-1", "attempt-2"],
+    });
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
+      {
+        id: "first",
+        runId: "run-0",
+        createdAt: 1_000,
+        report: { cohort, rows: [partial] },
+      },
+      {
+        id: "second",
+        runId: runSummary.id,
+        createdAt: 2_000,
+        report: { cohort, rows: [whole] },
+      },
+    ]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    wrap(
+      <BenchmarkConfigurationPage
+        row={whole}
+        report={{ cohort, rows: [whole] }}
+        runs={[runSummary]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+    const first = await screen.findByRole("button", {
+      name: /: 950 points · 1\/2 cases$/,
+    });
+    const second = screen.getByRole("button", {
+      name: /: 800 points · 2\/2 cases$/,
+    });
+    expect(first).toHaveAttribute("data-coverage", "partial");
+    expect(second).toHaveAttribute("data-coverage", "complete");
+    act(() => second.focus());
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "1 case added since the previous point",
+    );
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(/Partial/);
+    act(() => second.blur());
+    act(() => first.focus());
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "Partial coverage: the points average only the cases measured by then.",
+    );
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(
+      /since the previous point/,
+    );
+  });
+});
+
+describe("model page effort", () => {
+  afterEach(cleanup);
+
+  function page(effort: string | null) {
+    const row = leaderboardRow({ configuration: { ...configuration, effort } });
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    wrap(
+      <BenchmarkConfigurationPage
+        row={row}
+        report={{ cohort, rows: [row] }}
+        runs={[]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+    return within(
+      screen.getByRole("heading", { name: "model-1" })
+        .parentElement as HTMLElement,
+    );
+  }
+
+  it("names the level the model was measured at", () => {
+    const title = page("high");
+    expect(title.getByText("high")).toBeInTheDocument();
+    expect(title.queryByText("No effort setting")).not.toBeInTheDocument();
+  });
+
+  it("says a model without effort levels was measured with none", async () => {
+    const title = page(null);
+    await userEvent.hover(title.getByText("No effort setting"));
+    expect(
+      await screen.findByRole("tooltip", {}, { timeout: 2_000 }),
+    ).toHaveTextContent(
+      "This model offers no reasoning effort levels, so the benchmark measured it without one.",
+    );
+  });
+
+  it("never names the CLI's default as an effort", () => {
+    const title = page("default");
+    expect(title.queryByText("default")).not.toBeInTheDocument();
+    expect(title.queryByText("No effort setting")).not.toBeInTheDocument();
+  });
 });
 
 describe("model filter", () => {

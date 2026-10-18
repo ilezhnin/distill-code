@@ -20,6 +20,15 @@ export function explicitEffort(
   return effort && effort !== CLI_DEFAULT_EFFORT ? effort : null;
 }
 
+/**
+ * Whether a measurement ran with no effort setting: a model without an effort
+ * control lists no levels, so its request and acknowledgment both leave the
+ * effort unset. That measurement is fully specified, unlike the CLI's "default".
+ */
+export function effortUnset(effort: string | null | undefined): boolean {
+  return !effort;
+}
+
 /** The levels a model lists, without the CLI's "default". */
 export function explicitEfforts(efforts: readonly string[]): string[] {
   return efforts.filter((effort) => explicitEffort(effort) !== null);

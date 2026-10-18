@@ -46,6 +46,18 @@ export interface HistoryPoint {
   planned: number;
   backfilled?: number;
   revised?: number;
+  /** Cases measured here and not at the previous point, and the reverse. */
+  added?: number;
+  removed?: number;
+}
+
+/**
+ * Whether a point's rating stands on only part of the pool. Its points then
+ * average the cases measured so far, and move as more join, so they are no
+ * trend of the model on their own.
+ */
+export function partialCoverage(point: HistoryPoint): boolean {
+  return point.scored + (point.backfilled ?? 0) < point.planned;
 }
 
 /** Never bridge a missing result or a change in measured versions or runtime. */
@@ -121,7 +133,8 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
  * Points over time for one configuration, read like a stock chart: zoom
  * ranges, a plot whose hover band snaps to the nearest measurement, and a
  * navigator over the whole history. Every measurement is a point that selects
- * it for the page; lines connect only the same measured case set.
+ * it for the page; lines connect only the same measured case set, and a
+ * point measured on part of the pool shows as a faded ring.
  */
 export function PointsHistoryChart({
   points,
@@ -376,6 +389,11 @@ export function PointsHistoryChart({
   const tooltipId = `${ids}-tooltip`;
   const later = active
     ? [
+        partialCoverage(active) ? t("history.partial") : null,
+        active.added ? t("history.addedCases", { count: active.added }) : null,
+        active.removed
+          ? t("history.removedCases", { count: active.removed })
+          : null,
         active.backfilled
           ? t("history.backfilled", { count: active.backfilled })
           : null,
@@ -650,6 +668,10 @@ export function PointsHistoryChart({
             {visible.map((point) => {
               const selected = point.id === selectedId;
               const lifted = selected || point.id === active?.id;
+              // A point on the whole pool is solid; one on part of it is a
+              // faded ring, so a campaign's growing coverage never reads as
+              // the model's trend.
+              const partial = partialCoverage(point);
               return (
                 // biome-ignore lint/a11y/useSemanticElements: a point on an SVG line cannot be a <button> element
                 <circle
@@ -662,7 +684,13 @@ export function PointsHistoryChart({
                   cx={x(point)}
                   cy={y(point.points as number)}
                   r={selected ? 6 : lifted ? 5 : 3.5}
-                  fill={selected ? "var(--chart-1)" : "var(--background)"}
+                  fill={
+                    selected || !partial
+                      ? "var(--chart-1)"
+                      : "var(--background)"
+                  }
+                  data-coverage={partial ? "partial" : "complete"}
+                  strokeOpacity={partial && !lifted ? 0.55 : 1}
                   stroke={
                     selected
                       ? "var(--background)"
