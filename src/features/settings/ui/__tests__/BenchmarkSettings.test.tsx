@@ -597,7 +597,7 @@ describe("BenchmarkSettings judges", () => {
     show();
 
     expect(
-      screen.getByText(/never by a model from the candidate's own vendor/),
+      screen.getByText(/one model per lab from this pool/),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/never by one whose provider may train/),

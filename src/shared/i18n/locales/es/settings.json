@@ -702,7 +702,7 @@
     },
     "judges": {
       "title": "Jueces",
-      "description": "Las pruebas con rúbrica solo las juzgan modelos de este grupo: nunca un modelo del mismo proveedor que el candidato, nunca uno cuyo proveedor pueda entrenar con los datos enviados, y solo después de superar una calibración con respuestas cuyo veredicto se conoce.",
+      "description": "Las pruebas con rúbrica las juzga un modelo por laboratorio de este grupo, incluido el del candidato, cuya nota diluyen los otros laboratorios: nunca el autor de la prueba, nunca uno cuyo proveedor pueda entrenar con los datos enviados, y solo después de superar una calibración con respuestas cuyo veredicto se conoce.",
       "statusFailed": "No se pudo leer el estado de los jueces: {{message}}",
       "empty": "Todavía no hay jueces",
       "emptyDescription": "Añade un modelo abajo y luego calíbralo.",

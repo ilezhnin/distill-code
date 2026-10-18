@@ -279,34 +279,43 @@ Without a frozen panel, a rendering's judges come from the judge pool: the
 owner's list of models and efforts (`judgePool` in the benchmark settings
 document, edited in Settings > Benchmarks), not a rule in code. A judge reads
 private rubrics and the conditions a right answer meets, so a provider that may
-train on submitted data never judges and is never calibrated (provider data use,
-in benchmark operations). An entry takes seats only after it passed judge
+train on submitted data never judges and is never calibrated (provider data
+use, in benchmark operations). An entry takes seats only after it passed judge
 calibration: alone, it judged every accepted and rejected control of the rubric
 qualification records and scored each inside the record's bands
 (`minimumAcceptedScore`, `maximumRejectedScore`); an invalid sheet or an
-abstention is out of band. A visual rubric's controls count only for an entry
-whose provider's models see images; until visual controls exist, a visual seat
-rests on the text calibration. A rendering gets up to three judges, the roomiest
-accounts first (usage left in the windows the model draws on, the last good read
-when the current one fails), never a candidate's own model (aliases and
-context window variants resolved, so `opus[1m]` never judges `opus`) or the
-exact configuration that authored the case (provider, model and effort, as for
-candidates), and preferably no model of a candidate's vendor (Anthropic, OpenAI,
-xAI, Z.ai or Moonshot AI, by provider): when fewer than two judges of other
-vendors are offered, judges of a candidate's vendor fill the panel to two, and
-its rendering evaluation is marked `sameVendor` so boards can show or leave out
-those scores. A panel with the model of an exact author at another effort is
-marked `authorModel` the same way. A text rubric seats one judge per vendor. A
-visual rubric seats only providers whose models judge images, one judge per
-model, since one vendor's models judge images today, so a candidate of that
-vendor gets a `sameVendor` visual panel; with fewer than two judges a rendering
-stays unjudged (pending review, with the panel's reason). Each seat runs at its
-entry's effort, which its account must offer. The ordinary panel's recipe
-(`strong-pool-v1`) enters its protocol and its hash, so its scores never compare
-with the panels before the pool, and the hash names the recipe instead of the
-seated judges: the calibrated seats rotate by usage, so one recipe and panel
-size is one ruler. A frozen panel names its own seats and is not subject to this
-rule.
+abstention is out of band. A visual rubric's controls are part of the
+calibration of an entry whose provider is checked to see images (Claude). An
+entry of another provider that judges visual rubrics is calibrated on them once
+its text controls passed, and only that visual verdict decides its visual
+seats: the accepted and rejected renderings with their bands are also the image
+probe, since a judge that does not see the rendering cannot score both inside
+them. A judge's account offers the models of its newest listing (a run's, an
+inventory probe's or an earlier judge's, by the executable serving it now):
+under an hour old it is not listed again, and up to twelve hours old it still
+seats the judge when a refresh is refused, as the sandbox refuses a listing
+under load. A rendering gets one calibrated judge per lab (Anthropic, OpenAI
+and xAI, by provider), the roomiest account first (usage left in the windows
+the model draws on, the last good read when the current one fails), up to three
+(owner, 10-18, after BuseyBench's fixed three-lab ensemble): a judge of a
+candidate's own lab, or the candidate's own model, may sit, its score diluted
+by the other labs', and the rendering evaluation is marked `sameVendor` or
+`ownModel` (aliases and context window variants resolved, so `opus[1m]` is
+`opus`) so boards can show or leave out those scores. The exact configuration
+that authored the case never judges it (provider, model and effort, as for
+candidates): an author's lab with no other calibrated judge leaves the panel to
+the other labs, and a panel with the model of an exact author at another effort
+is marked `authorModel`. With fewer than two labs offered, more models of the
+seated labs fill the panel to two (a visual rubric's Opus and Sonnet while no
+other lab passed its visual calibration); with fewer than two judges a
+rendering stays unjudged (pending review, with the panel's reason). Each seat
+runs at its entry's effort, which its account must offer. The ordinary panel's
+recipe (`three-lab-v1`) and the labs it seated enter its protocol and its hash,
+so its scores never compare with earlier panels, and the hash names them
+instead of the seated judges: the calibrated seats rotate by usage, so one
+recipe, panel size and set of labs is one ruler. Calibrations count for their
+own recipe (`strong-pool-v1`). A frozen panel names its own seats and is not
+subject to this rule.
 
 A text rubric's critical checks (`environment.criticalChecks`, policy
 `critical-text-v1`) need from each judge a verdict and a reason for every

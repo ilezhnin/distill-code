@@ -887,45 +887,40 @@ pub(crate) fn by_headroom(mut offered: Vec<(Option<f64>, Configuration)>) -> Vec
 }
 
 /// The ordinary panel for a rendering from the judge pool's offered rows,
-/// each with its account's headroom: up to three seats, the roomiest first,
-/// never a candidate's own model or an author of the case (see
-/// [`select_judges`]), and preferably no model of a candidate's vendor (an
-/// unknown vendor admits no judge). When fewer than two judges of other
-/// vendors are offered, judges of a candidate's vendor fill the panel to two,
-/// and [`same_vendor`] marks it. A text rubric seats one judge per vendor; a
-/// visual one, one per model, since one vendor's models judge images today.
+/// each with its account's headroom: one calibrated judge per lab (vendor),
+/// the roomiest first, up to three (owner, 10-18, after BuseyBench's fixed
+/// three-lab ensemble). A judge of a candidate's own lab or model may sit:
+/// the other labs dilute its score, and [`same_vendor`] and [`own_model`]
+/// mark the panel. An exact author of the case never sits (see
+/// [`select_judges`]); an author's lab with no other calibrated judge leaves
+/// the panel to the other labs. With fewer than two labs offered, more
+/// models of the seated labs fill it to two (a visual rubric's Opus and
+/// Sonnet while only Claude passed a visual calibration). A candidate of no
+/// known vendor admits no judge.
 pub(crate) fn ordinary_judges(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
     offered: Vec<(Option<f64>, Configuration)>,
 ) -> Vec<Configuration> {
-    let Some(excluded) = candidate_vendors(candidates) else {
+    if candidate_vendors(candidates).is_none() {
         return Vec::new();
-    };
-    let per_vendor = text_judged(draft);
-    let admitted: Vec<(Configuration, &'static str)> =
-        admissible(candidates, draft, by_headroom(offered))
-            .into_iter()
-            .filter_map(|(judge, _)| {
-                let vendor = super::judge_pool::vendor(&judge.provider_id)?;
-                Some((judge, vendor))
-            })
-            .collect();
-    let mut vendors = std::collections::BTreeSet::new();
+    }
+    let admitted: Vec<(Configuration, &'static str)> = seatable(draft, by_headroom(offered), &[])
+        .into_iter()
+        .filter_map(|(judge, _)| {
+            let vendor = super::judge_pool::vendor(&judge.provider_id)?;
+            Some((judge, vendor))
+        })
+        .collect();
+    let mut labs = std::collections::BTreeSet::new();
     let mut panel: Vec<Configuration> = Vec::new();
     for (judge, vendor) in &admitted {
-        if panel.len() < MAX_JUDGES
-            && !excluded.contains(vendor)
-            && (!per_vendor || vendors.insert(*vendor))
-        {
+        if panel.len() < MAX_JUDGES && labs.insert(*vendor) {
             panel.push(judge.clone());
         }
     }
-    for (judge, vendor) in &admitted {
-        if panel.len() < MIN_JUDGES
-            && excluded.contains(vendor)
-            && (!per_vendor || vendors.insert(*vendor))
-        {
+    for (judge, _) in &admitted {
+        if panel.len() < MIN_JUDGES && !panel.iter().any(|seated| seated.id == judge.id) {
             panel.push(judge.clone());
         }
     }
@@ -959,8 +954,22 @@ pub(crate) fn author_model_judges(draft: &BenchmarkDraft, panel: &[Configuration
     })
 }
 
-/// Whether an ordinary panel seats a judge of a candidate's vendor, which it
-/// does only when too few judges of other vendors were offered.
+/// Whether a panel seats a candidate's own model on the same provider
+/// (aliases and context window variants resolved), which an ordinary panel
+/// may: the board can leave such scores out.
+pub(crate) fn own_model(candidates: &[&Configuration], panel: &[Configuration]) -> bool {
+    panel.iter().any(|judge| {
+        let model = model_identity(&judge.provider_id, &judge.model_id);
+        candidates.iter().any(|candidate| {
+            candidate.provider_id == judge.provider_id
+                && model.is_some()
+                && model_identity(&candidate.provider_id, &candidate.model_id) == model
+        })
+    })
+}
+
+/// Whether an ordinary panel seats a judge of a candidate's vendor (lab),
+/// which a three-lab panel does for every candidate of those labs.
 pub(crate) fn same_vendor(candidates: &[&Configuration], panel: &[Configuration]) -> bool {
     candidate_vendors(candidates).is_some_and(|vendors| {
         panel.iter().any(|judge| {
@@ -993,7 +1002,7 @@ pub(crate) fn select_judges(
 fn admissible(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
-    mut offered: Vec<Configuration>,
+    offered: Vec<Configuration>,
 ) -> Vec<(Configuration, String)> {
     let excluded: Option<Vec<String>> = candidates
         .iter()
@@ -1002,6 +1011,16 @@ fn admissible(
     let Some(excluded) = excluded else {
         return Vec::new();
     };
+    seatable(draft, offered, &excluded)
+}
+
+/// The offered judges, in order, with their models: none of the `excluded`
+/// models, no author of the case, one row per model of a provider.
+fn seatable(
+    draft: &BenchmarkDraft,
+    mut offered: Vec<Configuration>,
+    excluded: &[String],
+) -> Vec<(Configuration, String)> {
     // Concrete rows first, so an alias never takes its own target's seat.
     offered.sort_by_key(|c| {
         concrete_model(&c.provider_id, &c.model_id).as_deref() != Some(&c.model_id.to_lowercase())
@@ -2682,8 +2701,8 @@ impl NativeBackend {
     }
 
     /// The panel for one rendering: the judge pool's calibrated entries on
-    /// the enabled accounts that offer them, one per vendor, never the
-    /// candidate's vendor (see [`super::judge_pool`]). A frozen panel names
+    /// the enabled accounts that offer them, one per lab (see
+    /// [`ordinary_judges`] and [`super::judge_pool`]). A frozen panel names
     /// its own seats.
     async fn judge_panel(
         &self,
@@ -2702,10 +2721,9 @@ impl NativeBackend {
             .offered_judges(
                 &attempt.run_id,
                 &format!("attempt {}", attempt.id),
-                |provider| {
-                    pool.iter().any(|entry| entry.provider_id == provider)
-                        && (textual || judge_provider_allowed(provider))
-                },
+                // The pool holds only entries that may judge this rubric, a
+                // visual one's those that see images.
+                |provider| pool.iter().any(|entry| entry.provider_id == provider),
             )
             .await?;
         let offered = super::judge_pool::seat_rows(&pool, offered);
@@ -3370,15 +3388,19 @@ impl NativeBackend {
                     JudgeEvidence::Calibration { judge, .. } => vec![judge.as_ref().clone()],
                     _ => self.judge_panel(store, &attempt, &version.manifest).await?,
                 };
-                // An ordinary panel a candidate's vendor filled is marked, so
-                // boards can show or leave out its scores.
-                let same_vendor_panel = match &evidence {
-                    JudgeEvidence::Calibration { .. } => false,
-                    _ if version.manifest.environment.get("judgePanel").is_some() => false,
+                // An ordinary panel that seats a candidate's lab or own model
+                // is marked, so boards can show or leave out its scores.
+                let (same_vendor_panel, own_model_panel) = match &evidence {
+                    JudgeEvidence::Calibration { .. } => (false, false),
+                    _ if version.manifest.environment.get("judgePanel").is_some() => (false, false),
                     _ => {
                         let contributing =
                             super::workflow::judge_candidates(store, &attempt).await?;
-                        same_vendor(&contributing.iter().collect::<Vec<_>>(), &panel)
+                        let candidates: Vec<_> = contributing.iter().collect();
+                        (
+                            same_vendor(&candidates, &panel),
+                            own_model(&candidates, &panel),
+                        )
                     }
                 };
                 if let Some(issue) = panel_issue(&panel)
@@ -3452,6 +3474,9 @@ impl NativeBackend {
                             "protocol": protocol});
                         if same_vendor_panel {
                             details["sameVendor"] = json!(true);
+                        }
+                        if own_model_panel {
+                            details["ownModel"] = json!(true);
                         }
                         if !matches!(evidence, JudgeEvidence::Calibration { .. })
                             && author_model_judges(&version.manifest, &panel)
@@ -6061,14 +6086,14 @@ fn ordinary_recipe(draft: &BenchmarkDraft) -> Option<&'static str> {
         .environment
         .get("judgePanel")
         .is_none()
-        .then_some(super::judge_pool::RECIPE)
+        .then_some(super::judge_pool::PANEL_RECIPE)
 }
 
 /// What a judge batch's scores are comparable by. A frozen panel's hash
 /// names its judges and stays as it was. An ordinary panel's names its
-/// `recipe` instead: the pool's calibrated seats rotate by usage headroom, so
-/// one recipe is one ruler, and pool scores never compare with the panels
-/// before it.
+/// `recipe` and the labs it seated instead: the pool's calibrated seats
+/// rotate by usage headroom, so one recipe, panel size and set of labs is
+/// one ruler, and pool scores never compare with the panels before it.
 pub(crate) fn judge_protocol_hash(
     panel: &[Configuration],
     prompt: &str,
@@ -6094,8 +6119,17 @@ pub(crate) fn judge_protocol_hash(
     let identity = match recipe {
         None => json!({"judges": judges, "prompt": prompt, "renderer": renderer,
             "samplesPerJudge": 1, "expectedJudges": panel.len()}),
-        Some(recipe) => json!({"recipe": recipe, "prompt": prompt, "renderer": renderer,
-            "samplesPerJudge": 1, "expectedJudges": panel.len()}),
+        Some(recipe) => {
+            let labs: std::collections::BTreeSet<&str> = panel
+                .iter()
+                .map(|judge| {
+                    super::judge_pool::vendor(&judge.provider_id)
+                        .unwrap_or(judge.provider_id.as_str())
+                })
+                .collect();
+            json!({"recipe": recipe, "labs": labs, "prompt": prompt, "renderer": renderer,
+                "samplesPerJudge": 1, "expectedJudges": panel.len()})
+        }
     };
     hex::encode(Sha256::digest(identity.to_string().as_bytes()))
 }
@@ -6112,7 +6146,8 @@ pub(super) fn judge_protocol(draft: &BenchmarkDraft, panel: &[Configuration]) ->
         protocol["panelRecipe"] = json!(super::judge_panel::RECIPE);
         protocol["panelBinding"] = json!(super::judge_panel::binding(panel, &prompt, &renderer));
     } else {
-        protocol["ordinaryPanelRecipe"] = json!(super::judge_pool::RECIPE);
+        protocol["ordinaryPanelRecipe"] = json!(super::judge_pool::PANEL_RECIPE);
+        protocol["calibrationRecipe"] = json!(super::judge_pool::RECIPE);
     }
     protocol
 }
@@ -7550,10 +7585,8 @@ impl BenchmarkService {
             let version = &versions[&pending.version_id];
             // A cell planned before its provider's data use was known, or
             // through a path that did not ask, is settled here unsent.
-            let refused = data_use.refusal(
-                &pending.configuration.provider_id,
-                &version.manifest.split,
-            );
+            let refused =
+                data_use.refusal(&pending.configuration.provider_id, &version.manifest.split);
             let authored = !run.request.measures_author_cells()
                 && super::routing::authored_by_candidate(&version.manifest, &pending.configuration);
             if refused.is_none() && !authored {
@@ -7563,8 +7596,7 @@ impl BenchmarkService {
             let mut excluded = pending.clone();
             excluded.phase = "terminal".into();
             excluded.outcome = Some("excluded".into());
-            excluded.reason =
-                Some(refused.unwrap_or_else(|| "authored by this candidate".into()));
+            excluded.reason = Some(refused.unwrap_or_else(|| "authored by this candidate".into()));
             excluded.finished_at = Some(now());
             self.store.save_attempt(&excluded).await?;
             self.changed().await;
@@ -8573,7 +8605,10 @@ mod tests {
         apply_session_limit(&mut attempt, &verdict);
         assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
         let reason = attempt.reason.as_deref().unwrap();
-        assert!(reason.contains("(python3) passed the session's own memory ceiling"), "{reason}");
+        assert!(
+            reason.contains("(python3) passed the session's own memory ceiling"),
+            "{reason}"
+        );
         assert!(reason.contains("bridge exited"), "{reason}");
         // Only an infrastructure failure is the verdict's to settle.
         for outcome in ["completed", "budget_timeout", "execution_violation"] {
@@ -8909,12 +8944,25 @@ mod tests {
                 panel,
                 "prompt",
                 JUDGE_RENDERER,
-                Some(super::super::judge_pool::RECIPE),
+                Some(super::super::judge_pool::PANEL_RECIPE),
             )
         };
         assert_ne!(pool(&panel), hash);
         assert_eq!(pool(&replaced), pool(&panel));
         assert_ne!(pool(&panel[..1]), pool(&panel));
+        // Another set of labs is another ruler, and so is the old recipe.
+        let mut labs = panel.clone();
+        labs[1].provider_id = "codex-acp".into();
+        assert_ne!(pool(&labs), pool(&panel));
+        assert_ne!(
+            judge_protocol_hash(
+                &panel,
+                "prompt",
+                JUDGE_RENDERER,
+                Some(super::super::judge_pool::RECIPE)
+            ),
+            pool(&panel)
+        );
     }
 
     #[tokio::test]
@@ -9333,15 +9381,21 @@ mod tests {
             ids(&select_judges(&[&opus], &draft, offered())),
             ["sonnet", "haiku"]
         );
+        // An ordinary panel may seat the candidate's own model, and marks it
+        // by the same identity.
         let rows = offered().into_iter().map(|judge| (None, judge)).collect();
-        assert_eq!(
-            ids(&ordinary_judges(&[&opus], &draft, rows)),
-            ["sonnet", "haiku"]
-        );
+        let panel = ordinary_judges(&[&opus], &draft, rows);
+        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
+        assert!(own_model(&[&opus], &panel));
+        assert!(!own_model(&[&opus], &panel[1..]));
         // The other way round, and one seat for one model offered twice.
         let both = ["opus", "opus[1m]", "sonnet"].map(judge_row).to_vec();
         assert_eq!(
-            ids(&select_judges(&[&judge_row("opus[1m]")], &draft, both.clone())),
+            ids(&select_judges(
+                &[&judge_row("opus[1m]")],
+                &draft,
+                both.clone()
+            )),
             ["sonnet"]
         );
         assert_eq!(
@@ -9354,7 +9408,9 @@ mod tests {
             json!([{"providerId": "claude-acp", "modelId": "opus[1m]", "effort": "high"}]);
         let mut author = judge_row("opus");
         author.effort = Some("high".into());
-        assert!(super::super::routing::authored_by_candidate(&draft, &author));
+        assert!(super::super::routing::authored_by_candidate(
+            &draft, &author
+        ));
         assert_eq!(
             ids(&select_judges(&[&judge_row("haiku")], &draft, offered())),
             ["opus[1m]", "sonnet"]
@@ -9509,7 +9565,9 @@ mod tests {
             .all(|judge| judge.effort.as_deref() == Some("high")));
     }
     #[test]
-    fn ordinary_seats_are_one_per_vendor_and_never_the_candidates_vendor() {
+    fn ordinary_seats_are_one_per_lab_whoever_the_candidate_is() {
+        // Owner, 10-18: every ordinary panel seats one calibrated judge per
+        // lab, the candidate's own lab and model included, marked.
         let row = |provider: &str, model: &str| {
             let mut judge = judge_row(model);
             judge.provider_id = provider.into();
@@ -9522,8 +9580,6 @@ mod tests {
                 (Some(80.0), row("claude-acp", "sonnet")),
                 (Some(70.0), row("codex-acp", "invented-sol")),
                 (Some(60.0), row("grok-acp", "invented-grok")),
-                (Some(50.0), row("zai-acp", "invented-glm")),
-                (None, row("kimi-acp", "invented-kimi")),
             ]
         };
         let ids =
@@ -9534,64 +9590,65 @@ mod tests {
         let seat = |candidate: Configuration, draft: &BenchmarkDraft| {
             ordinary_judges(&[&candidate], draft, offered())
         };
-        // Every judge of the candidate's vendor is out, not only its model;
-        // the roomiest vendors take the three seats, one each.
+        let labs = ["opus[1m]", "invented-sol", "invented-grok"];
         let haiku = row("claude-acp", "haiku");
         let panel = seat(haiku.clone(), &text);
-        assert_eq!(
-            ids(&panel),
-            ["invented-sol", "invented-grok", "invented-glm"]
-        );
-        assert!(!same_vendor(&[&haiku], &panel));
-        assert_eq!(
-            ids(&seat(row("codex-acp", "invented-luna"), &text)),
-            ["opus[1m]", "invented-grok", "invented-glm"]
-        );
-        assert_eq!(
-            ids(&seat(row("grok-acp", "invented-grok-fast"), &text)),
-            ["opus[1m]", "invented-sol", "invented-glm"]
-        );
-        // A workflow's candidates exclude every vendor among them.
+        assert_eq!(ids(&panel), labs);
+        assert!(same_vendor(&[&haiku], &panel));
+        assert!(!own_model(&[&haiku], &panel));
+        let opus = row("claude-acp", "opus");
+        let panel = seat(opus.clone(), &text);
+        assert_eq!(ids(&panel), labs);
+        assert!(own_model(&[&opus], &panel));
+        for candidate in [
+            row("codex-acp", "invented-sol"),
+            row("grok-acp", "invented-grok-fast"),
+        ] {
+            assert_eq!(ids(&seat(candidate.clone(), &text)), labs);
+        }
+        // A workflow's candidates change nothing either.
         let both = [
             row("codex-acp", "invented-luna"),
-            row("zai-acp", "invented-glm-air"),
+            row("grok-acp", "invented-grok"),
         ];
         let panel = ordinary_judges(&[&both[0], &both[1]], &text, offered());
-        assert_eq!(ids(&panel), ["opus[1m]", "invented-grok", "invented-kimi"]);
-        // An author still never judges.
+        assert_eq!(ids(&panel), labs);
+        assert!(own_model(&[&both[0], &both[1]], &panel));
+        // An author never judges; its lab without another calibrated judge
+        // leaves the panel to the other two, and with one it sits instead.
         text.environment["authoredBy"] = json!([row("codex-acp", "invented-sol")]);
         assert_eq!(
-            ids(&seat(row("claude-acp", "haiku"), &text)),
-            ["invented-grok", "invented-glm", "invented-kimi"]
+            ids(&seat(haiku.clone(), &text)),
+            ["opus[1m]", "invented-grok"]
+        );
+        text.environment["authoredBy"] = json!([row("claude-acp", "opus[1m]")]);
+        assert_eq!(
+            ids(&seat(haiku.clone(), &text)),
+            ["sonnet", "invented-sol", "invented-grok"]
         );
         // A candidate of no known vendor admits no judge.
-        assert!(seat(row("invented-provider", "model"), &text).is_empty());
-        // With fewer than two judges of other vendors, the candidate's vendor
-        // fills the panel to two, never with the candidate's own model, and
-        // the panel is marked.
         text.environment["authoredBy"] = json!([]);
-        let two_vendors = || offered().into_iter().take(3).collect::<Vec<_>>();
-        let panel = ordinary_judges(&[&haiku], &text, two_vendors());
-        assert_eq!(ids(&panel), ["invented-sol", "opus[1m]"]);
-        assert!(same_vendor(&[&haiku], &panel));
-        let opus = row("claude-acp", "opus[1m]");
-        let panel = ordinary_judges(&[&opus], &text, two_vendors());
-        assert_eq!(ids(&panel), ["invented-sol", "sonnet"]);
-        assert!(same_vendor(&[&opus], &panel));
-        // A visual rubric, judged by one vendor's models today, seats one
-        // judge per model, still never of the candidate's vendor.
+        assert!(seat(row("invented-provider", "model"), &text).is_empty());
+        // Two labs offered: one each, no fill needed.
+        let two_labs = || offered().into_iter().take(3).collect::<Vec<_>>();
+        assert_eq!(
+            ids(&ordinary_judges(&[&haiku], &text, two_labs())),
+            ["opus[1m]", "invented-sol"]
+        );
+        // One lab offered (a visual rubric while only Claude passed a visual
+        // calibration): its models fill the panel to two, marked.
         let mut visual = creative();
         visual.environment["authoredBy"] = json!([]);
         let claude_only = || offered().into_iter().take(2).collect::<Vec<_>>();
-        let candidate = row("codex-acp", "invented-luna");
-        assert_eq!(
-            ids(&ordinary_judges(&[&candidate], &visual, claude_only())),
-            ["opus[1m]", "sonnet"]
-        );
-        let candidate = row("claude-acp", "haiku");
-        let panel = ordinary_judges(&[&candidate], &visual, claude_only());
+        let luna = row("codex-acp", "invented-luna");
+        let panel = ordinary_judges(&[&luna], &visual, claude_only());
         assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
-        assert!(same_vendor(&[&candidate], &panel));
+        assert!(!same_vendor(&[&luna], &panel));
+        let panel = ordinary_judges(&[&haiku], &visual, claude_only());
+        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
+        assert!(same_vendor(&[&haiku], &panel));
+        // Every lab passed visual: the same three labs.
+        assert_eq!(ids(&ordinary_judges(&[&haiku], &visual, offered())), labs);
     }
     #[test]
     fn a_judge_seat_goes_to_the_account_with_the_most_headroom() {
@@ -9763,11 +9820,7 @@ mod tests {
         let mut draft = seed_definitions().remove(0);
         draft.split = "held_out".into();
         draft.task_family = "invented-held-out-family".into();
-        let held_out = s
-            .store
-            .save_draft(None, None, draft)
-            .await
-            .unwrap();
+        let held_out = s.store.save_draft(None, None, draft).await.unwrap();
         let held_out = s.store.publish(&held_out.id, 1).await.unwrap().id;
         req.configurations[0].provider_id = "zai-acp".into();
         req.version_ids = vec![train.clone(), held_out.clone()];
@@ -11519,9 +11572,10 @@ mod tests {
         assert_eq!(seated, listing);
         assert!(refused.is_none());
         // Older: a refresh is tried; refused, the listing still seats.
-        let (seated, refused) = judge_inventory(Some(kept(2 * 3600, None)), async { Err(refusal()) })
-            .await
-            .unwrap();
+        let (seated, refused) =
+            judge_inventory(Some(kept(2 * 3600, None)), async { Err(refusal()) })
+                .await
+                .unwrap();
         assert_eq!(seated, listing);
         let (age, error) = refused.unwrap();
         assert!(age >= Duration::from_secs(2 * 3600));
@@ -11536,19 +11590,29 @@ mod tests {
         let newer = json!({"executable": {"path": "bridge.js"}, "models": [{"modelId": "n"}]});
         let answered = newer.clone();
         let (seated, refused) =
-            judge_inventory(Some(kept(2 * 3600, Some(3600))), async move { Ok(answered) })
-                .await
-                .unwrap();
+            judge_inventory(
+                Some(kept(2 * 3600, Some(3600))),
+                async move { Ok(answered) },
+            )
+            .await
+            .unwrap();
         assert_eq!(seated, newer);
         assert!(refused.is_none());
         // Too old, or never listed: only a live listing seats.
-        assert!(judge_inventory(Some(kept(13 * 3600, None)), async { Err(refusal()) })
+        assert!(
+            judge_inventory(Some(kept(13 * 3600, None)), async { Err(refusal()) })
+                .await
+                .is_err()
+        );
+        assert!(judge_inventory(None, async { Err(refusal()) })
             .await
             .is_err());
-        assert!(judge_inventory(None, async { Err(refusal()) }).await.is_err());
         let answered = newer.clone();
         assert_eq!(
-            judge_inventory(None, async move { Ok(answered) }).await.unwrap().0,
+            judge_inventory(None, async move { Ok(answered) })
+                .await
+                .unwrap()
+                .0,
             newer
         );
     }

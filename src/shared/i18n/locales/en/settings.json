@@ -702,7 +702,7 @@
     },
     "judges": {
       "title": "Judges",
-      "description": "Rubric tests are judged only by models in this pool: never by a model from the candidate's own vendor, never by one whose provider may train on submitted data, and only once it passed a calibration on answers whose verdict is known.",
+      "description": "Rubric tests are judged by one model per lab from this pool, the candidate's own lab included, so the other labs dilute its score: never by the test's author, never by one whose provider may train on submitted data, and only once it passed a calibration on answers whose verdict is known.",
       "statusFailed": "Judge status could not be read: {{message}}",
       "empty": "No judges yet",
       "emptyDescription": "Add a model below, then calibrate it.",

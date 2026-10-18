@@ -16,9 +16,12 @@ use super::{
 use crate::services::agent_host::execution::NativeProvider;
 use crate::services::provider_account_status::Headroom;
 
-/// The ordinary panel's recipe. It enters the judge protocol and its hash,
-/// and a calibration counts for this recipe only.
+/// The calibration recipe: a calibration counts for this recipe only.
 pub(crate) const RECIPE: &str = "strong-pool-v1";
+/// How an ordinary panel seats the pool's calibrated judges (owner, 10-18):
+/// one per lab, a candidate's own lab and model included (see
+/// `runner::ordinary_judges`). It enters the judge protocol and its hash.
+pub(crate) const PANEL_RECIPE: &str = "three-lab-v1";
 /// The benchmark settings document the renderer writes.
 const SETTINGS: &str = "settings.json";
 const CALIBRATIONS: &str = "judge-calibrations.json";
@@ -177,6 +180,34 @@ pub struct Calibration {
     pub account_id: Option<String>,
     pub controls: Vec<ControlScore>,
     pub failure: Option<String>,
+    /// For a judge whose provider has not been checked to see images: its
+    /// visual controls, judged once the text ones passed (see
+    /// [`VisualCalibration`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual: Option<VisualCalibration>,
+}
+
+/// Whether a judge of a provider not yet checked to see images judges them:
+/// the visual rubrics' controls, accepted and rejected renderings with their
+/// bands, which a judge that does not see the image cannot score inside
+/// both, so they are also the image probe. Passing seats the entry on visual
+/// rubrics; failing leaves its text seats as they are.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualCalibration {
+    /// `running`, `passed`, `failed` or `interrupted` (a restart cut it off).
+    pub status: String,
+    pub controls: Vec<ControlScore>,
+    pub failure: Option<String>,
+}
+
+/// Whether the entry's provider is checked to see images, or its newest
+/// calibration passed the visual controls.
+fn sees_images(entry: &Entry, calibration: Option<&Calibration>) -> bool {
+    runner::judge_provider_allowed(&entry.provider_id)
+        || calibration
+            .and_then(|calibration| calibration.visual.as_ref())
+            .is_some_and(|visual| visual.status == "passed")
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -208,8 +239,16 @@ pub async fn calibrations(root: &Path) -> Result<Vec<Calibration>> {
     let mut all = read(root).await?;
     let live: Vec<String> = running().iter().map(|(id, _)| id.clone()).collect();
     for calibration in &mut all {
-        if calibration.status == "running" && !live.contains(&calibration.id) {
+        let cut = !live.contains(&calibration.id);
+        if calibration.status == "running" && cut {
             calibration.status = "interrupted".into();
+        }
+        if let Some(visual) = calibration
+            .visual
+            .as_mut()
+            .filter(|visual| visual.status == "running" && cut)
+        {
+            visual.status = "interrupted".into();
         }
     }
     all.sort_by_key(|calibration| std::cmp::Reverse(calibration.started_at));
@@ -291,7 +330,10 @@ pub async fn seatable(root: &Path, textual: bool) -> Result<Vec<Entry>> {
         .await
         .into_iter()
         .filter(|entry| {
-            entry.judges(textual) && refusal(entry, latest(&all, entry), &data_use).is_none()
+            let calibration = latest(&all, entry);
+            entry.judges(textual)
+                && refusal(entry, calibration, &data_use).is_none()
+                && (textual || sees_images(entry, calibration))
         })
         .collect())
 }
@@ -335,6 +377,8 @@ pub struct Row {
     pub vendor: Option<&'static str>,
     pub calibration: Option<Calibration>,
     pub seats: bool,
+    /// Whether it also seats on visual rubrics (see [`sees_images`]).
+    pub seats_visual: bool,
     pub reason: Option<String>,
 }
 
@@ -360,6 +404,9 @@ pub async fn status(root: &Path) -> Result<Status> {
             Row {
                 vendor: vendor(&entry.provider_id),
                 seats: reason.is_none(),
+                seats_visual: reason.is_none()
+                    && entry.judges(false)
+                    && sees_images(&entry, calibration.as_ref()),
                 entry,
                 calibration,
                 reason,
@@ -373,35 +420,37 @@ pub async fn status(root: &Path) -> Result<Status> {
     })
 }
 
+type ControlSets = Vec<(qualification::Record, BenchmarkVersion)>;
+
 /// The rubric qualification records whose controls `entry` is calibrated on,
 /// with their versions: every text rubric's, and a visual rubric's when the
-/// entry judges visual rubrics and its provider's models see images.
-async fn control_sets(
-    store: &Store,
-    entry: &Entry,
-) -> Result<Vec<(qualification::Record, BenchmarkVersion)>> {
+/// entry judges visual rubrics and its provider is checked to see images.
+/// Second, for an entry that judges visual rubrics on a provider not yet
+/// checked, the visual rubrics' records its visual calibration judges.
+async fn control_sets(store: &Store, entry: &Entry) -> Result<(ControlSets, ControlSets)> {
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM selector_qualifications WHERE revoked_at IS NULL ORDER BY created_at,id",
     )
     .fetch_all(&store.pool)
     .await?;
-    let mut sets = Vec::new();
+    let checked = runner::judge_provider_allowed(&entry.provider_id);
+    let (mut sets, mut visual) = (Vec::new(), Vec::new());
     for id in ids {
         let record = store.qualification(&id).await?;
         if record.request.rubric.is_none() || record.request.controls.is_empty() {
             continue;
         }
         let version = store.version(&record.request.version_id).await?;
-        let textual = runner::text_judged(&version.manifest);
-        if version.manifest.evaluator.kind != "rubric"
-            || !(textual
-                || (entry.judges(false) && runner::judge_provider_allowed(&entry.provider_id)))
-        {
+        if version.manifest.evaluator.kind != "rubric" {
             continue;
         }
-        sets.push((record, version));
+        if runner::text_judged(&version.manifest) || (entry.judges(false) && checked) {
+            sets.push((record, version));
+        } else if entry.judges(false) {
+            visual.push((record, version));
+        }
     }
-    Ok(sets)
+    Ok((sets, visual))
 }
 
 /// Why a calibration stopped without a verdict on the judge.
@@ -417,18 +466,69 @@ fn judged_itself(evaluation: &Evaluation) -> bool {
 }
 
 /// Judges every control of `sets` with the entry's seat and records each
-/// score; the calibration fails on the first control out of its band.
+/// score; the calibration fails on the first control out of its band. Once
+/// the text controls passed, a judge of a provider not yet checked to see
+/// images judges `visual`, whose verdict only decides its visual seats.
 async fn run(
     store: &Store,
     backend: &dyn runner::ExecutionBackend,
     calibration: &mut Calibration,
     sets: &[(qualification::Record, BenchmarkVersion)],
+    visual: &[(qualification::Record, BenchmarkVersion)],
 ) -> Result<()> {
     let judge = backend
         .calibration_judge(&calibration.entry, &calibration.id)
         .await?;
     calibration.account_id = judge.account_id.clone();
     save(&store.root, calibration).await?;
+    calibration.failure = judge_controls(store, backend, calibration, &judge, sets, false).await?;
+    if calibration.failure.is_some() || visual.is_empty() {
+        return Ok(());
+    }
+    // The text verdict stands whatever happens to the visual phase, a
+    // restart included.
+    calibration.status = "passed".into();
+    calibration.visual = Some(VisualCalibration {
+        status: "running".into(),
+        controls: Vec::new(),
+        failure: None,
+    });
+    save(&store.root, calibration).await?;
+    let judged = judge_controls(store, backend, calibration, &judge, visual, true).await;
+    let settled = calibration
+        .visual
+        .as_mut()
+        .expect("visual calibration started");
+    match judged {
+        Ok(None) => settled.status = "passed".into(),
+        Ok(Some(failure)) => {
+            settled.status = "failed".into();
+            settled.failure = Some(failure);
+        }
+        // A judge that cannot take a rendering at all fails the probe; a
+        // passing one needs a calibration again.
+        Err(error) => {
+            settled.status = "failed".into();
+            settled.failure = Some(format!(
+                "The judge gave no answer on a rendering: {}: {}",
+                error.code, error.message
+            ));
+        }
+    }
+    save(&store.root, calibration).await
+}
+
+/// Judges every control of `sets` with `judge`, recording each score in the
+/// calibration's text controls or, for `visual`, its visual ones, and
+/// returns the first control out of its band as the failure.
+async fn judge_controls(
+    store: &Store,
+    backend: &dyn runner::ExecutionBackend,
+    calibration: &mut Calibration,
+    judge: &Configuration,
+    sets: &[(qualification::Record, BenchmarkVersion)],
+    visual: bool,
+) -> Result<Option<String>> {
     for (record, version) in sets {
         let Some(band) = record.request.rubric.as_ref() else {
             continue;
@@ -442,7 +542,7 @@ async fn run(
             let asked = now();
             let judged = loop {
                 let judged = backend
-                    .calibrate_control(store, version, record, index, &judge, directory.clone())
+                    .calibrate_control(store, version, record, index, judge, directory.clone())
                     .await?;
                 let busy = matches!(
                     judged.reason.as_deref(),
@@ -473,32 +573,40 @@ async fn run(
                 .map(|evaluation| evaluation.reason.clone())
                 .or_else(|| judged.reason.clone())
                 .unwrap_or_default();
-            calibration.controls.push(ControlScore {
+            let scored = ControlScore {
                 record_id: record.id.clone(),
                 control_id: control.id.clone(),
                 expected: control.expected.clone(),
                 score,
                 in_band: qualification::in_band(band, &control.expected, score),
                 reason: reason.chars().take(500).collect(),
-            });
+            };
+            let miss = (!scored.in_band).then(|| control_failure(&scored));
+            match calibration.visual.as_mut().filter(|_| visual) {
+                Some(visual) => visual.controls.push(scored),
+                None => calibration.controls.push(scored),
+            }
             save(&store.root, calibration).await?;
-            if let Some(miss) = calibration.controls.last().filter(|scored| !scored.in_band) {
-                calibration.failure = Some(format!(
-                    "Control {} expected {} and scored {}",
-                    miss.control_id,
-                    if miss.expected == "pass" {
-                        "an accepted answer"
-                    } else {
-                        "a rejected answer"
-                    },
-                    miss.score
-                        .map_or("no valid sheet".to_owned(), |score| format!("{score:.2}"))
-                ));
-                return Ok(());
+            if miss.is_some() {
+                return Ok(miss);
             }
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+fn control_failure(miss: &ControlScore) -> String {
+    format!(
+        "Control {} expected {} and scored {}",
+        miss.control_id,
+        if miss.expected == "pass" {
+            "an accepted answer"
+        } else {
+            "a rejected answer"
+        },
+        miss.score
+            .map_or("no valid sheet".to_owned(), |score| format!("{score:.2}"))
+    )
 }
 
 impl BenchmarkService {
@@ -535,7 +643,7 @@ impl BenchmarkService {
         {
             return Err(BenchmarkError::new("validation", reason));
         }
-        let sets = control_sets(&self.store, &entry).await?;
+        let (sets, visual) = control_sets(&self.store, &entry).await?;
         if sets.is_empty() {
             return Err(BenchmarkError::new(
                 "validation",
@@ -552,6 +660,7 @@ impl BenchmarkService {
             account_id: None,
             controls: Vec::new(),
             failure: None,
+            visual: None,
         };
         {
             let mut live = running();
@@ -573,7 +682,7 @@ impl BenchmarkService {
         let mut settled = calibration.clone();
         tokio::spawn(async move {
             let interrupted =
-                match Box::pin(run(&store, backend.as_ref(), &mut settled, &sets)).await {
+                match Box::pin(run(&store, backend.as_ref(), &mut settled, &sets, &visual)).await {
                     Ok(()) => false,
                     Err(error) => {
                         settled.failure = Some(format!("{}: {}", error.code, error.message));
@@ -598,7 +707,7 @@ impl BenchmarkService {
             }
             running().retain(|(live, _)| live != &settled.id);
             log::info!(
-                "[benchmarks] judge calibration {} of {} {} at {}: {} ({} controls{})",
+                "[benchmarks] judge calibration {} of {} {} at {}: {} ({} controls{}){}",
                 settled.id,
                 settled.entry.provider_id,
                 settled.entry.model_id,
@@ -609,6 +718,20 @@ impl BenchmarkService {
                     .failure
                     .as_deref()
                     .map(|failure| format!("; {failure}"))
+                    .unwrap_or_default(),
+                settled
+                    .visual
+                    .as_ref()
+                    .map(|visual| format!(
+                        "; visual {} ({} controls{})",
+                        visual.status,
+                        visual.controls.len(),
+                        visual
+                            .failure
+                            .as_deref()
+                            .map(|failure| format!("; {failure}"))
+                            .unwrap_or_default()
+                    ))
                     .unwrap_or_default()
             );
             super::notify_changed(&store, app.as_ref()).await;
@@ -644,6 +767,7 @@ mod tests {
             controls: Vec::new(),
             failure: (status == "failed")
                 .then(|| "Control c expected a rejected answer and scored 0.41".into()),
+            visual: None,
         }
     }
 
@@ -786,7 +910,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(calibrations(root.path()).await.unwrap().len(), 3);
-        assert_eq!(seatable(root.path(), true).await.unwrap(), [opus, sol]);
+        assert_eq!(
+            seatable(root.path(), true).await.unwrap(),
+            [opus.clone(), sol.clone()]
+        );
+        // A provider not checked to see images seats on visual rubrics only
+        // once its calibration passed the visual controls, which leave its
+        // text seat alone when they fail.
+        assert_eq!(
+            seatable(root.path(), false).await.unwrap(),
+            [opus.clone(), visual.clone()]
+        );
+        let mut probed = calibration(sol.clone(), "passed", 3);
+        probed.visual = Some(VisualCalibration {
+            status: "failed".into(),
+            controls: Vec::new(),
+            failure: Some("Control v expected an accepted answer and scored 0.20".into()),
+        });
+        save(root.path(), &probed).await.unwrap();
+        assert_eq!(
+            seatable(root.path(), true).await.unwrap(),
+            [opus.clone(), sol.clone()]
+        );
+        assert_eq!(
+            seatable(root.path(), false).await.unwrap(),
+            [opus.clone(), visual.clone()]
+        );
+        probed.visual.as_mut().unwrap().status = "passed".into();
+        save(root.path(), &probed).await.unwrap();
+        assert_eq!(
+            seatable(root.path(), false).await.unwrap(),
+            [opus.clone(), visual, sol.clone()]
+        );
+        let status = super::status(root.path()).await.unwrap();
+        assert!(status.pool.iter().all(|row| row.seats_visual));
+        // A restart during the visual phase keeps the passed text verdict
+        // and reads the visual phase as interrupted: text seats only.
+        probed.visual.as_mut().unwrap().status = "running".into();
+        save(root.path(), &probed).await.unwrap();
+        let stored = calibrations(root.path()).await.unwrap();
+        let cut = stored.iter().find(|stored| stored.id == probed.id).unwrap();
+        assert_eq!(cut.status, "passed");
+        assert_eq!(cut.visual.as_ref().unwrap().status, "interrupted");
+        assert!(seatable(root.path(), true).await.unwrap().contains(&sol));
+        assert!(!seatable(root.path(), false).await.unwrap().contains(&sol));
         // Calibrations that cannot be read seat nobody.
         std::fs::write(root.path().join(CALIBRATIONS), "{").unwrap();
         assert!(seatable(root.path(), true).await.unwrap().is_empty());
