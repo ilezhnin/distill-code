@@ -1373,7 +1373,30 @@ fn pace_key(store: &Store, account: &str) -> String {
 /// sent prompt, or a clean turn's speed at the concurrency it was admitted
 /// at. Turns that never reached the provider tell it nothing.
 fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
-    if account.is_empty() || !reached_provider(attempt) {
+    if reached_provider(attempt) {
+        pace(account, attempt, error, true);
+    }
+}
+
+/// What a finished workflow root tells its account's pace, as one turn
+/// admitted at its root's load: a rate-limit answer to any step halves it, a
+/// clean root counts toward a round. Its steps' summed tokens per second say
+/// nothing about one level, so it keeps no speed. A root no step of which
+/// reached the provider, or one admitted without an account seat (a policy
+/// root, whose workers this does not pace), tells it nothing.
+fn pace_workflow(account: &str, root: &Attempt, error: Option<&BenchmarkError>) {
+    let reached = reached_provider(root)
+        || root
+            .workflow_steps
+            .iter()
+            .any(|step| step.session_id.is_some() || step.host_run_id.is_some());
+    if reached && root.account_load.is_some() {
+        pace(account, root, error, false);
+    }
+}
+
+fn pace(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>, measured: bool) {
+    if account.is_empty() {
         return;
     }
     // A turn that ran out of its own time or was stopped says nothing about
@@ -1404,7 +1427,7 @@ fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
         let turns = attempt.account_load.as_ref().map_or(1, |load| load.turns);
         // Only a text turn's native time is the provider streaming; a
         // repository turn's includes its tools.
-        let speed = if attempt.configuration.execution_profile == "native_text" {
+        let speed = if measured && attempt.configuration.execution_profile == "native_text" {
             account_pace::speed(
                 attempt.usage.output,
                 attempt.usage.reasoning,
@@ -6559,14 +6582,29 @@ impl BenchmarkService {
         let result = if let Err(error) = run.request.require_dispatch_admission(now()) {
             Err(error)
         } else if version.manifest.workflow.is_some() {
-            super::workflow::execute(
+            let executed = super::workflow::execute(
                 self,
                 a.clone(),
                 version.clone(),
                 run.request.timeout_seconds,
                 cancel_rx.clone(),
             )
-            .await
+            .await;
+            let account = format!(
+                "{}\u{1f}{}",
+                a.configuration.provider_id,
+                a.configuration.account_id.as_deref().unwrap_or_default()
+            );
+            let paced = pace_key(&self.store, &account);
+            match &executed {
+                Ok(root) => pace_workflow(&paced, root, None),
+                Err(error) => {
+                    if let Ok(saved) = self.store.attempt(&a.id).await {
+                        pace_workflow(&paced, &saved, Some(error));
+                    }
+                }
+            }
+            executed
         } else {
             let executed = self
                 .backend
@@ -7950,6 +7988,112 @@ mod tests {
         pace_turn(account, &limited, None);
         pace_turn(account, &limited, None);
         assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS / 2);
+    }
+    /// A workflow root as its account's pace sees it: one turn admitted at
+    /// the root's load, its steps on the provider. `turns`, the outcome and
+    /// the reason are each test's.
+    fn workflow_root(turns: u32, outcome: &str, reason: Option<&str>) -> Attempt {
+        let row = judge_row("sonnet");
+        let mut root = super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        root.outcome = Some(outcome.into());
+        root.reason = reason.map(str::to_owned);
+        root.usage.output = Some(5000);
+        root.native_execution_ms = Some(10_000);
+        root.account_load = Some(AccountLoad { turns, limit: 4 });
+        root.workflow_steps = vec![WorkflowStepEvidence {
+            root_task_id: "invented-root".into(),
+            step_id: "invented-step".into(),
+            parent_step_id: None,
+            entry_state_hash: "invented-hash".into(),
+            attempt_id: "invented-step-attempt".into(),
+            session_id: Some("invented-session".into()),
+            host_run_id: None,
+            evidence_hash: None,
+            outcome: Some(outcome.into()),
+        }];
+        root
+    }
+    #[test]
+    fn a_workflow_root_admitted_full_counts_toward_its_accounts_round() {
+        let account = "invented-acp\u{1f}pace-workflow-round";
+        // Roots admitted with fewer beside them fill no round.
+        for turns in 1..4 {
+            pace_workflow(account, &workflow_root(turns, "completed", None), None);
+        }
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS);
+        for _ in 0..ACCOUNT_SLOTS {
+            pace_workflow(account, &workflow_root(4, "completed", None), None);
+        }
+        assert_eq!(account_pace::limit(account), 2 * ACCOUNT_SLOTS);
+        // A policy root, admitted without an account seat, and a root no step
+        // of which reached the provider tell the pace nothing, not even a
+        // rate limit their reason quotes.
+        let other = "invented-acp\u{1f}pace-workflow-unseated";
+        let limited = Some("HTTP 429 Too Many Requests");
+        let mut unseated = workflow_root(4, "provider_error", limited);
+        unseated.account_load = None;
+        let mut unsent = workflow_root(4, "provider_error", limited);
+        unsent.workflow_steps[0].session_id = None;
+        for _ in 0..2 * ACCOUNT_SLOTS {
+            pace_workflow(other, &unseated, None);
+            pace_workflow(other, &unsent, None);
+        }
+        assert_eq!(account_pace::limit(other), ACCOUNT_SLOTS);
+    }
+    #[test]
+    fn a_rate_limited_workflow_step_halves_its_accounts_pace() {
+        let reason = "invented-acp\u{1f}pace-workflow-reason";
+        let limited = workflow_root(4, "provider_error", Some("HTTP 429 Too Many Requests"));
+        pace_workflow(reason, &limited, None);
+        assert_eq!(account_pace::limit(reason), ACCOUNT_SLOTS / 2);
+        let error = "invented-acp\u{1f}pace-workflow-error";
+        pace_workflow(
+            error,
+            &workflow_root(4, "completed", None),
+            Some(&BenchmarkError::new(
+                "provider_error",
+                "rate limit reached for requests",
+            )),
+        );
+        assert_eq!(account_pace::limit(error), ACCOUNT_SLOTS / 2);
+    }
+    #[test]
+    fn a_workflow_root_keeps_no_speed_sample() {
+        // As text turns, five alone at 500 tokens/s and five beside three
+        // others at 100 would send the pace below four (see
+        // only_text_turns_teach_the_pace_speed_and_timeouts_never_throttle);
+        // as workflow roots they only fill a round.
+        let account = "invented-acp\u{1f}pace-workflow-speed";
+        for _ in 0..5 {
+            let mut alone = workflow_root(1, "completed", None);
+            alone.usage.output = Some(5000);
+            let mut beside = workflow_root(4, "completed", None);
+            beside.usage.output = Some(1000);
+            pace_workflow(account, &alone, None);
+            pace_workflow(account, &beside, None);
+        }
+        assert_eq!(account_pace::limit(account), 2 * ACCOUNT_SLOTS);
+    }
+    #[test]
+    fn a_workflow_root_that_fails_otherwise_neither_grows_nor_halves_the_pace() {
+        let account = "invented-acp\u{1f}pace-workflow-failure";
+        for _ in 0..2 * ACCOUNT_SLOTS {
+            pace_workflow(
+                account,
+                &workflow_root(4, "provider_error", Some("stream disconnected")),
+                None,
+            );
+            pace_workflow(account, &workflow_root(4, "fail", None), None);
+            pace_workflow(
+                account,
+                &workflow_root(4, "completed", None),
+                Some(&BenchmarkError::new(
+                    "infrastructure_failure",
+                    "Repository sandbox: Sandbox copy failed",
+                )),
+            );
+        }
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS);
     }
     /// A sealed turn whose answer could not be collected before its deadline
     /// because the sandbox had no room is unscored infrastructure, never the
