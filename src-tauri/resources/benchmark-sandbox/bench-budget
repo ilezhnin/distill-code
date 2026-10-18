@@ -1030,7 +1030,7 @@ def refused(reason, resource=None, need=0):
     return busy
 
 
-def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False):
+def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False, timing=False):
     """Admit `kind` beside `active` or raise BlockingIOError naming the line
     that holds it. Returns the measurements it decided on. A check or
     preparation it refuses for room keeps that room from new attempts for
@@ -1040,7 +1040,7 @@ def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False):
     nothing, so an admitted repository attempt keeps its room from text
     sessions until its reservation."""
     try:
-        observed = admit_measured(active, kind, gate, host_buffers, continuing)
+        observed = admit_measured(active, kind, gate, host_buffers, continuing, timing)
     except BlockingIOError as busy:
         resource = getattr(busy, 'resource', None)
         if (kind not in ATTEMPTS or continuing) and resource:
@@ -1058,7 +1058,7 @@ def decide(active, kind, gate, host_buffers=0, continuing=False, probe=False):
     return observed
 
 
-def admit_measured(active, kind, gate, host_buffers, continuing=False):
+def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=False):
     """Admission of `kind`. A `continuing` session (a later step of a
     workflow already under way) is an attempt that goes ahead of new ones:
     no room kept for waiting jobs, no CPU pressure or check-stall guard, no
@@ -1147,6 +1147,22 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False):
             else:
                 fits = timed + cpu + sessions_cpus <= capacity
             return 'measured' if fits else None
+        # A timing-sensitive check times what it checks (a planning lab's
+        # planner on a budget of seconds). While one runs no new CPU-heavy job
+        # starts beside it, the running ones go on, and the hold ends with
+        # its lease; one starts only while the measured use leaves its whole
+        # ceiling free.
+        if any(row.get('timing') for row in active):
+            # A timing check waiting behind another keeps its CPUs from new
+            # attempts meanwhile, as a check refused CPUs does.
+            raise refused('a timing-sensitive check runs, and CPU-heavy jobs start after it',
+                          'cpu' if timing else None, cpu if timing else 0)
+        # The samples lag: the measured use beside the running timed jobs,
+        # those jobs at their ceilings and sessions too new to show in the
+        # samples at theirs, added up. Without a sample, every ceiling.
+        occupied = used + CLASSES['repository'][1] * unsettled + timed
+        if timing and occupied + cpu > capacity:
+            raise refused('the measured CPU use leaves no timing-sensitive check its whole ceiling', 'cpu', cpu)
         admitted_by = admitted(kept_cpus)
         if kind == 'repository' and admitted_by != 'ceilings' and not continuing:
             if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
@@ -1169,6 +1185,8 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False):
                     sessionBurst=round(burst, 3), repositorySessions=sessions, admittedBy=admitted_by)
     if continuing:
         observed['continuing'] = True
+    if timing:
+        observed['timing'] = True
     return observed
 
 
@@ -1277,16 +1295,19 @@ def make_groups(kind, identifier):
     return groups
 
 
-def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=False, probe=False):
+def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=False, probe=False, timing=False):
     """Reserve `kind` for `identifier`, or raise BlockingIOError. A `probe`
     (`bench-budget admits`) runs the same checks and reserves nothing: a
     session whose workspace is prepared before it opens asks first, so a
     refused retry prepares nothing. Its admission leaves the priority holds
-    for the reservation that follows."""
+    for the reservation that follows. A `timing` check (a timing-sensitive
+    one) holds new CPU-heavy jobs back while it runs (see admit_measured)."""
     deadline = deadline_ms / 1000
     ident(identifier)
     if kind not in CLASSES or not time.time() < deadline <= time.time() + 86400 + 480 or not 0 <= host_buffers <= GIB + 65536:
         fail('unsupported benchmark class or reservation deadline')
+    if timing and kind not in ('check', 'pair'):
+        fail('only a check can be timing-sensitive')
     setup()
     with locked():
         active = receipts()
@@ -1294,7 +1315,7 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
         # reservation. The one at the head keeps the room it was refused
         # from new attempts (kept_room); an attempt that leaves that room
         # starts beside the queue instead of waiting for it to empty.
-        observed = decide(active, kind, gate, host_buffers, continuing, probe)
+        observed = decide(active, kind, gate, host_buffers, continuing, probe, timing)
         scratch_headroom(active, kind)
         if probe:
             print(json.dumps({'id': identifier, 'class': kind, 'deadlineMs': deadline_ms, 'admits': True}))
@@ -1308,6 +1329,8 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
                    groups=groups, deadline=deadline, memory=memory + host_buffers, cpu=cpu, pids=pids, lane=lane,
                    host_buffers=host_buffers, admitted=time.time())
         row.update(scratch_bytes=scratch_bytes, scratch_inodes=scratch_inodes)
+        if timing:
+            row['timing'] = True
         replace_private(STATE / ('lease-' + token + '.json'), json.dumps(row))
         print(json.dumps({'token': token, 'id': identifier, 'class': kind, 'deadlineMs': deadline_ms,
                           'admission': record}))
@@ -1800,11 +1823,12 @@ def main():
         except OSError:
             pass
         return 0
-    if len(sys.argv) in (6, 7, 8) and sys.argv[1] in ('reserve', 'admits'):
-        if len(sys.argv) == 8 and sys.argv[7] != 'continuing':
+    if len(sys.argv) in (6, 7, 8, 9) and sys.argv[1] in ('reserve', 'admits'):
+        flags = sys.argv[7:]
+        if len(set(flags)) != len(flags) or not set(flags) <= {'continuing', 'timing'}:
             fail('unsupported benchmark reservation flag')
         reserve(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6]) if len(sys.argv) >= 7 else 0,
-                len(sys.argv) == 8, sys.argv[1] == 'admits')
+                'continuing' in flags, sys.argv[1] == 'admits', 'timing' in flags)
         return 0
     if len(sys.argv) == 3 and sys.argv[1] == 'outcome':
         token = sys.argv[2]

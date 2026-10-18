@@ -255,6 +255,31 @@ pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str, credits: bool
         .is_some_and(|status| blocked(status, None, credits, now_ms()).0)
 }
 
+/// The least share left, in percent, across the last known usage windows of
+/// `account_id` that apply to `model_id`; `None` while nothing is known. Reads
+/// the cache only.
+pub(crate) async fn usage_headroom(
+    app: &AppHandle,
+    account_id: &str,
+    model_id: Option<&str>,
+) -> Option<f64> {
+    let state = app.state::<ProviderAccountStatusState>();
+    let cache = state.native.cache.lock().await;
+    cache
+        .get(account_id)
+        .and_then(|status| headroom(status, model_id))
+}
+
+fn headroom(status: &ProviderAccountStatus, model_id: Option<&str>) -> Option<f64> {
+    status
+        .limits
+        .iter()
+        .filter(|window| applies(window, model_id))
+        .filter_map(|window| window.used_percent)
+        .map(|used| (100.0 - used).max(0.0))
+        .reduce(f64::min)
+}
+
 /// Whether a turn of `model_id` on `status` can run only on the account's
 /// credits: plan usage is spent and its credits cover it. Also gives when plan
 /// usage resets, where every spent window names it.

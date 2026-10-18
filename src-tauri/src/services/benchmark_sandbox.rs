@@ -140,6 +140,16 @@ pub struct Admission {
     /// Set on a later workflow step's session, admitted ahead of new attempts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuing: Option<bool>,
+    /// Set on a timing-sensitive check: no new CPU-heavy job started beside
+    /// it, and it started with its whole ceiling free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<bool>,
+    /// CPUs the whole guest worked and the host ran outside the VM over the
+    /// last sampled seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_cpu: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outside_cpu: Option<f64>,
     /// Memory the benchmark cgroup actually used at admission.
     pub memory_current: u64,
     /// The WSL guest's 1, 5 and 15 minute load averages, CPUs and free memory.
@@ -542,7 +552,7 @@ pub(crate) async fn reserve(
     continuing: bool,
 ) -> io::Result<Reservation> {
     let mut reservation =
-        match reserve_with_buffers_for(class, id, deadline_ms, 0, continuing).await {
+        match reserve_with_buffers_for(class, id, deadline_ms, 0, continuing, false).await {
             Err(error)
                 if error.kind() == io::ErrorKind::TimedOut && remaining_ms(deadline_ms).is_ok() =>
             {
@@ -566,7 +576,7 @@ async fn reserve_with_buffers(
     deadline_ms: u64,
     host_buffers: usize,
 ) -> io::Result<Reservation> {
-    reserve_with_buffers_for(class, id, deadline_ms, host_buffers, false).await
+    reserve_with_buffers_for(class, id, deadline_ms, host_buffers, false, false).await
 }
 
 /// Asks the broker to admit `class` for `id`: `reserve`, or `admits` for the
@@ -579,6 +589,7 @@ async fn admission_answer(
     deadline_ms: u64,
     host_buffers: usize,
     continuing: bool,
+    timing: bool,
 ) -> io::Result<serde_json::Value> {
     valid_id(id)?;
     remaining_ms(deadline_ms)?;
@@ -589,6 +600,9 @@ async fn admission_answer(
     let mut args: Vec<&str> = vec![command, class.key(), id, &deadline, &gate, &host_buffers];
     if continuing {
         args.push("continuing");
+    }
+    if timing {
+        args.push("timing");
     }
     let out = invoke_raw(
         "/usr/local/sbin/bench-budget",
@@ -636,7 +650,7 @@ pub(crate) async fn admits(
     deadline_ms: u64,
     continuing: bool,
 ) -> io::Result<()> {
-    let value = match admission_answer("admits", class, id, deadline_ms, 0, continuing).await {
+    let value = match admission_answer("admits", class, id, deadline_ms, 0, continuing, false).await {
         Err(error) if error.kind() == io::ErrorKind::TimedOut && remaining_ms(deadline_ms).is_ok() => {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -659,9 +673,18 @@ async fn reserve_with_buffers_for(
     deadline_ms: u64,
     host_buffers: usize,
     continuing: bool,
+    timing: bool,
 ) -> io::Result<Reservation> {
-    let value =
-        admission_answer("reserve", class, id, deadline_ms, host_buffers, continuing).await?;
+    let value = admission_answer(
+        "reserve",
+        class,
+        id,
+        deadline_ms,
+        host_buffers,
+        continuing,
+        timing,
+    )
+    .await?;
     let token = value["token"]
         .as_str()
         .filter(|token| {
@@ -1464,7 +1487,7 @@ fn now_ms() -> io::Result<u64> {
 /// (`resource_busy`): nothing started, and the caller may ask again.
 #[allow(clippy::too_many_arguments)]
 async fn invoke_once_admitted(
-    (class, id): (ResourceClass, &str),
+    phase: (ResourceClass, &str),
     program: &str,
     args: &[&str],
     input: Option<&[u8]>,
@@ -1473,6 +1496,35 @@ async fn invoke_once_admitted(
     admit_until_ms: u64,
     deadline_ms: Option<u64>,
 ) -> io::Result<Output> {
+    invoke_once_admitted_as(
+        phase,
+        program,
+        args,
+        input,
+        cap,
+        run,
+        admit_until_ms,
+        deadline_ms,
+        false,
+    )
+    .await
+    .map(|(output, _)| output)
+}
+
+/// [`invoke_once_admitted`], also returning the admission record its lease
+/// was granted under; a `timing` lease is a timing-sensitive check's.
+#[allow(clippy::too_many_arguments)]
+async fn invoke_once_admitted_as(
+    (class, id): (ResourceClass, &str),
+    program: &str,
+    args: &[&str],
+    input: Option<&[u8]>,
+    cap: usize,
+    run: Duration,
+    admit_until_ms: u64,
+    deadline_ms: Option<u64>,
+    timing: bool,
+) -> io::Result<(Output, Admission)> {
     if cap > 512 * 1024 * 1024 || input.is_some_and(|bytes| bytes.len() > 512 * 1024 * 1024) {
         return Err(io::Error::new(
             io::ErrorKind::FileTooLarge,
@@ -1484,11 +1536,12 @@ async fn invoke_once_admitted(
         admission_window(admit_until_ms, deadline_ms),
         move || async move {
             let until = now_ms()?.saturating_add(run_after_admission(run, deadline_ms)?);
-            reserve_with_buffers(class, id, until, host_buffers).await
+            reserve_with_buffers_for(class, id, until, host_buffers, false, timing).await
         },
     )
     .await?;
     let run = run_after_admission(run, deadline_ms).map_err(|_| admission_queue_expired())?;
+    let admission = lease.admission.clone();
     invoke_reserved_bounded(
         &lease,
         program,
@@ -1498,6 +1551,7 @@ async fn invoke_once_admitted(
         Duration::from_millis(run),
     )
     .await
+    .map(|output| (output, admission))
 }
 
 /// The run time a helper admitted now gets: all of `run`, cut to what is left
@@ -2211,6 +2265,27 @@ pub(crate) async fn artifact(id: &str, package: &[u8], deadline_ms: u64) -> io::
         .map_err(|error| deadline_outcome(error, deadline_ms))
 }
 
+/// The artifact helper's refusals for size: each measures what the candidate's
+/// patches make of the published tree (which fit its limits when published),
+/// such as its canonical patch past the published artifact cap.
+const ARTIFACT_OVER_BUDGET: &[&str] = &[
+    "Artifact Git output exceeds its byte limit",
+    "Artifact contents exceed their byte limit",
+    "Artifact archive or package exceeds its byte limit",
+];
+
+/// A transition the helper refused for size: the answer past its budget, as
+/// `FileTooLarge`, not the sandbox failing. The admitting supervisor writes
+/// its own lines first; the helper's refusal is the last one.
+fn artifact_over_budget(code: Option<i32>, reason: &str) -> Option<io::Error> {
+    let last = reason
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())?;
+    (code == Some(2) && ARTIFACT_OVER_BUDGET.contains(&last))
+        .then(|| io::Error::new(io::ErrorKind::FileTooLarge, last.to_owned()))
+}
+
 async fn artifact_inner(id: &str, package: &[u8], deadline_ms: u64) -> io::Result<Vec<u8>> {
     valid_id(id)?;
     const MAX_PACKAGE: usize = 512 * 1024 * 1024;
@@ -2248,6 +2323,9 @@ async fn artifact_inner(id: &str, package: &[u8], deadline_ms: u64) -> io::Resul
             io::ErrorKind::TimedOut,
             reason.trim().to_owned(),
         ));
+    }
+    if let Some(refusal) = artifact_over_budget(out.code, &reason) {
+        return Err(refusal);
     }
     let out = out.require_success("artifact transition")?;
     if out.truncated {
@@ -2359,6 +2437,28 @@ pub(crate) async fn prepare_check(
 }
 
 pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result<Output> {
+    check_as(id, argv, seconds, false)
+        .await
+        .map(|(output, _)| output)
+}
+
+/// [`check`] for a timing-sensitive check: while it runs no new CPU-heavy job
+/// starts in the sandbox, and it starts only with its whole ceiling free.
+/// Returns the admission record, the load it started under.
+pub(crate) async fn check_timed(
+    id: &str,
+    argv: &[String],
+    seconds: u64,
+) -> io::Result<(Output, Admission)> {
+    check_as(id, argv, seconds, true).await
+}
+
+async fn check_as(
+    id: &str,
+    argv: &[String],
+    seconds: u64,
+    timing: bool,
+) -> io::Result<(Output, Admission)> {
     valid_id(id)?;
     if argv.is_empty() {
         return Err(io::Error::other("The check needs a command"));
@@ -2373,7 +2473,7 @@ pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result
         let phase = leased_class("/usr/local/sbin/bench-judge", &args)
             .await?
             .ok_or_else(|| io::Error::other("Sandbox check has no lease class"))?;
-        invoke_once_admitted(
+        invoke_once_admitted_as(
             phase,
             "/usr/local/sbin/bench-judge",
             &args,
@@ -2382,6 +2482,7 @@ pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result
             Duration::from_secs(seconds) + Duration::from_secs(30),
             now_ms()?.saturating_add(300_000),
             None,
+            timing,
         )
         .await
     }
@@ -2547,6 +2648,44 @@ mod tests {
             let mut stderr = text.clone().into_bytes();
             assert!(take_outcome_trailer(&mut stderr, &nonce).is_none(), "{text}");
             assert_eq!(stderr, text.into_bytes());
+        }
+    }
+
+    #[test]
+    fn an_artifact_the_helper_refuses_for_size_is_the_answer_past_its_cap() {
+        // A candidate's canonical patch past the published cap,
+        // after the admitting supervisor's own line.
+        let refusal = artifact_over_budget(
+            Some(2),
+            "resource_admitted: prep\nArtifact Git output exceeds its byte limit\n",
+        )
+        .unwrap();
+        assert_eq!(refusal.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(
+            refusal.to_string(),
+            "Artifact Git output exceeds its byte limit"
+        );
+        for reason in ARTIFACT_OVER_BUDGET {
+            assert!(artifact_over_budget(Some(2), reason).is_some(), "{reason}");
+        }
+        // Other refusals, a size line that is not the last, other exit codes
+        // and the published snapshot's own limit stay the sandbox's.
+        for (code, reason) in [
+            (Some(2), "Artifact Git operation refused: fatal: bad object"),
+            (Some(2), "Snapshot contents exceed their byte limit"),
+            (Some(2), "Invalid or over-budget artifact step patch"),
+            (
+                Some(2),
+                "Artifact Git output exceeds its byte limit\nlater failure",
+            ),
+            (Some(2), "\n \n"),
+            (Some(1), "Artifact Git output exceeds its byte limit"),
+            (None, "Artifact Git output exceeds its byte limit"),
+        ] {
+            assert!(
+                artifact_over_budget(code, reason).is_none(),
+                "{code:?} {reason}"
+            );
         }
     }
 

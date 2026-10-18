@@ -277,16 +277,7 @@ async fn transform_artifact(
     let id = format!("artifact-{}", uuid::Uuid::new_v4());
     let bytes = sandbox::artifact(&id, &package, deadline_ms)
         .await
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::TimedOut {
-                BenchmarkError::new(
-                    "budget_timeout",
-                    format!("Native repository operation: {error}"),
-                )
-            } else {
-                sandbox_error(error)
-            }
-        })?;
+        .map_err(artifact_error)?;
     let result = parse_artifact_result(snapshot, &bytes, max_bytes)?;
     if mode == "advance" {
         if let Some(last) = predecessors.last() {
@@ -857,6 +848,18 @@ async fn patch(dir: &Path, max_bytes: usize) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Whether a case's check times what it checks: a planning lab's planner on
+/// budgets of seconds, or a definition whose environment says so with
+/// `timingSensitive: true`. Its check runs with no new CPU-heavy job beside it.
+fn timing_sensitive(manifest: &BenchmarkDraft) -> bool {
+    manifest.work_class_id == "planning"
+        || manifest
+            .environment
+            .get("timingSensitive")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+}
+
 /// Scores the sealed answer. Empty answers remain a separate model outcome.
 pub async fn evaluate_patch(manifest: &BenchmarkDraft, patch: &str) -> Result<Evaluation> {
     if patch.trim().is_empty() {
@@ -890,6 +893,23 @@ fn evaluation(
         details,
         judge: None,
         usage: None,
+    }
+}
+
+/// What a refused artifact transition means for the attempt: its time ran
+/// out, or its answer is past the published artifact cap (the candidate's
+/// result, scored like a patch capture past it), else the sandbox failed.
+fn artifact_error(error: std::io::Error) -> BenchmarkError {
+    match error.kind() {
+        std::io::ErrorKind::TimedOut => BenchmarkError::new(
+            "budget_timeout",
+            format!("Native repository operation: {error}"),
+        ),
+        std::io::ErrorKind::FileTooLarge => BenchmarkError::new(
+            "budget_reached",
+            format!("The repository artifact exceeds the published artifact cap: {error}"),
+        ),
+        _ => sandbox_error(error),
     }
 }
 
@@ -1009,7 +1029,7 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
     verify(&snapshot).await?;
     let id = format!("check-{}", uuid::Uuid::new_v4());
     let mut cleanup = sandbox::Cleanup(Some(id.clone()));
-    let details = Some(
+    let mut details = Some(
         serde_json::json!({"sandbox": sandbox::DISTRIBUTION, "runtimeRevision": status.revision, "checkId": id}),
     );
     let result = async {
@@ -1023,7 +1043,24 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
                 details,
             ));
         }
-        match sandbox::check(&id, &check.command, check.timeout_seconds).await {
+        // A timing-sensitive check runs with no new CPU-heavy job beside it,
+        // and its evaluation keeps the load it started under for an audit.
+        let checked = if timing_sensitive(manifest) {
+            sandbox::check_timed(&id, &check.command, check.timeout_seconds)
+                .await
+                .map(|(output, admission)| {
+                    if let Some(details) = details.as_mut().and_then(|d| d.as_object_mut()) {
+                        details.insert(
+                            "admission".into(),
+                            serde_json::to_value(admission).unwrap_or_default(),
+                        );
+                    }
+                    output
+                })
+        } else {
+            sandbox::check(&id, &check.command, check.timeout_seconds).await
+        };
+        match checked {
             Ok(output) => {
                 if let Some(reason) = output.infrastructure_error() {
                     return Err(BenchmarkError::new("infrastructure_failure", reason));
@@ -1813,6 +1850,38 @@ else:
         })
         .to_string();
         draft
+    }
+
+    /// A planning lab's check, or one its definition marks, runs as a
+    /// timing-sensitive check; any other check does not.
+    #[test]
+    fn planning_labs_and_marked_definitions_have_timing_sensitive_checks() {
+        let mut draft = super::super::seeds::definitions().remove(0);
+        draft.work_class_id = "debug".into();
+        assert!(!timing_sensitive(&draft));
+        draft.environment["timingSensitive"] = serde_json::json!(true);
+        assert!(timing_sensitive(&draft));
+        draft.environment["timingSensitive"] = serde_json::json!("yes");
+        assert!(!timing_sensitive(&draft));
+        draft.work_class_id = "planning".into();
+        assert!(timing_sensitive(&draft));
+    }
+
+    #[test]
+    fn an_artifact_transition_past_the_cap_is_scored_like_a_patch_past_it() {
+        let error = |kind| std::io::Error::new(kind, "Artifact Git output exceeds its byte limit");
+        assert_eq!(
+            artifact_error(error(std::io::ErrorKind::FileTooLarge)).code,
+            "budget_reached"
+        );
+        assert_eq!(
+            artifact_error(error(std::io::ErrorKind::TimedOut)).code,
+            "budget_timeout"
+        );
+        assert_eq!(
+            artifact_error(error(std::io::ErrorKind::Other)).code,
+            "infrastructure_failure"
+        );
     }
 
     #[test]

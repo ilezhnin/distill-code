@@ -675,9 +675,65 @@ pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
     }
 }
 
+/// Model families that never take an ordinary judge seat (a frozen panel names
+/// its own seats): the tier kept for high-risk work, whose allowance a wave of
+/// judge turns would spend, and the small, fast tiers, too weak a judge to rank
+/// by (owner, 2026-10-18). A family matches within the resolved model id.
+pub(crate) const RESERVED_JUDGE_FAMILIES: &[&str] = &["fable"];
+pub(crate) const SMALL_JUDGE_FAMILIES: &[&str] = &["haiku"];
+/// Efforts too small for a judge on any model.
+pub(crate) const SMALL_JUDGE_EFFORTS: &[&str] = &["none", "minimal", "low"];
+
+/// Whether `configuration`, its model resolved to `model`, may take an
+/// ordinary judge seat (see [`RESERVED_JUDGE_FAMILIES`]).
+pub(crate) fn may_judge(configuration: &Configuration, model: &str) -> bool {
+    let model = model.to_lowercase();
+    let of = |families: &[&str]| families.iter().any(|family| model.contains(*family));
+    !of(RESERVED_JUDGE_FAMILIES)
+        && !of(SMALL_JUDGE_FAMILIES)
+        && !configuration
+            .effort
+            .as_deref()
+            .is_some_and(|effort| SMALL_JUDGE_EFFORTS.contains(&effort.to_lowercase().as_str()))
+}
+
+/// The offered judges with the most usage headroom first (percent left on
+/// their account, unknown last), so a seat goes to the eligible account that
+/// can spare it most rather than always to the first account listed.
+pub(crate) fn by_headroom(mut offered: Vec<(Option<f64>, Configuration)>) -> Vec<Configuration> {
+    offered.sort_by(|(a, _), (b, _)| {
+        b.unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&a.unwrap_or(f64::NEG_INFINITY))
+    });
+    offered
+        .into_iter()
+        .map(|(_, configuration)| configuration)
+        .collect()
+}
+
+/// The ordinary panel for a rendering from the offered rows, each with its
+/// account's headroom: [`select_judges`] over the rows [`may_judge`] admits,
+/// roomiest account first. A frozen panel names its own seats and is checked
+/// by [`select_judges`] alone.
+pub(crate) fn ordinary_judges(
+    candidates: &[&Configuration],
+    draft: &BenchmarkDraft,
+    offered: Vec<(Option<f64>, Configuration)>,
+) -> Vec<Configuration> {
+    let eligible = offered
+        .into_iter()
+        .filter(|(_, judge)| {
+            concrete_model(&judge.provider_id, &judge.model_id)
+                .is_some_and(|model| may_judge(judge, &model))
+        })
+        .collect();
+    select_judges(candidates, draft, by_headroom(eligible))
+}
+
 /// Up to three judges for a rendering, other providers first. A judge is never
 /// the candidate's own model (aliases resolved; an unresolved candidate alias
-/// admits no judge) and never an author of the case.
+/// admits no judge) and never an author of the case. Of one model offered on
+/// several accounts, the first offered takes the seat.
 pub(crate) fn select_judges(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
@@ -2269,16 +2325,19 @@ impl NativeBackend {
             }) else {
                 continue;
             };
-            offered.extend(
-                models
-                    .into_iter()
-                    .filter(|model| {
-                        model.available && model.configuration.execution_profile == "native_text"
-                    })
-                    .map(|model| model.configuration),
-            );
+            for model in models {
+                if model.available && model.configuration.execution_profile == "native_text" {
+                    let headroom = crate::services::provider_account_status::usage_headroom(
+                        &self.app,
+                        &account.id,
+                        Some(model.configuration.model_id.as_str()),
+                    )
+                    .await;
+                    offered.push((headroom, model.configuration));
+                }
+            }
         }
-        Ok(select_judges(&candidates, draft, offered))
+        Ok(ordinary_judges(&candidates, draft, offered))
     }
 
     /// Whether every judge's account is free before a batch starts or
@@ -7840,11 +7899,13 @@ mod tests {
             attempt
         };
         // Five turns alone at 500 tokens/s, five beside three others at 100.
+        // A repository turn teaches no speed, so its full round at four
+        // doubles the pace; the text turns' slowdown at four sends it to three.
         for (profile, account, limit) in [
             (
                 "protected_repository",
                 "invented-acp\u{1f}pace-repository",
-                4,
+                8,
             ),
             ("native_text", "invented-acp\u{1f}pace-text", 3),
         ] {
@@ -8225,29 +8286,41 @@ mod tests {
         };
         let ids =
             |panel: &[Configuration]| panel.iter().map(|c| c.model_id.clone()).collect::<Vec<_>>();
+        let ordinary = |candidate: &Configuration, draft: &BenchmarkDraft| {
+            let offered = offered().into_iter().map(|judge| (None, judge)).collect();
+            ordinary_judges(&[candidate], draft, offered)
+        };
         let mut draft = creative();
         draft.environment["authoredBy"] = json!([]);
-        // Any model but the candidate may judge a case nobody here wrote, and
-        // the alias never takes its target's seat.
-        let panel = select_judges(&[&judge_row("sonnet")], &draft, offered());
-        assert_eq!(ids(&panel), ["opus[1m]", "claude-fable-5-1[1m]", "haiku"]);
+        // Opus and Sonnet judge a case nobody here wrote: Fable and Haiku never
+        // take an ordinary seat, and the alias never takes its target's seat.
+        let panel = ordinary(&judge_row("haiku"), &draft);
+        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
         assert!(panel_issue(&panel).is_none());
-        // The default alias is Opus, so Opus never judges it.
-        let panel = select_judges(&[&judge_row("default")], &draft, offered());
-        assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "sonnet", "haiku"]);
-        // An author of the case never judges it; one judge cannot settle anything.
-        draft.environment["authoredBy"] =
-            json!([judge_row("haiku"), judge_row("claude-fable-5-1[1m]")]);
-        let panel = select_judges(&[&judge_row("opus[1m]")], &draft, offered());
-        assert_eq!(ids(&panel), ["sonnet"]);
+        // A frozen panel names its own seats: its check is `select_judges`
+        // alone, which seats them all.
+        let frozen = select_judges(&[&judge_row("sonnet")], &draft, offered());
+        assert_eq!(ids(&frozen), ["opus[1m]", "claude-fable-5-1[1m]", "haiku"]);
+        // A candidate that is one of them leaves one judge, who cannot settle
+        // anything: the rendering stays unjudged.
+        let panel = ordinary(&judge_row("sonnet"), &draft);
+        assert_eq!(ids(&panel), ["opus[1m]"]);
         assert!(panel_issue(&panel).is_some());
+        // The default alias is Opus, so Opus never judges it.
+        let panel = ordinary(&judge_row("default"), &draft);
+        assert_eq!(ids(&panel), ["sonnet"]);
+        // An author of the case never judges it.
+        draft.environment["authoredBy"] = json!([judge_row("sonnet")]);
+        let panel = ordinary(&judge_row("haiku"), &draft);
+        assert_eq!(ids(&panel), ["opus[1m]"]);
         // An author never judges through its alias either.
         draft.environment["authoredBy"] = json!([judge_row("opus[1m]")]);
-        let panel = select_judges(&[&judge_row("sonnet")], &draft, offered());
-        assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "haiku"]);
+        let panel = ordinary(&judge_row("haiku"), &draft);
+        assert_eq!(ids(&panel), ["sonnet"]);
         // A candidate alias with an unknown target admits no judge.
         let mut moving = judge_row("current");
         moving.provider_id = "other-provider".into();
+        assert!(ordinary(&moving, &draft).is_empty());
         assert!(select_judges(&[&moving], &draft, offered()).is_empty());
         // Generic examples without an exact author still exclude their candidate from judging.
         let seeded = creative();
@@ -8255,6 +8328,67 @@ mod tests {
             let panel = select_judges(&[&judge_row(candidate)], &seeded, offered());
             assert!(!panel.iter().any(|j| j.model_id == candidate));
         }
+    }
+    #[test]
+    fn the_judge_rule_keeps_reserved_and_small_tiers_off_ordinary_seats() {
+        let row = |model: &str, effort: Option<&str>| {
+            let mut judge = judge_row(model);
+            judge.effort = effort.map(str::to_owned);
+            (judge, model.to_owned())
+        };
+        let may = |(judge, model): (Configuration, String)| may_judge(&judge, &model);
+        assert!(may(row("opus[1m]", None)));
+        assert!(may(row("sonnet", Some("high"))));
+        assert!(!may(row("claude-fable-5-1[1m]", None)));
+        assert!(!may(row("claude-Fable-5[1m]", None)));
+        assert!(!may(row("haiku", None)));
+        assert!(!may(row("claude-haiku-4-5", None)));
+        // A small effort is a small tier on any model.
+        assert!(!may(row("invented-luna", Some("low"))));
+        assert!(!may(row("invented-luna", Some("Minimal"))));
+        assert!(!may(row("opus[1m]", Some("none"))));
+        assert!(may(row("invented-luna", Some("xhigh"))));
+    }
+    #[test]
+    fn a_judge_seat_goes_to_the_account_with_the_most_headroom() {
+        let on = |account: &str| {
+            let mut judge = judge_row("opus[1m]");
+            judge.id = format!("claude-acp:{account}:opus[1m]");
+            judge.account_id = Some(account.into());
+            judge
+        };
+        let ordered = by_headroom(vec![
+            (Some(20.0), on("first-listed")),
+            (None, on("unknown")),
+            (Some(80.0), on("spare")),
+            (Some(0.0), on("spent")),
+        ]);
+        let accounts: Vec<_> = ordered
+            .iter()
+            .map(|c| c.account_id.clone().unwrap())
+            .collect();
+        assert_eq!(accounts, ["spare", "first-listed", "spent", "unknown"]);
+        let mut draft = creative();
+        draft.environment["authoredBy"] = json!([]);
+        let panel = select_judges(&[&judge_row("haiku")], &draft, ordered);
+        assert_eq!(panel.len(), 1);
+        assert_eq!(panel[0].account_id.as_deref(), Some("spare"));
+        // The ordinary panel orders its rows so, and seats the roomier
+        // account's concrete row, not its alias of it.
+        let mut alias = on("roomier");
+        alias.model_id = "default".into();
+        let panel = ordinary_judges(
+            &[&judge_row("haiku")],
+            &draft,
+            vec![
+                (Some(50.0), on("spare")),
+                (Some(90.0), alias),
+                (Some(90.0), on("roomier")),
+            ],
+        );
+        assert_eq!(panel.len(), 1);
+        assert_eq!(panel[0].account_id.as_deref(), Some("roomier"));
+        assert_eq!(panel[0].model_id, "opus[1m]");
     }
     #[test]
     fn flagged_or_substituted_judge_turns_abstain() {
@@ -9122,10 +9256,21 @@ mod tests {
         let run = s.store.run(&run.id).await.unwrap();
         assert_eq!(run.state, "completed");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 40);
-        assert_eq!(
-            backend.peak_in_flight.load(Ordering::SeqCst),
-            2 * ACCOUNT_SLOTS as u64
-        );
+        // Every account slot dispatched before any turn could finish; full
+        // clean rounds then doubled the paces (slow start), and no more flew
+        // than the levels the turns were admitted under.
+        let most = |account: &str| {
+            run.attempts
+                .iter()
+                .filter(|a| a.configuration.account_id.as_deref() == Some(account))
+                .filter_map(|a| a.account_load.as_ref())
+                .map(|load| load.limit as usize)
+                .max()
+                .unwrap()
+        };
+        let peak = backend.peak_in_flight.load(Ordering::SeqCst) as usize;
+        assert!(peak >= 2 * ACCOUNT_SLOTS, "{peak}");
+        assert!(peak <= most("one") + most("two"), "{peak}");
         // A configuration's own turns overlap at most as far as its account's
         // pace allows: the run records no number of its own.
         assert_eq!(run.request.parallelism, Some(AS_ADMITTED));
@@ -9139,7 +9284,8 @@ mod tests {
                         && a.started_at < b.finished_at
                 })
                 .count();
-            assert!(overlapping <= ACCOUNT_SLOTS, "{overlapping}");
+            let account = a.configuration.account_id.as_deref().unwrap();
+            assert!(overlapping <= most(account), "{overlapping}");
         }
         dir.close().await;
     }

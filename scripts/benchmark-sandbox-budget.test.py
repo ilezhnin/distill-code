@@ -959,6 +959,126 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(BlockingIOError, 'CPU cores the host leaves free'):
             self.reserve('repository', 'fictional-sixth')
 
+    def test_a_timing_sensitive_check_runs_with_no_new_cpu_heavy_job_beside_it(self):
+        # A planning lab times its planner on budgets of seconds: while its
+        # check runs, no new CPU-heavy job starts, the running ones go on,
+        # and the hold ends with the check's lease. Light jobs still start.
+        self.roomy()
+        self.learn(repository=budget.GIB, check=budget.GIB)
+        self.measure(1.0)
+        self.reserve('repository', 'fictional-running')
+        self.settle()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            budget.reserve('check', 'fictional-planning', int(time.time() * 1000) + 60000, self.gate(), 0,
+                           False, False, True)
+        answer = json.loads(output.getvalue())
+        # Its admission records the load it started under, for a later audit.
+        self.assertTrue(answer['admission']['timing'])
+        self.assertEqual(answer['admission']['sandboxCpu'], 1.0)
+        self.assertIn('cpuCapacity', answer['admission'])
+        for kind in ('repository', 'check', 'browser', 'pair'):
+            with self.assertRaisesRegex(BlockingIOError, 'timing-sensitive check runs'):
+                self.reserve(kind, f'fictional-new-{kind}')
+        with self.assertRaisesRegex(BlockingIOError, 'timing-sensitive check runs'):
+            self.reserve('repository', 'fictional-step', continuing=True)
+        self.reserve('text', 'fictional-text')
+        self.reserve('prep', 'fictional-prep')
+        budget.release(answer['token'])
+        self.reserve('repository', 'fictional-after')
+        # Only a check can be one.
+        with self.assertRaisesRegex(RuntimeError, 'only a check'):
+            budget.reserve('repository', 'fictional-timed', int(time.time() * 1000) + 60000, self.gate(), 0,
+                           False, False, True)
+
+    def test_a_timing_sensitive_check_starts_only_with_its_whole_ceiling_free(self):
+        # The measured use must leave its two CPUs free beside the running
+        # jobs; an ordinary check starts by its own line meanwhile.
+        self.roomy()
+        self.learn(check=budget.GIB)
+        self.measure(14.0)  # of the 15 the host leaves
+        deadline = int(time.time() * 1000) + 60000
+        with self.assertRaisesRegex(BlockingIOError, 'whole ceiling'):
+            budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
+        # Its refusal keeps its CPUs from new attempts, as a waiting check's.
+        self.assertEqual(budget.kept_room('repository', budget.peaks())[1], budget.CHECK_CPUS)
+        self.reserve('check', 'fictional-ordinary')
+        # The ordinary check counts at its ceiling beside the measured use:
+        # 11 + 2 + 2 fits the 15.
+        self.measure(11.0)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            budget.reserve('check', 'fictional-timed-later', deadline, self.gate(), 0, False, False, True)
+        self.assertTrue(json.loads(output.getvalue())['admission']['timing'])
+
+    def test_the_timing_ceiling_rule_counts_what_the_samples_do_not_show_yet(self):
+        # The samples lag behind jobs admitted moments ago: sessions too new
+        # to be measured count at their ceilings, as the running timed jobs
+        # do, so a timing check never starts beside work about to take its
+        # CPUs. A second timing check waits for the first and keeps its CPUs
+        # from new attempts meanwhile.
+        self.roomy()
+        self.learn(repository=budget.GIB, check=budget.GIB)
+        self.measure(1.0)
+        for n in range(4):
+            self.reserve('repository', f'fictional-new-{n}')
+        self.busy = 500  # now 8 of 16 busy, 7 outside the VM: 16 - 7 - 1 = 8
+        deadline = int(time.time() * 1000) + 60000
+        # 1 measured, plus four unsettled sessions at 2 CPUs: 1 + 8 + 2 > 8.
+        with self.assertRaisesRegex(BlockingIOError, 'whole ceiling'):
+            budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
+        self.settle(('repository',))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
+        (budget.STATE / 'priority.json').unlink(missing_ok=True)
+        with self.assertRaisesRegex(BlockingIOError, 'timing-sensitive check runs'):
+            budget.reserve('check', 'fictional-timed-second', deadline, self.gate(), 0, False, False, True)
+        self.assertEqual(budget.kept_room('repository', budget.peaks())[1], budget.CHECK_CPUS)
+
+    def test_a_timing_check_counts_a_fresh_check_on_top_of_the_measured_sessions(self):
+        # Settled sessions show in the samples; a check admitted moments ago
+        # does not yet. Its ceiling adds to their measured use, so a timing
+        # check never starts where the two would leave it less than its own.
+        self.roomy()
+        self.learn(repository=budget.GIB, check=budget.GIB)
+        self.measure(1.0)
+        for n in range(3):
+            self.reserve('repository', f'fictional-settled-{n}')
+        self.settle(('repository',))
+        fresh = self.reserve('check', 'fictional-fresh')
+        self.measure(5.0)
+        self.busy = 750  # now 12 of 16 busy, 7 outside the VM: 16 - 7 - 1 = 8
+        deadline = int(time.time() * 1000) + 60000
+        # 5 measured + 2 for the fresh check + 2 > 8; the ordinary line would
+        # admit it (2 + 2 + 3 bursts of 0.5 <= 8).
+        with self.assertRaisesRegex(BlockingIOError, 'whole ceiling'):
+            budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
+        budget.release(self.reserve('check', 'fictional-ordinary'))
+        budget.release(fresh)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            budget.reserve('check', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
+        self.assertTrue(json.loads(output.getvalue())['admission']['timing'])
+
+    def test_reservation_flags_are_named_once_each(self):
+        calls = []
+        production = budget.reserve
+        budget.reserve = lambda *args: calls.append(args)
+        self.addCleanup(setattr, budget, 'reserve', production)
+        argv = sys.argv
+        self.addCleanup(setattr, sys, 'argv', argv)
+        budget.os.geteuid = lambda: 0
+        for flags, expected in (([], (False, False)), (['timing'], (False, True)),
+                                (['continuing', 'timing'], (True, True))):
+            sys.argv = ['bench-budget', 'reserve', 'check', 'fictional', '1', 'gate', '0', *flags]
+            budget.main()
+            self.assertEqual((calls[-1][5], calls[-1][7]), expected)
+        for flags in (['timing', 'timing'], ['fast']):
+            sys.argv = ['bench-budget', 'reserve', 'check', 'fictional', '1', 'gate', '0', *flags]
+            with self.assertRaisesRegex(RuntimeError, 'unsupported benchmark reservation flag'):
+                budget.main()
+
     def test_a_preparation_refused_by_the_light_line_holds_nobody(self):
         # 19:30 PDT 10-17: preparations refused on the light-job line kept
         # the 'cpu' hold armed, so no repository session started for minutes.

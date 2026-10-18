@@ -506,19 +506,27 @@ No fixed number bounds how many attempts fly. A new ordinary run records
 `parallelism: 0`: as many attempts of a configuration at once as its account's
 pace and the sandbox admit. An operator may set a number instead, of any size,
 which then bounds the configuration; a saved run without one flies one at a
-time. An account's pace starts at four turns at once. A rate-limit answer to a
-sent prompt (HTTP 429, "rate limit", "too many requests", "overloaded") halves
-it, and so does a level of concurrency whose turns stream clearly slower (below
-three quarters of the tokens per second) than turns with fewer beside them;
-since providers limit by model, the level refused or slowed at (two or more)
-then stands for an hour as the most turns of that model the account flies at
-once. The pace grows by one per stretch of clean turns, with no
-fixed most, never sooner than ten minutes after it last changed or was first
-used. Every configuration on the account shares its pace, and the app log
-records every move ("account pace ... -> ... turns at once, model ceiling
-..."), so a wave's log shows how far each account climbed. Quota recovery
-imposes one turn until a turn lands. The pace lives in the running app and
-starts again after a restart.
+time. An account with no history starts at four turns at once, in slow start:
+the level doubles after each clean round, as many clean turns as the level
+that were admitted with every slot taken, so an account its demand keeps below
+its level never grows. The first sign the provider limits the account ends
+slow start: a rate-limit answer to a sent prompt (HTTP 429, "rate limit", "too
+many requests", "overloaded") halves the level, and so does a level of
+concurrency whose turns stream clearly slower (below three quarters of the
+tokens per second) than turns with fewer beside them; since providers limit by
+model, the level refused or slowed at (two or more) then stands for an hour as
+the most turns of that model the account flies at once. After slow start the
+pace grows by one per stretch of clean turns, with no fixed most, never sooner
+than ten minutes after it last changed. Every configuration on the account
+shares its pace, and the app log records every move ("account pace ... -> ...
+turns at once, model ceiling ...") and every resume, so a wave's log shows how
+far each account climbed. Quota recovery imposes one turn until a turn lands.
+Each account's last stable level (the one it last finished a clean round at,
+or a refusal sent it to), whether it is still in slow start, and its standing
+model ceilings are kept in `account-pace.json` beside the benchmark store, so an
+app restart (a gap's deploy) resumes there; a level saved more than an hour
+before the restart resumes at half, in slow start again. While the app keeps
+running, the pace stays as it is however long the account was idle.
 
 The app prepares only as many ordinary attempts at once as the sandbox's recent
 answers allow: one plus the attempts the sandbox admitted in the last minute
@@ -540,9 +548,22 @@ while the check finishes, as its own sandbox job whose CPU weight puts it
 ahead of the sessions beside it. A configuration keeps at most as many such
 checks waiting as its parallelism; past that, a finished turn keeps its slot
 until its verdict. Planning labs, whose checks time planners on budgets of
-seconds, and judged renderings keep their slot until the verdict. Their checks
-take the CPU first by weight, and recent check stalls hold new sessions back;
-`heavy-cap` is an emergency knob, off by default, that no plan sets.
+seconds, and judged renderings keep their slot until the verdict. A
+timing-sensitive check (every planning lab's, and any case whose definition
+sets `environment.timingSensitive: true`) starts only while the measured use
+leaves its whole two-CPU ceiling free, and while it runs no new CPU-heavy job
+(repository session, check, paired check or browser run) starts; the running
+ones go on, and the hold ends with the check, at the latest at its own time
+limit (keep timing-sensitive checks short: the hold covers the whole
+sandbox). Its rule counts the measured use beside the running timed jobs,
+plus those jobs and the sessions too new to show in the samples at their
+ceilings (every ceiling while there is no sample), and a timing check refused
+for its ceiling or waiting for another
+keeps its CPUs from new attempts. Its evaluation records the
+admission it started under (`details.admission`: the measured sandbox, guest
+and outside CPU, the capacity and the competing jobs), so a planning result
+can be audited later. `heavy-cap` is an emergency knob, off by default, that no
+plan sets.
 
 Each attempt records the conditions its candidate session was admitted under,
 as `sandboxAdmission` on the attempt and in its sealed evidence: the admission

@@ -628,6 +628,26 @@ fn scoped_model_limit_does_not_block_other_models() {
 }
 
 #[test]
+fn headroom_is_the_least_share_left_in_the_windows_a_model_draws_on() {
+    let mut a = status("a", 30.0, 5000);
+    let mut weekly = a.limits[0].clone();
+    weekly.id = "weekly-opus".into();
+    weekly.used_percent = Some(85.0);
+    weekly.model_id = Some("opus".into());
+    a.limits.push(weekly);
+    assert_eq!(headroom(&a, Some("opus[1m]")), Some(15.0));
+    assert_eq!(headroom(&a, Some("sonnet")), Some(70.0));
+    assert_eq!(headroom(&a, None), Some(70.0));
+    // Overspent windows leave none; unknown usage gives no headroom at all.
+    a.limits[1].used_percent = Some(120.0);
+    assert_eq!(headroom(&a, Some("opus[1m]")), Some(0.0));
+    a.limits
+        .iter_mut()
+        .for_each(|window| window.used_percent = None);
+    assert_eq!(headroom(&a, Some("opus[1m]")), None);
+}
+
+#[test]
 fn elapsed_cached_reset_needs_fresh_evidence() {
     assert_eq!(
         choose_account(

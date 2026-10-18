@@ -269,6 +269,26 @@ communicate through the supported isolated probe boundary. Candidate stdout or
 exit status alone must not forge the trusted verdict. Verify resource limits,
 cancellation and cleanup as part of evaluator qualification.
 
+A repository case whose check times what it checks (a planner on budgets of
+seconds) sets `environment.timingSensitive: true`; planning-class cases are
+treated so without it. Its check then runs with no new CPU-heavy job starting
+beside it (see benchmark operations).
+
+Without a frozen panel, a rendering gets up to three judges, one per model,
+from the enabled accounts' available native text models of the providers that
+may judge (Claude today), never the candidate's model or an author. Ordinary
+seats exclude the Fable tier, kept for high-risk work, and small or fast tiers
+(Haiku), whose verdicts are too weak to rank by; the named lists in the
+runner's judge rule hold them, with a list of efforts too small to judge
+(`low`, `minimal`, `none`). Ordinary seats name no effort today, so they run at
+the model's default and that list applies only once a seat names one. The
+ordinary panel is therefore Opus and Sonnet. An Opus or Sonnet rendering gets
+one judge, which cannot settle it: it stays unjudged (pending review, with the
+panel's reason), and evaluating it again cannot help while only Claude models
+judge. Of one model on several accounts, the account with the most usage left
+in the windows that model draws on takes the seat. A frozen panel names its
+own seats and is not subject to this rule.
+
 Rubric tasks can freeze their judge seats in `environment.judgePanel`, with
 `recipe: "frozen-native-panel-v1"` and a `judges` array of two or three complete
 configurations. Each seat pins its account, model, effort, fast mode, billing
