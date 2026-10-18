@@ -175,9 +175,13 @@ naming the line that holds it, while it does not:
   (`/proc/stat`), so the VM's own work for the jobs is not counted twice;
   the pressure and stall guards below see what it takes from them. The allowance is half a core until eight sessions finished,
   then the 95th percentile of their average use, between a quarter core and
-  the session's ceiling. New sessions also wait while the guest's CPU pressure
-  over ten seconds exceeds a tenth or recent checks spent more than a tenth of
-  their time waiting for a CPU, and at most eight run at once. A timed job
+  the session's ceiling. A session admitted in the last fifteen seconds,
+  before the samples show its use, counts at its two-CPU ceiling instead, so
+  a wave start admits what the CPUs cover at the new sessions' ceilings and
+  the rest as their measured use frees room. New sessions also wait while the
+  jobs' CPU pressure exceeds a tenth or recent checks spent more than a tenth
+  of their time waiting for a CPU. No number bounds the sessions: as many run
+  as these lines, the memory claims and the memory guard admit. A timed job
   starts while its ceiling, the other timed jobs' ceilings and the sessions'
   allowances fit the same CPUs; with its CPU weight it takes a CPU before any
   session that bursts beside it. The ceiling rule of earlier builds still
@@ -209,7 +213,7 @@ naming the line that holds it, while it does not:
   repository claim while a repository job ran in the last five minutes.
   A later step of a workflow whose earlier steps a provider already worked on
   goes ahead of new attempts like a check: no kept room, CPU pressure or
-  check-stall guard or session cap holds it, only its ceilings, the memory
+  check-stall guard holds it, only its ceilings, the memory
   claims and guard, the CPU lines and the Windows floors; when it is refused
   room, new attempts leave that room for it.
 - Scratch. The filesystem's free space must cover the new job's scratch
@@ -226,6 +230,20 @@ naming the line that holds it, while it does not:
   wait names that cause. A larger page file raises the commit limit without
   lowering the RAM floor. Admission evidence also carries how busy the host's
   CPUs were over the last second.
+
+No count bounds how many jobs run: as many run as the measured CPUs, memory
+and pressure admit without errors in the sandbox, and as the providers take
+without rate-limit answers. The only fixed amounts are safety margins,
+fairness ceilings and starting points, never counts of jobs: the 12 GiB
+available-RAM and 8 GiB commit floors on Windows, the 2 GiB guest-memory floor
+and the 30 GiB sandbox-volume floor; each job's own ceilings by class (a
+repository session two CPUs and 6 GiB, a text session one CPU and 2 GiB, a
+check two CPUs), which keep measurements fair; the benchmark root's own
+ceilings, `AGGREGATE_CPU` (14 CPUs) and its process budget (4096); the 3.5 GiB
+each host preparation reserves against the Windows headroom; one check's two
+CPUs that an attempt leaves free; an account's starting pace of four turns;
+and a judge panel's size of three. `heavy-cap` is an emergency knob, off by
+default, that no plan sets.
 
 The Windows evidence each admission needs (`DISTILL_BENCH_HOST_GATE`) has five
 comma-separated integers: the time in milliseconds, available RAM, commit
@@ -484,21 +502,36 @@ three repetitions for a complete leaderboard measurement. Set an explicit
 before `benchmark_start_run`. Save the exact request, request key, returned run
 ID and planned attempt IDs privately before doing further work.
 
-Ordinary runs support `parallelism: 4`. This is a per-configuration limit within
-each account's pace and sixteen attempts across the app. An account's pace
-starts at four turns at once. A rate-limit answer to a sent prompt (HTTP 429,
-"rate limit", "too many requests", "overloaded") halves it, and so does a level
-of concurrency whose turns stream clearly slower (below three quarters of the
-tokens per second) than turns with fewer beside them. It grows by one per
-stretch of clean turns, up to eight, and never sooner than ten minutes after it
-last changed or was first used. Every configuration on the account shares its pace, so two runs of one
-configuration at four reach eight together. Quota recovery imposes one turn
-until a turn lands. The pace lives in the running app and starts again after a
-restart. Sandbox admission (see [Prepare the runtime](#1-prepare-the-runtime))
-can keep further attempts waiting. Inspect actual active attempts and the
-reason for a lower count, not just the request value. An existing ordinary run
-can be adjusted through `benchmark_set_run_parallelism`; record the amendment
-and preserve its original attempt identities.
+No fixed number bounds how many attempts fly. A new ordinary run records
+`parallelism: 0`: as many attempts of a configuration at once as its account's
+pace and the sandbox admit. An operator may set a number instead, of any size,
+which then bounds the configuration; a saved run without one flies one at a
+time. An account's pace starts at four turns at once. A rate-limit answer to a
+sent prompt (HTTP 429, "rate limit", "too many requests", "overloaded") halves
+it, and so does a level of concurrency whose turns stream clearly slower (below
+three quarters of the tokens per second) than turns with fewer beside them;
+since providers limit by model, the level refused or slowed at (two or more)
+then stands for an hour as the most turns of that model the account flies at
+once. The pace grows by one per stretch of clean turns, with no
+fixed most, never sooner than ten minutes after it last changed or was first
+used. Every configuration on the account shares its pace, and the app log
+records every move ("account pace ... -> ... turns at once, model ceiling
+..."), so a wave's log shows how far each account climbed. Quota recovery
+imposes one turn until a turn lands. The pace lives in the running app and
+starts again after a restart.
+
+The app prepares only as many ordinary attempts at once as the sandbox's recent
+answers allow: one plus the attempts the sandbox admitted in the last minute
+since it last refused one. A wave start ramps up as fast as the sandbox admits
+(the window doubles each round), and a full sandbox is asked by one attempt at
+a time. Admitted attempts are not counted, nor is one that has prepared for
+five minutes without the sandbox's answer (the log says so), so an attempt
+waiting for something else cannot hold the window shut. Sandbox admission (see [Prepare the
+runtime](#1-prepare-the-runtime)) decides the rest. Inspect actual active
+attempts and the reason for a lower count, not just the request value. An
+existing ordinary run can be adjusted through `benchmark_set_run_parallelism`
+(0 for as many as admitted); record the amendment and preserve its original
+attempt identities.
 
 Parallelism counts turns. Once a text or repository turn's answer is sealed
 and its sandbox removed, its objective check no longer holds the
@@ -507,8 +540,9 @@ while the check finishes, as its own sandbox job whose CPU weight puts it
 ahead of the sessions beside it. A configuration keeps at most as many such
 checks waiting as its parallelism; past that, a finished turn keeps its slot
 until its verdict. Planning labs, whose checks time planners on budgets of
-seconds, and judged renderings keep their slot until the verdict; run planning
-labs under `heavy-cap 1`, so nothing CPU-heavy runs beside their checks.
+seconds, and judged renderings keep their slot until the verdict. Their checks
+take the CPU first by weight, and recent check stalls hold new sessions back;
+`heavy-cap` is an emergency knob, off by default, that no plan sets.
 
 Each attempt records the conditions its candidate session was admitted under,
 as `sandboxAdmission` on the attempt and in its sealed evidence: the admission
@@ -652,14 +686,14 @@ Before starting any campaign cell:
 4. Read back the registered rule and verify the plan and qualification hashes.
    Only then start with `benchmark_control_workflow_campaign` and `action: "start"`.
 
-Campaign requests may freeze `parallelism` from 1 to 12. Omission retains the
+Campaign requests may freeze `parallelism`, any number from 1. Omission retains the
 legacy serial plan and hashes. This bounds admitted, unfinished whole workflows;
 it does not multiply the execution budget or change dependencies within a workflow.
 The concurrent scheduling recipe admits cells in their frozen order and refills
 after collecting a first result, even if an earlier child is still running.
 Provider, account and global worker limits still apply. A campaign may also
-freeze `accountSlots`, the model calls one account runs at once for it, from 1
-to 8; omission keeps the shared default of four. The bound is part of the plan,
+freeze `accountSlots`, the model calls one account runs at once for it, any
+number from 1; omission keeps the shared default of four. The bound is part of the plan,
 so a report states the conditions it ran under.
 
 New concurrent plans use the `sha256-campaign-cell-step-admission-v4` recipe. A

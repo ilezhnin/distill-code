@@ -234,6 +234,7 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
             cancel: watch::channel(false).0,
             checking: false,
             lane_slots: 1,
+            model: String::new(),
         },
     );
     for _ in 0..3 {

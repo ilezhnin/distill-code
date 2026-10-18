@@ -164,10 +164,8 @@ export function WorkflowCampaignForm({
     minQuality <= 1 &&
     Number.isInteger(parallelism) &&
     parallelism >= 1 &&
-    parallelism <= 12 &&
     Number.isInteger(accountSlots) &&
     accountSlots >= 1 &&
-    accountSlots <= 8 &&
     classModelsReady;
   const freeze = async () => {
     if (
@@ -439,7 +437,6 @@ export function WorkflowCampaignForm({
               id={id}
               type="number"
               min={1}
-              max={12}
               value={parallelism}
               disabled={locked}
               onChange={(e) => setParallelism(Number(e.target.value))}
@@ -452,7 +449,6 @@ export function WorkflowCampaignForm({
               id={id}
               type="number"
               min={1}
-              max={8}
               value={accountSlots}
               disabled={locked}
               onChange={(e) => setAccountSlots(Number(e.target.value))}

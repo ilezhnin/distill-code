@@ -336,8 +336,10 @@ pub struct RunRequest {
     #[serde(default)]
     pub preview: bool,
     /// Attempts of one configuration in flight at once, recorded at
-    /// admission so a run's points note the conditions it ran under. A run
-    /// admitted before it was recorded ran one at a time.
+    /// admission so a run's points note the conditions it ran under: 0 for
+    /// as many as the account's pace and the sandbox admit (the default), a
+    /// number when the operator bounds it. A run admitted before it was
+    /// recorded ran one at a time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<u32>,
     /// How the run treats a cell whose candidate authored the case, recorded
@@ -826,8 +828,9 @@ pub struct LeaderboardRow {
     /// answered, sorted; more than one means the id moved between models.
     #[serde(default)]
     pub resolved_models: Vec<String>,
-    /// Attempts of one configuration its standing run flew at once (one for
-    /// a run admitted before that was recorded).
+    /// Attempts of one configuration its standing run flew at once (0: as
+    /// the account's pace and the sandbox admitted; one for a run admitted
+    /// before that was recorded).
     #[serde(default)]
     pub parallelism: Option<u32>,
 }

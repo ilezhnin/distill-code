@@ -297,53 +297,115 @@ pub(crate) async fn host_admission_for(class: ResourceClass) -> io::Result<()> {
     .map_err(io::Error::other)?
 }
 
-static HOST_PREPARATION: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+/// Windows memory the host preparations in progress reserved: what each of
+/// their buffers may take, until it ends. No count bounds them: a
+/// preparation starts when the measured headroom, less what the others
+/// reserved, still covers its buffers and the Windows floors, so many asking
+/// at once never count the same free memory twice.
+#[derive(Debug, Default)]
+struct HostReservations {
+    reserved: std::sync::Mutex<u64>,
+    released: tokio::sync::Notify,
+}
+
+static HOST_PREPARATIONS: std::sync::LazyLock<HostReservations> =
+    std::sync::LazyLock::new(HostReservations::default);
+
+/// What one host preparation reserves: its input (at most 512 MiB) and the
+/// ring and output overlap (1 GiB) beside the Linux preparation's 2 GiB.
+const HOST_PREPARATION_BYTES: u64 = 2 * GIB + 3 * GIB / 2;
+
+/// A host preparation's reserved memory, returned when it drops.
+#[derive(Debug)]
+pub(crate) struct HostPreparation {
+    reservations: &'static HostReservations,
+    bytes: u64,
+}
+impl Drop for HostPreparation {
+    fn drop(&mut self) {
+        let mut reserved = self
+            .reservations
+            .reserved
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *reserved = reserved.saturating_sub(self.bytes);
+        drop(reserved);
+        self.reservations.released.notify_waiters();
+    }
+}
 
 /// Acquire before allocating a snapshot/package, and retain through its final
 /// import/export. Invocation deliberately does not acquire this gate again.
-///
-/// The Linux broker admits preparations by measured room rather than one at a
-/// time, so the host lets a few prepare at once; each permit still passes
-/// the Windows headroom check for its own buffers below.
-pub(crate) const HOST_PREPARATIONS: usize = 3;
-
-pub(crate) async fn host_preparation(
-    deadline_ms: u64,
-) -> io::Result<tokio::sync::OwnedSemaphorePermit> {
-    let gate =
-        HOST_PREPARATION.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(HOST_PREPARATIONS)));
-    let permit = queue_for_preparation(gate, deadline_ms).await?;
-    // Max input512MiB + ring/output overlap1GiB, in addition to Linux prep2GiB.
-    tokio::task::spawn_blocking(|| {
-        check_headroom(
-            &host_headroom()?,
-            ResourceClass::Preparation.memory() + 3 * GIB / 2,
-        )
-    })
-    .await
-    .map_err(io::Error::other)??;
-    Ok(permit)
-}
-
-/// Waits for `gate` until `deadline_ms`, in arrival order. A deadline that
-/// passes in the queue is the queue's refusal: nothing was prepared and no
-/// worker started, so the caller may wait and ask again.
-async fn queue_for_preparation(
-    gate: &Arc<tokio::sync::Semaphore>,
-    deadline_ms: u64,
-) -> io::Result<tokio::sync::OwnedSemaphorePermit> {
-    tokio::time::timeout(
-        Duration::from_millis(remaining_ms(deadline_ms)?),
-        gate.clone().acquire_owned(),
+pub(crate) async fn host_preparation(deadline_ms: u64) -> io::Result<HostPreparation> {
+    reserve_host_preparation(
+        &HOST_PREPARATIONS,
+        HOST_PREPARATION_BYTES,
+        deadline_ms,
+        || tokio::task::spawn_blocking(host_headroom),
     )
     .await
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "resource_busy: benchmark host preparation queue expired before worker startup",
-        )
-    })?
-    .map_err(io::Error::other)
+}
+
+/// Reserves `bytes` of host memory for a preparation in `reservations`,
+/// measuring the headroom with `measure`. Headroom that lacks room even with
+/// nothing reserved refuses at once (WouldBlock, as before any reservation
+/// existed); headroom the other preparations' reservations take waits for
+/// them to end, until `deadline_ms`, and a deadline that passes then is the
+/// queue's refusal: nothing was prepared and no worker started.
+async fn reserve_host_preparation<F>(
+    reservations: &'static HostReservations,
+    bytes: u64,
+    deadline_ms: u64,
+    measure: impl Fn() -> F,
+) -> io::Result<HostPreparation>
+where
+    F: std::future::Future<Output = Result<io::Result<HostHeadroom>, tokio::task::JoinError>>,
+{
+    remaining_ms(deadline_ms)?;
+    loop {
+        // Registered before the check, so a release between them still wakes it.
+        let released = reservations.released.notified();
+        let headroom = measure().await.map_err(io::Error::other)??;
+        {
+            let mut reserved = reservations
+                .reserved
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let left = HostHeadroom {
+                available_ram: headroom.available_ram.saturating_sub(*reserved),
+                available_commit: headroom.available_commit.saturating_sub(*reserved),
+                ..headroom
+            };
+            match check_headroom(&left, bytes) {
+                Ok(()) => {
+                    *reserved += bytes;
+                    return Ok(HostPreparation {
+                        reservations,
+                        bytes,
+                    });
+                }
+                Err(error) if *reserved == 0 || check_headroom(&headroom, bytes).is_err() => {
+                    return Err(error)
+                }
+                Err(_) => {}
+            }
+        }
+        let remaining = remaining_ms(deadline_ms).map_err(|_| host_queue_expired())?;
+        tokio::select! {
+            () = released => {}
+            () = tokio::time::sleep(Duration::from_millis(remaining.min(1000))) => {}
+        }
+        if remaining_ms(deadline_ms).is_err() {
+            return Err(host_queue_expired());
+        }
+    }
+}
+
+fn host_queue_expired() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "resource_busy: benchmark host preparation queue expired before worker startup",
+    )
 }
 
 /// Fresh Windows evidence for the broker: the time, available RAM, commit
@@ -3198,34 +3260,81 @@ mod tests {
         assert!(truncated);
     }
 
-    /// The host preparation queue refuses like the broker's queue when its
-    /// deadline passes while another preparation holds the permit, as a
-    /// qualification control met on 2026-10-17; it admits in arrival order.
+    /// Host preparations share the measured Windows headroom by reserving
+    /// their buffers' memory, with no count of their own: a second that the
+    /// first's reservation leaves short waits for it and starts once it ends,
+    /// and a wait past its deadline is the queue's refusal, as a
+    /// qualification control met on 2026-10-17; one the host is short for
+    /// even alone is refused at once; a deadline already gone is the
+    /// caller's own.
     #[tokio::test]
-    async fn a_host_preparation_queue_that_expires_is_a_busy_refusal() {
-        let now = || {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64
+    async fn host_preparations_share_the_measured_headroom_by_reservation() {
+        let reservations: &'static HostReservations = Box::leak(Box::default());
+        let measure = |ram: u64| {
+            move || {
+                tokio::task::spawn_blocking(move || {
+                    Ok::<_, io::Error>(HostHeadroom {
+                        available_ram: ram,
+                        available_commit: 40 * GIB,
+                        sandbox_volume_free: 100 * GIB,
+                    })
+                })
+            }
         };
-        let gate = Arc::new(tokio::sync::Semaphore::new(1));
-        let held = gate.clone().acquire_owned().await.unwrap();
-        let refused = queue_for_preparation(&gate, now() + 50).await.unwrap_err();
+        let now = || now_ms().unwrap();
+        // 17 GiB free: one preparation's 3.5 GiB fits above the 12 GiB floor,
+        // a second beside it does not.
+        let first = reserve_host_preparation(
+            reservations,
+            HOST_PREPARATION_BYTES,
+            now() + 60_000,
+            measure(17 * GIB),
+        )
+        .await
+        .unwrap();
+        let refused = reserve_host_preparation(
+            reservations,
+            HOST_PREPARATION_BYTES,
+            now() + 50,
+            measure(17 * GIB),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
         assert_eq!(
             refused.to_string(),
             "resource_busy: benchmark host preparation queue expired before worker startup"
         );
-        let next = tokio::spawn({
-            let gate = gate.clone();
-            async move { queue_for_preparation(&gate, now() + 60_000).await }
-        });
+        let next = tokio::spawn(reserve_host_preparation(
+            reservations,
+            HOST_PREPARATION_BYTES,
+            now() + 60_000,
+            measure(17 * GIB),
+        ));
         tokio::task::yield_now().await;
-        drop(held);
-        assert!(next.await.unwrap().is_ok());
+        drop(first);
+        let second = next.await.unwrap().unwrap();
+        drop(second);
+        // Short even alone: refused at once, naming the floor.
+        let short = reserve_host_preparation(
+            reservations,
+            HOST_PREPARATION_BYTES,
+            now() + 60_000,
+            measure(13 * GIB),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(short.kind(), io::ErrorKind::WouldBlock);
+        assert!(short.to_string().contains("12 GiB"), "{short}");
         // A deadline already gone before the queue is the caller's own.
-        let late = queue_for_preparation(&gate, now() - 1).await.unwrap_err();
+        let late = reserve_host_preparation(
+            reservations,
+            HOST_PREPARATION_BYTES,
+            now() - 1,
+            measure(60 * GIB),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(late.kind(), io::ErrorKind::TimedOut);
     }
 

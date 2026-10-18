@@ -20,8 +20,9 @@ sandbox measures leaves room for it, not up to a fixed number of lanes.
   or by measured use: a repository session while the sandbox's measured use,
   a burst allowance for each running session and the new one, the timed
   jobs' ceilings and one check's reserve fit the logical CPUs the host leaves
-  free less the supervisors' (at most eight sessions, none while CPU pressure
-  or check stalls exceed a tenth); a timed job while its ceiling, the other
+  free less the supervisors' (no count of sessions; sessions too new to be
+  measured count at their ceilings, and none starts while the jobs' CPU
+  pressure or check stalls exceed a tenth); a timed job while its ceiling, the other
   timed jobs' and the sessions' allowances fit them. Timed jobs carry
   cpu.weight 10000 against the sessions' 100, so they take the CPU first.
   Light jobs need the measured load below the light line.
@@ -123,13 +124,18 @@ STALL_WINDOW = 900
 # the supervisors' own CPU. The allowance is half a core until eight
 # sessions are recorded, then their 95th percentile of average use, never
 # below a quarter core nor above a session's ceiling. New sessions also wait
-# while the guest's CPU pressure or the recent check stalls exceed a tenth,
-# and never more than eight run at once.
+# while the jobs' CPU pressure or the recent check stalls exceed a tenth. No
+# count bounds them: as many run as the measured CPUs, the memory claims and
+# guard and these pressure lines admit.
 SUPERVISOR_CPUS = 1
 SESSION_BURST = 0.5
 SESSION_BURST_FLOOR = 0.25
 SESSION_PRESSURE = 0.10
-REPOSITORY_SESSIONS = 8
+# A session's use shows in the CPU samples only once it has run a while.
+# Until then it counts at its ceiling rather than its burst allowance, so a
+# wave start admits what the CPUs cover at the new sessions' ceilings and the
+# rest as their measured use frees room, never many sessions admitted blind.
+SESSION_SETTLE = 15
 # While a repository job ran in the last five minutes, a text attempt leaves
 # room for one learned repository claim, so text sessions at their account's
 # full pace cannot keep a repository run out.
@@ -1056,9 +1062,8 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False):
     """Admission of `kind`. A `continuing` session (a later step of a
     workflow already under way) is an attempt that goes ahead of new ones:
     no room kept for waiting jobs, no CPU pressure or check-stall guard, no
-    session cap, no room kept for another repository claim; its ceilings,
-    the memory claims and guard, the CPU lines and the Windows floors still
-    apply."""
+    room kept for another repository claim; its ceilings, the memory claims
+    and guard, the CPU lines and the Windows floors still apply."""
     memory, cpu, pids, lane = CLASSES[kind]
     if kind in ATTEMPTS:
         in_use = memory_in_use()
@@ -1126,18 +1131,24 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False):
         else:
             used = ceilings - timed
 
+        # Sessions admitted too recently for the samples to show their use
+        # count at their ceilings (SESSION_SETTLE). Without a sample their
+        # ceilings already stand in for their use.
+        now = time.time()
+        unsettled = 0 if measured is None else sum(
+            row['kind'] == 'repository' and now - row.get('admitted', now) < SESSION_SETTLE for row in active)
+        sessions_cpus = burst * (sessions - unsettled) + CLASSES['repository'][1] * unsettled
+
         def admitted(kept):
             if ceilings + cpu + reserve + kept <= line:
                 return 'ceilings'
             if kind == 'repository':
-                fits = used + burst * (sessions + 1) + timed + CHECK_CPUS + kept <= capacity
+                fits = used + sessions_cpus + burst + timed + CHECK_CPUS + kept <= capacity
             else:
-                fits = timed + cpu + burst * sessions <= capacity
+                fits = timed + cpu + sessions_cpus <= capacity
             return 'measured' if fits else None
         admitted_by = admitted(kept_cpus)
         if kind == 'repository' and admitted_by != 'ceilings' and not continuing:
-            if sessions >= REPOSITORY_SESSIONS:
-                raise refused('the sandbox runs its most repository sessions at once')
             if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
                 raise refused('CPU pressure in the sandbox holds new repository sessions')
         if admitted_by is None and kept_cpus and admitted(0) is not None:

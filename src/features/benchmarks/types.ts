@@ -219,8 +219,9 @@ export interface RunRequest {
   preview: boolean;
   /**
    * Attempts of one configuration in flight at once, recorded by the service
-   * at admission; absent on runs admitted before it was recorded (one at a
-   * time).
+   * at admission: 0 for as many as the account's pace and the sandbox admit
+   * (the default), a number when the operator bounds it; absent on runs
+   * admitted before it was recorded (one at a time).
    */
   parallelism?: number;
   /**

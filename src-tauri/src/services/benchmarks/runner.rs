@@ -20,6 +20,7 @@ use tauri::Manager;
 use tokio::sync::watch;
 
 mod account_pace;
+mod admission_window;
 pub mod collection_context;
 pub(crate) mod native_receipt;
 
@@ -247,6 +248,13 @@ pub trait ExecutionBackend: Send + Sync {
         _configuration: &'a Configuration,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
+    }
+    /// Whether this backend's attempts ask the local sandbox for admission
+    /// when their session opens, so the runner paces how many it prepares at
+    /// once by the answers (see `admission_window`). Fixture backends ask
+    /// nothing.
+    fn paces_preparation(&self) -> bool {
+        false
     }
     fn readiness_for_budget<'a>(
         &'a self,
@@ -902,7 +910,7 @@ fn unsigned_deadline(deadline: i64) -> Result<u64> {
         .map_err(|_| BenchmarkError::new("budget_clock_conflict", "Native deadline is invalid"))
 }
 
-async fn preparation_gate(deadline: Option<u64>) -> Result<tokio::sync::OwnedSemaphorePermit> {
+async fn preparation_gate(deadline: Option<u64>) -> Result<sandbox::HostPreparation> {
     let admission_deadline = deadline.unwrap_or((now() as u64).saturating_add(420_000));
     sandbox::host_preparation(admission_deadline)
         .await
@@ -1170,16 +1178,18 @@ const PANEL_INCOMPLETE: &str =
     "The judge panel is incomplete; every judge must return a valid score sheet";
 /// The error code a judge whose account turned busy answers with.
 const ACCOUNT_BUSY: &str = "account_busy";
-/// Attempts in flight at once on one account before its pace adapts (see
-/// [`account_pace`]), and across the app. The sandbox admits what fits; this
-/// only bounds how many attempts the app prepares at once.
+/// Attempts in flight at once on one account when its pace starts (see
+/// [`account_pace`]), which then grows and shrinks with what the provider
+/// shows. No number bounds the attempts across the app: the sandbox admits
+/// what fits, and [`admission_window`] paces how many it is asked for at once.
 pub(super) const ACCOUNT_SLOTS: usize = 4;
-const TOTAL_SLOTS: usize = 16;
-/// Attempts of one configuration a new run flies at once, recorded in its
-/// request. A stream's tokens per second do not depend on how many we send;
-/// what parallelism spends is the account's rate limit, which the runner
-/// waits out.
-pub const PARALLEL_ATTEMPTS: u32 = 4;
+/// The parallelism a new run records: as many attempts of a configuration
+/// at once as its account's pace and the sandbox admit. A stream's tokens per
+/// second do not depend on how many we send; what parallelism spends is the
+/// account's rate limit, which the pace follows. An operator may still set a
+/// number, which then bounds the configuration; saved runs without one fly
+/// one at a time.
+pub const AS_ADMITTED: u32 = 0;
 
 /// An attempt or a judge panel in flight, keyed in `BenchmarkService::active`
 /// by the attempt (or, for a panel, its run's panel lane): its run, the lane
@@ -1198,6 +1208,9 @@ pub struct Flight {
     pub checking: bool,
     /// How many attempts its lane flies at once, as claimed.
     pub lane_slots: usize,
+    /// The model its turn asks for ("" for a panel), counted against the
+    /// model's ceiling on its account (see `account_pace`).
+    pub model: String,
 }
 
 #[derive(Clone)]
@@ -1216,23 +1229,33 @@ impl Flight {
     fn uses_lane(&self, lane: &str) -> bool {
         !self.checking && (self.lane == lane || self.workers.iter().any(|w| w.lane == lane))
     }
+    fn uses_model(&self, account: &str, model: &str) -> bool {
+        !model.is_empty() && self.model == model && self.uses_account(account)
+    }
 }
 
 /// Where a flight would sit: its key in `BenchmarkService::active`, its lane
 /// and how many of the lane may fly at once, its account and how many of
-/// the account may.
+/// the account may, and its model and how many of that model the account
+/// may fly while the provider's ceiling for it stands.
 struct Seat<'a> {
     id: &'a str,
     lane: &'a str,
     lane_slots: usize,
     account: &'a str,
     account_slots: usize,
+    model: &'a str,
+    model_slots: usize,
 }
 
 /// Every sandbox attempt owns an independent bridge. Resource admission and
 /// the account's limits separately constrain requested concurrency.
 pub(super) fn attempts_at_once(request: &RunRequest, _configuration: &Configuration) -> u32 {
-    request.parallelism.unwrap_or(1).max(1)
+    match request.parallelism {
+        Some(AS_ADMITTED) => u32::MAX,
+        Some(parallelism) => parallelism,
+        None => 1,
+    }
 }
 
 /// Whether a finished turn's check may run after its seat is handed on: an
@@ -1278,6 +1301,12 @@ fn account_slots(run_id: &str, scope: &str, account: &str) -> usize {
     account_slots_within(run_id, scope, account_pace::limit(account))
 }
 
+/// How many turns of `model` that run flies at once on `account`: its
+/// account's, below the model's standing ceiling (see [`account_pace`]).
+fn model_slots(run_id: &str, scope: &str, account: &str, model: &str) -> usize {
+    account_slots_within(run_id, scope, account_pace::limit_for(account, model))
+}
+
 /// The key an account's pace is kept under: the store it measures for (each
 /// test service has its own) and the account as a seat names it.
 fn pace_key(store: &Store, account: &str) -> String {
@@ -1314,7 +1343,7 @@ fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
             .account_load
             .as_ref()
             .map(|load| load.limit as usize);
-        account_pace::record_throttle(account, admitted, now());
+        account_pace::record_throttle(account, &attempt.configuration.model_id, admitted, now());
     } else if error.is_none() && attempt.outcome.as_deref() == Some("completed") {
         let turns = attempt.account_load.as_ref().map_or(1, |load| load.turns);
         // Only a text turn's native time is the provider streaming; a
@@ -1328,7 +1357,13 @@ fn pace_turn(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>) {
         } else {
             None
         };
-        account_pace::record_turn(account, turns, speed, now());
+        account_pace::record_turn(
+            account,
+            &attempt.configuration.model_id,
+            turns,
+            speed,
+            now(),
+        );
     }
 }
 /// [`account_slots`] under a campaign's own frozen per-account bound.
@@ -1659,18 +1694,18 @@ fn local_refusals_cleared(attempt_id: &str) {
 }
 
 /// Whether `seat` (and every worker a v3 root reserves with it) fits beside
-/// the flights in `active`: below [`TOTAL_SLOTS`] in all, below its lane's
-/// and its account's limits, and not flying already.
+/// the flights in `active`: below its lane's and its account's limits, and
+/// not flying already.
 fn room(
     active: &std::collections::HashMap<String, Flight>,
     seat: &Seat<'_>,
     workers: &[WorkerReservation],
 ) -> bool {
     let on = |used: &dyn Fn(&Flight) -> bool| active.values().filter(|f| used(f)).count();
-    active.len() < TOTAL_SLOTS
-        && !active.contains_key(seat.id)
+    !active.contains_key(seat.id)
         && on(&|flight| flight.uses_lane(seat.lane)) < seat.lane_slots
         && on(&|flight| flight.uses_account(seat.account)) < seat.account_slots
+        && on(&|flight| flight.uses_model(seat.account, seat.model)) < seat.model_slots
         && workers.iter().all(|worker| {
             on(&|flight| flight.uses_lane(&worker.lane)) < worker.lane_slots
                 && on(&|flight| flight.uses_account(&worker.account)) < worker.account_slots
@@ -3478,6 +3513,9 @@ impl ExecutionBackend for NativeBackend {
     fn readiness<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         self.sandbox_readiness(c, None)
     }
+    fn paces_preparation(&self) -> bool {
+        true
+    }
     fn resource_admission<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let class = if c.execution_profile == "protected_repository" {
@@ -3717,7 +3755,11 @@ impl ExecutionBackend for NativeBackend {
                 .await
                 {
                     cleanup.0 = None;
-                    return Err(sandbox_setup_error(error, deadline));
+                    let error = sandbox_setup_error(error, deadline);
+                    if error.code == "resource_busy" {
+                        admission_window::refused(&store.root.display().to_string(), &attempt.id);
+                    }
+                    return Err(error);
                 }
             }
             let cwd = if let Some(id) = cleanup.0.as_deref().filter(|_| repository) {
@@ -3782,7 +3824,22 @@ impl ExecutionBackend for NativeBackend {
                     turn_timeout_ms(timeout_seconds, budget.as_ref())?,
                 )
                 .await
-                .map_err(host_error)?;
+                .map_err(host_error);
+            // The sandbox's answer paces the attempts prepared after this one
+            // (admission_window).
+            let scope = store.root.display().to_string();
+            let session = match session {
+                Ok(session) => {
+                    admission_window::admitted(&scope, &attempt.id);
+                    session
+                }
+                Err(error) => {
+                    if error.code == "resource_busy" {
+                        admission_window::refused(&scope, &attempt.id);
+                    }
+                    return Err(error);
+                }
+            };
             attempt.session_id = Some(session.session_id.clone());
             mark_phase(&mut attempt, "sessionOpened");
             let mut observed = attempt.configuration.clone();
@@ -5789,6 +5846,8 @@ impl BenchmarkService {
                     lane_slots: 1,
                     account: "",
                     account_slots: ACCOUNT_SLOTS,
+                    model: "",
+                    model_slots: usize::MAX,
                 };
                 if let Some(cancel) = self.claim(&run.id, seat).await {
                     tried.insert(id.clone());
@@ -5862,7 +5921,7 @@ impl BenchmarkService {
             .count()
     }
     /// Takes `seat` if it is free: its lane and its account below their
-    /// limits, [`TOTAL_SLOTS`] in all. Returns its cancel signal.
+    /// limits. Returns its cancel signal.
     async fn claim(&self, run_id: &str, seat: Seat<'_>) -> Option<watch::Receiver<bool>> {
         self.claim_workers(run_id, seat, Vec::new()).await
     }
@@ -5887,12 +5946,14 @@ impl BenchmarkService {
                 cancel,
                 checking: false,
                 lane_slots: seat.lane_slots,
+                model: seat.model.to_owned(),
             },
         );
         Some(signal)
     }
     async fn release(&self, id: &str) {
         self.active.lock().await.remove(id);
+        admission_window::ended(&self.store.root.display().to_string(), id);
     }
     /// Hands the lane and account of a finished turn to the next attempt of
     /// its configuration while its sealed answer is checked, so the run's
@@ -5993,6 +6054,13 @@ impl BenchmarkService {
                 &quota_scope(&a.configuration),
                 &pace_key(&self.store, &account),
             ),
+            model: &a.configuration.model_id,
+            model_slots: model_slots(
+                &run.id,
+                &quota_scope(&a.configuration),
+                &pace_key(&self.store, &account),
+                &a.configuration.model_id,
+            ),
         };
         // A v3 root holds every worker its policy may select for the whole
         // trajectory. A v4 root holds none here: each step takes its decided
@@ -6052,8 +6120,16 @@ impl BenchmarkService {
             .map(|worker| worker.account.clone())
             .collect();
         // A cell without a free seat waits without probing the host: a fill
-        // passes every pending cell, and most of them wait for a seat.
-        if !self.has_room(&seat, &workers).await {
+        // passes every pending cell, and most of them wait for a seat. An
+        // ordinary cell also waits while the attempts already in preparation
+        // fill the window the sandbox's recent answers allow.
+        let prepares = self.backend.paces_preparation()
+            && version.manifest.workflow.is_none()
+            && a.configuration.execution_profile != "workflow_policy";
+        let scope = self.store.root.display().to_string();
+        if !self.has_room(&seat, &workers).await
+            || (prepares && !admission_window::has_room(&scope))
+        {
             waiting_accounts.extend(accounts);
             return Ok(false);
         }
@@ -6071,6 +6147,17 @@ impl BenchmarkService {
             }
             return Err(error);
         }
+        // Its place in the window ends with the flight that owns it, however
+        // that flight ends, or here on any return before the flight starts.
+        let preparing = if prepares {
+            let Some(place) = admission_window::begin(&scope, &id) else {
+                waiting_accounts.extend(accounts);
+                return Ok(false);
+            };
+            Some(place)
+        } else {
+            None
+        };
         let Some(cancel_rx) = self.claim_workers(&run.id, seat, workers).await else {
             waiting_accounts.extend(accounts);
             return Ok(false);
@@ -6121,6 +6208,7 @@ impl BenchmarkService {
         self.changed().await;
         let (service, run) = (self.clone(), run.clone());
         flights.spawn(async move {
+            let _preparing = preparing;
             if let Err(error) = service
                 .run_attempt(
                     &run,
@@ -6491,6 +6579,11 @@ impl BenchmarkService {
                         failed.wait_until =
                             Some(sign_in_retry(&run.id, &a.configuration.provider_id));
                     } else {
+                        // Refused for room at whatever stage (the host's
+                        // preparation queue, a copy, the Windows floors, the
+                        // broker): the attempts prepared next are paced as
+                        // after any sandbox refusal.
+                        admission_window::refused(&self.store.root.display().to_string(), &a.id);
                         requeue(
                             &mut failed,
                             format!("Waiting for local resources: {}", error.message),
@@ -8306,6 +8399,8 @@ mod tests {
             lane_slots: 1,
             account: "",
             account_slots: ACCOUNT_SLOTS,
+            model: "",
+            model_slots: usize::MAX,
         };
         assert!(service.claim(&run.id, holder).await.is_some());
         let mut flights = tokio::task::JoinSet::new();
@@ -9031,9 +9126,9 @@ mod tests {
             backend.peak_in_flight.load(Ordering::SeqCst),
             2 * ACCOUNT_SLOTS as u64
         );
-        // A configuration's own turns overlap at most as far as the run was
-        // admitted with.
-        assert_eq!(run.request.parallelism, Some(PARALLEL_ATTEMPTS));
+        // A configuration's own turns overlap at most as far as its account's
+        // pace allows: the run records no number of its own.
+        assert_eq!(run.request.parallelism, Some(AS_ADMITTED));
         for a in &run.attempts {
             let overlapping = run
                 .attempts
@@ -9044,7 +9139,7 @@ mod tests {
                         && a.started_at < b.finished_at
                 })
                 .count();
-            assert!(overlapping <= PARALLEL_ATTEMPTS as usize, "{overlapping}");
+            assert!(overlapping <= ACCOUNT_SLOTS, "{overlapping}");
         }
         dir.close().await;
     }
@@ -9070,12 +9165,13 @@ mod tests {
     async fn a_configuration_flies_its_attempts_in_parallel() {
         let (dir, s, backend) = setup().await;
         let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
-        assert_eq!(run.request.parallelism, Some(PARALLEL_ATTEMPTS));
+        assert_eq!(run.request.parallelism, Some(AS_ADMITTED));
         let run = drain(&s, &run.id).await;
         assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
+        // As many as the account's pace takes at once.
         assert_eq!(
             backend.peak_in_flight.load(Ordering::SeqCst),
-            u64::from(PARALLEL_ATTEMPTS)
+            ACCOUNT_SLOTS as u64
         );
         assert!(run
             .attempts
@@ -9084,7 +9180,7 @@ mod tests {
         // The row notes the conditions its run flew under.
         let data = s.query_data().await.unwrap();
         let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
-        assert_eq!(report.rows[0].parallelism, Some(PARALLEL_ATTEMPTS));
+        assert_eq!(report.rows[0].parallelism, Some(AS_ADMITTED));
         dir.close().await;
     }
     #[tokio::test]
@@ -9119,11 +9215,20 @@ mod tests {
             .execute(&s.store.pool)
             .await
             .unwrap();
-        assert!(s.set_parallelism(&run.id, 9).await.is_err());
-        let set = s.set_parallelism(&run.id, 4).await.unwrap();
-        assert_eq!(set.request.parallelism, Some(4));
+        // An operator's number bounds the configuration, whatever its size;
+        // the account's pace still decides below it.
+        assert_eq!(
+            s.set_parallelism(&run.id, 64)
+                .await
+                .unwrap()
+                .request
+                .parallelism,
+            Some(64)
+        );
+        let set = s.set_parallelism(&run.id, 3).await.unwrap();
+        assert_eq!(set.request.parallelism, Some(3));
         drain(&s, &run.id).await;
-        assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 4);
+        assert_eq!(backend.peak_in_flight.load(Ordering::SeqCst), 3);
         dir.close().await;
     }
     #[tokio::test]
@@ -9157,6 +9262,8 @@ mod tests {
                 lane_slots,
                 account: "grok-shared-account",
                 account_slots: ACCOUNT_SLOTS,
+                model: "",
+                model_slots: usize::MAX,
             };
             let claimed = s.claim("repository-run", seat).await;
             assert_eq!(claimed.is_some(), index < ACCOUNT_SLOTS);
@@ -9173,6 +9280,8 @@ mod tests {
                     lane_slots,
                     account: "grok-shared-account",
                     account_slots: ACCOUNT_SLOTS,
+                    model: "",
+                    model_slots: usize::MAX,
                 },
             )
             .await;
@@ -9379,15 +9488,29 @@ mod tests {
         dir.close().await;
     }
     #[tokio::test]
-    async fn parallelism_outside_the_slots_is_refused() {
+    async fn any_parallelism_is_an_operators_bound_and_none_leaves_it_to_admission() {
+        // Owner decision 2026-10-17: no fixed count bounds a run; 0 (the
+        // default) leaves it to the account's pace and the sandbox.
         let (dir, s, _) = setup().await;
-        for n in [0, PARALLEL_ATTEMPTS + 1] {
+        for n in [AS_ADMITTED, 1, 5, 64] {
             let mut req = request(&s).await;
-            req.request_key = format!("parallel-{n}");
             req.parallelism = Some(n);
-            let error = s.start_run(req).await.unwrap_err();
-            assert!(error.message.contains("in parallel"), "{}", error.message);
+            let preview = s.preview_run(&req).await.unwrap();
+            assert!(
+                preview
+                    .issues
+                    .iter()
+                    .all(|issue| !issue.contains("in parallel")),
+                "{:?}",
+                preview.issues
+            );
         }
+        let configuration = request(&s).await.configurations[0].clone();
+        let mut req = request(&s).await;
+        req.parallelism = Some(AS_ADMITTED);
+        assert_eq!(attempts_at_once(&req, &configuration), u32::MAX);
+        req.parallelism = None;
+        assert_eq!(attempts_at_once(&req, &configuration), 1);
         dir.close().await;
     }
     #[tokio::test]

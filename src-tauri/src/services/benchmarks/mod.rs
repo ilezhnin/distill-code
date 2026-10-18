@@ -516,15 +516,6 @@ impl BenchmarkService {
         {
             issues.push("Select cases and configurations within the explicit execution budget (maximum 1000)".into());
         }
-        if request
-            .parallelism
-            .is_some_and(|n| n == 0 || n > runner::PARALLEL_ATTEMPTS)
-        {
-            issues.push(format!(
-                "Attempts in parallel per configuration must be between 1 and {}",
-                runner::PARALLEL_ATTEMPTS
-            ));
-        }
         if request.timeout_seconds == 0 || request.timeout_seconds > MAX_TIME_LIMIT_SECONDS {
             issues.push(format!(
                 "Run time limit must be between 1 and {MAX_TIME_LIMIT_SECONDS} seconds"
@@ -588,9 +579,11 @@ impl BenchmarkService {
         replace_run_id: Option<&str>,
     ) -> Result<BenchmarkRun> {
         // The run records how many attempts of a configuration it flies at
-        // once, before the request is compared with a saved plan.
+        // once, before the request is compared with a saved plan: unless the
+        // operator set a number, as many as the account's pace and the
+        // sandbox admit.
         let mut request = request.with_current_author_policy();
-        request.parallelism.get_or_insert(runner::PARALLEL_ATTEMPTS);
+        request.parallelism.get_or_insert(runner::AS_ADMITTED);
         if let Some(id) =
             sqlx::query_scalar::<_, String>("SELECT id FROM run_plans WHERE request_key=?")
                 .bind(&request.request_key)
@@ -797,16 +790,9 @@ impl BenchmarkService {
     /// Sets how many attempts of a configuration a run inside its window
     /// flies at once from now on, as the operator asks. The request records
     /// the newest setting, so a run that changed it notes the last one.
+    /// `parallelism` 0 lets the account's pace and the sandbox decide
+    /// ([`runner::AS_ADMITTED`]); any other number bounds the configuration.
     pub async fn set_parallelism(&self, id: &str, parallelism: u32) -> Result<BenchmarkRun> {
-        if parallelism == 0 || parallelism > runner::PARALLEL_ATTEMPTS {
-            return Err(BenchmarkError::new(
-                "validation",
-                format!(
-                    "Attempts in parallel per configuration must be between 1 and {}",
-                    runner::PARALLEL_ATTEMPTS
-                ),
-            ));
-        }
         let run = self.store.run(id).await?;
         if run.request.workflow_policy.is_some() && parallelism != 1 {
             return Err(BenchmarkError::new(

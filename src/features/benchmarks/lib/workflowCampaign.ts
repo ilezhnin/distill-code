@@ -8,9 +8,9 @@ import type { SelectorHoldoutReport } from "./benchmarkLearning";
 
 export interface WorkflowCampaignRequest {
   executionLimits?: RunRequest["executionLimits"];
-  /** Frozen maximum of unfinished trajectories (1..12); absent means serial. */
+  /** Frozen maximum of unfinished trajectories (at least 1); absent means serial. */
   parallelism?: number;
-  /** Frozen worker calls one account runs at once (1..8); absent means four. */
+  /** Frozen worker calls one account runs at once (at least 1); absent means four. */
   accountSlots?: number;
   requestKey: string;
   modelId: string;

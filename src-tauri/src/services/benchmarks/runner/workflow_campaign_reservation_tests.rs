@@ -432,7 +432,7 @@ async fn step_admission_serves_the_oldest_admitted_root_first_on_a_full_account(
 }
 
 #[tokio::test]
-async fn frozen_account_slots_bound_one_account_and_freezing_rejects_more_than_eight() {
+async fn frozen_account_slots_bound_one_account_and_freezing_rejects_none() {
     let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(GatedWorkers::default());
     let service = service(&dir, backend.clone()).await;
@@ -456,7 +456,9 @@ async fn frozen_account_slots_bound_one_account_and_freezing_rejects_more_than_e
         retry_policy: RunRetryPolicy::None,
         dispatch_not_after_ms: None,
     });
-    request.account_slots = Some(9);
+    // Any number from one is the plan's own bound (no fixed most); zero
+    // bounds nothing and is refused.
+    request.account_slots = Some(0);
     assert!(service
         .freeze_workflow_campaign(request.clone())
         .await
@@ -814,6 +816,8 @@ fn seat<'a>(id: &'a str, account: &'a str) -> Seat<'a> {
         lane_slots: 4,
         account,
         account_slots: 4,
+        model: "",
+        model_slots: usize::MAX,
     }
 }
 

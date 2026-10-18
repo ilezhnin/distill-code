@@ -1392,8 +1392,9 @@ fn measurement_report(
             // Catch-up pins this configuration, so it carries the runnable profile.
             configuration.execution_profile =
                 ledger_profile(&configuration.execution_profile).to_owned();
-            let parallelism = standing_request
-                .map(|request| super::runner::attempts_at_once(request, &configuration));
+            // As recorded: 0 for as many as admitted, one for a run admitted
+            // before it was recorded.
+            let parallelism = standing_request.map(|request| request.parallelism.unwrap_or(1));
             // The candidate's own cases: on a board their cells count for
             // speed and cost but never for quality, points or a rank.
             let own_version_ids: Vec<String> = pool

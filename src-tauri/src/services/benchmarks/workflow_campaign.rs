@@ -34,12 +34,14 @@ fn group(draft: &BenchmarkDraft) -> &str {
 pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_limits: Option<RunExecutionLimits>,
-    /// Maximum admitted, unfinished trajectories. Omission retains serial hashes.
+    /// Maximum admitted, unfinished trajectories, any number from one: the
+    /// workers' admission and accounts decide below it. Omission retains
+    /// serial hashes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<u32>,
-    /// Worker calls one account may run at once for this campaign, 1 to
-    /// [`MAX_ACCOUNT_SLOTS`]. Omission keeps the shared default of four and
-    /// the saved hashes. Recorded in the frozen plan: the measured conditions.
+    /// Worker calls one account may run at once for this campaign, any
+    /// number from one. Omission keeps the shared default of four and the
+    /// saved hashes. Recorded in the frozen plan: the measured conditions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_slots: Option<u32>,
     pub request_key: String,
@@ -67,8 +69,6 @@ pub(super) const RESERVED_WORKERS_ORDER: &str = "sha256-campaign-cell-reserved-w
 /// never held idle for a worker the policy did not choose. Waiting for that
 /// slot is recorded on the step and excluded from the whole-workflow clock.
 pub(super) const STEP_ADMISSION_ORDER: &str = "sha256-campaign-cell-step-admission-v4";
-/// The most worker calls a campaign may run at once on one account.
-pub(super) const MAX_ACCOUNT_SLOTS: u32 = 8;
 
 /// How a frozen campaign's roots take worker capacity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,8 +311,8 @@ impl BenchmarkService {
             || !(1..=20).contains(&request.repetitions)
             || !(1..=3600).contains(&request.timeout_seconds)
             || !(1..=100_000).contains(&request.max_executions)
-            || !(1..=12).contains(&request.parallelism.unwrap_or(1))
-            || !(1..=MAX_ACCOUNT_SLOTS).contains(&request.account_slots.unwrap_or(1))
+            || request.parallelism == Some(0)
+            || request.account_slots == Some(0)
         {
             return Err(invalid("Campaign requires distinct held-out cases, a request key and bounded repetitions, time, executions and account slots"));
         }
