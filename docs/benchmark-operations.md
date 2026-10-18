@@ -64,10 +64,13 @@ node scripts/benchmark-sandbox.mjs selftest
 ```
 
 Provisioning installs dependencies and restarts that distribution. Schedule it
-before measurement, not during a run. Sign in to the selected account through
-`bench-login` inside the sandbox, following the command described at the top of
-[the provisioning script](../scripts/benchmark-sandbox.mjs). Use the account ID
-from the application and the provider's normal login flow. Never put credentials
+before measurement, not during a run. Sign in to the selected account with
+`node scripts/benchmark-sandbox.mjs login claude|codex|grok|kimi ACCOUNT-ID`
+(see the top of [the provisioning script](../scripts/benchmark-sandbox.mjs)).
+It samples the Windows headroom the sandbox admits work against and runs
+`bench-login` in your terminal with it; a bare `wsl ... bench-login` carries no
+headroom sample and is refused. Use the account ID from the application and the
+provider's normal login flow. Never put credentials
 in a task, command transcript intended for publication, or source file. A Z.ai
 Coding Plan account has no login flow: **Copy key to benchmark sandbox** in
 Settings > Benchmarks (the `benchmark_sandbox_sign_in` command) copies its saved
@@ -376,8 +379,10 @@ renewal waits until none of them is alive. Meanwhile the account's new tests
 return to the queue ("Waits for a running Grok test") as unstarted
 admissions, under every retry policy, while later steps of workflows already
 running finish on the sign-in they were admitted with. A later step whose own
-limit needs the renewal waits only under automatic retry; a run without it
-stops for the operator. The renewal then starts
+limit needs the renewal waits for it inside its workflow, under every retry
+policy, as for sandbox room: nothing of the workflow is sent again. It waits
+for at most a quarter of the step's time limit; past that, a run without
+automatic retry stops for the operator as before. The renewal then starts
 one short session on the account, admitted as a text session under the same
 rules as every other job (a host build that keeps the measured load above the
 light line defers it), whose Grok CLI begins with

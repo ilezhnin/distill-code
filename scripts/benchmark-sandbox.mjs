@@ -4,6 +4,7 @@
 //
 //   node scripts/benchmark-sandbox.mjs            provision (create if missing)
 //   node scripts/benchmark-sandbox.mjs status     print bench-status
+//   node scripts/benchmark-sandbox.mjs login PROVIDER ACCOUNT-ID  sign in (below)
 //   node scripts/benchmark-sandbox.mjs selftest   check the confinement from inside
 //   node scripts/benchmark-sandbox.mjs deploy-helpers  network-free helper update
 //   node scripts/benchmark-sandbox.mjs heavy-cap N|off  cap CPU-heavy jobs at once
@@ -13,7 +14,10 @@
 //                                     the browser stay as they are)
 //
 // Provider sign-in happens inside the sandbox, by hand, once per account:
-//   wsl -d distill-bench -u root bench-login claude|codex|grok|kimi <account-id>
+//   node scripts/benchmark-sandbox.mjs login claude|codex|grok|kimi <account-id>
+// It samples the Windows headroom the sandbox admits work against
+// (DISTILL_BENCH_HOST_GATE) and runs bench-login in a terminal with it; a
+// bare `wsl ... bench-login` carries no gate and is refused.
 // A Z.ai account has no sign-in: Distill copies its saved API key in
 // (benchmark_sandbox_sign_in), piping it to `bench-login zai <account-id>`.
 //
@@ -240,12 +244,73 @@ function setting(name, value, valid, help) {
     throw new Error(`bench-budget ${name} exited ${result.status}`);
 }
 
+// The Windows headroom a sandbox job is admitted against, sampled as the
+// probes sample it: time, free RAM, free commit, free space on the sandbox's
+// volume and the host CPU share in thousandths (1001: not sampled).
+const HEADROOM = String.raw`
+$ErrorActionPreference='Stop'
+$os=Get-CimInstance Win32_OperatingSystem
+$memory=Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+$distro=Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' | Get-ItemProperty | Where-Object DistributionName -eq 'distill-bench'
+if (@($distro).Count -ne 1) { throw 'Sandbox registration is missing or ambiguous' }
+$volume=[System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($distro.BasePath))
+$ram=[uint64]$os.FreePhysicalMemory*1024
+$commit=[uint64]$memory.CommitLimit-[uint64]$memory.CommittedBytes
+$disk=[uint64]$volume.AvailableFreeSpace
+Write-Output "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$ram,$commit,$disk,1001"
+`;
+
+function hostGate() {
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", HEADROOM],
+    { encoding: "utf8", timeout: 15_000 },
+  );
+  if (result.error) throw result.error;
+  const gate = (result.stdout ?? "").trim();
+  if (result.status !== 0 || !/^\d+,\d+,\d+,\d+,\d+$/u.test(gate))
+    throw new Error(
+      `Windows headroom could not be sampled: ${(result.stderr ?? "").trim() || gate}`,
+    );
+  return gate;
+}
+
+/** Signs `provider` in for `account` inside the sandbox, in this terminal. */
+function login(provider, account) {
+  if (!/^(claude|codex|grok|kimi)$/u.test(provider ?? ""))
+    throw new Error(
+      "login takes claude|codex|grok|kimi and an account id; Distill copies Z.ai keys itself",
+    );
+  if (!/^[A-Za-z0-9_-]{1,80}$/u.test(account ?? ""))
+    throw new Error("login takes the account id from the application");
+  const result = spawnSync(
+    "wsl.exe",
+    [
+      "-d",
+      DISTRO,
+      "-u",
+      "root",
+      "--exec",
+      "/usr/bin/env",
+      `DISTILL_BENCH_HOST_GATE=${hostGate()}`,
+      "/usr/local/sbin/bench-login",
+      provider,
+      account,
+    ],
+    { stdio: "inherit" },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0)
+    throw new Error(`bench-login exited ${result.status}`);
+}
+
 const [command, argument, ...rest] = process.argv.slice(2);
 if (!command) provision();
 else if (command === "install-tool") {
   if (!argument) throw new Error("install-tool takes at least one tool id");
   provision([argument, ...rest]);
-} else if (command === "status") status();
+} else if (command === "login") login(argument, rest[0]);
+else if (command === "status") status();
 else if (command === "selftest") selftest();
 else if (command === "deploy-helpers") deployHelpers();
 else if (command === "heavy-cap")

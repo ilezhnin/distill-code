@@ -85,6 +85,38 @@ struct Reply {
 pub(super) struct Assessment {
     pub status: &'static str,
     pub checks: Value,
+    /// Passes the judge gave without a quote, on conditions met by leaving
+    /// something out and on the others, for the monitor (see [`omission`]).
+    pub quote_less: QuoteLess,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct QuoteLess {
+    pub omission: usize,
+    pub positive: usize,
+}
+
+/// Whether a condition reads as one the response meets by leaving something
+/// out ("does not mention", "contain no", "Fail if they do"). Only the monitor
+/// uses it: a quote-less pass on any condition is valid.
+pub(super) fn omission(requirement: &str) -> bool {
+    let text = format!(" {} ", requirement.to_lowercase());
+    [
+        " do not ",
+        " does not ",
+        " did not ",
+        " must not ",
+        " never ",
+        " contain no ",
+        " contains no ",
+        " mention no ",
+        " neither ",
+        "fail if they do",
+        "fail if it does",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker) && !text.contains(&format!("{marker} not")))
+        || text.trim_start().starts_with("no ")
 }
 
 /// Strict parsing is opt-in with the new protocol. Old sheets retain their
@@ -109,13 +141,39 @@ pub(super) fn parse(
     {
         return None;
     }
+    // A sheet that passes anything anchors itself in the response somewhere:
+    // passes without a single quote in the sheet are no verdict. (A fail
+    // always quotes; a sheet of unknowns without quotes still abstains.)
+    if parsed
+        .checks
+        .values()
+        .all(|check| check.evidence.is_empty())
+        && parsed
+            .checks
+            .values()
+            .any(|check| matches!(check.verdict, Verdict::Pass))
+    {
+        return None;
+    }
     let mut status = "pass";
+    let mut quote_less = QuoteLess::default();
     for requirement in requirements {
         let check = parsed.checks.get(&requirement.id)?;
+        // A fail quotes the violation. A pass may quote nothing: a condition
+        // the response meets by leaving something out ("does not mention
+        // consensus") has no text to quote, and judges answer such a pass
+        // with no evidence. Every quote given still has to be the response's.
+        if matches!(check.verdict, Verdict::Pass) && check.evidence.is_empty() {
+            if omission(&requirement.requirement) {
+                quote_less.omission += 1;
+            } else {
+                quote_less.positive += 1;
+            }
+        }
         if check.reason.trim().is_empty()
             || check.reason.len() > 2000
             || check.evidence.len() > 4
-            || (!matches!(check.verdict, Verdict::Unknown) && check.evidence.is_empty())
+            || (matches!(check.verdict, Verdict::Fail) && check.evidence.is_empty())
             || check.evidence.iter().any(|quote| {
                 quote.trim().is_empty() || quote.len() > 2000 || !response.contains(quote)
             })
@@ -132,5 +190,6 @@ pub(super) fn parse(
     Some(Assessment {
         status,
         checks: serde_json::to_value(parsed.checks).ok()?,
+        quote_less,
     })
 }

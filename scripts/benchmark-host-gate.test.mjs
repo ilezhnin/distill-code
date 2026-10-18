@@ -51,6 +51,7 @@ function validators(source) {
 const fields = (gate) => gate.split(",").length;
 
 const SCRIPTS = [
+  "scripts/benchmark-sandbox.mjs",
   "scripts/benchmark-sandbox-selftest.mjs",
   "scripts/benchmark-browser-ready.mjs",
   "scripts/benchmark-linux-text-policy-probe.mjs",
