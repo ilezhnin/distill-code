@@ -6651,6 +6651,9 @@ impl BenchmarkService {
                 ))
                 .unwrap_or(u32::MAX),
             });
+            // The account flies a turn from now: a restart measures its
+            // pace's staleness from here even before the turn ends.
+            account_pace::record_flight(&pace_key(&self.store, &account), now());
         }
         if let Err(error) =
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest).await
