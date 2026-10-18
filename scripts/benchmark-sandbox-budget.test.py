@@ -48,9 +48,15 @@ class BudgetTests(unittest.TestCase):
                 return types.SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0)
         budget.HEAVY_CAP = RootOwned(root / 'heavy-cap')
         budget.PEAKS = root / 'peaks.json'
+        budget.PEAKS_BACKUP = root / 'peaks.json.bak'
         budget.USAGE = root / 'job-usage.jsonl'
         production_cores = budget.sandbox_cores
         self.addCleanup(setattr, budget, 'sandbox_cores', production_cores)
+        production_guest = budget.guest_cores
+        self.addCleanup(setattr, budget, 'guest_cores', production_guest)
+        # The host's own /proc/stat must not decide: no guest sample unless a
+        # test writes one.
+        budget.PROC_STAT = root / 'guest-stat'
         budget.STATE.mkdir()
         budget.ROOT.mkdir()
         (budget.ROOT / 'memory.current').write_text('0')
@@ -129,18 +135,19 @@ class BudgetTests(unittest.TestCase):
             self.assertIn(line, lines)
 
     def test_before_any_peak_is_learned_a_wave_starts_at_full_parallelism(self):
-        # Repository sessions claim 3 GiB, half their ceiling, until eight
-        # are recorded; every other class its ceiling. Five sessions fit
-        # beside room for one check and one preparation, then memory holds
-        # the sixth.
+        # Repository sessions claim 3 GiB, half their ceiling, and checks
+        # 1 GiB, a quarter of theirs, until eight are recorded; every other
+        # class its ceiling. Six sessions fit beside room for one check and
+        # one preparation, then memory holds the seventh.
         self.roomy()
         self.measure(1.0)
-        for n in range(5):
+        for n in range(6):
             self.reserve('repository', f'fictional-{n}')
             self.settle()
         with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
-            self.reserve('repository', 'fictional-sixth')
+            self.reserve('repository', 'fictional-seventh')
         self.assertEqual(budget.expected_memory('repository', budget.peaks()), 3 * budget.GIB)
+        self.assertEqual(budget.expected_memory('check', budget.peaks()), budget.GIB)
         # Checks and preparation take the room attempts leave.
         self.reserve('check', 'fictional-check')
         self.reserve('prep', 'fictional-prep')
@@ -221,25 +228,48 @@ class BudgetTests(unittest.TestCase):
         self.measure(1.0)
         for name in ('fictional-a', 'fictional-b', 'fictional-c'):
             self.reserve('repository', name)
-        # A job stalled on CPU more than a tenth of ten seconds holds new
-        # sessions beyond the ceiling rule.
-        pressure = budget.ROOT / 'session-fictional-b' / 'cpu.pressure'
-        pressure.write_text('some avg10=15.00 avg60=1.00 avg300=1.00 total=9\n')
+        # A job whose tasks waited for CPUs other jobs held for more than a
+        # tenth of the sampled seconds holds new sessions beyond the ceiling
+        # rule.
+        def sampled(before, now):
+            at = time.time()
+            (budget.STATE / 'cpu.json').write_text(json.dumps([
+                [at - 10, 0, None, {'session-fictional-b': before}],
+                [at - 0.5, 0, None, {'session-fictional-b': now}]]))
+        sampled(0, 1_500_000)
         with self.assertRaisesRegex(BlockingIOError, 'CPU pressure in the sandbox'):
             self.reserve('repository', 'fictional-d')
-        pressure.write_text('some avg10=5.00 avg60=1.00 avg300=1.00 total=9\n')
-        # The supervisors' own control group never does, nor the guest's
-        # pressure it causes.
+        sampled(0, 500_000)
+        self.assertAlmostEqual(budget.job_pressure(), 0.05 / 0.95, places=3)
+        record = self.admit('repository', 'fictional-d')['admission']
+        self.assertEqual(record['admittedBy'], 'measured')
+        # 10-17: a check at its own cpu.max ceiling (it starts as many workers
+        # as the guest has CPUs) read as pressure and held every session,
+        # preparation and text attempt. Its throttled time is its own.
+        leaf = budget.ROOT / 'check-fictional-busy'
+        leaf.mkdir()
+        (leaf / 'cpu.pressure').write_text('some avg10=95.00 avg60=1.00 avg300=1.00 total=4000000\n')
+        (leaf / 'cpu.max').write_text('200000 100000\n')
+        (leaf / 'cpu.stat').write_text('usage_usec 8000000\nnr_throttled 39\nthrottled_usec 54600000\n')
+        self.assertEqual(budget.leaf_wait(leaf), 100_000)
+        # Its throttled_usec, summed over every CPU's runqueue, can exceed the
+        # wall time; what it waited outside its throttled periods still counts.
+        (leaf / 'cpu.stat').write_text('usage_usec 8000000\nnr_throttled 1\nthrottled_usec 40000000\n')
+        self.assertEqual(budget.leaf_wait(leaf), 3_900_000)
+        # The supervisors' own control group never counts.
         (budget.ROOT / 'control').mkdir()
         (budget.ROOT / 'control' / 'cpu.pressure').write_text('some avg10=40.00 avg60=1.00 avg300=1.00 total=9\n')
-        budget.Path('/proc/pressure/cpu').write_text('some avg10=19.70 avg60=1.00 avg300=1.00 total=9\n')
-        self.assertAlmostEqual(budget.job_pressure(), 0.05)
-        record = self.admit('repository', 'fictional-d')['admission']
-        self.assertEqual((record['admittedBy'], record['cpuPressure']), ('measured', 0.05))
-        # Checks that waited for CPUs hold new sessions too.
-        (budget.STATE / 'stalls.json').write_text(json.dumps([0.3] * 10))
+        self.assertNotIn('control', budget.leaf_waits())
+        self.assertEqual(budget.leaf_waits()['check-fictional-busy'], 3_900_000)
+        # Checks that waited for CPUs hold new sessions too, while their
+        # stalls are recent; older ones, and the old format, hold nothing.
+        (budget.STATE / 'stalls.json').write_text(json.dumps([[time.time(), 0.3]] * 10))
         with self.assertRaisesRegex(BlockingIOError, 'CPU pressure in the sandbox'):
             self.reserve('repository', 'fictional-e')
+        (budget.STATE / 'stalls.json').write_text(json.dumps([[time.time() - budget.STALL_WINDOW - 1, 0.3]] * 10))
+        self.assertIsNone(budget.recent_stall())
+        (budget.STATE / 'stalls.json').write_text(json.dumps([0.1125, 0.2143]))
+        self.assertIsNone(budget.recent_stall())
 
     def test_measured_memory_use_or_pressure_holds_new_attempts(self):
         # The smaller initial claims are guarded by what the sandbox uses:
@@ -275,26 +305,27 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(budget.memory_in_use(), 17 * budget.GIB)
 
     def test_a_later_workflow_step_goes_ahead_of_new_attempts(self):
-        # Its earlier steps are paid for: the priority holds, the ticket queue,
-        # the CPU pressure and check-stall guards and the session cap hold new
+        # Its earlier steps are paid for: the room kept for waiting jobs, the
+        # CPU pressure and check-stall guards and the session cap hold new
         # attempts, not it; memory and the Windows floors still bound it.
         self.roomy()
         self.learn(repository=budget.GIB, text=512 * MIB, check=budget.GIB, prep=256 * MIB)
         self.measure(1.0)
-        budget.hold('memory', time.time() + 60)
+        budget.hold('memory', time.time() + 60, budget.ADMISSION_MEMORY)
         with self.assertRaisesRegex(BlockingIOError, 'waits for room first'):
             self.reserve('text', 'fictional-new-text')
         record = self.admit('text', 'fictional-step-text', continuing=True)['admission']
         self.assertTrue(record['continuing'])
         budget.hold('memory')
+        # A queued job keeps only the room it was refused: an attempt starts
+        # beside a queue whose head asked for nothing it would take.
         ticket = budget.STATE / ('wait-' + 'b' * 32 + '.json')
         ticket.write_text(json.dumps({'pid': budget.os.getpid(), 'start': budget.proc_identity(budget.os.getpid()),
                                       'deadline': time.time() + 60, 'created': time.time_ns()}))
-        with self.assertRaisesRegex(BlockingIOError, 'capacity is queued'):
-            self.reserve('repository', 'fictional-new-queued')
+        self.reserve('repository', 'fictional-new-queued')
         self.reserve('repository', 'fictional-step-queued', continuing=True)
         ticket.unlink()
-        for n in range(budget.REPOSITORY_SESSIONS - 1):
+        for n in range(budget.REPOSITORY_SESSIONS - 2):
             self.reserve('repository', f'fictional-{n}')
             self.settle()
         with self.assertRaisesRegex(BlockingIOError, 'most repository sessions'):
@@ -557,7 +588,8 @@ class BudgetTests(unittest.TestCase):
         # The log stays bounded however long the failures go on.
         for _ in range(3 * budget.REAPER_LOG_LINES):
             budget.note_reaper('invented failure')
-        self.assertEqual(len(budget.REAPER_LOG.read_text().splitlines()), budget.REAPER_LOG_LINES)
+        kept = len(budget.REAPER_LOG.read_text().splitlines())
+        self.assertTrue(budget.REAPER_LOG_LINES <= kept <= 2 * budget.REAPER_LOG_LINES, kept)
 
     def test_bench_net_takes_the_fast_path_only_for_the_reaper_it_started(self):
         # The pid space wraps: a live process under the reaper's old pid is
@@ -606,6 +638,13 @@ class BudgetTests(unittest.TestCase):
         self.assertTrue(torn.with_name(torn.name + '.unreadable').exists())
         self.assertTrue(fresh.exists())
         self.assertIn('set aside unreadable ' + torn.name, budget.REAPER_LOG.read_text())
+        # A row that parses but lacks what its readers need (another build's
+        # schema, an operator's edit) is set aside the same way.
+        foreign = budget.STATE / ('lease-' + 'f' * 32 + '.json')
+        foreign.write_text(json.dumps({'pid': 4711, 'start': 'x'}))
+        os.utime(foreign, (old, old))
+        self.assertEqual(budget.receipts(), [])
+        self.assertTrue(foreign.with_name(foreign.name + '.unreadable').exists())
         # One unreadable owner does not keep an expired one from its cleanup.
         production_scratch = budget.SCRATCH
         self.addCleanup(setattr, budget, 'SCRATCH', production_scratch)
@@ -773,20 +812,24 @@ class BudgetTests(unittest.TestCase):
         self.reserve('text', 'fictional-text-later')
 
     def test_a_repository_attempt_short_of_memory_holds_new_text_attempts_back(self):
-        # Before any peak is learned a text attempt needs 8 GiB of room and a
-        # repository attempt 12: text sessions refilling every few minutes
+        # Before any peak is learned a text attempt needs 5 GiB of room and a
+        # repository attempt 6: text sessions refilling every few minutes
         # would otherwise keep the repository attempt out for good.
         self.roomy()
-        texts = [self.reserve('text', f'fictional-text-{n}') for n in range(8)]
+        texts = [self.reserve('text', f'fictional-text-{n}') for n in range(9)]
         with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
             self.reserve('repository', 'fictional-repository')
         self.assertEqual(budget.priority_waiting('text'),
                          'a repository attempt waits for the memory text sessions claim')
         self.assertIsNone(budget.priority_waiting('repository'))
-        for token in texts[:3]:
-            budget.release(token)
+        # A text attempt that would take the repository attempt's room waits.
+        budget.release(texts[0])
         with self.assertRaisesRegex(BlockingIOError, 'repository attempt waits for the memory'):
             self.reserve('text', 'fictional-text-refill')
+        # One that fits beside it starts.
+        for token in texts[1:3]:
+            budget.release(token)
+        self.reserve('text', 'fictional-text-beside')
         # Checks and preparations are not held by it.
         self.reserve('prep', 'fictional-prep')
         budget.release(next(path.name[6:-5] for path in budget.STATE.glob('lease-*.json')
@@ -795,9 +838,38 @@ class BudgetTests(unittest.TestCase):
         # Once it is in, the hold is gone.
         self.assertIsNone(budget.priority_waiting('text'))
 
+    def test_asking_before_preparing_reserves_nothing_and_keeps_the_hold(self):
+        # A repository attempt asks before its workspace is verified and
+        # copied. The answer makes no group or lease; a refusal holds text
+        # attempts back as a refused reservation does, and an admission keeps
+        # that hold until the reservation itself.
+        self.roomy()
+        texts = [self.reserve('text', f'fictional-text-{n}') for n in range(9)]
+        deadline = int(time.time() * 1000) + 60000
+
+        def ask():
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                budget.reserve('repository', 'fictional-repository', deadline, self.gate(), 0, False, True)
+            return json.loads(output.getvalue())
+        with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
+            ask()
+        held = 'a repository attempt waits for the memory text sessions claim'
+        self.assertEqual(budget.priority_waiting('text'), held)
+        for token in texts[:3]:
+            budget.release(token)
+        leases = sorted(path.name for path in budget.STATE.glob('lease-*.json'))
+        self.assertEqual(ask(), {'id': 'fictional-repository', 'class': 'repository',
+                                 'deadlineMs': deadline, 'admits': True})
+        self.assertEqual(sorted(path.name for path in budget.STATE.glob('lease-*.json')), leases)
+        self.assertFalse((budget.ROOT / 'session-fictional-repository').exists())
+        self.assertEqual(budget.priority_waiting('text'), held)
+        self.reserve('repository', 'fictional-repository')
+        self.assertIsNone(budget.priority_waiting('text'))
+
     def test_a_repository_attempt_text_cannot_make_room_for_holds_nothing(self):
         self.roomy()
-        self.learn(repository=4 * budget.GIB)
+        self.learn(repository=9 * budget.GIB // 2)
         for name in ('fictional-a', 'fictional-b', 'fictional-c'):
             self.reserve('repository', name)
         with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
@@ -808,20 +880,103 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
             self.reserve('text', 'fictional-text')
 
-    def test_checks_and_preparations_go_ahead_of_a_queued_sign_in(self):
-        # A sign-in or probe without a reservation waits in the ticket queue;
-        # attempts wait behind it, checks and preparations do not.
+    def test_a_queued_sign_in_keeps_only_the_room_it_was_refused(self):
+        # A sign-in or probe without a reservation waits in the ticket queue.
+        # 19:30 PDT 10-17: any queued job refused every new attempt, so a
+        # preparation waiting on the light-job line stopped all repository
+        # starts. Now attempts wait only for the room it was refused.
         self.roomy()
         ticket = budget.STATE / ('wait-' + 'a' * 32 + '.json')
         ticket.write_text(json.dumps({'pid': budget.os.getpid(), 'start': budget.proc_identity(budget.os.getpid()),
                                       'deadline': time.time() + 60, 'created': time.time_ns()}))
-        for kind in ('text', 'repository'):
-            with self.assertRaisesRegex(BlockingIOError, 'capacity is queued'):
-                self.reserve(kind, f'fictional-{kind}')
-        for kind in ('check', 'browser', 'prep'):
+        for kind in ('text', 'repository', 'check', 'browser', 'prep'):
             self.reserve(kind, f'fictional-{kind}')
+        budget.hold('memory', time.time() + 10, budget.ADMISSION_MEMORY)
+        with self.assertRaisesRegex(BlockingIOError, 'waits for room first'):
+            self.reserve('text', 'fictional-text-behind')
         ticket.unlink()
-        self.reserve('text', 'fictional-text')
+
+    def test_the_owners_desktop_load_leaves_four_sessions_and_their_checks(self):
+        # The owner keeps Unity and VS Code open (~3 cores) beside Distill and
+        # its WebView (~2.3): 5.3 cores outside the VM. The guest's own work
+        # (2.0 here, the jobs' 1.5 among it) is inside and not counted twice.
+        self.roomy()
+        self.learn(**{'repository': budget.GIB, 'check': budget.GIB, 'cpu-repository': 0.41})
+        self.measure(1.5)
+        budget.guest_cores = lambda: 4.0
+        self.busy = 581  # 9.3 of 16 logical CPUs busy on the host
+        self.assertAlmostEqual(budget.outside_cores(7.3, 1.5, 2.0), 5.3)
+        self.assertAlmostEqual(budget.outside_cores(7.3, 1.5), 5.8)
+        for n in range(4):
+            self.reserve('repository', f'fictional-{n}')
+        self.reserve('check', 'fictional-check-running')
+        # The running check uses its two CPUs: the jobs measure 1.5 + 2, and
+        # its ceiling already counts them, so they are not counted twice.
+        (budget.ROOT / 'check-fictional-check-running' / 'cpu.stat').write_text('usage_usec 2000000\n')
+        self.measure(3.5)
+        # 1.5 used + 0.41 x 5 bursts + the running check's 2 + one check's
+        # reserve of 2 = 7.55 of the 16 - 6 - 1 = 9 the host leaves.
+        record = self.admit('repository', 'fictional-fifth')['admission']
+        self.assertEqual((record['cpuCapacity'], record['admittedBy']), (9, 'measured'))
+        self.assertEqual(record['outsideCpu'], 5.296)
+        # A check that waits for CPUs keeps them: a sixth session would take
+        # them and waits; the check starts beside the five.
+        budget.hold('cpu', time.time() + budget.PRIORITY_HOLD, budget.CHECK_CPUS)
+        with self.assertRaisesRegex(BlockingIOError, 'a check waits for CPUs first'):
+            self.reserve('repository', 'fictional-sixth')
+        self.reserve('check', 'fictional-check-waiting')
+        budget.hold('cpu')
+        # Two checks running leave no room for a sixth session's burst and
+        # one more check: the checks keep their CPUs.
+        with self.assertRaisesRegex(BlockingIOError, 'CPU cores the host leaves free'):
+            self.reserve('repository', 'fictional-sixth')
+
+    def test_a_preparation_refused_by_the_light_line_holds_nobody(self):
+        # 19:30 PDT 10-17: preparations refused on the light-job line kept
+        # the 'cpu' hold armed, so no repository session started for minutes.
+        self.roomy()
+        self.measure(1.0)
+        budget.guest_cores = lambda: 1.0
+        self.busy = 750  # 12 of 16 logical CPUs busy: 11 outside the VM
+        with self.assertRaisesRegex(BlockingIOError, 'light-job admission line'):
+            self.reserve('prep', 'fictional-prep')
+        self.assertNotIn('cpu', budget.priority_state())
+        self.assertNotIn('memory', budget.priority_state())
+        self.assertIsNone(budget.priority_waiting('repository'))
+        # The repository line is the measured one: 1 used + one burst + one
+        # check's reserve fits the 16 - 11 - 1 = 4 the host leaves.
+        record = self.admit('repository', 'fictional-repository')['admission']
+        self.assertEqual(record['admittedBy'], 'measured')
+
+    def test_a_cancellation_is_never_read_as_a_missing_file(self):
+        # SIGHUP's exception used to be a TimeoutError, an OSError: inside a
+        # read it passed for a missing file, a dead owner or an empty ring.
+        self.assertFalse(issubclass(budget.Cancelled, OSError))
+
+        class Interrupted(type(Path())):
+            def read_text(self, *args, **kwargs):
+                raise budget.Cancelled('benchmark resource owner cancelled')
+        with self.assertRaises(budget.Cancelled):
+            budget.readable(Interrupted(budget.STATE / 'lease-fictional.json'))
+        budget.PEAKS = Interrupted(budget.PEAKS)
+        with self.assertRaises(budget.Cancelled):
+            budget.peaks()
+
+    def test_the_guest_cpu_sample_reads_the_vms_work(self):
+        stat_file = budget.PROC_STAT
+        stat_file.write_text('cpu  1000 0 500 9000 100 50 50 200 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\n', newline='\n')
+        # user + nice + system + irq + softirq, at 100 ticks a second.
+        self.assertEqual(budget.guest_work(), (1000 + 0 + 500 + 50 + 50) * 1_000_000 // budget.CLOCK_TICKS)
+        stat_file.write_text('intr 1 2 3\n', newline='\n')
+        self.assertIsNone(budget.guest_work())
+        now = time.time()
+        (budget.STATE / 'cpu.json').write_text(json.dumps([[now - 4, 0, 0], [now, 4_000_000, 12_000_000]]))
+        self.assertAlmostEqual(budget.sandbox_cores(), 1.0)
+        self.assertAlmostEqual(budget.guest_cores(), 3.0)
+        # Samples from before the guest was sampled still give the jobs' use.
+        (budget.STATE / 'cpu.json').write_text(json.dumps([[now - 4, 0], [now, 4_000_000, None]]))
+        self.assertAlmostEqual(budget.sandbox_cores(), 1.0)
+        self.assertIsNone(budget.guest_cores())
 
     def test_unknown_host_cpu_counts_no_load_outside_the_sandbox(self):
         # 1001 (or any share above 1000) is "not sampled": the operator
@@ -884,6 +1039,8 @@ class BudgetTests(unittest.TestCase):
         self.busy = 125
         record = self.admit('repository', 'fictional-measured', self.gate(ram=60, commit=60))['admission']
         self.assertLess(abs(record.pop('hostGateAgeMs')), 2000)
+        # No memory.stat in the fixture: the guard read memory.current.
+        self.assertEqual((record.pop('memoryInUse'), record.pop('memoryFile')), (3 * budget.GIB, None))
         self.assertEqual(record, {
             'policy': 'dynamic-v2', 'heavyCap': None, 'lane': 'heavy',
             'competing': {'text': 1, 'repository': 1}, 'competingHeavy': 1,
@@ -892,6 +1049,7 @@ class BudgetTests(unittest.TestCase):
             'hostAvailableRam': 60 * budget.GIB, 'hostAvailableCommit': 60 * budget.GIB,
             'guestMemAvailable': 32 * budget.GIB, 'hostCpuBusy': 0.125,
             'expectedMemory': 3 * budget.GIB, 'cpuLine': 6, 'sandboxCpu': None,
+            'guestCpu': None, 'outsideCpu': 2.0, 'keptMemory': 0, 'keptCpus': 0,
             'cpuPressure': None, 'checkStall': None, 'cpuCapacity': 13, 'sessionBurst': 0.5,
             'repositorySessions': 1, 'admittedBy': 'ceilings'})
 
@@ -928,10 +1086,58 @@ class BudgetTests(unittest.TestCase):
         self.learn(text=4 * budget.GIB, prep=MIB)
         self.assertEqual(budget.expected_memory('text', budget.peaks()), 2 * budget.GIB)
         self.assertEqual(budget.expected_memory('prep', budget.peaks()), 256 * MIB)
-        budget.PEAKS.write_text(json.dumps({'check': [MIB] * (budget.PEAK_SAMPLES - 1)}))
-        self.assertEqual(budget.expected_memory('check', budget.peaks()), 4 * budget.GIB)
+        budget.PEAKS.write_text(json.dumps({'pair': [MIB] * (budget.PEAK_SAMPLES - 1)}))
+        self.assertEqual(budget.expected_memory('pair', budget.peaks()), 8 * budget.GIB)
         budget.PEAKS.write_text('not json')
-        self.assertEqual(budget.expected_memory('check', budget.peaks()), 4 * budget.GIB)
+        self.assertEqual(budget.expected_memory('pair', budget.peaks()), 8 * budget.GIB)
+        # An unlearned check claims its initial quarter, not its ceiling.
+        self.assertEqual(budget.expected_memory('check', budget.peaks()), budget.GIB)
+
+    def test_a_failed_read_never_resets_what_admission_learned(self):
+        # 10-17 19:05:56: a supervisor that could not read the learned state
+        # wrote a fresh one, and every class went back to its initial claim.
+        # Now an update keeps the version it replaces, a backup answers when
+        # the current file cannot be read, and nothing is written over state
+        # that cannot be read at all.
+        self.learn(repository=budget.GIB)
+        before = budget.PEAKS.read_text()
+        leaf = budget.ROOT / 'session-fictional-done'
+        leaf.mkdir()
+        (leaf / 'memory.peak').write_text(str(2 * budget.GIB))
+        (leaf / 'cpu.stat').write_text('usage_usec 1000000\n')
+        budget.record_peak('repository', ['session-fictional-done'])
+        self.assertEqual(budget.PEAKS_BACKUP.read_text(), before)
+        self.assertEqual(json.loads(budget.PEAKS.read_text())['repository'][-1], 2 * budget.GIB)
+        # A torn current file: decisions and the next update use the backup.
+        budget.PEAKS.write_bytes(b'\xff\xfe{"torn')
+        self.assertEqual(budget.peaks(), json.loads(before))
+        budget.record_peak('repository', ['session-fictional-done'])
+        recovered = json.loads(budget.PEAKS.read_text())
+        self.assertEqual(recovered['repository'], [budget.GIB] * budget.PEAK_SAMPLES + [2 * budget.GIB])
+        self.assertEqual(budget.PEAKS_BACKUP.read_text(), before)
+        self.assertIn('recovered it from', budget.REAPER_LOG.read_text())
+        # Neither readable: both stay as they are, and the log says why.
+        budget.PEAKS.write_bytes(b'\xff')
+        budget.PEAKS_BACKUP.write_bytes(b'\xff')
+        budget.record_peak('repository', ['session-fictional-done'])
+        self.assertEqual((budget.PEAKS.read_bytes(), budget.PEAKS_BACKUP.read_bytes()), (b'\xff', b'\xff'))
+        self.assertIn('kept the learned admission state', budget.REAPER_LOG.read_text())
+        self.assertEqual(budget.peaks(), {})
+        # The usage log is kept, not started over, when it cannot be read.
+        budget.USAGE.mkdir()
+        budget.record_usage('repository', 'fictional-done', ['session-fictional-done'], time.time() - 10)
+        self.assertTrue(budget.USAGE.is_dir())
+        self.assertIn('kept ' + budget.USAGE.name, budget.REAPER_LOG.read_text())
+        # 19:39:59.9: the host's SIGHUP, as the supervisor's TimeoutError (an
+        # OSError), interrupted the usage read; the log is kept then too.
+        class Interrupted(type(Path())):
+            def read_text(self, *args, **kwargs):
+                raise TimeoutError('benchmark resource owner cancelled')
+        budget.USAGE = Interrupted(budget.USAGE.parent / 'interrupted-usage.jsonl')
+        budget.USAGE.write_text('{"kept": true}\n')
+        budget.record_usage('repository', 'fictional-done', ['session-fictional-done'], time.time() - 10)
+        self.assertEqual(budget.USAGE.read_bytes(), b'{"kept": true}\n')
+        self.assertIn('kept interrupted-usage.jsonl, it could not be read: TimeoutError', budget.REAPER_LOG.read_text())
 
     def test_checks_that_waited_for_cpus_tighten_the_line(self):
         self.assertEqual(budget.cpu_line(0.0, None), 8)

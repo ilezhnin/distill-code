@@ -3615,6 +3615,27 @@ impl ExecutionBackend for NativeBackend {
             }
             busy().await?;
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
+            if let Some(id) = cleanup.0.clone().filter(|_| repository) {
+                // Asked before the verify and the copy, each a preparation
+                // job: a refused retry prepares nothing, and the check made
+                // nothing to clean. The reservation when the session opens
+                // still decides. Five minutes ahead stays valid for the
+                // broker even with the guest clock a minute off.
+                let ask_until = deadline
+                    .unwrap_or(u64::MAX)
+                    .min((now() as u64).saturating_add(300_000));
+                if let Err(error) = sandbox::admits(
+                    sandbox::ResourceClass::Repository,
+                    &id,
+                    ask_until,
+                    sandbox::continues(&turn_owner(&attempt)),
+                )
+                .await
+                {
+                    cleanup.0 = None;
+                    return Err(sandbox_setup_error(error, deadline));
+                }
+            }
             let cwd = if let Some(id) = cleanup.0.as_deref().filter(|_| repository) {
                 let snapshot = super::repository::snapshot(&version.manifest)?;
                 if let Some(input) = &artifact_input {

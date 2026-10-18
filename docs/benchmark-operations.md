@@ -152,7 +152,9 @@ naming the line that holds it, while it does not:
   now and what jobs of its kind needed before: the 95th percentile of their
   recorded peaks plus a quarter, never above the ceiling and, until eight are
   recorded, the ceiling itself, except a repository session, which claims
-  3 GiB (half its ceiling) until then, so a wave starts at full parallelism.
+  3 GiB (half its ceiling) until then, so a wave starts at full parallelism,
+  and a check, which claims 1 GiB (a quarter of its ceiling): checks follow
+  repository sessions only, so they can stay unlearned for a long time.
   The claims and the new job's must fit 23 GiB, and an attempt must also leave
   room for one check and one preparation. No attempt starts while the jobs'
   anonymous, shared and kernel memory exceeds 70 % of those 23 GiB or the
@@ -164,8 +166,10 @@ naming the line that holds it, while it does not:
   over the last seconds, a burst allowance for every running session and the
   new one, the ceilings of the running timed jobs (checks, paired checks,
   browser runs) and one check's two CPUs must fit the guest's logical CPUs
-  less what the host runs outside the sandbox and one CPU for the
-  supervisors. The allowance is half a core until eight sessions finished,
+  less what the host runs outside the VM and one CPU for the supervisors.
+  Outside is the host's busy CPUs less the work of the whole guest
+  (`/proc/stat`), so the VM's own work for the jobs is not counted twice;
+  the pressure and stall guards below see what it takes from them. The allowance is half a core until eight sessions finished,
   then the 95th percentile of their average use, between a quarter core and
   the session's ceiling. New sessions also wait while the guest's CPU pressure
   over ten seconds exceeds a tenth or recent checks spent more than a tenth of
@@ -176,27 +180,34 @@ naming the line that holds it, while it does not:
   admits whatever it admitted: every CPU-heavy job by its ceiling within the
   physical cores (half the guest's CPUs) less the host's own use, an attempt
   leaving one check's two CPUs, the line dropping by one check while checks
-  waited for CPUs. Light jobs and preparations need the measured load below
-  three quarters of the guest's CPUs and, where Linux reports it, CPU pressure
-  below a quarter. The CPU pressure these lines read is the highest of the
+  waited for CPUs. Light jobs and preparations need the jobs' measured load
+  plus the host's load outside the VM below three quarters of the guest's
+  CPUs and, where Linux reports it, CPU pressure below a quarter. CPU pressure
+  and check stalls count only the time a job's tasks waited for CPUs another
+  job held, never its own `cpu.max` throttling (a check sees all the guest's
+  CPUs and starts that many workers on its two); a check's recorded stall
+  counts for fifteen minutes. The measured use the repository line adds to
+  the running timed jobs' ceilings leaves out what those jobs use. The CPU pressure these lines read is the highest of the
   running jobs' own, never the supervisors' control group. Every finished job
   records its CPU seconds, average cores, memory peak and wall time;
   `bench-budget usage` lists the latest.
-- Priority. While a check or a preparation waits for memory, no attempt
-  starts; while a check waits for CPUs, no CPU-heavy attempt starts. Neither
-  starves behind attempts. A check the operator's cap refuses holds new
-  repository sessions the same way, so it takes the next place a session
-  frees. While a repository attempt waits for memory that the running text
-  sessions claim, no new text attempt starts, so the smaller text claims
-  cannot keep refilling the room it needs; and once repository peaks are
-  learned, a text attempt leaves room for one more repository claim while a
-  repository job ran in the last five minutes. A sign-in or probe queued
-  without a reservation holds attempts back, never checks or preparations.
+- Priority. A check or a preparation refused memory, and a timed job refused
+  CPUs, keeps what it needs from new attempts for ten seconds after each
+  refusal: an attempt starts only if it fits beside that room as well as its
+  own check's, so neither starves behind attempts, and an attempt that leaves
+  the room starts instead of waiting for the queue to empty. A refusal by the
+  light-job line keeps nothing, since that line protects no other job's
+  room. A check the operator's cap refuses takes the next place a session
+  frees the same way. While a repository attempt waits for memory that the
+  running text sessions claim, a new text attempt starts only beside that
+  room, so the smaller text claims cannot keep refilling it; and once
+  repository peaks are learned, a text attempt leaves room for one more
+  repository claim while a repository job ran in the last five minutes.
   A later step of a workflow whose earlier steps a provider already worked on
-  goes ahead of new attempts like a check: no priority hold, ticket, CPU
-  pressure or check-stall guard or session cap holds it, only its ceilings,
-  the memory claims and guard, the CPU lines and the Windows floors; when it
-  is refused, new attempts wait for it.
+  goes ahead of new attempts like a check: no kept room, CPU pressure or
+  check-stall guard or session cap holds it, only its ceilings, the memory
+  claims and guard, the CPU lines and the Windows floors; when it is refused
+  room, new attempts leave that room for it.
 - Scratch. The filesystem's free space must cover the new job's scratch
   reservation (1 GiB and 16384 inodes for a repository session), half a GiB,
   and the reservations of jobs admitted in the last two minutes; an older
