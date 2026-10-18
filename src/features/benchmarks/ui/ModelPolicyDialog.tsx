@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { Badge } from "@/shared/ui/badge";
@@ -56,6 +56,19 @@ export function ModelPolicyDialog({
   const promotions = useQuery({
     queryKey: ["benchmarks", "promotions"],
     queryFn: benchmarkGovernanceApi.listPromotions,
+  });
+  const queryClient = useQueryClient();
+  const previewLearned = useMutation({
+    mutationFn: () =>
+      benchmarkGovernanceApi.previewLearnedClass({ workClassId: classId }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["benchmarks", "class-policies"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["benchmarks", "learned-fits"],
+      });
+    },
   });
   const versions = definitions.data?.flatMap((d) => d.versions) ?? [];
   const currentVersions = (definitions.data ?? [])
@@ -213,15 +226,43 @@ export function ModelPolicyDialog({
               <p className="text-xs text-muted-foreground">
                 {t("policyManager.trainingHint")}
               </p>
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                disabled={!ready}
-                onClick={() => setTool({ kind: "learning" })}
-              >
-                {t("policyManager.prepareFit")}
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  disabled={!ready}
+                  onClick={() => setTool({ kind: "learning" })}
+                >
+                  {t("policyManager.prepareFit")}
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  disabled={previewLearned.isPending}
+                  onClick={() => previewLearned.mutate()}
+                >
+                  {previewLearned.isPending
+                    ? t("policyManager.previewRunning")
+                    : t("policyManager.previewLearned")}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("policyManager.previewHint")}
+              </p>
+              {previewLearned.error ? (
+                <BenchmarkAlert>
+                  {benchmarkErrorMessage(previewLearned.error)}
+                </BenchmarkAlert>
+              ) : null}
+              {previewLearned.data ? (
+                <p className="text-xs" role="status">
+                  {t("policyManager.previewSaved", {
+                    cases: previewLearned.data.cases.length,
+                  })}
+                </p>
+              ) : null}
               {fits.isPending ? (
                 <p>{t("loading")}</p>
               ) : !fits.error && !classFits.length ? (

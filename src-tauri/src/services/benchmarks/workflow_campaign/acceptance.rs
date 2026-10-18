@@ -3,6 +3,14 @@ use super::*;
 use crate::services::benchmarks::learned::report::ReportCase;
 
 const RECIPE: &str = "independent-group-sign-holm-v1";
+/// For a selector that runs one of the fixed workers per task. It ties the
+/// worker it picks wherever it picks it, so beating every worker is not the
+/// question. It must beat the declared order and the training aggregate (a
+/// classical sign test: tied groups carry no sign) and be no worse than every
+/// fixed worker by more than the registered margin.
+pub(in crate::services::benchmarks) const SELECTION_RECIPE: &str =
+    "superiority-noninferiority-sign-holm-v1";
+const MAX_NON_INFERIORITY_MARGIN: f64 = 0.2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -14,10 +22,21 @@ pub struct Rule {
     pub minimum_group_utility_gain: f64,
     /// An observed equal-group quality floor, not a population confidence bound.
     pub minimum_observed_quality: f64,
+    /// The utility a fixed worker may lead by in a group without a loss;
+    /// only the selection recipe takes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_inferiority_margin: Option<f64>,
 }
 impl Rule {
     pub(in crate::services::benchmarks) fn validate(&self) -> Result<()> {
-        if self.recipe != RECIPE
+        let margin = match (self.recipe.as_str(), self.non_inferiority_margin) {
+            (RECIPE, None) => true,
+            (SELECTION_RECIPE, Some(margin)) => {
+                margin.is_finite() && margin > 0.0 && margin <= MAX_NON_INFERIORITY_MARGIN
+            }
+            _ => false,
+        };
+        if !margin
             || !self.alpha.is_finite()
             || !(0.0..=0.05).contains(&self.alpha)
             || self.alpha == 0.0
@@ -26,7 +45,7 @@ impl Rule {
             || !self.minimum_observed_quality.is_finite()
             || !(0.0..=1.0).contains(&self.minimum_observed_quality)
         {
-            return Err(invalid("Acceptance requires independent-group-sign-holm-v1, alpha in (0,.05], gain in [0,1), and observed quality in [0,1]"));
+            return Err(invalid("Acceptance requires independent-group-sign-holm-v1, or superiority-noninferiority-sign-holm-v1 with a margin in (0,0.2], alpha in (0,.05], gain in [0,1), and observed quality in [0,1]"));
         }
         Ok(())
     }
@@ -36,6 +55,12 @@ impl Rule {
 #[serde(rename_all = "camelCase")]
 pub struct Comparison {
     pub baseline: String,
+    /// `superiority` or `non_inferiority`; absent under the original recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<String>,
+    /// Groups without a sign in a superiority test; absent when ties count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tied_groups: Option<usize>,
     pub winning_groups: usize,
     pub mean_utility_gain: f64,
     pub p_value: f64,
@@ -161,6 +186,8 @@ pub(in crate::services::benchmarks) fn assess(
         })
         .sum::<f64>()
         / groups as f64;
+    let selection = rule.recipe == SELECTION_RECIPE;
+    let margin = rule.non_inferiority_margin.unwrap_or(0.0);
     let mut comparisons = Vec::new();
     for baseline in baselines {
         let gains: Vec<_> = grouped
@@ -173,23 +200,53 @@ pub(in crate::services::benchmarks) fn assess(
                     / group.len() as f64
             })
             .collect();
-        let wins = gains
-            .iter()
-            .filter(|gain| **gain > rule.minimum_group_utility_gain + 1e-12)
-            .count();
-        comparisons.push(Comparison {
-            baseline,
-            winning_groups: wins,
-            mean_utility_gain: gains.iter().sum::<f64>() / groups as f64,
-            p_value: sign_tail(wins, groups),
-            adjusted_p_value: 1.0,
-            passed: false,
-        });
+        let mean_utility_gain = gains.iter().sum::<f64>() / groups as f64;
+        let comparison = if selection && baseline.starts_with("worker:") {
+            let wins = gains.iter().filter(|gain| **gain > -margin + 1e-12).count();
+            Comparison {
+                baseline,
+                test: Some("non_inferiority".into()),
+                tied_groups: None,
+                winning_groups: wins,
+                mean_utility_gain,
+                p_value: sign_tail(wins, groups),
+                adjusted_p_value: 1.0,
+                passed: false,
+            }
+        } else {
+            let wins = gains
+                .iter()
+                .filter(|gain| **gain > rule.minimum_group_utility_gain + 1e-12)
+                .count();
+            // The original recipe keeps ties as non-wins. The selection recipe
+            // drops groups of equal utility, as a classical sign test does.
+            let tied = if selection {
+                gains.iter().filter(|gain| gain.abs() <= 1e-12).count()
+            } else {
+                0
+            };
+            Comparison {
+                baseline,
+                test: selection.then(|| "superiority".into()),
+                tied_groups: selection.then_some(tied),
+                winning_groups: wins,
+                mean_utility_gain,
+                p_value: sign_tail(wins, groups - tied),
+                adjusted_p_value: 1.0,
+                passed: false,
+            }
+        };
+        comparisons.push(comparison);
     }
     holm(&mut comparisons);
     for comparison in &mut comparisons {
+        let required = if comparison.test.as_deref() == Some("non_inferiority") {
+            -margin
+        } else {
+            rule.minimum_group_utility_gain
+        };
         comparison.passed = comparison.adjusted_p_value <= rule.alpha
-            && comparison.mean_utility_gain > rule.minimum_group_utility_gain + 1e-12;
+            && comparison.mean_utility_gain > required + 1e-12;
     }
     let mut reasons = Vec::new();
     if groups < 8 {
@@ -200,6 +257,14 @@ pub(in crate::services::benchmarks) fn assess(
     }
     if comparisons.iter().any(|c| !c.passed) {
         reasons.push("not_superior_to_every_registered_baseline".into());
+    }
+    if selection {
+        return Ok(Assessment { rule:rule.clone(),groups,observed_quality,comparisons,passed:reasons.is_empty(),reasons,
+            limitations:vec!["Superiority sign tests concern the groups where the learned choice and the baseline differ in utility; tied groups carry no sign, so few differing groups cannot pass".into(),
+                "Non-inferiority counts a group as a loss when a fixed worker leads by at least the registered margin; it is not a confidence bound for the mean difference".into(),
+                "The persona is one of the fixed workers, so its superiority test also covers non-inferiority to that worker; Holm counts both".into(),
+                "Holm adjustment covers the aggregate, persona and every fixed worker together; best-fixed and oracle remain hindsight summaries".into(),
+                "Passing this empirical screen does not establish semantic independence, verifier validity, deployment equivalence or permission to dispatch".into()] });
     }
     Ok(Assessment { rule:rule.clone(),groups,observed_quality,comparisons,passed:reasons.is_empty(),reasons,
         limitations:vec!["Sign tests concern the probability of beating each baseline by the declared margin across independent representative groups, not a confidence bound for the mean gain".into(),
@@ -219,6 +284,7 @@ mod tests {
             alpha: 0.05,
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 0.8,
+            non_inferiority_margin: None,
         }
     }
     fn cases() -> Vec<ReportCase> {
@@ -261,6 +327,8 @@ mod tests {
             .into_iter()
             .map(|p| Comparison {
                 baseline: String::new(),
+                test: None,
+                tied_groups: None,
                 winning_groups: 0,
                 mean_utility_gain: 0.0,
                 p_value: p,
@@ -318,5 +386,125 @@ mod tests {
         assert!(assess(&conservative, &base, &ids).unwrap().passed);
         conservative.minimum_group_utility_gain = 1.0;
         assert!(conservative.validate().is_err());
+    }
+
+    /// The policy cells of a per-task selector: it picks worker `a` on the
+    /// even cases and `b` on the odd ones, and each worker solves only its own.
+    fn selection_cases(count: usize, persona: &str) -> Vec<ReportCase> {
+        (0..count)
+            .map(|i| {
+                let pick = if i % 2 == 0 { "worker:a" } else { "worker:b" };
+                let utility = |key: &str| {
+                    let solved = match key {
+                        "learned" => pick,
+                        "aggregate" | "persona" => persona,
+                        other => other,
+                    };
+                    if solved == pick {
+                        0.9
+                    } else {
+                        0.0
+                    }
+                };
+                ReportCase {
+                    version_id: format!("case-{i}"),
+                    group: format!("group-{i}"),
+                    learned_key: pick.into(),
+                    aggregate_key: persona.into(),
+                    used_fallback: false,
+                    cells: ["learned", "aggregate", "persona", "worker:a", "worker:b"]
+                        .into_iter()
+                        .map(|key| ReportCell {
+                            candidate_key: key.into(),
+                            run_id: "fixture".into(),
+                            quality: utility(key),
+                            utility: utility(key),
+                            mean_duration_ms: Some(1.0),
+                            mean_cost: Some(1.0),
+                            repeats: vec![],
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+    fn selection_rule() -> Rule {
+        Rule {
+            recipe: SELECTION_RECIPE.into(),
+            alpha: 0.05,
+            minimum_group_utility_gain: 0.0,
+            minimum_observed_quality: 0.8,
+            non_inferiority_margin: Some(0.05),
+        }
+    }
+    #[test]
+    fn a_per_task_selector_is_tested_for_superiority_over_orders_and_non_inferiority_to_workers() {
+        let ids = ["a".into(), "b".into()];
+        // The original recipe cannot pass: the selector ties each worker on
+        // the cases where it picks that worker.
+        let sixteen = selection_cases(16, "worker:a");
+        assert!(!assess(&rule(), &sixteen, &ids).unwrap().passed);
+        let result = assess(&selection_rule(), &sixteen, &ids).unwrap();
+        assert!(result.passed, "{:?}", result.comparisons);
+        let persona = result
+            .comparisons
+            .iter()
+            .find(|c| c.baseline == "persona")
+            .unwrap();
+        assert_eq!(persona.test.as_deref(), Some("superiority"));
+        assert_eq!(persona.tied_groups, Some(8));
+        assert_eq!(persona.winning_groups, 8);
+        assert!((persona.p_value - 1.0 / 256.0).abs() < 1e-15);
+        let worker = result
+            .comparisons
+            .iter()
+            .find(|c| c.baseline == "worker:a")
+            .unwrap();
+        assert_eq!(worker.test.as_deref(), Some("non_inferiority"));
+        assert_eq!(worker.winning_groups, 16);
+        assert_eq!(worker.tied_groups, None);
+        // Eight groups leave only four with a sign against the order: too few.
+        let eight = assess(&selection_rule(), &selection_cases(8, "worker:a"), &ids).unwrap();
+        assert!(!eight.passed);
+        assert!(eight
+            .reasons
+            .contains(&"not_superior_to_every_registered_baseline".into()));
+        // A worker that leads by more than the margin in a group is a loss.
+        let mut worse = sixteen.clone();
+        for case in worse.iter_mut().take(4) {
+            let learned = case
+                .cells
+                .iter()
+                .position(|c| c.candidate_key == "learned")
+                .unwrap();
+            case.cells[learned].utility -= 0.06;
+        }
+        let result = assess(&selection_rule(), &worse, &ids).unwrap();
+        let worker = result
+            .comparisons
+            .iter()
+            .find(|c| c.baseline == "worker:a")
+            .unwrap();
+        assert_eq!(worker.winning_groups, 14);
+        // Margins are part of the rule and only of the selection recipe.
+        let mut missing = selection_rule();
+        missing.non_inferiority_margin = None;
+        assert!(missing.validate().is_err());
+        let mut wide = selection_rule();
+        wide.non_inferiority_margin = Some(0.25);
+        assert!(wide.validate().is_err());
+        let mut original = rule();
+        original.non_inferiority_margin = Some(0.05);
+        assert!(original.validate().is_err());
+        // Original rules keep their serialized form and hashes.
+        assert!(serde_json::to_value(rule())
+            .unwrap()
+            .get("nonInferiorityMargin")
+            .is_none());
+        let saved = assess(&rule(), &cases(), &ids).unwrap();
+        assert!(serde_json::to_value(&saved.comparisons[0])
+            .unwrap()
+            .get("test")
+            .is_none());
     }
 }

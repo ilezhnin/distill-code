@@ -16,6 +16,7 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
             configurations: configurations(),
             cutoff_at: now(),
             weights: RoleWeights::default(),
+            runtime_match: None,
         },
     )
     .await;

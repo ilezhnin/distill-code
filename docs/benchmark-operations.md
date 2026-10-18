@@ -746,6 +746,31 @@ unseen tasks. The native prediction API refuses known training families and
 groups; do not relabel them to bypass that check. Probabilities express relative
 preference, not calibrated probabilities of success.
 
+A fit request may set `runtimeMatch: "model_identity"`. The default (`exact`)
+counts only cells measured on each candidate's newest runtime revision. Runtime
+revisions include the sandbox helpers and the native harness, so every deploy
+starts a new one. Under `model_identity` a candidate is its leaderboard identity:
+cells from every recorded runtime count, as on the boards, and each cell lists
+the revisions it used. The column takes its configuration from the newest direct
+attempt, never from an auxiliary call inside a repository workflow. A silent
+vendor-side change inside one identity stays possible, so read the revision
+lists. Prospective held-out reports still require the exact frozen runtime.
+
+`benchmark_preview_learned_class({ request: { workClassId, excludedProviders } })`
+is a research shortcut for one class. It picks the class's largest public scope
+and, from training cells only, every candidate with at least eight complete
+training cases there. Providers that may train on submitted data under the
+provider data-use rule above, and any `excludedProviders`, are left out. The
+fewest-measured
+candidates are then dropped until at least eight cases in two groups are common
+to all that remain. It fits with `model_identity` and replays the frozen fit on
+the class's held-out cases that already have complete cells for every candidate,
+using the holdout report arithmetic (learned, training aggregate, best fixed,
+oracle and each fixed candidate). Those families were measured before the fit,
+so the result is a `retrospective_preview`: it is not an unseen evaluation and
+grants no routing, reservation or certificate. The newest preview of each class
+appears in `benchmark_class_policies` and in the class status in Settings.
+
 If all candidates have indistinguishable utilities, labels are incomplete, or
 the selector simply reproduces one global winner without task-dependent evidence,
 keep the fit as research. Do not spend a held-out campaign to excuse unusable
@@ -868,6 +893,61 @@ step completed, not that the whole workflow passed. The activity icon shows
 when new session events were last observed; hover for the detailed state.
 The clock includes preparation and waiting. Quiet activity or an unavailable
 check alone does not establish a hung model.
+
+### Class certificates from an executor holdout
+
+A class can also be certified for ordinary chats and waves without a workflow
+campaign. The basis is a frozen executor holdout (`benchmark_freeze_selector_holdout`)
+of single-step held-out versions in the fit's scope:
+
+1. Qualify every held-out version before freezing. No run may name it yet.
+2. Freeze the plan with the fit, the complete preference order (its first key
+   is the persona comparator), the fallback key and the quality floor.
+3. Register the rule with `benchmark_register_holdout_rule({ request })` before
+   any run names a frozen version. `request` holds `requestKey`, `planId`,
+   `operator`, `rule` and the held-out `qualificationIds`. Registration is
+   refused once any run plan or attempt names a version of the reserved
+   families or groups, sibling revisions and previews included.
+4. Measure each frozen candidate once: its first run after the reservation
+   counts, with the plan's exact configuration and runtime revision, the
+   required repetitions, a timeout of at least the cases' own, and no retries
+   of first attempts. A deploy between the fit and the last first attempt
+   changes the runtime revision, and the report then refuses those cells.
+   Executor holdout reservations do not stop ordinary runs: keep the reserved
+   families out of every other run, previews included. Promotion refuses if
+   any run other than the counted measurement ever named a version of the
+   reserved families.
+5. Call `benchmark_promote_holdout_selector({ planId })`. It evaluates the
+   immutable holdout report and assesses the registered rule. On a pass it
+   issues a certificate with `source: "executor_holdout"`.
+
+Freezing, registration and promotion refuse a pool with a provider that may
+train on submitted data under the provider data-use rule. A certifying plan's
+fallback key must be the head of its declared
+order, because an ordinary chat keeps its own order when the policy abstains.
+Promotion also refuses once a frozen family's reservation was released.
+Releasing the families after certification is fine.
+
+Such a certificate drives `benchmark_class_policies` and ordinary chat and wave
+selection exactly as a campaign certificate does. It never covers an owned
+native task: owned task mode, binding and dispatch refuse it, and owned
+deployments still need a workflow campaign certificate. Revocation works the
+same way.
+
+Use the `superiority-noninferiority-sign-holm-v1` rule for these holdouts. A
+per-task selector runs one of the fixed workers, so it ties each worker on the
+cases where it picks that worker. The original rule, which requires beating every
+worker, cannot pass such a selector. The selection rule requires:
+
+- **superiority** over the persona and the training aggregate: a sign test over
+  the groups whose utilities differ;
+- **non-inferiority** to every fixed worker: a group counts as a loss when the
+  worker leads by at least `nonInferiorityMargin`, a value in (0, 0.2];
+- Holm adjustment over all comparisons, and the observed-quality floor.
+
+Training versions of such a fit are not required to have qualified before
+their first measurement; only the held-out evaluation certifies. Disclose this
+when the training corpus was graded by evaluators revised after measurement.
 
 ## 7. Promote and verify orchestration
 

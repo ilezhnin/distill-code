@@ -522,6 +522,7 @@
     "status": {
       "certified": "Certified",
       "fallback": "Fallback",
+      "fallbackPreview": "Fallback · preview",
       "loading": "Loading…",
       "unavailable": "Unavailable"
     },
@@ -565,7 +566,11 @@
     "evidenceUnavailable": "Task policy status could not be read. No learned policy is confirmed here.",
     "evidenceCertified": "Certified task policy available. Each task is evaluated against available models; saved fallback preferences apply if the policy abstains.",
     "evidencePending": "No certified task policy yet: saved fallback preferences apply. Qualified cases: {{training}} training, {{heldOut}} held-out; {{fits}} fits, {{campaigns}} comparisons.",
-    "managePolicy": "Policies and certificates"
+    "managePolicy": "Policies and certificates",
+    "evidencePreview": "Learned preview from {{date}}, not certified: on {{cases}} held-out cases in {{groups}} groups that were measured earlier, the learned choice reached utility {{learned}} against {{best}} for the best single model ({{bestModel}}), a difference of {{gain}}. It picks {{model}} on {{chosen}} of them. Fitted on {{training}} training cases.",
+    "evidencePreviewInterval": "Paired 95% interval of the difference: {{low}} to {{high}}.",
+    "evidencePreviewFewGroups": "Fewer than {{minimum}} groups, so no interval is shown.",
+    "evidencePreviewEmpty": "Learned preview from {{date}}, not certified: fitted on {{training}} training cases with {{candidates}} models, but no measured held-out case of this class covers them all yet."
   },
   "accounts": {
     "title": "Accounts and limits",

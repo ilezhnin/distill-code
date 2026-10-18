@@ -7,6 +7,8 @@ use crate::services::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "holdout_promotion_tests.rs"]
+mod holdout_promotion_tests;
 #[path = "promotion_pipeline_tests.rs"]
 mod promotion_pipeline_tests;
 #[path = "workflow_campaign_tests.rs"]
@@ -581,6 +583,7 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
         configurations: configurations(),
         cutoff_at: now(),
         weights: RoleWeights::default(),
+        runtime_match: None,
     };
     // This is the same query/fit/save path as the application command.
     let artifact = fit_or_explain(&service, query).await;

@@ -27,6 +27,7 @@ async fn training_with_weights(
             configurations: configurations(),
             cutoff_at: now(),
             weights,
+            runtime_match: None,
         },
     )
     .await;
@@ -548,6 +549,7 @@ async fn class_training(
             configurations: configurations(),
             cutoff_at: now(),
             weights: RoleWeights::default(),
+            runtime_match: None,
         },
     )
     .await;
@@ -981,6 +983,7 @@ async fn a_cost_weighted_fit_without_recorded_costs_refuses_before_any_execution
                 speed: 0.15,
                 cost: 0.0,
             },
+            runtime_match: None,
         },
     )
     .await;

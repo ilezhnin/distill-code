@@ -2,13 +2,19 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CampaignDeployment,
   ClassPolicy,
+  HoldoutRegistration,
   PromotionRegistration,
   PromotionState,
   QualificationBinding,
   QualificationRecord,
   QualificationRequest,
+  RegisteredHoldoutRule,
   RegisteredPromotionRule,
 } from "../lib/benchmarkGovernance";
+import type {
+  LearnedPreview,
+  LearnedPreviewRequest,
+} from "../lib/benchmarkLearning";
 
 export const benchmarkGovernanceApi = {
   qualifyVersion: (request: QualificationRequest) =>
@@ -26,6 +32,18 @@ export const benchmarkGovernanceApi = {
       request,
     }),
   classPolicies: () => invoke<ClassPolicy[]>("benchmark_class_policies"),
+  registerHoldoutRule: (request: HoldoutRegistration) =>
+    invoke<RegisteredHoldoutRule>("benchmark_register_holdout_rule", {
+      request,
+    }),
+  getHoldoutRule: (planId: string) =>
+    invoke<RegisteredHoldoutRule | null>("benchmark_get_holdout_rule", {
+      planId,
+    }),
+  promoteHoldoutSelector: (planId: string) =>
+    invoke<PromotionState>("benchmark_promote_holdout_selector", { planId }),
+  previewLearnedClass: (request: LearnedPreviewRequest) =>
+    invoke<LearnedPreview>("benchmark_preview_learned_class", { request }),
   campaignDeployment: (campaignId: string) =>
     invoke<CampaignDeployment>("benchmark_campaign_deployment", {
       campaignId,
