@@ -766,6 +766,11 @@ export interface JudgePoolEntry {
   modelId: string;
   effort?: string | null;
   inputs?: JudgeInput[] | null;
+  /**
+   * The account ids it may sit on, kept as stored; any enabled account of
+   * its provider when absent.
+   */
+  accounts?: string[] | null;
 }
 /**
  * The owner's word on one provider in the benchmark settings document

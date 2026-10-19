@@ -564,10 +564,14 @@ coverage, verifier isolation and task usefulness before paying for model runs.
 
 The same rubric controls calibrate the ordinary judges. `benchmark_judge_pool`
 returns the pool from the benchmark settings (`judgePool`: `providerId`,
-`modelId`, `effort`, optional `inputs`), each entry with its newest calibration
-and whether it takes seats, plus every stored calibration.
+`modelId`, `effort`, optional `inputs`, optional `accounts`), each entry with
+its newest calibration and whether it takes seats, plus every stored
+calibration. `accounts` lists the account ids an entry may sit on, for seats
+and calibration alike, to steer seats off a shared login; without it any
+enabled account of the provider may take the seat. Settings keeps the list as
+written; edit it in `benchmarks/settings.json`.
 `benchmark_calibrate_judge` with one such `entry` starts a calibration in the
-background: the roomiest enabled account offering that model and effort judges
+background: the roomiest allowed account offering that model and effort judges
 each control alone, under the ordinary protocol, and the calibration fails at
 the first control outside its band. It costs one judge call per control. Only a
 pool entry is calibrated, and never one of a provider that may train on

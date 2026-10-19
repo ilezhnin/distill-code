@@ -55,6 +55,12 @@ pub struct Entry {
     /// The rubrics it judges, `text` and `visual`; both when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<String>>,
+    /// The accounts it may sit on (their ids); any enabled account of its
+    /// provider when absent. Steers seats off a shared login (10-18: every
+    /// Claude seat landed on the owner's own Claude Code login while it
+    /// neared its limit). Seating and calibration both keep to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<Vec<String>>,
     /// Read and ignored: whether a provider may judge is its data use
     /// (see [`super::data_use`]), one rule for judges and candidates. Kept
     /// so pools written before that still read.
@@ -79,6 +85,18 @@ impl Entry {
                         .iter()
                         .all(|input| input == "text" || input == "visual")
             })
+            && self.accounts.as_ref().is_none_or(|accounts| {
+                !accounts.is_empty()
+                    && accounts.len() <= 16
+                    && accounts.iter().all(|account| bounded(account, 128))
+            })
+    }
+
+    /// Whether it may sit on `account` (see [`Self::accounts`]).
+    pub fn sits_on(&self, account: Option<&str>) -> bool {
+        self.accounts.as_ref().is_none_or(|accounts| {
+            account.is_some_and(|account| accounts.iter().any(|allowed| allowed == account))
+        })
     }
 
     /// Whether it judges a text rubric (`textual`) or a visual one.
@@ -340,7 +358,8 @@ pub async fn seatable(root: &Path, textual: bool) -> Result<Vec<Entry>> {
 
 /// The offered model rows that are pool entries, each as the seat it is:
 /// the entry's effort, which the row must offer and its provider's profile
-/// allow. A row no entry names never seats.
+/// allow, on an account the entry lets it sit on. A row no entry names never
+/// seats.
 pub(crate) fn seat_rows(
     pool: &[Entry],
     offered: Vec<(Option<Headroom>, InventoryModel)>,
@@ -350,21 +369,26 @@ pub(crate) fn seat_rows(
         .filter_map(|(headroom, row)| {
             let provider = &row.configuration.provider_id;
             let model = runner::concrete_model(provider, &row.configuration.model_id)?;
-            let entry = pool.iter().find(|entry| {
-                &entry.provider_id == provider && entry.model().as_deref() == Some(model.as_str())
-            })?;
-            if entry
-                .effort
-                .as_ref()
-                .is_some_and(|effort| !row.efforts.contains(effort))
-            {
-                return None;
-            }
-            let mut judge = row.configuration;
-            judge.effort = entry.effort.clone();
-            runner::profile_refusal(&judge)
-                .is_none()
-                .then_some((headroom, judge))
+            // The first entry of the model that may sit on this row's account
+            // at an effort the row offers: entries of one model may differ in
+            // effort or accounts.
+            pool.iter().find_map(|entry| {
+                if &entry.provider_id != provider
+                    || entry.model().as_deref() != Some(model.as_str())
+                    || entry
+                        .effort
+                        .as_ref()
+                        .is_some_and(|effort| !row.efforts.contains(effort))
+                    || !entry.sits_on(row.configuration.account_id.as_deref())
+                {
+                    return None;
+                }
+                let mut judge = row.configuration.clone();
+                judge.effort = entry.effort.clone();
+                runner::profile_refusal(&judge)
+                    .is_none()
+                    .then_some((headroom, judge))
+            })
         })
         .collect()
 }
@@ -751,6 +775,7 @@ mod tests {
             model_id: model.into(),
             effort: effort.map(str::to_owned),
             inputs: None,
+            accounts: None,
             disclosure_confirmed: true,
         }
     }
@@ -1045,5 +1070,41 @@ mod tests {
         assert_eq!(seats.len(), 1);
         assert_eq!(seats[0].1.model_id, "invented-sol");
         assert_eq!(seats[0].1.effort.as_deref(), Some("high"));
+        // An entry that names its accounts sits only on those.
+        let mut steered = entry("codex-acp", "invented-sol", Some("high"));
+        steered.accounts = Some(vec!["invented-second".into()]);
+        let mut second = judge("codex-acp", "invented-sol", &["high"]);
+        second.configuration.account_id = Some("invented-second".into());
+        let seats = seat_rows(
+            &[steered.clone()],
+            vec![
+                (None, judge("codex-acp", "invented-sol", &["high"])),
+                (None, second),
+            ],
+        );
+        assert_eq!(seats.len(), 1);
+        assert_eq!(seats[0].1.account_id.as_deref(), Some("invented-second"));
+        // Two entries of one model on different accounts each seat on theirs.
+        let mut first = entry("codex-acp", "invented-sol", Some("high"));
+        first.accounts = Some(vec!["invented-account".into()]);
+        let mut second_row = judge("codex-acp", "invented-sol", &["high"]);
+        second_row.configuration.account_id = Some("invented-second".into());
+        let seats = seat_rows(
+            &[first, steered.clone()],
+            vec![
+                (None, judge("codex-acp", "invented-sol", &["high"])),
+                (None, second_row),
+            ],
+        );
+        assert_eq!(seats.len(), 2);
+        assert!(steered.valid());
+        // A list must name something, within bounds.
+        steered.accounts = Some(Vec::new());
+        assert!(!steered.valid());
+        let read: Entry = serde_json::from_value(json!({"providerId":"codex-acp",
+            "modelId":"invented-sol","accounts":["invented-second"]}))
+        .unwrap();
+        assert_eq!(read.accounts, Some(vec!["invented-second".to_owned()]));
+        assert!(entry("codex-acp", "invented-sol", None).sits_on(None));
     }
 }
