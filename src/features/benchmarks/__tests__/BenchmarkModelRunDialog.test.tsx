@@ -457,6 +457,8 @@ it("pauses a running run and resumes a paused one from the dialog", async () => 
   await waitFor(() => expect(resume).toBeEnabled());
   expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
   expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
+  // The count still reads the run, not the selection.
+  expect(screen.getByText(/of [0-9]+ finished/)).toBeInTheDocument();
   await user.click(resume);
   expect(benchmarkApi.resumeRun).toHaveBeenCalledWith("run-2");
 });

@@ -546,7 +546,7 @@ export function BenchmarkModelRunDialog({
             <span className="flex-1">{t("modelRun.allTests")}</span>
             {steering ? <StateBadge state={runState} /> : null}
             <span className="text-xs font-normal text-muted-foreground tabular-nums">
-              {runActive
+              {runActive || steering
                 ? t("modelRun.finished", { settled, total: inRun })
                 : t("modelRun.selected", {
                     selected: chosen.length,
