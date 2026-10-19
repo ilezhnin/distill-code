@@ -928,6 +928,22 @@ order, because an ordinary chat keeps its own order when the policy abstains.
 Promotion also refuses once a frozen family's reservation was released.
 Releasing the families after certification is fine.
 
+Registration requires each browser-graded qualification to name the renderer
+installed at that time. Promotion checks the renderer that graded the evidence
+instead:
+- every renderer that a counted repetition names must be the qualified one;
+- a renderer-graded repetition must name it (browser checks also name the
+  qualified worker), and each browser-checked version must have at least one
+  repetition that does;
+- a zero scored without the renderer passes: a budget failure, or a rubric
+  answer with nothing to render.
+
+Promotion also needs the app's browser worker unchanged since qualification. An
+issued holdout certificate does not depend on the renderer installed later,
+because a chat runs no evaluator. A campaign certificate still needs its
+renderer installed: owned dispatch stops after a renderer change until
+requalification, and a chat skips it while its renderer is unavailable.
+
 Such a certificate drives `benchmark_class_policies` and ordinary chat and wave
 selection exactly as a campaign certificate does. It never covers an owned
 native task: owned task mode, binding and dispatch refuse it, and owned
