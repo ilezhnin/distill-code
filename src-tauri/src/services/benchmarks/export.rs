@@ -76,8 +76,21 @@ fn observation(
 ) -> Value {
     let score = attempt.and_then(|a| super::analysis::score_as_of(a, cutoff));
     let reward = if authored { None } else { score };
+    // Why a cell carries no reward on purpose: its candidate wrote the case,
+    // or the provider's data use kept the candidate from it (settled
+    // `excluded` unsent).
+    let excluded = if authored {
+        Some("authored_by_candidate")
+    } else if attempt.is_some_and(|a| {
+        a.outcome.as_deref() == Some("excluded")
+            && super::data_use::refused_for_data_use(a.reason.as_deref())
+    }) {
+        Some("data_use")
+    } else {
+        None
+    };
     json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
-        "excluded":authored.then_some("authored_by_candidate"),"authoredByCandidate":authored,
+        "excluded":excluded,"authoredByCandidate":authored,
         "authoredReward":if authored { score } else { None },
         "outcome":attempt.and_then(|a|super::analysis::outcome_as_of(a.outcome.as_deref(),a.finished_at,&a.evaluations,cutoff)),
         "phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),"nativeExecutionMs":attempt.and_then(|a|a.native_execution_ms),"workerOverheadMs":attempt.and_then(|a|a.duration_ms.zip(a.native_execution_ms).map(|(wall,native)|wall.saturating_sub(native))),

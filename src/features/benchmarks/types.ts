@@ -529,6 +529,11 @@ export interface LeaderboardRow {
    * Rows recorded before it was kept have none.
    */
   unsupportedVersionIds?: string[];
+  /**
+   * Pool cases the provider's data use keeps this configuration from: out
+   * of its plan and never owed. Rows recorded before it was kept have none.
+   */
+  refusedVersionIds?: string[];
   /** Every model the counted attempts' usage named, sorted. */
   resolvedModels?: string[];
   /** Attempts of this configuration its standing run flew at once. */

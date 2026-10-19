@@ -824,6 +824,11 @@ pub struct LeaderboardRow {
     /// of the whole pool still includes them.
     #[serde(default)]
     pub unsupported_version_ids: Vec<String>,
+    /// Pool cases its provider's data use keeps this configuration from (a
+    /// provider that may train on submissions runs train cases only): out of
+    /// its plan, so they never hold the row preliminary, and never owed.
+    #[serde(default)]
+    pub refused_version_ids: Vec<String>,
     /// Every model the scored attempts' usage names as the one that
     /// answered, sorted; more than one means the id moved between models.
     #[serde(default)]
