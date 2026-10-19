@@ -1218,7 +1218,9 @@ impl Store {
             .await
     }
     /// Every family and split group an evaluation reserves, as (kind, value),
-    /// whoever owns it.
+    /// whoever owns it. Suites no longer read reservations; tests use this to
+    /// prove a retired holdout's rows block nothing.
+    #[cfg(test)]
     pub async fn evaluation_reservations(&self) -> Result<Vec<(String, String)>> {
         // Reservations of the retired executor holdout are history: they
         // never hold a case back from a suite, lane or run.
