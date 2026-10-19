@@ -21,11 +21,21 @@ export const benchmarkKeys = ["benchmarks"] as const;
  */
 export const COALESCED_REFRESH_MS = 1_500;
 /**
- * History, boards and the other analyses read the whole ledger, the catalog
- * reads every manifest and the usage ledger every attempt, so events refresh
- * them at most this often. The app's own edits still refresh at once.
+ * History, boards and the other analyses read the whole ledger and the
+ * catalog reads every manifest, so events refresh them at most this often.
+ * The app's own edits still refresh at once.
  */
 export const THROTTLED_REFRESH_MS = 15_000;
+/**
+ * The usage ledger reads every attempt and evaluation, and Stats keeps what
+ * it projected, so events never refresh it: it follows on this interval and
+ * whenever Stats opens.
+ */
+export const USAGE_LEDGER_REFRESH_MS = 300_000;
+const usageLedgerKey = [...benchmarkKeys, "usage-ledger"] as const;
+const OFF_EVENTS = new Set(["usage-ledger"]);
+const onEvents = (query: { queryKey: readonly unknown[] }) =>
+  !OFF_EVENTS.has(String(query.queryKey[1]));
 const THROTTLED_QUERIES = new Set([
   "history",
   "definitions",
@@ -37,7 +47,6 @@ const THROTTLED_QUERIES = new Set([
   "selector-harness",
   "class-policies",
   "designs",
-  "usage-ledger",
 ]);
 const throttled = (query: { queryKey: readonly unknown[] }) =>
   THROTTLED_QUERIES.has(String(query.queryKey[1]));
@@ -97,12 +106,16 @@ function useBenchmarkInvalidation(enabled: boolean) {
         });
     };
     const refresh = (scope: ReadonlySet<string> | null) => {
-      invalidate((query) => !throttled(query) && touched(query, scope), true);
+      invalidate(
+        (query) =>
+          onEvents(query) && !throttled(query) && touched(query, scope),
+        true,
+      );
       if (throttledTimer !== undefined) return;
       throttledTimer = setTimeout(() => {
         throttledTimer = undefined;
         if (cancelled) return;
-        invalidate(throttled, false);
+        invalidate((query) => onEvents(query) && throttled(query), false);
       }, THROTTLED_REFRESH_MS);
     };
     const flush = () => {
@@ -191,9 +204,11 @@ export function useBenchmarkRuntime() {
   useBenchmarkInvalidation(enabled);
   const projected = useRef(new Set<string>());
   const query = useQuery({
-    queryKey: [...benchmarkKeys, "usage-ledger"],
+    queryKey: usageLedgerKey,
     queryFn: benchmarkApi.getUsageLedger,
     enabled,
+    refetchInterval: USAGE_LEDGER_REFRESH_MS,
+    refetchIntervalInBackground: true,
   });
   useEffect(() => {
     for (const record of query.data ?? []) {
@@ -202,6 +217,14 @@ export function useBenchmarkRuntime() {
       projected.current.add(record.attemptId);
     }
   }, [query.data]);
+}
+
+/** Mounted by Stats: completed benchmark work is read in as Stats opens. */
+export function useFreshBenchmarkUsage() {
+  const client = useQueryClient();
+  useEffect(() => {
+    void client.invalidateQueries({ queryKey: usageLedgerKey });
+  }, [client]);
 }
 
 export const useBenchmarkRuns = () =>
@@ -215,7 +238,9 @@ export const useWorkflowCampaigns = () =>
     queryKey: [...benchmarkKeys, "workflow-campaigns"],
     queryFn: benchmarkApi.listWorkflowCampaigns,
     enabled: isDesktopRuntime(),
-    refetchInterval: 5000,
+    // Events refresh campaigns as they change; the poll only keeps waits
+    // that pass without an event current.
+    refetchInterval: 30_000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
     staleTime: 4000,

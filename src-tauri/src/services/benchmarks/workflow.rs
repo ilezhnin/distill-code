@@ -1235,12 +1235,21 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
         root.observed = last.attempt.observed.clone();
         root.event_cursor = last.attempt.event_cursor;
     }
-    // A root's speed is measured under its most loaded step's admission.
-    root.sandbox_admission = executed
+    // A root's speed is measured under its most loaded step's admission. A
+    // step that ran without a recorded one could have been more loaded than
+    // any recorded, so the whole root is unrecorded then.
+    root.sandbox_admission = if executed
         .iter()
-        .filter_map(|step| step.attempt.sandbox_admission.as_ref())
-        .max_by_key(|admission| admission.competing_heavy)
-        .cloned();
+        .any(|step| step.attempt.sandbox_admission.is_none())
+    {
+        None
+    } else {
+        executed
+            .iter()
+            .filter_map(|step| step.attempt.sandbox_admission.as_ref())
+            .max_by_key(|admission| admission.competing_heavy)
+            .cloned()
+    };
     if let Some(auxiliary) = executed
         .iter()
         .find(|step| step.attempt.usage.schema == "provider_turn_with_auxiliary_v2")
@@ -2321,9 +2330,15 @@ mod tests {
         assert_eq!(
             result
                 .sandbox_admission
+                .as_ref()
                 .map(|admission| admission.competing_heavy),
             Some(4)
         );
+        // One executed step without a recorded admission leaves the root
+        // unrecorded, never banded by the steps that recorded one.
+        steps[1].attempt.sandbox_admission = None;
+        aggregate(&mut result, &steps);
+        assert_eq!(result.sandbox_admission, None);
         directory.close().await;
     }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   catchUpCases,
+  requests,
   resolveCatchUpConfiguration,
 } from "../lib/benchmarkCatchUp";
 import type { Configuration, InventoryModel, RunSummary } from "../types";
@@ -119,6 +120,13 @@ describe("catch-up configuration", () => {
         },
       ]),
     ).toEqual({ issue: "changed" });
+  });
+
+  it("never counts a run in another billing mode for the row", () => {
+    const row = { ...configuration, billingMode: "subscription" };
+    const run = runSummary;
+    expect(requests({ ...row, accountId: "account-2" }, row, run)).toBe(true);
+    expect(requests({ ...row, billingMode: "api" }, row, run)).toBe(false);
   });
 
   it("never fills a moving alias's row with the model it points at now", () => {

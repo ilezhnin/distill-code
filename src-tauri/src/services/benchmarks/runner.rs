@@ -23,6 +23,7 @@ mod account_pace;
 mod admission_window;
 pub mod collection_context;
 pub(crate) mod native_receipt;
+mod preparation_watchdog;
 
 /// Fewest judges whose votes may settle a rendering.
 pub(crate) const MIN_JUDGES: usize = 2;
@@ -1242,6 +1243,25 @@ where
     }
 }
 
+/// Why the check that a workspace is still its acknowledged copy failed: a
+/// diff past one byte (`FileTooLarge`) or one Git cannot encode
+/// (`InvalidData`) is the copy having `changed`; a broker refusal waits like
+/// any other; anything else is the sandbox failing, never a changed selection.
+fn untouched_check_error(error: std::io::Error, changed: &str) -> BenchmarkError {
+    match error.kind() {
+        std::io::ErrorKind::FileTooLarge | std::io::ErrorKind::InvalidData => {
+            BenchmarkError::new("selection_changed", changed)
+        }
+        std::io::ErrorKind::WouldBlock if error.to_string().starts_with("resource_busy:") => {
+            BenchmarkError::new("resource_busy", error.to_string())
+        }
+        _ => BenchmarkError::new(
+            "infrastructure_failure",
+            format!("Sandbox workspace check: {error}"),
+        ),
+    }
+}
+
 /// A `*_until` helper reports `TimedOut` only once the native deadline has
 /// passed. Without a deadline a timeout is the helper's own control limit,
 /// an infrastructure failure rather than budget exhaustion.
@@ -1253,7 +1273,13 @@ fn sandbox_setup_error(error: std::io::Error, deadline: Option<u64>) -> Benchmar
     } else if deadline.is_some() && error.kind() == std::io::ErrorKind::TimedOut {
         BenchmarkError::new("budget_timeout", error.to_string())
     } else {
-        error.into()
+        // Still storage_unavailable, which stops the run for the operator: a
+        // sandbox that cannot build workspaces fails every attempt alike. The
+        // reason names the sandbox, as the check path's does.
+        BenchmarkError::new(
+            "storage_unavailable",
+            format!("Repository sandbox: {error}"),
+        )
     }
 }
 
@@ -4030,9 +4056,9 @@ impl ExecutionBackend for NativeBackend {
                     1,
                 )
                 .await
-                .map_err(|_| {
-                    BenchmarkError::new(
-                        "selection_changed",
+                .map_err(|error| {
+                    untouched_check_error(
+                        error,
                         "The isolated native repository changed after setup",
                     )
                 })?;
@@ -4055,7 +4081,13 @@ impl ExecutionBackend for NativeBackend {
                     .map_err(|error| host_error(error.to_string()))?;
                 if record.cwd != "/workspace"
                     || !sandbox::patch(&text_execution::attempt_id(&session.owned.owner_id), 1)
-                        .await?
+                        .await
+                        .map_err(|error| {
+                            untouched_check_error(
+                                error,
+                                "The native text context changed after setup",
+                            )
+                        })?
                         .is_empty()
                 {
                     return Err(BenchmarkError::new(
@@ -4922,6 +4954,11 @@ impl ExecutionBackend for NativeBackend {
                 Err(error) => {
                     if error.code == "resource_busy" {
                         admission_window::refused(&scope, &attempt.id);
+                        // A refused text session left nothing: the router
+                        // cleaned before it asked, or after the refusal.
+                        if !repository {
+                            cleanup.0 = None;
+                        }
                     }
                     return Err(error);
                 }
@@ -7610,12 +7647,30 @@ impl BenchmarkService {
         // A wait ends when its cell starts; only a new one lets it start
         // again within this tick.
         a.wait_until = None;
-        self.store.save_attempt(&a).await?;
-        if self.store.run_state(&run.id).await? != "running" {
+        // The claim holds a lane, account and model seat: a store failure from
+        // here on releases it, or the seat would stay taken until a restart.
+        if let Err(error) = self.store.save_attempt(&a).await {
+            self.release(&id).await;
+            return Err(error);
+        }
+        let state = match self.store.run_state(&run.id).await {
+            Ok(state) => state,
+            Err(error) => {
+                // Best effort: the cell waits again instead of reading as
+                // preparing with no flight until a restart recovers it.
+                a.phase = "pending".into();
+                a.started_at = None;
+                let _ = self.store.save_attempt(&a).await;
+                self.release(&id).await;
+                return Err(error);
+            }
+        };
+        if state != "running" {
             a.phase = "pending".into();
             a.started_at = None;
-            self.store.save_attempt(&a).await?;
+            let saved = self.store.save_attempt(&a).await;
             self.release(&id).await;
+            saved?;
             return Ok(false);
         }
         // Tell the app the attempt started, so a run's view shows which test
@@ -7939,16 +7994,25 @@ impl BenchmarkService {
             }
             executed
         } else {
-            let executed = self
-                .backend
-                .execute(
+            let unstarted = || async {
+                self.store
+                    .attempt(&a.id)
+                    .await
+                    .is_ok_and(|saved| saved.phase == "preparing" && !reached_provider(&saved))
+            };
+            let executed = preparation_watchdog::bounded(
+                self.backend.execute(
                     &self.store,
                     a.clone(),
                     version.clone(),
                     run.request.timeout_seconds,
                     cancel_rx.clone(),
-                )
-                .await;
+                ),
+                preparation_watchdog::PREPARATION_LIMIT,
+                preparation_watchdog::CHECK_EVERY,
+                unstarted,
+            )
+            .await;
             if executed
                 .as_ref()
                 .is_ok_and(|done| checks_without_its_seat(done, &version))

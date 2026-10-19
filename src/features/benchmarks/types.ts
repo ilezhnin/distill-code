@@ -514,6 +514,8 @@ export interface LeaderboardRow {
   medianDurationMs: number | null;
   medianOutputTokens: number | null;
   cost: number | null;
+  /** Some repetition behind `cost` had a price: no cost is unknown spend. */
+  priced?: boolean;
   measuredAt: number | null;
   /**
    * One scale for every board, computed by the service: the mean of the

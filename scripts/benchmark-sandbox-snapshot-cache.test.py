@@ -269,9 +269,13 @@ class CacheTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'does not hold its published tree'):
             self.run_main('--tree', tree, self.directory('wrong'), stdin=other)
         # Nothing is read from it: a cached copy is a miss that writes nothing.
+        # Only a miss says why the cache was not used.
         untouched = self.directory('cached')
-        self.assertEqual(self.run_main('--cached', tree, untouched), unpack.NOT_CACHED)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(self.run_main('--cached', tree, untouched), unpack.NOT_CACHED)
         self.assertEqual(list(untouched.iterdir()), [])
+        self.assertIn('copying without the cache', said.getvalue())
         if LINUX_ROOT:
             self.assertEqual(sorted(path.name for path in unpack.CACHE.iterdir()), [tree + '.tar'])
             self.assertEqual(planted.read_bytes(), data)
