@@ -569,6 +569,7 @@
     "managePolicy": "Policies and certificates",
     "evidenceEvaluation": "Held-out evaluation {{look}} of {{look}} from {{date}}, not certified: on {{cases}} held-out cases in {{groups}} groups, the learned choice reached {{quality}}% quality. {{reasons}} Fitted on {{training}} training cases.",
     "evidenceEvaluationCertified": "Held-out evaluation {{look}} of {{look}} from {{date}} certified this class: on {{cases}} held-out cases in {{groups}} groups, the learned choice reached {{quality}}% quality. Fitted on {{training}} training cases.",
+    "evidenceEvaluationInactive": "Held-out evaluation {{look}} of {{look}} from {{date}} certified this class on {{cases}} held-out cases in {{groups}} groups, but its certificate is no longer active, so the class uses its fallback order. Fitted on {{training}} training cases.",
     "evidenceEvaluationEmpty": "Held-out evaluation {{look}} of {{look}} from {{date}}: fitted on {{training}} training cases, but no qualified held-out case of this class has two measured models yet.",
     "evaluationReason": {
       "fewer_than_eight_independent_groups": "Some comparisons have fewer than 8 groups.",

@@ -94,10 +94,12 @@ pub struct ClassEvaluation {
     pub look: usize,
     /// The fallback order as the request named it, and the pool candidates
     /// it resolved to, in order.
+    #[serde(default)]
     pub persona_order: Vec<RankedMatcher>,
     pub persona_keys: Vec<String>,
     /// The candidates measured on at least eight held-out groups: the only
     /// ones compared, and the only ones a certificate lets the policy choose.
+    #[serde(default)]
     pub pool_keys: Vec<String>,
     pub aggregate_keys: Vec<String>,
     pub excluded_providers: Vec<String>,
@@ -869,7 +871,7 @@ impl Store {
     /// Every journaled evaluation of a class, newest first.
     pub async fn class_evaluations(&self, class: &str) -> Result<Vec<ClassEvaluation>> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM selector_certifications WHERE work_class_id=? ORDER BY created_at DESC,id DESC LIMIT 256",
+            "SELECT id FROM selector_certifications WHERE work_class_id=? ORDER BY created_at DESC,rowid DESC LIMIT 256",
         )
         .bind(class)
         .fetch_all(&self.pool)
@@ -1062,17 +1064,25 @@ impl BenchmarkService {
         // One writer: the dedup check, the look number, the journal row and
         // its certificate commit together or not at all.
         let mut tx = self.store.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let journaled: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM selector_certifications WHERE model_id=? AND snapshot_hash=?",
+        // Only a repeat of the class's newest look is the same look; the same
+        // fit and cells after a different look are journaled again, so the
+        // newest look always names what the class stands on.
+        let newest: Option<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT id,model_id,snapshot_hash,created_at FROM selector_certifications WHERE work_class_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
         )
-        .bind(&evaluation.model_id)
-        .bind(&evaluation.snapshot_hash)
+        .bind(&evaluation.work_class_id)
         .fetch_optional(&mut *tx)
         .await?;
-        if let Some(id) = journaled {
-            tx.rollback().await?;
-            return self.store.class_evaluation(&id).await;
+        if let Some((id, model_id, snapshot_hash, _)) = &newest {
+            if *model_id == evaluation.model_id && *snapshot_hash == evaluation.snapshot_hash {
+                let id = id.clone();
+                tx.rollback().await?;
+                return self.store.class_evaluation(&id).await;
+            }
         }
+        // Stamped under the lock, never before the newest look's time, so the
+        // newest by time is also the highest look number.
+        evaluation.created_at = newest.map_or(now(), |(_, _, _, at)| now().max(at));
         let looks: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM selector_certifications WHERE work_class_id=?",
         )

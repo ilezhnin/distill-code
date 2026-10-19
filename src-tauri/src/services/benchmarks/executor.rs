@@ -287,14 +287,16 @@ fn apply_class_model(
         .iter()
         .filter(|candidate| candidate.available)
         .filter_map(|candidate| {
-            // A held-out certificate speaks only for its certified pool.
             let mut matches = model.candidates.iter().filter(|trained| {
-                pool.is_none_or(|pool| pool.contains(&trained.candidate_key))
-                    && class_evidence_matches(&candidate.configuration, &trained.configuration)
+                class_evidence_matches(&candidate.configuration, &trained.configuration)
             });
             let trained = matches.next()?;
             // Different certified billing/profile contexts are not interchangeable.
             if matches.next().is_some() {
+                return None;
+            }
+            // A held-out certificate speaks only for its certified pool.
+            if pool.is_some_and(|pool| !pool.contains(&trained.candidate_key)) {
                 return None;
             }
             Some((

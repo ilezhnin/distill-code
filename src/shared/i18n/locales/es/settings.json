@@ -569,6 +569,7 @@
     "managePolicy": "Políticas y certificados",
     "evidenceEvaluation": "Evaluación reservada {{look}} de {{look}} del {{date}}, sin certificar: en {{cases}} casos reservados de {{groups}} grupos, la elección aprendida alcanzó una calidad del {{quality}} %. {{reasons}} Ajustada con {{training}} casos de entrenamiento.",
     "evidenceEvaluationCertified": "Evaluación reservada {{look}} de {{look}} del {{date}}, certificó esta clase: en {{cases}} casos reservados de {{groups}} grupos, la elección aprendida alcanzó una calidad del {{quality}} %. Ajustada con {{training}} casos de entrenamiento.",
+    "evidenceEvaluationInactive": "La evaluación reservada {{look}} de {{look}} del {{date}} certificó esta clase con {{cases}} casos reservados de {{groups}} grupos, pero su certificado ya no está activo, así que la clase usa su orden de respaldo. Ajustada con {{training}} casos de entrenamiento.",
     "evidenceEvaluationEmpty": "Evaluación reservada {{look}} de {{look}} del {{date}}: ajustada con {{training}} casos de entrenamiento, pero aún ningún caso reservado calificado de esta clase tiene dos modelos medidos.",
     "evaluationReason": {
       "fewer_than_eight_independent_groups": "Algunas comparaciones tienen menos de 8 grupos.",

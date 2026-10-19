@@ -138,7 +138,12 @@ it("shows the newest evaluation whether it found no case or certified the class"
       certifiedAt: Date.UTC(2026, 9, 19),
       campaignId: "evaluation-1",
       modelId: "invented-model",
-      evaluation: { ...evaluation, status: "certified", reasons: [] },
+      evaluation: {
+        ...evaluation,
+        status: "certified",
+        reasons: [],
+        certificateId: "certificate-1",
+      },
     },
   ]);
   show("debug");
@@ -147,5 +152,26 @@ it("shows the newest evaluation whether it found no case or certified the class"
   ).toBeVisible();
   expect(screen.getByTestId("learned-class-preview")).toHaveTextContent(
     /Held-out evaluation 3 of 3 from .+ certified this class: on 21 held-out cases/,
+  );
+});
+
+it("says when the newest look certified but its certificate is no longer active", async () => {
+  vi.mocked(api.classPolicies).mockResolvedValue([
+    {
+      ...empty,
+      evaluation: {
+        ...evaluation,
+        status: "certified",
+        reasons: [],
+        certificateId: "revoked-certificate",
+      },
+    },
+  ]);
+  show("debug");
+  const line = await screen.findByTestId("learned-class-preview");
+  expect(line).toHaveTextContent(/certificate is no longer active/);
+  expect(screen.getByTestId("learned-class-status")).toHaveAttribute(
+    "data-certified",
+    "false",
   );
 });
