@@ -21,10 +21,25 @@ staging=/srv/bench/staging/$id
 probe=/srv/bench/probes/$id
 pair=/srv/bench/pairs/$id.json
 submission=/srv/bench/submissions/$id
+# The same parents as bench-copy's: an unsafe /srv/bench refuses the check
+# as it refuses the attempt, while only an unsafe cache degrades.
+protected_parent() {
+  local path=$1 owner mode
+  [[ -d $path && ! -L $path ]] || return 1
+  owner=$(/usr/bin/stat -c %u "$path")
+  mode=$(/usr/bin/stat -c %a "$path")
+  [[ $owner == 0 && $((8#$mode & 0022)) == 0 ]]
+}
+for parent in /srv /srv/bench /srv/bench/checks /srv/bench/staging; do
+  protected_parent "$parent" || { echo "bench-check-prep: unprotected parent" >&2; exit 77; }
+done
 [[ ! -e $dir && ! -e $staging && ! -e $probe && ! -e $pair && ! -e $submission ]] || { echo "bench-check-prep: $id exists" >&2; exit 73; }
 mkdir -p "$staging" "$dir"
 chmod 700 "$staging" "$dir"
-trap 'rm -rf "$staging"' EXIT
+# A refused preparation leaves no partial check behind (this run made each of
+# these paths: none existed above); one whose answer does not apply (2) keeps
+# the placed snapshot for its recorded reason.
+trap 'code=$?; rm -rf "$staging"; if (( code != 0 && code != 2 )); then rm -rf "$dir" "$probe" "$submission"; rm -f "$pair"; fi' EXIT
 /usr/local/sbin/bench-unpack "$staging"
 if [[ -z $tree ]]; then
   cp -a "$staging/snapshot/." "$dir/"

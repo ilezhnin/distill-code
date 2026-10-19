@@ -29,6 +29,7 @@ unpack = importlib.machinery.SourceFileLoader('benchmark_unpack_fixture', str(so
 production_scratch_headroom = budget.scratch_headroom
 production_state = budget.STATE
 production_stop = budget.stop
+production_child_group = budget.child_group
 production_os = budget.os
 MIB = 1024 ** 2
 
@@ -755,7 +756,7 @@ class BudgetTests(unittest.TestCase):
         production_run = budget.subprocess.run
         self.addCleanup(setattr, budget.subprocess, 'run', production_run)
         budget.subprocess.run = lambda command, **_: cleaned.append(command[1]) or types.SimpleNamespace(returncode=0)
-        budget.expire_scratch(set())
+        budget.expire_scratch()
         self.assertEqual(cleaned, ['fictional-done'])
         self.assertFalse((owners / 'fictional-done.json').exists())
         self.assertTrue((owners / 'fictional-broken.json').exists())
@@ -1573,6 +1574,95 @@ class BudgetTests(unittest.TestCase):
         row['admitted'] = time.time() - budget.SCRATCH_SETTLE - 1
         path.write_text(json.dumps(row))
         self.reserve('check', 'fictional-check')
+
+    def scratch_owners(self):
+        production_scratch = budget.SCRATCH
+        self.addCleanup(setattr, budget, 'SCRATCH', production_scratch)
+        budget.SCRATCH = Path(self.temporary.name) / 'scratch'
+        owners = budget.SCRATCH / 'owners'
+        owners.mkdir(parents=True, exist_ok=True)
+        cleaned = []
+        production_run = budget.subprocess.run
+        self.addCleanup(setattr, budget.subprocess, 'run', production_run)
+        budget.subprocess.run = lambda command, **_: cleaned.append(command[1]) or types.SimpleNamespace(returncode=0)
+        return owners, cleaned
+
+    def test_an_id_still_asking_for_room_keeps_its_scratch(self):
+        # A long queue can outlast the owner's deadline; every ask renews it,
+        # refused or not, so the reaper never cleans the id under a job about
+        # to start.
+        owners, cleaned = self.scratch_owners()
+        owner = owners / 'fictional-queued.json'
+        owner.write_text(json.dumps({'id': 'fictional-queued', 'deadline': time.time() - 1}))
+        with contextlib.suppress(BlockingIOError):
+            self.reserve('text', 'fictional-queued')
+        self.assertGreater(json.loads(owner.read_text())['deadline'], time.time() + 7000)
+        budget.expire_scratch()
+        self.assertEqual(cleaned, [])
+        # An id nobody asks for any more expires as before.
+        other = owners / 'fictional-gone.json'
+        other.write_text(json.dumps({'id': 'fictional-gone', 'deadline': time.time() - 1}))
+        budget.expire_scratch()
+        self.assertEqual(cleaned, ['fictional-gone'])
+
+    def test_expire_scratch_keeps_an_id_any_lease_names(self):
+        owners, cleaned = self.scratch_owners()
+        token = self.reserve('text', 'fictional-leased')
+        # The owner expired, but a lease written since the reaper's first read
+        # still names the id.
+        (owners / 'fictional-leased.json').write_text(
+            json.dumps({'id': 'fictional-leased', 'deadline': time.time() - 1}))
+        budget.expire_scratch()
+        self.assertEqual(cleaned, [])
+        budget.release(token)
+        budget.expire_scratch()
+        self.assertEqual(cleaned, ['fictional-leased'])
+
+    def test_staging_files_of_dead_writers_are_removed(self):
+        old = time.time() - budget.TORN_AFTER - 5
+        dead = budget.STATE / 'lease-fictional.json.4000001.new'
+        live = budget.STATE / 'lease-fictional.json.4000002.new'
+        fresh = budget.STATE / 'lease-fictional.json.4000003.new'
+        for path in (dead, live, fresh):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{}')
+        for path in (dead, live):
+            os.utime(path, (old, old))
+        production_identity = budget.proc_identity
+        self.addCleanup(setattr, budget, 'proc_identity', production_identity)
+        budget.proc_identity = lambda pid: 'running' if pid == 4000002 else None
+        budget.remove_staging()
+        self.assertFalse(dead.exists())
+        self.assertTrue(live.exists())
+        self.assertTrue(fresh.exists())
+
+    def test_an_orphan_group_no_lease_names_is_made_anew(self):
+        production_device = budget.DEVICE
+        self.addCleanup(setattr, budget, 'DEVICE', production_device)
+        budget.DEVICE = '8:16'
+        limits = (512 * MIB, 1, 64, 100, 100, 100)
+        # A broker killed after making the group and before writing its lease.
+        (budget.ROOT / 'text-fictional-orphan').mkdir()
+        production_child_group('text-fictional-orphan', *limits)
+        self.assertEqual((budget.ROOT / 'text-fictional-orphan' / 'pids.max').read_text(), '64')
+        # A group a lease names, or one that holds tasks, is never taken over.
+        token = self.reserve('text', 'fictional-named')
+        named = json.loads((budget.STATE / ('lease-' + token + '.json')).read_text())['groups'][0]
+        with self.assertRaises(FileExistsError):
+            production_child_group(named, *limits)
+        busy = budget.ROOT / 'text-fictional-busy'
+        busy.mkdir()
+        (busy / 'cgroup.procs').write_text('4711')
+        with self.assertRaises(FileExistsError):
+            production_child_group('text-fictional-busy', *limits)
+
+    def test_release_of_a_torn_or_missing_lease_does_nothing(self):
+        budget.release('a' * 32)
+        torn = budget.STATE / ('lease-' + 'b' * 32 + '.json')
+        torn.parent.mkdir(parents=True, exist_ok=True)
+        torn.write_text('{"groups": ')
+        budget.release('b' * 32)
+        self.assertTrue(torn.exists())
 
     def test_expired_pending_owner_is_reaped_and_live_claim_is_not_released(self):
         token = self.reserve('text', 'fictional-expiry')

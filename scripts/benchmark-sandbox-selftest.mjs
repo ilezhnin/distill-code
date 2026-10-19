@@ -301,6 +301,7 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
       "damaged",
       "evict",
       "check-miss",
+      "check-wrong",
     ];
     scrub();
     try {
@@ -323,6 +324,7 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
       pass(
         "an archive holding its tree is cached, root only and read only",
         stored.status === 0 &&
+          stored.stdout.split("\n").includes(`cached ${tree}`) &&
           root(
             `import os;d=os.stat('/srv/bench/cache');f=os.stat('${entry(tree)}');print(d.st_uid,oct(d.st_mode&0o777),f.st_uid,oct(f.st_mode&0o777),f.st_nlink)`,
           ) === "0 0o700 0 0o400 1",
@@ -405,6 +407,22 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
         uncached.status === 3 &&
           uncached.stdout === `not cached ${fake}\n` &&
           !leftover("check-miss"),
+      );
+      const refusedCheck = leased(
+        "/usr/local/sbin/bench-check-prep",
+        [owned("check-wrong"), fake],
+        "prep",
+        tar([
+          ["answer.patch", patch],
+          ["snapshot.tar", snapshot],
+        ]),
+        owned("check-wrong"),
+      );
+      pass(
+        "a check from an archive without its tree is refused and leaves nothing",
+        ![0, 2, 3].includes(refusedCheck.status) &&
+          refusedCheck.stderr.includes("does not hold its published tree") &&
+          !leftover("check-wrong"),
       );
     } finally {
       for (const suffix of suffixes)

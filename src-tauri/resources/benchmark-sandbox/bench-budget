@@ -288,7 +288,9 @@ def setup():
     ensure(ROOT / 'memory.swap.max', 0)
     control = ROOT / 'control'
     control.mkdir(exist_ok=True)
-    ensure(control / 'memory.max', 256 * 1024 ** 2)
+    # One GiB for every supervisor, reaper, status and clean together: the
+    # slack the admission memory leaves above it (ADMISSION_MEMORY).
+    ensure(control / 'memory.max', 1024 ** 3)
     ensure(control / 'memory.swap.max', 0)
     ensure(control / 'pids.max', 128)
     ensure(control / 'cpu.max', f'{SUPERVISOR_CPUS * 100000} 100000')
@@ -1458,7 +1460,7 @@ def admission(active, kind, observed):
                 competingHeavy=sum(row['kind'] in CPU_HEAVY for row in active),
                 reservedMemory=observed.pop('claimedMemory'),
                 reservedCpu=observed.pop('heavyCpus'),
-                memoryCurrent=int((ROOT / 'memory.current').read_text()),
+                memoryCurrent=read_number(ROOT / 'memory.current'),
                 memoryInUse=memory_in_use(), memoryFile=(memory_stat() or {}).get('file'),
                 guestLoad=[round(value, 2) for value in os.getloadavg()],
                 guestCpus=os.cpu_count(), **observed)
@@ -1575,6 +1577,7 @@ def reserve(kind, identifier, deadline_ms, gate, host_buffers=0, continuing=Fals
         fail('only a check can be timing-sensitive')
     setup()
     with locked():
+        keep_owner(identifier)
         active = receipts()
         # Checks, preparations, sign-ins and probes queue without a
         # reservation. The one at the head keeps the room it was refused
@@ -1606,10 +1609,9 @@ def release(token):
         fail('invalid benchmark reservation token')
     with locked():
         path = STATE / ('lease-' + token + '.json')
-        if path.exists():
-            row = json.loads(path.read_text())
-            if row.get('pending') and stop(row['groups']):
-                path.unlink()
+        row = readable(path, LEASE_KEYS)
+        if row is not None and row.get('pending') and stop(row['groups']):
+            path.unlink(missing_ok=True)
 
 
 MEMORY_CEILING = 'infrastructure_error: benchmark process tree reached its memory ceiling'
@@ -1815,7 +1817,17 @@ def child_group(name, memory, cpu, pids, read, written, weight):
     if DEVICE is None:
         fail('benchmark scratch device is unknown')
     path = ROOT / name
-    path.mkdir()
+    try:
+        path.mkdir()
+    except FileExistsError:
+        # One a killed broker or supervisor left before any lease named it
+        # (callers hold the lock that every lease writer holds): it holds
+        # nothing, so it goes and this admission makes it anew.
+        if populated(path) or any(name in (row or {}).get('groups', ())
+                                  for row in (readable(lease, LEASE_KEYS) for lease in STATE.glob('lease-*.json'))):
+            raise
+        path.rmdir()
+        path.mkdir()
     try:
         for key, value in {'memory.max': memory, 'memory.swap.max': 0, 'pids.max': pids,
                            'cpu.max': f'{cpu * 100000} 100000', 'cpu.weight': weight}.items():
@@ -1834,10 +1846,13 @@ def child_group(name, memory, cpu, pids, read, written, weight):
 def joined(mode, identifier, command):
     token = os.environ.get('DISTILL_BENCH_BUNDLE', '')
     lease = STATE / ('lease-' + token + '.json')
-    if not re.fullmatch('[0-9a-f]{32}', token) or not lease.is_file():
+    if not re.fullmatch('[0-9a-f]{32}', token):
         fail('missing owned resource bundle')
-    row = json.loads(lease.read_text())
-    if row['id'] != identifier or not live(row):
+    try:
+        row = json.loads(lease.read_text())
+    except (FileNotFoundError, ValueError):
+        fail('missing owned resource bundle')
+    if not isinstance(row, dict) or row.get('id') != identifier or not live(row):
         fail('resource bundle owner expired')
     group = row['groups'][1 if mode == 'probe' and len(row['groups']) == 2 else 0]
     write(ROOT / group / 'cgroup.procs', os.getpid())
@@ -1873,6 +1888,7 @@ def run(kind, identifier, command):
     groups = []
     owned = False
     child = None
+    stalled_before = None
     def cancelled(_signal, _frame):
         raise Cancelled('benchmark resource owner cancelled')
     signal.signal(signal.SIGTERM, cancelled)
@@ -1902,6 +1918,7 @@ def run(kind, identifier, command):
             if time.time() >= min(deadline, started + 300):
                 raise TimeoutError('resource_busy: benchmark resource queue expired before execution')
             with locked():
+                keep_owner(identifier)
                 active = receipts()
                 queue = waiting()
                 admitted = False
@@ -2144,7 +2161,22 @@ def reap_pass():
         for path in (STATE / 'outcomes').glob('*.json'):
             if path.stat().st_mtime < time.time() - 3600:
                 path.unlink(missing_ok=True)
-    expire_scratch({row['id'] for row in active})
+    expire_scratch()
+    remove_staging()
+
+
+def remove_staging():
+    """replace_private's staging files a writer left when it died between
+    writing and renaming: never renamed now, they would stay forever."""
+    with locked():
+        for directory in (STATE, STATE / 'outcomes', SCRATCH / 'owners'):
+            for path in directory.glob('*.new'):
+                try:
+                    pid = int(path.name.rsplit('.', 2)[-2])
+                    if path.stat().st_mtime < time.time() - TORN_AFTER and proc_identity(pid) is None:
+                        path.unlink(missing_ok=True)
+                except (OSError, ValueError, IndexError):
+                    continue
 
 
 REAPER_ARGV = [b'/usr/local/sbin/bench-budget', b'reap', b'--daemon']
@@ -2238,16 +2270,29 @@ def own(identifier):
         fail('unsafe benchmark scratch owner directory')
     path = directory / (identifier + '.json')
     # A bounded independent retention deadline applies even after app crash.
-    # The credential save helper retains ambiguous refresh evidence before
-    # this owner can be removed; failure deliberately prevents deletion.
+    # bench-clean removes this owner itself; a credential save it could not
+    # settle stays under auth-unsaved for the operator, not here.
     with locked():
         replace_private(path, json.dumps({'id': identifier, 'deadline': time.time() + 7200}))
 
 
-def expire_scratch(active):
-    # Read under the broker lock, as the owners are written; clean outside it.
+def keep_owner(identifier):
+    """Under the lock: an id still asking for room keeps its scratch for two
+    hours more, so a long queue never lets expire_scratch clean it under a
+    job that is about to start."""
+    path = SCRATCH / 'owners' / (identifier + '.json')
+    row = readable(path, ('id', 'deadline'))
+    if row is not None and row['deadline'] < time.time() + 7200:
+        replace_private(path, json.dumps({'id': identifier, 'deadline': time.time() + 7200}))
+
+
+def expire_scratch():
+    # Read under the broker lock, as the owners and leases are written; clean
+    # outside it. Any lease naming an id keeps it, live or not yet reaped.
     with locked():
         owners = [(path, readable(path, ('id', 'deadline'))) for path in (SCRATCH / 'owners').glob('*.json')]
+        active = {row['id'] for row in (readable(path, ('id',)) for path in STATE.glob('lease-*.json'))
+                  if row is not None}
     for path, row in owners:
         # One owner that cannot be read or cleaned must not keep the others.
         try:
@@ -2361,7 +2406,7 @@ def print_outcome():
 if __name__ == '__main__':
     try:
         code = main()
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, Cancelled) as error:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, Cancelled, MemoryError) as error:
         if OUTCOME_TOKEN:
             try:
                 reason = str(error)
