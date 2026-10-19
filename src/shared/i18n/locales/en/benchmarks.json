@@ -535,7 +535,7 @@
     "filter": "Filter by model name",
     "noMatch": "No model matches the filter.",
     "points": "Measurements",
-    "point": "{{date}} · repeat {{number}}",
+    "point": "{{date}} · #{{number}}",
     "noImage": "No rendering was stored for this measurement.",
     "score": "Score",
     "judgesLabel": "Judges",

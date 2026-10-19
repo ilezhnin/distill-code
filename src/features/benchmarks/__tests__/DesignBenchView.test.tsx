@@ -340,17 +340,21 @@ describe("design gallery", () => {
     // A stored image that no longer loads gives way to the markup.
     fireEvent.error(within(detail).getByRole("presentation"));
     expect(image()).toMatch(/^data:image\/svg\+xml/);
-    expect(within(detail).getAllByRole("radio")).toHaveLength(3);
-    await userEvent.click(
-      within(detail).getByRole("radio", { name: /repeat 3/ }),
-    );
+    // Points read oldest first, each as a compact date, time and repeat,
+    // with the full date in its tooltip.
+    const chips = within(detail).getAllByRole("radio");
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      expect.stringMatching(/^Oct 1[89] \d{2}:\d{2} · #1$/),
+      expect.stringMatching(/^Oct 1[89] \d{2}:\d{2} · #2$/),
+      expect.stringMatching(/^Oct 1[89] \d{2}:\d{2} · #3$/),
+    ]);
+    expect(chips[0].getAttribute("title")).toMatch(/2026/);
+    await userEvent.click(within(detail).getByRole("radio", { name: /#3$/ }));
     expect(image()).toBe("asset://renders/rep-3.png");
     expect(within(detail).getByText("600")).toBeInTheDocument();
     expect(within(detail).getByText("$0.5")).toBeInTheDocument();
     // A point without a stored image shows its own markup.
-    await userEvent.click(
-      within(detail).getByRole("radio", { name: /repeat 2/ }),
-    );
+    await userEvent.click(within(detail).getByRole("radio", { name: /#2$/ }));
     await vi.waitFor(() => expect(image()).toContain("second"));
     expect(benchmarkApi.getEvidence).toHaveBeenCalledWith("rep-2");
     expect(within(detail).getByText("700")).toBeInTheDocument();

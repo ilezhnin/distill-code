@@ -535,7 +535,7 @@
     "filter": "Filtrar por nombre de modelo",
     "noMatch": "Ningún modelo coincide con el filtro.",
     "points": "Mediciones",
-    "point": "{{date}} · repetición {{number}}",
+    "point": "{{date}} · n.º {{number}}",
     "noImage": "No se guardó ninguna imagen de esta medición.",
     "score": "Puntuación",
     "judgesLabel": "Jueces",
