@@ -1059,6 +1059,10 @@ pub(super) fn judge_provider_allowed(provider_id: &str) -> bool {
     NativeProvider::for_harness(provider_id).is_some_and(NativeProvider::judges_images)
 }
 
+/// Why a configuration asking for fast mode never runs in a benchmark.
+pub(super) const FAST_MODE_REFUSED: &str =
+    "Fast mode is never used in benchmarks; choose the configuration without it";
+
 /// What an inventory without an account asks for: a managed account, or the
 /// CLI sign-in of a provider whose CLI keeps its own.
 fn account_refusal(provider: &str) -> &'static str {
@@ -1069,10 +1073,15 @@ fn account_refusal(provider: &str) -> &'static str {
     }
 }
 
-/// Why a configuration cannot run under any verified native profile: an
-/// unknown provider, no account (worded for what the provider signs in
-/// with), or an effort its profile refuses.
+/// Why a configuration cannot run under any verified native profile: fast
+/// mode (never used for benchmarks: candidates, judges and campaign lanes
+/// all run at normal speed, owner 10-18), an unknown provider, no account
+/// (worded for what the provider signs in with), or an effort its profile
+/// refuses.
 pub(super) fn profile_refusal(c: &Configuration) -> Option<String> {
+    if c.fast_mode == Some(true) {
+        return Some(FAST_MODE_REFUSED.into());
+    }
     let Some(provider) = NativeProvider::for_harness(&c.provider_id) else {
         return Some("This provider/account has no verified native text execution policy".into());
     };
@@ -5059,10 +5068,10 @@ impl ExecutionBackend for NativeBackend {
                         .effort
                         .as_ref()
                         .is_some_and(|e| selection["reasoningEffort"].as_str() != Some(e.as_str()))
-                    || attempt
-                        .configuration
-                        .fast_mode
-                        .is_some_and(|f| selection["fastMode"].as_bool() != Some(f))
+                    || !super::analysis::fast_mode_acknowledged(
+                        attempt.configuration.fast_mode,
+                        selection["fastMode"].as_bool(),
+                    )
                 {
                     attempt.outcome = Some("selection_changed".into());
                     attempt.reason = Some(
@@ -5557,10 +5566,10 @@ async fn wait_for_owned_turn(
                         .effort
                         .as_ref()
                         .is_some_and(|e| Some(e) != observed.reasoning_effort.as_ref())
-                    || attempt
-                        .configuration
-                        .fast_mode
-                        .is_some_and(|f| Some(f) != observed.fast_mode)
+                    || !super::analysis::fast_mode_acknowledged(
+                        attempt.configuration.fast_mode,
+                        observed.fast_mode,
+                    )
                 {
                     attempt.outcome = Some("selection_changed".into());
                     attempt.reason = Some("Provider selection changed during execution".into());
@@ -12391,6 +12400,29 @@ mod tests {
             6
         );
         assert!(offered_efforts(&json!({"modelId":"m"}), excluded).is_empty());
+    }
+    #[test]
+    fn fast_mode_is_refused_and_an_acknowledged_none_is_off() {
+        // Owner, 10-18: no fast mode anywhere, for candidates, judges and
+        // campaign lanes alike.
+        let mut sonnet: Configuration = serde_json::from_value(json!({"id":"j",
+            "providerId":"claude-acp","accountId":"a","modelId":"sonnet","effort":"high",
+            "fastMode":false,"billingMode":"subscription","executionProfile":"native_text"}))
+        .unwrap();
+        assert_eq!(profile_refusal(&sonnet), None);
+        let mut fast = sonnet.clone();
+        fast.fast_mode = Some(true);
+        assert_eq!(profile_refusal(&fast).as_deref(), Some(FAST_MODE_REFUSED));
+        // A Claude session acknowledges no fast mode for Sonnet: that is off,
+        // and matches a seat pinned to off, never one asking for on.
+        let mut acknowledged = sonnet.clone();
+        acknowledged.fast_mode = None;
+        assert!(matches_selection(&sonnet, &acknowledged));
+        assert!(!matches_selection(&fast, &acknowledged));
+        acknowledged.fast_mode = Some(true);
+        assert!(!matches_selection(&sonnet, &acknowledged));
+        sonnet.fast_mode = None;
+        assert!(matches_selection(&sonnet, &acknowledged));
     }
     #[test]
     fn codex_configurations_refuse_ultra_and_need_an_account() {

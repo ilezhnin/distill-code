@@ -343,7 +343,10 @@ configurations. Each seat pins its account, model, effort, fast mode, billing
 mode, native text profile and inventory revision. The rubric needs 1-32 distinct
 criteria with finite positive weights. Authors and candidates cannot
 occupy a seat. A null effort is allowed only when the model offers no effort
-selection; it never means a moving default. The runner checks current
+selection; it never means a moving default. Fast mode is always pinned off:
+no benchmark candidate, judge or campaign lane may ask for it, and a session
+that acknowledges no fast mode (a model without one, such as Sonnet) counts
+as off. The runner checks current
 availability and the pinned runtime
 before each judge call; it never substitutes another judge for a frozen seat.
 Text panels accept verified native text providers; visual panels additionally

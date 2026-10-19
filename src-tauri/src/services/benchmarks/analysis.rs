@@ -395,9 +395,16 @@ pub(crate) fn matches_selection(requested: &Configuration, observed: &Configurat
             .effort
             .as_ref()
             .is_none_or(|e| Some(e) == observed.effort.as_ref())
-        && requested
-            .fast_mode
-            .is_none_or(|f| Some(f) == observed.fast_mode)
+        && fast_mode_acknowledged(requested.fast_mode, observed.fast_mode)
+}
+
+/// Whether an acknowledged fast mode is the one asked for, where the request
+/// set one. A session that acknowledges none runs a model without fast mode,
+/// so it is off: it matches a request for off, never one for on (10-18:
+/// Claude sessions acknowledge none for every model but Opus, so frozen
+/// Sonnet judge seats pinned to off abstained every time).
+pub(crate) fn fast_mode_acknowledged(requested: Option<bool>, observed: Option<bool>) -> bool {
+    requested.is_none_or(|fast| fast == observed.unwrap_or(false))
 }
 
 /// What ran. A refused selection (another model, effort or fast mode) stays
