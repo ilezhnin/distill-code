@@ -786,6 +786,10 @@ pub struct LeaderboardRow {
     pub median_duration_ms: Option<f64>,
     pub median_output_tokens: Option<f64>,
     pub cost: Option<f64>,
+    /// Whether any repetition the cost is made of has a price: without a
+    /// cost, the spend is then unknown rather than the model unpriced.
+    #[serde(default)]
+    pub priced: bool,
     pub measured_at: Option<i64>,
     /// One scale for every board, so the selector reads the same numbers the
     /// operator sees: the mean of the measured class boards, points out of

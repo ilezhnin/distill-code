@@ -148,6 +148,11 @@ describe("formatSpend", () => {
     // A refused or failed call counted nothing.
     expect(formatSpend(t, null, null)).toBe("Not reported");
   });
+
+  it("reads a row's missing cost as unknown spend when some repetition was priced", () => {
+    expect(formatSpend(t, null, 800, true)).toBe("Not reported");
+    expect(formatSpend(t, null, 800, false)).toBe("No price");
+  });
 });
 
 describe("attentionLabel", () => {

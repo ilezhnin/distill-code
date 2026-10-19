@@ -284,7 +284,12 @@ export function BenchmarkConfigurationPage({
     ],
     [
       t("configuration.spend"),
-      formatSpend(t, shownRow.cost, shownRow.medianOutputTokens),
+      formatSpend(
+        t,
+        shownRow.cost,
+        shownRow.medianOutputTokens,
+        shownRow.priced,
+      ),
     ],
     [
       t("configuration.outputTokens"),

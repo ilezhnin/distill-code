@@ -686,7 +686,8 @@ pub(super) fn case_records(
 /// The record a cell's speed and cost compare with: its band's fastest solve
 /// of the case and the case's cheapest. A solved cell no record holds in its
 /// band (its repetitions a subset of a more loaded cell, as after an account
-/// move) is alone in that band and sets it.
+/// move) compares with the nearest more loaded band's record, the cell it was
+/// part of, and only without one is alone in its band and sets it.
 pub(super) fn record_of(
     records: &CaseRecords,
     version: &str,
@@ -695,10 +696,8 @@ pub(super) fn record_of(
     if !records.solved.contains(version) {
         return None;
     }
-    let duration = records
-        .durations
-        .get(&(version.to_owned(), cell.band))
-        .copied()
+    let duration = (cell.band..=BAND_UNRECORDED)
+        .find_map(|band| records.durations.get(&(version.to_owned(), band)).copied())
         .or(cell.duration_ms);
     Some((duration, records.costs.get(version).copied()))
 }
@@ -1438,6 +1437,7 @@ fn measurement_report(
             let every_scored_versions: BTreeSet<&str> = every_cells.keys().copied().collect();
             let spent = spent_attempts(&every_cell, &every_scored_versions, query.as_of);
             let cost = mean_case_cost(&spent, query.as_of);
+            let priced = spent.iter().any(|a| a.usage.cost.is_some());
             let resources = board_stats(&every_cells, &records);
             // Work that never began measured nothing, so it never dates the row.
             let measured_at = every_scored
@@ -1470,7 +1470,7 @@ fn measurement_report(
                 return Some(LeaderboardRow {
                     comparison_key: String::new(),
                     configuration, passed: 0, scored: 0, attempted: 0, planned: 0, complete: 0, quality: None,
-                    median_duration_ms, median_output_tokens, cost, measured_at,
+                    median_duration_ms, median_output_tokens, cost, priced, measured_at,
                     points: None, speed_share: resources.speed_share, cost_share: resources.cost_share,
                     status: "excluded".into(),
                     reason: format!("{excluded} cases left out of quality: this candidate helped author every case in the pool; their speed and cost still count"),
@@ -1574,6 +1574,7 @@ fn measurement_report(
                 median_duration_ms,
                 median_output_tokens,
                 cost,
+                priced,
                 measured_at,
                 points,
                 speed_share: resources.speed_share,
@@ -2086,8 +2087,9 @@ pub(super) mod tests {
             assert_eq!(record.1, Some(1.0), "{model}");
         }
         // A solved cell whose band holds no record (its repetitions part of
-        // a more loaded cell, as after an account move) is alone in it, and
-        // still compares its cost with the case's cheapest solve.
+        // a more loaded cell, as after an account move) compares with the
+        // nearest more loaded band's record, and its cost with the case's
+        // cheapest solve.
         let crowded: Vec<Attempt> = attempts
             .iter()
             .filter(|a| a.configuration.model_id == "crowded")
@@ -2097,11 +2099,32 @@ pub(super) mod tests {
         let idle = cell("alone");
         assert_eq!(
             record_of(&fewer, "v0", &idle),
-            Some((Some(60_000.0), Some(3.0)))
+            Some((Some(180_000.0), Some(3.0)))
         );
         assert_eq!(
             case_points(&idle, record_of(&fewer, "v0", &idle)).speed,
             Some(1.0)
+        );
+        // Slower than that record, it reads below it, as the row does.
+        let slow = CaseCell {
+            duration_ms: Some(360_000.0),
+            ..idle
+        };
+        assert_eq!(
+            case_points(&slow, record_of(&fewer, "v0", &slow)).speed,
+            Some(0.5)
+        );
+        // Only a record in a less loaded band leaves the cell alone in its own.
+        let mixed: Vec<Attempt> = attempts
+            .iter()
+            .filter(|a| a.configuration.model_id == "alone")
+            .cloned()
+            .collect();
+        let quiet = case_records(&mixed, &runs, None, protocol);
+        let busy = cell("crowded");
+        assert_eq!(
+            record_of(&quiet, "v0", &busy),
+            Some((Some(180_000.0), Some(1.0)))
         );
         assert_eq!(share("crowded").cost, Some(1.0 / 3.0));
         assert_eq!(share("mixed").cost, Some(0.5));

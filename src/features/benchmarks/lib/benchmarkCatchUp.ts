@@ -96,10 +96,12 @@ export function requests(
   run: RunSummary,
 ): boolean {
   // A row stands for a model on every account of its provider, so a run
-  // that went on on another account still plans the row's gaps.
+  // that went on on another account still plans the row's gaps; another
+  // billing mode is another row.
   if (
     requested.providerId !== row.providerId ||
     requested.modelId !== row.modelId ||
+    requested.billingMode !== row.billingMode ||
     executionProfile(requested.executionProfile) !==
       executionProfile(row.executionProfile)
   )
