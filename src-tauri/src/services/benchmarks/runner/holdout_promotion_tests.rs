@@ -11,10 +11,12 @@ fn request() -> EvaluationRequest {
     EvaluationRequest {
         work_class_id: "debug".into(),
         excluded_providers: vec![],
-        // The class's manual order prefers the painter everywhere.
+        // The class's fallback order prefers the painter everywhere.
         persona_order: vec![RankedMatcher {
             platform: None,
             needles: vec![vec!["painter".into()]],
+            effort: None,
+            fast_mode: None,
         }],
     }
 }
@@ -49,6 +51,8 @@ async fn certificate_scenario() {
     );
     assert_eq!(evaluation.look, 2);
     assert_eq!(evaluation.cases.len(), 16);
+    assert_eq!(evaluation.persona_order, request().persona_order);
+    assert_eq!(evaluation.pool_keys.len(), 2);
     assert_eq!(evaluation.model_id, empty.model_id);
     assert_eq!(evaluation.qualification_ids.len(), 16);
     // The same fit on the same cells is the same look, journaled once.
@@ -147,6 +151,63 @@ async fn certificate_scenario() {
             .unwrap(),
         Discovery::Refused(_)
     ));
+    // Only the newest look speaks for the class: a later look that did not
+    // certify returns it to its fallback order, and the status shows that look.
+    let mut failed = evaluation.clone();
+    failed.id = "invented-later-look".into();
+    failed.look = 3;
+    failed.created_at += 1;
+    failed.snapshot_hash = "invented-later-snapshot".into();
+    failed.status = "not_certified".into();
+    failed.certificate_id = None;
+    if let Some(assessment) = failed.assessment.as_mut() {
+        assessment.passed = false;
+    }
+    failed.artifact_hash.clear();
+    failed.artifact_hash = crate::services::benchmarks::workflow_campaign::hash(&failed).unwrap();
+    sqlx::query("INSERT INTO selector_certifications(id,work_class_id,model_id,snapshot_hash,created_at,data_json,artifact_hash) VALUES(?,?,?,?,?,?,?)")
+        .bind(&failed.id).bind(&failed.work_class_id).bind(&failed.model_id)
+        .bind(&failed.snapshot_hash).bind(failed.created_at)
+        .bind(serde_json::to_string(&failed).unwrap()).bind(&failed.artifact_hash)
+        .execute(&service.store.pool).await.unwrap();
+    assert!(service
+        .store
+        .class_certificate("debug")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(service
+        .store
+        .require_active_promotion(&certificate_id)
+        .await
+        .unwrap_err()
+        .message
+        .contains("newer held-out look"));
+    let policy = service
+        .store
+        .class_policies()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|p| p.work_class_id == "debug")
+        .unwrap();
+    assert!(policy.certificate_id.is_none());
+    let summary = policy.evaluation.unwrap();
+    assert_eq!(
+        (summary.status.as_str(), summary.look),
+        ("not_certified", 3)
+    );
+    sqlx::query("DELETE FROM selector_certifications WHERE id=?")
+        .bind(&failed.id)
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    assert!(service
+        .store
+        .class_certificate("debug")
+        .await
+        .unwrap()
+        .is_some());
     // A revoked qualification of a counted case deactivates the certificate.
     service
         .store

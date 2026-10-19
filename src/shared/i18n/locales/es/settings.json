@@ -567,8 +567,9 @@
     "evidenceCertified": "Política certificada disponible. Se evalúa cada tarea con los modelos disponibles; si la política se abstiene, se usan las preferencias de respaldo.",
     "evidencePending": "Sin política certificada: se usan las preferencias de respaldo. Casos cualificados: {{training}} de entrenamiento, {{heldOut}} reservados; {{fits}} ajustes, {{campaigns}} comparaciones.",
     "managePolicy": "Políticas y certificados",
-    "evidenceEvaluation": "Evaluación reservada {{look}} del {{date}}, sin certificar: en {{cases}} casos reservados de {{groups}} grupos, la elección aprendida alcanzó una calidad del {{quality}} %. {{reasons}} Ajustada con {{training}} casos de entrenamiento.",
-    "evidenceEvaluationEmpty": "Evaluación reservada {{look}} del {{date}}: ajustada con {{training}} casos de entrenamiento, pero aún ningún caso reservado calificado de esta clase tiene dos modelos medidos.",
+    "evidenceEvaluation": "Evaluación reservada {{look}} de {{look}} del {{date}}, sin certificar: en {{cases}} casos reservados de {{groups}} grupos, la elección aprendida alcanzó una calidad del {{quality}} %. {{reasons}} Ajustada con {{training}} casos de entrenamiento.",
+    "evidenceEvaluationCertified": "Evaluación reservada {{look}} de {{look}} del {{date}}, certificó esta clase: en {{cases}} casos reservados de {{groups}} grupos, la elección aprendida alcanzó una calidad del {{quality}} %. Ajustada con {{training}} casos de entrenamiento.",
+    "evidenceEvaluationEmpty": "Evaluación reservada {{look}} de {{look}} del {{date}}: ajustada con {{training}} casos de entrenamiento, pero aún ningún caso reservado calificado de esta clase tiene dos modelos medidos.",
     "evaluationReason": {
       "fewer_than_eight_independent_groups": "Algunas comparaciones tienen menos de 8 grupos.",
       "observed_quality_below_floor": "La calidad está por debajo del mínimo del 50 %.",

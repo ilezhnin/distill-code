@@ -384,7 +384,7 @@ pub(super) fn selection_distribution(
 }
 
 /// SplitMix64: a fixed, portable stream for the recipe's subset draws.
-fn split_mix(state: &mut u64) -> u64 {
+pub(super) fn split_mix(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -559,5 +559,6 @@ pub(super) fn refit(snapshot: &TrainingSnapshot, common_cases: usize) -> Result<
                 .collect::<Result<_>>()?,
         ),
         candidates,
+        recipe_parameters: Some(RECIPE_PARAMETERS),
     })
 }

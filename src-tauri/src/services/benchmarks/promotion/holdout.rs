@@ -53,48 +53,46 @@ pub(crate) fn qualified_renderer_grading(
     }
 }
 
-impl Store {
-    /// Records the certificate a passing evaluation issues; the evaluation is
-    /// its whole evidence, so its id and snapshot bind the certificate.
-    pub(in crate::services::benchmarks) async fn issue_class_certificate(
-        &self,
-        evaluation: &ClassEvaluation,
-        model: &learned::LearnedModel,
-        qualifications: Vec<qualification::Binding>,
-        contract: Contract,
-    ) -> Result<String> {
-        let assessment = evaluation
-            .assessment
-            .clone()
-            .filter(|a| a.passed)
-            .ok_or_else(|| invalid("Only a passing evaluation issues a certificate"))?;
-        let mut certificate = Certificate {
-            id: String::new(),
-            created_at: now(),
-            model_id: model.id.clone(),
-            model_snapshot_hash: model.snapshot_hash.clone(),
-            campaign_id: evaluation.id.clone(),
-            campaign_plan_hash: evaluation.snapshot_hash.clone(),
-            report_hash: evaluation.snapshot_hash.clone(),
-            rule_hash: hash(&certify::rule())?,
-            contract,
-            assessment,
-            qualifications,
-            prior_keys: evaluation.persona_keys.clone(),
-            min_prediction_quality: 0.5,
-            artifact_hash: String::new(),
-            native_inventory: None,
-            trajectory: None,
-            source: Some(SOURCE.into()),
-        };
-        certificate.id = hash(&certificate)?;
-        certificate.artifact_hash = hash(&certificate)?;
-        sqlx::query("INSERT OR IGNORE INTO selector_class_certificates(id,evaluation_id,created_at,artifact_json,artifact_hash) VALUES(?,?,?,?,?)")
-            .bind(&certificate.id).bind(&evaluation.id).bind(certificate.created_at)
-            .bind(serde_json::to_string(&certificate)?).bind(&certificate.artifact_hash).execute(&self.pool).await?;
-        Ok(certificate.id)
-    }
+/// The certificate a passing evaluation issues; the evaluation is its whole
+/// evidence, so its id and snapshot bind it. The caller records both in one
+/// transaction.
+pub(in crate::services::benchmarks) fn held_out_certificate(
+    evaluation: &ClassEvaluation,
+    model: &learned::LearnedModel,
+    qualifications: Vec<qualification::Binding>,
+    contract: Contract,
+) -> Result<Certificate> {
+    let assessment = evaluation
+        .assessment
+        .clone()
+        .filter(|a| a.passed)
+        .ok_or_else(|| invalid("Only a passing evaluation issues a certificate"))?;
+    let mut certificate = Certificate {
+        id: String::new(),
+        created_at: evaluation.created_at,
+        model_id: model.id.clone(),
+        model_snapshot_hash: model.snapshot_hash.clone(),
+        campaign_id: evaluation.id.clone(),
+        campaign_plan_hash: evaluation.snapshot_hash.clone(),
+        report_hash: evaluation.snapshot_hash.clone(),
+        rule_hash: hash(&certify::rule())?,
+        contract,
+        assessment,
+        qualifications,
+        prior_keys: evaluation.persona_keys.clone(),
+        min_prediction_quality: 0.5,
+        artifact_hash: String::new(),
+        native_inventory: None,
+        trajectory: None,
+        source: Some(SOURCE.into()),
+        pool_keys: Some(evaluation.pool_keys.clone()),
+    };
+    certificate.id = hash(&certificate)?;
+    certificate.artifact_hash = hash(&certificate)?;
+    Ok(certificate)
+}
 
+impl Store {
     /// Authority of a held-out certificate: its journaled evaluation, its
     /// qualifications and its fit, never the renderer installed now.
     pub(super) async fn require_active_holdout_promotion(
@@ -117,8 +115,21 @@ impl Store {
             || evaluation.snapshot_hash != certificate.report_hash
             || evaluation.certificate_id.as_deref() != Some(certificate.id.as_str())
             || evaluation.status != "certified"
+            || certificate.pool_keys.as_ref() != Some(&evaluation.pool_keys)
         {
             return Err(invalid("Held-out certificate evidence changed"));
+        }
+        // Only the class's newest look speaks for it: a later look that did
+        // not certify returns the class to its fallback order.
+        if self
+            .newest_class_evaluation_id(&evaluation.work_class_id)
+            .await?
+            .as_deref()
+            != Some(evaluation.id.as_str())
+        {
+            return Err(invalid(
+                "A newer held-out look of the class superseded this certificate",
+            ));
         }
         self.verify_qualification_authority(&certificate.qualifications, false)
             .await?;

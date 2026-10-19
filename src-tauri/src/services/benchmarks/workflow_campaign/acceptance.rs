@@ -274,9 +274,9 @@ pub(in crate::services::benchmarks) fn assess(
 }
 
 /// The selection recipe on cases where a candidate may be absent: the
-/// learned, aggregate and persona arms are always present (each chose among
-/// the candidates the case measured), and a fixed worker is compared only on
-/// the groups that measured it. Each comparison counts its own groups and
+/// learned and aggregate arms are always present (each chose among the
+/// candidates the case measured); the persona arm and a fixed worker are
+/// compared only on the groups where they are present. Each comparison counts its own groups and
 /// needs at least eight; Holm covers all of them together.
 pub(in crate::services::benchmarks) fn assess_available(
     rule: &Rule,
@@ -307,7 +307,9 @@ pub(in crate::services::benchmarks) fn assess_available(
     };
     let mut grouped: BTreeMap<&str, Vec<&ReportCase>> = BTreeMap::new();
     for case in cases {
-        let policy = ["learned", "aggregate", "persona"]
+        // The persona arm is absent where none of the manual order's
+        // models measured the case; it is compared where it is present.
+        let policy = ["learned", "aggregate"]
             .iter()
             .all(|key| arms(case, key).is_some());
         if case.group.trim().is_empty()

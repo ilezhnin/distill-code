@@ -816,8 +816,9 @@ lists the class's journaled evaluations, newest first.
 - **Fit (recipe `family-weighted-softmax-kl-v2-random-subsets`).** The class's
   largest public scope, training cells only, with `model_identity`.
   - Every candidate with at least eight complete training cases there joins the
-    pool. Providers that may train on submitted data, and any `excludedProviders`,
-    are left out.
+    pool; a candidate that falls below eight once cases without a second pool
+    candidate are dropped leaves it. Providers that may train on submitted data,
+    and any `excludedProviders`, are left out.
   - Candidates need not share cases: every training case that measured two pool
     candidates counts, and an unmeasured candidate is masked, never a zero.
   - The selection head learns from each case's full measured set and seven seeded
@@ -825,30 +826,53 @@ lists the class's journaled evaluations, newest first.
     at least two per subset; the seed mixes in the case's version id), so it
     chooses among whatever candidates a task has. A new model or effort joins at
     the next fit once it has eight training cases; it needs no new tasks.
+  - The draw count, inclusion probability, seed and case bound are stored in the
+    model and enter its id. The fit's cutoff is the newest counted training
+    measurement, so unchanged training cells give the same fit.
   - A fit refuses any held-out version.
 - **Evaluation (recipe `held-out-certification-v1`).** The fit is replayed on
   every held-out case of the class and scope that ordinary runs measured.
+  - The certified pool is the fit's candidates measured on at least eight
+    held-out groups. Only they are compared, and a certificate lets the policy
+    choose only among them; the others join at a later look once measured.
   - A case counts when its version has a current, attested, unrevoked
     qualification and at least two pool candidates have complete cells under the
     single-run rule (3/3 in one run).
+  - A cell is the newest run that scored the case, the same rule as the
+    leaderboard. A newer run stopped part-way leaves its candidate absent on
+    that case (never a zero) even when an older run is complete. The rule never
+    looks at scores, but a run stopped for an outcome-related reason would still
+    bias which cells count.
   - A renderer-bound version's cells must have been graded by its qualified
     renderer.
-  - The learned arm chooses among the candidates the case measured. The persona
-    arm is the first of them in the class's manual order (`personaOrder`, the
-    app's own ranking). The aggregate arm is the first in the fit's training
-    aggregate order.
+  - The learned arm chooses among the pool candidates the case measured; when
+    it abstains it falls back as a chat does, to the persona arm, else to the
+    aggregate arm.
+  - The persona arm is what an ordinary chat of the class falls back to: the
+    operator's class override, else the built-in ranking, with each entry's
+    provider, words, effort and fast mode (`personaOrder`). Only candidates the
+    order names count; on a case none of them measured the arm is absent.
+  - The aggregate arm is the first measured candidate in the training aggregate
+    order: candidates ranked by mean case-centred utility (a case's utility
+    minus the mean over the candidates it measured) over their own training
+    cases, each group weighted equally.
   - The fixed rule (`superiority-noninferiority-sign-holm-v1`, alpha 0.05, gain 0,
     quality floor 0.5, margin 0.05) compares each worker only on the groups that
     measured it. Each comparison needs at least eight groups, and Holm covers all
     of them.
 - **Journal.** Every evaluation is a look in the journal, numbered per class,
-  with its fit, recipe and the hash of every counted cell. The same fit on the
-  same cells is the same look. A look runs on demand: once after each new fit
+  with its fit, recipe, rule and recipe parameters, the order as sent and the
+  keys it resolved to, the pool, the qualification ids, and every counted
+  repetition (attempt id and a hash of its evaluations). The same fit on the
+  same cells is the same look. One transaction checks for the same look,
+  numbers it, and writes the look and its certificate. A look runs on demand: once after each new fit
   (the command fits first) and again when the held-out cells change. No
   correction is made across looks; the look count is shown with the result.
 - **Certificate.** A passing look issues the class certificate (`source:
-  "held_out_certification"`). The newest evaluation of each class appears in
-  `benchmark_class_policies` and in the class status in Settings.
+  "held_out_certification"`). It is active only while its look is the class's
+  newest: a later look that does not certify returns the class to its fallback
+  order. The newest look of each class, passed or not, and the look count
+  appear in `benchmark_class_policies` and in the class status in Settings.
 
 If all candidates have indistinguishable utilities, labels are incomplete, or
 the selector simply reproduces one global winner without task-dependent evidence,
@@ -993,7 +1017,7 @@ Overfitting is controlled by discipline:
 The certificate's authority is its journaled evaluation, its qualifications and
 its fit:
 - A revoked or changed qualification of a counted case deactivates it, and so
-  does a changed fit.
+  do a changed fit and a newer look of the class.
 - The renderer installed later plays no part: the evaluation already checked
   which renderer graded the counted cells.
 - It never covers an owned native task: owned task mode, binding and dispatch

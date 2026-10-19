@@ -60,6 +60,8 @@ fn matcher(word: &str) -> RankedMatcher {
     RankedMatcher {
         platform: None,
         needles: vec![vec![word.into()]],
+        effort: None,
+        fast_mode: None,
     }
 }
 
@@ -215,6 +217,39 @@ fn random_subsets_are_seeded_renormalized_and_keep_the_full_set_first() {
         assert!(draw.windows(2).all(|w| w[0].0 < w[1].0));
     }
     assert_eq!(fit::subset_targets(&example, &full).unwrap(), draws);
+    // The recipe's parameters are pinned, and so is the stream: SplitMix64's
+    // reference vector and the draws of one named case.
+    assert_eq!(
+        super::super::RECIPE_PARAMETERS,
+        super::super::RecipeParameters {
+            subset_draws: 8,
+            subset_inclusion: 0.5,
+            subset_seed: 0x5355_4253_4554_0002,
+            min_candidate_cases: 8,
+        }
+    );
+    let mut state = 0;
+    assert_eq!(fit::split_mix(&mut state), 0xE220_A839_7B1D_CDAF);
+    let mut golden = example.clone();
+    golden.version_id = "golden-case".into();
+    let indices: Vec<Vec<usize>> = fit::subset_targets(&golden, &full)
+        .unwrap()
+        .iter()
+        .map(|draw| draw.iter().map(|(i, _)| *i).collect())
+        .collect();
+    assert_eq!(
+        indices,
+        vec![
+            vec![0, 1, 2, 3],
+            vec![0, 2, 3],
+            vec![1, 2],
+            vec![0, 2, 3],
+            vec![0, 1, 2],
+            vec![0, 1, 3],
+            vec![0, 2],
+            vec![1, 2],
+        ]
+    );
     // Another case draws another stream.
     example.version_id.push_str("-other");
     assert_ne!(fit::subset_targets(&example, &full).unwrap(), draws);
@@ -224,7 +259,7 @@ fn random_subsets_are_seeded_renormalized_and_keep_the_full_set_first() {
 }
 
 #[test]
-fn the_manual_order_maps_to_the_pool_and_covers_every_candidate() {
+fn the_fallback_order_maps_to_the_candidates_it_names_only() {
     let data = measured(0);
     let artifact = fit(
         &data,
@@ -241,18 +276,52 @@ fn the_manual_order_maps_to_the_pool_and_covers_every_candidate() {
             .candidate_key
             .clone()
     };
+    assert!(artifact.model.recipe_parameters.is_some());
+    // A chat falls back only to what its order names, never to the rest.
     assert_eq!(
         persona_keys(&artifact.model, &[matcher("PAINTER")]),
-        vec![key("painter"), key("parser")]
+        vec![key("painter")]
     );
-    // A matcher of another platform names nothing; the rest keeps key order.
+    assert_eq!(
+        persona_keys(&artifact.model, &[matcher("parser"), matcher("painter")]),
+        vec![key("parser"), key("painter")]
+    );
+    // Another platform, effort or fast mode names nothing.
     let elsewhere = RankedMatcher {
         platform: Some("invented-platform".into()),
-        needles: vec![vec!["painter".into()]],
+        ..matcher("painter")
     };
-    let mut rest = vec![key("painter"), key("parser")];
-    rest.sort();
-    assert_eq!(persona_keys(&artifact.model, &[elsewhere]), rest);
+    assert!(persona_keys(&artifact.model, &[elsewhere]).is_empty());
+    let painter = artifact
+        .model
+        .candidates
+        .iter()
+        .find(|c| c.configuration.model_id == "painter")
+        .unwrap()
+        .configuration
+        .clone();
+    let other_effort = RankedMatcher {
+        effort: Some(format!(
+            "{}-other",
+            painter.effort.clone().unwrap_or_default()
+        )),
+        ..matcher("painter")
+    };
+    assert!(persona_keys(&artifact.model, &[other_effort]).is_empty());
+    let fast = RankedMatcher {
+        fast_mode: Some(!painter.fast_mode.unwrap_or(false)),
+        ..matcher("painter")
+    };
+    assert!(persona_keys(&artifact.model, &[fast]).is_empty());
+    let exact = RankedMatcher {
+        effort: painter.effort.clone(),
+        fast_mode: Some(painter.fast_mode.unwrap_or(false)),
+        ..matcher("painter")
+    };
+    assert_eq!(
+        persona_keys(&artifact.model, &[exact]),
+        vec![key("painter")]
+    );
 }
 
 #[test]
@@ -271,10 +340,10 @@ fn held_out_cases_count_present_candidates_only_and_certify_on_enough_groups() {
     let persona = persona_keys(&artifact.model, &request().persona_order);
     let mut eligible = countable(&data);
     eligible.remove("held-14");
-    let (cases, unqualified, ungraded) =
-        held_out_cases(&data, &artifact, &persona, &eligible, 10).unwrap();
-    assert_eq!(unqualified, 1);
-    assert_eq!(ungraded, 0);
+    let held = held_out_cases(&data, &artifact, &persona, &eligible, 10).unwrap();
+    let cases = held.cases;
+    assert_eq!(held.unqualified, 1);
+    assert_eq!(held.ungraded, 0);
     assert_eq!(cases.len(), 14);
     for case in &cases {
         let names: BTreeSet<_> = case
@@ -309,7 +378,8 @@ fn held_out_cases_count_present_candidates_only_and_certify_on_enough_groups() {
         .iter()
         .map(|c| c.candidate_key.clone())
         .collect();
-    let assessment = acceptance::assess_available(&rule(), &cases, &keys).unwrap();
+    assert_eq!(held.pool, keys);
+    let assessment = acceptance::assess_available(&rule(), &cases, &held.pool).unwrap();
     assert!(assessment.passed, "{:?}", assessment.reasons);
     assert_eq!(assessment.groups, 14);
     // A worker measured on fewer than eight groups cannot be compared.
@@ -342,8 +412,95 @@ fn a_class_without_measured_held_out_cases_has_no_cases() {
     )
     .unwrap();
     let persona = persona_keys(&artifact.model, &request().persona_order);
-    let (cases, unqualified, _) =
-        held_out_cases(&data, &artifact, &persona, &BTreeMap::new(), 10).unwrap();
-    assert!(cases.is_empty());
-    assert_eq!(unqualified, 0);
+    let held = held_out_cases(&data, &artifact, &persona, &BTreeMap::new(), 10).unwrap();
+    assert!(held.cases.is_empty());
+    assert!(held.pool.is_empty());
+    assert_eq!(held.unqualified, 0);
+}
+
+#[test]
+fn a_candidate_on_fewer_than_eight_held_out_groups_leaves_the_certified_pool() {
+    let mut data = measured(16);
+    // The vendor may see held-out tasks here, so it trains and is measured on
+    // every held-out case; the parser only on five held-out groups.
+    for c in &mut data.runs[0].request.configurations {
+        if c.model_id == "vendor-model" {
+            c.provider_id = "invented-acp".into();
+        }
+    }
+    let vendor = data.runs[0]
+        .request
+        .configurations
+        .iter()
+        .find(|c| c.model_id == "vendor-model")
+        .unwrap()
+        .clone();
+    for a in &mut data.attempts {
+        if a.configuration.model_id == "vendor-model" {
+            a.configuration = vendor.clone();
+            a.observed = Some(vendor.clone());
+        }
+    }
+    let held_parser: Vec<_> = data
+        .attempts
+        .iter()
+        .filter(|a| a.version_id.starts_with("held-") && a.configuration.model_id == "parser")
+        .cloned()
+        .collect();
+    for mut a in held_parser {
+        a.id = format!("{}-vendor", a.id);
+        a.configuration = vendor.clone();
+        a.observed = Some(vendor.clone());
+        data.attempts.push(a);
+    }
+    data.attempts.retain(|a| {
+        !(a.configuration.model_id == "parser"
+            && a.version_id.starts_with("held-")
+            && a.version_id["held-".len()..].parse::<usize>().unwrap() >= 5)
+    });
+    let artifact = fit(
+        &data,
+        training_request(&data, &request(), 10, &data_use()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(artifact.model.candidates.len(), 3);
+    let key = |model: &str| {
+        artifact
+            .model
+            .candidates
+            .iter()
+            .find(|c| c.configuration.model_id == model)
+            .unwrap()
+            .candidate_key
+            .clone()
+    };
+    let persona = persona_keys(&artifact.model, &request().persona_order);
+    let held = held_out_cases(&data, &artifact, &persona, &countable(&data), 10).unwrap();
+    let mut pool = vec![key("painter"), key("vendor-model")];
+    pool.sort_by_key(|k| {
+        artifact
+            .model
+            .candidates
+            .iter()
+            .position(|c| &c.candidate_key == k)
+    });
+    assert_eq!(held.pool, pool);
+    // Every case still compares the two pool candidates; the parser is never
+    // a worker, an arm or a learned choice until a later look measures it.
+    assert_eq!(held.cases.len(), 16);
+    let parser = key("parser");
+    for case in &held.cases {
+        assert!(case
+            .cells
+            .iter()
+            .all(|c| !c.candidate_key.ends_with(&parser)));
+        assert_ne!(case.learned_key, parser);
+        assert_ne!(case.aggregate_key, parser);
+    }
+    let assessment = acceptance::assess_available(&rule(), &held.cases, &held.pool).unwrap();
+    assert_eq!(assessment.groups, 16);
+    assert!(assessment
+        .comparisons
+        .iter()
+        .all(|c| !c.baseline.ends_with(&parser)));
 }
