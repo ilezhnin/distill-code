@@ -816,6 +816,33 @@ async fn reservations_cover_historical_relations_and_exposure() {
     assert!(service.store.workflow_campaigns().await.unwrap().is_empty());
     assert_eq!(backend.calls.load(Ordering::SeqCst), 48);
     let roots_d = roots(&service, &train, "campaign-first").await;
+    // A retired executor holdout's reservation rows are history: they never
+    // hold a family back from a campaign.
+    for root in &roots_d {
+        for (kind, value) in [
+            ("family", root.manifest.task_family.clone()),
+            (
+                "group",
+                root.manifest.environment["splitGroup"]
+                    .as_str()
+                    .unwrap_or(&root.manifest.task_family)
+                    .to_owned(),
+            ),
+        ] {
+            sqlx::query("INSERT OR IGNORE INTO evaluation_reservations(kind,value,owner_kind,owner_id) VALUES(?,?,'executor_holdout','retired-holdout')")
+                .bind(kind)
+                .bind(value)
+                .execute(&service.store.pool)
+                .await
+                .unwrap();
+        }
+    }
+    assert!(service
+        .store
+        .evaluation_reservations()
+        .await
+        .unwrap()
+        .is_empty());
     let frozen = service
         .freeze_workflow_campaign(request(&fit, &roots_d, "campaign-first"))
         .await

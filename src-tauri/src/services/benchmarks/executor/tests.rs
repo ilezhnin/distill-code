@@ -109,6 +109,7 @@ async fn certified_class_maps_renderer_choices_without_attesting_their_runtime()
             &fit.model,
             "verified-example-certificate",
             0.0,
+            None,
         )
         .unwrap();
         assert_eq!(decision.source, "learned");
@@ -124,6 +125,26 @@ async fn certified_class_maps_renderer_choices_without_attesting_their_runtime()
         assert_eq!(original.billing_mode, "unknown");
         assert!(original.inventory_revision.is_none());
     }
+    // A held-out certificate speaks only for its certified pool: outside it
+    // the class abstains to the fallback choice.
+    let mut decision = store
+        .preview_executor_decision(ordinary_application_request("chat"))
+        .await
+        .unwrap();
+    let prior = decision.chosen.clone();
+    apply_class_model(
+        &mut decision,
+        &fit.model,
+        "verified-example-certificate",
+        0.0,
+        Some(&[]),
+    )
+    .unwrap();
+    assert_eq!(decision.chosen, prior);
+    assert_eq!(
+        decision.learned_status,
+        "class_policy_abstained:no_trained_available_candidate"
+    );
     directory.close().await;
 }
 
@@ -169,6 +190,7 @@ async fn ordinary_class_mapping_respects_pins_availability_effort_and_known_runt
             &fit.model,
             "verified-example-certificate",
             0.0,
+            None,
         )
         .unwrap();
         assert_eq!(decision.chosen, prior, "{condition}");
@@ -231,6 +253,7 @@ async fn ordinary_unspecified_speed_and_explicit_normal_have_distinct_dispatch_i
             &fit.model,
             "verified-example-certificate",
             0.0,
+            None,
         )
         .unwrap();
         let chosen = decision.chosen.as_ref().unwrap();
@@ -276,6 +299,7 @@ async fn duplicate_runnable_contexts_abstain_without_poisoning_other_choices() {
         &fit.model,
         "verified-example-certificate",
         0.0,
+        None,
     )
     .unwrap();
     assert_eq!(decision.chosen.as_ref().unwrap().model_id, "painter");
@@ -385,7 +409,14 @@ async fn ordinary_class_mapping_abstains_on_ambiguous_evidence_contexts() {
         .await
         .unwrap();
     let prior = decision.chosen.clone();
-    apply_class_model(&mut decision, &model, "verified-example-certificate", 0.0).unwrap();
+    apply_class_model(
+        &mut decision,
+        &model,
+        "verified-example-certificate",
+        0.0,
+        None,
+    )
+    .unwrap();
     assert_eq!(decision.chosen, prior);
     assert_eq!(
         decision.learned_status,
@@ -1382,6 +1413,7 @@ async fn ordinary_inventory_beyond_research_bound_keeps_priors_pins_and_learned_
             &fit.model,
             "verified-example-certificate",
             0.0,
+            None,
         )
         .unwrap();
         assert_eq!(decision.source, "learned");

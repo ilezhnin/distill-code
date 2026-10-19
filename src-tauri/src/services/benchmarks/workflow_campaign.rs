@@ -748,9 +748,10 @@ impl Store {
             for value in values {
                 if sqlx::query("INSERT OR IGNORE INTO evaluation_reservations(kind,value,owner_kind,owner_id) VALUES(?,?,'workflow_campaign',?)")
                 .bind(kind).bind(&value).bind(&plan.id).execute(&mut *tx).await?.rows_affected() == 0 {
-                    // The replaced campaign hands its reservation over; any
-                    // other owner keeps the family.
-                    let moved = sqlx::query("UPDATE evaluation_reservations SET owner_id=? WHERE kind=? AND value=? AND owner_kind='workflow_campaign' AND owner_id IN (SELECT id FROM workflow_campaigns WHERE state='cancelled')")
+                    // The replaced campaign hands its reservation over, and a
+                    // retired executor holdout's row is history that holds
+                    // nothing; any other owner keeps the family.
+                    let moved = sqlx::query("UPDATE evaluation_reservations SET owner_kind='workflow_campaign',owner_id=? WHERE kind=? AND value=? AND (owner_kind='executor_holdout' OR (owner_kind='workflow_campaign' AND owner_id IN (SELECT id FROM workflow_campaigns WHERE state='cancelled')))")
                         .bind(&plan.id).bind(kind).bind(&value).execute(&mut *tx).await?.rows_affected();
                     if moved == 0 {
                         return Err(invalid("Family is reserved by another evaluation"));

@@ -284,7 +284,7 @@ impl Store {
         let certificate = self.require_active_promotion(id).await?;
         if certificate.source.is_some() {
             return Err(invalid(
-                "A class certificate from an executor holdout covers ordinary chats and waves only, not an owned task",
+                "A held-out class certificate covers ordinary chats and waves only, not an owned task",
             ));
         }
         if certificate.trajectory.is_some() {

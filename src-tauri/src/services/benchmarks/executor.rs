@@ -273,6 +273,7 @@ fn apply_class_model(
     model: &learned::LearnedModel,
     certificate_id: &str,
     min_quality: f64,
+    pool: Option<&[String]>,
 ) -> Result<()> {
     if decision.request.prediction.hard_candidate_key.is_some() {
         decision.learned_status = EXPLICIT_PIN.into();
@@ -286,8 +287,10 @@ fn apply_class_model(
         .iter()
         .filter(|candidate| candidate.available)
         .filter_map(|candidate| {
+            // A held-out certificate speaks only for its certified pool.
             let mut matches = model.candidates.iter().filter(|trained| {
-                class_evidence_matches(&candidate.configuration, &trained.configuration)
+                pool.is_none_or(|pool| pool.contains(&trained.candidate_key))
+                    && class_evidence_matches(&candidate.configuration, &trained.configuration)
             });
             let trained = matches.next()?;
             // Different certified billing/profile contexts are not interchangeable.
@@ -661,6 +664,7 @@ impl Store {
                         &model,
                         &certificate.id,
                         certificate.min_prediction_quality,
+                        certificate.pool_keys.as_deref(),
                     )?;
                 }
             }

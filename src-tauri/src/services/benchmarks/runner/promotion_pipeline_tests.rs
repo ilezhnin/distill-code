@@ -864,6 +864,7 @@ async fn exposed_replacement_reports_cannot_promote_even_when_acceptance_passes(
         native_inventory: None,
         trajectory: None,
         source: None,
+        pool_keys: None,
     };
     legacy.id = fixtures::hash(&serde_json::to_vec(&legacy).unwrap());
     legacy.artifact_hash = fixtures::hash(&serde_json::to_vec(&legacy).unwrap());

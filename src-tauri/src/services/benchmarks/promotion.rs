@@ -240,6 +240,10 @@ pub struct Certificate {
     /// absent for workflow campaign certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// A held-out certificate's certified pool: the only candidates its
+    /// policy may choose among in a chat. Absent on other certificates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_keys: Option<Vec<String>>,
 }
 impl Certificate {
     /// Whether this certificate authorizes that contract at that lineage
@@ -1148,6 +1152,7 @@ impl Store {
             native_inventory,
             trajectory,
             source: None,
+            pool_keys: None,
         };
         certificate.id = hash(&certificate)?;
         certificate.artifact_hash = hash(&certificate)?;
@@ -1483,6 +1488,7 @@ impl Store {
 }
 
 mod holdout;
+pub(in crate::services::benchmarks) use holdout::held_out_certificate;
 pub(crate) use holdout::qualified_renderer_grading;
 
 #[cfg(test)]

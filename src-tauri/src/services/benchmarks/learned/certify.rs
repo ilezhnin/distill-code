@@ -12,7 +12,7 @@ use super::super::{
     export::{self, RuntimeMatch},
     qualification,
     store::{now, Store},
-    workflow_campaign::{self, acceptance},
+    workflow_campaign::acceptance,
     BenchmarkService,
 };
 use super::report::{ReportCase, ReportCell};
@@ -38,15 +38,20 @@ pub(in crate::services::benchmarks) fn rule() -> acceptance::Rule {
     }
 }
 
-/// One entry of the class's manual order, as the app's ranking names it: a
-/// provider (optional) and alternative sets of words the model's id or name
-/// must all contain.
+/// One entry of the class's fallback order, as an ordinary chat of the
+/// class resolves it (the user's class override, else the built-in ranking):
+/// a provider, alternative sets of words the model's id or name must all
+/// contain, and the effort and fast mode the chat would run it at.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RankedMatcher {
     #[serde(default)]
     pub platform: Option<String>,
     pub needles: Vec<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +92,13 @@ pub struct ClassEvaluation {
     pub model_snapshot_hash: String,
     /// This evaluation's number among the class's journaled evaluations.
     pub look: usize,
+    /// The fallback order as the request named it, and the pool candidates
+    /// it resolved to, in order.
+    pub persona_order: Vec<RankedMatcher>,
     pub persona_keys: Vec<String>,
+    /// The candidates measured on at least eight held-out groups: the only
+    /// ones compared, and the only ones a certificate lets the policy choose.
+    pub pool_keys: Vec<String>,
     pub aggregate_keys: Vec<String>,
     pub excluded_providers: Vec<String>,
     pub candidates: Vec<EvaluationCandidate>,
@@ -297,17 +308,38 @@ pub(super) fn training_request(
             "Fewer than two candidates have {MIN_CANDIDATE_CASES} complete training cases in the class"
         )));
     }
-    let usable: Vec<&Value> = cases
-        .iter()
-        .map(|(row, _)| *row)
-        .filter(|row| {
-            chosen
+    // A case counts when it measured two pool candidates; a candidate whose
+    // own counted cases then fall below the bound leaves the pool, and the
+    // cases are counted again, until both settle.
+    let usable: Vec<&Value> = loop {
+        let usable: Vec<&Value> = cases
+            .iter()
+            .map(|(row, _)| *row)
+            .filter(|row| {
+                chosen
+                    .iter()
+                    .filter(|(configuration, _)| observed(row, &configuration.id).is_some())
+                    .count()
+                    >= 2
+            })
+            .collect();
+        let before = chosen.len();
+        chosen.retain(|(configuration, _)| {
+            usable
                 .iter()
-                .filter(|(configuration, _)| observed(row, &configuration.id).is_some())
+                .filter(|row| observed(row, &configuration.id).is_some())
                 .count()
-                >= 2
-        })
-        .collect();
+                >= MIN_CANDIDATE_CASES
+        });
+        if chosen.len() < 2 {
+            return Err(coverage(format!(
+                "Fewer than two candidates have {MIN_CANDIDATE_CASES} complete training cases in the class"
+            )));
+        }
+        if chosen.len() == before {
+            break usable;
+        }
+    };
     let groups: BTreeSet<_> = usable
         .iter()
         .filter_map(|row| row["splitGroup"].as_str())
@@ -356,35 +388,54 @@ pub(super) fn training_request(
     })
 }
 
-/// The newest moment any training measurement of the class was recorded:
-/// a run's creation, an attempt's end or its evaluation, whichever is latest.
-fn training_cutoff(data: &QueryData, class: &str) -> Option<i64> {
+/// The newest moment a counted training measurement of the class was
+/// recorded: the run, attempt end or evaluation of every repetition the
+/// training ledger counts at `now`. Unchanged training cells give the same
+/// cutoff, so the same fit; an uncounted attempt never moves it.
+fn training_cutoff(data: &QueryData, class: &str, now: i64) -> Result<Option<i64>> {
+    let rows =
+        export::ledger_rows_matching(data, false, LEDGER_SALT, now, RuntimeMatch::ModelIdentity)?;
     let train: BTreeSet<&str> = data
         .versions
         .iter()
         .filter(|v| v.manifest.split == "train" && v.manifest.work_class_id == class)
         .map(|v| v.id.as_str())
         .collect();
+    let counted: BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| {
+            row["taskVersion"]
+                .as_str()
+                .is_some_and(|id| train.contains(id))
+        })
+        .flat_map(|row| row["matrix"].as_array().into_iter().flatten())
+        .filter(|cell| cell["observationStatus"] == "observed")
+        .flat_map(|cell| cell["outcomes"].as_array().into_iter().flatten())
+        .filter_map(|outcome| outcome["attemptId"].as_str())
+        .collect();
     let runs: BTreeMap<&str, i64> = data
         .runs
         .iter()
         .map(|r| (r.id.as_str(), r.created_at))
         .collect();
-    data.attempts
+    Ok(data
+        .attempts
         .iter()
-        .filter(|a| train.contains(a.version_id.as_str()))
+        .filter(|a| counted.contains(a.id.as_str()))
         .flat_map(|a| {
             [a.finished_at, runs.get(a.run_id.as_str()).copied()]
                 .into_iter()
                 .flatten()
                 .chain(a.evaluations.iter().map(|e| e.created_at))
         })
-        .max()
+        .max())
 }
 
-/// The pool in the class's manual order: candidates each matcher names, in
-/// the matchers' order (key order among one matcher's matches), then the rest
-/// in key order, so every case has a persona choice among its candidates.
+/// The pool candidates an ordinary chat's fallback order names, in its
+/// order: each matcher's provider, words, effort and fast mode must all
+/// match (several matches of one matcher in key order). A candidate the order
+/// never names is not the persona's; where none it names measured a case,
+/// the persona arm is absent there.
 pub(super) fn persona_keys(model: &LearnedModel, order: &[RankedMatcher]) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     for matcher in order {
@@ -403,6 +454,13 @@ pub(super) fn persona_keys(model: &LearnedModel, order: &[RankedMatcher]) -> Vec
                     .platform
                     .as_ref()
                     .is_none_or(|platform| platform == &c.provider_id)
+                    && matcher
+                        .effort
+                        .as_ref()
+                        .is_none_or(|effort| c.effort.as_ref() == Some(effort))
+                    && matcher
+                        .fast_mode
+                        .is_none_or(|fast| c.fast_mode.unwrap_or(false) == fast)
                     && matcher.needles.iter().any(|set| {
                         set.iter()
                             .all(|needle| haystack.contains(&needle.to_lowercase()))
@@ -416,14 +474,50 @@ pub(super) fn persona_keys(model: &LearnedModel, order: &[RankedMatcher]) -> Vec
             }
         }
     }
-    let mut rest: Vec<_> = model
+    keys
+}
+
+/// The training aggregate for a sparse pool: candidates ranked by their mean
+/// case-centred utility (a case's utility minus the mean over the candidates
+/// that case measured) over their own training cases, each group weighted
+/// equally. Candidates that never shared a case still compare.
+pub(super) fn aggregate_keys(artifact: &FitArtifact) -> Vec<String> {
+    let mut by_candidate: BTreeMap<&str, BTreeMap<&str, Vec<f64>>> = BTreeMap::new();
+    for example in &artifact.snapshot.examples {
+        let measured: Vec<(&str, f64)> = example
+            .targets
+            .iter()
+            .filter_map(|t| Some((t.candidate_key.as_str(), t.utility?)))
+            .collect();
+        if measured.len() < 2 {
+            continue;
+        }
+        let mean = measured.iter().map(|(_, u)| u).sum::<f64>() / measured.len() as f64;
+        for (key, utility) in measured {
+            by_candidate
+                .entry(key)
+                .or_default()
+                .entry(example.split_group.as_str())
+                .or_default()
+                .push(utility - mean);
+        }
+    }
+    let score = |key: &str| -> f64 {
+        by_candidate.get(key).map_or(f64::NEG_INFINITY, |groups| {
+            groups
+                .values()
+                .map(|v| v.iter().sum::<f64>() / v.len() as f64)
+                .sum::<f64>()
+                / groups.len() as f64
+        })
+    };
+    let mut keys: Vec<String> = artifact
+        .model
         .candidates
         .iter()
         .map(|c| c.candidate_key.clone())
-        .filter(|key| !keys.contains(key))
         .collect();
-    rest.sort();
-    keys.extend(rest);
+    keys.sort_by(|a, b| score(b).total_cmp(&score(a)).then_with(|| a.cmp(b)));
     keys
 }
 
@@ -435,31 +529,47 @@ pub(super) struct Countable {
     pub worker: Option<String>,
 }
 
+/// The held-out evidence of one evaluation.
+#[derive(Debug, Clone)]
+pub(super) struct HeldOut {
+    pub cases: Vec<ReportCase>,
+    /// The candidates measured on at least eight held-out groups.
+    pub pool: Vec<String>,
+    pub unqualified: usize,
+    pub ungraded: usize,
+}
+
+/// A countable held-out case: its version, group, task and the present
+/// candidates' keys, cells and rewards.
+type MeasuredCase<'a> = (
+    &'a BenchmarkVersion,
+    String,
+    PublicTask,
+    Vec<(String, &'a Value, f64)>,
+);
+
 /// The policy cases of one evaluation: every held-out case of the fit's class
-/// and scope with a current qualification, counting the pool candidates whose
-/// cell is complete under the single-run rule and graded by the qualified
-/// renderer. A case needs two such candidates; an absent candidate is never a
-/// zero.
+/// and scope with a current qualification, counting the candidates whose cell
+/// is complete in one run and graded by the qualified renderer. Only
+/// candidates measured on at least eight held-out groups are compared (the
+/// certified pool; others join at a later look once measured), and a case
+/// needs two of them. An absent candidate is never a zero.
 pub(super) fn held_out_cases(
     data: &QueryData,
     artifact: &FitArtifact,
     persona: &[String],
     countable: &BTreeMap<String, Countable>,
     cutoff: i64,
-) -> Result<(Vec<ReportCase>, usize, usize)> {
+) -> Result<HeldOut> {
     let model = &artifact.model;
-    let configurations: Vec<_> = model
-        .candidates
-        .iter()
-        .map(|c| c.configuration.clone())
-        .collect();
-    let aggregate = workflow_campaign::aggregate_order(artifact, &configurations)?;
+    let aggregate = aggregate_keys(artifact);
     let rows =
         export::ledger_rows_matching(data, true, LEDGER_SALT, cutoff, RuntimeMatch::ModelIdentity)?;
     let versions: BTreeMap<_, _> = data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
     let attempts: BTreeMap<_, _> = data.attempts.iter().map(|a| (a.id.as_str(), a)).collect();
     let (mut unqualified, mut ungraded) = (0, 0);
-    let mut cases = Vec::new();
+    // Every countable case with its group and its graded, complete cells.
+    let mut measured: Vec<MeasuredCase> = Vec::new();
     for row in &rows {
         let Some(version) = row["taskVersion"].as_str().and_then(|id| versions.get(id)) else {
             continue;
@@ -500,12 +610,52 @@ pub(super) fn held_out_cases(
             }
             present.push((candidate.candidate_key.clone(), cell, reward));
         }
+        let group = row["splitGroup"]
+            .as_str()
+            .unwrap_or(&draft.task_family)
+            .to_owned();
+        measured.push((version, group, task, present));
+    }
+    // The certified pool: candidates on at least eight groups among the cases
+    // two pool candidates measured, until both settle.
+    let mut pool: Vec<String> = model
+        .candidates
+        .iter()
+        .map(|c| c.candidate_key.clone())
+        .collect();
+    loop {
+        let before = pool.len();
+        let mut groups: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for (_, group, _, present) in &measured {
+            let in_pool: Vec<&str> = present
+                .iter()
+                .map(|(key, _, _)| key.as_str())
+                .filter(|key| pool.iter().any(|p| p == key))
+                .collect();
+            if in_pool.len() < 2 {
+                continue;
+            }
+            for key in in_pool {
+                groups.entry(key).or_default().insert(group.as_str());
+            }
+        }
+        pool.retain(|key| groups.get(key.as_str()).is_some_and(|g| g.len() >= 8));
+        if pool.len() == before {
+            break;
+        }
+    }
+    let mut cases = Vec::new();
+    for (version, group, task, present) in measured {
+        let present: Vec<_> = present
+            .into_iter()
+            .filter(|(key, _, _)| pool.contains(key))
+            .collect();
         if present.len() < 2 {
             continue;
         }
         let keys: Vec<String> = present.iter().map(|(key, _, _)| key.clone()).collect();
         let first_of = |order: &[String]| order.iter().find(|key| keys.contains(key)).cloned();
-        let persona_key = first_of(persona).expect("persona covers the pool");
+        let persona_key = first_of(persona);
         let aggregate_key = first_of(&aggregate).expect("aggregate covers the pool");
         let learned = choose_among(model, &task, &keys, MIN_QUALITY)?;
         let mut targets: Vec<_> = present
@@ -531,11 +681,15 @@ pub(super) fn held_out_cases(
                 utility: target.utility.expect("observed"),
                 mean_duration_ms: target.mean_duration_ms,
                 mean_cost: target.mean_cost,
-                repeats: vec![],
+                repeats: repeats(cell, &attempts, cutoff),
             })
             .collect();
+        // An abstaining prediction falls back as an ordinary chat does: to
+        // its fallback order, else to the training aggregate.
         let used_fallback = learned.is_none();
-        let learned_key = learned.unwrap_or_else(|| persona_key.clone());
+        let learned_key = learned
+            .or_else(|| persona_key.clone())
+            .unwrap_or_else(|| aggregate_key.clone());
         let arm = |name: &str, key: &str| {
             let mut cell = workers
                 .iter()
@@ -548,18 +702,17 @@ pub(super) fn held_out_cases(
         let mut cells = vec![
             arm("learned", &learned_key),
             arm("aggregate", &aggregate_key),
-            arm("persona", &persona_key),
         ];
+        if let Some(persona_key) = &persona_key {
+            cells.push(arm("persona", persona_key));
+        }
         cells.extend(workers.iter().cloned().map(|mut cell| {
             cell.candidate_key = format!("worker:{}", cell.candidate_key);
             cell
         }));
         cases.push(ReportCase {
             version_id: version.id.clone(),
-            group: row["splitGroup"]
-                .as_str()
-                .unwrap_or(&draft.task_family)
-                .to_owned(),
+            group,
             learned_key,
             aggregate_key,
             used_fallback,
@@ -567,7 +720,41 @@ pub(super) fn held_out_cases(
         });
     }
     cases.sort_by(|a, b| a.version_id.cmp(&b.version_id));
-    Ok((cases, unqualified, ungraded))
+    Ok(HeldOut {
+        cases,
+        pool,
+        unqualified,
+        ungraded,
+    })
+}
+
+/// The counted repetitions of a cell: attempt ids and their evaluations,
+/// hashed, so a look names exactly the evidence it read.
+fn repeats(
+    cell: &Value,
+    attempts: &BTreeMap<&str, &Attempt>,
+    cutoff: i64,
+) -> Vec<super::report::RepeatEvidence> {
+    let mut repeats: Vec<_> = cell["outcomes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|outcome| attempts.get(outcome["attemptId"].as_str()?))
+        .filter_map(|attempt| {
+            Some(super::report::RepeatEvidence {
+                attempt_id: attempt.id.clone(),
+                repetition: attempt.repetition,
+                scored_at: attempt.finished_at?,
+                quality: super::super::analysis::score_as_of(attempt, Some(cutoff))?,
+                duration_ms: attempt.duration_ms.map(|v| v as f64),
+                cost: attempt.usage.cost.filter(|v| v.is_finite() && *v >= 0.0),
+                evidence_hash: attempt.evidence_hash.clone(),
+                evaluations_hash: hash(&attempt.evaluations).ok()?,
+            })
+        })
+        .collect();
+    repeats.sort_by(|a, b| (a.repetition, &a.attempt_id).cmp(&(b.repetition, &b.attempt_id)));
+    repeats
 }
 
 /// Whether every repetition of a renderer-bound cell was graded by the
@@ -668,6 +855,17 @@ impl Store {
         Ok(evaluation)
     }
 
+    /// The id of a class's newest journaled look: the only one whose
+    /// certificate may speak for the class.
+    pub async fn newest_class_evaluation_id(&self, class: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM selector_certifications WHERE work_class_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+        )
+        .bind(class)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     /// Every journaled evaluation of a class, newest first.
     pub async fn class_evaluations(&self, class: &str) -> Result<Vec<ClassEvaluation>> {
         let ids: Vec<String> = sqlx::query_scalar(
@@ -686,7 +884,7 @@ impl Store {
     /// The newest evaluation of every class that has one.
     pub async fn latest_class_evaluations(&self) -> Result<Vec<ClassEvaluation>> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM selector_certifications s WHERE created_at=(SELECT max(created_at) FROM selector_certifications t WHERE t.work_class_id=s.work_class_id) ORDER BY work_class_id,id",
+            "SELECT id FROM selector_certifications s WHERE rowid=(SELECT rowid FROM selector_certifications t WHERE t.work_class_id=s.work_class_id ORDER BY created_at DESC,rowid DESC LIMIT 1) ORDER BY work_class_id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -726,60 +924,66 @@ impl BenchmarkService {
             .await?;
         let excluded = excluded(&request, &data_use);
         let eligible = countable.clone();
-        let (artifact, persona, cases, unqualified, ungraded) =
-            tauri::async_runtime::spawn_blocking(move || {
-                let cutoff = now();
-                // The fit's cutoff is its newest training measurement, so the
-                // same training cells always give the same fit and look.
-                let fit_cutoff = training_cutoff(&data, &request.work_class_id).unwrap_or(cutoff);
-                let artifact = fit(
-                    &data,
-                    training_request(&data, &request, fit_cutoff, &data_use)?,
-                )?;
-                require_held_out_pool(
-                    &artifact
-                        .model
-                        .candidates
-                        .iter()
-                        .map(|c| c.configuration.clone())
-                        .collect::<Vec<_>>(),
-                    &data_use,
-                )?;
-                let persona = persona_keys(&artifact.model, &request.persona_order);
-                let (cases, unqualified, ungraded) =
-                    held_out_cases(&data, &artifact, &persona, &eligible, cutoff)?;
-                Ok::<_, BenchmarkError>((artifact, persona, cases, unqualified, ungraded))
-            })
-            .await
-            .map_err(|e| BenchmarkError::new("infrastructure_failure", e.to_string()))??;
+        let order = request.persona_order.clone();
+        let (artifact, persona, held) = tauri::async_runtime::spawn_blocking(move || {
+            let cutoff = now();
+            // The fit's cutoff is its newest counted training measurement, so
+            // the same training cells always give the same fit.
+            let fit_cutoff =
+                training_cutoff(&data, &request.work_class_id, cutoff)?.unwrap_or(cutoff);
+            let artifact = fit(
+                &data,
+                training_request(&data, &request, fit_cutoff, &data_use)?,
+            )?;
+            require_held_out_pool(
+                &artifact
+                    .model
+                    .candidates
+                    .iter()
+                    .map(|c| c.configuration.clone())
+                    .collect::<Vec<_>>(),
+                &data_use,
+            )?;
+            let persona = persona_keys(&artifact.model, &request.persona_order);
+            let held = held_out_cases(&data, &artifact, &persona, &eligible, cutoff)?;
+            Ok::<_, BenchmarkError>((artifact, persona, held))
+        })
+        .await
+        .map_err(|e| BenchmarkError::new("infrastructure_failure", e.to_string()))??;
         self.store.save_selector_fit(&artifact).await?;
         let model = &artifact.model;
-        let snapshot_hash = hash(&(&cases, &persona))?;
-        let journaled: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM selector_certifications WHERE model_id=? AND snapshot_hash=?",
-        )
-        .bind(&model.id)
-        .bind(&snapshot_hash)
-        .fetch_optional(&self.store.pool)
-        .await?;
-        if let Some(id) = journaled {
-            return self.store.class_evaluation(&id).await;
-        }
-        let keys: Vec<String> = model
-            .candidates
-            .iter()
-            .map(|c| c.candidate_key.clone())
+        let HeldOut {
+            cases,
+            pool,
+            unqualified,
+            ungraded,
+        } = held;
+        let counted: BTreeSet<&str> = cases.iter().map(|c| c.version_id.as_str()).collect();
+        let mut bindings: Vec<qualification::Binding> = countable
+            .into_iter()
+            .filter(|(id, _)| counted.contains(id.as_str()))
+            .map(|(_, c)| c.binding)
             .collect();
+        bindings.sort_by(|a, b| a.version_id.cmp(&b.version_id));
+        let qualification_ids: Vec<String> = bindings.iter().map(|b| b.id.clone()).collect();
+        // Everything a look read and how it judged it: the recipe and its rule,
+        // the fit's parameters, the order, the pool, every counted repetition
+        // and the qualifications of the counted cases.
+        let snapshot_hash = hash(&(
+            RECIPE,
+            rule(),
+            model.recipe_parameters,
+            &order,
+            &persona,
+            &pool,
+            &cases,
+            &qualification_ids,
+        ))?;
         let assessment = if cases.is_empty() {
             None
         } else {
-            Some(acceptance::assess_available(&rule(), &cases, &keys)?)
+            Some(acceptance::assess_available(&rule(), &cases, &pool)?)
         };
-        let configurations: Vec<_> = model
-            .candidates
-            .iter()
-            .map(|c| c.configuration.clone())
-            .collect();
         let candidates = model
             .candidates
             .iter()
@@ -805,31 +1009,24 @@ impl BenchmarkService {
                 }
             })
             .collect();
-        let uncapped: BTreeSet<&str> = configurations
+        let uncapped: BTreeSet<&str> = model
+            .candidates
             .iter()
-            .map(|c| c.provider_id.as_str())
+            .map(|c| c.configuration.provider_id.as_str())
             .filter(|p| !super::super::runner::OUTPUT_CAP_PROVIDERS.contains(p))
             .collect();
         let mut limitations = vec![
             "Held-out cases are a permanent evaluation set every model has measured; this is not an unseen-family exam".into(),
             "The look count grows with every journaled evaluation; no correction is made across looks".into(),
+            "A cell is the newest run that scored the case, the leaderboard's rule; a newer run stopped part-way leaves its candidate absent there even when an older run is complete, and a run stopped for an outcome-related reason would bias which cells count".into(),
         ];
         if !uncapped.is_empty() {
             limitations.push(format!("An output-token stop of these providers' CLIs is not recognized, so such a cell stays absent instead of scoring zero: {}", uncapped.into_iter().collect::<Vec<_>>().join(", ")));
         }
-        let look: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM selector_certifications WHERE work_class_id=?",
-        )
-        .bind(&model.work_class_id)
-        .fetch_one(&self.store.pool)
-        .await?;
-        let counted: BTreeSet<&str> = cases.iter().map(|c| c.version_id.as_str()).collect();
-        let mut bindings: Vec<qualification::Binding> = countable
-            .into_iter()
-            .filter(|(id, _)| counted.contains(id.as_str()))
-            .map(|(_, c)| c.binding)
-            .collect();
-        bindings.sort_by(|a, b| a.version_id.cmp(&b.version_id));
+        let first_case = match cases.first() {
+            Some(case) => Some(self.store.version(&case.version_id).await?),
+            None => None,
+        };
         let passed = assessment.as_ref().is_some_and(|a| a.passed);
         let mut evaluation = ClassEvaluation {
             id: String::new(),
@@ -839,9 +1036,11 @@ impl BenchmarkService {
             fit_recipe: model.recipe.clone(),
             model_id: model.id.clone(),
             model_snapshot_hash: model.snapshot_hash.clone(),
-            look: look as usize + 1,
-            aggregate_keys: workflow_campaign::aggregate_order(&artifact, &configurations)?,
+            look: 0,
+            persona_order: order,
             persona_keys: persona,
+            pool_keys: pool,
+            aggregate_keys: aggregate_keys(&artifact),
             excluded_providers: excluded,
             candidates,
             unqualified_cases: unqualified,
@@ -856,32 +1055,55 @@ impl BenchmarkService {
             assessment,
             cases,
             limitations,
-            qualification_ids: bindings.iter().map(|b| b.id.clone()).collect(),
+            qualification_ids,
             certificate_id: None,
             artifact_hash: String::new(),
         };
-        evaluation.id = hash(&evaluation)?;
-        if passed {
-            let first = self.store.version(&evaluation.cases[0].version_id).await?;
-            evaluation.certificate_id = Some(
-                self.store
-                    .issue_class_certificate(
-                        &evaluation,
-                        model,
-                        bindings,
-                        super::super::promotion::Contract::from_task(&PublicTask::from(
-                            &first.manifest,
-                        )),
-                    )
-                    .await?,
-            );
+        // One writer: the dedup check, the look number, the journal row and
+        // its certificate commit together or not at all.
+        let mut tx = self.store.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let journaled: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM selector_certifications WHERE model_id=? AND snapshot_hash=?",
+        )
+        .bind(&evaluation.model_id)
+        .bind(&evaluation.snapshot_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(id) = journaled {
+            tx.rollback().await?;
+            return self.store.class_evaluation(&id).await;
         }
+        let looks: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM selector_certifications WHERE work_class_id=?",
+        )
+        .bind(&evaluation.work_class_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        evaluation.look = looks as usize + 1;
+        evaluation.id = hash(&evaluation)?;
+        let certificate = match (passed, first_case) {
+            (true, Some(first)) => Some(super::super::promotion::held_out_certificate(
+                &evaluation,
+                model,
+                bindings,
+                super::super::promotion::Contract::from_task(&PublicTask::from(&first.manifest)),
+            )?),
+            _ => None,
+        };
+        evaluation.certificate_id = certificate.as_ref().map(|c| c.id.clone());
         evaluation.artifact_hash = hash(&evaluation)?;
-        sqlx::query("INSERT OR IGNORE INTO selector_certifications(id,work_class_id,model_id,snapshot_hash,created_at,data_json,artifact_hash) VALUES(?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO selector_certifications(id,work_class_id,model_id,snapshot_hash,created_at,data_json,artifact_hash) VALUES(?,?,?,?,?,?,?)")
             .bind(&evaluation.id).bind(&evaluation.work_class_id).bind(&evaluation.model_id)
             .bind(&evaluation.snapshot_hash).bind(evaluation.created_at)
             .bind(serde_json::to_string(&evaluation)?).bind(&evaluation.artifact_hash)
-            .execute(&self.store.pool).await?;
+            .execute(&mut *tx).await?;
+        if let Some(certificate) = &certificate {
+            sqlx::query("INSERT INTO selector_class_certificates(id,evaluation_id,created_at,artifact_json,artifact_hash) VALUES(?,?,?,?,?)")
+                .bind(&certificate.id).bind(&evaluation.id).bind(certificate.created_at)
+                .bind(serde_json::to_string(certificate)?).bind(&certificate.artifact_hash)
+                .execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
         self.store.class_evaluation(&evaluation.id).await
     }
 }

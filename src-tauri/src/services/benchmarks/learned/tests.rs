@@ -543,6 +543,7 @@ async fn legacy_ridge_bytes_hashes_predictions_and_persistence_remain_unchanged(
     let current = fit(&data, request(&data)).unwrap();
     let mut legacy = current.clone();
     legacy.model.recipe = LEGACY_RECIPE.into();
+    legacy.model.recipe_parameters = None;
     legacy.model.id.clear();
     for candidate in &mut legacy.model.candidates {
         candidate.selection_coefficients = None;

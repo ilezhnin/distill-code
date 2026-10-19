@@ -15,7 +15,7 @@ CREATE INDEX selector_certifications_by_class ON selector_certifications(work_cl
 -- id names the journaled look that issued it.
 CREATE TABLE selector_class_certificates (
     id TEXT PRIMARY KEY,
-    evaluation_id TEXT NOT NULL UNIQUE,
+    evaluation_id TEXT NOT NULL UNIQUE REFERENCES selector_certifications(id),
     created_at INTEGER NOT NULL,
     artifact_json TEXT NOT NULL,
     artifact_hash TEXT NOT NULL,

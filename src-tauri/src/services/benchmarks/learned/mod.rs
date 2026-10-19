@@ -175,7 +175,30 @@ pub struct LearnedModel {
     pub training_groups: Vec<String>,
     pub scope_hashes: Vec<String>,
     pub candidates: Vec<CandidateModel>,
+    /// The random-subset recipe's parameters, hashed with the model; absent
+    /// for earlier recipes, which keep their original ids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_parameters: Option<RecipeParameters>,
 }
+
+/// What the random-subset recipe draws and needs, frozen into every model it
+/// fits so a changed parameter can never pass for the same recipe.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecipeParameters {
+    pub subset_draws: usize,
+    pub subset_inclusion: f64,
+    pub subset_seed: u64,
+    pub min_candidate_cases: usize,
+}
+
+/// The parameters of [`RECIPE`].
+pub(super) const RECIPE_PARAMETERS: RecipeParameters = RecipeParameters {
+    subset_draws: SUBSET_DRAWS,
+    subset_inclusion: SUBSET_INCLUSION,
+    subset_seed: SUBSET_SEED,
+    min_candidate_cases: MIN_CANDIDATE_CASES,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -304,6 +327,7 @@ fn validate_model(model: &LearnedModel) -> Result<()> {
         || model.id != model_hash(model)?
         || !(2..=MAX_CANDIDATES).contains(&model.candidates.len())
         || (model.recipe != RECIPE && model.common_cases < MIN_CASES)
+        || (model.recipe == RECIPE) != (model.recipe_parameters == Some(RECIPE_PARAMETERS))
         || model.training_cases < MIN_CASES
         || model.training_cases > MAX_CASES
         || model.training_groups.len() < 2
