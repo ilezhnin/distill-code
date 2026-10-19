@@ -5,6 +5,7 @@ mod claude;
 mod claude_resets;
 mod codex;
 mod repository;
+pub(crate) mod sandbox_login;
 mod types;
 mod zai;
 
@@ -252,8 +253,13 @@ pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
 
 /// Whether the last known status of `account_id` has a usage window spent
 /// now, counting a plan window its credits cover as spent unless `credits`
-/// may be used; false while nothing is known. Reads the cache only.
+/// may be used; false while nothing is known, and while the benchmark
+/// sandbox spends the account under another login than the app reads (see
+/// [`sandbox_login`]). Reads the cache only.
 pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str, credits: bool) -> bool {
+    if sandbox_login::mismatch(app, account_id) {
+        return false;
+    }
     let state = app.state::<ProviderAccountStatusState>();
     let cache = state.native.cache.lock().await;
     cache
@@ -262,13 +268,17 @@ pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str, credits: bool
 }
 
 /// The least share left, in percent, across the last known usage windows of
-/// `account_id` that apply to `model_id`; `None` while nothing is known. Reads
-/// the cache only.
+/// `account_id` that apply to `model_id`; `None` while nothing is known, and
+/// while the benchmark sandbox spends the account under another login than
+/// the app reads (see [`sandbox_login`]). Reads the cache only.
 pub(crate) async fn usage_headroom(
     app: &AppHandle,
     account_id: &str,
     model_id: Option<&str>,
 ) -> Option<Headroom> {
+    if sandbox_login::mismatch(app, account_id) {
+        return None;
+    }
     let state = app.state::<ProviderAccountStatusState>();
     let cache = state.native.cache.lock().await;
     let status = cache.get(account_id);
@@ -448,6 +458,12 @@ async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSn
     let accounts = provider_accounts::snapshot(app)?.accounts;
     let state = app.state::<ProviderAccountStatusState>();
     let now = now_ms();
+    // Worked out before the cache is locked: it may read a CLI home.
+    let mismatched: std::collections::HashSet<&str> = accounts
+        .iter()
+        .filter(|account| sandbox_login::mismatch(app, &account.id))
+        .map(|account| account.id.as_str())
+        .collect();
     let mut cache = state.native.cache.lock().await;
     cache.retain(|id, _| accounts.iter().any(|account| &account.id == id));
     let snapshot = ProviderAccountStatusSnapshot {
@@ -456,6 +472,7 @@ async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSn
             .filter_map(|account| cache.get(&account.id).cloned())
             .map(|mut status| {
                 status.stale |= now - status.last_updated_at > STALE_MS;
+                status.sandbox_login_mismatch = mismatched.contains(status.account_id.as_str());
                 status
             })
             .collect(),

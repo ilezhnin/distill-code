@@ -596,6 +596,7 @@
     "notReported": "Sin datos",
     "stale": "Desactualizado",
     "onCredits": "Usando créditos",
+    "sandboxLoginMismatch": "Sandbox de benchmarks con otra cuenta iniciada",
     "usagePaused": "Actualizaciones de uso en pausa",
     "usageRetryIn": "El proveedor ha pausado las consultas de uso. Reintento en {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Esperando la próxima actualización de uso.",
