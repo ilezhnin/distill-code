@@ -45,6 +45,7 @@ import type {
   ResultQuery,
   RunSummary,
 } from "../types";
+import { benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys, useBenchmarkReleases } from "../hooks/useBenchmarks";
 import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
 import {
@@ -55,6 +56,7 @@ import {
 } from "./BenchmarkTaskGrid";
 import { listByIds } from "./BenchmarkTestStatus";
 import {
+  BenchmarkAlert,
   BoardIcon,
   ShareMarks,
   RatingValue,
@@ -425,7 +427,37 @@ export function BenchmarkConfigurationPage({
           ) : null}
         </div>
       </header>
-      {measurements.length > 0 ? (
+      {/* The history recalculates every point on today's pool, which takes
+          a while: the wait says so, and a failure says why. */}
+      {history.loading ? (
+        <section aria-label={t("history.title")} aria-busy>
+          <p
+            role="status"
+            className="flex items-center gap-2 text-sm text-muted-foreground"
+          >
+            <Spinner decorative className="size-3.5" />
+            {t("history.loading")}
+          </p>
+        </section>
+      ) : history.error ? (
+        <section aria-label={t("history.title")} className="space-y-2">
+          <BenchmarkAlert>
+            {t("history.failed", {
+              reason: benchmarkErrorMessage(history.error),
+            })}
+          </BenchmarkAlert>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={history.reading}
+            leftIcon={history.reading ? <Spinner decorative /> : undefined}
+            onClick={history.retry}
+          >
+            {t("history.retry")}
+          </Button>
+        </section>
+      ) : measurements.length > 0 ? (
         <section aria-label={t("history.title")}>
           <PointsHistoryChart
             releases={releaseMarks}

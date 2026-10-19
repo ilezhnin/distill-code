@@ -757,6 +757,9 @@
   },
   "history": {
     "title": "Rating history",
+    "loading": "Loading the rating history: each point is recalculated on today's cases, which takes a few seconds.",
+    "failed": "The rating history could not be read: {{reason}}",
+    "retry": "Try again",
     "recalculated": "Current pool",
     "recorded": "As recorded",
     "recalculatedDescription": "Every point covers today's cases. Each case uses the newest result available at that date, scored with today's reviews; a case not yet measured then is a gap at that point.",
