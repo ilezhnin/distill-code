@@ -265,7 +265,9 @@ export function BenchmarksView({
     </>
   );
   return (
-    <PageShell contentWidth="full">
+    // Benchmark pages run long (the gallery, the library, the attempts), so
+    // their scrollbar always shows.
+    <PageShell contentWidth="full" scrollbar="visible">
       <section aria-label={t("title")} className="flex w-full flex-col gap-6">
         {errors.map((error) => (
           <BenchmarkAlert key={error}>{error}</BenchmarkAlert>

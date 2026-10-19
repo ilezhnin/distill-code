@@ -26,6 +26,30 @@ function classesOf(element: Element | null) {
 
 // The page gutter is one distance on every page: whatever reading width a page
 // asks for, the content starts on the gutter and is never re-centered.
+describe("PageShell scrollbar", () => {
+  const scrollerOf = () =>
+    screen.getByText("Page body").parentElement?.parentElement?.parentElement ??
+    null;
+  it("keeps the scrollbar hidden by default and shows it on request", () => {
+    const { unmount } = render(
+      <PageShell>
+        <p>Page body</p>
+      </PageShell>,
+    );
+    expect(classesOf(scrollerOf())).not.toContain("scrollbar-visible");
+    unmount();
+    render(
+      <PageShell scrollbar="visible">
+        <p>Page body</p>
+      </PageShell>,
+    );
+    expect(classesOf(scrollerOf())).toContain("scrollbar-visible");
+    for (const scrollClass of PAGE_SCROLL_CLASS.split(" ")) {
+      expect(classesOf(scrollerOf())).toContain(scrollClass);
+    }
+  });
+});
+
 describe("PageShell page gutter", () => {
   it.each(
     CONTENT_WIDTHS,
