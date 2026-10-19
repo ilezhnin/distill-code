@@ -1803,12 +1803,14 @@ fn trusted_headroom(
 const HOST_CPU_LINE: f64 = 0.70;
 
 /// Whether `attempt` was admitted while the Windows host was past the CPU
-/// line, by the busy share its admission recorded.
+/// line: by the 30-second mean its admission recorded, which the broker's
+/// line compares too, or, on admissions from before the mean was kept, by
+/// its one-second sample.
 fn host_past_cpu_line(attempt: &Attempt) -> bool {
     attempt
         .sandbox_admission
         .as_ref()
-        .and_then(|admission| admission.host_cpu_busy)
+        .and_then(|admission| admission.host_cpu_mean.or(admission.host_cpu_busy))
         .is_some_and(|busy| busy >= HOST_CPU_LINE)
 }
 
@@ -9176,6 +9178,17 @@ mod tests {
         assert!(!host_past_cpu_line(&attempt));
         attempt.sandbox_admission = Some(admitted(0.70));
         assert!(host_past_cpu_line(&attempt));
+        // The 30-second mean, the broker's own window, decides where it was
+        // recorded: a quiet second inside a busy stretch is still busy, and a
+        // spike inside a quiet one is not.
+        let mut busy_stretch = admitted(0.2);
+        busy_stretch.host_cpu_mean = Some(0.8);
+        attempt.sandbox_admission = Some(busy_stretch);
+        assert!(host_past_cpu_line(&attempt));
+        let mut spike = admitted(0.95);
+        spike.host_cpu_mean = Some(0.5);
+        attempt.sandbox_admission = Some(spike);
+        assert!(!host_past_cpu_line(&attempt));
     }
     #[test]
     fn the_session_admission_is_sealed_with_its_attempt_once() {
@@ -9226,7 +9239,15 @@ mod tests {
     #[test]
     fn only_text_turns_teach_the_pace_speed_and_timeouts_never_throttle() {
         let row = judge_row("sonnet");
-        let turn = |profile: &str, turns: u32, output: u64| {
+        let busy_host: sandbox::Admission = serde_json::from_value(json!({
+            "heavyLanes": 3, "lane": "heavy", "competing": {}, "competingHeavy": 0,
+            "reservedMemory": 0, "reservedCpu": 0, "memoryCurrent": 0,
+            "guestLoad": [0.0, 0.0, 0.0], "guestCpus": 16, "guestMemAvailable": 0,
+            "hostAvailableRam": 0, "hostAvailableCommit": 0, "hostCpuBusy": 0.3,
+            "hostCpuMean": 0.9,
+        }))
+        .unwrap();
+        let turn = |profile: &str, turns: u32, output: u64, loaded: bool| {
             let mut attempt =
                 super::super::pending_attempt("invented-run", "invented-version", &row, 0);
             attempt.configuration.execution_profile = profile.into();
@@ -9235,27 +9256,34 @@ mod tests {
             attempt.usage.output = Some(output);
             attempt.native_execution_ms = Some(10_000);
             attempt.account_load = Some(AccountLoad { turns, limit: 4 });
+            if loaded {
+                attempt.sandbox_admission = Some(busy_host.clone());
+            }
             attempt
         };
-        // Five turns alone at 500 tokens/s, five beside three others at 100.
-        // A repository turn teaches no speed, so its full round at four
-        // doubles the pace; the text turns' slowdown at four sends it to three.
-        for (profile, account, limit) in [
+        // Five turns alone at 500 tokens/s, five beside three others at 80
+        // each (320 in all, under three quarters of 500). A repository turn
+        // teaches no speed, so its full round at four doubles the pace; so do
+        // text turns at four admitted while the host's 30-second mean was past
+        // its CPU line. Only the text turns' slowdown at four sends it to three.
+        for (profile, account, loaded, limit) in [
             (
                 "protected_repository",
                 "invented-acp\u{1f}pace-repository",
+                false,
                 8,
             ),
-            ("native_text", "invented-acp\u{1f}pace-text", 3),
+            ("native_text", "invented-acp\u{1f}pace-loaded", true, 8),
+            ("native_text", "invented-acp\u{1f}pace-text", false, 3),
         ] {
             for _ in 0..5 {
-                pace_turn(account, &turn(profile, 1, 5000), None);
-                pace_turn(account, &turn(profile, 4, 1000), None);
+                pace_turn(account, &turn(profile, 1, 5000, false), None);
+                pace_turn(account, &turn(profile, 4, 800, loaded), None);
             }
-            assert_eq!(account_pace::limit(account), limit, "{profile}");
+            assert_eq!(account_pace::limit(account), limit, "{account}");
         }
         let account = "invented-acp\u{1f}pace-timeout";
-        let mut timed = turn("native_text", 1, 0);
+        let mut timed = turn("native_text", 1, 0, false);
         timed.outcome = Some("budget_timeout".into());
         timed.reason = Some("rate limit reached; {\"nativeExecutionMs\":429810}".into());
         pace_turn(account, &timed, None);

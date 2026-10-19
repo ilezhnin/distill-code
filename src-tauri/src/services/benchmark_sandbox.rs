@@ -163,6 +163,11 @@ pub struct Admission {
     /// Busy share of all Windows CPUs over the second before admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_cpu_busy: Option<f64>,
+    /// Mean busy share of all Windows CPUs over the 30 seconds before
+    /// admission, the window bench-budget's load line compares; the app
+    /// records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_cpu_mean: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_cpus: Option<u32>,
     /// What the memory guard counted (anonymous, shared and kernel memory)
@@ -567,6 +572,7 @@ pub(crate) async fn reserve(
     reservation.admission.host_cpus = std::thread::available_parallelism()
         .ok()
         .and_then(|count| u32::try_from(count.get()).ok());
+    reservation.admission.host_cpu_mean = host_cpu_mean();
     record_session_admission(id, reservation.admission.clone());
     Ok(reservation)
 }
@@ -723,26 +729,62 @@ fn host_headroom() -> io::Result<HostHeadroom> {
     ))
 }
 
-/// Busy share of all Windows CPUs over one second, in thousandths, from a
-/// thread that samples once a second for every admission's evidence; None in
-/// the first second, and where Windows reports nothing.
-fn host_cpu_permille() -> Option<u32> {
-    static LATEST: OnceLock<Arc<std::sync::atomic::AtomicU32>> = OnceLock::new();
-    let latest = LATEST.get_or_init(|| {
-        let latest = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-        let writer = Arc::clone(&latest);
+/// How many one-second samples the host CPU mean covers: the 30 seconds over
+/// which bench-budget smooths the gate's samples for its load line.
+const HOST_CPU_WINDOW: usize = 30;
+
+/// The host CPU samples of the last [`HOST_CPU_WINDOW`] seconds, in
+/// thousandths, newest last; filled by a thread that samples once a second
+/// from the first admission on.
+fn host_cpu_samples() -> &'static std::sync::Mutex<std::collections::VecDeque<u32>> {
+    static SAMPLES: OnceLock<Arc<std::sync::Mutex<std::collections::VecDeque<u32>>>> =
+        OnceLock::new();
+    SAMPLES.get_or_init(|| {
+        let samples = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        let writer = Arc::clone(&samples);
         let started = std::thread::Builder::new()
             .name("benchmark-host-cpu".into())
             .spawn(move || loop {
                 let busy = host_cpu_busy_over(Duration::from_secs(1)).unwrap_or(u32::MAX);
-                writer.store(busy, std::sync::atomic::Ordering::Relaxed);
+                let mut samples = writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                samples.push_back(busy);
+                while samples.len() > HOST_CPU_WINDOW {
+                    samples.pop_front();
+                }
             });
         if started.is_err() {
             log::warn!("[benchmarks] cannot sample Windows CPU use for sandbox admission");
         }
-        latest
-    });
-    Some(latest.load(std::sync::atomic::Ordering::Relaxed)).filter(|busy| *busy <= 1000)
+        samples
+    })
+}
+
+/// Busy share of all Windows CPUs over the last second, in thousandths, for
+/// the broker's evidence; None in the first second, and where Windows
+/// reports nothing.
+fn host_cpu_permille() -> Option<u32> {
+    let samples = host_cpu_samples()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    samples.back().copied().filter(|busy| *busy <= 1000)
+}
+
+/// Mean busy share of all Windows CPUs over the last 30 seconds (as much of
+/// it as was sampled), from 0 to 1: what the broker's load line compares, so
+/// a turn admitted in a quiet second of a busy stretch still reads as busy.
+fn host_cpu_mean() -> Option<f64> {
+    let samples = host_cpu_samples()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    mean_share(samples.iter().copied())
+}
+
+/// The mean of the known thousandths among `samples`, as a share.
+fn mean_share(samples: impl Iterator<Item = u32>) -> Option<f64> {
+    let known: Vec<u32> = samples.filter(|busy| *busy <= 1000).collect();
+    (!known.is_empty()).then(|| f64::from(known.iter().sum::<u32>()) / known.len() as f64 / 1000.0)
 }
 
 #[cfg(not(windows))]
@@ -3007,6 +3049,27 @@ mod tests {
         // Absent measurements stay absent in the sealed record.
         let sealed = serde_json::to_value(&admission).unwrap();
         assert!(sealed.get("checkStall").is_none() && sealed.get("heavyLanes").is_none());
+    }
+
+    #[test]
+    fn the_host_cpu_mean_averages_the_known_seconds() {
+        // Unknown seconds (u32::MAX) are left out; no known second is no mean.
+        assert_eq!(mean_share([200, 400, u32::MAX].into_iter()), Some(0.3));
+        assert_eq!(mean_share([u32::MAX].into_iter()), None);
+        assert_eq!(mean_share(std::iter::empty()), None);
+        let mut admission: Admission = serde_json::from_value(serde_json::json!({
+            "lane": "heavy", "competing": {}, "competingHeavy": 0,
+            "reservedMemory": 0, "reservedCpu": 0, "memoryCurrent": 0,
+            "guestLoad": [0.0, 0.0, 0.0], "guestCpus": 16, "guestMemAvailable": 0,
+            "hostAvailableRam": 0, "hostAvailableCommit": 0,
+        }))
+        .unwrap();
+        assert_eq!(admission.host_cpu_mean, None);
+        admission.host_cpu_mean = Some(0.42);
+        assert_eq!(
+            serde_json::to_value(&admission).unwrap()["hostCpuMean"],
+            0.42
+        );
     }
 
     #[test]
