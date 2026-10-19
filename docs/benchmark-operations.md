@@ -605,6 +605,11 @@ account after the reset, never on another account. A try the limit refuses
 again before any answer waits again, so only one answer is ever measured. A
 limit no reset lifts (billing, an account on hold, no credit) settles the
 attempt as it ended, and so does a turn the runner had already stopped itself.
+A limit that names no reset (Claude's stop mid-answer says only "resets 7pm")
+waits until the reset the account's last usage read shows (a weekly window
+read spent makes it a reset the run cannot wait for, so the run stops for the
+operator), or asks again every five minutes where the read shows none. A judge whose turn a limit refused or
+cut off leaves the run's panels until that reset.
 A workflow root under it settles with its quota outcome instead, since its
 committed steps are never replayed. Use at least
 three repetitions for a complete leaderboard measurement. Set an explicit

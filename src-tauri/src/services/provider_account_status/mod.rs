@@ -267,6 +267,27 @@ pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str, credits: bool
         .is_some_and(|status| blocked(status, None, credits, now_ms()).0)
 }
 
+/// When the spent usage limit of `account_id` for `model_id` resets, by its
+/// last known status: the latest reset among its spent windows, while every
+/// one of them names a reset still ahead; none while no window shows spent,
+/// and none while the benchmark sandbox spends the account under another
+/// login (see [`sandbox_login`]). Reads the cache only.
+pub(crate) async fn spent_until(
+    app: &AppHandle,
+    account_id: &str,
+    model_id: Option<&str>,
+) -> Option<i64> {
+    if sandbox_login::mismatch(app, account_id) {
+        return None;
+    }
+    let state = app.state::<ProviderAccountStatusState>();
+    let cache = state.native.cache.lock().await;
+    match blocked(cache.get(account_id)?, model_id, false, now_ms()) {
+        (true, reset) => reset,
+        (false, _) => None,
+    }
+}
+
 /// The least share left, in percent, across the last known usage windows of
 /// `account_id` that apply to `model_id`; `None` while nothing is known, and
 /// while the benchmark sandbox spends the account under another login than

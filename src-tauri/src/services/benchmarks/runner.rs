@@ -260,6 +260,16 @@ pub trait ExecutionBackend: Send + Sync {
     fn paces_preparation(&self) -> bool {
         false
     }
+    /// When `account`'s spent usage limit for `model_id` resets, as its last
+    /// usage read says; none where it shows no spent limit or nothing is
+    /// known. Fixture backends know nothing.
+    fn spent_until<'a>(
+        &'a self,
+        _account: &'a str,
+        _model_id: &'a str,
+    ) -> BoxFuture<'a, Option<i64>> {
+        Box::pin(async { None })
+    }
     fn readiness_for_budget<'a>(
         &'a self,
         configuration: &'a Configuration,
@@ -2073,26 +2083,47 @@ fn exhausted(run_id: &str, account: &str) -> bool {
     }
 }
 
-/// A judge turn its account's usage limit refused: the account leaves this
-/// run's panels until the reset, as a candidate's does. A CLI sign-in has no
-/// usage reads that would show it spent, so without this every later panel
-/// that seats it would get one more abstention.
+/// A judge turn its account's usage limit refused or cut off mid-answer: the
+/// account leaves this run's panels until the reset, as a candidate's does. A
+/// CLI sign-in has no usage reads that would show it spent, so without this
+/// every later panel that seats it would get one more abstention.
 fn exhaust_judge_on_quota(
     run_id: &str,
     account: &str,
     error: &Value,
-    reply: &str,
-    usage: &TokenUsage,
+    known_reset: Option<i64>,
 ) -> bool {
-    let refused = is_quota_wait(error) || refused_for_quota(error, reply, usage);
+    let refused = judge_quota_stop(error);
     if refused {
         exhaust(
             run_id,
             account,
-            quota_reset(&error.to_string()).unwrap_or(now() + QUOTA_RETRY_MS),
+            quota_reset(&error.to_string())
+                .or(known_reset)
+                .unwrap_or(now() + QUOTA_RETRY_MS),
         );
     }
     refused
+}
+
+/// Whether a judge turn ended on its account's usage limit, before or
+/// during its answer.
+fn judge_quota_stop(error: &Value) -> bool {
+    is_quota_wait(error) || crate::services::provider_account_status::is_quota_error(error)
+}
+
+/// `error` (a quota refusal as the host or provider gave it) with its
+/// account's known reset as `data.nextReset`, kept as text otherwise.
+fn with_next_reset(error: &str, reset: i64) -> String {
+    let mut value = serde_json::from_str::<Value>(error)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({ "message": error }));
+    if !value["data"].is_object() {
+        value["data"] = json!({});
+    }
+    value["data"]["nextReset"] = json!(reset);
+    value.to_string()
 }
 
 /// When a quota refusal says the account's limit resets.
@@ -3308,7 +3339,16 @@ impl NativeBackend {
                     // A flagged or substituted turn abstains; its spend still counts.
                     turn_failure = judge_turn_failure(judge, &status);
                     if let Some(error) = status.error.as_ref() {
-                        exhaust_judge_on_quota(&attempt.run_id, &account, error, &reply, &usage);
+                        // A limit that names no reset holds the account until
+                        // the one its usage read shows.
+                        let known = if judge_quota_stop(error)
+                            && quota_reset(&error.to_string()).is_none()
+                        {
+                            ExecutionBackend::spent_until(self, &account, &judge.model_id).await
+                        } else {
+                            None
+                        };
+                        exhaust_judge_on_quota(&attempt.run_id, &account, error, known);
                     }
                     if frozen_panel
                         && status.result.as_ref().and_then(|result| {
@@ -4408,6 +4448,17 @@ impl ExecutionBackend for NativeBackend {
     }
     fn paces_preparation(&self) -> bool {
         true
+    }
+    fn spent_until<'a>(
+        &'a self,
+        account: &'a str,
+        model_id: &'a str,
+    ) -> BoxFuture<'a, Option<i64>> {
+        Box::pin(crate::services::provider_account_status::spent_until(
+            &self.app,
+            account,
+            Some(model_id),
+        ))
     }
     fn resource_admission<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -7754,12 +7805,30 @@ impl BenchmarkService {
                 // operator resumed settles the cell instead.
                 // A limit that ran out on this account moves the test to
                 // another account of the provider with room, if there is one.
+                // A limit that names no reset (Claude's stop mid-answer says
+                // only "resets 7pm") waits until the reset the account's last
+                // usage read shows, where it shows one.
+                let quota_message = if waits_for_quota && quota_reset(&error.message).is_none() {
+                    match self
+                        .backend
+                        .spent_until(
+                            a.configuration.account_id.as_deref().unwrap_or_default(),
+                            &a.configuration.model_id,
+                        )
+                        .await
+                    {
+                        Some(reset) => with_next_reset(&error.message, reset),
+                        None => error.message.clone(),
+                    }
+                } else {
+                    error.message.clone()
+                };
                 if retry_allowed && waits_for_quota {
                     if let Some(account) = a.configuration.account_id.as_deref() {
                         exhaust(
                             &run.id,
                             account,
-                            quota_reset(&error.message).unwrap_or(now() + QUOTA_RETRY_MS),
+                            quota_reset(&quota_message).unwrap_or(now() + QUOTA_RETRY_MS),
                         );
                     }
                     if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
@@ -7794,7 +7863,7 @@ impl BenchmarkService {
                         quota_plan(
                             &run.id,
                             &quota_scope(&a.configuration),
-                            &error.message,
+                            &quota_message,
                             now(),
                         )
                     });
@@ -10035,8 +10104,7 @@ mod tests {
             "invented-run",
             "cli-login-grok-acp",
             &quota,
-            "",
-            &TokenUsage::default()
+            None
         ));
         assert!(exhausted("invented-run", "cli-login-grok-acp"));
         // Another run, or another account, is not held.
@@ -10048,10 +10116,24 @@ mod tests {
             "second-run",
             "cli-login-grok-acp",
             &other,
-            "",
-            &TokenUsage::default()
+            None
         ));
         assert!(!exhausted("second-run", "cli-login-grok-acp"));
+        // A limit that cut the judge off mid-answer holds the account too.
+        let cut = json!({"code":-32603,"data":{"errorKind":"quota_exhausted",
+            "dispatchStarted":true},"message":"You've hit your session limit"});
+        let reset = now() + 2 * 60 * 60 * 1000;
+        assert!(exhaust_judge_on_quota(
+            "third-run",
+            "invented-claude",
+            &cut,
+            Some(reset)
+        ));
+        assert!(exhausted("third-run", "invented-claude"));
+        assert_eq!(
+            EXHAUSTED.lock().unwrap()[&("third-run".to_owned(), "invented-claude".to_owned())],
+            reset
+        );
     }
     #[test]
     fn a_pool_judge_sits_on_the_cli_sign_in_candidates_run_on() {
@@ -11643,6 +11725,26 @@ mod tests {
         // A model the plan leaves out is no quota.
         let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
         assert!(!refused_for_quota(&refused, "", &empty));
+    }
+    #[test]
+    fn a_limit_that_names_no_reset_waits_for_the_one_the_usage_read_shows() {
+        let reset = now() + 2 * 60 * 60 * 1000;
+        // Claude's stop mid-answer names its reset only in words.
+        let stop = json!({"code":-32603,"data":{"errorKind":"quota_exhausted",
+            "dispatchStarted":true},"message":"You've hit your session limit · resets 7pm"})
+        .to_string();
+        assert_eq!(quota_reset(&stop), None);
+        let filled = with_next_reset(&stop, reset);
+        assert_eq!(quota_reset(&filled), Some(reset));
+        assert!(filled.contains("quota_exhausted") && filled.contains("resets 7pm"));
+        assert_eq!(
+            quota_plan("invented-reset-run", "claude-acp", &filled, now()),
+            QuotaPlan::WaitUntil(reset)
+        );
+        // Words alone keep their text beside the reset.
+        let words = with_next_reset("usage limit reached", reset);
+        assert_eq!(quota_reset(&words), Some(reset));
+        assert!(words.contains("usage limit reached"));
     }
     #[test]
     fn a_usage_limit_mid_answer_stops_the_turn_for_quota_unless_something_decided_it() {
