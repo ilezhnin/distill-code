@@ -562,6 +562,25 @@ pub struct DesignEntry {
     pub judges: Vec<DesignJudge>,
     /// The score the leaderboard reads: the human review, else the judges' median.
     pub score: Option<f64>,
+    /// The image the judges scored, when the panel rendered one.
+    pub rendering: Option<String>,
+    /// Every scored rendering of this brief by this model in a complete
+    /// measurement, newest first; the card's own attempt is one of them.
+    pub points: Vec<DesignPoint>,
+}
+/// One scored rendering behind a design card: its own image, score and cost.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignPoint {
+    pub attempt_id: String,
+    pub run_id: String,
+    pub repetition: u32,
+    pub finished_at: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub cost: Option<f64>,
+    pub score: Option<f64>,
+    pub judges: u32,
+    pub rendering: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]

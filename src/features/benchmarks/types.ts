@@ -323,6 +323,22 @@ export interface DesignEntry {
   judges: DesignJudge[];
   /** The score the leaderboard reads: the human review, else the judges' median. */
   score: number | null;
+  /** The image the judges scored; absent on an older backend. */
+  rendering?: string | null;
+  /** Every scored rendering of this brief by this model, newest first. */
+  points?: DesignPoint[];
+}
+/** One scored rendering behind a design card: its own image, score and cost. */
+export interface DesignPoint {
+  attemptId: string;
+  runId: string;
+  repetition: number;
+  finishedAt: number | null;
+  durationMs: number | null;
+  cost: number | null;
+  score: number | null;
+  judges: number;
+  rendering: string | null;
 }
 export interface AttemptSummary {
   id: string;

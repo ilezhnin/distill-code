@@ -750,6 +750,8 @@ impl Store {
                 .insert(attempt.repetition);
             candidates.push((attempt, manifest, row.get(2), required));
         }
+        // The card each candidate of a complete cell belongs to.
+        let mut keys: Vec<Option<(String, String)>> = Vec::with_capacity(candidates.len());
         for (index, (attempt, _, _, required)) in candidates.iter().enumerate() {
             if repetitions[&(
                 attempt.run_id.clone(),
@@ -759,12 +761,14 @@ impl Store {
                 .len()
                 < *required as usize
             {
+                keys.push(None);
                 continue;
             }
             let key = (
                 attempt.version_id.clone(),
                 super::analysis::leaderboard_key(&card_configuration(attempt)),
             );
+            keys.push(Some(key.clone()));
             let tier = card_tier(attempt);
             let card = cards.entry(key).or_insert((tier, index));
             if tier > card.0 && candidates[card.1].0.run_id == attempt.run_id {
@@ -804,6 +808,40 @@ impl Store {
                 })
                 .collect();
             let score = super::analysis::score(attempt);
+            // Every scored rendering of the card's brief and model, each with
+            // the image its own panel scored.
+            let mut points: Vec<DesignPoint> = candidates
+                .iter()
+                .zip(&keys)
+                .filter(|(_, key)| key.is_some() && **key == keys[index])
+                .map(|((point, _, _, _), _)| {
+                    let batch = &point.evaluations[scoring_batch(&point.evaluations)];
+                    DesignPoint {
+                        attempt_id: point.id.clone(),
+                        run_id: point.run_id.clone(),
+                        repetition: point.repetition,
+                        finished_at: point.finished_at,
+                        duration_ms: point.duration_ms,
+                        cost: super::model_catalog::attempt_cost(
+                            &catalog,
+                            &point.configuration,
+                            &point.usage,
+                            point.finished_at.or(point.started_at),
+                        ),
+                        score: super::analysis::score(point),
+                        judges: batch
+                            .iter()
+                            .filter(|e| e.provenance == "judge" && e.score.is_some())
+                            .count() as u32,
+                        rendering: batch_rendering(batch),
+                    }
+                })
+                .collect();
+            points.sort_by(|a, b| {
+                b.finished_at
+                    .cmp(&a.finished_at)
+                    .then(a.repetition.cmp(&b.repetition))
+            });
             out.push(DesignEntry {
                 attempt_id: attempt.id.clone(),
                 run_id: attempt.run_id.clone(),
@@ -840,6 +878,10 @@ impl Store {
                     attempt.configuration.id.clone(),
                 )]
                     .len() as u32,
+                rendering: batch_rendering(
+                    &attempt.evaluations[scoring_batch(&attempt.evaluations)],
+                ),
+                points,
             });
         }
         Ok(out)
@@ -1301,6 +1343,17 @@ fn scoring_batch(evaluations: &[Evaluation]) -> std::ops::Range<usize> {
     }
 }
 
+/// The image a judge batch scored: its render marker's screenshot.
+fn batch_rendering(batch: &[Evaluation]) -> Option<String> {
+    batch
+        .first()
+        .filter(|e| e.provenance == "render")?
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "screenshot")
+        .map(|artifact| artifact.path.clone())
+}
+
 /// How well an attempt can stand for its card: a scored rendering, a rendering,
 /// a settled attempt, anything else. A rendering awaiting its panel has a
 /// sealed generation and stands like a settled one.
@@ -1450,6 +1503,18 @@ mod tests {
         assert_eq!(review.score, 0.7);
         assert!(entries[0].judges.is_empty());
         assert_eq!(review.details.as_ref().unwrap()["craft"], json!(0.6));
+        // Each scored repetition of the measurement is a point of its own.
+        let points = &entries[0].points;
+        assert_eq!(points.len(), 3);
+        assert!(points.iter().all(|point| point.run_id == "run-2"));
+        assert!(points
+            .iter()
+            .any(|point| point.attempt_id == "attempt-run-2"));
+        let mut repetitions: Vec<u32> = points.iter().map(|point| point.repetition).collect();
+        repetitions.sort_unstable();
+        assert_eq!(repetitions, vec![0, 1, 2]);
+        assert!(points.iter().all(|point| point.score == Some(0.7)));
+        assert_eq!(entries[0].rendering, None);
         // A run whose rendering is not reviewed is not a completed result.
         let older = store
             .list_designs(&ResultQuery {
@@ -1468,6 +1533,24 @@ mod tests {
             .unwrap();
         assert!(none.is_empty());
         directory.close().await;
+    }
+    #[test]
+    fn a_design_shows_the_image_its_scoring_batch_rendered() {
+        let evaluations: Vec<Evaluation> = serde_json::from_value(json!([
+            {"id":"r1","evaluatorRevision":"1","verdict":"rendered","score":null,"reason":"","createdAt":1,"provenance":"render","artifacts":[{"kind":"screenshot","path":"old.png","hash":"a","label":"Rendering"}],"details":{"expectedJudges":1}},
+            {"id":"j1","evaluatorRevision":"1","verdict":"judged","score":0.4,"reason":"","createdAt":2,"provenance":"judge","artifacts":[]},
+            {"id":"r2","evaluatorRevision":"1","verdict":"rendered","score":null,"reason":"","createdAt":3,"provenance":"render","artifacts":[{"kind":"screenshot","path":"new.png","hash":"b","label":"Rendering"}],"details":{"expectedJudges":1}},
+            {"id":"j2","evaluatorRevision":"1","verdict":"judged","score":0.9,"reason":"","createdAt":4,"provenance":"judge","artifacts":[]},
+            {"id":"r3","evaluatorRevision":"1","verdict":"rendered","score":null,"reason":"","createdAt":5,"provenance":"render","artifacts":[{"kind":"screenshot","path":"unsettled.png","hash":"c","label":"Rendering"}],"details":{"expectedJudges":2}}
+        ]))
+        .unwrap();
+        // The newest settled batch scores the attempt, so its image is shown.
+        assert_eq!(
+            batch_rendering(&evaluations[scoring_batch(&evaluations)]).as_deref(),
+            Some("new.png")
+        );
+        assert_eq!(batch_rendering(&evaluations[1..2]), None);
+        assert_eq!(batch_rendering(&[]), None);
     }
     /// A rendering the old runner stopped for the size of its event record
     /// scored a fixed 0 and, being the newest scored one, took the card. Read

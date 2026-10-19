@@ -524,7 +524,19 @@
     "empty": "No designs yet.",
     "emptyHint": "Run a creative brief; every rendering lands here for the judge panel.",
     "judges_one": "{{count}} judge",
-    "judges_other": "{{count}} judges"
+    "judges_other": "{{count}} judges",
+    "gallery": "Design gallery",
+    "openBrief": "Open {{name}}, {{count}}",
+    "summary_one": "{{count}} design · best score {{best}}",
+    "summary_other": "{{count}} designs · best score {{best}}",
+    "filter": "Filter by model name",
+    "noMatch": "No model matches the filter.",
+    "points": "Measurements",
+    "point": "{{date}} · repeat {{number}}",
+    "noImage": "No rendering was stored for this measurement.",
+    "score": "Score",
+    "judgesLabel": "Judges",
+    "evidence": "Open evidence"
   },
   "import": {
     "title": "Import a definition",
