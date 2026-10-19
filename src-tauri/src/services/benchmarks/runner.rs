@@ -1957,41 +1957,35 @@ pub(super) fn quota_scope(configuration: &Configuration) -> String {
 /// operator resumed it, so its cells ask again, and a refusal from before a
 /// long pause neither holds a healthy account nor counts toward giving up.
 pub(super) fn forget_quota_waits(run_id: &str) {
-    for held in [
-        &EXHAUSTED,
-        &QUOTA_SINCE,
-        &PROVIDER_HOLDS,
-        &PRE_ANSWER_REFUSALS,
-    ] {
+    for held in [&EXHAUSTED, &QUOTA_SINCE, &PROVIDER_HOLDS] {
         held.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(run, _), _| run != run_id);
     }
 }
 
-/// How many tries of each attempt (by run and attempt) were refused before
-/// any answer under a run that forbids retries; kept in memory, so a restart
-/// or the operator's resume starts the count again.
-static PRE_ANSWER_REFUSALS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
-> = std::sync::LazyLock::new(Default::default);
-
 /// Tries of one attempt refused before any answer that go back to the queue
-/// before the run stops for the operator.
-const PRE_ANSWER_TRIES: i64 = 3;
+/// before the run stops for the operator; one more after the operator's
+/// resume settles the cell, as `refused_again` does under automatic retries.
+const PRE_ANSWER_TRIES: u32 = 3;
 /// How long a try refused before any answer waits before the next one.
 const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
 
-/// Counts one more refusal before any answer of `attempt_id` under `run_id`.
-fn pre_answer_refused(run_id: &str, attempt_id: &str) -> i64 {
-    let mut refusals = PRE_ANSWER_REFUSALS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let count = refusals
-        .entry((run_id.to_owned(), attempt_id.to_owned()))
-        .or_default();
-    *count += 1;
-    *count
+/// Refusals before any answer a cell goes back with before the operator is
+/// asked: a runtime the host would not start needs the operator at once.
+fn pre_answer_limit(error: &BenchmarkError) -> u32 {
+    if error.code == "capability_missing" {
+        1
+    } else {
+        PRE_ANSWER_TRIES
+    }
+}
+
+/// Whether one more refusal before any answer still goes back to the queue:
+/// once the operator resumed a run stopped at the bound, the next refusal
+/// settles the cell instead of cycling forever.
+fn within_pre_answer_tries(attempt: &Attempt, error: &BenchmarkError) -> bool {
+    error.code == "account_busy" || attempt.pre_answer_refusals < pre_answer_limit(error)
 }
 
 /// Whether a failed try ended before the provider answered anything, so
@@ -6071,13 +6065,31 @@ fn terminal_outcome(error: &Value, model_id: &str) -> &'static str {
     }
 }
 
+/// Providers whose CLI output-token stop [`exceeded_output_cap`] recognizes;
+/// a holdout report names the others as a limitation.
+pub(crate) const OUTPUT_CAP_PROVIDERS: [&str; 2] = ["claude-acp", "grok-acp"];
+
 /// Whether the provider's own CLI stopped a turn because the answer passed its
 /// output-token maximum (Claude Code: "Claude's response exceeded the 32000
-/// output token maximum"). The over-long answer is the model's own, so the
+/// output token maximum"; Grok Build: "response truncated by max_tokens").
+/// The reason keeps the provider's words, which name the cap in effect. The over-long answer is the model's own, so the
 /// attempt is a budget failure scored zero, like an answer past the published
 /// cap, never an unscored infrastructure failure. The CLI's limit belongs to
 /// its pinned runtime, which every inventory revision already names.
 fn exceeded_output_cap(error: &Value) -> bool {
+    // Grok Build names its stop by kind: "response truncated by max_tokens".
+    let kind = |path: &str| error.pointer(path).and_then(Value::as_str);
+    if [
+        "/data/error_kind",
+        "/data/errorKind",
+        "/error_kind",
+        "/errorKind",
+    ]
+    .into_iter()
+    .any(|path| kind(path) == Some("max_tokens_truncation"))
+    {
+        return true;
+    }
     let failure = error
         .pointer("/data/sessionFailure")
         .or_else(|| error.get("sessionFailure"));
@@ -7817,24 +7829,28 @@ impl BenchmarkService {
                     && version.manifest.workflow.is_none()
                     && run.request.require_dispatch_admission(now()).is_ok()
                     && refused_before_answer(&failed, &error)
+                    && within_pre_answer_tries(&failed, &error)
                 {
-                    let tries = pre_answer_refused(&run.id, &a.id);
+                    // Interactive work on the account is waited out like under
+                    // automatic retries and never counts toward the bound.
+                    let busy = error.code == "account_busy";
+                    let tries = failed.pre_answer_refusals + u32::from(!busy);
                     requeue(
                         &mut failed,
                         format!("Refused before any answer; tried again. {}", error.message),
                     );
+                    failed.pre_answer_refusals = tries;
                     drop_collection_clock(&self.store, &mut failed).await?;
-                    failed.wait_until = Some(now() + PRE_ANSWER_RETRY_MS);
+                    failed.wait_until = Some(
+                        now()
+                            + if busy {
+                                ACCOUNT_BUSY_RETRY_MS
+                            } else {
+                                PRE_ANSWER_RETRY_MS
+                            },
+                    );
                     self.store.save_attempt(&failed).await?;
-                    // A runtime the host would not start needs the operator at
-                    // once, as under automatic retries; other refusals get a
-                    // few more tries first.
-                    let stop_after = if error.code == "capability_missing" {
-                        1
-                    } else {
-                        PRE_ANSWER_TRIES
-                    };
-                    if tries >= stop_after {
+                    if !busy && tries >= pre_answer_limit(&error) {
                         self.store.set_run_state(&run.id, "needs_attention").await?;
                     }
                     self.changed().await;
@@ -11507,6 +11523,7 @@ mod tests {
     #[test]
     fn a_case_goes_out_whole_and_a_begun_case_first() {
         let attempt = |version: &str, repetition: u32, started: bool| Attempt {
+            pre_answer_refusals: 0,
             id: format!("{version}-{repetition}"),
             run_id: "run".into(),
             version_id: version.into(),
@@ -11733,6 +11750,14 @@ mod tests {
             "title":"API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."}},
             "message":"API Error: Claude's response exceeded the 32000 output token maximum."});
         assert!(exceeded_output_cap(&capped));
+        // The live Grok Build receipt (2026-10).
+        let grok = json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+            "error_kind":"max_tokens_truncation","message":"response truncated by max_tokens",
+            "promptNotAccepted":false},"message":"response truncated by max_tokens"});
+        assert_eq!(
+            terminal_outcome(&grok, "grok-4.7-build-fast"),
+            "budget_reached"
+        );
         assert_eq!(terminal_outcome(&capped, "haiku"), "budget_reached");
         // A usage limit stays a quota stop, and other limits stay infrastructure.
         let session_limit = json!({"code":-32603,"data":{"dispatchStarted":true,"errorKind":"quota_exhausted",

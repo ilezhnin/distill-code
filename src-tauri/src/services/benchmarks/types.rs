@@ -633,6 +633,11 @@ pub struct Attempt {
     /// knows: a usage limit's reset or retry, a sign-in's renewal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_until: Option<i64>,
+    /// Tries of this attempt the provider refused before any answer under a
+    /// run that forbids retries. Kept with the attempt, so an operator's
+    /// resume never resets the bound on in-place retries.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pre_answer_refusals: u32,
     pub session_id: Option<String>,
     pub host_run_id: Option<String>,
     pub observed: Option<Configuration>,
@@ -1148,4 +1153,8 @@ pub struct QueryData {
     /// The protocol the ledger is read under: how many scored repetitions a
     /// cell needs before its case counts. A case may declare more.
     pub required_repetitions: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }

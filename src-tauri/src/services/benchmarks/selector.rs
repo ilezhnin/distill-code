@@ -669,6 +669,7 @@ mod tests {
                 };
                 let config = configuration(model);
                 data.attempts.push(Attempt {
+                    pre_answer_refusals: 0,
                     id: format!("{model}-{}", version.id),
                     run_id: data.runs[0].id.clone(),
                     version_id: version.id.clone(),

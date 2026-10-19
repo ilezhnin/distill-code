@@ -786,6 +786,7 @@ mod tests {
                         attempts: vec![],
                     });
                     data.attempts.push(Attempt {
+                        pre_answer_refusals: 0,
                         id: id.clone(),
                         run_id: id,
                         version_id: version.id.clone(),

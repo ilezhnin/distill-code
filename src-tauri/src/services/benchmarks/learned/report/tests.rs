@@ -401,3 +401,54 @@ async fn store_evaluator_reads_original_versions_raw_plans_and_complete_cells() 
     );
     directory.close().await;
 }
+
+#[test]
+fn an_operator_stop_never_loses_a_group() {
+    for mode in 0..4 {
+        let (mut data, plan, model) = fixture();
+        let at = data
+            .attempts
+            .iter()
+            .position(|a| a.run_id == "holdout-run")
+            .unwrap();
+        match mode {
+            0 => data.attempts[at].outcome = Some("cancelled".into()),
+            1 => data.attempts[at].outcome = Some("dispatch_uncertain".into()),
+            2 => data.attempts[at].outcome = Some("interrupted".into()),
+            _ => {
+                data.attempts.remove(at);
+                data.runs
+                    .iter_mut()
+                    .find(|r| r.id == "holdout-run")
+                    .unwrap()
+                    .state = "cancelled".into();
+            }
+        }
+        if mode < 3 {
+            data.attempts[at].evaluations.clear();
+        }
+        let refused = evaluate(data, &plan, &model).unwrap_err();
+        assert_eq!(refused.code, "incomplete_holdout_evidence", "mode {mode}");
+        assert!(refused.message.contains("operator"), "mode {mode}");
+    }
+    // A provider's failure is named in the lost case's reasons.
+    let (mut data, plan, model) = fixture();
+    let at = data
+        .attempts
+        .iter()
+        .position(|a| a.run_id == "holdout-run")
+        .unwrap();
+    data.attempts[at].outcome = Some("infrastructure_failure".into());
+    data.attempts[at].evaluations.clear();
+    let report = evaluate(data, &plan, &model).unwrap();
+    assert!(report
+        .excluded
+        .iter()
+        .flat_map(|e| &e.reasons)
+        .any(|r| r.contains("infrastructure_failure")));
+    // The fixture's invented providers have no recognized output-cap stop.
+    assert!(report
+        .limitations
+        .iter()
+        .any(|l| l.contains("output-token stop")));
+}
