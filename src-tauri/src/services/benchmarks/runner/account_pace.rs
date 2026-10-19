@@ -127,11 +127,21 @@ impl Pace {
     /// from before push-backs were kept infers one from its ceilings.
     fn resumes_where_it_was(saved: &Saved, now: i64) -> bool {
         let idle = now - saved.active_at.unwrap_or(saved.at);
-        let pushed_back_last = match saved.pushed_back_at {
-            Some(at) => at >= saved.at,
-            None => saved.ceilings.values().any(|(_, since)| *since >= saved.at),
-        };
+        let pushed_back_last = Self::pushed_back_at(saved).is_some_and(|at| at >= saved.at);
         idle < CEILING_MS || (idle < RESUME_MS && !pushed_back_last)
+    }
+
+    /// When `saved`'s provider last pushed back: as kept, or, in a file from
+    /// before it was kept, when the stable level was set if a ceiling dates
+    /// from then.
+    fn pushed_back_at(saved: &Saved) -> Option<i64> {
+        saved.pushed_back_at.or_else(|| {
+            saved
+                .ceilings
+                .values()
+                .any(|(_, since)| *since >= saved.at)
+                .then_some(saved.at)
+        })
     }
 
     /// The pace a restart resumes from `saved`. Staleness runs from the last
@@ -158,7 +168,9 @@ impl Pace {
             (level, now)
         };
         pace.active = if fresh { active } else { now };
-        pace.pushed_back = saved.pushed_back_at;
+        // A push-back inferred from an old file is kept, so the next save
+        // carries it although the ceilings it came from are dropped.
+        pace.pushed_back = Self::pushed_back_at(saved);
         // Only a file that keeps push-backs keeps ceilings from refusals
         // alone (see `Saved::pushed_back_at`).
         pace.ceilings = saved
@@ -693,6 +705,8 @@ mod tests {
         };
         let resumed = Pace::resume(&old, CEILING_MS - 1);
         assert_eq!(resumed.limit_for("m", CEILING_MS - 1), 16);
+        // The inferred push-back is kept, so a second restart halves too.
+        assert_eq!(resumed.saved().pushed_back_at, Some(0));
         assert_eq!(Pace::resume(&old, CEILING_MS).limit(), 8);
     }
 
@@ -969,6 +983,16 @@ mod tests {
             busier.speeds.entry(11).or_default().push(75.0);
         }
         assert!(busier.slowed().is_none());
+        // A level is held against the best lower level, not the nearest: four
+        // turns streaming 140 in all are slower than two's 200, though not
+        // than three's 160.
+        let mut uneven = Pace::new(4, 0);
+        for _ in 0..COMPARABLE {
+            uneven.speeds.entry(2).or_default().push(100.0);
+            uneven.speeds.entry(3).or_default().push(160.0 / 3.0);
+            uneven.speeds.entry(4).or_default().push(35.0);
+        }
+        assert_eq!(uneven.slowed(), Some(4));
         // Unknown speeds teach nothing either way.
         let mut quiet = Pace::new(4, 0);
         for _ in 0..50 {

@@ -621,8 +621,10 @@ start: a rate-limit answer to a sent prompt (HTTP 429, "rate limit", "too many
 requests", "overloaded") halves the level. A level of concurrency whose turns
 together stream clearly less (below three quarters of the tokens per second in
 all) than a lower level's turns together sends the pace below it, counting only
-turns admitted while the host's 30-second CPU mean was below the CPU line, so
-our own load never reads as the provider's slowdown. Each stream slowing as
+turns admitted while the host's CPU, averaged over the same 30 seconds and held
+to the same 70 % line as the broker's load line, was below it (admissions from
+before that mean was kept use their one-second sample), so our own load never
+reads as the provider's slowdown. Each stream slowing as
 more fly at once is no slowdown while the account streams more in all. Since
 providers limit by model, the level a model's turns were refused at (two or
 more) then stands for an hour as the most turns of that model the account flies
