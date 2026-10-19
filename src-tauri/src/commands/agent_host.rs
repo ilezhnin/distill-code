@@ -22,6 +22,12 @@ pub async fn prepare_agent_host_shutdown(
     app_handle: tauri::AppHandle,
     prepared: bool,
 ) -> Result<(), String> {
+    // Refused for an active chat before anything is paused: parking the
+    // benchmark runs first left 12 of 13 runs paused behind a refused close
+    // (10-18).
+    if prepared && app_handle.state::<AgentHost>().chats_active().await {
+        return Err(crate::services::agent_host::router::CHATS_ACTIVE.into());
+    }
     app_handle
         .state::<crate::services::benchmarks::BenchmarkState>()
         .park()

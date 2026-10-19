@@ -422,6 +422,26 @@ struct Selection {
     fast: Option<bool>,
 }
 
+/// Why a close waits for ordinary chats.
+pub const CHATS_ACTIVE: &str =
+    "Wait for active chats to finish or stop them before closing Distill.";
+
+/// Turns a close would cut among `sessions`: ordinary chats loading, running
+/// or with prompts queued, and owned (benchmark) sessions likewise.
+fn active_turns<'a>(sessions: impl Iterator<Item = &'a SessionRuntime>) -> (usize, usize) {
+    sessions
+        .filter(|runtime| {
+            runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
+        })
+        .fold((0, 0), |(chats, tests), runtime| {
+            if runtime.execution_profile.is_some() {
+                (chats, tests + 1)
+            } else {
+                (chats + 1, tests)
+            }
+        })
+}
+
 pub struct SessionRuntime {
     /// The harness and the bridge's own id for this session. Once the runtime
     /// is in a [`SessionTable`] they only change through the table, which
@@ -779,6 +799,17 @@ impl AgentHost {
         Ok(inner)
     }
 
+    /// Whether ordinary chats have turns a close would cut. A close checks
+    /// this before it pauses the benchmark runs, so a refused close pauses
+    /// nothing.
+    pub async fn chats_active(&self) -> bool {
+        let Some(inner) = self.inner.lock().await.clone() else {
+            return false;
+        };
+        let sessions = inner.sessions.lock().await;
+        active_turns(sessions.values()).0 > 0
+    }
+
     pub async fn prepare_shutdown(&self, prepared: bool) -> Result<(), String> {
         let inner = self.inner.lock().await.clone();
         let Some(inner) = inner else {
@@ -786,14 +817,16 @@ impl AgentHost {
         };
         {
             let sessions = inner.sessions.lock().await;
-            if prepared
-                && sessions.values().any(|runtime| {
-                    runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
-                })
-            {
-                return Err(
-                    "Wait for active chats to finish or stop them before closing Distill.".into(),
-                );
+            if prepared {
+                let (chats, tests) = active_turns(sessions.values());
+                if chats > 0 {
+                    return Err(CHATS_ACTIVE.into());
+                }
+                if tests > 0 {
+                    return Err(format!(
+                        "Benchmark runs are pausing: {tests} benchmark or task turn(s) still finish. Close Distill again once they settle."
+                    ));
+                }
             }
             inner.shutdown_prepared.store(prepared, Ordering::SeqCst);
         }
@@ -8841,6 +8874,35 @@ mod tests {
         assert!(Inner::evidence_only(&summary));
         assert_eq!(summary["update"]["session_summary"], "t");
         assert!(!Inner::evidence_only(&retry));
+    }
+
+    #[test]
+    fn a_close_counts_chats_and_benchmark_turns_apart() {
+        let runtime = |owned: bool, loading: bool| SessionRuntime {
+            harness: "invented-acp".into(),
+            account_id: None,
+            execution_profile: owned.then(|| "native-text-v1".into()),
+            bridge_session_id: "invented-bridge-session".into(),
+            generation: 1,
+            loading,
+            run: None,
+            steer_queue: VecDeque::new(),
+            snapshot: json!({}),
+            has_model_option: false,
+            substitutions: Vec::new(),
+            last_active: std::time::Instant::now(),
+        };
+        let sessions = [
+            runtime(false, false),
+            runtime(true, true),
+            runtime(true, true),
+            runtime(true, false),
+        ];
+        // Only benchmark turns: the close pauses the runs and says how many
+        // still finish, instead of refusing before anything for a chat.
+        assert_eq!(active_turns(sessions.iter()), (0, 2));
+        let busy_chat = [runtime(false, true), runtime(true, true)];
+        assert_eq!(active_turns(busy_chat.iter()), (1, 1));
     }
 
     #[test]
