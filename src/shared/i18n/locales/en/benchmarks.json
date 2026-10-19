@@ -389,6 +389,7 @@
     "stoppedCredits": "Plan usage spent, credits not allowed, stopped",
     "running": "Running",
     "judging": "Judges",
+    "paused": "Paused",
     "start": "Start",
     "stop": "Stop",
     "stopping": "Stopping…",

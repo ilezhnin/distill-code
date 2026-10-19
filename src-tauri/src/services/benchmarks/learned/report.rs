@@ -786,7 +786,6 @@ impl Store {
             definitions: vec![],
             releases: vec![],
             required_repetitions: 1,
-            suite_exclusions: Default::default(),
         };
         let report = tauri::async_runtime::spawn_blocking(move || evaluate(data, &plan, &model))
             .await

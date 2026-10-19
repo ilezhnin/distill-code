@@ -389,6 +389,7 @@
     "stoppedCredits": "Uso del plan agotado, créditos no permitidos, detenida",
     "running": "En curso",
     "judging": "Jueces",
+    "paused": "En pausa",
     "start": "Iniciar",
     "stop": "Detener",
     "stopping": "Deteniendo…",

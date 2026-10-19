@@ -1112,7 +1112,6 @@ mod tests {
             runs: vec![],
             attempts: vec![],
             required_repetitions: 1,
-            suite_exclusions: Default::default(),
         };
         let result = export(&store, &data, false).await.unwrap();
         let ledger = std::path::Path::new(&result.path).with_file_name("ledger.jsonl");

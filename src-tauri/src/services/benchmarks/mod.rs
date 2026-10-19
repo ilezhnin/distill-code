@@ -371,9 +371,6 @@ impl BenchmarkService {
         }
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
         let releases = self.store.releases().await?;
-        let mut suite_exclusions =
-            analysis::reserved_versions(&versions, &self.store.evaluation_reservations().await?);
-        suite_exclusions.extend(board_exclusions(&self.store.root).await);
         // Every analysis reads this data, so a measurement of an unknown
         // effort is left out of all of them alike, and an attempt its event
         // record stopped is unscored in all of them alike; the store keeps
@@ -386,7 +383,6 @@ impl BenchmarkService {
                 runs,
                 attempts,
                 required_repetitions: analysis::REQUIRED_REPETITIONS,
-                suite_exclusions,
             },
         )))
     }
@@ -969,6 +965,22 @@ impl BenchmarkService {
         }
         let planned = run.request.repetitions.max(1);
         let mut unfinished = false;
+        // A rendering whose panel a stop cut short keeps its sealed answer:
+        // it goes back to its judges instead of being measured again.
+        for attempt in &run.attempts {
+            if attempt.phase == "terminal"
+                && attempt.reason.as_deref() == Some(runner::JUDGING_STOPPED)
+                && attempt.outcome.as_deref() == Some("pending_review")
+                && analysis::score(attempt).is_none()
+            {
+                let mut waiting = attempt.clone();
+                waiting.phase = runner::AWAITING_JUDGES.into();
+                waiting.reason = None;
+                self.store.save_attempt(&waiting).await?;
+                unfinished = true;
+            }
+        }
+        let run = &self.store.run(&run.id).await?;
         for (_, attempts) in analysis::run_cells(run) {
             let measured = attempts.iter().filter(|a| analysis::is_measured(a)).count() as u32;
             if measured >= planned || never_measured(&attempts) {
@@ -1374,26 +1386,5 @@ impl BenchmarkService {
             }
         }
         Ok(())
-    }
-}
-
-/// The owner's suite exclusions from the benchmark settings document. A
-/// missing or unreadable document lists none: the exclusions only narrow
-/// which rows rank, so reading none never lets a private task out.
-async fn board_exclusions(root: &std::path::Path) -> BTreeSet<String> {
-    match tokio::fs::read_to_string(root.join("settings.json")).await {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(settings) => analysis::board_exclusions_from(&settings),
-            Err(error) => {
-                log::warn!("[benchmarks] board exclusions unreadable: {error}");
-                BTreeSet::new()
-            }
-        },
-        Err(error) => {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                log::warn!("[benchmarks] board exclusions unreadable: {error}");
-            }
-            BTreeSet::new()
-        }
     }
 }

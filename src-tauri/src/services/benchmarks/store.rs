@@ -1075,10 +1075,13 @@ impl Store {
     /// closed is completed at the time its last cell settled.
     pub async fn set_run_state_at(&self, id: &str, state: &str, at: i64) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE run_plans SET state=?,revision=revision+1,updated_at=? WHERE id=?")
+        // A turn that fails while the owner stops the run never takes the
+        // stop back: needs_attention leaves a cancelling or cancelled run be.
+        sqlx::query("UPDATE run_plans SET state=?,revision=revision+1,updated_at=? WHERE id=? AND NOT (?='needs_attention' AND state IN ('cancelling','cancelled'))")
             .bind(state)
             .bind(at)
             .bind(id)
+            .bind(state)
             .execute(&mut *tx)
             .await?;
         event(&mut tx, id, "run_changed").await?;
@@ -1196,16 +1199,6 @@ impl Store {
     pub async fn releases(&self) -> Result<Vec<PoolRelease>> {
         self.json_rows("SELECT data_json FROM pool_releases ORDER BY created_at, rowid")
             .await
-    }
-    /// Every family and split group an evaluation reserves, as (kind, value),
-    /// whoever owns it.
-    pub async fn evaluation_reservations(&self) -> Result<Vec<(String, String)>> {
-        sqlx::query("SELECT DISTINCT kind, value FROM evaluation_reservations")
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(|row| Ok((row.try_get("kind")?, row.try_get("value")?)))
-            .collect()
     }
     pub async fn save_release(&self, release: &PoolRelease) -> Result<()> {
         let mut tx = self.pool.begin().await?;

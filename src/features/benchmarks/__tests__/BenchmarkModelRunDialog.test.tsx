@@ -35,6 +35,7 @@ vi.mock("../api/benchmarks", () => ({
     listAttempts: vi.fn(),
     cancelRun: vi.fn(),
     resumeRun: vi.fn(),
+    pauseRun: vi.fn(),
     extendRun: vi.fn(),
     providerDataUse: vi.fn(),
   },
@@ -435,6 +436,37 @@ it("follows the run that measures the model now", async () => {
     ),
   ).toBeChecked();
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
+it("pauses a running run and resumes a paused one from the dialog", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.pauseRun).mockResolvedValue(liveRun("pausing"));
+  show({ runId: "run-2" });
+  const pause = await screen.findByRole("button", { name: "Pause" });
+  expect(pause).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+  expect(screen.getByText("Running")).toBeInTheDocument();
+  await user.click(pause);
+  expect(benchmarkApi.pauseRun).toHaveBeenCalledWith("run-2");
+  cleanup();
+  // Paused: nothing works or ticks; resume picks the run up.
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(liveRun("paused"));
+  vi.mocked(benchmarkApi.resumeRun).mockResolvedValue(liveRun("running"));
+  show({ runId: "run-2" });
+  const resume = await screen.findByRole("button", { name: "Resume" });
+  await waitFor(() => expect(resume).toBeEnabled());
+  expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
+  expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
+  await user.click(resume);
+  expect(benchmarkApi.resumeRun).toHaveBeenCalledWith("run-2");
+});
+
+it("reads a stopping run as cancelling and offers no second stop", async () => {
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(liveRun("cancelling"));
+  show({ runId: "run-2" });
+  expect(await screen.findByText("Cancelling")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Stopping…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
 });
 
 it("shows a stopped run's unfinished tests as cancelled and offers Start again", async () => {

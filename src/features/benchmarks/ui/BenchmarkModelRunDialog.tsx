@@ -43,9 +43,10 @@ import type {
   LeaderboardRow,
   RunRequest,
 } from "../types";
-import { BenchmarkAlert } from "./BenchmarkPrimitives";
+import { BenchmarkAlert, StateBadge } from "./BenchmarkPrimitives";
 import {
   ACTIVE_RUN,
+  FINISHED_RUN,
   listByIds,
   passed,
   TestStatusMark,
@@ -424,6 +425,24 @@ export function BenchmarkModelRunDialog({
       setBusy(false);
     }
   };
+  // Pause lets the running attempts finish and starts no new one; resume
+  // picks the run up where it stopped. The same rules as the run drawer.
+  const control = async (act: (id: string) => Promise<unknown>) => {
+    if (!runId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await act(runId);
+      await client.invalidateQueries({ queryKey: benchmarkKeys });
+    } catch (failure) {
+      setError(benchmarkErrorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // A run that has not finished is steered here: paused, resumed or stopped.
+  const runState = run.data?.state ?? null;
+  const steering = runState != null && !FINISHED_RUN.has(runState);
   const finish = async () => {
     if (!runId) return;
     setBusy(true);
@@ -525,6 +544,7 @@ export function BenchmarkModelRunDialog({
               }
             />
             <span className="flex-1">{t("modelRun.allTests")}</span>
+            {steering ? <StateBadge state={runState} /> : null}
             <span className="text-xs font-normal text-muted-foreground tabular-nums">
               {runActive
                 ? t("modelRun.finished", { settled, total: inRun })
@@ -603,15 +623,51 @@ export function BenchmarkModelRunDialog({
           </ol>
         </DialogBody>
         <DialogFooter>
-          {runActive || stopping ? (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy || stopping}
-              onClick={() => void stop()}
-            >
-              {stopping ? t("modelRun.stopping") : t("modelRun.stop")}
-            </Button>
+          {steering ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy || runState !== "running"}
+                onClick={() => void control(benchmarkApi.pauseRun)}
+              >
+                {t("actions.pause")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  busy ||
+                  !["paused", "needs_attention", "planned"].includes(
+                    runState ?? "",
+                  )
+                }
+                onClick={() => void control(benchmarkApi.resumeRun)}
+              >
+                {t("actions.resume")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                destructive
+                disabled={busy || stopping}
+                onClick={() => void stop()}
+              >
+                {stopping ? t("modelRun.stopping") : t("modelRun.stop")}
+              </Button>
+              {/* A stopped run inside its window can also go on with the
+                  tests it lacks, as the same run. */}
+              {finishing ? (
+                <Button
+                  type="button"
+                  variant="primary"
+                  disabled={busy || (cells.left === 0 && added.length === 0)}
+                  onClick={() => void finish()}
+                >
+                  {t("modelRun.finish")}
+                </Button>
+              ) : null}
+            </>
           ) : finishing ? (
             <Button
               type="button"

@@ -34,7 +34,7 @@ pub(crate) const MAX_JUDGES: usize = 3;
 /// its sheets timed out; every other judge's 90th percentile stays near a
 /// minute, so a fast judge finishes as soon as before.
 pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 600;
-const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
+pub(super) const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
 pub(super) const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
 pub(super) const RENDERER_BUSY: &str =
     "Waiting for local resources to render for the judge panel; evaluate again later";
@@ -11117,6 +11117,51 @@ mod tests {
         )
         .unwrap();
         assert!(!s.preview_run(&req).await.unwrap().valid);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn finish_continues_a_cancelled_run_and_returns_a_stopped_panel_to_its_judges() {
+        let (dir, s, _backend) = setup().await;
+        let mut req = request(&s).await;
+        req.repetitions = 1;
+        let run = s.start_run(req).await.unwrap();
+        // Stopped while its rendering awaited the panel: the answer is sealed,
+        // its verdict missing.
+        let mut stopped = s.store.run(&run.id).await.unwrap().attempts.remove(0);
+        stopped.phase = "terminal".into();
+        stopped.outcome = Some("pending_review".into());
+        stopped.reason = Some(JUDGING_STOPPED.into());
+        stopped.output = Some("sealed answer".into());
+        stopped.started_at = Some(1);
+        stopped.finished_at = Some(2);
+        s.store.save_attempt(&stopped).await.unwrap();
+        s.store.set_run_state(&run.id, "cancelled").await.unwrap();
+        let finished = s.extend_run(&run.id, &[]).await.unwrap();
+        // The same run goes on, and the answer waits for its judges again.
+        assert_eq!(finished.id, run.id);
+        assert_eq!(finished.state, "running");
+        let revived = s.store.attempt(&stopped.id).await.unwrap();
+        assert_eq!(revived.phase, AWAITING_JUDGES);
+        assert_eq!(revived.outcome.as_deref(), Some("pending_review"));
+        assert_eq!(revived.reason, None);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn a_failing_turn_never_takes_a_stop_back() {
+        let (dir, s, _backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.store.set_run_state(&run.id, "cancelling").await.unwrap();
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelling");
+        s.store.set_run_state(&run.id, "cancelled").await.unwrap();
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelled");
         dir.close().await;
     }
     /// [`request`] flown one attempt at a time, so a refused turn is the

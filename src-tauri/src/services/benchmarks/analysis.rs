@@ -897,16 +897,6 @@ pub(super) fn is_ranked_split(split: &str) -> bool {
     matches!(split, "train" | "held_out")
 }
 
-/// The ranked pool a board measures: the suite. A case an evaluation
-/// reserves or the owner lists apart enters no count, rating, attempt total
-/// or cohort there; the case tracker still reads every pool case.
-fn suite_pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a BenchmarkVersion> {
-    ranked_pool(data, query)
-        .into_iter()
-        .filter(|v| !data.suite_exclusions.contains(&v.id))
-        .collect()
-}
-
 pub(super) fn ranked_pool<'a>(
     data: &'a QueryData,
     query: &ResultQuery,
@@ -985,64 +975,6 @@ pub fn case_tracker(data: &QueryData) -> Vec<CaseStats> {
                 smoke: models >= 2 && passed == models,
             }
         })
-        .collect()
-}
-
-/// The versions the owner lists apart from the measurement suite in the
-/// benchmark settings document: `boardExclusions`, an array of version ids.
-/// Anything else in it is ignored.
-pub fn board_exclusions_from(settings: &serde_json::Value) -> BTreeSet<String> {
-    settings["boardExclusions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The versions an evaluation reserves: every version whose family or split
-/// group a reservation names, closed over the families and groups those
-/// versions share, the closure a reserved campaign refuses ordinary runs by.
-pub fn reserved_versions(
-    versions: &[BenchmarkVersion],
-    reservations: &[(String, String)],
-) -> BTreeSet<String> {
-    let group =
-        |version: &BenchmarkVersion| super::export::split_group(&version.manifest).to_owned();
-    let mut families: BTreeSet<String> = BTreeSet::new();
-    let mut groups: BTreeSet<String> = BTreeSet::new();
-    for (kind, value) in reservations {
-        if kind == "family" {
-            families.insert(value.clone());
-        } else {
-            groups.insert(value.clone());
-        }
-    }
-    if families.is_empty() && groups.is_empty() {
-        return BTreeSet::new();
-    }
-    loop {
-        let before = (families.len(), groups.len());
-        for version in versions {
-            let split_group = group(version);
-            if families.contains(&version.manifest.task_family) || groups.contains(&split_group) {
-                families.insert(version.manifest.task_family.clone());
-                groups.insert(split_group);
-            }
-        }
-        if before == (families.len(), groups.len()) {
-            break;
-        }
-    }
-    versions
-        .iter()
-        .filter(|version| {
-            families.contains(&version.manifest.task_family) || groups.contains(&group(version))
-        })
-        .map(|version| version.id.clone())
         .collect()
 }
 
@@ -1338,7 +1270,7 @@ fn leaderboard_counting(data: &QueryData, query: &ResultQuery, own: OwnCases) ->
             .iter()
             .filter(|attempt| !judge_flagged(attempt, hidden))
             .collect::<Vec<_>>(),
-        suite_pool(data, query),
+        ranked_pool(data, query),
         own,
     )
 }
@@ -1477,9 +1409,6 @@ fn measurement_report(
         pool.iter().map(|v| (v.id.as_str(), *v)).collect();
     let published: BTreeMap<&str, &BenchmarkVersion> =
         data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
-    // The measurement suite: the pool without what an evaluation reserves or
-    // the owner lists apart.
-    let in_suite = |v: &BenchmarkVersion| !data.suite_exclusions.contains(&v.id);
     let runs: BTreeMap<&str, &BenchmarkRun> = data
         .runs
         .iter()
@@ -1775,11 +1704,10 @@ fn measurement_report(
             });
             let (passed, scored, quality) = (overall.passed, overall.scored, overall.quality);
             let complete = overall.complete;
-            // The measurement suite: the eligible cases no evaluation holds
-            // back. A row is fully tested when each has a complete cell; the
-            // cell completed when its last scored repetition settled.
-            let suite: Vec<&BenchmarkVersion> =
-                eligible.iter().copied().filter(|v| in_suite(v)).collect();
+            // The measurement suite: every eligible case. A row is fully
+            // tested when each has a complete cell; the cell completed when
+            // its last scored repetition settled.
+            let suite: Vec<&BenchmarkVersion> = eligible.clone();
             let suite_planned = suite.len() as u32;
             let suite_complete = suite
                 .iter()
@@ -1915,18 +1843,11 @@ fn measurement_report(
     // row covers it, else the suite most comparable rows share (then the
     // larger, then the first by id). Only the rows whose suite differs lose
     // the rank.
-    // The points also average any scored case outside the suite (one an
-    // evaluation reserved after a run measured it), so ranked rows must share
-    // those too.
     let suite_of = |row: &LeaderboardRow| -> Vec<String> {
-        let mut set: BTreeSet<String> = pool
-            .iter()
-            .filter(|v| in_suite(v))
+        pool.iter()
             .filter(|v| own == OwnCases::Counted || !row.own_version_ids.contains(&v.id))
             .map(|v| v.id.clone())
-            .collect();
-        set.extend(row.scored_version_ids.iter().cloned());
-        set.into_iter().collect()
+            .collect()
     };
     let suites: Vec<Vec<String>> = rows.iter().map(suite_of).collect();
     let mut ranked_sets: BTreeMap<&Vec<String>, usize> = BTreeMap::new();
@@ -1935,11 +1856,7 @@ fn measurement_report(
             *ranked_sets.entry(suite).or_default() += 1;
         }
     }
-    let full_suite: Vec<String> = pool
-        .iter()
-        .filter(|v| in_suite(v))
-        .map(|v| v.id.clone())
-        .collect();
+    let full_suite: Vec<String> = pool.iter().map(|v| v.id.clone()).collect();
     let reference = if ranked_sets.contains_key(&full_suite) {
         Some(full_suite)
     } else {
@@ -2083,7 +2000,7 @@ fn recalculated_history_report(
             data,
             &ResultQuery::default(),
             &selected,
-            suite_pool(data, &ResultQuery::default()),
+            ranked_pool(data, &ResultQuery::default()),
             OwnCases::Counted,
         )
     };
@@ -2198,7 +2115,7 @@ fn history_for(
         })
         .collect();
     // Today's pool: what every point is recalculated on.
-    let current_pool = suite_pool(data, &ResultQuery::default());
+    let current_pool = ranked_pool(data, &ResultQuery::default());
     let current: BTreeSet<&str> = current_pool.iter().map(|v| v.id.as_str()).collect();
     // The counted attempts of each run: its settled, unsuperseded cells.
     let mut cells: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
@@ -2708,7 +2625,6 @@ pub(super) mod tests {
             // The fixtures measure one repetition per case; the product
             // protocol of `REQUIRED_REPETITIONS` has its own tests.
             required_repetitions: 1,
-            suite_exclusions: Default::default(),
         }
     }
     /// A case published at `at` whose family no run has measured yet.
@@ -2776,65 +2692,6 @@ pub(super) mod tests {
         assert_eq!(row.fully_tested_at, Some(2));
     }
     #[test]
-    fn a_case_an_evaluation_reserves_is_no_part_of_the_suite() {
-        let mut data = dataset();
-        add_case(&mut data, 6, 10);
-        // A holdout reserves the new case's family: the suite is whole again,
-        // and the board leaves the case out of every count.
-        data.suite_exclusions =
-            reserved_versions(&data.versions, &[("family".into(), "family-6".into())]);
-        assert_eq!(data.suite_exclusions, BTreeSet::from(["v6".to_owned()]));
-        let row = standing(&data);
-        assert_eq!((row.suite_complete, row.suite_planned), (6, 6));
-        assert_eq!(row.planned, row.suite_planned);
-        assert_eq!(row.status, "comparable");
-        assert_eq!(row.fully_tested_at, Some(2));
-        // Neither the cohort nor a row's cells carry the reserved case.
-        let mut measured = data.attempts[0].clone();
-        measured.id = "after-v6".into();
-        measured.version_id = "v6".into();
-        measured.run_id = "after".into();
-        data.attempts.push(measured);
-        let report = leaderboard(&data, &ResultQuery::default());
-        assert!(!report
-            .cohort
-            .unwrap()
-            .version_ids
-            .contains(&"v6".to_owned()));
-        assert!(!report.rows[0].attempt_ids.contains(&"after-v6".to_owned()));
-        assert_eq!(report.rows[0].scored, 6);
-        // The case tracker still reads it, so its stats stay visible.
-        let tracked = case_tracker(&data);
-        assert_eq!(
-            tracked
-                .iter()
-                .find(|case| case.version_id == "v6")
-                .unwrap()
-                .models,
-            1
-        );
-    }
-    #[test]
-    fn an_unlisted_held_out_case_joins_the_suite_and_a_listed_one_does_not() {
-        let mut data = dataset();
-        add_case(&mut data, 6, 10);
-        data.versions[6].manifest.split = "held_out".into();
-        // Nobody ran it: it is still owed, nothing infers it away.
-        let row = standing(&data);
-        assert_eq!((row.suite_complete, row.suite_planned), (6, 7));
-        assert_eq!(row.status, "preliminary");
-        // The owner lists it apart, and reservations add to the list.
-        data.suite_exclusions = BTreeSet::from(["v6".to_owned()]);
-        data.suite_exclusions.extend(reserved_versions(
-            &data.versions,
-            &[("family".into(), "family-5".into())],
-        ));
-        let row = standing(&data);
-        assert_eq!((row.suite_complete, row.suite_planned), (5, 5));
-        assert_eq!(row.planned, row.suite_planned);
-        assert_eq!(row.status, "comparable");
-    }
-    #[test]
     fn a_history_point_lists_a_refused_case_as_refused() {
         let mut data = dataset();
         for attempt in data.attempts.iter_mut().filter(|a| a.id == "after-v5") {
@@ -2899,33 +2756,6 @@ pub(super) mod tests {
         let hidden = row(Some(vec!["sameVendor".into(), "ownModel".into()]));
         assert_eq!((hidden.suite_complete, hidden.suite_planned), (5, 6));
         assert_eq!(hidden.status, "preliminary");
-    }
-    #[test]
-    fn the_owner_lists_suite_exclusions_by_version_id() {
-        let settings = serde_json::json!({
-            "timeLimitMinutes": 240,
-            "boardExclusions": ["v1", " v2 ", "", 7, "v1"]
-        });
-        assert_eq!(
-            board_exclusions_from(&settings),
-            BTreeSet::from(["v1".to_owned(), "v2".to_owned()])
-        );
-        assert!(board_exclusions_from(&serde_json::json!({})).is_empty());
-        assert!(board_exclusions_from(&serde_json::Value::Null).is_empty());
-    }
-    #[test]
-    fn a_reservation_closes_over_shared_families_and_groups() {
-        let mut data = dataset();
-        // v1 shares a split group with v0's family; v2 shares v1's family.
-        data.versions[1].manifest.environment = serde_json::json!({ "splitGroup": "shared" });
-        data.versions[0].manifest.environment = serde_json::json!({ "splitGroup": "shared" });
-        data.versions[2].manifest.task_family = "family-1".into();
-        let reserved = reserved_versions(&data.versions, &[("family".into(), "family-0".into())]);
-        assert_eq!(
-            reserved,
-            BTreeSet::from(["v0".to_owned(), "v1".to_owned(), "v2".to_owned()])
-        );
-        assert!(reserved_versions(&data.versions, &[]).is_empty());
     }
     #[test]
     fn the_full_date_is_the_last_moment_every_published_case_was_complete() {

@@ -1200,12 +1200,6 @@ pub struct QueryData {
     /// The protocol the ledger is read under: how many scored repetitions a
     /// cell needs before its case counts. A case may declare more.
     pub required_repetitions: u32,
-    /// Pool cases outside the measurement suite a row must cover to count as
-    /// fully tested: the ones an evaluation reserves (a holdout plan or a
-    /// workflow campaign names their family or split group) and the ones the
-    /// owner lists in the benchmark settings (`boardExclusions`). Boards
-    /// leave them out of every count; the case tracker still reads them.
-    pub suite_exclusions: std::collections::BTreeSet<String>,
 }
 
 fn is_zero(value: &u32) -> bool {

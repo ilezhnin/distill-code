@@ -54,6 +54,11 @@ export type TestStatus =
     }
   | { kind: "running"; startedAt: number | null }
   | { kind: "judging"; startedAt: number | null }
+  /**
+   * A test that was working or awaiting its judges when its run paused:
+   * nothing moves until the run resumes, so no clock runs.
+   */
+  | { kind: "paused"; runState: string }
   | {
       kind: "scored";
       /** Mean score of the repetitions, 0 to 1. */
@@ -157,10 +162,15 @@ export function testStatus(
   if (attempts.length === 0) return null;
   const runFinished = runState != null && FINISHED_RUN.has(runState);
   const working = attempts.find((a) => WORKING.has(a.phase));
-  if (working) return { kind: "running", startedAt: working.startedAt ?? null };
   const judging = attempts.find(
     (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
   );
+  // A paused run neither works nor judges: its cells wait for it to
+  // resume. A stopping or cancelling run may still land a flight, so its
+  // cells keep their clock.
+  if ((working || judging) && runState === "paused")
+    return { kind: "paused", runState };
+  if (working) return { kind: "running", startedAt: working.startedAt ?? null };
   if (judging) return { kind: "judging", startedAt: judging.startedAt ?? null };
   // A test the runner put back in the queue with a reason waits on its
   // provider: a usage limit, a sign-in renewal or the operator.
@@ -319,6 +329,12 @@ export function TestStatusMark({
           {t("modelRun.judging")}
           {time(since(status.startedAt))}
           <Spinner decorative className="size-4" />
+        </span>
+      );
+    case "paused":
+      return (
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {t("modelRun.paused")}
         </span>
       );
     case "scored":

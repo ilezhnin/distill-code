@@ -1165,7 +1165,6 @@ mod tests {
             runs: Vec::new(),
             attempts: Vec::new(),
             required_repetitions: 1,
-            suite_exclusions: Default::default(),
         };
         let received = analyze(Arc::new(data), move |_| {
             receiver
