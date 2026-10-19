@@ -1486,7 +1486,7 @@ pub(crate) async fn invoke_bounded(
     let deadline = now.saturating_add(timeout.as_millis().min(u64::MAX as u128) as u64);
     let admission_deadline = deadline.min(now.saturating_add(300_000));
     let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
-    let lease = admit(admission_deadline, || {
+    let lease = admit_in_turn(class, admission_deadline, || {
         reserve_with_buffers(class, id, deadline, host_buffers)
     })
     .await?;
@@ -1594,7 +1594,8 @@ async fn invoke_once_admitted_as(
         ));
     }
     let host_buffers = cap.saturating_mul(2).saturating_add(TAIL_BYTES * 2);
-    let lease = admit(
+    let lease = admit_in_turn(
+        class,
         admission_window(admit_until_ms, deadline_ms),
         move || async move {
             let until = now_ms()?.saturating_add(run_after_admission(run, deadline_ms)?);
@@ -1649,6 +1650,46 @@ fn admission_queue_expired() -> io::Error {
 /// busy, until `admission_deadline`. A window that closes in the queue is the
 /// queue's refusal, whichever check sees it first: the broker's last busy
 /// answer, or the deadline check before the next ask.
+/// One ask of each resource class is in flight to the broker at a time; the
+/// other askers wait here, in the app, in turn for each ask. Every ask starts
+/// processes inside the distribution (`wsl.exe`, the broker, its timeout), so
+/// a burst of jobs waiting for room used to cost one each per second per job:
+/// on 10-18 a rescore's 122 waiting renders exhausted the sandbox's process
+/// budget, which failed their cleanups and the lane cells' own setup. Now a
+/// burst costs one ask at a time per class, a class's burst never holds
+/// another class's askers, and since the turn is held for one ask, not for
+/// the whole wait, the broker still chooses among every waiting job. How many
+/// jobs run stays the broker's measured decision; this bounds only the
+/// asking.
+static ADMISSION_TURNS: [tokio::sync::Mutex<()>; 6] =
+    [const { tokio::sync::Mutex::const_new(()) }; 6];
+
+/// [`admit`], each ask in its turn among the askers of `class`; the wait for
+/// a turn comes off the same admission window.
+async fn admit_in_turn<L, F>(
+    class: ResourceClass,
+    admission_deadline: u64,
+    mut reserve: impl FnMut() -> F,
+) -> io::Result<L>
+where
+    F: std::future::Future<Output = io::Result<L>>,
+{
+    admit(admission_deadline, || {
+        let ask = reserve();
+        async move {
+            let window = remaining_ms(admission_deadline).map_err(|_| admission_queue_expired())?;
+            let _turn = tokio::time::timeout(
+                Duration::from_millis(window),
+                ADMISSION_TURNS[class as usize].lock(),
+            )
+            .await
+            .map_err(|_| admission_queue_expired())?;
+            ask.await
+        }
+    })
+    .await
+}
+
 async fn admit<L, F>(admission_deadline: u64, mut reserve: impl FnMut() -> F) -> io::Result<L>
 where
     F: std::future::Future<Output = io::Result<L>>,
@@ -3769,6 +3810,67 @@ mod tests {
         .await
         .unwrap();
         assert_eq!((granted, asks), (7, 2));
+    }
+
+    /// 10-18: a rescore's 122 renders waiting for room each asked the broker
+    /// every second, and the processes those asks started exhausted the
+    /// sandbox's process budget. One asker per class asks at a time now.
+    #[tokio::test]
+    async fn askers_of_one_class_ask_the_broker_in_turn_and_never_hold_another_class() {
+        let (release, granted) = tokio::sync::oneshot::channel::<()>();
+        let release = std::sync::Mutex::new(Some(release));
+        let first_asks = std::sync::atomic::AtomicUsize::new(0);
+        let second_asks = std::sync::atomic::AtomicUsize::new(0);
+        let gate = tokio::sync::Mutex::new(Some(granted));
+        let deadline = now_ms().unwrap() + 60_000;
+        // The first renders' asker waits for room until the test lets it in.
+        // An ask counts once it runs, in its turn, not when it is made.
+        let (first_counter, second_counter, gate) = (&first_asks, &second_asks, &gate);
+        let first = admit_in_turn(ResourceClass::Browser, deadline, || async move {
+            first_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            {
+                if let Some(granted) = gate.lock().await.take() {
+                    let _ = granted.await;
+                }
+                Ok::<_, io::Error>(1)
+            }
+        });
+        let second = async {
+            // Behind it, the next render asks only once the first got room.
+            tokio::task::yield_now().await;
+            let asked = admit_in_turn(ResourceClass::Browser, deadline, || async move {
+                second_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, io::Error>(2)
+            });
+            let other = async {
+                // A preparation is never held by the renders' turn.
+                let prepared = admit_in_turn(ResourceClass::Preparation, deadline, || async {
+                    Ok::<_, io::Error>(3)
+                })
+                .await
+                .unwrap();
+                assert_eq!(prepared, 3);
+                assert_eq!(second_asks.load(std::sync::atomic::Ordering::SeqCst), 0);
+                if let Some(release) = release.lock().unwrap().take() {
+                    let _ = release.send(());
+                }
+            };
+            let (asked, ()) = tokio::join!(asked, other);
+            asked
+        };
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!((first.unwrap(), second.unwrap()), (1, 2));
+        assert_eq!(first_asks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_asks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A window that closes while waiting for the turn is the queue's
+        // refusal, unscored.
+        let _held = ADMISSION_TURNS[ResourceClass::Check as usize].lock().await;
+        let expired = admit_in_turn(ResourceClass::Check, now_ms().unwrap() + 50, || async {
+            Ok::<_, io::Error>(4)
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(expired.kind(), io::ErrorKind::WouldBlock);
     }
 
     /// A collection, check or later step that waits for room keeps its whole

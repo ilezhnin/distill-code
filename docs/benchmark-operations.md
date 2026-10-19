@@ -286,7 +286,12 @@ naming the line that holds it, while it does not:
 
 No count bounds how many jobs run: as many run as the measured CPUs, memory
 and pressure admit without errors in the sandbox, and as the providers take
-without rate-limit answers. The only fixed amounts are safety margins,
+without rate-limit answers. Jobs waiting for room ask the broker one ask per
+resource class at a time, the others waiting in the app in turn for each ask
+(so the broker still chooses among all of them): every ask
+starts processes inside the distribution, and a burst of waiting renders
+asking each second once exhausted its process budget (10-18). A render
+refused room before it started cleans nothing. The only fixed amounts are safety margins,
 fairness ceilings and starting points, never counts of jobs: the 12 GiB
 available-RAM and 8 GiB commit floors on Windows, the 2 GiB guest-memory floor
 and the 30 GiB sandbox-volume floor; each job's own ceilings by class (a
