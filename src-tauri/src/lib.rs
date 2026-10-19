@@ -554,7 +554,12 @@ pub(crate) mod test_support {
                 pool.close().await;
                 // A connection released just before is still on its way back
                 // to the pool; that task closes it now that the pool is closed.
-                let closed = tokio::time::timeout(Duration::from_secs(10), async {
+                // Closing the last connection checkpoints the WAL into the
+                // database file on sqlx's worker thread, disk work that a
+                // loaded CI runner can stretch past 10 s (10-19: Windows CI,
+                // 650 s of tests in parallel); a database a task really holds
+                // still fails here, only later.
+                let closed = tokio::time::timeout(Duration::from_secs(120), async {
                     while pool.size() > 0 {
                         tokio::time::sleep(Duration::from_millis(1)).await;
                     }

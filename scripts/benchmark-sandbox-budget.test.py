@@ -1,6 +1,7 @@
 """Invented admission fixtures. No WSL changes, provider calls or private tasks."""
 import contextlib
 import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -17,6 +18,16 @@ import time
 import types
 import unittest
 
+
+def load_source(name, path):
+    """Loads an extensionless helper script as a module; `load_module` is
+    gone from current Python, so this is the spec route it stood for."""
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
 sys.dont_write_bytecode = True
 
 # fcntl is Linux-only. Tests replace its boundary with a thread lock; production
@@ -24,8 +35,8 @@ sys.dont_write_bytecode = True
 if sys.platform == 'win32':
     sys.modules['fcntl'] = types.SimpleNamespace()
 source = Path(__file__).parent.parent / 'src-tauri/resources/benchmark-sandbox/bench-budget'
-budget = importlib.machinery.SourceFileLoader('benchmark_budget_fixture', str(source)).load_module()
-unpack = importlib.machinery.SourceFileLoader('benchmark_unpack_fixture', str(source.with_name('bench-unpack'))).load_module()
+budget = load_source('benchmark_budget_fixture', str(source))
+unpack = load_source('benchmark_unpack_fixture', str(source.with_name('bench-unpack')))
 production_scratch_headroom = budget.scratch_headroom
 production_state = budget.STATE
 production_stop = budget.stop

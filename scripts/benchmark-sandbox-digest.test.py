@@ -2,6 +2,7 @@
 import contextlib
 import hashlib
 import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -12,9 +13,19 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
+
+def load_source(name, path):
+    """Loads an extensionless helper script as a module; `load_module` is
+    gone from current Python, so this is the spec route it stood for."""
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).resolve().parents[1] / 'src-tauri/resources/benchmark-sandbox/bench-digest'
-digest = importlib.machinery.SourceFileLoader('benchmark_digest_fixture', str(SOURCE)).load_module()
+digest = load_source('benchmark_digest_fixture', str(SOURCE))
 production_os = digest.os
 production_protected = digest.protected
 

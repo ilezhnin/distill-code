@@ -3,6 +3,7 @@ provider. Runs on Windows with ownership and mode shims, and with real root
 ownership and modes as root on Linux (`sudo python3 -I <this file>`)."""
 import contextlib
 import importlib.machinery
+import importlib.util
 import io
 import os
 from pathlib import Path
@@ -16,9 +17,19 @@ import time
 from types import SimpleNamespace
 import unittest
 
+
+def load_source(name, path):
+    """Loads an extensionless helper script as a module; `load_module` is
+    gone from current Python, so this is the spec route it stood for."""
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).resolve().parents[1] / 'src-tauri/resources/benchmark-sandbox/bench-unpack'
-unpack = importlib.machinery.SourceFileLoader('benchmark_snapshot_cache_fixture', str(SOURCE)).load_module()
+unpack = load_source('benchmark_snapshot_cache_fixture', str(SOURCE))
 production = SimpleNamespace(os=unpack.os, trusted=unpack.trusted, CACHE=unpack.CACHE,
                              CACHE_BYTES=unpack.CACHE_BYTES, CACHE_ENTRIES=unpack.CACHE_ENTRIES)
 LINUX_ROOT = os.name == 'posix' and os.geteuid() == 0
