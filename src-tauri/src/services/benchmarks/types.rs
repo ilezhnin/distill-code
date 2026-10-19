@@ -652,6 +652,11 @@ pub struct Attempt {
     /// knows: a usage limit's reset or retry, a sign-in's renewal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_until: Option<i64>,
+    /// Tries of this attempt the provider refused before any answer under a
+    /// run that forbids retries. Kept with the attempt, so an operator's
+    /// resume never resets the bound on in-place retries.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pre_answer_refusals: u32,
     pub session_id: Option<String>,
     pub host_run_id: Option<String>,
     pub observed: Option<Configuration>,
@@ -1201,4 +1206,8 @@ pub struct QueryData {
     /// owner lists in the benchmark settings (`boardExclusions`). They stay
     /// on the boards.
     pub suite_exclusions: std::collections::BTreeSet<String>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }

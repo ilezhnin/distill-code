@@ -150,7 +150,7 @@ async fn execution_limits_a_substituted_model_goes_again_on_the_same_attempt() {
 #[tokio::test]
 async fn execution_limits_substitutions_that_persist_stop_for_the_operator_unsettled() {
     let (dir, service, backend) = setup().await;
-    backend.wrong_selections.store(3, Ordering::SeqCst);
+    backend.wrong_selections.store(4, Ordering::SeqCst);
     let run = service
         .start_run(bounded_request(&service).await)
         .await
@@ -166,7 +166,23 @@ async fn execution_limits_substitutions_that_persist_stop_for_the_operator_unset
     assert_eq!(stopped.attempts.len(), 1);
     assert_eq!(stopped.attempts[0].phase, "pending");
     assert!(stopped.attempts[0].outcome.is_none());
-    forget_quota_waits(&run.id);
+    assert_eq!(stopped.attempts[0].pre_answer_refusals, 3);
+    // The bound survives the operator's resume: the same refusal once more
+    // settles the cell instead of cycling forever.
+    service.control(&run.id, "resume").await.unwrap();
+    let mut held = service.store.run(&run.id).await.unwrap().attempts[0].clone();
+    held.wait_until = None;
+    service.store.save_attempt(&held).await.unwrap();
+    for _ in 0..3 {
+        service.tick().await.unwrap();
+    }
+    let settled = service.store.run(&run.id).await.unwrap();
+    assert_eq!(settled.attempts.len(), 1);
+    assert_eq!(settled.attempts[0].phase, "terminal");
+    assert_eq!(
+        settled.attempts[0].outcome.as_deref(),
+        Some("selection_changed")
+    );
     dir.close().await;
 }
 

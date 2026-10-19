@@ -2632,6 +2632,7 @@ pub(super) mod tests {
             versions
                 .iter()
                 .map(|version| Attempt {
+                    pre_answer_refusals: 0,
                     id: format!("{run}-{}", version.id),
                     run_id: run.into(),
                     version_id: version.id.clone(),

@@ -123,6 +123,7 @@ fn pending_attempt(
     repetition: u32,
 ) -> Attempt {
     Attempt {
+        pre_answer_refusals: 0,
         id: uuid::Uuid::new_v4().to_string(),
         run_id: run_id.to_owned(),
         version_id: version_id.to_owned(),

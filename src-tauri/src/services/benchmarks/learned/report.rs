@@ -296,6 +296,40 @@ fn collect(data: &QueryData, plan: &HoldoutPlan) -> Result<(Vec<ReportCase>, Vec
     Ok((kept, excluded))
 }
 
+/// A first cell settled without a usable measurement. Only a provider's or
+/// the infrastructure's outcome may lose its group: an operator's
+/// cancellation, or an attempt the run forbade to replay, would let a stop
+/// choose which groups leave, so the report refuses instead and is never
+/// saved. The settled outcomes go into the reason.
+fn unusable(
+    run: &BenchmarkRun,
+    attempts: &[&Attempt],
+    required: usize,
+    reason: &str,
+) -> Result<CellEvidence> {
+    let outcomes: Vec<&str> = attempts
+        .iter()
+        .filter_map(|a| a.outcome.as_deref())
+        .collect();
+    if (run.state == "cancelled" && attempts.len() < required)
+        || outcomes
+            .iter()
+            .any(|o| matches!(*o, "cancelled" | "dispatch_uncertain" | "interrupted"))
+    {
+        return Err(incomplete(
+            "A first measurement was cancelled or forbidden to replay; an operator's stop never loses a group",
+        ));
+    }
+    Ok(CellEvidence::Unusable {
+        run_id: run.id.clone(),
+        reason: if outcomes.is_empty() {
+            reason.to_owned()
+        } else {
+            format!("[{}] {reason}", outcomes.join(", "))
+        },
+    })
+}
+
 /// The first measurement of one frozen cell. A cell still being measured, or
 /// not yet planned, keeps the whole report waiting; a cell that settled
 /// without a usable first measurement is unusable for good.
@@ -347,11 +381,12 @@ fn first_cell(
             || run.request.repetitions != frozen.required_repetitions
             || run.request.timeout_seconds < frozen.minimum_timeout_seconds
         {
-            return Ok(CellEvidence::Unusable {
-                run_id: run.id.clone(),
-                reason: "first run does not match the frozen runtime, repetitions or timeout"
-                    .into(),
-            });
+            return unusable(
+                run,
+                &[],
+                frozen.required_repetitions as usize,
+                "first run does not match the frozen runtime, repetitions or timeout",
+            );
         }
         let mut attempts: Vec<_> = data
             .attempts
@@ -383,10 +418,12 @@ fn first_cell(
                 })
             })
         {
-            return Ok(CellEvidence::Unusable {
-                    run_id: run.id.clone(),
-                    reason: "first cell is incomplete or acknowledged another runtime; later runs cannot replace it".into(),
-                });
+            return unusable(
+                run,
+                &attempts,
+                frozen.required_repetitions as usize,
+                "first cell is incomplete or acknowledged another runtime; later runs cannot replace it",
+            );
         }
         // Every first attempt settled, so a refusal here is final.
         let repeats: Result<Vec<_>> = attempts
@@ -400,10 +437,12 @@ fn first_cell(
         let repeats = match repeats {
             Ok(repeats) => repeats,
             Err(error) => {
-                return Ok(CellEvidence::Unusable {
-                    run_id: run.id.clone(),
-                    reason: error.message,
-                })
+                return unusable(
+                    run,
+                    &attempts,
+                    frozen.required_repetitions as usize,
+                    &error.message,
+                )
             }
         };
         Ok(CellEvidence::Complete(ReportCell {
@@ -609,6 +648,15 @@ fn evaluate(data: QueryData, plan: &HoldoutPlan, model: &LearnedModel) -> Result
         .map(|e| &e.group)
         .collect::<BTreeSet<_>>()
         .len();
+    let uncapped: BTreeSet<&str> = plan
+        .configurations
+        .iter()
+        .map(|c| c.provider_id.as_str())
+        .filter(|p| !super::super::runner::OUTPUT_CAP_PROVIDERS.contains(p))
+        .collect();
+    if !uncapped.is_empty() {
+        limitations.push(format!("An output-token stop of these providers' CLIs is not recognized and would lose its group instead of scoring zero: {}", uncapped.into_iter().collect::<Vec<_>>().join(", ")));
+    }
     if lost > 0 {
         limitations.push(format!("{lost} groups left every arm because a first measurement settled unusable; the remaining groups need not be representative if such failures follow task difficulty"));
     }
