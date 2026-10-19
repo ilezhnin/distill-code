@@ -531,6 +531,19 @@ const GROUP_BUSY: &str =
 const RESERVATION_UNANSWERED: &str =
     "resource_busy: the sandbox broker did not answer the reservation in time; no provider process started";
 
+const ADMISSION_UNANSWERED: &str =
+    "resource_busy: the sandbox admission check did not answer in time; no provider process started";
+
+/// A broker ask that timed out while its deadline still holds is `refusal`
+/// (WouldBlock): the attempt is asked for again. Any other error stays.
+fn unanswered(error: io::Error, deadline_ms: u64, refusal: &'static str) -> io::Error {
+    if error.kind() == io::ErrorKind::TimedOut && remaining_ms(deadline_ms).is_ok() {
+        io::Error::new(io::ErrorKind::WouldBlock, refusal)
+    } else {
+        error
+    }
+}
+
 /// Whether `error` from [`reserve`] refused the session before anything of
 /// it existed in Linux: the host's own refusals and the broker's, which it
 /// raises before making the session's groups or lease. A busy control group
@@ -552,18 +565,9 @@ pub(crate) async fn reserve(
     deadline_ms: u64,
     continuing: bool,
 ) -> io::Result<Reservation> {
-    let mut reservation =
-        match reserve_with_buffers_for(class, id, deadline_ms, 0, continuing, false).await {
-            Err(error)
-                if error.kind() == io::ErrorKind::TimedOut && remaining_ms(deadline_ms).is_ok() =>
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    RESERVATION_UNANSWERED,
-                ))
-            }
-            answer => answer?,
-        };
+    let mut reservation = reserve_with_buffers_for(class, id, deadline_ms, 0, continuing, false)
+        .await
+        .map_err(|error| unanswered(error, deadline_ms, RESERVATION_UNANSWERED))?;
     reservation.admission.host_cpus = std::thread::available_parallelism()
         .ok()
         .and_then(|count| u32::try_from(count.get()).ok());
@@ -617,16 +621,29 @@ async fn admission_answer(
     if !out.success() && out.reason().contains("resource_busy:") {
         return Err(admission_refusal(out.reason()));
     }
-    // A cgroup busy for a moment (EBUSY while another job's group is reaped,
-    // EEXIST while an expired lease of the same name is) refused this
-    // admission before anything started: wait like any other local refusal
-    // instead of failing the run's storage.
-    let reason = out.reason();
-    if !out.success() && (reason.contains("[Errno 16]") || reason.contains("[Errno 17]")) {
+    if !out.success() && group_busy(&out.reason()) {
         return Err(io::Error::new(io::ErrorKind::WouldBlock, GROUP_BUSY));
     }
     let out = out.require_success("resource admission")?;
     Ok(serde_json::from_slice(&out.stdout)?)
+}
+
+/// Whether a failed admission was the control group busy for a moment, before
+/// anything started: EBUSY while another job's group is reaped, EEXIST while
+/// an expired lease of the same name is, EAGAIN or ENOMEM (or Python's own
+/// MemoryError) while the supervisors' shared control group is at its limit.
+/// Such an admission waits like any other local refusal instead of failing
+/// the run's storage.
+fn group_busy(reason: &str) -> bool {
+    [
+        "[Errno 11]",
+        "[Errno 12]",
+        "[Errno 16]",
+        "[Errno 17]",
+        "MemoryError",
+    ]
+    .iter()
+    .any(|code| reason.contains(code))
 }
 
 /// A broker refusal from `reason`, the output tail: from its `resource_busy:`
@@ -651,15 +668,9 @@ pub(crate) async fn admits(
     deadline_ms: u64,
     continuing: bool,
 ) -> io::Result<()> {
-    let value = match admission_answer("admits", class, id, deadline_ms, 0, continuing, false).await {
-        Err(error) if error.kind() == io::ErrorKind::TimedOut && remaining_ms(deadline_ms).is_ok() => {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "resource_busy: the sandbox admission check did not answer in time; no provider process started",
-            ))
-        }
-        answer => answer?,
-    };
+    let value = admission_answer("admits", class, id, deadline_ms, 0, continuing, false)
+        .await
+        .map_err(|error| unanswered(error, deadline_ms, ADMISSION_UNANSWERED))?;
     if value["admits"] != true || value["id"] != id || value["class"] != class.key() {
         return Err(io::Error::other(
             "capability_missing: malformed sandbox admission answer",
@@ -1516,14 +1527,17 @@ async fn leased_class<'a>(
     if program != "/usr/local/sbin/bench-judge" {
         return Ok(Some((class, id)));
     }
-    let response = invoke_raw(
-        "/usr/local/sbin/bench-budget",
-        &["check-class", id],
-        None,
-        64,
-        Duration::from_secs(5),
-        None,
-    )
+    let ask = ["check-class", id];
+    let response = once_more_if_timed_out(|| {
+        invoke_raw(
+            "/usr/local/sbin/bench-budget",
+            &ask,
+            None,
+            64,
+            Duration::from_secs(5),
+            None,
+        )
+    })
     .await?
     .require_success("check classification")?;
     let class = match response.stdout.as_slice() {
@@ -1842,6 +1856,10 @@ pub(crate) async fn observe_now() -> io::Result<Status> {
 }
 
 async fn observe_status() -> io::Result<Status> {
+    // The CPU sampler answers only after its first second. Starting it with
+    // the first status read means the first admission after an app start
+    // already carries the host's load.
+    let _ = host_cpu_permille();
     let out = invoke(
         "/usr/local/sbin/bench-status",
         &[],
@@ -2252,13 +2270,40 @@ pub(crate) async fn copy_tree(
     let out = copy_until_inner(&args, archive, deadline_ms)
         .await
         .map_err(|error| deadline_outcome(error, deadline_ms))?;
-    if archive.is_none() && not_cached(&out, tree) {
+    settle_copy(out, tree, archive.is_some())
+}
+
+/// What a copy answer means for the attempt: `Ok(false)` for a cache miss
+/// of an unsent `tree`, `Ok(true)` for a workspace, an error naming the
+/// failure otherwise. The cache's own line never enters that error, so a
+/// failure reads the same whatever the cache did.
+fn settle_copy(mut out: Output, tree: &str, sent: bool) -> io::Result<bool> {
+    if !sent && not_cached(&out, tree) {
+        warn_cache_miss(&out, tree);
         learn_cache(tree, false);
         return Ok(false);
     }
-    let out = out.require_success("copy")?;
-    learn_cache(tree, archive.is_none() || kept(&out, tree));
+    let held = !sent || kept(&out, tree);
+    out.stdout = without_cache_line(&out.stdout, tree);
+    out.require_success("copy")?;
+    learn_cache(tree, held);
     Ok(true)
+}
+
+/// What a helper said beside a cache miss, such as a cache directory it
+/// will not trust; `None` when it said nothing.
+fn cache_miss_warning(out: &Output) -> Option<String> {
+    let text = String::from_utf8_lossy(&out.stderr);
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.chars().take(500).collect())
+}
+
+/// A degraded cache only speaks on a miss, and after one miss this process
+/// stops asking for that tree, so the warning is logged where it is said.
+fn warn_cache_miss(out: &Output, tree: &str) {
+    if let Some(warning) = cache_miss_warning(out) {
+        log::warn!("Benchmark snapshot cache missed {tree}: {warning}");
+    }
 }
 
 /// Published trees the sandbox's snapshot cache held when this process last
@@ -2445,6 +2490,40 @@ fn artifact_over_budget(code: Option<i32>, reason: &str) -> Option<io::Error> {
         .then(|| io::Error::new(io::ErrorKind::FileTooLarge, last.to_owned()))
 }
 
+/// The artifact helper's own deadline refusals: the transition ran out of
+/// the root's time, as `TimedOut`. Matched on the last line, like the size
+/// refusals, since the admitting supervisor writes its own lines first; a
+/// transition the broker reported as failed stays the sandbox's.
+const ARTIFACT_TIMED_OUT: &[&str] = &[
+    "Artifact transition exceeded its time limit",
+    "Artifact deadline expired before staging",
+    "Artifact deadline expired before input",
+];
+
+fn artifact_timed_out(out: &Output) -> Option<io::Error> {
+    if out.code != Some(2) || out.infrastructure_error().is_some() {
+        return None;
+    }
+    let reason = String::from_utf8_lossy(&out.stderr);
+    let last = reason
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())?;
+    ARTIFACT_TIMED_OUT
+        .contains(&last)
+        .then(|| io::Error::new(io::ErrorKind::TimedOut, last.to_owned()))
+}
+
+/// [`artifact_over_budget`] for a transition the broker did not report as
+/// failed: a helper tree that outlived its kill is the sandbox's failure,
+/// whatever the helper said before it.
+fn artifact_size_refusal(out: &Output) -> Option<io::Error> {
+    if out.infrastructure_error().is_some() {
+        return None;
+    }
+    artifact_over_budget(out.code, &String::from_utf8_lossy(&out.stderr))
+}
+
 async fn artifact_inner(id: &str, package: &[u8], deadline_ms: u64) -> io::Result<Vec<u8>> {
     valid_id(id)?;
     const MAX_PACKAGE: usize = 512 * 1024 * 1024;
@@ -2469,21 +2548,10 @@ async fn artifact_inner(id: &str, package: &[u8], deadline_ms: u64) -> io::Resul
         Some(deadline_ms),
     )
     .await?;
-    let reason = String::from_utf8_lossy(&out.stderr);
-    if out.code == Some(2)
-        && matches!(
-            reason.trim(),
-            "Artifact transition exceeded its time limit"
-                | "Artifact deadline expired before staging"
-                | "Artifact deadline expired before input"
-        )
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            reason.trim().to_owned(),
-        ));
+    if let Some(timeout) = artifact_timed_out(&out) {
+        return Err(timeout);
     }
-    if let Some(refusal) = artifact_over_budget(out.code, &reason) {
+    if let Some(refusal) = artifact_size_refusal(&out) {
         return Err(refusal);
     }
     let out = out.require_success("artifact transition")?;
@@ -2579,12 +2647,12 @@ pub(crate) async fn prepare_check(
     kill("check", id).await?;
     let mut out = result?;
     if !sent && not_cached(&out, tree) {
+        warn_cache_miss(&out, tree);
         learn_cache(tree, false);
         return Ok(None);
     }
-    // An answer that does not apply (exit 2) still found the snapshot placed.
-    if out.code == Some(2) || out.success() {
-        learn_cache(tree, !sent || kept(&out, tree));
+    if let Some(held) = check_cache_held(&out, tree, sent) {
+        learn_cache(tree, held);
     }
     // What the cache did is no part of the check's answer: a reason recorded
     // for an answer that does not apply reads the same either way.
@@ -2593,6 +2661,13 @@ pub(crate) async fn prepare_check(
         return Ok(Some(out));
     }
     out.require_success("prepare check").map(Some)
+}
+
+/// Whether a check preparation leaves `tree` in the sandbox's cache, or
+/// `None` when the answer says nothing about it. An answer that does not
+/// apply (exit 2) still found the snapshot placed.
+fn check_cache_held(out: &Output, tree: &str, sent: bool) -> Option<bool> {
+    (out.code == Some(2) || out.success()).then(|| !sent || kept(out, tree))
 }
 
 pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result<Output> {
@@ -2648,8 +2723,23 @@ async fn check_as(
     .await;
     // Windows Job Objects do not kill Linux children. Also remove detached
     // children after an ordinary exit; they must not outlive an evaluation.
-    kill("check", id).await?;
+    // A kill that timed out once is asked again before the check's result is
+    // given up.
+    once_more_if_timed_out(|| kill("check", id)).await?;
     result
+}
+
+/// `call` again when its first answer timed out: a slow WSL start or a busy
+/// broker for a moment, not a reason to lose a check that already ran.
+async fn once_more_if_timed_out<T, F, Fut>(mut call: F) -> io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = io::Result<T>>,
+{
+    match call().await {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => call().await,
+        answer => answer,
+    }
 }
 
 pub(crate) async fn kill(mode: &str, id: &str) -> io::Result<()> {
@@ -2911,6 +3001,147 @@ mod tests {
     }
 
     #[test]
+    fn a_size_refusal_after_the_brokers_infrastructure_verdict_is_the_sandboxs() {
+        let answer = |infrastructure: Option<&str>| Output {
+            code: Some(2),
+            stdout: Vec::new(),
+            stderr: b"Artifact Git output exceeds its byte limit\n".to_vec(),
+            truncated: false,
+            infrastructure: infrastructure.map(str::to_owned),
+            candidate_limit: None,
+        };
+        assert_eq!(
+            artifact_size_refusal(&answer(None)).unwrap().kind(),
+            io::ErrorKind::FileTooLarge
+        );
+        assert!(artifact_size_refusal(&answer(Some(
+            "infrastructure_error: benchmark process tree did not stop"
+        )))
+        .is_none());
+    }
+
+    #[test]
+    fn an_artifact_timeout_after_the_supervisors_lines_is_the_roots_time() {
+        let answer = |code, stderr: &str, infrastructure: Option<&str>| Output {
+            code: Some(code),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+            truncated: false,
+            infrastructure: infrastructure.map(str::to_owned),
+            candidate_limit: None,
+        };
+        // The live shape: the admitting supervisor's line comes first.
+        let timeout = artifact_timed_out(&answer(
+            2,
+            "resource_admitted: prep\nArtifact transition exceeded its time limit\n",
+            None,
+        ))
+        .unwrap();
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            timeout.to_string(),
+            "Artifact transition exceeded its time limit"
+        );
+        for reason in ARTIFACT_TIMED_OUT {
+            assert!(
+                artifact_timed_out(&answer(2, reason, None)).is_some(),
+                "{reason}"
+            );
+        }
+        // Not the last line, another exit, or the broker's own failure verdict.
+        for (code, reason, infrastructure) in [
+            (
+                2,
+                "Artifact transition exceeded its time limit\nlater failure",
+                None,
+            ),
+            (1, "Artifact transition exceeded its time limit", None),
+            (
+                2,
+                "Artifact transition exceeded its time limit",
+                Some("infrastructure_error: benchmark process tree did not stop"),
+            ),
+        ] {
+            assert!(
+                artifact_timed_out(&answer(code, reason, infrastructure)).is_none(),
+                "{code} {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unanswered_broker_ask_is_a_refusal_only_inside_its_deadline() {
+        let later = now_ms().unwrap() + 60_000;
+        let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "wsl.exe took too long");
+        let refused = unanswered(timed_out(), later, RESERVATION_UNANSWERED);
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(refused.to_string(), RESERVATION_UNANSWERED);
+        assert!(!reserved_nothing(&refused));
+        let refused = unanswered(timed_out(), later, ADMISSION_UNANSWERED);
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        // Past its deadline, or any other error, it stays what it was.
+        assert_eq!(
+            unanswered(timed_out(), 1, RESERVATION_UNANSWERED).kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            unanswered(io::Error::other("broken"), later, RESERVATION_UNANSWERED).kind(),
+            io::ErrorKind::Other
+        );
+    }
+
+    #[test]
+    fn a_control_group_at_its_limit_is_busy_for_a_moment() {
+        for reason in [
+            "OSError: [Errno 16] Device or resource busy",
+            "FileExistsError: [Errno 17] File exists",
+            "BlockingIOError: [Errno 11] Resource temporarily unavailable",
+            "OSError: [Errno 12] Cannot allocate memory",
+            "Traceback (most recent call last):\nMemoryError",
+        ] {
+            assert!(group_busy(reason), "{reason}");
+        }
+        for reason in [
+            "OSError: [Errno 28] No space left on device",
+            "OSError: [Errno 121] Remote I/O error",
+            "capability_missing: scratch is not mounted",
+        ] {
+            assert!(!group_busy(reason), "{reason}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_control_call_is_asked_once_more() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let answer = |kinds: &'static [io::ErrorKind]| {
+            calls.store(0, std::sync::atomic::Ordering::SeqCst);
+            let calls = &calls;
+            once_more_if_timed_out(move || async move {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                match kinds.get(call) {
+                    Some(kind) => Err(io::Error::new(*kind, "slow")),
+                    None => Ok(call),
+                }
+            })
+        };
+        assert_eq!(answer(&[io::ErrorKind::TimedOut]).await.unwrap(), 1);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // Twice in a row, or another error, is the answer.
+        assert_eq!(
+            answer(&[io::ErrorKind::TimedOut, io::ErrorKind::TimedOut])
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            answer(&[io::ErrorKind::Other]).await.unwrap_err().kind(),
+            io::ErrorKind::Other
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn one_host_measurement_answers_admission_for_a_second() {
         let recent = RecentHeadroom::default();
         let at = Instant::now();
@@ -3080,6 +3311,15 @@ mod tests {
             tree
         ));
         assert!(!not_cached(&answer(3, "", None), tree));
+        // Only the helper's whole line: not one cut short or followed by more.
+        assert!(!not_cached(
+            &answer(3, &format!("not cached {tree}"), None),
+            tree
+        ));
+        assert!(!not_cached(
+            &answer(3, &format!("not cached {tree}\n\n"), None),
+            tree
+        ));
         assert!(!not_cached(
             &answer(
                 3,
@@ -3088,6 +3328,68 @@ mod tests {
             ),
             tree
         ));
+    }
+
+    #[test]
+    fn a_failed_copy_reads_the_same_whatever_the_cache_did() {
+        // Invented trees of this test alone: the record is process-wide.
+        let tree = format!("{}3", "c".repeat(39));
+        let answer = |code, stdout: &str, stderr: &str| Output {
+            code: Some(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+            truncated: false,
+            infrastructure: None,
+            candidate_limit: None,
+        };
+        let failed = settle_copy(
+            answer(70, &format!("cached {tree}\n"), "bench-copy: disk full"),
+            &tree,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!failed.contains("cached"), "{failed}");
+        assert!(failed.contains("disk full"), "{failed}");
+        assert!(!snapshot_cached(&tree));
+        assert!(settle_copy(answer(0, &format!("cached {tree}\n"), ""), &tree, true).unwrap());
+        assert!(snapshot_cached(&tree));
+        let miss = answer(
+            3,
+            &format!("not cached {tree}\n"),
+            "unsafe cache; copying without the cache\n",
+        );
+        assert_eq!(
+            cache_miss_warning(&miss).as_deref(),
+            Some("unsafe cache; copying without the cache")
+        );
+        assert!(!settle_copy(miss, &tree, false).unwrap());
+        assert!(!snapshot_cached(&tree));
+        assert_eq!(cache_miss_warning(&answer(3, "", " \n")), None);
+    }
+
+    #[test]
+    fn a_check_answer_that_does_not_apply_still_teaches_the_cache() {
+        let tree = format!("{}4", "c".repeat(39));
+        let answer = |code, stdout: &str| Output {
+            code: Some(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            truncated: false,
+            infrastructure: None,
+            candidate_limit: None,
+        };
+        // Asked from the cache, a placed snapshot is held whatever the answer.
+        assert_eq!(check_cache_held(&answer(2, ""), &tree, false), Some(true));
+        assert_eq!(check_cache_held(&answer(0, ""), &tree, false), Some(true));
+        // Sent, it is held only when the helper said it kept it.
+        assert_eq!(check_cache_held(&answer(2, ""), &tree, true), Some(false));
+        assert_eq!(
+            check_cache_held(&answer(0, &format!("cached {tree}\n")), &tree, true),
+            Some(true)
+        );
+        // A failed preparation says nothing about the cache.
+        assert_eq!(check_cache_held(&answer(70, ""), &tree, false), None);
     }
 
     #[test]
