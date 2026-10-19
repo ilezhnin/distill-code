@@ -1492,7 +1492,13 @@ impl SessionStore {
             .await
             .map_err(|error| db_error("failed to read session events", error))?
         {
-            if compactor.push(row.get("payload_json")) {
+            let payload: String = row.get("payload_json");
+            // An owned session's provider extension is evidence only, never
+            // shown (see the router's `mark_evidence_only`).
+            if payload.contains("\"evidenceOnly\":true") {
+                continue;
+            }
+            if compactor.push(payload) {
                 count += 1;
             }
         }

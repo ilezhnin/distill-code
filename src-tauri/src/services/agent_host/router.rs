@@ -2020,10 +2020,34 @@ impl Inner {
     /// is the order the transcript keeps.
     async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) -> Result<(), String> {
         Self::persist_pending_events(&self.store, pending, |mut payload, id| {
+            if Self::evidence_only(&payload) {
+                return;
+            }
             Self::stamp_event_id(&mut payload, id);
             self.notify_frontend("session/update", payload);
         })
         .await
+    }
+
+    /// Marks an update the transcript keeps as evidence but the renderer
+    /// never shows (see [`Self::evidence_only`]).
+    fn mark_evidence_only(params: &mut Value) {
+        if let Some(update) = params.get_mut("update").and_then(Value::as_object_mut) {
+            let meta = update.entry("_meta").or_insert_with(|| json!({}));
+            if !meta.is_object() {
+                *meta = json!({});
+            }
+            if !meta["distill"].is_object() {
+                meta["distill"] = json!({});
+            }
+            meta["distill"]["evidenceOnly"] = json!(true);
+        }
+    }
+
+    /// Whether an update is an owned session's provider extension the host
+    /// keeps as evidence only.
+    fn evidence_only(payload: &Value) -> bool {
+        payload.pointer("/update/_meta/distill/evidenceOnly") == Some(&json!(true))
     }
 
     async fn persist_pending_events(
@@ -2122,9 +2146,14 @@ impl Inner {
         let benchmark = harness.contains("\u{1f}benchmark:");
         // An owned session also keeps grok's other session extension updates:
         // they are evidence, and grok reports its hooks and subagents there.
-        let method = if Self::normalize_xai_turn_usage(method, &mut params)
-            || (benchmark && Self::is_xai_session_extension(method))
-        {
+        // They are no ACP updates, so the renderer never sees them (10-17:
+        // its ACP client rejected every `session_summary_generated`).
+        let usage = Self::normalize_xai_turn_usage(method, &mut params);
+        let evidence_only = benchmark && !usage && Self::is_xai_session_extension(method);
+        if evidence_only {
+            Self::mark_evidence_only(&mut params);
+        }
+        let method = if usage || evidence_only {
             "session/update"
         } else {
             method
@@ -2274,7 +2303,7 @@ impl Inner {
         } else {
             None
         };
-        if !persist {
+        if !persist && !Self::evidence_only(&params) {
             self.notify_frontend("session/update", params);
         }
         stored
@@ -8803,6 +8832,15 @@ mod tests {
         ));
         assert!(Inner::is_xai_session_extension("_x.ai/session/update"));
         assert!(!Inner::is_xai_session_extension("_x.ai/sessions/changed"));
+        // Kept as evidence, never sent to the renderer, whose ACP client
+        // rejects such updates.
+        let mut summary = json!({"sessionId": "s1", "update": {
+            "sessionUpdate": "session_summary_generated", "session_summary": "t"}});
+        assert!(!Inner::evidence_only(&summary));
+        Inner::mark_evidence_only(&mut summary);
+        assert!(Inner::evidence_only(&summary));
+        assert_eq!(summary["update"]["session_summary"], "t");
+        assert!(!Inner::evidence_only(&retry));
     }
 
     #[test]
