@@ -1289,6 +1289,19 @@ fn collection_budget(
         .transpose()
 }
 
+/// [`collection_budget`] with its root's credited idle time (see
+/// `artifact_context::BudgetLease::credits`).
+async fn credited_budget(
+    store: &Store,
+    draft: &BenchmarkDraft,
+) -> Result<Option<super::artifact_context::BudgetLease>> {
+    let mut budget = collection_budget(draft)?;
+    if let Some(lease) = budget.as_mut() {
+        store.credit(lease).await?;
+    }
+    Ok(budget)
+}
+
 fn turn_timeout_ms(
     seconds: u32,
     budget: Option<&super::artifact_context::BudgetLease>,
@@ -2212,6 +2225,49 @@ pub(super) fn never_started(attempt: &Attempt, error: &BenchmarkError) -> bool {
             .all(|step| step.session_id.is_none() && step.host_run_id.is_none())
 }
 
+/// The reason of a unit settled as [`unstarted_timeout`], before the
+/// clock's own message.
+pub(super) const UNSTARTED_TIMEOUT: &str = "Infrastructure: the native root wall budget ran out before the session of the attempt or step that timed out started (no model time in it)";
+
+/// The host's proof that a turn's budget ran out before any provider prompt.
+pub(super) const NO_PROVIDER_START: &str = "native-owned-no-provider-start-v1";
+
+/// Whether a `budget_timeout` settles `unit` (an attempt, a workflow root or
+/// one of its steps) before any session of it started: no session, turn or
+/// acknowledged selection, no native time, no sealed evidence, no session
+/// opened, and no step of it that reached a provider or sealed evidence. The clock then
+/// measured the host (a pause, the queue, a wait for a local slot), not the
+/// model, so the unit is the infrastructure's, unscored, never a zero. It
+/// settles and is never requeued, so an exhausted clock cannot loop; a run
+/// that allows retries owes the cell again through a fresh attempt.
+pub(super) fn unstarted_timeout(unit: &Attempt, code: &str) -> bool {
+    code == "budget_timeout"
+        && !reached_provider(unit)
+        && unit.native_execution_ms.unwrap_or(0) == 0
+        && unit.evidence_hash.is_none()
+        && unit
+            .phase_times
+            .as_ref()
+            .is_none_or(|times| !times.contains_key("sessionOpened"))
+        && unit.workflow_steps.iter().all(|step| {
+            step.session_id.is_none() && step.host_run_id.is_none() && step.evidence_hash.is_none()
+        })
+}
+
+/// The outcome and reason `unit` settles with after `error`: its code and
+/// message, or `infrastructure_failure` for a wall budget that ran out
+/// before its session started (see [`unstarted_timeout`]).
+pub(super) fn settled_failure(unit: &Attempt, error: &BenchmarkError) -> (String, String) {
+    if unstarted_timeout(unit, &error.code) {
+        (
+            "infrastructure_failure".into(),
+            format!("{UNSTARTED_TIMEOUT}: {}", error.message),
+        )
+    } else {
+        (error.code.clone(), error.message.clone())
+    }
+}
+
 /// Whether `code` holds its run until a time it already knows, rather than
 /// asking the operator.
 fn is_wait(code: &str) -> bool {
@@ -2228,6 +2284,17 @@ fn is_wait(code: &str) -> bool {
 /// sign-in renewal wait always wait.
 fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
     !is_wait(&error.code) && attempt.reason.as_deref() == Some(error.message.as_str())
+}
+
+/// Drops the native clock a standalone attempt's try froze when the try goes
+/// back to the queue, so the next try is timed from its own start: time in
+/// the queue (a pause, a refusal for room, a quota wait) never spends the
+/// next try's wall budget. A sealed attempt keeps it.
+async fn drop_collection_clock(store: &Store, attempt: &mut Attempt) -> Result<()> {
+    if collection_context::discard_clock(store, attempt).await? {
+        attempt.collection_context = None;
+    }
+    Ok(())
 }
 
 /// Puts `attempt` back in the queue with `reason`, without anything of the
@@ -4403,7 +4470,7 @@ impl ExecutionBackend for NativeBackend {
             let version =
                 collection_context::prepare(store, &mut attempt, version, timeout).await?;
             let repository = super::repository::is_repository_case(&version.manifest);
-            let budget = collection_budget(&version.manifest)?;
+            let budget = credited_budget(store, &version.manifest).await?;
             let deadline = budget
                 .as_ref()
                 .map(|budget| budget.deadline_at_ms())
@@ -4842,7 +4909,7 @@ impl ExecutionBackend for NativeBackend {
             // on the answer, the evidence ceiling on the record.
             let version = super::workflow::effective_version_for_attempt(store, &attempt).await?;
             let cap = version.manifest.limits.max_artifact_bytes;
-            let budget = collection_budget(&version.manifest)?;
+            let budget = credited_budget(store, &version.manifest).await?;
             let deadline = budget
                 .as_ref()
                 .map(|budget| budget.deadline_at_ms())
@@ -5899,6 +5966,14 @@ fn terminal_error_outcome(error: &Value) -> &'static str {
         .as_str()
         .or_else(|| error.pointer("/data/kind").and_then(Value::as_str))
     {
+        // The host's deadline passed before the turn reached the provider.
+        Some("budget_timeout")
+            if error["proof"] == NO_PROVIDER_START
+                || error.pointer("/data/proof").and_then(Value::as_str)
+                    == Some(NO_PROVIDER_START) =>
+        {
+            "infrastructure_failure"
+        }
         Some("budget_timeout") => "budget_timeout",
         Some("cancelled") => "cancelled",
         Some("selection_changed") => "selection_changed",
@@ -6428,6 +6503,7 @@ impl BenchmarkService {
     /// campaign work: at the start of every tick, and every
     /// [`HOUSEKEEPING_EVERY`] within one.
     async fn housekeeping(self: &Arc<Self>) -> Result<()> {
+        self.store.beat(now()).await?;
         self.recover_interrupted().await?;
         self.bake_closed_windows().await?;
         super::campaigns::tick(self).await?;
@@ -6494,6 +6570,10 @@ impl BenchmarkService {
                             restored.outcome = Some("interrupted".into());
                             restored.reason = Some("Recovered workflow prefix retained; this run forbids another dispatch after interruption".into());
                             restored.finished_at = Some(now());
+                        } else if version.manifest.workflow.is_none() {
+                            // Back in the queue, a standalone try takes its
+                            // clock with it, as after any requeue.
+                            drop_collection_clock(&self.store, &mut restored).await?;
                         }
                         self.store.save_attempt(&restored).await?;
                         continue;
@@ -7395,6 +7475,9 @@ impl BenchmarkService {
                         failed.wait_until = Some(now() + local_refusal_wait(&a.id));
                     }
                     failed.workflow_steps.clear();
+                    if version.manifest.workflow.is_none() {
+                        drop_collection_clock(&self.store, &mut failed).await?;
+                    }
                     // The flight's end tells the app, once.
                     self.store.save_attempt(&failed).await?;
                     return Ok(());
@@ -7405,6 +7488,11 @@ impl BenchmarkService {
                 if retry_allowed && error.code == "account_busy" {
                     failed.phase = "pending".into();
                     failed.started_at = None;
+                    if version.manifest.workflow.is_none() {
+                        drop_collection_clock(&self.store, &mut failed).await?;
+                    } else {
+                        self.idle_root(&failed).await?;
+                    }
                     // Asked again shortly, within this tick: interactive work
                     // ends long before every other run's turns land.
                     failed.wait_until = Some(now() + ACCOUNT_BUSY_RETRY_MS);
@@ -7435,8 +7523,10 @@ impl BenchmarkService {
                             failed.started_at = None;
                             failed.reason = Some(reason);
                             failed.wait_until = None;
+                            self.idle_root(&failed).await?;
                         } else {
                             requeue(&mut failed, reason);
+                            drop_collection_clock(&self.store, &mut failed).await?;
                         }
                         failed.configuration.account_id = Some(other);
                         // It goes on at once on the other account, within
@@ -7474,8 +7564,12 @@ impl BenchmarkService {
                         failed.started_at = None;
                         failed.reason = Some(reason);
                         failed.wait_until = None;
+                        self.idle_root(&failed).await?;
                     } else {
+                        // A limit hit mid-turn discards the turn and its
+                        // clock: the next try is a new owner and key.
                         requeue(&mut failed, reason);
+                        drop_collection_clock(&self.store, &mut failed).await?;
                     }
                     let provider = &a.configuration.provider_id;
                     let mut stop = false;
@@ -7505,9 +7599,10 @@ impl BenchmarkService {
                                 | "validation"
                                 | "evidence_mismatch"
                         ));
+                let (outcome, reason) = settled_failure(&failed, &error);
                 failed.phase = "terminal".into();
-                failed.outcome = Some(error.code.clone());
-                failed.reason = Some(error.message);
+                failed.outcome = Some(outcome);
+                failed.reason = Some(reason);
                 failed.finished_at = Some(now());
                 self.store.save_attempt(&failed).await?;
                 if needs_operator
@@ -7518,6 +7613,18 @@ impl BenchmarkService {
             }
         }
         Ok(())
+    }
+    /// Opens an idle credit for a workflow root that goes back to the queue
+    /// with its native root clock running, so the wait is not spent from its
+    /// wall budget. A campaign root never continues mid-trajectory, so it
+    /// never gets one.
+    async fn idle_root(&self, root: &Attempt) -> Result<()> {
+        if root.configuration.execution_profile == "workflow_policy" {
+            return Ok(());
+        }
+        self.store
+            .open_root_credit(&root.id, &root.run_id, now(), "idle")
+            .await
     }
     /// Discards what a try no provider saw left behind, so the cell's next
     /// admission is its first: a root-pinned workflow's prepared steps and
@@ -7532,9 +7639,14 @@ impl BenchmarkService {
         if version.manifest.workflow.is_none() {
             return Ok(true);
         }
-        if attempt.configuration.execution_profile == "workflow_policy" {
-            return Ok(attempt.workflow_steps.is_empty());
+        if attempt.configuration.execution_profile == "workflow_policy"
+            && !attempt.workflow_steps.is_empty()
+        {
+            return Ok(false);
         }
+        // A campaign root that never started a step times its next
+        // admission afresh too: its root clock and any step clock its
+        // preparation froze go with the prepared steps.
         super::workflow::discard_unstarted(&self.store, attempt).await
     }
     /// Another enabled account of `configuration`'s provider whose limit has
@@ -8621,6 +8733,83 @@ mod tests {
         assert_eq!(
             json!(verdict),
             json!({"candidateLimit": "memory", "victim": "python3"})
+        );
+    }
+    #[test]
+    fn a_wall_budget_spent_before_the_session_started_is_the_infrastructures() {
+        // 10-18: attempts that kept a clock through a pause, and campaign
+        // steps that waited for a local slot, settled as budget_timeout with
+        // no model time: false zeros on the boards and in fit data.
+        let row = judge_row("sonnet");
+        let attempt = super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        let exhausted =
+            BenchmarkError::new("budget_timeout", "Native root wall budget is exhausted");
+        let (outcome, reason) = settled_failure(&attempt, &exhausted);
+        assert_eq!(outcome, "infrastructure_failure");
+        assert!(reason.starts_with(UNSTARTED_TIMEOUT), "{reason}");
+        assert!(
+            reason.ends_with("Native root wall budget is exhausted"),
+            "{reason}"
+        );
+        // Anything of a model measured keeps the timeout: a session, native
+        // time, sealed evidence, an opened session, a step that ran.
+        let mut started = attempt.clone();
+        started.session_id = Some("invented-session".into());
+        let mut timed = attempt.clone();
+        timed.native_execution_ms = Some(5);
+        let mut sealed = attempt.clone();
+        sealed.evidence_hash = Some("invented-evidence".into());
+        let mut opened = attempt.clone();
+        mark_phase(&mut opened, "sessionOpened");
+        let step = |session: Option<&str>, evidence: Option<&str>| WorkflowStepEvidence {
+            root_task_id: "invented-root".into(),
+            step_id: "implement".into(),
+            parent_step_id: None,
+            entry_state_hash: "invented-entry".into(),
+            attempt_id: "invented-step".into(),
+            session_id: session.map(Into::into),
+            host_run_id: None,
+            evidence_hash: evidence.map(Into::into),
+            outcome: None,
+        };
+        let mut prefix = attempt.clone();
+        prefix
+            .workflow_steps
+            .push(step(None, Some("invented-evidence")));
+        let mut ran = attempt.clone();
+        ran.workflow_steps
+            .push(step(Some("invented-session"), None));
+        for unit in [started, timed, sealed, opened, prefix, ran] {
+            assert_eq!(settled_failure(&unit, &exhausted).0, "budget_timeout");
+        }
+        // A root whose steps never started is the infrastructure's too.
+        let mut unstarted_root = attempt.clone();
+        unstarted_root.workflow_steps.push(step(None, None));
+        assert_eq!(
+            settled_failure(&unstarted_root, &exhausted).0,
+            "infrastructure_failure"
+        );
+        // Other failures keep their code and message.
+        let capped = BenchmarkError::new("budget_reached", "Answer cap");
+        assert_eq!(
+            settled_failure(&attempt, &capped),
+            ("budget_reached".into(), "Answer cap".into())
+        );
+        // The host's proof that the deadline passed before any provider
+        // prompt, at either place a turn error carries it.
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind": "budget_timeout", "proof": NO_PROVIDER_START})),
+            "infrastructure_failure"
+        );
+        assert_eq!(
+            terminal_error_outcome(
+                &json!({"data": {"kind": "budget_timeout", "proof": NO_PROVIDER_START}})
+            ),
+            "infrastructure_failure"
+        );
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind": "budget_timeout"})),
+            "budget_timeout"
         );
     }
     #[test]

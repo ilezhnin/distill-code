@@ -462,7 +462,8 @@ async fn concurrent_campaign_refills_while_slow_children_fly_and_drains_all_on_p
 }
 
 #[tokio::test]
-async fn concurrent_campaign_slot_timeout_seals_first_evidence_without_dispatch_or_retry() {
+async fn concurrent_campaign_slot_timeout_seals_unscored_first_evidence_without_dispatch_or_retry()
+{
     let (dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
     let frozen = legacy_bounded_plan(&service, frozen).await;
     service
@@ -524,20 +525,27 @@ async fn concurrent_campaign_slot_timeout_seals_first_evidence_without_dispatch_
     backend.drain();
     tick.await.unwrap().unwrap();
     service.tick().await.unwrap();
+    // A root that ran out of wall budget waiting for a local slot before its
+    // session started measured the host, not the model: its first
+    // trajectory is sealed as the infrastructure's, unscored, never a zero
+    // (owner's coordinator, 10-18).
     for run in &expired {
         let root = &run.attempts[0];
         assert!(
             root.evidence_hash.is_some(),
-            "A measured slot timeout must seal its first root evidence"
+            "A slot timeout must seal its first root evidence"
         );
-        assert_eq!(root.outcome.as_deref(), Some("budget_timeout"));
+        assert_eq!(root.outcome.as_deref(), Some("infrastructure_failure"));
+        assert!(root.reason.as_deref().is_some_and(
+            |reason| reason.starts_with(crate::services::benchmarks::runner::UNSTARTED_TIMEOUT)
+        ));
         let steps = crate::services::benchmarks::workflow::saved_steps(&service.store, &root.id)
             .await
             .unwrap();
         assert_eq!(steps.len(), 1);
         let child = &steps[0].attempt;
         assert_eq!(child.phase, "terminal");
-        assert_eq!(child.outcome.as_deref(), Some("budget_timeout"));
+        assert_eq!(child.outcome.as_deref(), Some("infrastructure_failure"));
         assert!(child.session_id.is_none() && child.host_run_id.is_none());
         assert!(child.observed.is_none() && child.native_execution_ms.is_none());
         assert!(child.duration_ms.is_none());
@@ -561,31 +569,17 @@ async fn concurrent_campaign_slot_timeout_seals_first_evidence_without_dispatch_
             .iter()
             .any(|(run, _)| run == &original.id));
     }
-    let report = service
+    // Unscored first trajectories leave the campaign without a report; a
+    // replacement campaign measures those cells.
+    let error = service
         .store
         .workflow_campaign_report(&frozen.plan.id)
         .await
-        .unwrap();
-    assert_eq!(report.trace_hashes.len(), frozen.plan.cells.len());
-    for original in &expired {
-        let repeat = report
-            .cases
-            .iter()
-            .flat_map(|case| &case.cells)
-            .flat_map(|cell| &cell.repeats)
-            .find(|repeat| repeat.attempt_id == original.attempts[0].id)
-            .expect("The original undispatched timeout remains in the complete report");
-        assert_eq!(repeat.quality, 0.0);
-        assert_eq!(repeat.evidence_hash, original.attempts[0].evidence_hash);
-    }
+        .unwrap_err();
     assert_eq!(
-        service
-            .store
-            .workflow_campaign_report(&frozen.plan.id)
-            .await
-            .unwrap()
-            .artifact_hash,
-        report.artifact_hash
+        error.code, "incomplete_holdout_evidence",
+        "{}",
+        error.message
     );
     dir.close().await;
 }
@@ -700,13 +694,16 @@ async fn concurrent_campaign_backend_setup_cannot_dispatch_after_root_deadline()
     let runs = children(&service, &frozen).await;
     assert_eq!(runs.len(), 4);
     for run in runs {
+        // Setup outlasted the root's deadline before any session: the
+        // host's, unscored.
         let root = &run.attempts[0];
-        assert_eq!(root.outcome.as_deref(), Some("budget_timeout"));
+        assert_eq!(root.outcome.as_deref(), Some("infrastructure_failure"));
         assert!(root.evidence_hash.is_some());
         assert_eq!(root.workflow_steps.len(), 1);
         let step = &root.workflow_steps[0];
         assert!(step.session_id.is_none());
         assert!(step.host_run_id.is_none());
+        assert_eq!(step.outcome.as_deref(), Some("infrastructure_failure"));
         let lease = service
             .store
             .native_budget(&format!("workflow:{}:0", root.id))

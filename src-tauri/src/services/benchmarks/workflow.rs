@@ -487,6 +487,10 @@ pub(super) async fn discard_unstarted(store: &Store, root: &Attempt) -> Result<b
         .bind(&step_keys)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM budget_credits WHERE root_id=?")
+        .bind(&root.id)
+        .execute(&mut *tx)
+        .await?;
     if !steps.is_empty() {
         event(&mut tx, &root.run_id, "workflow_steps_discarded").await?;
     }
@@ -614,6 +618,7 @@ async fn prepare_step(
             step_key: format!("workflow-root:{}", root.id),
             step_started_at_ms: origin,
             step_cap_seconds: root_request.timeout_seconds,
+            credits: Vec::new(),
         };
         Some(
             store
@@ -1035,6 +1040,7 @@ async fn prepare_step_admitted(
                 step_key: step_key.clone(),
                 step_started_at_ms: now().max(origin),
                 step_cap_seconds: root_cap,
+                credits: Vec::new(),
             },
             repository: repository_context.clone(),
             local_wait_ms: None,
@@ -1074,6 +1080,7 @@ async fn prepare_step_admitted(
         step_key: format!("workflow-root:{}", root.id),
         step_started_at_ms: origin,
         step_cap_seconds: root_cap,
+        credits: Vec::new(),
     };
     let budget = store
         .reserve_task_budget(
@@ -1378,6 +1385,9 @@ pub fn execute(
             concurrency.admission == super::workflow_campaign::WorkerAdmission::SelectedStep;
         if new_clock || concurrent_policy {
             let key = format!("workflow-root:{}", root.id);
+            // The time it sat in the queue with a paid prefix, or stranded
+            // by a stopped app, is credited back from here on.
+            service.store.close_root_credit(&root.id, now()).await?;
             let old = service.store.native_budget(&key).await?;
             let origin = old
                 .as_ref()
@@ -1394,6 +1404,7 @@ pub fn execute(
                 step_key: key.clone(),
                 step_started_at_ms: origin,
                 step_cap_seconds: timeout,
+                credits: Vec::new(),
             };
             if let Err(error) = service
                 .store
@@ -1415,9 +1426,10 @@ pub fn execute(
                 if error.code != "budget_timeout" {
                     return Err(error);
                 }
+                let (outcome, reason) = super::runner::settled_failure(&root, &error);
                 root.phase = "collecting".into();
-                root.outcome = Some(error.code);
-                root.reason = Some(error.message);
+                root.outcome = Some(outcome);
+                root.reason = Some(reason);
                 let steps = saved_steps(&service.store, &root.id).await?;
                 seal_root(&service.store, &mut root, &steps).await?;
                 return Ok(root);
@@ -1491,7 +1503,9 @@ pub fn execute(
                 // Exhaustion is the timeout outcome; a clock that moved backwards
                 // is a conflict to surface, never a recorded budget timeout.
                 match super::artifact_context::remaining_seconds(
-                    wall_origin + excluded_waits_ms(&steps),
+                    wall_origin
+                        + excluded_waits_ms(&steps)
+                        + service.store.root_credit_ms(&root.id).await?,
                     now(),
                     timeout,
                 ) {
@@ -1505,8 +1519,13 @@ pub fn execute(
                 remaining_ms.div_ceil(1000) as u32
             };
             if remaining == 0 {
-                root.outcome = Some("budget_timeout".into());
-                root.reason = Some("Workflow exhausted its shared duration budget".into());
+                let exhausted = BenchmarkError::new(
+                    "budget_timeout",
+                    "Workflow exhausted its shared duration budget",
+                );
+                let (outcome, reason) = super::runner::settled_failure(&root, &exhausted);
+                root.outcome = Some(outcome);
+                root.reason = Some(reason);
                 break;
             }
             if steps.len() == index {
@@ -1569,8 +1588,9 @@ pub fn execute(
                 match prepared {
                     Ok(step) => steps.push(step),
                     Err(error) if error.code == "budget_timeout" => {
-                        root.outcome = Some(error.code);
-                        root.reason = Some(error.message);
+                        let (outcome, reason) = super::runner::settled_failure(&root, &error);
+                        root.outcome = Some(outcome);
+                        root.reason = Some(reason);
                         break;
                     }
                     Err(error) => return Err(error),
@@ -1711,25 +1731,35 @@ pub fn execute(
                     if root.configuration.execution_profile == "workflow_policy"
                         && error.code == "budget_timeout" =>
                 {
-                    // Local slot exhaustion is a measured first trajectory, not a
-                    // dispatched infrastructure failure. Seal it below even when
-                    // retries are disabled, without inventing worker evidence.
+                    // Seal it below even when retries are disabled, without
+                    // inventing worker evidence. A step whose session never
+                    // started measured a wait for a local slot, the host's,
+                    // not the model's: infrastructure, unscored (owner's
+                    // coordinator, 10-18); one that ran is a measured
+                    // timeout.
                     saved.attempt = service.store.attempt(&saved.attempt.id).await?;
+                    let (outcome, reason) = super::runner::settled_failure(&saved.attempt, &error);
                     saved.attempt.phase = "terminal".into();
-                    saved.attempt.outcome = Some(error.code);
-                    saved.attempt.reason = Some(error.message);
+                    saved.attempt.outcome = Some(outcome);
+                    saved.attempt.reason = Some(reason);
                     saved.attempt.finished_at = Some(now());
                 }
                 Err(error) if !request.automatic_retry() => {
                     saved.attempt = service.store.attempt(&saved.attempt.id).await?;
+                    let (outcome, reason) = super::runner::settled_failure(&saved.attempt, &error);
                     saved.attempt.phase = "terminal".into();
-                    saved.attempt.outcome = Some(error.code.clone());
-                    saved.attempt.reason = Some(error.message.clone());
+                    saved.attempt.outcome = Some(outcome.clone());
+                    saved.attempt.reason = Some(reason.clone());
                     saved.attempt.finished_at = Some(now());
                     service.store.save_attempt(&saved.attempt).await?;
                     aggregate(&mut root, &steps);
                     service.store.save_attempt(&root).await?;
-                    return Err(error);
+                    // The root settles with what its step settled with.
+                    return Err(if outcome == error.code {
+                        error
+                    } else {
+                        BenchmarkError::new(&outcome, reason)
+                    });
                 }
                 Err(error)
                     if root.configuration.execution_profile == "workflow_policy"
@@ -1741,9 +1771,10 @@ pub fn execute(
                     // A research trajectory records its actual unavailable/quota
                     // outcome. It cannot silently move accounts or retry a worker.
                     saved.attempt = service.store.attempt(&saved.attempt.id).await?;
+                    let (outcome, reason) = super::runner::settled_failure(&saved.attempt, &error);
                     saved.attempt.phase = "terminal".into();
-                    saved.attempt.outcome = Some(error.code);
-                    saved.attempt.reason = Some(error.message);
+                    saved.attempt.outcome = Some(outcome);
+                    saved.attempt.reason = Some(reason);
                     saved.attempt.finished_at = Some(now());
                 }
                 Err(error) if error.code == "account_busy" => {
@@ -1770,9 +1801,10 @@ pub fn execute(
                         service.store.save_attempt(&saved.attempt).await?;
                         return Err(error);
                     }
+                    let (outcome, reason) = super::runner::settled_failure(&saved.attempt, &error);
                     saved.attempt.phase = "terminal".into();
-                    saved.attempt.outcome = Some(error.code);
-                    saved.attempt.reason = Some(error.message);
+                    saved.attempt.outcome = Some(outcome);
+                    saved.attempt.reason = Some(reason);
                     saved.attempt.finished_at = Some(now());
                 }
             }

@@ -350,7 +350,19 @@ than a quarter of its allowance has passed; on the wall-clock budget that time
 comes off the step's own allowance. Past that quarter the refusal ends the
 step, unscored. The first step of a workflow returns to the queue instead. A check's own time limit starts once it is admitted, so waiting for
 room never shortens it. Only a deadline that passes while waiting ends the
-attempt, as unscored infrastructure failure. Evaluator admission waits on the
+attempt, as unscored infrastructure failure. So does a wall budget that ran out
+before the attempt's or step's own session started (a pause, the queue, a wait
+for a local slot, setup that outlasted the deadline): no model time was
+measured, so it is never a model's zero, and it settles rather than returning
+to the queue. A standalone try that goes back to the queue takes its clock with
+it, so its next try is timed from its own start; a quota limit hit mid-turn
+discards the turn and its clock alike. A root-pinned workflow that goes back to
+the queue with a paid prefix (a quota or account wait), or that a stopped app
+left mid-trajectory, gets that time back: it is credited to its wall budget
+from when it left flight, or from the service's last heartbeat, until its next
+flight starts, in a hash-bound record that never changes once closed. Time in
+flight is never credited, and campaign roots, which never continue
+mid-trajectory, get no credit. Evaluator admission waits on the
 captured answer; a runtime resource failure is inconclusive infrastructure
 evidence, not a model score. The application does not change global
 `.wslconfig` or the resources of other distributions.
@@ -857,7 +869,11 @@ Such a report retains its `supersedes` provenance and cannot promote a selector,
 even if its numeric comparison passes the registered acceptance rule.
 
 Saved concurrent v2 plans keep their original semantics: local slot contention
-spends the root wall budget. Serial v1 plans retain their immediate busy outcome.
+spends the root wall budget. A root whose budget runs out that way before its
+next step's session started measured the host, not the model, and is sealed as
+unscored infrastructure failure (10-18), so such a campaign has no report and a
+replacement measures those cells. Serial v1 plans retain their immediate busy
+outcome.
 Installing a newer backend never rewrites a frozen campaign or its results.
 Freeze and review the concurrency contract before preregistration, and check
 that the installed backend supports it. No recipe changes accounts, replaces

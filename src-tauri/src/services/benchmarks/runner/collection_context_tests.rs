@@ -72,7 +72,7 @@ async fn legacy_collection_does_not_gain_a_context_or_native_clock() {
 }
 
 #[tokio::test]
-async fn standalone_clock_retry_keeps_origin_and_rejects_a_changed_cap() {
+async fn standalone_clock_recovery_keeps_origin_and_rejects_a_changed_cap() {
     let (dir, service, _) = tests::setup().await;
     let run = service
         .start_run(tests::request(&service).await)
@@ -97,6 +97,54 @@ async fn standalone_clock_retry_keeps_origin_and_rejects_a_changed_cap() {
             .code,
         "budget_clock_conflict"
     );
+    dir.close().await;
+}
+
+/// 10-18: three runs' repository attempts kept their first try's clock
+/// through refusals for room and a pause, and the try after the resume
+/// settled at once as budget_timeout with no model time.
+#[tokio::test]
+async fn a_requeued_standalone_try_drops_its_clock_and_the_next_try_times_its_own() {
+    let (dir, service, _) = tests::setup().await;
+    let run = service
+        .start_run(tests::request(&service).await)
+        .await
+        .unwrap();
+    let mut attempt = run.attempts[0].clone();
+    let version = opted_in(service.store.version(&attempt.version_id).await.unwrap());
+    let key = format!("collection:{}", attempt.id);
+    attempt.started_at = Some(now() - 59_500);
+    collection_context::reserve(&service.store, &attempt, &version, 60)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    // The first try's clock ran out while the attempt sat in the queue.
+    let stale = collection_context::reserve(&service.store, &attempt, &version, 60)
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, "budget_timeout");
+    assert!(unstarted_timeout(&attempt, &stale.code));
+    // A sealed attempt keeps its clock.
+    let mut sealed = attempt.clone();
+    sealed.evidence_hash = Some("invented-evidence".into());
+    assert!(!collection_context::discard_clock(&service.store, &sealed)
+        .await
+        .unwrap());
+    assert!(service.store.native_budget(&key).await.unwrap().is_some());
+    // Back in the queue, the try takes its clock with it, and the next try
+    // is timed from its own start.
+    attempt.collection_context = None;
+    assert!(collection_context::discard_clock(&service.store, &attempt)
+        .await
+        .unwrap());
+    assert!(service.store.native_budget(&key).await.unwrap().is_none());
+    let start = now();
+    attempt.started_at = Some(start);
+    let fresh = collection_context::reserve(&service.store, &attempt, &version, 60)
+        .await
+        .unwrap();
+    assert_eq!(fresh.root_started_at_ms, start);
+    assert!(fresh.remaining_ms(now()).unwrap() > 59_000);
     dir.close().await;
 }
 

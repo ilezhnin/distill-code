@@ -1054,8 +1054,17 @@ impl Store {
         )
         .fetch_all(&self.pool)
         .await?;
+        // A workflow root the stop cut off mid-trajectory gets the downtime
+        // back from when the service was last alive.
+        let alive = self.last_beat().await?;
         for data in rows {
             let mut a: Attempt = serde_json::from_str(&data)?;
+            if let Some(from) = alive {
+                if a.configuration.execution_profile != "workflow_policy" {
+                    self.open_root_credit(&a.id, &a.run_id, from, "stranded")
+                        .await?;
+                }
+            }
             a.phase = "interrupted".into();
             if a.evidence_hash.is_none()
                 || a.outcome.is_none()
