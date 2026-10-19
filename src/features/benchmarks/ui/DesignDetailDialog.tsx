@@ -55,7 +55,15 @@ export function DesignDetailDialog({
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
-  const points = entry.points?.length ? entry.points : [ownPoint(entry)];
+  // Oldest first, as the measurements were taken; a repeat breaks a tie.
+  const points = [
+    ...(entry.points?.length ? entry.points : [ownPoint(entry)]),
+  ].sort(
+    (a, b) =>
+      (a.finishedAt ?? Number.MAX_SAFE_INTEGER) -
+        (b.finishedAt ?? Number.MAX_SAFE_INTEGER) ||
+      a.repetition - b.repetition,
+  );
   const [shownId, setShownId] = useState(
     points.some((point) => point.attemptId === entry.attemptId)
       ? entry.attemptId
@@ -99,8 +107,9 @@ export function DesignDetailDialog({
             <ToggleGroup
               type="single"
               size="sm"
+              variant="outline"
               aria-label={t("design.points")}
-              className="flex-wrap justify-start"
+              className="w-full flex-wrap justify-start gap-1.5"
               value={point.attemptId}
               onValueChange={(value) => {
                 if (value) setShownId(value);
@@ -110,15 +119,28 @@ export function DesignDetailDialog({
                 <ToggleGroupItem
                   key={candidate.attemptId}
                   value={candidate.attemptId}
+                  title={
+                    candidate.finishedAt == null
+                      ? undefined
+                      : formatDate(candidate.finishedAt, {
+                          dateStyle: "full",
+                          timeStyle: "medium",
+                        })
+                  }
+                  className="flex-none rounded-md px-2.5 tabular-nums data-[variant=outline]:border-l"
                 >
                   {t("design.point", {
                     date:
                       candidate.finishedAt == null
                         ? t("unknown")
-                        : formatDate(candidate.finishedAt, {
-                            dateStyle: "medium",
-                            timeStyle: "short",
-                          }),
+                        : `${formatDate(candidate.finishedAt, {
+                            month: "short",
+                            day: "numeric",
+                          })} ${formatDate(candidate.finishedAt, {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            hourCycle: "h23",
+                          })}`,
                     number: candidate.repetition + 1,
                   })}
                 </ToggleGroupItem>
