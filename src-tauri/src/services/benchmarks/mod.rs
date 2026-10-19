@@ -736,9 +736,9 @@ impl BenchmarkService {
         self.store.run(&id).await
     }
     /// A run resumes with the cases it has not finished, inside its window.
-    /// A case short of its repetitions starts over, every repetition anew, so
-    /// a cell never spans two sittings; a complete case, passed or failed,
-    /// stands. A test the app restarted under was settled as uncertain and
+    /// A case short of its repetitions keeps the ones it measured and owes
+    /// only the rest: the cell is the run's, across pauses and stops; a
+    /// complete case, passed or failed, stands. A test the app restarted under was settled as uncertain and
     /// is measured again as a new attempt, never under its own key. Once the
     /// window closed the run is final and nothing resumes it.
     pub async fn control(&self, id: &str, action: &str) -> Result<BenchmarkRun> {
@@ -988,10 +988,12 @@ impl BenchmarkService {
             }
             unfinished = true;
             for attempt in attempts {
-                // A queued repetition runs as planned; a rendering awaiting
-                // its judges or a verdict keeps its paid generation.
+                // A queued repetition runs as planned. A measured one, scored
+                // or awaiting its verdict, stands: the cell belongs to the
+                // run, not to a sitting, so only a cancelled, failed or
+                // unscored repetition is measured again.
                 if attempt.phase != "terminal"
-                    || (analysis::is_measured(&attempt) && analysis::score(&attempt).is_none())
+                    || analysis::is_measured(&attempt)
                     || matches!(attempt.outcome.as_deref(), Some("excluded" | "unsupported"))
                 {
                     continue;
@@ -1004,7 +1006,7 @@ impl BenchmarkService {
                 );
                 let mut superseded = attempt;
                 superseded.reason = Some(format!(
-                    "Measured again from the start on resume: {measured} of {planned} repetitions were measured when the run stopped (this one: {})",
+                    "Measured again on resume: {measured} of {planned} repetitions were measured when the run stopped (this one: {})",
                     superseded.outcome.as_deref().unwrap_or("unfinished")
                 ));
                 superseded.outcome = Some(analysis::SUPERSEDED.into());

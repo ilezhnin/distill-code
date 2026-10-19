@@ -207,8 +207,8 @@ export function BenchmarkConfigurationPage({
     [key, row, runs],
   );
   // The run the dialog starts from: the one measuring the model now, else
-  // its newest run whose window is still open.
-  const open = useMemo(() => rowOpenRun(row, runs, Date.now()), [row, runs]);
+  // its newest run not baked yet.
+  const open = useMemo(() => rowOpenRun(row, runs), [row, runs]);
   const dialogRunId = activity.runId ?? open?.id ?? null;
   const queuedRunId = catchUp.queuedRunId;
   // The run measuring this model now, else one that plans its gaps.

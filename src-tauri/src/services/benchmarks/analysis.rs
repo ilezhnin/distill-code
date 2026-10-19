@@ -7,18 +7,27 @@ pub(super) fn score(attempt: &Attempt) -> Option<f64> {
     score_as_of(attempt, None)
 }
 
-/// How long a run stays open after it started: the window in which its
-/// unfinished cases may still be measured. Once it closes the run is baked,
-/// complete cells kept and the rest dropped, and nothing changes it after.
+/// How long a run stays open after it started, time it spent paused left
+/// out: the window in which its unfinished cases may still be measured.
+/// Once it closes the run is baked, complete cells kept and the rest
+/// dropped, and nothing changes it after.
 pub const RUN_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// When a run's window closes.
+/// When a run's window closes as of `at`: a paused run's window waits for it.
+pub fn window_closes_at(run: &BenchmarkRun, at: i64) -> i64 {
+    let resting = run
+        .paused_since
+        .map_or(0, |since| at.saturating_sub(since).max(0));
+    run.created_at + RUN_WINDOW_MS + run.paused_ms + resting
+}
+
+/// When a run's window closes, as of now.
 pub fn window_closes(run: &BenchmarkRun) -> i64 {
-    run.created_at + RUN_WINDOW_MS
+    window_closes_at(run, super::now())
 }
 
 /// The outcome of an attempt that no longer counts: a repetition of a case
-/// measured again from the start, or one its run's closing window left
+/// measured again, or one its run's closing window left
 /// short. The attempt keeps its evidence and spend; no cell holds it.
 pub const SUPERSEDED: &str = "superseded";
 
@@ -2602,6 +2611,8 @@ pub(super) mod tests {
                 created_at: 2,
                 updated_at: 3,
                 baked_at: None,
+                paused_ms: 0,
+                paused_since: None,
                 request: request.clone(),
                 attempts: vec![],
             },
@@ -2612,6 +2623,8 @@ pub(super) mod tests {
                 created_at: 5,
                 updated_at: 6,
                 baked_at: None,
+                paused_ms: 0,
+                paused_since: None,
                 request: request.clone(),
                 attempts: vec![],
             },

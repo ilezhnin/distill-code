@@ -782,6 +782,8 @@ mod tests {
                         created_at: 900,
                         updated_at: 1000,
                         baked_at: None,
+                        paused_ms: 0,
+                        paused_since: None,
                         request: run_request,
                         attempts: vec![],
                     });

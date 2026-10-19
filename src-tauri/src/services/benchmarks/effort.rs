@@ -192,6 +192,8 @@ mod tests {
             created_at,
             updated_at: created_at + 1,
             baked_at: None,
+            paused_ms: 0,
+            paused_since: None,
             request,
             attempts: Vec::new(),
         });

@@ -755,7 +755,7 @@ impl Store {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let rows = sqlx::query("SELECT id,state,revision,created_at,updated_at,baked_at,request_json FROM run_plans ORDER BY created_at,id").fetch_all(&mut *tx).await?;
+        let rows = sqlx::query("SELECT id,state,revision,created_at,updated_at,baked_at,paused_ms,paused_since,request_json FROM run_plans ORDER BY created_at,id").fetch_all(&mut *tx).await?;
         let runs = rows
             .into_iter()
             .map(|r| {
@@ -766,6 +766,8 @@ impl Store {
                     created_at: r.try_get("created_at")?,
                     updated_at: r.try_get("updated_at")?,
                     baked_at: r.try_get("baked_at")?,
+                    paused_ms: r.try_get("paused_ms")?,
+                    paused_since: r.try_get("paused_since")?,
                     request: serde_json::from_str(r.try_get("request_json")?)?,
                     attempts: vec![],
                 })

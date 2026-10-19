@@ -440,7 +440,7 @@ impl Store {
     }
     pub async fn run(&self, id: &str) -> Result<BenchmarkRun> {
         let r = sqlx::query(
-            "SELECT state,revision,created_at,updated_at,request_json,baked_at FROM run_plans WHERE id=?",
+            "SELECT state,revision,created_at,updated_at,request_json,baked_at,paused_ms,paused_since FROM run_plans WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -455,6 +455,8 @@ impl Store {
             created_at: r.get(2),
             updated_at: r.get(3),
             baked_at: r.get(5),
+            paused_ms: r.get(6),
+            paused_since: r.get(7),
             request: serde_json::from_str(r.get(4))?,
             attempts: rows
                 .into_iter()
@@ -522,7 +524,8 @@ impl Store {
                     FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal'
                         AND json_extract(a.data_json,'$.outcome') IS NOT NULL
                         AND json_extract(a.data_json,'$.outcome')<>'superseded')
-                END
+                END,
+                r.paused_ms,r.paused_since
              FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
         .fetch_all(&self.pool)
@@ -536,6 +539,8 @@ impl Store {
                     created_at: r.get(3),
                     updated_at: r.get(4),
                     baked_at: r.get(11),
+                    paused_ms: r.get(13),
+                    paused_since: r.get(14),
                     request: serde_json::from_str(r.get(5))?,
                     attempt_count: r.get::<i64, _>(6) as u64,
                     settled_count: r.get::<i64, _>(7) as u64,
@@ -1044,12 +1049,13 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
-    /// The ids of runs whose window closed at or before `cutoff` and whose
+    /// The ids of runs whose window, time spent paused left out, closed at
+    /// or before `cutoff` (a paused run's window waits) and whose
     /// cells are not final yet, oldest first, leaving out the runs a workflow
     /// campaign owns. Only ids: the caller loads a run once it may bake it.
     pub async fn unbaked_run_ids(&self, cutoff: i64) -> Result<Vec<String>> {
         Ok(sqlx::query_scalar::<_, String>(
-            "SELECT id FROM run_plans p WHERE baked_at IS NULL AND created_at<=? AND NOT EXISTS(SELECT 1 FROM workflow_campaign_cells c WHERE c.request_key=p.request_key) ORDER BY created_at,id",
+            "SELECT id FROM run_plans p WHERE baked_at IS NULL AND paused_since IS NULL AND created_at+paused_ms<=? AND NOT EXISTS(SELECT 1 FROM workflow_campaign_cells c WHERE c.request_key=p.request_key) ORDER BY created_at,id",
         )
         .bind(cutoff)
         .fetch_all(&self.pool)
@@ -1077,11 +1083,11 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         // A turn that fails while the owner stops the run never takes the
         // stop back: needs_attention leaves a cancelling or cancelled run be.
-        sqlx::query("UPDATE run_plans SET state=?,revision=revision+1,updated_at=? WHERE id=? AND NOT (?='needs_attention' AND state IN ('cancelling','cancelled'))")
+        // A pause's time is kept apart, so the run's window leaves it out.
+        sqlx::query("UPDATE run_plans SET state=?1,revision=revision+1,updated_at=?2,paused_ms=paused_ms+CASE WHEN paused_since IS NOT NULL AND ?1<>'paused' THEN MAX(0,?2-paused_since) ELSE 0 END,paused_since=CASE WHEN ?1='paused' THEN COALESCE(paused_since,?2) ELSE NULL END WHERE id=?3 AND NOT (?1='needs_attention' AND state IN ('cancelling','cancelled'))")
             .bind(state)
             .bind(at)
             .bind(id)
-            .bind(state)
             .execute(&mut *tx)
             .await?;
         event(&mut tx, id, "run_changed").await?;
@@ -1120,7 +1126,9 @@ impl Store {
             a.reason=Some("Application restarted; reconcile committed host evidence before any further dispatch.".into());
             self.save_attempt(&a).await?;
         }
-        sqlx::query("UPDATE run_plans SET state='needs_attention',revision=revision+1 WHERE state IN ('running','pausing','cancelling')").execute(&self.pool).await?;
+        // A stop the restart cut short stays a stop: the runner closes it
+        // once nothing of the run flies, as it would have before.
+        sqlx::query("UPDATE run_plans SET state='needs_attention',revision=revision+1 WHERE state IN ('running','pausing')").execute(&self.pool).await?;
         let rows = sqlx::query_scalar::<_, String>(
             "SELECT data_json FROM schedules WHERE enabled=1 AND next_due_at<?",
         )

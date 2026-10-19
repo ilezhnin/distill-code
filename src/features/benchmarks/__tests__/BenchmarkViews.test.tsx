@@ -962,9 +962,10 @@ describe("benchmark authoring and saved evidence", () => {
       />
     );
     const { rerender } = wrap(page([paused, runSummary]));
-    // A paused run plans gaps but measures nothing now: a fresh dialog.
+    // A run not baked yet goes to the dialog, which goes on with it inside
+    // its window and explains it once the window closed.
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    expect(openDialog).toHaveBeenLastCalledWith(null);
+    expect(openDialog).toHaveBeenLastCalledWith("paused-run-1");
     await userEvent.click(
       screen.getByRole("button", { name: "Queued in run paused-r" }),
     );
@@ -1919,9 +1920,10 @@ describe("configuration history", () => {
         limit: 100,
       }),
     );
-    // Run measures today's model, whichever point is shown.
+    // Run measures today's model, whichever point is shown, from its
+    // newest run not baked yet.
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    expect(catchUp).toHaveBeenCalledWith(null);
+    expect(catchUp).toHaveBeenCalledWith("run-1");
     expect(benchmarkApi.getHistory).toHaveBeenCalledWith(configuration, true);
     await userEvent.click(
       screen.getByRole("button", { name: "Show current results" }),

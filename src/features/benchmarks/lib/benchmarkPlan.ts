@@ -36,23 +36,30 @@ export function judgeCalls(
 export const REQUIRED_REPETITIONS = 3;
 
 /**
- * How long a run stays open after it started (analysis::RUN_WINDOW_MS): the
- * window in which its unfinished cases may still be measured. Once it closes
- * the run is final, complete cells kept and the rest dropped.
+ * How long a run stays open after it started, time it spent paused left out
+ * (analysis::RUN_WINDOW_MS): the window in which its unfinished cases may
+ * still be measured. Once it closes the run is final, complete cells kept
+ * and the rest dropped.
  */
 export const RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-/** When a run's window closes. */
-export function runWindowCloses(run: { createdAt: number }): number {
-  return run.createdAt + RUN_WINDOW_MS;
+type RunWindow = {
+  createdAt: number;
+  bakedAt?: number | null;
+  pausedMs?: number;
+  pausedSince?: number | null;
+};
+
+/** When a run's window closes as of `now`: a paused run's window waits for it. */
+export function runWindowCloses(run: RunWindow, now = Date.now()): number {
+  const resting =
+    run.pausedSince == null ? 0 : Math.max(0, now - run.pausedSince);
+  return run.createdAt + RUN_WINDOW_MS + (run.pausedMs ?? 0) + resting;
 }
 
 /** Whether a run may still be finished: its window is open and it is not baked. */
-export function runWindowOpen(
-  run: { createdAt: number; bakedAt?: number | null },
-  now: number,
-): boolean {
-  return run.bakedAt == null && now < runWindowCloses(run);
+export function runWindowOpen(run: RunWindow, now: number): boolean {
+  return run.bakedAt == null && now < runWindowCloses(run, now);
 }
 
 /**

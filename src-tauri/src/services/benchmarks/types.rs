@@ -429,6 +429,13 @@ pub struct BenchmarkRun {
     /// finishing; none is changed after this.
     #[serde(default)]
     pub baked_at: Option<i64>,
+    /// Time the run spent paused before its current pause, if any: its
+    /// window leaves it out.
+    #[serde(default)]
+    pub paused_ms: i64,
+    /// When the run's current pause began.
+    #[serde(default)]
+    pub paused_since: Option<i64>,
     pub request: RunRequest,
     pub attempts: Vec<Attempt>,
 }
@@ -443,6 +450,12 @@ pub struct RunSummary {
     /// See [`BenchmarkRun::baked_at`].
     #[serde(default)]
     pub baked_at: Option<i64>,
+    /// See [`BenchmarkRun::paused_ms`].
+    #[serde(default)]
+    pub paused_ms: i64,
+    /// See [`BenchmarkRun::paused_since`].
+    #[serde(default)]
+    pub paused_since: Option<i64>,
     pub request: RunRequest,
     pub attempt_count: u64,
     pub settled_count: u64,
