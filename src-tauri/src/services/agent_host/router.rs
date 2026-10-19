@@ -6808,7 +6808,7 @@ impl Inner {
         let host = Arc::clone(self);
         tokio::spawn(async move {
             if tokio::time::Instant::now() >= monotonic_deadline {
-                let error = json!({"kind":"budget_timeout","message":"Native root wall budget expired before dispatch"});
+                let error = json!({"kind":"budget_timeout","message":"Native root wall budget expired before dispatch","proof":"native-owned-no-provider-start-v1"});
                 let _ = host
                     .store
                     .settle_dispatch(&request.request_key, "terminal", None, Some(&error))

@@ -1226,7 +1226,7 @@ impl Store {
         }
         // Inference reads no fit snapshot, controls, evaluators or run outcomes.
         // Full evidence validation happened when this certificate was issued.
-        self.verify_qualification_authority(&state.certificate.qualifications)
+        self.verify_qualification_authority(&state.certificate.qualifications, true)
             .await?;
         let model = self.selector_model(&state.certificate.model_id).await?;
         if model.snapshot_hash != state.certificate.model_snapshot_hash {
@@ -1241,12 +1241,15 @@ impl Store {
         Ok(state.certificate)
     }
     /// The frozen qualifications a certificate cites are still its exact,
-    /// unrevoked records, graded by the installed renderer they named.
+    /// unrevoked records. With `installed_renderer`, the renderer installed
+    /// now is still the one they named; a holdout certificate instead proved
+    /// at promotion which renderer graded its counted attempts.
     async fn verify_qualification_authority(
         &self,
         qualifications: &[qualification::Binding],
+        installed_renderer: bool,
     ) -> Result<()> {
-        let mut installed_renderer = None;
+        let mut installed = None;
         for frozen in qualifications {
             let current = self
                 .qualification_bindings(&frozen.version_id)
@@ -1265,11 +1268,15 @@ impl Store {
             {
                 return Err(invalid("Promotion qualification authority changed"));
             }
-            if let Some(revision) = current.evaluator_runtime_revision.as_deref() {
-                if installed_renderer.is_none() {
-                    installed_renderer = Some(Box::pin(super::worker::ready()).await?);
+            if let Some(revision) = current
+                .evaluator_runtime_revision
+                .as_deref()
+                .filter(|_| installed_renderer)
+            {
+                if installed.is_none() {
+                    installed = Some(Box::pin(super::worker::ready()).await?);
                 }
-                if installed_renderer.as_deref() != Some(revision) {
+                if installed.as_deref() != Some(revision) {
                     return Err(invalid(
                         "Promoted renderer runtime changed; requalify before dispatch",
                     ));
@@ -1322,7 +1329,17 @@ impl Store {
             };
             match self.require_active_promotion(&id).await {
                 Ok(certificate) => return Ok(Some((certificate, model_id))),
-                Err(error) if error.code == "invalid_promotion" => continue,
+                // A campaign certificate whose renderer is unavailable or busy
+                // cannot speak for a chat now; an older one, or the chat's own
+                // order, can. Owned dispatch keeps these errors.
+                Err(error)
+                    if matches!(
+                        error.code.as_str(),
+                        "invalid_promotion" | "capability_missing" | "resource_busy"
+                    ) =>
+                {
+                    continue
+                }
                 Err(error) => return Err(error),
             }
         }

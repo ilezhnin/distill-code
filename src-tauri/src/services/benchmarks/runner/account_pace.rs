@@ -16,8 +16,11 @@
 //! clean round at, or a refusal sent it to), when it last flew turns, whether
 //! it is still in slow start and its standing model ceilings are kept beside
 //! the store, so an app restart resumes there: an account that flew turns
-//! within a ceiling's hour goes on at its level, one idle for longer resumes
-//! at half its stable level, in slow start again. Every move is logged. Every attempt records how many
+//! within a ceiling's hour goes on at its level, and so does one idle for up
+//! to six hours whose last word from the provider was no refusal or slowdown
+//! (a drain or a deploy changes nothing on the provider's side); one idle for
+//! longer, or over the hour right after a refusal or slowdown, resumes at
+//! half its stable level, in slow start again. Every move is logged. Every attempt records how many
 //! turns its account had in flight when it was admitted, so speed results
 //! stay comparable across levels.
 use serde::{Deserialize, Serialize};
@@ -28,6 +31,10 @@ use std::sync::{LazyLock, Mutex};
 /// How long the level the provider last refused or slowed turns at stands
 /// as the account's ceiling before the pace may probe it again.
 const CEILING_MS: i64 = 60 * 60 * 1000;
+/// How long an account may sit idle and still resume at the level it was
+/// flying, when the provider did not push back last (10-18: every gap's
+/// restart, an hour or more of drain and deploy, halved every account).
+const RESUME_MS: i64 = 6 * 60 * 60 * 1000;
 /// How long the pace holds after it changed (or was first used) before it
 /// may grow again.
 const HOLD_MS: i64 = 10 * 60 * 1000;
@@ -103,16 +110,26 @@ impl Pace {
         }
     }
 
+    /// Whether a restart at `now` resumes `saved` where it was: it flew
+    /// within the hour, or within [`RESUME_MS`] when its last move was not
+    /// the provider's refusal or slowdown (which sets a model ceiling no
+    /// earlier than the stable level it sent the account to).
+    pub(super) fn resumes_where_it_was(saved: &Saved, now: i64) -> bool {
+        let idle = now - saved.active_at.unwrap_or(saved.at);
+        let refused_last = saved.ceilings.values().any(|(_, since)| *since >= saved.at);
+        idle < CEILING_MS || (idle < RESUME_MS && !refused_last)
+    }
+
     /// The pace a restart resumes from `saved`. Staleness runs from the last
-    /// time the account flew turns: a short stop (a restart, a build gap)
-    /// says nothing new about its provider, so within a ceiling's hour the
-    /// account goes on at the level it was flying, in the same slow start.
-    /// One idle for longer resumes at half its stable level, in slow start
-    /// again, since the evidence that ended it has lapsed too. The model
-    /// ceilings still standing hold either way.
+    /// time the account flew turns: a stop (a restart, a gap's drain and
+    /// deploy) says nothing new about its provider, so the account goes on
+    /// at the level it was flying, in the same slow start, while
+    /// [`Self::resumes_where_it_was`]. Otherwise it resumes at half its
+    /// stable level, in slow start again, since the evidence that ended it
+    /// has lapsed too. The model ceilings still standing hold either way.
     pub(super) fn resume(saved: &Saved, now: i64) -> Self {
         let active = saved.active_at.unwrap_or(saved.at);
-        let fresh = now - active < CEILING_MS;
+        let fresh = Self::resumes_where_it_was(saved, now);
         let level = if fresh {
             saved.current.unwrap_or(saved.level)
         } else {
@@ -353,10 +370,10 @@ fn with_pace<T>(key: &str, apply: impl FnOnce(&mut Pace) -> T) -> T {
                     "[benchmarks] account pace {} resumed at {} turns at once: it last flew turns {idle} s ago ({}), stable level {}, slow start {}",
                     shown(key),
                     pace.limit(),
-                    if idle * 1000 < CEILING_MS {
-                        "within the hour, so it goes on where it was"
+                    if Pace::resumes_where_it_was(&saved, now) {
+                        "within the hour, or within six hours with no refusal or slowdown last, so it goes on where it was"
                     } else {
-                        "over an hour ago, so at half its stable level"
+                        "six hours or more ago, or over an hour after a refusal or slowdown, so at half its stable level"
                     },
                     saved.level,
                     pace.slow_start
@@ -382,6 +399,19 @@ fn shown(key: &str) -> String {
         .next()
         .unwrap_or(key)
         .replace(char::from(0x1f), "/")
+}
+
+/// When `account` (its provider and id, as a seat names it) last flew a
+/// turn under any store this process paces, to the minute; none when it has
+/// no pace here.
+pub(super) fn last_flight(account: &str) -> Option<i64> {
+    PACES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|(key, _)| key.rsplit(char::from(0x1e)).next() == Some(account))
+        .map(|(_, pace)| pace.active)
+        .max()
 }
 
 /// `account` starts a turn at `now`: it is flying, which a restart measures
@@ -648,11 +678,22 @@ mod tests {
         assert_eq!(resumed.limit(), 16);
         assert!(resumed.slow_start);
         assert_eq!(resumed.saved().active_at, Some(last));
-        // An account idle for more than a ceiling's hour resumes at half its
-        // stable level.
-        let idle = Pace::resume(&saved, last + CEILING_MS);
+        // A drain and deploy of an hour or more with no refusal last goes on
+        // at 16 too (10-18: every gap's restart halved every account).
+        let drained = Pace::resume(&saved, last + 2 * CEILING_MS);
+        assert_eq!(drained.limit(), 16);
+        assert!(drained.slow_start);
+        // An account idle for longer than that resumes at half its stable
+        // level.
+        let idle = Pace::resume(&saved, last + RESUME_MS);
         assert_eq!(idle.limit(), 4);
         assert!(idle.slow_start);
+        // Over the hour right after a refusal, it resumes at half as well.
+        let mut refused = pace.clone();
+        refused.throttled("m", Some(16), last);
+        let saved = refused.saved();
+        assert_eq!(Pace::resume(&saved, last + CEILING_MS - 1).limit(), 8);
+        assert_eq!(Pace::resume(&saved, last + CEILING_MS).limit(), 4);
         // Activity is kept to the minute, so a burst of turns saves once.
         let mut steady = Pace::new(4, 0);
         steady.finished("m", 1, None, ACTIVE_STEP_MS);
@@ -688,13 +729,13 @@ mod tests {
         );
         // An account with no history in the same store seeds its start.
         assert_eq!(limit(&fresh), super::super::ACCOUNT_SLOTS);
-        // A level saved more than a ceiling's hour ago resumes at half.
+        // A level saved longer ago than the idle window resumes at half.
         let mut file = file;
         file.insert(
             "invented-acp\u{1f}pace-stale".into(),
             Saved {
                 level: 12,
-                at: now - CEILING_MS - 1,
+                at: now - RESUME_MS - 1,
                 slow_start: false,
                 ceilings: BTreeMap::new(),
                 current: None,

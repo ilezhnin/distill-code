@@ -48,6 +48,35 @@ describe("previewDocument", () => {
     );
   });
 
+  it("frames a drawing as the judges see it, whatever its own size", () => {
+    const viewBox = previewDocument("<svg viewBox='0 0 1024 768'/>", "svg");
+    const sized = previewDocument("<svg width='1024' height='768'/>", "svg");
+    for (const document of [viewBox, sized]) {
+      expect(document).toContain(
+        "body>svg{display:block!important;width:100vw!important;height:100vh!important",
+      );
+      expect(document).not.toContain("display:grid");
+    }
+    expect(sized).toContain(
+      `<svg viewBox="0 0 1024 768" width='1024' height='768'/>`,
+    );
+    for (const kept of [
+      "<svg width='10px' height='5' viewBox='0 0 2 1'/>",
+      "<svg width='100%' height='100%'/>",
+      "<svg stroke-width='3' height='5'/>",
+    ])
+      expect(previewDocument(kept, "svg")).toContain(kept);
+    // Prose around one drawing is that drawing, also for an html format;
+    // a page with other markup stays a page.
+    const drawing = "<svg viewBox='0 0 4 3'><rect/></svg>";
+    expect(previewDocument(`Here it is: ${drawing} Enjoy.`, "html")).toContain(
+      `<body>${drawing}</body>`,
+    );
+    expect(previewDocument(`<p>Title</p>${drawing}`, "html")).not.toContain(
+      "body>svg",
+    );
+  });
+
   it("renders nothing for prose or code", () => {
     expect(previewDocument("42", "text")).toBeNull();
     expect(previewDocument("fn main() {}", "rust")).toBeNull();

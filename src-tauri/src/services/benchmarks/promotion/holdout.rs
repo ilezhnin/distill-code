@@ -67,13 +67,58 @@ fn policy_cases(report: &HoldoutReport, persona: &str) -> Result<Vec<ReportCase>
         .collect()
 }
 
+/// How one counted repetition relates to the renderer its qualification
+/// verified: `None` when an evaluation names another renderer (or, for
+/// browser checks, another worker) or a graded repetition names none;
+/// `Some(true)` when it names the qualified one; `Some(false)` for a zero
+/// scored without the renderer: a budget failure without a grader, or a
+/// rubric answer without any markup to render (a native structural zero).
+fn qualified_renderer_grading(
+    evaluations: &[&Evaluation],
+    installed: &str,
+    worker: Option<&str>,
+) -> Option<bool> {
+    let mut named = false;
+    for details in evaluations.iter().filter_map(|e| e.details.as_ref()) {
+        if let Some(revision) = details.get("installedRevision") {
+            if revision.as_str() != Some(installed)
+                || worker.is_some_and(|w| details["runtimeRevision"].as_str() != Some(w))
+            {
+                return None;
+            }
+            named = true;
+        }
+        if let Some(revision) = details.pointer("/protocol/installedRendererRevision") {
+            if revision.as_str() != Some(installed) {
+                return None;
+            }
+            named = true;
+        }
+    }
+    // Browser checks never produce an objective verdict; the rubric's
+    // structural zero is the one judge_panel::validate_evidence accepts.
+    let structural_zero = worker.is_none()
+        && evaluations
+            .iter()
+            .all(|e| e.provenance == "objective" && e.verdict == "fail" && e.score == Some(0.0));
+    match (named, evaluations.is_empty() || structural_zero) {
+        (true, _) => Some(true),
+        (false, true) => Some(false),
+        (false, false) => None,
+    }
+}
+
 impl Store {
     /// The frozen held-out versions qualify before their reservation, on the
-    /// exact published content and evaluator the plan froze.
+    /// exact published content and evaluator the plan froze. With
+    /// `installed_renderer`, a renderer-bound qualification must also name
+    /// the renderer installed now; promotion instead checks the renderer that
+    /// graded the counted attempts.
     async fn holdout_qualifications(
         &self,
         plan: &HoldoutPlan,
         ids: &[String],
+        installed_renderer: bool,
     ) -> Result<Vec<qualification::Binding>> {
         let mut covered = BTreeSet::new();
         let mut bindings = Vec::new();
@@ -87,7 +132,9 @@ impl Store {
                 .ok_or_else(|| invalid("Qualification binding disappeared"))?;
             let version = self.version(&binding.version_id).await?;
             qualification::validate_protocol(&record, &version)?;
-            Box::pin(qualification::validate_renderer_runtime(&record, &version)).await?;
+            if installed_renderer {
+                Box::pin(qualification::validate_renderer_runtime(&record, &version)).await?;
+            }
             let frozen = plan
                 .cases
                 .iter()
@@ -165,6 +212,62 @@ impl Store {
                 .map(|(id, _, _)| id),
         );
         Ok(ids.into_iter().collect())
+    }
+
+    /// Each counted repetition of a renderer-bound version was graded by the
+    /// renderer its qualification verified, so the certificate does not
+    /// depend on the renderer installed when a later chat consults it. A
+    /// browser-checked version was graded under it at least once: a zero
+    /// scored without the renderer cannot carry the whole version. The report
+    /// stays frozen while judge receipts are reconciled, so the evaluations
+    /// are read again rather than matched to its hash; receipts name no
+    /// renderer.
+    async fn require_qualified_grading(
+        &self,
+        report: &HoldoutReport,
+        qualifications: &[qualification::Binding],
+    ) -> Result<()> {
+        for binding in qualifications {
+            let Some(installed) = binding.evaluator_runtime_revision.as_deref() else {
+                continue;
+            };
+            let record = self.qualification(&binding.id).await?;
+            // validate_protocol already holds every browser control to one
+            // worker revision; rubric renderings carry none.
+            let worker = record
+                .controls
+                .iter()
+                .find_map(|control| control.evaluation.as_ref()?.details.as_ref())
+                .and_then(|details| details.get("runtimeRevision")?.as_str());
+            let case = report
+                .cases
+                .iter()
+                .find(|case| case.version_id == binding.version_id)
+                .ok_or_else(|| invalid("A qualified held-out version has no counted cell"))?;
+            let mut graded = false;
+            for repeat in case.cells.iter().flat_map(|cell| &cell.repeats) {
+                let attempt = self.attempt(&repeat.attempt_id).await?;
+                let evaluations: Vec<_> = attempt
+                    .evaluations
+                    .iter()
+                    .filter(|e| e.created_at <= repeat.scored_at)
+                    .collect();
+                match qualified_renderer_grading(&evaluations, installed, worker) {
+                    Some(named) => graded |= named,
+                    None => {
+                        return Err(invalid(
+                            "A counted attempt was graded by another renderer than its qualification verified",
+                        ))
+                    }
+                }
+            }
+            if worker.is_some() && !graded {
+                return Err(invalid(
+                    "No counted attempt of a renderer-bound version names its qualified renderer",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The runs that ever named a version of the component, from run plans
@@ -259,7 +362,7 @@ impl Store {
             ));
         }
         let bindings = self
-            .holdout_qualifications(&plan, &request.qualification_ids)
+            .holdout_qualifications(&plan, &request.qualification_ids, true)
             .await?;
         let mut saved = RegisteredHoldoutRule {
             request,
@@ -334,7 +437,7 @@ impl Store {
         let plan = self.selector_holdout(plan_id).await?;
         let model = self.selector_model(&plan.request.model_id).await?;
         let qualifications = self
-            .holdout_qualifications(&plan, &rule.request.qualification_ids)
+            .holdout_qualifications(&plan, &rule.request.qualification_ids, false)
             .await?;
         if hash(&plan)? != rule.plan_hash
             || model.snapshot_hash != plan.model_snapshot_hash
@@ -351,6 +454,7 @@ impl Store {
         self.require_holdout_reserved(&plan).await?;
         // Complete first measurements only; an incomplete holdout errors here.
         let report = self.evaluate_selector_holdout(plan_id).await?;
+        Box::pin(self.require_qualified_grading(&report, &qualifications)).await?;
         // The counted runs are the only runs that ever named the reserved
         // families: no preview, sibling revision or extra run could be read
         // before the comparison was settled.
@@ -415,7 +519,9 @@ impl Store {
     }
 
     /// Authority of a holdout certificate: its immutable plan, rule,
-    /// qualifications and fit, never comparison outcomes.
+    /// qualifications and fit, never comparison outcomes. Promotion proved
+    /// which renderer graded the evidence; the renderer installed now plays
+    /// no part in choosing a model for a chat.
     pub(super) async fn require_active_holdout_promotion(
         &self,
         certificate: Certificate,
@@ -441,7 +547,7 @@ impl Store {
         {
             return Err(invalid("Holdout promotion authority changed"));
         }
-        self.verify_qualification_authority(&certificate.qualifications)
+        self.verify_qualification_authority(&certificate.qualifications, false)
             .await?;
         let model = self.selector_model(&certificate.model_id).await?;
         if model.snapshot_hash != certificate.model_snapshot_hash {
@@ -538,5 +644,77 @@ mod tests {
         let mut broken = report(16);
         broken.cases[0].learned_key = "unmeasured".into();
         assert!(policy_cases(&broken, "b").is_err());
+    }
+
+    fn graded(provenance: &str, details: Option<serde_json::Value>) -> Evaluation {
+        Evaluation {
+            id: "evaluation".into(),
+            evaluator_revision: "revision".into(),
+            verdict: "pass".into(),
+            score: Some(1.0),
+            reason: String::new(),
+            created_at: 1,
+            provenance: provenance.into(),
+            artifacts: vec![],
+            details,
+            judge: None,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn counted_attempts_must_name_the_qualified_renderer() {
+        let browser = |installed: &str, worker: &str| {
+            graded(
+                "protected_browser",
+                Some(
+                    serde_json::json!({"installedRevision": installed, "runtimeRevision": worker}),
+                ),
+            )
+        };
+        let check = |evaluations: &[Evaluation], worker: Option<&str>| {
+            qualified_renderer_grading(&evaluations.iter().collect::<Vec<_>>(), "r1", worker)
+        };
+        let named = Some(true);
+        let unnamed_zero = Some(false);
+        assert_eq!(check(&[browser("r1", "w1")], Some("w1")), named);
+        // Another installed renderer or worker on any evaluation refuses it.
+        assert_eq!(check(&[browser("r2", "w1")], Some("w1")), None);
+        assert_eq!(check(&[browser("r1", "w2")], Some("w1")), None);
+        assert_eq!(
+            check(&[browser("r1", "w1"), browser("r2", "w1")], Some("w1")),
+            None
+        );
+        // A graded repetition that names no renderer cannot prove which one it used.
+        assert_eq!(
+            check(&[graded("protected_browser", None)], Some("w1")),
+            None
+        );
+        assert_eq!(
+            check(&[graded("exact", Some(serde_json::json!({})))], None),
+            None
+        );
+        // A budget failure is scored without a grader.
+        assert_eq!(check(&[], Some("w1")), unnamed_zero);
+        // Rubric renderings name the renderer in their judge protocol.
+        let render = |installed: &str| {
+            graded(
+                "render",
+                Some(serde_json::json!({"protocol": {"installedRendererRevision": installed}})),
+            )
+        };
+        assert_eq!(check(&[render("r1"), graded("judge", None)], None), named);
+        assert_eq!(check(&[render("r2"), graded("judge", None)], None), None);
+        // A rubric answer without markup is a native zero nothing rendered;
+        // a browser check never produces one.
+        let mut structural = graded("objective", None);
+        structural.verdict = "fail".into();
+        structural.score = Some(0.0);
+        assert_eq!(check(std::slice::from_ref(&structural), None), unnamed_zero);
+        assert_eq!(check(std::slice::from_ref(&structural), Some("w1")), None);
+        let mut passed = structural.clone();
+        passed.verdict = "pass".into();
+        passed.score = Some(1.0);
+        assert_eq!(check(&[passed], None), None);
     }
 }

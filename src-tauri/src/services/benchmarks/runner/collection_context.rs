@@ -133,6 +133,24 @@ impl Context {
     }
 }
 
+/// Deletes the clock [`reserve`] froze for a standalone attempt whose try
+/// goes back to the queue (see `runner::drop_collection_clock`); false, and
+/// nothing deleted, for a sealed attempt. A recorded preparation refusal
+/// stays.
+pub(super) async fn discard_clock(store: &Store, attempt: &Attempt) -> Result<bool> {
+    if attempt.evidence_hash.is_some() {
+        return Ok(false);
+    }
+    sqlx::query(
+        "DELETE FROM task_budget_bindings WHERE request_key=? AND root_id=? AND refusal_json IS NULL",
+    )
+    .bind(format!("collection:{}", attempt.id))
+    .bind(&attempt.id)
+    .execute(&store.pool)
+    .await?;
+    Ok(true)
+}
+
 pub(super) async fn reserve(
     store: &Store,
     attempt: &Attempt,
@@ -153,6 +171,7 @@ pub(super) async fn reserve(
         step_key: key.clone(),
         step_started_at_ms: origin,
         step_cap_seconds: timeout,
+        credits: Vec::new(),
     };
     store
         .reserve_task_budget(

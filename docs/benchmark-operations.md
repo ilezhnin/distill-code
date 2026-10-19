@@ -286,7 +286,12 @@ naming the line that holds it, while it does not:
 
 No count bounds how many jobs run: as many run as the measured CPUs, memory
 and pressure admit without errors in the sandbox, and as the providers take
-without rate-limit answers. The only fixed amounts are safety margins,
+without rate-limit answers. Jobs waiting for room ask the broker one ask per
+resource class at a time, the others waiting in the app in turn for each ask
+(so the broker still chooses among all of them): every ask
+starts processes inside the distribution, and a burst of waiting renders
+asking each second once exhausted its process budget (10-18). A render
+refused room before it started cleans nothing. The only fixed amounts are safety margins,
 fairness ceilings and starting points, never counts of jobs: the 12 GiB
 available-RAM and 8 GiB commit floors on Windows, the 2 GiB guest-memory floor
 and the 30 GiB sandbox-volume floor; each job's own ceilings by class (a
@@ -350,7 +355,19 @@ than a quarter of its allowance has passed; on the wall-clock budget that time
 comes off the step's own allowance. Past that quarter the refusal ends the
 step, unscored. The first step of a workflow returns to the queue instead. A check's own time limit starts once it is admitted, so waiting for
 room never shortens it. Only a deadline that passes while waiting ends the
-attempt, as unscored infrastructure failure. Evaluator admission waits on the
+attempt, as unscored infrastructure failure. So does a wall budget that ran out
+before the attempt's or step's own session started (a pause, the queue, a wait
+for a local slot, setup that outlasted the deadline): no model time was
+measured, so it is never a model's zero, and it settles rather than returning
+to the queue. A standalone try that goes back to the queue takes its clock with
+it, so its next try is timed from its own start; a quota limit hit mid-turn
+discards the turn and its clock alike. A root-pinned workflow that goes back to
+the queue with a paid prefix (a quota or account wait), or that a stopped app
+left mid-trajectory, gets that time back: it is credited to its wall budget
+from when it left flight, or from the service's last heartbeat, until its next
+flight starts, in a hash-bound record that never changes once closed. Time in
+flight is never credited, and campaign roots, which never continue
+mid-trajectory, get no credit. Evaluator admission waits on the
 captured answer; a runtime resource failure is inconclusive infrastructure
 evidence, not a model score. The application does not change global
 `.wslconfig` or the resources of other distributions.
@@ -577,7 +594,15 @@ them out. Workflow steps and rubric judges add calls; use
 formula. Qualification-control counts, candidate calls and judge calls are
 different quantities and should be reported separately.
 
-Set the research run's `executionLimits.retryPolicy` to `none`. Use at least
+Set the research run's `executionLimits.retryPolicy` to `none`. Such a run still
+waits out a usage limit: a turn the limit refused, or stopped before anything of
+it was evaluated, is discarded, and the same attempt goes again on the same
+account after the reset, never on another account. A try the limit refuses
+again before any answer waits again, so only one answer is ever measured. A
+limit no reset lifts (billing, an account on hold, no credit) settles the
+attempt as it ended, and so does a turn the runner had already stopped itself.
+A workflow root under it settles with its quota outcome instead, since its
+committed steps are never replayed. Use at least
 three repetitions for a complete leaderboard measurement. Set an explicit
 `maxExecutions` and a realistic `timeoutSeconds`; if applicable, also set
 `executionLimits.dispatchNotAfterMs`. Review a valid preview and resource budget
@@ -595,7 +620,9 @@ level never grows. The first sign the provider limits the account ends slow
 start: a rate-limit answer to a sent prompt (HTTP 429, "rate limit", "too many
 requests", "overloaded") halves the level, and so does a level of concurrency
 whose turns stream clearly slower (below three quarters of the tokens per
-second) than turns with fewer beside them; since providers limit by model, the
+second) than turns with fewer beside them, counting only turns admitted while
+the host was below the CPU line, so our own load never reads as the provider's
+slowdown; since providers limit by model, the
 level refused or slowed at (two or more) then stands for an hour as the most
 turns of that model the account flies at once. After slow start the pace grows
 by one per stretch of clean turns, with no fixed most, never sooner than ten
@@ -608,8 +635,11 @@ at, or a refusal sent it to), when it last flew turns (to the minute, from the
 moment a turn is admitted), whether it is still in slow start, and its standing
 model ceilings are kept in `account-pace.json` beside the benchmark store, so an
 app restart (a gap's deploy) resumes there: an account that flew turns within
-the hour before the restart goes on at its level, in the same slow start; one
-idle for longer resumes at half its stable level, in slow start again. A file
+the hour before the restart goes on at its level, in the same slow start, and
+so does one idle for up to six hours whose last move was no refusal or
+slowdown (a gap's drain and deploy change nothing on the provider's side); one
+idle for longer, or over the hour right after a refusal or slowdown, resumes at
+half its stable level, in slow start again. A file
 written before activity was kept dates the stable level instead. While the app
 keeps running, the pace stays as it is however long the account was idle.
 
@@ -670,7 +700,8 @@ had its answer collected and sealed, and began its evaluation; with
 `startedAt` and the evaluation's `createdAt` these split its preparation,
 turn, collection and check. Attempts recorded
 before these fields existed, and attempts recovered after an application
-restart, do not have them. Compare speed across attempts admitted under
+restart, do not have them; a try that went back to the queue drops its phase
+times, so they always describe the attempt's last try. Compare speed across attempts admitted under
 similar conditions (the policy, the rule, the sessions running and the
 competing jobs), or stratify by them.
 
@@ -857,7 +888,11 @@ Such a report retains its `supersedes` provenance and cannot promote a selector,
 even if its numeric comparison passes the registered acceptance rule.
 
 Saved concurrent v2 plans keep their original semantics: local slot contention
-spends the root wall budget. Serial v1 plans retain their immediate busy outcome.
+spends the root wall budget. A root whose budget runs out that way before its
+next step's session started measured the host, not the model, and is sealed as
+unscored infrastructure failure (10-18), so such a campaign has no report and a
+replacement measures those cells. Serial v1 plans retain their immediate busy
+outcome.
 Installing a newer backend never rewrites a frozen campaign or its results.
 Freeze and review the concurrency contract before preregistration, and check
 that the installed backend supports it. No recipe changes accounts, replaces
@@ -927,6 +962,22 @@ fallback key must be the head of its declared
 order, because an ordinary chat keeps its own order when the policy abstains.
 Promotion also refuses once a frozen family's reservation was released.
 Releasing the families after certification is fine.
+
+Registration requires each browser-graded qualification to name the renderer
+installed at that time. Promotion checks the renderer that graded the evidence
+instead:
+- every renderer that a counted repetition names must be the qualified one;
+- a renderer-graded repetition must name it (browser checks also name the
+  qualified worker), and each browser-checked version must have at least one
+  repetition that does;
+- a zero scored without the renderer passes: a budget failure, or a rubric
+  answer with nothing to render.
+
+Promotion also needs the app's browser worker unchanged since qualification. An
+issued holdout certificate does not depend on the renderer installed later,
+because a chat runs no evaluator. A campaign certificate still needs its
+renderer installed: owned dispatch stops after a renderer change until
+requalification, and a chat skips it while its renderer is unavailable.
 
 Such a certificate drives `benchmark_class_policies` and ordinary chat and wave
 selection exactly as a campaign certificate does. It never covers an owned

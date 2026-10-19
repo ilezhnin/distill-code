@@ -201,6 +201,97 @@ async fn owned_turn_reconciliation_retains_delayed_timeout_receipt_and_usage() {
 }
 
 #[tokio::test]
+async fn owned_turn_a_usage_limit_mid_answer_waits_for_quota() {
+    let mut terminal = dispatch("terminal", 2, None);
+    terminal.error = Some(json!({"code":-32603,"data":{"accountId":"invented-account",
+        "dispatchStarted":true,"errorKind":"quota_exhausted","promptNotAccepted":false},
+        "message":"You've hit your session limit · resets 7pm (America/Los_Angeles)"}));
+    let host = ReceiptHost::new(vec![
+        snapshot(
+            vec![OwnedEvent {
+                event_id: 1,
+                payload: json!({"update": {"sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "An answer cut off"}}}),
+            }],
+            1,
+            false,
+            dispatch("running", 1, None),
+        ),
+        snapshot(vec![usage_event(2)], 2, false, terminal),
+    ]);
+    let mut attempt = attempt();
+    let mut capture = TurnCapture::new(1024);
+    let (_sender, mut cancel) = watch::channel(false);
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        wait_for_owned_turn(
+            &host,
+            &mut attempt,
+            &mut capture,
+            &mut cancel,
+            OwnedTurnWait {
+                key: KEY,
+                session_id: SESSION,
+                started: Instant::now(),
+                timeout: Duration::from_secs(60),
+                budget: None,
+                repository: false,
+                cancellation_grace: Duration::from_secs(1),
+                terminal_drain_grace: Duration::from_secs(1),
+            },
+        ),
+    )
+    .await
+    .expect("the terminal receipt settles the wait")
+    .unwrap_err();
+    // The unfinished answer is not measured: the attempt waits for the reset.
+    assert_eq!(error.code, QUOTA_WAIT);
+    assert!(error.message.contains("quota_exhausted"));
+    assert_eq!(attempt.outcome, None);
+    assert_eq!(capture.output, "An answer cut off");
+    assert!(host.cancellations.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn owned_turn_a_turn_the_runner_cancelled_keeps_its_outcome_whatever_its_receipt_says() {
+    // The runner stopped the turn for its time limit; the provider's limit
+    // arriving in the receipt afterwards does not send the turn again.
+    let mut terminal = dispatch("terminal", 2, None);
+    terminal.error = Some(json!({"code":-32603,"data":{"dispatchStarted":true,
+        "errorKind":"quota_exhausted"},"message":"You've hit your session limit"}));
+    let host = ReceiptHost::new(vec![snapshot(
+        vec![
+            OwnedEvent {
+                event_id: 1,
+                payload: json!({"update": {"sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "An answer cut off"}}}),
+            },
+            usage_event(2),
+        ],
+        2,
+        false,
+        terminal,
+    )]);
+    let mut attempt = attempt();
+    observe(
+        &host,
+        &mut attempt,
+        &mut TurnCapture::new(1024),
+        false,
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    assert_eq!(attempt.outcome.as_deref(), Some("infrastructure_failure"));
+    assert!(attempt
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("quota_exhausted"));
+    host.assert_single_cancellation();
+}
+
+#[tokio::test]
 async fn owned_turn_reconciliation_checks_operator_terminal_before_expired_grace() {
     let mut receipt = snapshot(
         vec![usage_event(1)],

@@ -28,7 +28,11 @@ pub(crate) mod native_receipt;
 pub(crate) const MIN_JUDGES: usize = 2;
 /// Most judges on one panel; plan admission reserves this many calls.
 pub(crate) const MAX_JUDGES: usize = 3;
-pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 180;
+/// How long one judge turn may take. 10-18: Grok 4.7 high judged text
+/// rubrics in a median 122 s with a tenth at the old 180 s cap, and six of
+/// its sheets timed out; every other judge's 90th percentile stays near a
+/// minute, so a fast judge finishes as soon as before.
+pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 600;
 const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
 pub(super) const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
 pub(super) const RENDERER_BUSY: &str =
@@ -1289,6 +1293,19 @@ fn collection_budget(
         .transpose()
 }
 
+/// [`collection_budget`] with its root's credited idle time (see
+/// `artifact_context::BudgetLease::credits`).
+async fn credited_budget(
+    store: &Store,
+    draft: &BenchmarkDraft,
+) -> Result<Option<super::artifact_context::BudgetLease>> {
+    let mut budget = collection_budget(draft)?;
+    if let Some(lease) = budget.as_mut() {
+        store.credit(lease).await?;
+    }
+    Ok(budget)
+}
+
 fn turn_timeout_ms(
     seconds: u32,
     budget: Option<&super::artifact_context::BudgetLease>,
@@ -1742,8 +1759,13 @@ fn pace(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>, measur
     } else if error.is_none() && attempt.outcome.as_deref() == Some("completed") {
         let turns = attempt.account_load.as_ref().map_or(1, |load| load.turns);
         // Only a text turn's native time is the provider streaming; a
-        // repository turn's includes its tools.
-        let speed = if measured && attempt.configuration.execution_profile == "native_text" {
+        // repository turn's includes its tools. A turn admitted while the
+        // host was past the CPU line streamed as slowly as our own load let
+        // it, which must never read as the provider slowing the account.
+        let speed = if measured
+            && attempt.configuration.execution_profile == "native_text"
+            && !host_past_cpu_line(attempt)
+        {
             account_pace::speed(
                 attempt.usage.output,
                 attempt.usage.reasoning,
@@ -1761,6 +1783,35 @@ fn pace(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>, measur
         );
     }
 }
+/// An account's usage headroom as judge seating may rank by: none (unknown,
+/// ranked last) when it reads 0 % used on every window although it flew
+/// turns within the hour. 10-18: b55a read 0 % on every window through
+/// hundreds of turns (its usage reads another sign-in than the sandbox
+/// spends, or the provider paused them), so every judge seat went to it as
+/// the roomiest account while it could hit a real limit unseen.
+fn trusted_headroom(
+    headroom: Option<crate::services::provider_account_status::Headroom>,
+    last_flight: Option<i64>,
+    now: i64,
+) -> Option<crate::services::provider_account_status::Headroom> {
+    let flew_lately = last_flight.is_some_and(|at| now - at < 60 * 60 * 1000);
+    headroom.filter(|headroom| !(flew_lately && headroom.share >= 100.0))
+}
+
+/// The host CPU busy share past which heavy jobs wait (bench-budget's
+/// LOAD_LINE, measured-load-v1).
+const HOST_CPU_LINE: f64 = 0.70;
+
+/// Whether `attempt` was admitted while the Windows host was past the CPU
+/// line, by the busy share its admission recorded.
+fn host_past_cpu_line(attempt: &Attempt) -> bool {
+    attempt
+        .sandbox_admission
+        .as_ref()
+        .and_then(|admission| admission.host_cpu_busy)
+        .is_some_and(|busy| busy >= HOST_CPU_LINE)
+}
+
 /// [`account_slots`] under a campaign's own frozen per-account bound.
 pub(super) fn account_slots_within(run_id: &str, scope: &str, configured: usize) -> usize {
     if quota_waiting(run_id, scope) {
@@ -1841,6 +1892,49 @@ fn refused_for_quota(error: &Value, output: &str, usage: &TokenUsage) -> bool {
     crate::services::provider_account_status::is_quota_error(error)
         && output.is_empty()
         && usage.output.unwrap_or(0) == 0
+}
+
+/// Whether the provider's usage limit stopped a dispatched turn before
+/// anything decided it. The answer it cut off was never finished, so none of
+/// it is measured: the turn is discarded and the attempt waits for the reset,
+/// as after a refusal before any answer ([`refused_for_quota`]). A turn that
+/// broke its policy, or passed its answer cap, already settled as that (the
+/// caller also keeps a turn it cancelled itself), and a limit no reset lifts
+/// ([`lasting_quota`]) settles as it ended.
+fn stopped_for_quota(error: &Value, capture: &TurnCapture, repository: bool) -> bool {
+    crate::services::provider_account_status::is_quota_error(error)
+        && !lasting_quota(error)
+        && capture.violation.is_none()
+        && (repository || !capture.answer_capped)
+}
+
+/// The quota kinds of an account that no usage reset brings back: billing,
+/// an account on hold, no credit left.
+const LASTING_QUOTA_KINDS: [&str; 3] = ["billing_error", "account_on_hold", "insufficient_quota"];
+
+/// Whether a quota error names a limit no reset lifts (see
+/// [`LASTING_QUOTA_KINDS`]), in a typed field or the provider's message.
+fn lasting_quota(error: &Value) -> bool {
+    let typed = [
+        "/data/errorKind",
+        "/errorKind",
+        "/data/codexErrorInfo",
+        "/codexErrorInfo",
+        "/data/code",
+        "/error/code",
+        "/code",
+    ];
+    let said = ["/message", "/data/message"];
+    typed
+        .iter()
+        .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .any(|kind| LASTING_QUOTA_KINDS.contains(&kind.as_str()))
+        || said
+            .iter()
+            .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+            .map(str::to_ascii_lowercase)
+            .any(|text| LASTING_QUOTA_KINDS.iter().any(|kind| text.contains(kind)))
 }
 
 /// The longest a run waits on one provider's usage limit. A 5-hour window
@@ -2212,6 +2306,49 @@ pub(super) fn never_started(attempt: &Attempt, error: &BenchmarkError) -> bool {
             .all(|step| step.session_id.is_none() && step.host_run_id.is_none())
 }
 
+/// The reason of a unit settled as [`unstarted_timeout`], before the
+/// clock's own message.
+pub(super) const UNSTARTED_TIMEOUT: &str = "Infrastructure: the native root wall budget ran out before the session of the attempt or step that timed out started (no model time in it)";
+
+/// The host's proof that a turn's budget ran out before any provider prompt.
+pub(super) const NO_PROVIDER_START: &str = "native-owned-no-provider-start-v1";
+
+/// Whether a `budget_timeout` settles `unit` (an attempt, a workflow root or
+/// one of its steps) before any session of it started: no session, turn or
+/// acknowledged selection, no native time, no sealed evidence, no session
+/// opened, and no step of it that reached a provider or sealed evidence. The clock then
+/// measured the host (a pause, the queue, a wait for a local slot), not the
+/// model, so the unit is the infrastructure's, unscored, never a zero. It
+/// settles and is never requeued, so an exhausted clock cannot loop; a run
+/// that allows retries owes the cell again through a fresh attempt.
+pub(super) fn unstarted_timeout(unit: &Attempt, code: &str) -> bool {
+    code == "budget_timeout"
+        && !reached_provider(unit)
+        && unit.native_execution_ms.unwrap_or(0) == 0
+        && unit.evidence_hash.is_none()
+        && unit
+            .phase_times
+            .as_ref()
+            .is_none_or(|times| !times.contains_key("sessionOpened"))
+        && unit.workflow_steps.iter().all(|step| {
+            step.session_id.is_none() && step.host_run_id.is_none() && step.evidence_hash.is_none()
+        })
+}
+
+/// The outcome and reason `unit` settles with after `error`: its code and
+/// message, or `infrastructure_failure` for a wall budget that ran out
+/// before its session started (see [`unstarted_timeout`]).
+pub(super) fn settled_failure(unit: &Attempt, error: &BenchmarkError) -> (String, String) {
+    if unstarted_timeout(unit, &error.code) {
+        (
+            "infrastructure_failure".into(),
+            format!("{UNSTARTED_TIMEOUT}: {}", error.message),
+        )
+    } else {
+        (error.code.clone(), error.message.clone())
+    }
+}
+
 /// Whether `code` holds its run until a time it already knows, rather than
 /// asking the operator.
 fn is_wait(code: &str) -> bool {
@@ -2230,8 +2367,20 @@ fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
     !is_wait(&error.code) && attempt.reason.as_deref() == Some(error.message.as_str())
 }
 
+/// Drops the native clock a standalone attempt's try froze when the try goes
+/// back to the queue, so the next try is timed from its own start: time in
+/// the queue (a pause, a refusal for room, a quota wait) never spends the
+/// next try's wall budget. A sealed attempt keeps it.
+async fn drop_collection_clock(store: &Store, attempt: &mut Attempt) -> Result<()> {
+    if collection_context::discard_clock(store, attempt).await? {
+        attempt.collection_context = None;
+    }
+    Ok(())
+}
+
 /// Puts `attempt` back in the queue with `reason`, without anything of the
-/// try the provider never saw.
+/// try it discards: its phase times go with its claim, so a session that try
+/// opened never counts as the next try's (see [`unstarted_timeout`]).
 pub(super) fn requeue(attempt: &mut Attempt, reason: String) {
     attempt.phase = "pending".into();
     attempt.started_at = None;
@@ -2241,6 +2390,7 @@ pub(super) fn requeue(attempt: &mut Attempt, reason: String) {
     attempt.event_cursor = 0;
     attempt.usage = TokenUsage::default();
     attempt.resolved_model = None;
+    attempt.phase_times = None;
     attempt.reason = Some(reason);
     attempt.wait_until = None;
 }
@@ -2853,7 +3003,11 @@ impl NativeBackend {
                         Some(model.configuration.model_id.as_str()),
                     )
                     .await;
-                    offered.push((headroom, model));
+                    let flown = account_pace::last_flight(&format!(
+                        "{}\u{1f}{}",
+                        account.provider_id, account.id
+                    ));
+                    offered.push((trusted_headroom(headroom, flown, now()), model));
                 }
             }
         }
@@ -2936,6 +3090,12 @@ impl NativeBackend {
                 "Judge account became busy",
             ));
         }
+        // A judge turn flies on its account too, so a stretch of judging alone
+        // still counts as the account flying (see `trusted_headroom`).
+        account_pace::record_flight(
+            &pace_key(store, &format!("{}\u{1f}{}", judge.provider_id, account)),
+            now(),
+        );
         if version.manifest.environment.get("judgePanel").is_some() {
             let contributing = super::workflow::judge_candidates(store, attempt).await?;
             let candidates: Vec<_> = contributing.iter().collect();
@@ -4403,7 +4563,7 @@ impl ExecutionBackend for NativeBackend {
             let version =
                 collection_context::prepare(store, &mut attempt, version, timeout).await?;
             let repository = super::repository::is_repository_case(&version.manifest);
-            let budget = collection_budget(&version.manifest)?;
+            let budget = credited_budget(store, &version.manifest).await?;
             let deadline = budget
                 .as_ref()
                 .map(|budget| budget.deadline_at_ms())
@@ -4842,7 +5002,7 @@ impl ExecutionBackend for NativeBackend {
             // on the answer, the evidence ceiling on the record.
             let version = super::workflow::effective_version_for_attempt(store, &attempt).await?;
             let cap = version.manifest.limits.max_artifact_bytes;
-            let budget = collection_budget(&version.manifest)?;
+            let budget = credited_budget(store, &version.manifest).await?;
             let deadline = budget
                 .as_ref()
                 .map(|budget| budget.deadline_at_ms())
@@ -5364,7 +5524,9 @@ async fn wait_for_owned_turn(
             && attempt.event_cursor >= status.event_cursor
         {
             if let Some(error) = status.error.as_ref().filter(|e| {
-                is_quota_wait(e) || refused_for_quota(e, &capture.output, &attempt.usage)
+                is_quota_wait(e)
+                    || refused_for_quota(e, &capture.output, &attempt.usage)
+                    || (!cancelled && stopped_for_quota(e, capture, repository))
             }) {
                 return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
             }
@@ -5899,6 +6061,14 @@ fn terminal_error_outcome(error: &Value) -> &'static str {
         .as_str()
         .or_else(|| error.pointer("/data/kind").and_then(Value::as_str))
     {
+        // The host's deadline passed before the turn reached the provider.
+        Some("budget_timeout")
+            if error["proof"] == NO_PROVIDER_START
+                || error.pointer("/data/proof").and_then(Value::as_str)
+                    == Some(NO_PROVIDER_START) =>
+        {
+            "infrastructure_failure"
+        }
         Some("budget_timeout") => "budget_timeout",
         Some("cancelled") => "cancelled",
         Some("selection_changed") => "selection_changed",
@@ -5980,7 +6150,9 @@ fn markup_body<'a>(output: &'a str, format: Option<&str>) -> Option<&'a str> {
     None
 }
 
-const JUDGE_RENDERER: &str = "chromium-1024x768-v1";
+/// v2 (10-18): a drawing fills the frame whatever its own size (see
+/// [`render_document`]); v1 showed a viewBox-only drawing as a thumbnail.
+const JUDGE_RENDERER: &str = "chromium-1024x768-v2";
 
 pub(super) fn requires_browser_runtime(draft: &BenchmarkDraft) -> bool {
     matches!(draft.evaluator.kind.as_str(), "javascript" | "browser")
@@ -6007,7 +6179,7 @@ fn judge_renderer(draft: &BenchmarkDraft) -> String {
     let viewport = if (width, height) == (1024, 768) {
         JUDGE_RENDERER.to_owned()
     } else {
-        format!("chromium-{width}x{height}-v1")
+        format!("chromium-{width}x{height}-v2")
     };
     format!("{viewport}:linux:{}", super::worker::runtime_revision())
 }
@@ -6165,15 +6337,138 @@ pub(super) fn frozen_judge_binding(draft: &BenchmarkDraft) -> Result<String> {
 
 /// A standalone document that shows a drawing or a page, or nothing when the
 /// output is neither.
+///
+/// A drawing's root `<svg>` fills the frame (the judge's viewport) whatever
+/// its own width and height, its content scaled to fit with its aspect kept
+/// (its `preserveAspectRatio`, centered by default). One with a width and a
+/// height but no viewBox gets one from them, so it scales like one that
+/// declares it. Before (10-18), a viewBox-only drawing sat in a grid track
+/// sized by its content, so its percentage width fell back to the browser's
+/// 300 by 150 default and judges saw a thumbnail.
 pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<String> {
     let body = markup_body(output, format)?;
+    // Prose around one drawing (an html-format answer that leads with a
+    // sentence, say) is that drawing.
+    let body = lone_svg(body).unwrap_or(body);
     let start = head(body);
     if start.starts_with("<svg") || (format == Some("svg") && start.contains("<svg")) {
-        return Some(format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><style>html,body{{margin:0;height:100%;display:grid;place-items:center;background:#fff}}svg{{width:100%;height:auto;max-height:100%}}</style></head><body>{body}</body></html>"
-        ));
+        let body = with_view_box(body);
+        return Some(format!("<!doctype html><html><head><meta charset=\"utf-8\"><style>{SVG_FRAME}</style></head><body>{body}</body></html>"));
     }
     Some(body.to_string())
+}
+
+/// The page style that sizes a drawing's root `<svg>` to the frame, above
+/// any width, height or margin the drawing sets on itself.
+const SVG_FRAME: &str = "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body>svg{display:block!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;margin:0!important}";
+
+/// The one `<svg>`...`</svg>` of `body` when nothing but text surrounds it
+/// (no other tag before or after); none for an HTML document or a page with
+/// other markup.
+fn lone_svg(body: &str) -> Option<&str> {
+    // ASCII lowering keeps byte offsets, and every offset found is ASCII.
+    let lowered = body.to_ascii_lowercase();
+    let lead = lowered.trim_start();
+    if lead.starts_with("<!doctype") || lead.starts_with("<html") {
+        return None;
+    }
+    let from = lowered.find("<svg")?;
+    let to = lowered.rfind("</svg>")? + "</svg>".len();
+    if to <= from || body[..from].contains('<') || body[to..].contains('<') {
+        return None;
+    }
+    Some(&body[from..to])
+}
+
+/// `svg` with a viewBox taken from its root element's width and height when
+/// it declares both as plain lengths but no viewBox; anything else as it is.
+fn with_view_box(svg: &str) -> std::borrow::Cow<'_, str> {
+    // ASCII lowering keeps byte offsets, and every offset found is ASCII.
+    let lowered = svg.to_ascii_lowercase();
+    let Some(open) = lowered.find("<svg") else {
+        return svg.into();
+    };
+    let mut quote = None;
+    let mut close = None;
+    for (offset, &byte) in svg.as_bytes()[open..].iter().enumerate() {
+        match quote {
+            Some(mark) if byte == mark => quote = None,
+            Some(_) => {}
+            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+            None if byte == b'>' => {
+                close = Some(open + offset);
+                break;
+            }
+            None => {}
+        }
+    }
+    let Some(close) = close else {
+        return svg.into();
+    };
+    let attributes = svg_attributes(&svg[open + 4..close]);
+    if attributes.iter().any(|(name, _)| name == "viewbox") {
+        return svg.into();
+    }
+    let length = |wanted: &str| {
+        attributes
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .and_then(|(_, value)| {
+                let value = value.trim();
+                value
+                    .strip_suffix("px")
+                    .unwrap_or(value)
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+            })
+            .filter(|value| value.is_finite() && *value > 0.0)
+    };
+    let (Some(width), Some(height)) = (length("width"), length("height")) else {
+        return svg.into();
+    };
+    format!(
+        "{}<svg viewBox=\"0 0 {width} {height}\"{}",
+        &svg[..open],
+        &svg[open + 4..]
+    )
+    .into()
+}
+
+/// The attributes of an opening tag's text after its name, names lowered.
+fn svg_attributes(tag: &str) -> Vec<(String, String)> {
+    let mut attributes = Vec::new();
+    let mut rest = tag;
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '/');
+        let end = rest
+            .find(|c: char| c == '=' || c == '/' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        if end == 0 {
+            break;
+        }
+        let name = rest[..end].to_ascii_lowercase();
+        rest = rest[end..].trim_start();
+        let mut value = String::new();
+        if let Some(after) = rest.strip_prefix('=') {
+            let after = after.trim_start();
+            match after.chars().next() {
+                Some(mark @ ('"' | '\'')) => {
+                    let inner = &after[1..];
+                    let stop = inner.find(mark).unwrap_or(inner.len());
+                    value = inner[..stop].to_owned();
+                    rest = inner.get(stop + 1..).unwrap_or("");
+                }
+                _ => {
+                    let stop = after.find(char::is_whitespace).unwrap_or(after.len());
+                    value = after[..stop].to_owned();
+                    rest = &after[stop..];
+                }
+            }
+        }
+        attributes.push((name, value));
+    }
+    attributes
 }
 
 fn judge_prompt(draft: &BenchmarkDraft, criteria: &[RubricCriterion]) -> String {
@@ -6428,6 +6723,7 @@ impl BenchmarkService {
     /// campaign work: at the start of every tick, and every
     /// [`HOUSEKEEPING_EVERY`] within one.
     async fn housekeeping(self: &Arc<Self>) -> Result<()> {
+        self.store.beat(now()).await?;
         self.recover_interrupted().await?;
         self.bake_closed_windows().await?;
         super::campaigns::tick(self).await?;
@@ -6494,6 +6790,10 @@ impl BenchmarkService {
                             restored.outcome = Some("interrupted".into());
                             restored.reason = Some("Recovered workflow prefix retained; this run forbids another dispatch after interruption".into());
                             restored.finished_at = Some(now());
+                        } else if version.manifest.workflow.is_none() {
+                            // Back in the queue, a standalone try takes its
+                            // clock with it, as after any requeue.
+                            drop_collection_clock(&self.store, &mut restored).await?;
                         }
                         self.store.save_attempt(&restored).await?;
                         continue;
@@ -7395,6 +7695,9 @@ impl BenchmarkService {
                         failed.wait_until = Some(now() + local_refusal_wait(&a.id));
                     }
                     failed.workflow_steps.clear();
+                    if version.manifest.workflow.is_none() {
+                        drop_collection_clock(&self.store, &mut failed).await?;
+                    }
                     // The flight's end tells the app, once.
                     self.store.save_attempt(&failed).await?;
                     return Ok(());
@@ -7402,9 +7705,29 @@ impl BenchmarkService {
                 local_refusals_cleared(&a.id);
                 let retry_allowed = run.request.automatic_retry()
                     && run.request.require_dispatch_admission(now()).is_ok();
+                // A usage limit that stopped the turn before anything of it
+                // was evaluated waits for the reset under every retry policy:
+                // the unfinished turn is discarded and the same attempt goes
+                // again. A run that forbids retries never moves it to another
+                // account, and settles a workflow root, whose committed steps
+                // it never replays.
+                let waits_for_quota = error.code == QUOTA_WAIT
+                    && failed.evaluations.is_empty()
+                    && run.request.require_dispatch_admission(now()).is_ok()
+                    && (retry_allowed || version.manifest.workflow.is_none());
+                let back_to_queue = if error.code == QUOTA_WAIT {
+                    waits_for_quota
+                } else {
+                    retry_allowed
+                };
                 if retry_allowed && error.code == "account_busy" {
                     failed.phase = "pending".into();
                     failed.started_at = None;
+                    if version.manifest.workflow.is_none() {
+                        drop_collection_clock(&self.store, &mut failed).await?;
+                    } else {
+                        self.idle_root(&failed).await?;
+                    }
                     // Asked again shortly, within this tick: interactive work
                     // ends long before every other run's turns land.
                     failed.wait_until = Some(now() + ACCOUNT_BUSY_RETRY_MS);
@@ -7420,7 +7743,7 @@ impl BenchmarkService {
                 // operator resumed settles the cell instead.
                 // A limit that ran out on this account moves the test to
                 // another account of the provider with room, if there is one.
-                if retry_allowed && error.code == QUOTA_WAIT {
+                if retry_allowed && waits_for_quota {
                     if let Some(account) = a.configuration.account_id.as_deref() {
                         exhaust(
                             &run.id,
@@ -7435,8 +7758,10 @@ impl BenchmarkService {
                             failed.started_at = None;
                             failed.reason = Some(reason);
                             failed.wait_until = None;
+                            self.idle_root(&failed).await?;
                         } else {
                             requeue(&mut failed, reason);
+                            drop_collection_clock(&self.store, &mut failed).await?;
                         }
                         failed.configuration.account_id = Some(other);
                         // It goes on at once on the other account, within
@@ -7447,7 +7772,7 @@ impl BenchmarkService {
                         return Ok(());
                     }
                 }
-                if retry_allowed
+                if back_to_queue
                     && returns_to_queue(&error.code, &failed.phase)
                     && !refused_again(&a, &error)
                 {
@@ -7474,8 +7799,12 @@ impl BenchmarkService {
                         failed.started_at = None;
                         failed.reason = Some(reason);
                         failed.wait_until = None;
+                        self.idle_root(&failed).await?;
                     } else {
+                        // A limit hit mid-turn discards the turn and its
+                        // clock: the next try is a new owner and key.
                         requeue(&mut failed, reason);
+                        drop_collection_clock(&self.store, &mut failed).await?;
                     }
                     let provider = &a.configuration.provider_id;
                     let mut stop = false;
@@ -7505,9 +7834,10 @@ impl BenchmarkService {
                                 | "validation"
                                 | "evidence_mismatch"
                         ));
+                let (outcome, reason) = settled_failure(&failed, &error);
                 failed.phase = "terminal".into();
-                failed.outcome = Some(error.code.clone());
-                failed.reason = Some(error.message);
+                failed.outcome = Some(outcome);
+                failed.reason = Some(reason);
                 failed.finished_at = Some(now());
                 self.store.save_attempt(&failed).await?;
                 if needs_operator
@@ -7518,6 +7848,18 @@ impl BenchmarkService {
             }
         }
         Ok(())
+    }
+    /// Opens an idle credit for a workflow root that goes back to the queue
+    /// with its native root clock running, so the wait is not spent from its
+    /// wall budget. A campaign root never continues mid-trajectory, so it
+    /// never gets one.
+    async fn idle_root(&self, root: &Attempt) -> Result<()> {
+        if root.configuration.execution_profile == "workflow_policy" {
+            return Ok(());
+        }
+        self.store
+            .open_root_credit(&root.id, &root.run_id, now(), "idle")
+            .await
     }
     /// Discards what a try no provider saw left behind, so the cell's next
     /// admission is its first: a root-pinned workflow's prepared steps and
@@ -7532,9 +7874,14 @@ impl BenchmarkService {
         if version.manifest.workflow.is_none() {
             return Ok(true);
         }
-        if attempt.configuration.execution_profile == "workflow_policy" {
-            return Ok(attempt.workflow_steps.is_empty());
+        if attempt.configuration.execution_profile == "workflow_policy"
+            && !attempt.workflow_steps.is_empty()
+        {
+            return Ok(false);
         }
+        // A campaign root that never started a step times its next
+        // admission afresh too: its root clock and any step clock its
+        // preparation froze go with the prepared steps.
         super::workflow::discard_unstarted(&self.store, attempt).await
     }
     /// Another enabled account of `configuration`'s provider whose limit has
@@ -7838,6 +8185,10 @@ pub struct FakeBackend {
     pub quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     accepted_quota_waits: std::sync::atomic::AtomicU64,
+    /// Accepted turns that report a usage limit after their answer was
+    /// already evaluated.
+    #[cfg(test)]
+    evaluated_quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     inventory_delay_ms: std::sync::atomic::AtomicU64,
     #[cfg(test)]
@@ -8135,12 +8486,29 @@ impl ExecutionBackend for FakeBackend {
                 a.phase = "running".into();
                 a.session_id = Some(format!("accepted-session-{}", a.id));
                 a.host_run_id = Some(format!("accepted-turn-{}", a.id));
+                mark_phase(&mut a, "sessionOpened");
+                mark_phase(&mut a, "dispatched");
                 a.usage.input = Some(7);
                 store.save_attempt(&a).await?;
                 return Err(BenchmarkError::new(
                     QUOTA_WAIT,
                     json!({"kind":QUOTA_WAIT,"dispatchStarted":true,"nextReset":now()+60_000})
                         .to_string(),
+                ));
+            }
+            #[cfg(test)]
+            if take(&self.evaluated_quota_waits) {
+                a.phase = "running".into();
+                a.session_id = Some(format!("evaluated-session-{}", a.id));
+                a.host_run_id = Some(format!("evaluated-turn-{}", a.id));
+                a.usage.input = Some(7);
+                let output = v.manifest.evaluator.known_good.clone();
+                a.evaluations.push(evaluate(&v.manifest, &output).await?);
+                a.output = Some(output);
+                store.save_attempt(&a).await?;
+                return Err(BenchmarkError::new(
+                    QUOTA_WAIT,
+                    json!({"kind":QUOTA_WAIT,"dispatchStarted":true}).to_string(),
                 ));
             }
             let flying = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -8589,6 +8957,69 @@ mod tests {
         assert!(super::render_document("I cannot draw.", Some("svg")).is_none());
     }
     #[test]
+    fn a_drawing_fills_the_judges_frame_whatever_its_own_size() {
+        // 10-18: a viewBox-only answer, as the creative briefs ask for, was
+        // judged as a 300 by 150 thumbnail.
+        let frame = "body>svg{display:block!important;width:100vw!important;height:100vh!important";
+        let view_box = super::render_document(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 768'><rect/></svg>",
+            Some("svg"),
+        )
+        .unwrap();
+        let sized = super::render_document(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='768'><rect/></svg>",
+            Some("svg"),
+        )
+        .unwrap();
+        // Both fill the same frame, scaled with their aspect kept.
+        for document in [&view_box, &sized] {
+            assert!(document.contains(frame), "{document}");
+            assert!(!document.contains("display:grid"), "{document}");
+        }
+        assert!(view_box.contains(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 768'><rect/></svg>"
+        ));
+        // A width and height without a viewBox scale like a declared one.
+        assert!(sized.contains(
+            "<svg viewBox=\"0 0 1024 768\" xmlns='http://www.w3.org/2000/svg' width='1024' height='768'>"
+        ));
+        // A declared viewBox, relative sizes, a missing height and another
+        // attribute that ends in "width" stay as written.
+        for kept in [
+            "<svg width=\"400px\" height=\"300px\" viewBox=\"0 0 40 30\"/>",
+            "<svg width=\"100%\" height=\"100%\"><rect/></svg>",
+            "<svg width='10'/>",
+            "<svg stroke-width='3' height='5'/>",
+        ] {
+            assert!(
+                super::render_document(kept, Some("svg"))
+                    .unwrap()
+                    .contains(kept),
+                "{kept}"
+            );
+        }
+        // Prose around one drawing is that drawing, in either format; a page
+        // with other markup stays a page.
+        let drawing = "<svg viewBox='0 0 4 3'><rect/></svg>";
+        for format in [Some("html"), Some("svg")] {
+            let framed =
+                super::render_document(&format!("Here it is: {drawing} Enjoy."), format).unwrap();
+            assert!(
+                framed.contains(&format!("<body>{drawing}</body>")),
+                "{framed}"
+            );
+        }
+        let page = format!("<p>Title</p>{drawing}");
+        assert_eq!(super::render_document(&page, Some("html")).unwrap(), page);
+        // Pixel units count, and a quoted '>' does not end the tag.
+        assert!(super::render_document(
+            "<svg data-note='a>b' width='10px' height=\"20\"/>",
+            Some("svg")
+        )
+        .unwrap()
+        .contains("<svg viewBox=\"0 0 10 20\" data-note='a>b' width='10px' height=\"20\"/>"));
+    }
+    #[test]
     fn a_session_s_own_memory_ceiling_on_the_candidate_s_command_is_its_budget() {
         // A Grok session (10-18): the session's own memory.max killed the
         // candidate's python3, the bridge died with the leaf, and the turn
@@ -8622,6 +9053,129 @@ mod tests {
             json!(verdict),
             json!({"candidateLimit": "memory", "victim": "python3"})
         );
+    }
+    #[test]
+    fn a_wall_budget_spent_before_the_session_started_is_the_infrastructures() {
+        // 10-18: attempts that kept a clock through a pause, and campaign
+        // steps that waited for a local slot, settled as budget_timeout with
+        // no model time: false zeros on the boards and in fit data.
+        let row = judge_row("sonnet");
+        let attempt = super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        let exhausted =
+            BenchmarkError::new("budget_timeout", "Native root wall budget is exhausted");
+        let (outcome, reason) = settled_failure(&attempt, &exhausted);
+        assert_eq!(outcome, "infrastructure_failure");
+        assert!(reason.starts_with(UNSTARTED_TIMEOUT), "{reason}");
+        assert!(
+            reason.ends_with("Native root wall budget is exhausted"),
+            "{reason}"
+        );
+        // Anything of a model measured keeps the timeout: a session, native
+        // time, sealed evidence, an opened session, a step that ran.
+        let mut started = attempt.clone();
+        started.session_id = Some("invented-session".into());
+        let mut timed = attempt.clone();
+        timed.native_execution_ms = Some(5);
+        let mut sealed = attempt.clone();
+        sealed.evidence_hash = Some("invented-evidence".into());
+        let mut opened = attempt.clone();
+        mark_phase(&mut opened, "sessionOpened");
+        let step = |session: Option<&str>, evidence: Option<&str>| WorkflowStepEvidence {
+            root_task_id: "invented-root".into(),
+            step_id: "implement".into(),
+            parent_step_id: None,
+            entry_state_hash: "invented-entry".into(),
+            attempt_id: "invented-step".into(),
+            session_id: session.map(Into::into),
+            host_run_id: None,
+            evidence_hash: evidence.map(Into::into),
+            outcome: None,
+        };
+        let mut prefix = attempt.clone();
+        prefix
+            .workflow_steps
+            .push(step(None, Some("invented-evidence")));
+        let mut ran = attempt.clone();
+        ran.workflow_steps
+            .push(step(Some("invented-session"), None));
+        for unit in [started, timed, sealed, opened, prefix, ran] {
+            assert_eq!(settled_failure(&unit, &exhausted).0, "budget_timeout");
+        }
+        // A root whose steps never started is the infrastructure's too.
+        let mut unstarted_root = attempt.clone();
+        unstarted_root.workflow_steps.push(step(None, None));
+        assert_eq!(
+            settled_failure(&unstarted_root, &exhausted).0,
+            "infrastructure_failure"
+        );
+        // Other failures keep their code and message.
+        let capped = BenchmarkError::new("budget_reached", "Answer cap");
+        assert_eq!(
+            settled_failure(&attempt, &capped),
+            ("budget_reached".into(), "Answer cap".into())
+        );
+        // The host's proof that the deadline passed before any provider
+        // prompt, at either place a turn error carries it.
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind": "budget_timeout", "proof": NO_PROVIDER_START})),
+            "infrastructure_failure"
+        );
+        assert_eq!(
+            terminal_error_outcome(
+                &json!({"data": {"kind": "budget_timeout", "proof": NO_PROVIDER_START}})
+            ),
+            "infrastructure_failure"
+        );
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind": "budget_timeout"})),
+            "budget_timeout"
+        );
+    }
+    #[test]
+    fn untouched_usage_on_an_account_that_flies_is_unknown_headroom() {
+        use crate::services::provider_account_status::Headroom;
+        let now = 10 * 60 * 60 * 1000;
+        let untouched = Some(Headroom {
+            share: 100.0,
+            read_at: now - 60_000,
+        });
+        let read = Some(Headroom {
+            share: 27.0,
+            read_at: now - 60_000,
+        });
+        // 0 % on every window while it flew turns minutes ago: unknown.
+        assert_eq!(trusted_headroom(untouched, Some(now - 120_000), now), None);
+        // Idle for over an hour, or never paced here: as read.
+        assert_eq!(
+            trusted_headroom(untouched, Some(now - 2 * 60 * 60 * 1000), now),
+            untouched
+        );
+        assert_eq!(trusted_headroom(untouched, None, now), untouched);
+        // A partly used account reads as it is, flying or not.
+        assert_eq!(trusted_headroom(read, Some(now - 120_000), now), read);
+        assert_eq!(trusted_headroom(None, Some(now), now), None);
+    }
+    #[test]
+    fn a_turn_admitted_past_the_hosts_cpu_line_teaches_the_pace_no_speed() {
+        // 10-18: our own load slowing the streaming must never read as the
+        // provider slowing the account.
+        let row = judge_row("sonnet");
+        let mut attempt =
+            super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        assert!(!host_past_cpu_line(&attempt));
+        let admitted = |busy: f64| -> sandbox::Admission {
+            serde_json::from_value(json!({
+                "heavyLanes": 3, "lane": "heavy", "competing": {}, "competingHeavy": 0,
+                "reservedMemory": 0, "reservedCpu": 0, "memoryCurrent": 0,
+                "guestLoad": [0.0, 0.0, 0.0], "guestCpus": 16, "guestMemAvailable": 0,
+                "hostAvailableRam": 0, "hostAvailableCommit": 0, "hostCpuBusy": busy,
+            }))
+            .unwrap()
+        };
+        attempt.sandbox_admission = Some(admitted(0.69));
+        assert!(!host_past_cpu_line(&attempt));
+        attempt.sandbox_admission = Some(admitted(0.70));
+        assert!(host_past_cpu_line(&attempt));
     }
     #[test]
     fn the_session_admission_is_sealed_with_its_attempt_once() {
@@ -9286,7 +9840,7 @@ mod tests {
         assert_eq!(
             judge_renderer(&draft),
             format!(
-                "chromium-1280x800-v1:linux:{}",
+                "chromium-1280x800-v2:linux:{}",
                 super::super::worker::runtime_revision()
             )
         );
@@ -11052,6 +11606,46 @@ mod tests {
         // A model the plan leaves out is no quota.
         let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
         assert!(!refused_for_quota(&refused, "", &empty));
+    }
+    #[test]
+    fn a_usage_limit_mid_answer_stops_the_turn_for_quota_unless_something_decided_it() {
+        // Claude Code's session limit as the host reports it after a long answer.
+        let limit = json!({"code":-32603,"data":{"accountId":"invented-account",
+            "dispatchStarted":true,"errorKind":"quota_exhausted","promptNotAccepted":false,
+            "sessionFailure":{"actions":[],"category":"limit","severity":"error",
+                "title":"You've hit your session limit · resets 7pm (America/Los_Angeles)"}},
+            "message":"You've hit your session limit · resets 7pm (America/Los_Angeles)"});
+        let mut capture = TurnCapture::new(1024);
+        capture.output = "an answer cut off midway".into();
+        assert!(stopped_for_quota(&limit, &capture, false));
+        // Anything else that ended the turn is no quota.
+        let crashed = json!({"code":-32603,"data":{"errorKind":"provider_failure",
+            "dispatchStarted":true},"message":"bridge exited"});
+        assert!(!stopped_for_quota(&crashed, &capture, false));
+        let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
+        assert!(!stopped_for_quota(&refused, &capture, false));
+        // A limit no reset lifts settles as it ended instead of waiting.
+        for kind in LASTING_QUOTA_KINDS {
+            let lasting = json!({"data":{"errorKind":kind,"dispatchStarted":true},
+                "message":"invented provider words"});
+            assert!(!stopped_for_quota(&lasting, &capture, false), "{kind}");
+        }
+        let said = json!({"message":"insufficient_quota: add credits to continue"});
+        assert!(crate::services::provider_account_status::is_quota_error(
+            &said
+        ));
+        assert!(!stopped_for_quota(&said, &capture, false));
+        // A broken policy settles as that, whatever stopped the turn after.
+        let mut violated = TurnCapture::new(1024);
+        violated.violation = Some("invented violation".into());
+        assert!(!stopped_for_quota(&limit, &violated, false));
+        // So does an answer past its cap, except in a repository, whose
+        // answer is its work tree.
+        let mut capped = TurnCapture::new(4);
+        capped.output = "longer than four bytes".into();
+        assert!(capped.cap_answer());
+        assert!(!stopped_for_quota(&limit, &capped, false));
+        assert!(stopped_for_quota(&limit, &capped, true));
     }
     #[tokio::test]
     async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {

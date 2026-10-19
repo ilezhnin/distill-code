@@ -219,6 +219,16 @@ async fn execute(request: Value, timeout: Duration) -> Result<Value> {
         timeout + Duration::from_secs(420),
     )
     .await;
+    // Refused room before it started, the job made nothing to clean, and a
+    // clean would only start more processes in a sandbox that is out of
+    // them.
+    if outcome
+        .as_ref()
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+    {
+        cleanup.0.take();
+        return Err(sandbox_error(outcome.unwrap_err(), "evaluation_error"));
+    }
     sandbox::clean(&id)
         .await
         .map_err(|error| BenchmarkError::new("infrastructure_failure", error.to_string()))?;
