@@ -3428,6 +3428,30 @@ impl NativeBackend {
                 counts.positive
             );
         }
+        // A reply that gave no valid sheet is kept beside the rendering, so a
+        // later audit reads it from the evidence (10-18: the rejected sheets
+        // had to be rebuilt from the session events).
+        let mut artifacts = Vec::new();
+        if parsed.is_none() && !reply.trim().is_empty() {
+            let directory = evidence.directory(store, attempt);
+            let path = directory.join(format!("judge-reply-{placeholder_id}.txt"));
+            let written = async {
+                tokio::fs::create_dir_all(&directory).await?;
+                tokio::fs::write(&path, reply.as_bytes()).await
+            }
+            .await;
+            match written {
+                Ok(()) => artifacts.push(Artifact {
+                    kind: "text".into(),
+                    path: path.to_string_lossy().into_owned(),
+                    hash: hex::encode(Sha256::digest(reply.as_bytes())),
+                    label: "Judge reply".into(),
+                }),
+                Err(error) => log::warn!(
+                    "[benchmarks] the judge reply of {placeholder_id} could not be kept: {error}"
+                ),
+            }
+        }
         let reason = match &parsed {
             Some(sheet) if !sheet.reason.is_empty() => sheet.reason.clone(),
             Some(_) => "Scored by the judge panel".into(),
@@ -3451,7 +3475,7 @@ impl NativeBackend {
                 "judge_failure"
             }
             .into(),
-            artifacts: Vec::new(),
+            artifacts,
             details: Some(
                 json!({"judgeBatchId": batch, "sessionId": session.session_id, "usageComplete": usage_complete,
                 "requestKey":key, "inFlight":!usage_complete,
