@@ -612,7 +612,9 @@ level never grows. The first sign the provider limits the account ends slow
 start: a rate-limit answer to a sent prompt (HTTP 429, "rate limit", "too many
 requests", "overloaded") halves the level, and so does a level of concurrency
 whose turns stream clearly slower (below three quarters of the tokens per
-second) than turns with fewer beside them; since providers limit by model, the
+second) than turns with fewer beside them, counting only turns admitted while
+the host was below the CPU line, so our own load never reads as the provider's
+slowdown; since providers limit by model, the
 level refused or slowed at (two or more) then stands for an hour as the most
 turns of that model the account flies at once. After slow start the pace grows
 by one per stretch of clean turns, with no fixed most, never sooner than ten
@@ -625,8 +627,11 @@ at, or a refusal sent it to), when it last flew turns (to the minute, from the
 moment a turn is admitted), whether it is still in slow start, and its standing
 model ceilings are kept in `account-pace.json` beside the benchmark store, so an
 app restart (a gap's deploy) resumes there: an account that flew turns within
-the hour before the restart goes on at its level, in the same slow start; one
-idle for longer resumes at half its stable level, in slow start again. A file
+the hour before the restart goes on at its level, in the same slow start, and
+so does one idle for up to six hours whose last move was no refusal or
+slowdown (a gap's drain and deploy change nothing on the provider's side); one
+idle for longer, or over the hour right after a refusal or slowdown, resumes at
+half its stable level, in slow start again. A file
 written before activity was kept dates the stable level instead. While the app
 keeps running, the pace stays as it is however long the account was idle.
 

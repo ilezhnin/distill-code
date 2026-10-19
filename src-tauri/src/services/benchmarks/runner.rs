@@ -1755,8 +1755,13 @@ fn pace(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>, measur
     } else if error.is_none() && attempt.outcome.as_deref() == Some("completed") {
         let turns = attempt.account_load.as_ref().map_or(1, |load| load.turns);
         // Only a text turn's native time is the provider streaming; a
-        // repository turn's includes its tools.
-        let speed = if measured && attempt.configuration.execution_profile == "native_text" {
+        // repository turn's includes its tools. A turn admitted while the
+        // host was past the CPU line streamed as slowly as our own load let
+        // it, which must never read as the provider slowing the account.
+        let speed = if measured
+            && attempt.configuration.execution_profile == "native_text"
+            && !host_past_cpu_line(attempt)
+        {
             account_pace::speed(
                 attempt.usage.output,
                 attempt.usage.reasoning,
@@ -1774,6 +1779,35 @@ fn pace(account: &str, attempt: &Attempt, error: Option<&BenchmarkError>, measur
         );
     }
 }
+/// An account's usage headroom as judge seating may rank by: none (unknown,
+/// ranked last) when it reads 0 % used on every window although it flew
+/// turns within the hour. 10-18: b55a read 0 % on every window through
+/// hundreds of turns (its usage reads another sign-in than the sandbox
+/// spends, or the provider paused them), so every judge seat went to it as
+/// the roomiest account while it could hit a real limit unseen.
+fn trusted_headroom(
+    headroom: Option<crate::services::provider_account_status::Headroom>,
+    last_flight: Option<i64>,
+    now: i64,
+) -> Option<crate::services::provider_account_status::Headroom> {
+    let flew_lately = last_flight.is_some_and(|at| now - at < 60 * 60 * 1000);
+    headroom.filter(|headroom| !(flew_lately && headroom.share >= 100.0))
+}
+
+/// The host CPU busy share past which heavy jobs wait (bench-budget's
+/// LOAD_LINE, measured-load-v1).
+const HOST_CPU_LINE: f64 = 0.70;
+
+/// Whether `attempt` was admitted while the Windows host was past the CPU
+/// line, by the busy share its admission recorded.
+fn host_past_cpu_line(attempt: &Attempt) -> bool {
+    attempt
+        .sandbox_admission
+        .as_ref()
+        .and_then(|admission| admission.host_cpu_busy)
+        .is_some_and(|busy| busy >= HOST_CPU_LINE)
+}
+
 /// [`account_slots`] under a campaign's own frozen per-account bound.
 pub(super) fn account_slots_within(run_id: &str, scope: &str, configured: usize) -> usize {
     if quota_waiting(run_id, scope) {
@@ -2920,7 +2954,11 @@ impl NativeBackend {
                         Some(model.configuration.model_id.as_str()),
                     )
                     .await;
-                    offered.push((headroom, model));
+                    let flown = account_pace::last_flight(&format!(
+                        "{}\u{1f}{}",
+                        account.provider_id, account.id
+                    ));
+                    offered.push((trusted_headroom(headroom, flown, now()), model));
                 }
             }
         }
@@ -3003,6 +3041,12 @@ impl NativeBackend {
                 "Judge account became busy",
             ));
         }
+        // A judge turn flies on its account too, so a stretch of judging alone
+        // still counts as the account flying (see `trusted_headroom`).
+        account_pace::record_flight(
+            &pace_key(store, &format!("{}\u{1f}{}", judge.provider_id, account)),
+            now(),
+        );
         if version.manifest.environment.get("judgePanel").is_some() {
             let contributing = super::workflow::judge_candidates(store, attempt).await?;
             let candidates: Vec<_> = contributing.iter().collect();
@@ -8999,6 +9043,52 @@ mod tests {
             terminal_error_outcome(&json!({"kind": "budget_timeout"})),
             "budget_timeout"
         );
+    }
+    #[test]
+    fn untouched_usage_on_an_account_that_flies_is_unknown_headroom() {
+        use crate::services::provider_account_status::Headroom;
+        let now = 10 * 60 * 60 * 1000;
+        let untouched = Some(Headroom {
+            share: 100.0,
+            read_at: now - 60_000,
+        });
+        let read = Some(Headroom {
+            share: 27.0,
+            read_at: now - 60_000,
+        });
+        // 0 % on every window while it flew turns minutes ago: unknown.
+        assert_eq!(trusted_headroom(untouched, Some(now - 120_000), now), None);
+        // Idle for over an hour, or never paced here: as read.
+        assert_eq!(
+            trusted_headroom(untouched, Some(now - 2 * 60 * 60 * 1000), now),
+            untouched
+        );
+        assert_eq!(trusted_headroom(untouched, None, now), untouched);
+        // A partly used account reads as it is, flying or not.
+        assert_eq!(trusted_headroom(read, Some(now - 120_000), now), read);
+        assert_eq!(trusted_headroom(None, Some(now), now), None);
+    }
+    #[test]
+    fn a_turn_admitted_past_the_hosts_cpu_line_teaches_the_pace_no_speed() {
+        // 10-18: our own load slowing the streaming must never read as the
+        // provider slowing the account.
+        let row = judge_row("sonnet");
+        let mut attempt =
+            super::super::pending_attempt("invented-run", "invented-version", &row, 0);
+        assert!(!host_past_cpu_line(&attempt));
+        let admitted = |busy: f64| -> sandbox::Admission {
+            serde_json::from_value(json!({
+                "heavyLanes": 3, "lane": "heavy", "competing": {}, "competingHeavy": 0,
+                "reservedMemory": 0, "reservedCpu": 0, "memoryCurrent": 0,
+                "guestLoad": [0.0, 0.0, 0.0], "guestCpus": 16, "guestMemAvailable": 0,
+                "hostAvailableRam": 0, "hostAvailableCommit": 0, "hostCpuBusy": busy,
+            }))
+            .unwrap()
+        };
+        attempt.sandbox_admission = Some(admitted(0.69));
+        assert!(!host_past_cpu_line(&attempt));
+        attempt.sandbox_admission = Some(admitted(0.70));
+        assert!(host_past_cpu_line(&attempt));
     }
     #[test]
     fn the_session_admission_is_sealed_with_its_attempt_once() {
