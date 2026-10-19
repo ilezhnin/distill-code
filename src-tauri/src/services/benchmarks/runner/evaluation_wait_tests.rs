@@ -155,3 +155,49 @@ async fn unstarted_refusals_are_recognised_where_they_arrive() {
     assert!(!judging_deferred(&attempt));
     dir.close().await;
 }
+
+/// A workspace check that could not read the workspace is the sandbox's
+/// failure; only a diff it found means the acknowledged copy changed.
+#[test]
+fn only_a_found_diff_reads_as_a_changed_workspace() {
+    let changed = "The native text context changed after setup";
+    for kind in [
+        std::io::ErrorKind::FileTooLarge,
+        std::io::ErrorKind::InvalidData,
+    ] {
+        let error = untouched_check_error(std::io::Error::new(kind, "diff"), changed);
+        assert_eq!(
+            (error.code.as_str(), error.message.as_str()),
+            ("selection_changed", changed)
+        );
+    }
+    let busy = std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        "resource_busy: benchmark preparation queue expired before worker startup",
+    );
+    assert_eq!(untouched_check_error(busy, changed).code, "resource_busy");
+    for error in [
+        std::io::Error::new(std::io::ErrorKind::TimedOut, "slow broker"),
+        std::io::Error::other("Sandbox patch failed: wsl.exe exited"),
+    ] {
+        assert_eq!(
+            untouched_check_error(error, changed).code,
+            "infrastructure_failure"
+        );
+    }
+}
+
+/// A workspace the sandbox could not build stops the run, and its reason
+/// names the sandbox like a check's does.
+#[test]
+fn a_failed_workspace_copy_names_the_sandbox_and_stops_the_run() {
+    let error = sandbox_setup_error(
+        std::io::Error::other("Sandbox copy failed: bench-copy: unprotected parent"),
+        Some(1),
+    );
+    assert_eq!(error.code, "storage_unavailable");
+    assert_eq!(
+        error.message,
+        "Repository sandbox: Sandbox copy failed: bench-copy: unprotected parent"
+    );
+}

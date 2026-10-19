@@ -19,9 +19,12 @@ const STALE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Default)]
 struct Window {
-    /// Attempts in preparation that the sandbox has not answered yet, and
-    /// since when.
-    preparing: HashMap<String, Instant>,
+    /// Attempts in preparation that the sandbox has not answered yet, since
+    /// when, and the place's generation.
+    preparing: HashMap<String, (Instant, u64)>,
+    /// The generation the next place gets, so a guard of an earlier place of
+    /// the same attempt never ends a later one.
+    generation: u64,
     /// When the sandbox admitted attempts since it last refused one.
     admissions: VecDeque<Instant>,
     /// Whether ready attempts wait for the window now, so it is logged once
@@ -47,7 +50,7 @@ impl Window {
     fn counted(&self, now: Instant) -> usize {
         self.preparing
             .values()
-            .filter(|since| now.saturating_duration_since(**since) < STALE)
+            .filter(|(since, _)| now.saturating_duration_since(*since) < STALE)
             .count()
     }
 
@@ -72,15 +75,28 @@ impl Window {
         room
     }
 
-    fn begin(&mut self, id: &str, now: Instant) -> bool {
-        if self.preparing.contains_key(id) {
-            return true;
+    /// The place's generation, or None while the window is full.
+    fn begin(&mut self, id: &str, now: Instant) -> Option<u64> {
+        if let Some((_, generation)) = self.preparing.get(id) {
+            return Some(*generation);
         }
         if !self.has_room(now) {
-            return false;
+            return None;
         }
-        self.preparing.insert(id.to_owned(), now);
-        true
+        self.generation += 1;
+        self.preparing.insert(id.to_owned(), (now, self.generation));
+        Some(self.generation)
+    }
+
+    /// Ends `id`'s place of `generation`, not a later one of the same id.
+    fn end(&mut self, id: &str, generation: u64) {
+        if self
+            .preparing
+            .get(id)
+            .is_some_and(|(_, current)| *current == generation)
+        {
+            self.preparing.remove(id);
+        }
     }
 
     fn admitted(&mut self, id: &str, now: Instant) {
@@ -122,19 +138,21 @@ pub(super) fn has_room(scope: &str) -> bool {
 pub(super) struct Preparing {
     scope: String,
     id: String,
+    generation: u64,
 }
 
 impl Drop for Preparing {
     fn drop(&mut self) {
-        ended(&self.scope, &self.id);
+        with(&self.scope, |window| window.end(&self.id, self.generation));
     }
 }
 
 /// Starts preparing `id` for `scope`; None while the window is full.
 pub(super) fn begin(scope: &str, id: &str) -> Option<Preparing> {
-    with(scope, |window| window.begin(id, Instant::now())).then(|| Preparing {
+    with(scope, |window| window.begin(id, Instant::now())).map(|generation| Preparing {
         scope: scope.to_owned(),
         id: id.to_owned(),
+        generation,
     })
 }
 
@@ -160,40 +178,64 @@ pub(super) fn ended(scope: &str, id: &str) {
 mod tests {
     use super::*;
 
+    impl Window {
+        fn begin_ok(&mut self, id: &str, now: Instant) -> bool {
+            self.begin(id, now).is_some()
+        }
+    }
+
+    #[test]
+    fn an_earlier_place_of_the_same_attempt_never_ends_a_later_one() {
+        let scope = "invented-store-for-generations";
+        let first = begin(scope, "attempt").expect("an empty window has room");
+        // The sandbox answered the first place, and the attempt begins again
+        // before the first guard is dropped.
+        admitted(scope, "attempt");
+        let second = begin(scope, "attempt").expect("the answer made room");
+        drop(first);
+        assert!(with(scope, |window| window
+            .preparing
+            .contains_key("attempt")));
+        drop(second);
+        assert!(!with(scope, |window| window
+            .preparing
+            .contains_key("attempt")));
+    }
+
     #[test]
     fn a_wave_start_doubles_while_the_sandbox_admits_and_one_refusal_closes_it() {
         let mut window = Window::default();
         let at = Instant::now();
         // One attempt asks first; nothing else prepares beside it.
-        assert!(window.begin("a", at));
-        assert!(!window.begin("b", at));
+        assert!(window.begin_ok("a", at));
+        assert!(!window.begin_ok("b", at));
         // Each admission lets one more prepare: 1, 2, 4 at once.
         window.admitted("a", at);
-        assert!(window.begin("b", at) && window.begin("c", at));
-        assert!(!window.begin("d", at));
+        assert!(window.begin_ok("b", at) && window.begin_ok("c", at));
+        assert!(!window.begin_ok("d", at));
         window.admitted("b", at);
         window.admitted("c", at);
         for id in ["d", "e", "f", "g"] {
-            assert!(window.begin(id, at), "{id}");
+            assert!(window.begin_ok(id, at), "{id}");
         }
-        assert!(!window.begin("h", at));
+        assert!(!window.begin_ok("h", at));
         // The first refusal: back to one attempt at a time.
         window.refused("d");
-        assert!(!window.begin("h", at));
+        assert!(!window.begin_ok("h", at));
         for id in ["e", "f", "g"] {
             window.refused(id);
         }
-        assert!(window.begin("h", at));
-        assert!(!window.begin("i", at));
+        assert!(window.begin_ok("h", at));
+        assert!(!window.begin_ok("i", at));
         // Asking again for one already preparing is no second place.
-        assert!(window.begin("h", at));
+        assert!(window.begin_ok("h", at));
     }
 
     #[test]
     fn a_preparation_that_hangs_stops_counting_and_a_dropped_place_ends() {
         let mut window = Window::default();
         let at = Instant::now();
-        assert!(window.begin("hung", at));
+        assert!(window.begin_ok("hung", at));
         assert!(!window.has_room(at + STALE - Duration::from_secs(1)));
         assert!(window.has_room(at + STALE));
         // A place dropped by its flight, however it ended, frees the window.
@@ -209,7 +251,7 @@ mod tests {
         let mut window = Window::default();
         let at = Instant::now();
         for id in ["a", "b", "c"] {
-            window.preparing.insert(id.to_owned(), at);
+            window.preparing.insert(id.to_owned(), (at, 0));
             window.admitted(id, at);
         }
         assert_eq!(window.size(at), 4);
