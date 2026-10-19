@@ -6,6 +6,7 @@ fn fixture() -> (QueryData, HoldoutPlan, LearnedModel) {
     plan.created_at = 100;
     let mut run = data.runs[0].clone();
     run.id = "holdout-run".into();
+    run.state = "completed".into();
     run.created_at = 101;
     run.updated_at = 105;
     run.request.version_ids = plan.request.version_ids.clone();
@@ -98,7 +99,7 @@ fn reports_reproduce_and_regrading_cannot_change_the_first_score() {
 }
 
 #[test]
-fn partial_or_incompatible_first_cells_cannot_be_replaced_by_later_successes() {
+fn unusable_first_cells_lose_their_group_and_are_never_replaced_by_later_successes() {
     for mode in 0..8 {
         let (mut data, plan, model) = fixture();
         let mut later = data.runs.last().unwrap().clone();
@@ -122,6 +123,7 @@ fn partial_or_incompatible_first_cells_cannot_be_replaced_by_later_successes() {
             .iter()
             .position(|a| a.run_id == "holdout-run")
             .unwrap();
+        let version_id = data.attempts[at].version_id.clone();
         match mode {
             0 => {
                 data.attempts.remove(at);
@@ -157,11 +159,46 @@ fn partial_or_incompatible_first_cells_cannot_be_replaced_by_later_successes() {
                 data.attempts[at].phase = "pending".into();
             }
         }
-        assert_eq!(
-            evaluate(data, &plan, &model).unwrap_err().code,
-            "incomplete_holdout_evidence",
-            "mode {mode}"
-        );
+        if mode == 7 {
+            // A first attempt still running keeps the report waiting.
+            assert_eq!(
+                evaluate(data, &plan, &model).unwrap_err().code,
+                "incomplete_holdout_evidence"
+            );
+            continue;
+        }
+        // A settled, unusable first cell takes its whole group out of every
+        // arm; the later success never stands in for it.
+        let report = evaluate(data, &plan, &model).unwrap();
+        assert_eq!(report.status, "incomplete", "mode {mode}");
+        if mode == 5 {
+            // The one first run differs from the frozen plan: every cell is lost.
+            assert_eq!(report.groups, 0);
+            assert_eq!(report.excluded.len(), plan.cases.len());
+            assert!(report.cases.is_empty() && report.policies.is_empty());
+            continue;
+        }
+        let lost = report
+            .excluded
+            .iter()
+            .find(|e| e.version_id == version_id)
+            .unwrap_or_else(|| panic!("mode {mode}: {:?}", report.excluded));
+        assert!(!lost.reasons.is_empty(), "mode {mode}");
+        assert!(lost.run_ids.iter().all(|run| run == "holdout-run"));
+        assert!(report.cases.iter().all(|c| c.group != lost.group));
+        // The fixture pairs two cases per group: the sibling leaves as well.
+        assert_eq!(report.groups, 3, "mode {mode}");
+        assert_eq!(report.excluded.len(), 2, "mode {mode}");
+        assert_eq!(report.cases.len(), 6, "mode {mode}");
+        assert!(report
+            .cases
+            .iter()
+            .flat_map(|c| &c.cells)
+            .all(|cell| cell.run_id == "holdout-run"));
+        assert!(report
+            .limitations
+            .iter()
+            .any(|l| l.contains("left every arm")));
     }
 }
 
@@ -215,7 +252,14 @@ fn recipes_versions_and_pre_reservation_exposure_are_binding() {
                 data.runs.last_mut().unwrap().request.timeout_seconds = 1;
             }
         }
-        assert!(evaluate(data, &plan, &model).is_err());
+        if mode == 4 {
+            // A first run below the frozen timeout loses its cells for good.
+            let report = evaluate(data, &plan, &model).unwrap();
+            assert_eq!(report.status, "incomplete");
+            assert!(report.cases.is_empty());
+            continue;
+        }
+        assert!(evaluate(data, &plan, &model).is_err(), "mode {mode}");
     }
 }
 
@@ -320,8 +364,9 @@ async fn store_evaluator_reads_original_versions_raw_plans_and_complete_cells() 
     sqlx::query("INSERT INTO selector_holdouts(id,request_key,request_hash,model_id,created_at,data_json) VALUES(?,?,?,?,?,?)")
         .bind(&plan.id).bind(&plan.request.request_key).bind(hash(&plan.request).unwrap()).bind(&model.id).bind(plan.created_at).bind(serde_json::to_string(&plan).unwrap()).execute(&store.pool).await.unwrap();
     for run in &data.runs {
+        // Still running: its attempts are not stored yet.
         sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,?,1,?,?,?)")
-            .bind(&run.id).bind(&run.id).bind(&run.state).bind(run.created_at).bind(run.updated_at).bind(serde_json::to_string(&run.request).unwrap()).execute(&store.pool).await.unwrap();
+            .bind(&run.id).bind(&run.id).bind("running").bind(run.created_at).bind(run.updated_at).bind(serde_json::to_string(&run.request).unwrap()).execute(&store.pool).await.unwrap();
     }
     assert_eq!(
         store

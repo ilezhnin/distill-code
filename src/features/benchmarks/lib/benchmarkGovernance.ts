@@ -74,6 +74,8 @@ export interface PromotionRule {
   minimumGroupUtilityGain: number;
   minimumObservedQuality: number;
   nonInferiorityMargin?: number;
+  /** Selection recipe only: groups an incomplete first measurement may lose. */
+  maxIncompleteGroups?: number;
 }
 export interface DeploymentContract {
   workClassId: string;

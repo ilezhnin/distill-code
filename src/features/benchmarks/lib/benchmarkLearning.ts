@@ -237,7 +237,15 @@ export interface SelectorHoldoutReport {
     learnedGainInterval: { lower: number; upper: number };
   }[];
   limitations: string[];
-  status: "research_only";
+  /** "incomplete" when groups left every arm (see `excluded`). */
+  status: "research_only" | "incomplete";
+  /** Frozen cases whose group lost a cell for good; absent when none. */
+  excluded?: {
+    versionId: string;
+    group: string;
+    reasons: string[];
+    runIds: string[];
+  }[];
   dispatchAllowed: false;
 }
 

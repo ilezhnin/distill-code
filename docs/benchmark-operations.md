@@ -602,7 +602,14 @@ again before any answer waits again, so only one answer is ever measured. A
 limit no reset lifts (billing, an account on hold, no credit) settles the
 attempt as it ended, and so does a turn the runner had already stopped itself.
 A workflow root under it settles with its quota outcome instead, since its
-committed steps are never replayed. Use at least
+committed steps are never replayed. A try the provider refused before any
+answer (another model acknowledged at session open, a busy account, a prompt
+the host never dispatched) goes again as the same attempt on the same account
+after five minutes; after three such tries the run waits for the operator, and
+a runtime the host would not start waits for the operator at once. The cell is
+never settled by such a refusal. An answer the provider's CLI cut off at its own
+output-token maximum is the model's own: it settles as a budget failure scored
+zero. Use at least
 three repetitions for a complete leaderboard measurement. Set an explicit
 `maxExecutions` and a realistic `timeoutSeconds`; if applicable, also set
 `executionLimits.dispatchNotAfterMs`. Review a valid preview and resource budget
@@ -972,6 +979,19 @@ instead:
   repetition that does;
 - a zero scored without the renderer passes: a budget failure, or a rubric
   answer with nothing to render.
+
+A browser check whose candidate page drove the job past its ceiling records a
+failed evaluation that names the renderer and worker, so these zeros count too.
+
+A first measurement whose cell settled unusable (unscored, on another runtime,
+or unlike the frozen plan) is never replaced. Once every first attempt has
+settled, the report is saved anyway: such a case's whole group leaves every
+arm, the report lists it under `excluded` with status `incomplete`, and the
+remaining groups are summarized. Promotion refuses unless the registered rule
+tolerates that many lost groups: `maxIncompleteGroups` (selection recipe only,
+at most 4, none by default) is part of the rule registered before measurement,
+so the exclusion never follows the outcome. Assessment still needs at least
+eight remaining groups.
 
 Promotion also needs the app's browser worker unchanged since qualification. An
 issued holdout certificate does not depend on the renderer installed later,

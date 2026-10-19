@@ -19,9 +19,11 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
 import { shortId, workClassLabel } from "../lib/benchmarkLabels";
+import { Textarea } from "@/shared/ui/textarea";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
+  Field,
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { BenchmarkLearningDialog } from "./BenchmarkLearningDialog";
@@ -438,27 +440,33 @@ export function ModelPolicyDialog({
                           {JSON.stringify(certificate, null, 2)}
                         </pre>
                       </details>
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        disabled={
-                          !ready ||
-                          campaigns.isPending ||
-                          Boolean(campaigns.error) ||
-                          !classCampaigns.some(
-                            (c) => c.plan.id === certificate.campaignId,
-                          )
-                        }
-                        onClick={() =>
-                          setTool({
-                            kind: "campaign",
-                            id: certificate.campaignId,
-                          })
-                        }
-                      >
-                        {t("policyManager.manageCertificate")}
-                      </Button>
+                      {certificate.source === "executor_holdout" ? (
+                        revokedAt === null ? (
+                          <HoldoutCertificateRevocation id={certificate.id} />
+                        ) : null
+                      ) : (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          disabled={
+                            !ready ||
+                            campaigns.isPending ||
+                            Boolean(campaigns.error) ||
+                            !classCampaigns.some(
+                              (c) => c.plan.id === certificate.campaignId,
+                            )
+                          }
+                          onClick={() =>
+                            setTool({
+                              kind: "campaign",
+                              id: certificate.campaignId,
+                            })
+                          }
+                        >
+                          {t("policyManager.manageCertificate")}
+                        </Button>
+                      )}
                     </div>
                   ),
                 )}
@@ -473,5 +481,54 @@ export function ModelPolicyDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Revokes a certificate issued from an executor holdout. It has no workflow
+ * campaign to manage, so its revocation lives here.
+ */
+function HoldoutCertificateRevocation({ id }: { id: string }) {
+  const { t } = useTranslation("benchmarks");
+  const [reason, setReason] = useState("");
+  const queryClient = useQueryClient();
+  const revoke = useMutation({
+    mutationFn: () => benchmarkGovernanceApi.revokePromotion(id, reason.trim()),
+    onSuccess: () => {
+      setReason("");
+      void queryClient.invalidateQueries({
+        queryKey: ["benchmarks", "promotions"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["benchmarks", "class-policies"],
+      });
+    },
+  });
+  return (
+    <div className="space-y-2">
+      <Field label={t("governance.revocationReason")}>
+        {(fieldId) => (
+          <Textarea
+            id={fieldId}
+            maxLength={4096}
+            value={reason}
+            disabled={revoke.isPending}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        )}
+      </Field>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={revoke.isPending || !reason.trim()}
+        onClick={() => revoke.mutate()}
+      >
+        {t("promotion.revoke")}
+      </Button>
+      {revoke.error ? (
+        <BenchmarkAlert>{benchmarkErrorMessage(revoke.error)}</BenchmarkAlert>
+      ) : null}
+    </div>
   );
 }

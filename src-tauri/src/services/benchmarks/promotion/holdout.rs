@@ -108,6 +108,24 @@ fn qualified_renderer_grading(
     }
 }
 
+/// The groups the report lost to unusable first cells stay within the
+/// tolerance the rule registered before any measurement (none by default).
+fn within_tolerance(report: &HoldoutReport, rule: &acceptance::Rule) -> Result<()> {
+    let lost = report
+        .excluded
+        .iter()
+        .map(|e| &e.group)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let tolerated = rule.max_incomplete_groups.unwrap_or(0) as usize;
+    if lost > tolerated {
+        return Err(invalid(format!(
+            "{lost} held-out groups have an unusable first measurement; the registered rule tolerates {tolerated}"
+        )));
+    }
+    Ok(())
+}
+
 impl Store {
     /// The frozen held-out versions qualify before their reservation, on the
     /// exact published content and evaluator the plan froze. With
@@ -239,6 +257,15 @@ impl Store {
                 .iter()
                 .find_map(|control| control.evaluation.as_ref()?.details.as_ref())
                 .and_then(|details| details.get("runtimeRevision")?.as_str());
+            // A case its group lost under the registered tolerance counts
+            // for nothing, so its grading is not part of the evidence.
+            if report
+                .excluded
+                .iter()
+                .any(|e| e.version_id == binding.version_id)
+            {
+                continue;
+            }
             let case = report
                 .cases
                 .iter()
@@ -454,6 +481,7 @@ impl Store {
         self.require_holdout_reserved(&plan).await?;
         // Complete first measurements only; an incomplete holdout errors here.
         let report = self.evaluate_selector_holdout(plan_id).await?;
+        within_tolerance(&report, &rule.request.rule)?;
         Box::pin(self.require_qualified_grading(&report, &qualifications)).await?;
         // The counted runs are the only runs that ever named the reserved
         // families: no preview, sibling revision or extra run could be read
@@ -462,6 +490,12 @@ impl Store {
             .cases
             .iter()
             .flat_map(|case| case.cells.iter().map(|cell| cell.run_id.clone()))
+            .chain(
+                report
+                    .excluded
+                    .iter()
+                    .flat_map(|e| e.run_ids.iter().cloned()),
+            )
             .collect();
         let component = self.holdout_component(&plan).await?;
         let runs = Self::holdout_runs(&mut *self.pool.acquire().await?, &component).await?;
@@ -599,6 +633,7 @@ mod tests {
             limitations: vec![],
             status: "research_only".into(),
             dispatch_allowed: false,
+            excluded: vec![],
         }
     }
 
@@ -609,6 +644,7 @@ mod tests {
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 0.8,
             non_inferiority_margin: Some(0.05),
+            max_incomplete_groups: None,
         }
     }
 
@@ -644,6 +680,38 @@ mod tests {
         let mut broken = report(16);
         broken.cases[0].learned_key = "unmeasured".into();
         assert!(policy_cases(&broken, "b").is_err());
+    }
+
+    #[test]
+    fn lost_groups_need_a_registered_tolerance() {
+        let mut lost = report(16);
+        for (index, group) in ["group-3", "group-3", "group-5"].into_iter().enumerate() {
+            lost.excluded.push(learned::report::ExcludedCase {
+                version_id: format!("lost-{index}"),
+                group: group.into(),
+                reasons: vec![],
+                run_ids: vec!["run".into()],
+            });
+        }
+        // Two groups lost (two cases of one group count once).
+        let mut rule = selection_rule();
+        assert!(within_tolerance(&report(16), &rule).is_ok());
+        assert!(within_tolerance(&lost, &rule)
+            .unwrap_err()
+            .message
+            .contains("tolerates 0"));
+        rule.max_incomplete_groups = Some(1);
+        assert!(within_tolerance(&lost, &rule).is_err());
+        rule.max_incomplete_groups = Some(2);
+        assert!(rule.validate().is_ok());
+        assert!(within_tolerance(&lost, &rule).is_ok());
+        // Only the selection recipe takes a tolerance, and only a small one.
+        rule.max_incomplete_groups = Some(acceptance::MAX_INCOMPLETE_GROUPS + 1);
+        assert!(rule.validate().is_err());
+        rule.max_incomplete_groups = Some(1);
+        rule.recipe = "independent-group-sign-holm-v1".into();
+        rule.non_inferiority_margin = None;
+        assert!(rule.validate().is_err());
     }
 
     fn graded(provenance: &str, details: Option<serde_json::Value>) -> Evaluation {
