@@ -28,21 +28,30 @@ import {
 } from "./BenchmarkPrimitives";
 import { BenchmarkLearningDialog } from "./BenchmarkLearningDialog";
 import { WorkflowCampaignDialog } from "./WorkflowCampaignDialog";
-import {
-  isModelPreferenceClassId,
-  MODEL_PREFERENCE_CLASSES,
-} from "@/features/agents/lib/modelRanking";
+import { isModelPreferenceClassId } from "@/features/agents/lib/modelRanking";
+import { candidatesForRankingSource } from "@/features/agents/lib/agentModelRanking";
+import type { RoutingPolicy } from "@/features/agents/lib/routingPolicy";
+import { useRoutingPolicyStore } from "@/features/agents/stores/routingPolicyStore";
 import type { RankedMatcher } from "../lib/benchmarkLearning";
 
 /**
- * The class's manual order, as the comparator a held-out evaluation must
- * beat: the app's own ranking of the class, with its platform and words.
+ * The order an ordinary chat of the class falls back to, as the comparator a
+ * held-out evaluation must beat: the operator's class override, else the
+ * built-in ranking, each with its platform, words, effort and fast mode.
  */
-function manualOrder(classId: string): RankedMatcher[] {
+export function fallbackOrder(
+  classId: string,
+  classOverrides: RoutingPolicy["classOverrides"],
+): RankedMatcher[] {
   const id = isModelPreferenceClassId(classId) ? classId : "general";
-  return MODEL_PREFERENCE_CLASSES[id].ranking.map((candidate) => ({
+  return candidatesForRankingSource(
+    { kind: "class", classId: id },
+    classOverrides,
+  ).map((candidate) => ({
     platform: candidate.platform,
     needles: candidate.needles.map((set) => [...set]),
+    ...(candidate.effort ? { effort: candidate.effort } : {}),
+    ...(candidate.fast !== undefined ? { fastMode: candidate.fast } : {}),
   }));
 }
 
@@ -77,11 +86,14 @@ export function ModelPolicyDialog({
     queryFn: benchmarkGovernanceApi.listPromotions,
   });
   const queryClient = useQueryClient();
+  const classOverrides = useRoutingPolicyStore(
+    (state) => state.policy.classOverrides,
+  );
   const previewLearned = useMutation({
     mutationFn: () =>
       benchmarkGovernanceApi.evaluateClass({
         workClassId: classId,
-        personaOrder: manualOrder(classId),
+        personaOrder: fallbackOrder(classId, classOverrides),
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({

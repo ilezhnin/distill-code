@@ -100,7 +100,7 @@ it("shows the newest held-out evaluation next to the fallback order", async () =
   show("debug");
   const line = await screen.findByTestId("learned-class-preview");
   expect(line).toHaveTextContent(
-    /Held-out evaluation 3 from .+, not certified/,
+    /Held-out evaluation 3 of 3 from .+, not certified/,
   );
   expect(line).toHaveTextContent(/on 21 held-out cases in 21 groups/);
   expect(line).toHaveTextContent(/reached 62% quality/);
@@ -112,7 +112,7 @@ it("shows the newest held-out evaluation next to the fallback order", async () =
   expect(status).toHaveTextContent(/No certified task policy yet/);
 });
 
-it("says when an evaluation found no held-out case and hides it once certified", async () => {
+it("shows the newest evaluation whether it found no case or certified the class", async () => {
   vi.mocked(api.classPolicies).mockResolvedValue([
     {
       ...empty,
@@ -145,5 +145,7 @@ it("says when an evaluation found no held-out case and hides it once certified",
   expect(
     await screen.findByText(/Certified task policy available/),
   ).toBeVisible();
-  expect(screen.queryByTestId("learned-class-preview")).toBeNull();
+  expect(screen.getByTestId("learned-class-preview")).toHaveTextContent(
+    /Held-out evaluation 3 of 3 from .+ certified this class: on 21 held-out cases/,
+  );
 });

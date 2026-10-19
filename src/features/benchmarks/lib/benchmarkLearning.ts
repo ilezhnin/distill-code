@@ -192,10 +192,12 @@ export interface SelectorPolicyResult {
   learnedGainInterval: { lower: number; upper: number };
 }
 
-/** One entry of a class's manual order, as the app's ranking names it. */
+/** One entry of a class's chat fallback order, with the effort it runs at. */
 export interface RankedMatcher {
   platform?: string;
   needles: string[][];
+  effort?: string;
+  fastMode?: boolean;
 }
 /** Fit a class from its training cells and evaluate it on its held-out cells. */
 export interface ClassEvaluationRequest {
@@ -238,7 +240,10 @@ export interface ClassEvaluation {
   modelId: string;
   modelSnapshotHash: string;
   look: number;
+  personaOrder: RankedMatcher[];
   personaKeys: string[];
+  /** Candidates measured on at least eight held-out groups. */
+  poolKeys: string[];
   aggregateKeys: string[];
   excludedProviders: string[];
   candidates: ClassEvaluationCandidate[];

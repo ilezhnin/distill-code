@@ -8,6 +8,8 @@ import type { PromotionState } from "../lib/benchmarkGovernance";
 import type { SelectorFitSummary } from "../lib/benchmarkLearning";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 import { ModelPolicyDialog } from "../ui/ModelPolicyDialog";
+import { MODEL_PREFERENCE_CLASSES } from "@/features/agents/lib/modelRanking";
+import { useRoutingPolicyStore } from "@/features/agents/stores/routingPolicyStore";
 import { definition } from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
@@ -307,7 +309,9 @@ it("evaluates the learned choice of the category against its manual order", asyn
     modelId: "fit",
     modelSnapshotHash: "snapshot",
     look: 2,
+    personaOrder: [],
     personaKeys: ["a"],
+    poolKeys: ["a"],
     aggregateKeys: ["a"],
     excludedProviders: ["kimi-acp", "zai-acp"],
     candidates: [],
@@ -328,16 +332,33 @@ it("evaluates the learned choice of the category against its manual order", asyn
     certificateId: null,
     artifactHash: "hash",
   });
-  show();
-  await user.click(await screen.findByRole("tab", { name: "Training" }));
-  await user.click(
-    screen.getByRole("button", { name: "Evaluate learned choice" }),
-  );
-  // The comparator is the class's own manual order from the app's ranking.
+  // The comparator is what a chat of the class falls back to: the operator's
+  // class override first, with the effort and fast mode it runs at.
+  const ranking = MODEL_PREFERENCE_CLASSES.debug.ranking;
+  const chosen = ranking[ranking.length - 1];
+  const saved = useRoutingPolicyStore.getState().policy;
+  useRoutingPolicyStore.setState({
+    policy: { ...saved, classOverrides: { debug: [chosen.label] } },
+  });
+  try {
+    show();
+    await user.click(await screen.findByRole("tab", { name: "Training" }));
+    await user.click(
+      screen.getByRole("button", { name: "Evaluate learned choice" }),
+    );
+  } finally {
+    useRoutingPolicyStore.setState({ policy: saved });
+  }
   const request = vi.mocked(api.evaluateClass).mock.calls[0][0];
   expect(request.workClassId).toBe("debug");
-  expect(request.personaOrder.length).toBeGreaterThan(0);
-  expect(request.personaOrder[0].needles.length).toBeGreaterThan(0);
+  expect(request.personaOrder).toEqual([
+    {
+      platform: chosen.platform,
+      needles: chosen.needles.map((set) => [...set]),
+      ...(chosen.effort ? { effort: chosen.effort } : {}),
+      ...(chosen.fast !== undefined ? { fastMode: chosen.fast } : {}),
+    },
+  ]);
   expect(
     await screen.findByText(
       /Look 2 saved: 5 held-out cases compared, not certified/,

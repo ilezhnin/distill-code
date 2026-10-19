@@ -34,7 +34,10 @@ const REASONS = [
   "not_superior_to_every_registered_baseline",
 ] as const;
 
-/** The line for an uncertified class's newest held-out evaluation. */
+/**
+ * The line for a class's newest held-out evaluation, pass or fail: only that
+ * look speaks for the class, and its number is the count of looks so far.
+ */
 function evaluationText(
   policy: ClassPolicy,
   t: ReturnType<typeof useTranslation>["t"],
@@ -52,6 +55,16 @@ function evaluationText(
   const reasons = REASONS.filter((reason) =>
     evaluation.reasons.includes(reason),
   ).map((reason) => t(`routing.evaluationReason.${reason}`));
+  if (evaluation.status === "certified") {
+    return t("routing.evidenceEvaluationCertified", {
+      date,
+      look: evaluation.look,
+      cases: evaluation.heldOutCases,
+      groups: evaluation.groups,
+      quality: Math.round((evaluation.observedQuality ?? 0) * 100),
+      training: evaluation.trainingCases,
+    });
+  }
   return t("routing.evidenceEvaluation", {
     date,
     look: evaluation.look,
@@ -65,8 +78,8 @@ function evaluationText(
 
 /**
  * Class certification makes selection available; individual tasks can still
- * abstain when evidence or available models do not match. An uncertified
- * class shows its newest held-out evaluation next to the fallback order.
+ * abstain when evidence or available models do not match. Every class shows
+ * its newest held-out evaluation, certified or not.
  */
 export function LearnedClassStatus({
   classId,
@@ -80,17 +93,16 @@ export function LearnedClassStatus({
   const policies = useClassPolicies();
   const policy = policies.data?.find((row) => row.workClassId === classId);
   const certified = certifiedPolicy(policy);
-  const preview =
-    policy?.evaluation && !certified
-      ? evaluationText(
-          policy,
-          t,
-          formatDate(policy.evaluation.createdAt, {
-            dateStyle: "short",
-            timeStyle: "short",
-          }),
-        )
-      : null;
+  const preview = policy?.evaluation
+    ? evaluationText(
+        policy,
+        t,
+        formatDate(policy.evaluation.createdAt, {
+          dateStyle: "short",
+          timeStyle: "short",
+        }),
+      )
+    : null;
   const text = policies.isPending
     ? t("routing.evidenceLoading")
     : policies.error
