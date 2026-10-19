@@ -133,9 +133,14 @@ export function configurationKey(configuration: Configuration): string {
  * Only comparable rows receive a rank; preliminary scores never earn a place.
  */
 export function rankRows(rows: LeaderboardRow[], board: Board): RankedRow[] {
+  // Only a fully tested row ranks, so the ranked rows come first and the
+  // partial scores follow below them, each group by its points.
+  const rankable = (entry: { row: LeaderboardRow; points: number | null }) =>
+    entry.row.status === "comparable" && entry.points != null;
   const entries = rows
     .map((row) => ({ row, points: board.points(row) }))
     .sort((a, b) => {
+      if (rankable(a) !== rankable(b)) return rankable(a) ? -1 : 1;
       if (a.points == null) return b.points == null ? 0 : 1;
       if (b.points == null) return -1;
       return b.points - a.points;
@@ -144,8 +149,7 @@ export function rankRows(rows: LeaderboardRow[], board: Board): RankedRow[] {
   let previousPoints: number | null = null;
   let rank = 0;
   return entries.map((entry) => {
-    const comparable =
-      entry.row.status === "comparable" && entry.points != null;
+    const comparable = rankable(entry);
     if (comparable) {
       comparableCount += 1;
       if (entry.points !== previousPoints) rank = comparableCount;

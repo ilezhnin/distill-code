@@ -498,6 +498,7 @@ mod tests {
             runs: store.all_runs().await.unwrap(),
             attempts: vec![],
             required_repetitions: 1,
+            suite_exclusions: Default::default(),
         }
     }
     fn pooled(data: &QueryData, as_of: Option<i64>, version: &str) -> bool {

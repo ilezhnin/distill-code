@@ -183,12 +183,13 @@ describe("leaderboard boards", () => {
     ).toEqual([
       ["alpha", 1],
       ["gamma", 1],
-      ["delta", null],
       ["beta", 3],
+      // Not fully tested: below every ranked row, whatever its points.
+      ["delta", null],
     ]);
     // The unranked row keeps its points and bar, just no place.
-    expect(ranked[2].points).toBe(900);
-    expect(ranked[2].share).toBe(90);
+    expect(ranked[3].points).toBe(900);
+    expect(ranked[3].share).toBe(90);
   });
 
   it("sorts preliminary class scores with zero before missing scores without assigning ranks", () => {

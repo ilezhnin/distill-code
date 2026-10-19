@@ -764,6 +764,11 @@ pub struct ResultQuery {
     pub as_of: Option<i64>,
     pub offset: Option<u32>,
     pub limit: Option<u32>,
+    /// Judge panel marks (`sameVendor`, `ownModel`, `authorModel`) whose
+    /// scores a board leaves out: an attempt judged by a panel carrying one
+    /// of them counts as unmeasured there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_judge_flags: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -833,6 +838,20 @@ pub struct LeaderboardRow {
     /// before that was recorded).
     #[serde(default)]
     pub parallelism: Option<u32>,
+    /// Cases of the measurement suite this row is measured on: its eligible
+    /// pool cases without the ones an evaluation holds back.
+    #[serde(default)]
+    pub suite_planned: u32,
+    /// Suite cases whose cell holds every repetition it requires. A row is
+    /// fully tested, and can rank, when this reaches `suite_planned`.
+    #[serde(default)]
+    pub suite_complete: u32,
+    /// The last time every suite case of that time had a complete cell: now,
+    /// the moment the last missing case completed; for a row short of the
+    /// suite today, when it last covered the suite before it grew. None when
+    /// it never did.
+    #[serde(default)]
+    pub fully_tested_at: Option<i64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1148,4 +1167,10 @@ pub struct QueryData {
     /// The protocol the ledger is read under: how many scored repetitions a
     /// cell needs before its case counts. A case may declare more.
     pub required_repetitions: u32,
+    /// Pool cases outside the measurement suite a row must cover to count as
+    /// fully tested: the ones an evaluation reserves (a holdout plan or a
+    /// workflow campaign names their family or split group) and the ones the
+    /// owner lists in the benchmark settings (`boardExclusions`). They stay
+    /// on the boards.
+    pub suite_exclusions: std::collections::BTreeSet<String>,
 }

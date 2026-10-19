@@ -58,6 +58,7 @@ import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
 import { BenchmarkRunDrawer } from "./BenchmarkRunDrawer";
 import { BenchmarkRunsDialog } from "./BenchmarkRunsDialog";
 import { LeaderboardView } from "./LeaderboardView";
+import type { JudgeFlag } from "./JudgeFlagFilter";
 
 const PAGE_SIZE = 50;
 
@@ -129,9 +130,19 @@ export function BenchmarksView({
   );
   // Ranks, places and the model filter need every row; the board pages its
   // own rendered list. 500 is the service's cap.
+  // Scores whose judge panel sat close to the candidate, left out on request.
+  const [hiddenJudgeFlags, setHiddenJudgeFlags] = useState<JudgeFlag[]>([]);
   const leaderboardQuery = useMemo(
-    () => ({ runId: null, versionIds: null, offset: 0, limit: 500 }),
-    [],
+    () => ({
+      runId: null,
+      versionIds: null,
+      offset: 0,
+      limit: 500,
+      ...(hiddenJudgeFlags.length
+        ? { excludeJudgeFlags: [...hiddenJudgeFlags].sort() }
+        : {}),
+    }),
+    [hiddenJudgeFlags],
   );
   const leaderboard = useQuery({
     queryKey: [...benchmarkKeys, "leaderboard", leaderboardQuery],
@@ -349,6 +360,8 @@ export function BenchmarksView({
               onNavigate({ section: "leaderboard", configurationId: key })
             }
             actions={actions}
+            hiddenJudgeFlags={hiddenJudgeFlags}
+            onHiddenJudgeFlagsChange={setHiddenJudgeFlags}
           />
         ) : null}
       </section>

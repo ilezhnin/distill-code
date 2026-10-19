@@ -512,7 +512,10 @@
     "chartLabel": "{{model}}: {{value}}",
     "price": "API in / out per 1M",
     "context": "Context",
-    "priceShort": "API price"
+    "priceShort": "API price",
+    "fullyTested": "Fully tested",
+    "fullyTestedCoverage": "{{complete}}/{{planned}}",
+    "fullyTestedEarlier": "Fully tested on {{date}}. The suite has grown since: now {{complete}}/{{planned}} cases have every repetition."
   },
   "design": {
     "brief": "Brief",
@@ -731,9 +734,10 @@
     "queuedShort": "Queued",
     "queued": "Queued in run {{id}}",
     "current": "Show current results",
+    "effortBadge": "Effort: {{level}}",
     "noEffortHint": "Measured without an effort setting. Models that offer no reasoning effort levels run this way.",
     "statusHint": {
-      "preliminary": "Not ranked: a current case has no scored result yet, a run shortened a task's time limit, or this model's case set differs from the ranked models.",
+      "preliminary": "Not ranked: the model is not fully tested yet (every measurement-suite case with every repetition), a run shortened a task's time limit, or its suite differs from the ranked models'.",
       "retrospective": "A retrospective estimate on today's case pool. It has no rank.",
       "excluded": "This model helped author every current case, so it is not measured.",
       "untested": "No case has run for this model yet."
@@ -743,7 +747,7 @@
     "title": "Rating history",
     "recalculated": "Current pool",
     "recorded": "As recorded",
-    "recalculatedDescription": "Every point covers today's cases. Each case uses the newest result available at that date, scored with today's reviews; a case not yet measured then uses its first later result.",
+    "recalculatedDescription": "Every point covers today's cases. Each case uses the newest result available at that date, scored with today's reviews; a case not yet measured then is a gap at that point.",
     "recordedDescription": "Results and evaluations as they stood at each date. Coverage can differ between points.",
     "backfilled_one": "{{count}} case first measured later",
     "backfilled_other": "{{count}} cases first measured later",
@@ -767,6 +771,8 @@
     "partial": "Partial coverage: the points average only the measured cases, not the whole pool.",
     "owedRepetitions_one": "{{count}} case still has repetitions to run",
     "owedRepetitions_other": "{{count}} cases still have repetitions to run",
+    "suiteFull": "Fully tested: every suite case has every repetition",
+    "suitePartial": "Not fully tested: {{complete}}/{{planned}} suite cases have every repetition",
     "addedCases_one": "{{count}} case added since the previous point",
     "addedCases_other": "{{count}} cases added since the previous point",
     "removedCases_one": "{{count}} case no longer counted since the previous point",
@@ -1003,6 +1009,18 @@
       "expectAccessibleError": "Check accessible error",
       "expectSize": "Check size",
       "expectBounds": "Check position"
+    }
+  },
+  "judgeFlags": {
+    "label": "Judges",
+    "all": "All",
+    "hidden_one": "{{count}} hidden",
+    "hidden_other": "{{count}} hidden",
+    "heading": "Show scores judged with",
+    "flags": {
+      "sameVendor": "A judge from the model's own lab",
+      "ownModel": "The model itself on the panel",
+      "authorModel": "The case author's model on the panel"
     }
   }
 }

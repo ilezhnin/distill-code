@@ -512,7 +512,10 @@
     "chartLabel": "{{model}}: {{value}}",
     "price": "API entrada / salida por 1M",
     "context": "Contexto",
-    "priceShort": "Precio API"
+    "priceShort": "Precio API",
+    "fullyTested": "Probado por completo",
+    "fullyTestedCoverage": "{{complete}}/{{planned}}",
+    "fullyTestedEarlier": "Probado por completo el {{date}}. El conjunto creció desde entonces: ahora {{complete}}/{{planned}} casos tienen todas las repeticiones."
   },
   "design": {
     "brief": "Encargo",
@@ -731,9 +734,10 @@
     "queuedShort": "En cola",
     "queued": "En cola en la ejecución {{id}}",
     "current": "Mostrar resultados actuales",
+    "effortBadge": "Esfuerzo: {{level}}",
     "noEffortHint": "Medido sin ajuste de esfuerzo. Los modelos que no ofrecen niveles de esfuerzo de razonamiento se ejecutan así.",
     "statusHint": {
-      "preliminary": "Sin posición: a un caso actual aún le falta un resultado puntuado, una ejecución acortó el límite de tiempo de una tarea o el conjunto de casos de este modelo difiere del de los modelos clasificados.",
+      "preliminary": "Sin posición: el modelo aún no está probado por completo (cada caso del conjunto de medición con todas las repeticiones), una ejecución acortó el límite de tiempo de una tarea o su conjunto difiere del de los modelos clasificados.",
       "retrospective": "Una estimación retrospectiva sobre el conjunto actual de casos. No tiene posición.",
       "excluded": "Este modelo ayudó a crear todos los casos actuales, así que no se mide.",
       "untested": "Aún no se ha ejecutado ningún caso con este modelo."
@@ -743,7 +747,7 @@
     "title": "Historial de puntuación",
     "recalculated": "Conjunto actual",
     "recorded": "Según el registro",
-    "recalculatedDescription": "Cada punto cubre los casos actuales. Cada caso usa el resultado más reciente disponible en esa fecha, puntuado con las revisiones actuales; un caso aún no medido entonces usa su primer resultado posterior.",
+    "recalculatedDescription": "Cada punto cubre los casos actuales. Cada caso usa el resultado más reciente disponible en esa fecha, puntuado con las revisiones actuales; un caso aún no medido entonces es un hueco en ese punto.",
     "recordedDescription": "Resultados y evaluaciones tal como estaban en cada fecha. La cobertura puede variar entre puntos.",
     "backfilled_one": "{{count}} caso medido por primera vez después",
     "backfilled_other": "{{count}} casos medidos por primera vez después",
@@ -767,6 +771,8 @@
     "partial": "Cobertura parcial: los puntos promedian solo los casos medidos, no todo el conjunto.",
     "owedRepetitions_one": "{{count}} caso aún tiene repeticiones pendientes",
     "owedRepetitions_other": "{{count}} casos aún tienen repeticiones pendientes",
+    "suiteFull": "Probado por completo: cada caso del conjunto tiene todas las repeticiones",
+    "suitePartial": "Sin probar por completo: {{complete}}/{{planned}} casos del conjunto tienen todas las repeticiones",
     "addedCases_one": "{{count}} caso añadido desde el punto anterior",
     "addedCases_other": "{{count}} casos añadidos desde el punto anterior",
     "removedCases_one": "{{count}} caso que ya no cuenta desde el punto anterior",
@@ -1003,6 +1009,18 @@
       "expectAccessibleError": "Comprobar error accesible",
       "expectSize": "Comprobar tamaño",
       "expectBounds": "Comprobar posición"
+    }
+  },
+  "judgeFlags": {
+    "label": "Jueces",
+    "all": "Todos",
+    "hidden_one": "{{count}} oculto",
+    "hidden_other": "{{count}} ocultos",
+    "heading": "Mostrar puntuaciones juzgadas con",
+    "flags": {
+      "sameVendor": "Un juez del propio laboratorio del modelo",
+      "ownModel": "El propio modelo en el panel",
+      "authorModel": "El modelo autor del caso en el panel"
     }
   }
 }

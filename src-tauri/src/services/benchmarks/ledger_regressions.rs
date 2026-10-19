@@ -336,11 +336,11 @@ fn settled_retest(data: &mut QueryData, state: &str, outcomes: &[&str]) {
     data.attempts.extend(extra);
 }
 
-/// A newer run that began stands even where it scored nothing: its unscored
-/// cells are gaps of that sitting, never filled from an earlier run. A run
-/// cancelled before any cell started never began, so the earlier run stands.
+/// A newer run that scored nothing replaces no cell: each case keeps its
+/// newest scored cell. A run cancelled before any cell started measured
+/// nothing at all.
 #[test]
-fn an_unscored_newer_run_stands_with_its_gaps() {
+fn an_unscored_newer_run_leaves_the_scored_cells_standing() {
     let mut data = before_only();
     settled_retest(&mut data, "cancelled", &["cancelled"]);
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
@@ -362,12 +362,12 @@ fn an_unscored_newer_run_stands_with_its_gaps() {
         let mut data = before_only();
         settled_retest(&mut data, "cancelled", outcomes);
         let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-        assert_eq!(row.points, None, "{outcomes:?}");
-        assert_eq!((row.scored, row.planned), (0, 6), "{outcomes:?}");
-        assert_eq!(row.status, "preliminary", "{outcomes:?}");
-        assert_eq!(row.missing_version_ids.len(), 6, "{outcomes:?}");
+        assert_eq!(row.points, Some(1000), "{outcomes:?}");
+        assert_eq!((row.scored, row.planned), (6, 6), "{outcomes:?}");
+        assert_eq!(row.status, "comparable", "{outcomes:?}");
+        assert!(row.missing_version_ids.is_empty(), "{outcomes:?}");
         assert!(
-            row.attempt_ids.iter().all(|id| id.starts_with("retest-")),
+            row.attempt_ids.iter().all(|id| id.starts_with("before-")),
             "{outcomes:?}"
         );
         // The training ledger is evidence, not standing: the earlier scored
@@ -535,15 +535,15 @@ fn a_case_without_any_scored_cell_stays_a_gap() {
     assert_eq!(row.status, "preliminary");
     assert_eq!(row.missing_version_ids, vec!["v0"]);
     assert_eq!((row.scored, row.planned), (5, 6));
-    // A later run that began on v0 and failed its infrastructure stands
-    // instead, with every case its gap.
+    // A later run that began on v0 and failed its infrastructure scored
+    // nothing there: v0 stays the one gap.
     let mut data = before_only();
     settled_retest(&mut data, "needs_attention", &["infrastructure_failure"]);
     retest_only_v0(&mut data);
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
     assert_eq!(row.status, "preliminary");
-    assert_eq!(row.missing_version_ids.len(), 6);
-    assert_eq!((row.scored, row.planned, row.attempted), (0, 6, 1));
+    assert_eq!(row.missing_version_ids, vec!["v0"]);
+    assert_eq!((row.scored, row.planned, row.attempted), (5, 6, 6));
 }
 
 #[test]
@@ -965,14 +965,15 @@ fn a_retest_of_one_case_is_a_sitting_of_one_case() {
     a.outcome = Some("fail".into());
     data.runs.push(run);
     data.attempts.push(a);
-    // The retest stands alone: v0 failed, the other five are its gaps.
+    // The retest's fail replaces v0's cell; the other five keep theirs.
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!((row.scored, row.planned, row.points), (1, 6, Some(0)));
-    assert_eq!(row.missing_version_ids.len(), 5);
-    // With three required its one repetition is incomplete as well.
+    assert_eq!((row.scored, row.planned, row.passed), (6, 6, 5));
+    assert!(row.missing_version_ids.is_empty());
+    assert!(row.attempt_ids.contains(&"new-first-repeat".to_owned()));
+    // With three required no one-repetition cell is complete.
     data.required_repetitions = 3;
     let row = leaderboard(&data, &ResultQuery::default()).rows.remove(0);
-    assert_eq!((row.scored, row.complete, row.passed), (1, 0, 0));
+    assert_eq!((row.scored, row.complete), (6, 0));
     assert_eq!(row.status, "preliminary");
 }
 
@@ -1345,13 +1346,13 @@ fn a_running_retest_is_observed_before_it_completes() {
         a.finished_at = None;
     }
     let points = history(&data, &configuration);
-    // The running retest is the sitting that stands: three fails so far.
+    // Three fails so far replace their cases; the other three keep their passes.
     assert_eq!(
         points
             .iter()
             .map(|p| (p.created_at, p.report.rows[0].points))
             .collect::<Vec<_>>(),
-        vec![(3, Some(1000)), (11, Some(0))]
+        vec![(3, Some(1000)), (11, Some(500))]
     );
     // The newest point is the header's rating; the live board also lists
     // the repetitions still queued.
@@ -1465,9 +1466,9 @@ fn a_refused_selection_stays_with_the_requested_candidate() {
     let rows = leaderboard(&data, &ResultQuery::default()).rows;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].configuration.model_id, "model");
-    // The refused run began, so it is the sitting that stands: all gaps.
-    assert_eq!((rows[0].scored, rows[0].planned), (0, 6));
-    assert_eq!(rows[0].points, None);
+    // The refusal scored nothing, so every case keeps its earlier cell.
+    assert_eq!((rows[0].scored, rows[0].planned), (6, 6));
+    assert!(rows[0].attempt_ids.iter().all(|id| id != "refused"));
 }
 
 #[test]
@@ -1580,9 +1581,9 @@ fn only_repetitions_that_ran_carry_spend() {
         };
     }
     let cost = |data: &QueryData| leaderboard(data, &ResultQuery::default()).rows[0].cost;
-    // The retest stands alone with v0: its paid repetition counts and the
-    // cancelled one, never started, spent nothing.
-    assert!((cost(&data).unwrap() - 2.0).abs() < 1e-9);
+    // v0's retest cell counts its paid repetition; the cancelled one, never
+    // started, spent nothing. The other five cases keep their spend of 1.
+    assert!((cost(&data).unwrap() - 7.0 / 6.0).abs() < 1e-9);
     // With that repetition's spend unknown the row's spend is unknown too,
     // never free.
     data.attempts
@@ -1625,8 +1626,8 @@ fn a_refused_effort_or_fast_mode_stays_with_the_requested_candidate() {
         let row = &rows[0];
         assert_eq!(row.configuration.effort.as_deref(), Some("medium"));
         assert_eq!(row.configuration.fast_mode, Some(false));
-        assert_eq!((row.scored, row.planned), (0, 6));
-        assert_eq!(row.points, None);
+        // The refusal scored nothing: the earlier cells stand.
+        assert_eq!((row.scored, row.planned), (6, 6));
     }
     // Where the request left effort to the provider, the acknowledged one stays.
     let mut data = before_only();

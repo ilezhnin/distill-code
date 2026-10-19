@@ -480,6 +480,8 @@ export interface ResultQuery {
   asOf?: number | null;
   offset?: number | null;
   limit?: number | null;
+  /** Judge panel marks whose scores a board leaves out. */
+  excludeJudgeFlags?: string[] | null;
 }
 export interface LeaderboardRow {
   comparisonKey?: string;
@@ -533,6 +535,18 @@ export interface LeaderboardRow {
   resolvedModels?: string[];
   /** Attempts of this configuration its standing run flew at once. */
   parallelism?: number | null;
+  /**
+   * The measurement suite this row must cover: its eligible pool cases
+   * without the ones an evaluation holds back. Absent on older snapshots.
+   */
+  suitePlanned?: number;
+  /** Suite cases whose cell holds every repetition. */
+  suiteComplete?: number;
+  /**
+   * The last time the row covered its suite: now when it covers it, else
+   * before the suite grew; null when it never did.
+   */
+  fullyTestedAt?: number | null;
 }
 /** One metric of an author's home advantage (`author-home-advantage-v1`). */
 export interface HomeAdvantageMetric {

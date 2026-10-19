@@ -307,11 +307,19 @@ export function BenchmarkConfigurationPage({
                   without levels. The CLI's "default" is neither and never
                   reaches a board, so it is never named as an effort. */}
               {effort ? (
-                <Badge variant="outline">{effort}</Badge>
+                // Named, so a level such as "none" never reads as no setting.
+                <Badge variant="outline">
+                  {t("configuration.effortBadge", { level: effort })}
+                </Badge>
               ) : effortUnset(shownRow.configuration.effort) ? (
                 <Tooltip delayDuration={TOOLTIP_DELAY.restedHover}>
                   <TooltipTrigger asChild>
-                    <span className="inline-flex">
+                    {/* Focusable, so a keyboard reaches the hint too. */}
+                    <span
+                      // biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip trigger must take focus to show its hint
+                      tabIndex={0}
+                      className="inline-flex rounded-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
                       <Badge variant="outline">{t("run.noEffort")}</Badge>
                     </span>
                   </TooltipTrigger>
@@ -433,6 +441,14 @@ export function BenchmarkConfigurationPage({
                 revised: entry.snapshot.revisedVersionIds?.length ?? 0,
                 // A case with a repetition still to run moves the points too.
                 complete: entry.row.complete,
+                // A fully tested point covers the whole measurement suite.
+                suite:
+                  entry.row.suitePlanned == null
+                    ? undefined
+                    : {
+                        complete: entry.row.suiteComplete ?? 0,
+                        planned: entry.row.suitePlanned,
+                      },
                 added: entry.change?.added,
                 removed: entry.change?.removed,
               };
@@ -457,7 +473,12 @@ export function BenchmarkConfigurationPage({
           {statusHint ? (
             <Tooltip delayDuration={TOOLTIP_DELAY.held}>
               <TooltipTrigger asChild>
-                <span className="inline-flex">
+                {/* Focusable, so a keyboard reaches the hint too. */}
+                <span
+                  // biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip trigger must take focus to show its hint
+                  tabIndex={0}
+                  className="inline-flex rounded-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
                   <StateBadge state={shownRow.status} />
                 </span>
               </TooltipTrigger>

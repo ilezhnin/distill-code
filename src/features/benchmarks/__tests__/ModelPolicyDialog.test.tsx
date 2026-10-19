@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
@@ -22,6 +28,7 @@ vi.mock("../api/benchmarkGovernance", () => ({
   benchmarkGovernanceApi: {
     listPromotions: vi.fn(),
     previewLearnedClass: vi.fn(),
+    revokePromotion: vi.fn(),
   },
 }));
 const learning = vi.fn();
@@ -250,6 +257,44 @@ it("lists issued and revoked scoped certificates without treating a fit as a cer
       showGovernance: true,
     }),
   );
+});
+
+it("revokes a holdout certificate that no campaign manages", async () => {
+  const user = userEvent.setup();
+  const holdout: PromotionState = {
+    ...certificate,
+    certificate: {
+      ...certificate.certificate,
+      id: "holdout-debug",
+      // A holdout plan, not a comparison campaign.
+      campaignId: "holdout-plan",
+    },
+  };
+  vi.mocked(api.listPromotions).mockResolvedValue([holdout]);
+  vi.mocked(api.revokePromotion).mockResolvedValue({
+    ...holdout,
+    revokedAt: 5000,
+    revocationReason: "Wrong prior",
+  });
+  show();
+  expect(await screen.findByText("Issued")).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Manage certificate" }),
+  ).toBeDisabled();
+  const revoke = screen.getByRole("button", { name: "Revoke promotion" });
+  // A reason comes first.
+  expect(revoke).toBeDisabled();
+  await user.type(
+    screen.getByLabelText("Reason for revocation"),
+    "Wrong prior",
+  );
+  await user.click(revoke);
+  expect(api.revokePromotion).toHaveBeenCalledWith(
+    "holdout-debug",
+    "Wrong prior",
+  );
+  // The registry reads again and shows the revocation.
+  await waitFor(() => expect(api.listPromotions).toHaveBeenCalledTimes(2));
 });
 
 it("does not describe unreadable certificate evidence as an empty registry", async () => {

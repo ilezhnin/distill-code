@@ -1155,6 +1155,16 @@ impl Store {
         self.json_rows("SELECT data_json FROM pool_releases ORDER BY created_at, rowid")
             .await
     }
+    /// Every family and split group an evaluation reserves, as (kind, value),
+    /// whoever owns it.
+    pub async fn evaluation_reservations(&self) -> Result<Vec<(String, String)>> {
+        sqlx::query("SELECT DISTINCT kind, value FROM evaluation_reservations")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|row| Ok((row.try_get("kind")?, row.try_get("value")?)))
+            .collect()
+    }
     pub async fn save_release(&self, release: &PoolRelease) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO pool_releases(id,name,created_at,data_json) VALUES(?,?,?,?)")
@@ -2349,6 +2359,7 @@ mod tests {
             as_of: None,
             offset: Some(50),
             limit: Some(50),
+            exclude_judge_flags: None,
         };
         let filtered = store.list_attempts(&query).await.unwrap();
         assert_eq!(filtered.len(), 13);

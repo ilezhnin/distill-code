@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/shared/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
+import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkGovernanceApi } from "../api/benchmarkGovernance";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { useBenchmarkDefinitions } from "../hooks/useBenchmarks";
@@ -22,10 +23,55 @@ import { shortId, workClassLabel } from "../lib/benchmarkLabels";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
+  Field,
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { BenchmarkLearningDialog } from "./BenchmarkLearningDialog";
 import { WorkflowCampaignDialog } from "./WorkflowCampaignDialog";
+
+/**
+ * Revokes a certificate in place, whatever made it: a holdout certificate has
+ * no campaign to manage it from, and revocation is the safety valve for every
+ * certificate steering a class. A reason is required, as in the campaign view.
+ */
+function CertificateRevoke({ id }: { id: string }) {
+  const { t } = useTranslation("benchmarks");
+  const queryClient = useQueryClient();
+  const [reason, setReason] = useState("");
+  const revoke = useMutation({
+    mutationFn: () => benchmarkGovernanceApi.revokePromotion(id, reason.trim()),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["benchmarks", "promotions"] }),
+  });
+  return (
+    <div className="space-y-2">
+      <Field label={t("governance.revocationReason")}>
+        {(fieldId) => (
+          <Textarea
+            id={fieldId}
+            maxLength={16384}
+            value={reason}
+            disabled={revoke.isPending}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        )}
+      </Field>
+      {revoke.error ? (
+        <BenchmarkAlert>{benchmarkErrorMessage(revoke.error)}</BenchmarkAlert>
+      ) : null}
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        destructive
+        disabled={revoke.isPending || !reason.trim()}
+        onClick={() => revoke.mutate()}
+      >
+        {t("promotion.revoke")}
+      </Button>
+    </div>
+  );
+}
 
 /** One entry point to the existing qualification, fitting and promotion tools. */
 export function ModelPolicyDialog({
@@ -459,6 +505,9 @@ export function ModelPolicyDialog({
                       >
                         {t("policyManager.manageCertificate")}
                       </Button>
+                      {revokedAt === null ? (
+                        <CertificateRevoke id={certificate.id} />
+                      ) : null}
                     </div>
                   ),
                 )}
