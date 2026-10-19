@@ -1,7 +1,9 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { IconClock, IconCoin } from "@tabler/icons-react";
+import { IconArrowLeft, IconClock, IconCoin } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
+import { Button } from "@/shared/ui/button";
+import { SearchBar } from "@/shared/ui/SearchBar";
 import {
   modelNameKey,
   useModelCatalog,
@@ -13,34 +15,52 @@ import {
   modelDisplayName,
   providerVendor,
 } from "../lib/benchmarkLabels";
-import {
-  previewDocument,
-  renderable,
-  type RenderableMarkup,
-} from "../lib/benchmarkPreview";
+import { renderable } from "../lib/benchmarkPreview";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { resolveCatalogEntry } from "../lib/modelCatalog";
 import type { DesignEntry } from "../types";
 import {
   BenchmarkEmpty,
   BenchmarkToolbar,
-  FilterMenu,
   ModelIdentity,
-  type Option,
   SectionHeading,
   StateBadge,
 } from "./BenchmarkPrimitives";
+import { DesignDetailDialog } from "./DesignDetailDialog";
+import { DesignRendering } from "./DesignRendering";
 
 interface Brief {
   versionId: string;
   name: string;
   entries: DesignEntry[];
+  /** The highest-scoring design, the newest among equals. */
+  best: DesignEntry;
+}
+
+interface Identity {
+  name: string;
+  vendor: string;
+}
+
+const points = (score: number | null) =>
+  score == null ? null : Math.round(score * 1000);
+
+const recency = (entry: DesignEntry) => entry.finishedAt ?? entry.runCreatedAt;
+
+/** Scored designs first, highest score first, the newest among equals. */
+export function byScore(a: DesignEntry, b: DesignEntry): number {
+  if (a.score != null || b.score != null) {
+    if (a.score == null) return 1;
+    if (b.score == null) return -1;
+    if (a.score !== b.score) return b.score - a.score;
+  }
+  return recency(b) - recency(a);
 }
 
 /**
- * The design gallery: every brief with the newest rendering per
- * configuration side by side, each under the model that made it. Opening a
- * card opens its evidence.
+ * The design gallery: one card per brief with its best rendering as the
+ * cover; a brief opens its models' designs by score, and a design opens
+ * every scored rendering behind it.
  */
 export function DesignBenchView({
   entries,
@@ -51,34 +71,36 @@ export function DesignBenchView({
   entries: DesignEntry[];
   loading: boolean;
   onEvidence: (id: string) => void;
-  /** The page actions, last in the brief filter row. */
+  /** The page actions, last in the toolbar row. */
   actions?: ReactNode;
 }) {
   const { t } = useTranslation("benchmarks");
   const names = useModelNames();
   const catalog = useModelCatalog();
-  const [brief, setBrief] = useState("all");
+  const [openBrief, setOpenBrief] = useState<string | null>(null);
+  const [openDesign, setOpenDesign] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
   const briefs = useMemo(() => {
-    const groups = new Map<string, Brief>();
+    const groups = new Map<string, DesignEntry[]>();
     for (const entry of entries) {
-      const group = groups.get(entry.versionId) ?? {
-        versionId: entry.versionId,
-        name: entry.name,
-        entries: [],
-      };
-      group.entries.push(entry);
-      groups.set(entry.versionId, group);
+      groups.set(entry.versionId, [
+        ...(groups.get(entry.versionId) ?? []),
+        entry,
+      ]);
     }
-    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return [...groups.values()]
+      .map((group): Brief => {
+        const sorted = [...group].sort(byScore);
+        return {
+          versionId: sorted[0].versionId,
+          name: sorted[0].name,
+          entries: sorted,
+          best: sorted[0],
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [entries]);
-  const options: Option[] = [
-    { value: "all", label: t("design.allBriefs") },
-    ...briefs.map((group) => ({ value: group.versionId, label: group.name })),
-  ];
-  const shown = briefs.filter(
-    (group) => brief === "all" || group.versionId === brief,
-  );
-  const identity = (entry: DesignEntry) => {
+  const identity = (entry: DesignEntry): Identity => {
     const modelName =
       entry.configuration.modelName ??
       names.get(modelNameKey(entry.configuration));
@@ -94,52 +116,138 @@ export function DesignBenchView({
       vendor: fact?.vendor ?? providerVendor(entry.configuration.providerId),
     };
   };
-  return (
-    <section className="space-y-8">
-      <BenchmarkToolbar actions={actions}>
-        {!loading && briefs.length > 1 ? (
-          <FilterMenu
-            label={t("design.brief")}
-            value={brief}
-            options={options}
-            onChange={setBrief}
+  const brief = briefs.find((group) => group.versionId === openBrief) ?? null;
+  const design =
+    brief?.entries.find((entry) => entry.attemptId === openDesign) ?? null;
+  const close = () => {
+    setOpenBrief(null);
+    setOpenDesign(null);
+    setFilter("");
+  };
+  if (loading || entries.length === 0 || !brief) {
+    return (
+      <section className="space-y-6">
+        <BenchmarkToolbar actions={actions} />
+        {loading ? (
+          <BenchmarkEmpty title={t("loading")} compact />
+        ) : entries.length === 0 ? (
+          <BenchmarkEmpty
+            title={t("design.empty")}
+            description={t("design.emptyHint")}
           />
-        ) : null}
+        ) : (
+          <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {briefs.map((group) => (
+              <BriefCard
+                key={group.versionId}
+                brief={group}
+                onOpen={() => setOpenBrief(group.versionId)}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  }
+  const query = filter.trim().toLowerCase();
+  const shown = brief.entries
+    .map((entry) => ({ entry, identity: identity(entry) }))
+    .filter(
+      ({ entry, identity }) =>
+        !query ||
+        identity.name.toLowerCase().includes(query) ||
+        entry.configuration.modelId.toLowerCase().includes(query),
+    );
+  const best = points(brief.best.score);
+  return (
+    <section className="space-y-6">
+      <BenchmarkToolbar actions={actions}>
+        <nav className="flex min-w-0 items-center gap-2 text-sm">
+          <Button
+            type="button"
+            variant="ghost"
+            flush
+            leftIcon={<IconArrowLeft />}
+            onClick={close}
+          >
+            {t("design.gallery")}
+          </Button>
+          <span aria-hidden className="text-muted-foreground">
+            /
+          </span>
+          <span className="truncate">{brief.name}</span>
+        </nav>
       </BenchmarkToolbar>
-      {loading ? (
-        <BenchmarkEmpty title={t("loading")} compact />
-      ) : entries.length === 0 ? (
-        <BenchmarkEmpty
-          title={t("design.empty")}
-          description={t("design.emptyHint")}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <SectionHeading
+          title={brief.name}
+          description={
+            best == null
+              ? t("design.designs", { count: brief.entries.length })
+              : t("design.summary", { count: brief.entries.length, best })
+          }
         />
+        <SearchBar
+          size="small"
+          className="sm:w-64"
+          value={filter}
+          onChange={setFilter}
+          placeholder={t("design.filter")}
+          aria-label={t("design.filter")}
+        />
+      </div>
+      {shown.length === 0 ? (
+        <BenchmarkEmpty title={t("design.noMatch")} compact />
       ) : (
-        shown.map((group) => (
-          <section key={group.versionId} className="space-y-3">
-            <div className="flex items-baseline justify-between gap-4">
-              <SectionHeading title={group.name} />
-              <span className="text-xs text-muted-foreground">
-                {t("design.designs", { count: group.entries.length })}
-              </span>
-            </div>
-            <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {group.entries.map((entry) => {
-                const { name, vendor } = identity(entry);
-                return (
-                  <DesignCard
-                    key={entry.attemptId}
-                    entry={entry}
-                    name={name}
-                    vendor={vendor}
-                    onOpen={() => onEvidence(entry.attemptId)}
-                  />
-                );
-              })}
-            </ul>
-          </section>
-        ))
+        <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {shown.map(({ entry, identity }) => (
+            <DesignCard
+              key={entry.attemptId}
+              entry={entry}
+              name={identity.name}
+              vendor={identity.vendor}
+              onOpen={() => setOpenDesign(entry.attemptId)}
+            />
+          ))}
+        </ul>
       )}
+      {design ? (
+        <DesignDetailDialog
+          entry={design}
+          {...identity(design)}
+          onClose={() => setOpenDesign(null)}
+          onEvidence={(id) => {
+            setOpenDesign(null);
+            onEvidence(id);
+          }}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function BriefCard({ brief, onOpen }: { brief: Brief; onOpen: () => void }) {
+  const { t } = useTranslation("benchmarks");
+  const count = t("design.designs", { count: brief.entries.length });
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={t("design.openBrief", { name: brief.name, count })}
+        className="group w-full overflow-hidden rounded-lg border border-border bg-card text-left transition-colors hover:border-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <div className="relative aspect-[16/10] w-full overflow-hidden bg-white">
+          <DesignImage entry={brief.best} />
+        </div>
+        <div className="space-y-0.5 p-3">
+          <div className="truncate font-medium">{brief.name}</div>
+          <div className="text-xs text-muted-foreground tabular-nums">
+            {count}
+          </div>
+        </div>
+      </button>
+    </li>
   );
 }
 
@@ -155,13 +263,12 @@ function DesignCard({
   onOpen: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
-  const markup = renderable(entry.output, entry.outputFormat);
-  const points = entry.score == null ? null : Math.round(entry.score * 1000);
+  const score = points(entry.score);
+  // Only a rendering a panel still owes a verdict is waiting for one.
   const state =
     entry.phase === "terminal"
       ? (entry.outcome ?? "pending_review")
       : entry.phase;
-  // Only a rendering a panel still owes a verdict is waiting for one.
   const awaitingPanel =
     entry.phase === "awaiting_judges" ||
     (entry.phase === "terminal"
@@ -179,13 +286,7 @@ function DesignCard({
         className="group w-full overflow-hidden rounded-lg border border-border bg-card text-left transition-colors hover:border-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <div className="relative aspect-[4/3] w-full overflow-hidden bg-white">
-          {markup ? (
-            <DesignThumbnail markup={markup} />
-          ) : (
-            <div className="flex h-full items-center justify-center bg-muted">
-              <StateBadge state={state} />
-            </div>
-          )}
+          <DesignImage entry={entry} />
         </div>
         <div className="flex items-center justify-between gap-3 p-3">
           <ModelIdentity
@@ -203,10 +304,10 @@ function DesignCard({
             <div
               className={cn(
                 "font-display text-xl font-semibold tabular-nums",
-                points == null && "text-muted-foreground",
+                score == null && "text-muted-foreground",
               )}
             >
-              {points ?? "–"}
+              {score ?? "–"}
             </div>
             {entry.judges.length > 0 ? (
               <div className="text-xs text-muted-foreground">
@@ -241,32 +342,21 @@ function DesignCard({
   );
 }
 
-/** A drawing as an image, a page in a scaled, script-free frame. */
-function DesignThumbnail({ markup }: { markup: RenderableMarkup }) {
-  const { t } = useTranslation("benchmarks");
-  if (markup.kind === "svg") {
-    const body = markup.body.includes("xmlns=")
-      ? markup.body
-      : markup.body.replace(
-          /<svg\b/i,
-          '<svg xmlns="http://www.w3.org/2000/svg"',
-        );
-    return (
-      <img
-        src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(body)}`}
-        alt=""
-        className="h-full w-full object-contain"
-      />
-    );
-  }
+/** A design's card image: what the judges saw, else its own markup. */
+function DesignImage({ entry }: { entry: DesignEntry }) {
+  const state =
+    entry.phase === "terminal"
+      ? (entry.outcome ?? "pending_review")
+      : entry.phase;
   return (
-    <iframe
-      sandbox=""
-      srcDoc={previewDocument(markup.body, "html") ?? ""}
-      title={t("evidence.preview")}
-      tabIndex={-1}
-      aria-hidden
-      className="pointer-events-none absolute left-0 top-0 h-[300%] w-[300%] origin-top-left scale-[0.3333]"
+    <DesignRendering
+      rendering={entry.rendering ?? null}
+      markup={renderable(entry.output, entry.outputFormat)}
+      fallback={
+        <div className="flex h-full items-center justify-center bg-muted">
+          <StateBadge state={state} />
+        </div>
+      }
     />
   );
 }

@@ -527,7 +527,19 @@
     "empty": "Aún no hay diseños.",
     "emptyHint": "Ejecuta un encargo creativo; cada resultado aparece aquí para el panel de jueces.",
     "judges_one": "{{count}} juez",
-    "judges_other": "{{count}} jueces"
+    "judges_other": "{{count}} jueces",
+    "gallery": "Galería de diseños",
+    "openBrief": "Abrir {{name}}, {{count}}",
+    "summary_one": "{{count}} diseño · mejor puntuación {{best}}",
+    "summary_other": "{{count}} diseños · mejor puntuación {{best}}",
+    "filter": "Filtrar por nombre de modelo",
+    "noMatch": "Ningún modelo coincide con el filtro.",
+    "points": "Mediciones",
+    "point": "{{date}} · repetición {{number}}",
+    "noImage": "No se guardó ninguna imagen de esta medición.",
+    "score": "Puntuación",
+    "judgesLabel": "Jueces",
+    "evidence": "Abrir evidencia"
   },
   "import": {
     "title": "Importar una definición",
