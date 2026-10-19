@@ -272,7 +272,11 @@ impl Pace {
     /// under the current limit (or not known) halves it again.
     pub(super) fn throttled(&mut self, model: &str, admitted_limit: Option<usize>, now: i64) {
         self.flew(now);
-        if admitted_limit.is_some_and(|limit| limit > self.limit) {
+        if let Some(admitted) = admitted_limit.filter(|limit| *limit > self.limit) {
+            // The level already went down (a refusal of the same burst, or a
+            // slowdown, which sets no ceiling): it is not halved again, but
+            // the provider did refuse the model at that level.
+            self.observed(model, admitted, now);
             return;
         }
         self.observed(model, admitted_limit.unwrap_or(self.limit), now);
@@ -974,6 +978,11 @@ mod tests {
         // A slowdown sets no model ceiling: only a refusal does.
         assert!(pace.ceilings.is_empty());
         assert_eq!(pace.limit_for("m", 0), 3);
+        // A refusal of a turn admitted at four, the level the slowdown left,
+        // sets the ceiling the slowdown did not, and halves nothing more.
+        pace.throttled("m", Some(4), 0);
+        assert_eq!(pace.limit(), 3);
+        assert_eq!(pace.ceiling("m", 0), Some(4));
         // A slowdown ends slow start as a refusal does: full rounds no longer
         // double the level.
         assert!(!pace.slow_start);
