@@ -280,7 +280,8 @@ pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation
     evaluate_with_runtime(runtime, draft, output).await
 }
 
-pub async fn render(html: &str, width: u32, height: u32) -> Result<Vec<u8>> {
+/// A rendering, with the installed renderer revision the job itself reported.
+pub async fn render(html: &str, width: u32, height: u32) -> Result<(Vec<u8>, String)> {
     if !available() {
         return Err(BenchmarkError::new(
             "capability_missing",
@@ -305,9 +306,15 @@ pub async fn render(html: &str, width: u32, height: u32) -> Result<Vec<u8>> {
             "Linux rendering exceeded its time budget",
         ));
     }
-    screenshot(&envelope)?.ok_or_else(|| {
+    let png = screenshot(&envelope)?.ok_or_else(|| {
         BenchmarkError::new("evaluation_error", "Linux renderer returned no screenshot")
-    })
+    })?;
+    // `execute` already checked this is a 64-digit hex revision.
+    let installed = envelope["installedRevision"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    Ok((png, installed))
 }
 
 #[derive(Debug, PartialEq)]
@@ -364,11 +371,21 @@ pub async fn evaluate_with_runtime(
     } else {
         Duration::from_secs(u64::from(draft.limits.timeout_seconds.clamp(1, 60)))
     };
-    let envelope = execute(
+    let envelope = match execute(
         json!({"kind":draft.evaluator.kind,"spec":spec,"output":output}),
         timeout,
     )
-    .await?;
+    .await
+    {
+        // The candidate's page drove the job past its ceiling: a graded fail
+        // that names the renderer and worker that ran it, so a certificate
+        // can tell which renderer this zero came from.
+        Err(error) if error.code == super::runner::CANDIDATE_LIMIT => {
+            let installed = Box::pin(ready()).await?;
+            return Ok(failed_artifact(draft, &error.message, &installed));
+        }
+        result => result?,
+    };
     if envelope.get("error").is_some() {
         if envelope["candidateTimedOut"] == true {
             return Ok(failed_artifact(

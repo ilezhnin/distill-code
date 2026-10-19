@@ -108,7 +108,70 @@ async fn execution_limits_quota_after_an_evaluation_never_discards_the_turn() {
 }
 
 #[tokio::test]
-async fn execution_limits_predispatch_refusals_settle_without_retry() {
+async fn execution_limits_a_substituted_model_goes_again_on_the_same_attempt() {
+    let (dir, service, backend) = setup().await;
+    *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
+    backend.wrong_selections.store(1, Ordering::SeqCst);
+    let run = service
+        .start_run(bounded_request(&service).await)
+        .await
+        .unwrap();
+    service.tick().await.unwrap();
+    let held = service.store.run(&run.id).await.unwrap();
+    assert_eq!(held.state, "running");
+    assert_eq!(held.attempts.len(), 1);
+    let mut waiting = held.attempts[0].clone();
+    // Nothing of the substituted session stays on the attempt.
+    assert_eq!(waiting.phase, "pending");
+    assert!(waiting.observed.is_none() && waiting.session_id.is_none());
+    assert!(waiting.wait_until.is_some_and(|until| until > now()));
+    assert_eq!(
+        waiting.configuration.account_id.as_deref(),
+        Some("isolated")
+    );
+    waiting.wait_until = None;
+    service.store.save_attempt(&waiting).await.unwrap();
+    for _ in 0..3 {
+        service.tick().await.unwrap();
+    }
+    let completed = service.store.run(&run.id).await.unwrap();
+    assert_eq!(completed.state, "completed");
+    assert_eq!(completed.attempts.len(), 1);
+    let attempt = &completed.attempts[0];
+    assert_eq!(attempt.id, waiting.id);
+    assert_eq!(attempt.outcome.as_deref(), Some("pass"));
+    assert_eq!(
+        attempt.observed.as_ref().unwrap().model_id,
+        attempt.configuration.model_id
+    );
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn execution_limits_substitutions_that_persist_stop_for_the_operator_unsettled() {
+    let (dir, service, backend) = setup().await;
+    backend.wrong_selections.store(3, Ordering::SeqCst);
+    let run = service
+        .start_run(bounded_request(&service).await)
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        service.tick().await.unwrap();
+        let mut held = service.store.run(&run.id).await.unwrap().attempts[0].clone();
+        held.wait_until = None;
+        service.store.save_attempt(&held).await.unwrap();
+    }
+    let stopped = service.store.run(&run.id).await.unwrap();
+    assert_eq!(stopped.state, "needs_attention");
+    assert_eq!(stopped.attempts.len(), 1);
+    assert_eq!(stopped.attempts[0].phase, "pending");
+    assert!(stopped.attempts[0].outcome.is_none());
+    forget_quota_waits(&run.id);
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn execution_limits_predispatch_refusals_wait_for_the_operator_unsettled() {
     let (dir, service, backend) = setup().await;
     backend.capability_refusals.store(1, Ordering::SeqCst);
     *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
@@ -122,11 +185,10 @@ async fn execution_limits_predispatch_refusals_settle_without_retry() {
     let stopped = service.store.run(&run.id).await.unwrap();
     assert_eq!(stopped.state, "needs_attention");
     assert_eq!(stopped.attempts.len(), 1);
-    assert_eq!(stopped.attempts[0].phase, "terminal");
-    assert_eq!(
-        stopped.attempts[0].outcome.as_deref(),
-        Some("capability_missing")
-    );
+    // The runtime the host would not start waits for the operator; the
+    // cell is never settled, so a resume sends the same attempt.
+    assert_eq!(stopped.attempts[0].phase, "pending");
+    assert!(stopped.attempts[0].outcome.is_none());
     assert_eq!(
         stopped.attempts[0].configuration.account_id.as_deref(),
         Some("isolated")

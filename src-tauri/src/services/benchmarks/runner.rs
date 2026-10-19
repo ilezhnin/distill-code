@@ -1957,11 +1957,67 @@ pub(super) fn quota_scope(configuration: &Configuration) -> String {
 /// operator resumed it, so its cells ask again, and a refusal from before a
 /// long pause neither holds a healthy account nor counts toward giving up.
 pub(super) fn forget_quota_waits(run_id: &str) {
-    for held in [&EXHAUSTED, &QUOTA_SINCE, &PROVIDER_HOLDS] {
+    for held in [
+        &EXHAUSTED,
+        &QUOTA_SINCE,
+        &PROVIDER_HOLDS,
+        &PRE_ANSWER_REFUSALS,
+    ] {
         held.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(run, _), _| run != run_id);
     }
+}
+
+/// How many tries of each attempt (by run and attempt) were refused before
+/// any answer under a run that forbids retries; kept in memory, so a restart
+/// or the operator's resume starts the count again.
+static PRE_ANSWER_REFUSALS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Tries of one attempt refused before any answer that go back to the queue
+/// before the run stops for the operator.
+const PRE_ANSWER_TRIES: i64 = 3;
+/// How long a try refused before any answer waits before the next one.
+const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
+
+/// Counts one more refusal before any answer of `attempt_id` under `run_id`.
+fn pre_answer_refused(run_id: &str, attempt_id: &str) -> i64 {
+    let mut refusals = PRE_ANSWER_REFUSALS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let count = refusals
+        .entry((run_id.to_owned(), attempt_id.to_owned()))
+        .or_default();
+    *count += 1;
+    *count
+}
+
+/// Whether a failed try ended before the provider answered anything, so
+/// discarding it decides nothing about the attempt's outcome: the provider
+/// acknowledged another model at session open, a runtime it would not start,
+/// the host refused the prompt (or never dispatched it), or the account was
+/// busy with interactive work. Nothing was answered, paid for as output or
+/// evaluated. A turn that started answering is outside this class.
+pub(super) fn refused_before_answer(attempt: &Attempt, error: &BenchmarkError) -> bool {
+    let host = serde_json::from_str::<Value>(&error.message).ok();
+    let data = host
+        .as_ref()
+        .map(|e| e.get("data").unwrap_or(e).clone())
+        .unwrap_or(Value::Null);
+    let before_prompt = data["dispatchStarted"] == Value::Bool(false)
+        || data["promptNotAccepted"] == Value::Bool(true);
+    attempt.evaluations.is_empty()
+        && attempt.output.as_deref().is_none_or(str::is_empty)
+        && attempt.usage.output.unwrap_or(0) == 0
+        && (error.code == "account_busy"
+            || (attempt.phase == "preparing"
+                && matches!(
+                    error.code.as_str(),
+                    "selection_changed" | "capability_missing"
+                ))
+            || (error.code == "infrastructure_failure" && before_prompt))
 }
 
 /// When each run's account first refused for quota (see [`quota_scope`]),
@@ -3577,7 +3633,17 @@ impl NativeBackend {
                     document.as_bytes().to_vec()
                 } else {
                     match super::worker::render(&document, width, height).await {
-                        Ok(bytes) => bytes,
+                        // The marker names the renderer this very job ran on,
+                        // which must still be the one the batch was opened for.
+                        Ok((bytes, rendered)) => {
+                            if installed_renderer.as_deref() != Some(rendered.as_str()) {
+                                return Err(BenchmarkError::new(
+                                    "selection_changed",
+                                    "The renderer changed while rendering for the judge panel; requalify before continuing",
+                                ));
+                            }
+                            bytes
+                        }
                         // Nothing rendered and no judge was asked: the panel
                         // waits like one whose judges are busy.
                         Err(error) if unstarted_refusal(&error) => {
@@ -5996,11 +6062,34 @@ const ACP_AUTH_REQUIRED: i64 = -32000;
 /// configuration unsupported; anything else as [`terminal_error_outcome`]
 /// reads it.
 fn terminal_outcome(error: &Value, model_id: &str) -> &'static str {
-    if refuses_model(error, model_id) {
+    if exceeded_output_cap(error) {
+        "budget_reached"
+    } else if refuses_model(error, model_id) {
         "unsupported"
     } else {
         terminal_error_outcome(error)
     }
+}
+
+/// Whether the provider's own CLI stopped a turn because the answer passed its
+/// output-token maximum (Claude Code: "Claude's response exceeded the 32000
+/// output token maximum"). The over-long answer is the model's own, so the
+/// attempt is a budget failure scored zero, like an answer past the published
+/// cap, never an unscored infrastructure failure. The CLI's limit belongs to
+/// its pinned runtime, which every inventory revision already names.
+fn exceeded_output_cap(error: &Value) -> bool {
+    let failure = error
+        .pointer("/data/sessionFailure")
+        .or_else(|| error.get("sessionFailure"));
+    let said = |text: Option<&str>| {
+        text.map(str::to_ascii_lowercase).is_some_and(|text| {
+            text.contains("exceeded the") && text.contains("output token maximum")
+        })
+    };
+    failure.is_some_and(|f| f["category"] == "limit" && f["severity"] == "error")
+        && (said(failure.and_then(|f| f["title"].as_str()))
+            || said(error["message"].as_str())
+            || said(error.pointer("/data/message").and_then(Value::as_str)))
 }
 
 /// The words with which a provider's message refuses the model it names:
@@ -7720,6 +7809,37 @@ impl BenchmarkService {
                 } else {
                     retry_allowed
                 };
+                // A run that forbids retries replays no answer, but a try the
+                // provider refused before answering anything is no answer: the
+                // same attempt goes again on the same account, a few times,
+                // then waits for the operator, never settling the cell.
+                if !retry_allowed
+                    && version.manifest.workflow.is_none()
+                    && run.request.require_dispatch_admission(now()).is_ok()
+                    && refused_before_answer(&failed, &error)
+                {
+                    let tries = pre_answer_refused(&run.id, &a.id);
+                    requeue(
+                        &mut failed,
+                        format!("Refused before any answer; tried again. {}", error.message),
+                    );
+                    drop_collection_clock(&self.store, &mut failed).await?;
+                    failed.wait_until = Some(now() + PRE_ANSWER_RETRY_MS);
+                    self.store.save_attempt(&failed).await?;
+                    // A runtime the host would not start needs the operator at
+                    // once, as under automatic retries; other refusals get a
+                    // few more tries first.
+                    let stop_after = if error.code == "capability_missing" {
+                        1
+                    } else {
+                        PRE_ANSWER_TRIES
+                    };
+                    if tries >= stop_after {
+                        self.store.set_run_state(&run.id, "needs_attention").await?;
+                    }
+                    self.changed().await;
+                    return Ok(());
+                }
                 if retry_allowed && error.code == "account_busy" {
                     failed.phase = "pending".into();
                     failed.started_at = None;
@@ -8185,6 +8305,9 @@ pub struct FakeBackend {
     pub quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     accepted_quota_waits: std::sync::atomic::AtomicU64,
+    /// Sessions that acknowledge another model than the one asked for.
+    #[cfg(test)]
+    wrong_selections: std::sync::atomic::AtomicU64,
     /// Accepted turns that report a usage limit after their answer was
     /// already evaluated.
     #[cfg(test)]
@@ -8434,6 +8557,18 @@ impl ExecutionBackend for FakeBackend {
                         crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
                     ));
                 }
+            }
+            #[cfg(test)]
+            if take(&self.wrong_selections) {
+                a.session_id = Some(format!("substituted-session-{}", a.id));
+                let mut observed = a.configuration.clone();
+                observed.model_id = "invented-substitute".into();
+                a.observed = Some(observed);
+                store.save_attempt(&a).await?;
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "Provider did not acknowledge the exact model, effort and fast mode",
+                ));
             }
             if take(&self.capability_refusals) {
                 return Err(BenchmarkError::new(
@@ -11589,6 +11724,105 @@ mod tests {
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("cancelled")));
         dir.close().await;
     }
+    #[test]
+    fn an_answer_past_the_providers_output_cap_is_a_scored_budget_failure() {
+        // The live Claude Code receipt (S7, 2026-10-18), with its account id.
+        let capped = json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+            "errorKind":"provider_failure","promptNotAccepted":false,"sessionFailure":{
+            "actions":["new_session"],"category":"limit","severity":"error",
+            "title":"API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."}},
+            "message":"API Error: Claude's response exceeded the 32000 output token maximum."});
+        assert!(exceeded_output_cap(&capped));
+        assert_eq!(terminal_outcome(&capped, "haiku"), "budget_reached");
+        // A usage limit stays a quota stop, and other limits stay infrastructure.
+        let session_limit = json!({"code":-32603,"data":{"dispatchStarted":true,"errorKind":"quota_exhausted",
+            "sessionFailure":{"actions":[],"category":"limit","severity":"error",
+            "title":"You've hit your session limit"}},"message":"You've hit your session limit"});
+        assert!(!exceeded_output_cap(&session_limit));
+        let other = json!({"code":-32603,"message":"exceeded the output token maximum"});
+        assert!(!exceeded_output_cap(&other));
+        assert_eq!(terminal_outcome(&other, "haiku"), "infrastructure_failure");
+    }
+
+    #[test]
+    fn only_a_try_refused_before_any_answer_goes_again() {
+        let mut attempt = blank_attempt();
+        attempt.phase = "preparing".into();
+        attempt.evaluations.clear();
+        attempt.output = None;
+        attempt.usage = TokenUsage::default();
+        let error = |code: &str, message: &str| BenchmarkError::new(code, message);
+        let host = |data: Value| json!({"code":-32603,"data":data}).to_string();
+        assert!(refused_before_answer(
+            &attempt,
+            &error("selection_changed", "substituted")
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error("capability_missing", "no sign-in")
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error("account_busy", "interactive work")
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error(
+                "infrastructure_failure",
+                &host(json!({"dispatchStarted":false}))
+            )
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error(
+                "infrastructure_failure",
+                &host(json!({"dispatchStarted":true,"promptNotAccepted":true}))
+            )
+        ));
+        // A turn the provider accepted, or one that answered, is not.
+        assert!(!refused_before_answer(
+            &attempt,
+            &error(
+                "infrastructure_failure",
+                &host(json!({"dispatchStarted":true,"promptNotAccepted":false}))
+            )
+        ));
+        assert!(!refused_before_answer(
+            &attempt,
+            &error("dispatch_uncertain", "unknown")
+        ));
+        let mut running = attempt.clone();
+        running.phase = "running".into();
+        assert!(!refused_before_answer(
+            &running,
+            &error("selection_changed", "changed mid-turn")
+        ));
+        let mut answered = attempt.clone();
+        answered.usage.output = Some(12);
+        assert!(!refused_before_answer(
+            &answered,
+            &error("account_busy", "busy")
+        ));
+        let mut evaluated = attempt.clone();
+        evaluated.evaluations.push(Evaluation {
+            id: "invented".into(),
+            evaluator_revision: "invented".into(),
+            verdict: "pass".into(),
+            score: Some(1.0),
+            reason: String::new(),
+            created_at: 1,
+            provenance: "objective".into(),
+            artifacts: vec![],
+            details: None,
+            judge: None,
+            usage: None,
+        });
+        assert!(!refused_before_answer(
+            &evaluated,
+            &error("selection_changed", "late")
+        ));
+    }
+
     #[test]
     fn a_provider_usage_limit_before_any_answer_waits_for_quota() {
         let limit = json!({"code":-32000,"data":{"accountId":"cli-login-kimi-acp",

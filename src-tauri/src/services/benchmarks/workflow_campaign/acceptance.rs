@@ -11,6 +11,9 @@ const RECIPE: &str = "independent-group-sign-holm-v1";
 pub(in crate::services::benchmarks) const SELECTION_RECIPE: &str =
     "superiority-noninferiority-sign-holm-v1";
 const MAX_NON_INFERIORITY_MARGIN: f64 = 0.2;
+/// The most independent groups a selection holdout may lose to incomplete
+/// evidence and still be assessed on the rest.
+pub(in crate::services::benchmarks) const MAX_INCOMPLETE_GROUPS: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,6 +29,12 @@ pub struct Rule {
     /// only the selection recipe takes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub non_inferiority_margin: Option<f64>,
+    /// Groups whose first measurement stayed incomplete (an unscored or
+    /// another-runtime cell) that a selection holdout tolerates: such groups
+    /// leave every arm, and the rest are assessed. Registered before any
+    /// measurement, so the exclusion can never follow the outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_incomplete_groups: Option<u32>,
 }
 impl Rule {
     pub(in crate::services::benchmarks) fn validate(&self) -> Result<()> {
@@ -36,7 +45,13 @@ impl Rule {
             }
             _ => false,
         };
+        let tolerance = match (self.recipe.as_str(), self.max_incomplete_groups) {
+            (_, None) => true,
+            (SELECTION_RECIPE, Some(groups)) => groups <= MAX_INCOMPLETE_GROUPS,
+            _ => false,
+        };
         if !margin
+            || !tolerance
             || !self.alpha.is_finite()
             || !(0.0..=0.05).contains(&self.alpha)
             || self.alpha == 0.0
@@ -45,7 +60,7 @@ impl Rule {
             || !self.minimum_observed_quality.is_finite()
             || !(0.0..=1.0).contains(&self.minimum_observed_quality)
         {
-            return Err(invalid("Acceptance requires independent-group-sign-holm-v1, or superiority-noninferiority-sign-holm-v1 with a margin in (0,0.2], alpha in (0,.05], gain in [0,1), and observed quality in [0,1]"));
+            return Err(invalid("Acceptance requires independent-group-sign-holm-v1, or superiority-noninferiority-sign-holm-v1 with a margin in (0,0.2], alpha in (0,.05], gain in [0,1), observed quality in [0,1], and at most four tolerated incomplete groups with the selection recipe only"));
         }
         Ok(())
     }
@@ -285,6 +300,7 @@ mod tests {
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 0.8,
             non_inferiority_margin: None,
+            max_incomplete_groups: None,
         }
     }
     fn cases() -> Vec<ReportCase> {
@@ -435,6 +451,7 @@ mod tests {
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 0.8,
             non_inferiority_margin: Some(0.05),
+            max_incomplete_groups: None,
         }
     }
     #[test]

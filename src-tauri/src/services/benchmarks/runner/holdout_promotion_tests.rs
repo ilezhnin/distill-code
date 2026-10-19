@@ -55,6 +55,7 @@ fn rule() -> acceptance::Rule {
         minimum_group_utility_gain: 0.0,
         minimum_observed_quality: 0.5,
         non_inferiority_margin: Some(0.05),
+        max_incomplete_groups: None,
     }
 }
 
@@ -369,5 +370,145 @@ async fn certificate_scenario() {
         .await
         .unwrap();
     assert!(service.store.promotion(&certificate.id).await.is_err());
+    directory.close().await;
+}
+
+#[tokio::test]
+async fn a_group_lost_within_the_registered_tolerance_is_left_out_of_every_arm() {
+    Box::pin(tolerance_scenario()).await;
+}
+
+async fn tolerance_scenario() {
+    let directory = crate::test_support::TempRoot::new();
+    let backend = Arc::new(OfflineWorkers::default());
+    let service = open(&directory, backend.clone()).await;
+    let training = publish(&service, "train", 8).await;
+    measure(&service, &training, "tolerance-training").await;
+    let artifact = fit_or_explain(
+        &service,
+        learned::FitRequest {
+            work_class_id: "debug".into(),
+            version_ids: training.iter().map(|v| v.id.clone()).collect(),
+            configurations: configurations(),
+            cutoff_at: now(),
+            weights: RoleWeights::default(),
+            runtime_match: Some(RuntimeMatch::ModelIdentity),
+        },
+    )
+    .await;
+    service.store.save_selector_fit(&artifact).await.unwrap();
+    let key = |model: &str| {
+        artifact
+            .model
+            .candidates
+            .iter()
+            .find(|c| c.configuration.model_id == model)
+            .unwrap()
+            .candidate_key
+            .clone()
+    };
+    let held = held_out_named(&service, &training[0], 16, "tolerance-holdout").await;
+    let qualifications = qualify(&service, &held).await;
+    let plan = service
+        .freeze_selector_holdout(HoldoutRequest {
+            request_key: "tolerance-holdout".into(),
+            model_id: artifact.model.id.clone(),
+            version_ids: held.iter().map(|v| v.id.clone()).collect(),
+            persona_prior: vec![key("painter"), key("parser")],
+            fallback_key: key("painter"),
+            min_quality: 0.5,
+        })
+        .await
+        .unwrap();
+    let mut tolerant = rule();
+    tolerant.max_incomplete_groups = Some(1);
+    service
+        .store
+        .register_holdout_rule(HoldoutRegistration {
+            request_key: "tolerance-holdout-rule".into(),
+            plan_id: plan.id.clone(),
+            operator: "Invented acceptance operator".into(),
+            rule: tolerant,
+            qualification_ids: qualifications,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    measure(&service, &held, "tolerance-measurement").await;
+    // One first repetition settled unscored, as when a provider fails a
+    // turn: it is never replaced, and its whole group leaves every arm.
+    let lost: String =
+        sqlx::query_scalar("SELECT id FROM attempts WHERE version_id=? ORDER BY rowid LIMIT 1")
+            .bind(&held[1].id)
+            .fetch_one(&service.store.pool)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE attempts SET data_json=json_set(data_json,'$.outcome','infrastructure_failure','$.evaluations',json('[]')) WHERE id=?")
+        .bind(&lost)
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    let state = service
+        .store
+        .promote_holdout_selector(&plan.id)
+        .await
+        .unwrap();
+    assert!(state.certificate.assessment.passed);
+    assert_eq!(state.certificate.assessment.groups, 15);
+    let report = service
+        .store
+        .evaluate_selector_holdout(&plan.id)
+        .await
+        .unwrap();
+    assert_eq!(report.status, "incomplete");
+    assert_eq!(report.excluded.len(), 1);
+    assert_eq!(report.excluded[0].version_id, held[1].id);
+    assert!(report.cases.iter().all(|c| c.version_id != held[1].id));
+    // A registered rule the measurement does not pass issues nothing.
+    let strict_held = held_out_named(&service, &training[0], 16, "failing-holdout").await;
+    let strict_ids = qualify(&service, &strict_held).await;
+    let strict_plan = service
+        .freeze_selector_holdout(HoldoutRequest {
+            request_key: "failing-holdout".into(),
+            model_id: artifact.model.id.clone(),
+            version_ids: strict_held.iter().map(|v| v.id.clone()).collect(),
+            persona_prior: vec![key("painter"), key("parser")],
+            fallback_key: key("painter"),
+            min_quality: 0.5,
+        })
+        .await
+        .unwrap();
+    let mut strict = rule();
+    // Eight differing groups give p = 1/256; Holm doubles it past 0.5%.
+    strict.alpha = 0.005;
+    service
+        .store
+        .register_holdout_rule(HoldoutRegistration {
+            request_key: "failing-holdout-rule".into(),
+            plan_id: strict_plan.id.clone(),
+            operator: "Invented acceptance operator".into(),
+            rule: strict,
+            qualification_ids: strict_ids,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    measure(&service, &strict_held, "failing-measurement").await;
+    let failed = service
+        .store
+        .promote_holdout_selector(&strict_plan.id)
+        .await
+        .unwrap_err();
+    assert!(
+        failed.message.contains("Preregistered comparison failed"),
+        "{failed:?}"
+    );
+    let issued: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM selector_holdout_promotions WHERE plan_id=?")
+            .bind(&strict_plan.id)
+            .fetch_one(&service.store.pool)
+            .await
+            .unwrap();
+    assert_eq!(issued, 0);
     directory.close().await;
 }

@@ -22,6 +22,7 @@ vi.mock("../api/benchmarkGovernance", () => ({
   benchmarkGovernanceApi: {
     listPromotions: vi.fn(),
     previewLearnedClass: vi.fn(),
+    revokePromotion: vi.fn(),
   },
 }));
 const learning = vi.fn();
@@ -249,6 +250,40 @@ it("lists issued and revoked scoped certificates without treating a fit as a cer
       initialCampaignId: campaign.plan.id,
       showGovernance: true,
     }),
+  );
+});
+
+it("revokes a holdout certificate in place, since it has no campaign to manage", async () => {
+  vi.mocked(api.listPromotions).mockResolvedValue([
+    {
+      ...certificate,
+      certificate: {
+        ...certificate.certificate,
+        id: "holdout-debug",
+        source: "executor_holdout",
+      },
+    },
+  ]);
+  vi.mocked(api.revokePromotion).mockResolvedValue({
+    ...certificate,
+    revokedAt: 5000,
+    revocationReason: "Grader defect",
+  });
+  show();
+  expect(await screen.findByText("Issued")).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Manage certificate" }),
+  ).toBeNull();
+  const revoke = screen.getByRole("button", { name: "Revoke promotion" });
+  expect(revoke).toBeDisabled();
+  await userEvent.type(
+    screen.getByLabelText("Reason for revocation"),
+    "Grader defect",
+  );
+  await userEvent.click(revoke);
+  expect(api.revokePromotion).toHaveBeenCalledWith(
+    "holdout-debug",
+    "Grader defect",
   );
 });
 

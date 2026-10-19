@@ -252,12 +252,35 @@ pub(super) fn training_request(
             .filter_map(|row| row["splitGroup"].as_str())
             .collect();
         if common.len() >= MIN_CASES && groups.len() >= 2 {
-            let mut version_ids: Vec<String> = common
-                .iter()
-                .filter_map(|row| row["taskVersion"].as_str().map(str::to_owned))
+            // Above the fit's case limit, take the groups in turn, so the
+            // kept cases still span every group the limit can hold.
+            let mut by_group: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+            for row in &common {
+                if let (Some(group), Some(version)) =
+                    (row["splitGroup"].as_str(), row["taskVersion"].as_str())
+                {
+                    by_group.entry(group).or_default().push(version.to_owned());
+                }
+            }
+            let mut queues: Vec<std::collections::VecDeque<String>> = by_group
+                .into_values()
+                .map(|mut versions| {
+                    versions.sort();
+                    versions.into()
+                })
                 .collect();
+            let mut version_ids = Vec::new();
+            while version_ids.len() < MAX_CASES && queues.iter().any(|q| !q.is_empty()) {
+                for queue in &mut queues {
+                    if version_ids.len() == MAX_CASES {
+                        break;
+                    }
+                    if let Some(version) = queue.pop_front() {
+                        version_ids.push(version);
+                    }
+                }
+            }
             version_ids.sort();
-            version_ids.truncate(MAX_CASES);
             return Ok(FitRequest {
                 work_class_id: request.work_class_id.clone(),
                 version_ids,
@@ -270,6 +293,9 @@ pub(super) fn training_request(
         chosen.pop();
     }
 }
+
+/// Saved previews kept per class; older ones are dropped on the next save.
+const PREVIEWS_KEPT_PER_CLASS: i64 = 20;
 
 /// Replays a fitted model on the exposed held-out cases of its class.
 pub(super) fn preview(
@@ -514,6 +540,11 @@ impl Store {
         sqlx::query("INSERT OR IGNORE INTO selector_previews(id,model_id,work_class_id,created_at,data_json) VALUES(?,?,?,?,?)")
             .bind(&preview.artifact_hash).bind(&preview.model_id).bind(&preview.work_class_id)
             .bind(preview.created_at).bind(serde_json::to_string(preview)?)
+            .execute(&self.pool).await?;
+        // Previews carry no authority and are recomputed on demand: keep the
+        // newest few per class.
+        sqlx::query("DELETE FROM selector_previews WHERE work_class_id=? AND id NOT IN (SELECT id FROM selector_previews WHERE work_class_id=? ORDER BY created_at DESC,id DESC LIMIT ?)")
+            .bind(&preview.work_class_id).bind(&preview.work_class_id).bind(PREVIEWS_KEPT_PER_CLASS)
             .execute(&self.pool).await?;
         Ok(())
     }

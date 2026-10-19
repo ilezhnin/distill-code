@@ -107,6 +107,35 @@ pub struct HoldoutReport {
     pub limitations: Vec<String>,
     pub status: String,
     pub dispatch_allowed: bool,
+    /// Frozen cases left out of every arm because a cell of their group
+    /// settled without a usable first measurement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded: Vec<ExcludedCase>,
+}
+
+/// A frozen case whose group lost a cell for good: its first run settled
+/// unscored, on another runtime, or unlike the frozen plan. Later runs never
+/// replace it; the whole group leaves every arm, whatever the other cells say.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcludedCase {
+    pub version_id: String,
+    pub group: String,
+    /// Why each unusable cell of the case failed, `candidate key: reason`;
+    /// empty when only another case of its group failed.
+    pub reasons: Vec<String>,
+    /// The first runs of the case's cells, which count as its measurement.
+    pub run_ids: Vec<String>,
+}
+
+/// One frozen cell of the first measurement.
+enum CellEvidence {
+    Complete(ReportCell),
+    /// Settled for good without a usable measurement.
+    Unusable {
+        run_id: String,
+        reason: String,
+    },
 }
 
 fn incomplete(message: impl Into<String>) -> BenchmarkError {
@@ -182,8 +211,9 @@ pub(in crate::services::benchmarks) fn first_score(
 /// Raw immutable version IDs and run plans are required here. Ordinary board
 /// queries carry versions forward and filter unknown effort, which would hide
 /// an incomplete first measurement and allow a favorable later one to replace it.
-fn collect(data: &QueryData, plan: &HoldoutPlan) -> Result<Vec<ReportCase>> {
+fn collect(data: &QueryData, plan: &HoldoutPlan) -> Result<(Vec<ReportCase>, Vec<ExcludedCase>)> {
     let mut cases = Vec::new();
+    let mut excluded = Vec::new();
     for frozen in &plan.cases {
         let v = data
             .versions
@@ -198,89 +228,28 @@ fn collect(data: &QueryData, plan: &HoldoutPlan) -> Result<Vec<ReportCase>> {
             return Err(incomplete("Frozen task or evaluator has changed"));
         }
         let mut cells = Vec::new();
+        let mut unusable = Vec::new();
         for candidate in &plan.configurations {
-            let key = routing::candidate_key(candidate);
-            let matches =
-                |configuration: &Configuration| routing::candidate_key(configuration) == key;
-            let run = data
-                .runs
-                .iter()
-                .filter(|r| {
-                    !r.request.preview
-                        && (r.request.version_ids.contains(&frozen.version_id)
-                            && r.request.configurations.iter().any(matches)
-                            || data.attempts.iter().any(|a| {
-                                a.run_id == r.id
-                                    && a.version_id == frozen.version_id
-                                    && (matches(&a.configuration)
-                                        || a.observed.as_ref().is_some_and(matches))
-                            }))
-                })
-                .min_by_key(|r| (r.created_at, &r.id))
-                .ok_or_else(|| {
-                    incomplete(format!(
-                        "{} / {} has not been planned",
-                        frozen.version_id, candidate.model_id
-                    ))
-                })?;
-            let requested: Vec<_> = run
-                .request
-                .configurations
-                .iter()
-                .filter(|c| matches(c))
-                .collect();
-            if run.created_at <= plan.created_at
-                || requested.len() != 1
-                || requested[0].inventory_revision != candidate.inventory_revision
-                || run.request.repetitions != frozen.required_repetitions
-                || run.request.timeout_seconds < frozen.minimum_timeout_seconds
-            {
-                return Err(incomplete(
-                    "First run does not match the frozen runtime, repetitions or timeout",
-                ));
+            match first_cell(data, plan, frozen, v, candidate)? {
+                CellEvidence::Complete(cell) => cells.push(cell),
+                CellEvidence::Unusable { run_id, reason } => unusable.push((
+                    run_id,
+                    format!("{}: {reason}", routing::candidate_key(candidate)),
+                )),
             }
-            let mut attempts: Vec<_> = data
-                .attempts
-                .iter()
-                .filter(|a| {
-                    a.run_id == run.id
-                        && a.version_id == frozen.version_id
-                        && (a.configuration.id == requested[0].id
-                            || matches(&a.configuration)
-                            || a.observed.as_ref().is_some_and(matches))
-                })
-                .collect();
-            attempts.sort_by_key(|a| (a.repetition, &a.id));
-            if attempts.len() != frozen.required_repetitions as usize
-                || !attempts
+        }
+        if !unusable.is_empty() {
+            excluded.push(ExcludedCase {
+                version_id: frozen.version_id.clone(),
+                group: frozen.split_group.clone(),
+                run_ids: cells
                     .iter()
-                    .map(|a| a.repetition)
-                    .eq(0..frozen.required_repetitions)
-                || attempts.iter().any(|a| {
-                    a.observed.as_ref().is_none_or(|c| {
-                        !matches(c) || c.inventory_revision != candidate.inventory_revision
-                    })
-                })
-            {
-                return Err(incomplete("First cell is incomplete or acknowledged another runtime; later runs cannot replace it"));
-            }
-            let repeats: Vec<_> = attempts
-                .iter()
-                .map(|a| {
-                    let repeat = first_score(a, &frozen.evaluator_revision, plan.created_at)?;
-                    super::super::judge_panel::validate_evidence(&v.manifest, a, repeat.scored_at)?;
-                    Ok(repeat)
-                })
-                .collect::<Result<_>>()?;
-            cells.push(ReportCell {
-                candidate_key: key,
-                run_id: run.id.clone(),
-                quality: mean(repeats.iter().map(|r| Some(r.quality))).expect("nonempty repeats"),
-                utility: 0.0,
-                mean_duration_ms: mean(repeats.iter().map(|r| r.duration_ms)),
-                mean_cost: mean(repeats.iter().map(|r| r.cost)),
-                repeats,
+                    .map(|c| c.run_id.clone())
+                    .chain(unusable.iter().map(|(run, _)| run.clone()))
+                    .collect(),
+                reasons: unusable.into_iter().map(|(_, reason)| reason).collect(),
             });
+            continue;
         }
         // Use precisely the fitted model's utility rule, including its treatment
         // of absent costs and zero-quality answers. No new held-out weights.
@@ -312,7 +281,141 @@ fn collect(data: &QueryData, plan: &HoldoutPlan) -> Result<Vec<ReportCase>> {
             cells,
         });
     }
-    Ok(cases)
+    // A group that lost any case leaves every arm whole, so the remaining
+    // groups stay paired and equally weighted.
+    let lost: BTreeSet<String> = excluded.iter().map(|e| e.group.clone()).collect();
+    let (kept, dropped): (Vec<ReportCase>, Vec<ReportCase>) = cases
+        .into_iter()
+        .partition(|case| !lost.contains(&case.group));
+    excluded.extend(dropped.into_iter().map(|case| ExcludedCase {
+        run_ids: case.cells.iter().map(|c| c.run_id.clone()).collect(),
+        version_id: case.version_id,
+        group: case.group,
+        reasons: Vec::new(),
+    }));
+    Ok((kept, excluded))
+}
+
+/// The first measurement of one frozen cell. A cell still being measured, or
+/// not yet planned, keeps the whole report waiting; a cell that settled
+/// without a usable first measurement is unusable for good.
+fn first_cell(
+    data: &QueryData,
+    plan: &HoldoutPlan,
+    frozen: &super::holdout::HoldoutCase,
+    v: &BenchmarkVersion,
+    candidate: &Configuration,
+) -> Result<CellEvidence> {
+    {
+        let key = routing::candidate_key(candidate);
+        let matches = |configuration: &Configuration| routing::candidate_key(configuration) == key;
+        let run = data
+            .runs
+            .iter()
+            .filter(|r| {
+                !r.request.preview
+                    && (r.request.version_ids.contains(&frozen.version_id)
+                        && r.request.configurations.iter().any(matches)
+                        || data.attempts.iter().any(|a| {
+                            a.run_id == r.id
+                                && a.version_id == frozen.version_id
+                                && (matches(&a.configuration)
+                                    || a.observed.as_ref().is_some_and(matches))
+                        }))
+            })
+            .min_by_key(|r| (r.created_at, &r.id))
+            .ok_or_else(|| {
+                incomplete(format!(
+                    "{} / {} has not been planned",
+                    frozen.version_id, candidate.model_id
+                ))
+            })?;
+        let requested: Vec<_> = run
+            .request
+            .configurations
+            .iter()
+            .filter(|c| matches(c))
+            .collect();
+        // A run from before the reservation is exposure, not a lost cell.
+        if run.created_at <= plan.created_at {
+            return Err(incomplete(
+                "A run named a frozen case before its reservation",
+            ));
+        }
+        if requested.len() != 1
+            || requested[0].inventory_revision != candidate.inventory_revision
+            || run.request.repetitions != frozen.required_repetitions
+            || run.request.timeout_seconds < frozen.minimum_timeout_seconds
+        {
+            return Ok(CellEvidence::Unusable {
+                run_id: run.id.clone(),
+                reason: "first run does not match the frozen runtime, repetitions or timeout"
+                    .into(),
+            });
+        }
+        let mut attempts: Vec<_> = data
+            .attempts
+            .iter()
+            .filter(|a| {
+                a.run_id == run.id
+                    && a.version_id == frozen.version_id
+                    && (a.configuration.id == requested[0].id
+                        || matches(&a.configuration)
+                        || a.observed.as_ref().is_some_and(matches))
+            })
+            .collect();
+        attempts.sort_by_key(|a| (a.repetition, &a.id));
+        // Still measuring: the report waits for every first attempt.
+        if attempts.iter().any(|a| a.phase != "terminal")
+            || (attempts.len() < frozen.required_repetitions as usize
+                && !matches!(run.state.as_str(), "completed" | "cancelled"))
+        {
+            return Err(incomplete("The first measurement is still running"));
+        }
+        if attempts.len() != frozen.required_repetitions as usize
+            || !attempts
+                .iter()
+                .map(|a| a.repetition)
+                .eq(0..frozen.required_repetitions)
+            || attempts.iter().any(|a| {
+                a.observed.as_ref().is_none_or(|c| {
+                    !matches(c) || c.inventory_revision != candidate.inventory_revision
+                })
+            })
+        {
+            return Ok(CellEvidence::Unusable {
+                    run_id: run.id.clone(),
+                    reason: "first cell is incomplete or acknowledged another runtime; later runs cannot replace it".into(),
+                });
+        }
+        // Every first attempt settled, so a refusal here is final.
+        let repeats: Result<Vec<_>> = attempts
+            .iter()
+            .map(|a| {
+                let repeat = first_score(a, &frozen.evaluator_revision, plan.created_at)?;
+                super::super::judge_panel::validate_evidence(&v.manifest, a, repeat.scored_at)?;
+                Ok(repeat)
+            })
+            .collect();
+        let repeats = match repeats {
+            Ok(repeats) => repeats,
+            Err(error) => {
+                return Ok(CellEvidence::Unusable {
+                    run_id: run.id.clone(),
+                    reason: error.message,
+                })
+            }
+        };
+        Ok(CellEvidence::Complete(ReportCell {
+            candidate_key: key,
+            run_id: run.id.clone(),
+            quality: mean(repeats.iter().map(|r| Some(r.quality))).expect("nonempty repeats"),
+            utility: 0.0,
+            mean_duration_ms: mean(repeats.iter().map(|r| r.duration_ms)),
+            mean_cost: mean(repeats.iter().map(|r| r.cost)),
+            repeats,
+        }))
+    }
 }
 
 fn group_mean(cases: &[&ReportCase], select: impl Fn(&ReportCase) -> Option<f64>) -> Option<f64> {
@@ -486,19 +589,54 @@ fn evaluate(data: QueryData, plan: &HoldoutPlan, model: &LearnedModel) -> Result
             "Holdout report protocol or model identity mismatch",
         ));
     }
-    let cases = collect(&evidence::with_answer_caps(data), plan)?;
-    let policies = summarize(&cases, plan);
+    let (cases, excluded) = collect(&evidence::with_answer_caps(data), plan)?;
+    // Nothing is summarized when every group was lost.
+    let policies = if cases.is_empty() {
+        Vec::new()
+    } else {
+        summarize(&cases, plan)
+    };
+    let mut limitations: Vec<String> = vec![
+        "Declared groups require independent semantic and grader qualification".into(),
+        "Percentile intervals are exploratory, conditional on recorded repetitions, and not adjusted for multiple comparisons".into(),
+        "Small group counts can produce unreliable or degenerate intervals; no promotion inference is granted".into(),
+        "Best fixed and oracle are hindsight comparators selected by utility; best fixed is reselected in every resample".into(),
+        "Duration and cost cover generation only; unknown resources remain absent and subscription charges are not inferred".into(),
+        "Full workflow qualification and promotion approval remain required".into(),
+    ];
+    let lost = excluded
+        .iter()
+        .map(|e| &e.group)
+        .collect::<BTreeSet<_>>()
+        .len();
+    if lost > 0 {
+        limitations.push(format!("{lost} groups left every arm because a first measurement settled unusable; the remaining groups need not be representative if such failures follow task difficulty"));
+    }
     let mut report = HoldoutReport {
-        plan_id: plan.id.clone(), plan_hash: hash(plan)?, artifact_hash: String::new(), created_at: super::super::store::now(),
-        protocol: protocol.clone(), groups: cases.iter().map(|c| &c.group).collect::<BTreeSet<_>>().len(),
-        fallback_cases: cases.iter().filter(|c| c.used_fallback).count(), cases, policies,
-        limitations: vec!["Declared groups require independent semantic and grader qualification".into(),
-            "Percentile intervals are exploratory, conditional on recorded repetitions, and not adjusted for multiple comparisons".into(),
-            "Small group counts can produce unreliable or degenerate intervals; no promotion inference is granted".into(),
-            "Best fixed and oracle are hindsight comparators selected by utility; best fixed is reselected in every resample".into(),
-            "Duration and cost cover generation only; unknown resources remain absent and subscription charges are not inferred".into(),
-            "Full workflow qualification and promotion approval remain required".into()],
-        status: "research_only".into(), dispatch_allowed: false,
+        plan_id: plan.id.clone(),
+        plan_hash: hash(plan)?,
+        artifact_hash: String::new(),
+        created_at: super::super::store::now(),
+        protocol: protocol.clone(),
+        groups: cases
+            .iter()
+            .map(|c| &c.group)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        fallback_cases: cases.iter().filter(|c| c.used_fallback).count(),
+        cases,
+        policies,
+        limitations,
+        // A report with lost groups is a readable record, never a pass by
+        // itself: promotion compares the loss with the registered tolerance.
+        status: if lost > 0 {
+            "incomplete"
+        } else {
+            "research_only"
+        }
+        .into(),
+        dispatch_allowed: false,
+        excluded,
     };
     report.artifact_hash = hash(&report)?;
     Ok(report)
