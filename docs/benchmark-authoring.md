@@ -335,7 +335,15 @@ judge model, so their share can be watched. A failed condition scores that judge
 makes it abstain. The judge instructions still ask for quotes on a pass, so the
 judge protocol and its hash stayed the same when the parser began accepting a
 pass without one, and when it began accepting quotes copied from the rendered
-response.
+response. The judge prompt's opening form names the checks beside the scores
+and notes, and its closing line asks for all three (a new protocol hash, so
+judgments from before compare apart). An ordinary panel also reads a sheet
+that says the same thing in another shape: one stray closing brace after it,
+or the sheet split into objects one after another whose shared members agree
+(scores and notes, then the whole sheet), or checks listed as entries that
+each name their condition id. An object closed early and continued, prose or
+a fence around the sheet, conflicting members, and more than four quotes stay
+invalid; a frozen panel reads only the declared sheet.
 
 Rubric tasks can freeze their judge seats in `environment.judgePanel`, with
 `recipe: "frozen-native-panel-v1"` and a `judges` array of two or three complete

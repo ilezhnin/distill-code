@@ -58,7 +58,7 @@ pub(super) fn instructions(draft: &BenchmarkDraft) -> String {
     )
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Verdict {
     Pass,
@@ -66,12 +66,115 @@ enum Verdict {
     Unknown,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Check {
     verdict: Verdict,
     evidence: Vec<String>,
     reason: String,
+}
+
+/// One object of a reply that splits or reshapes its sheet (see
+/// [`canonical_sheet`]): any of the sheet's members, nothing else.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Part {
+    #[serde(default)]
+    scores: Option<BTreeMap<String, f64>>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    checks: Option<Checks>,
+}
+
+/// Checks keyed by condition id, as declared, or listed each with its id.
+#[derive(Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+enum Checks {
+    Map(BTreeMap<String, Check>),
+    List(Vec<Listed>),
+}
+
+#[derive(Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Listed {
+    id: String,
+    verdict: Verdict,
+    evidence: Vec<String>,
+    reason: String,
+}
+
+/// A reply that carries exactly one sheet in a shape that says the same
+/// thing as the declared one, rewritten as the declared single object; none
+/// for a declared sheet (nothing to rewrite) and for anything else. Accepted
+/// shapes (10-18 rejections, judge-sheet analysis):
+/// - one stray closing brace after the sheet;
+/// - several objects one after another, white space only between them, each
+///   member given once or given again with the same value (a scores-and-notes
+///   object, then the whole sheet);
+/// - checks listed as entries that each name their condition id, no id twice.
+///
+/// Nothing is repaired or guessed: prose, fences, an object closed early and
+/// continued, conflicting members and a missing member stay invalid, and the
+/// sheet still goes through every check of [`parse`].
+pub(super) fn canonical_sheet(reply: &str) -> Option<String> {
+    if serde_json::from_str::<Reply>(reply).is_ok() {
+        return None;
+    }
+    let mut rest = reply.trim();
+    let mut parts = Vec::new();
+    while rest.starts_with('{') {
+        let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<Part>();
+        let part = stream.next()?.ok()?;
+        // An object that gives no member says nothing; it is no sheet.
+        if part.scores.is_none() && part.notes.is_none() && part.checks.is_none() {
+            return None;
+        }
+        rest = rest[stream.byte_offset()..].trim_start();
+        parts.push(part);
+    }
+    if parts.is_empty() || !rest.strip_prefix('}').unwrap_or(rest).trim().is_empty() {
+        return None;
+    }
+    /// The one value a member has across the parts that give it.
+    fn one<T: PartialEq>(values: impl Iterator<Item = Option<T>>) -> Option<T> {
+        let mut found: Option<T> = None;
+        for value in values.flatten() {
+            match &found {
+                Some(seen) if *seen != value => return None,
+                Some(_) => {}
+                None => found = Some(value),
+            }
+        }
+        found
+    }
+    let scores = one(parts.iter().map(|part| part.scores.clone()))?;
+    let notes = one(parts.iter().map(|part| part.notes.clone()))?;
+    let checks = match one(parts.into_iter().map(|part| part.checks))? {
+        Checks::Map(checks) => checks,
+        Checks::List(listed) => {
+            let mut checks = BTreeMap::new();
+            for Listed {
+                id,
+                verdict,
+                evidence,
+                reason,
+            } in listed
+            {
+                let check = Check {
+                    verdict,
+                    evidence,
+                    reason,
+                };
+                if checks.insert(id, check).is_some() {
+                    return None;
+                }
+            }
+            checks
+        }
+    };
+    serde_json::to_string(&serde_json::json!({"scores": scores, "notes": notes, "checks": checks}))
+        .ok()
 }
 
 #[derive(Deserialize)]
