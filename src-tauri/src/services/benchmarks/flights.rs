@@ -13,6 +13,10 @@ use std::time::Instant;
 /// shares. So a view asking again never overlaps its own superseded request,
 /// and each caller still gets a result at least as new as its request. A
 /// result is held only while a caller holds it.
+/// Keys kept before idle ones are dropped: views ask with their arguments in
+/// the key, so the set grows with every board and history ever opened.
+const KEPT_SLOTS: usize = 256;
+
 #[derive(Default)]
 pub struct Flights {
     slots: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Last>>>>>,
@@ -31,13 +35,15 @@ impl Flights {
         Fut: Future<Output = Result<T>>,
     {
         let asked = Instant::now();
-        let slot = self
-            .slots
-            .lock()
-            .unwrap()
-            .entry(key.to_owned())
-            .or_default()
-            .clone();
+        let slot = {
+            let mut slots = self.slots.lock().unwrap();
+            if slots.len() >= KEPT_SLOTS {
+                // A slot no caller holds keeps only a result nobody can
+                // still share, so it goes; one in use stays.
+                slots.retain(|_, slot| Arc::strong_count(slot) > 1);
+            }
+            slots.entry(key.to_owned()).or_default().clone()
+        };
         let mut last = slot.lock().await;
         let fresh = last
             .as_ref()
@@ -104,6 +110,19 @@ mod tests {
         // A request after both finished computes again: nothing is served stale.
         let again = ask(flights.clone()).await;
         assert_eq!(*again, 3);
+    }
+
+    #[tokio::test]
+    async fn idle_keys_are_dropped_once_many_were_asked_for() {
+        let flights = Flights::default();
+        for index in 0..(KEPT_SLOTS * 2) {
+            let value = flights
+                .share(&format!("history-{index}"), || async move { Ok(index) })
+                .await
+                .unwrap();
+            assert_eq!(*value, index);
+        }
+        assert!(flights.slots.lock().unwrap().len() <= KEPT_SLOTS);
     }
 
     #[tokio::test]

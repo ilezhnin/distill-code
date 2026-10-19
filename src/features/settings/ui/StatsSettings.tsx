@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Clock,
 } from "lucide-react";
+import { useFreshBenchmarkUsage } from "@/features/benchmarks/hooks/useBenchmarks";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
@@ -65,6 +66,7 @@ async function refreshUsageSources(): Promise<void> {
 
 export function StatsSettings() {
   const { t } = useTranslation("settings");
+  useFreshBenchmarkUsage();
   const ledger = useUsageLedger();
   const telemetry = useWaveTelemetry();
   const sessions = useChatSessionStore((state) => state.sessions);

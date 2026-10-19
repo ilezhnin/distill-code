@@ -9,7 +9,9 @@ import { benchmarkApi } from "../api/benchmarks";
 import {
   COALESCED_REFRESH_MS,
   THROTTLED_REFRESH_MS,
+  USAGE_LEDGER_REFRESH_MS,
   useBenchmarkRuntime,
+  useFreshBenchmarkUsage,
 } from "../hooks/useBenchmarks";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import type { BenchmarkChange, UsageLedgerEntry } from "../types";
@@ -72,19 +74,23 @@ describe("persistent benchmark runtime", () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const view = render(
-      <QueryClientProvider client={client}>
-        <Shell />
-      </QueryClientProvider>,
-    );
-    await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledOnce());
-    expect(projectBenchmarkUsage).toHaveBeenCalledWith(entry);
-    // The usage ledger reads every attempt, so events refresh it once per
-    // interval, not at every saved attempt.
+    // The ledger's own interval starts with the query, under these timers.
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    let view: ReturnType<typeof render> | undefined;
     try {
+      view = render(
+        <QueryClientProvider client={client}>
+          <Shell />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledOnce());
+      expect(projectBenchmarkUsage).toHaveBeenCalledWith(entry);
+      // The usage ledger reads every attempt, so events never refresh it;
+      // it follows on its own interval.
       act(() => changed?.({ sequence: 1 }));
       await act(() => vi.advanceTimersByTimeAsync(THROTTLED_REFRESH_MS));
+      expect(benchmarkApi.getUsageLedger).toHaveBeenCalledOnce();
+      await act(() => vi.advanceTimersByTimeAsync(USAGE_LEDGER_REFRESH_MS));
       await waitFor(() =>
         expect(projectBenchmarkUsage).toHaveBeenCalledTimes(2),
       );
@@ -94,8 +100,35 @@ describe("persistent benchmark runtime", () => {
     expect(projectBenchmarkUsage).toHaveBeenLastCalledWith(second);
     act(() => changed?.({ sequence: 1 }));
     expect(benchmarkApi.getUsageLedger).toHaveBeenCalledTimes(2);
-    view.unmount();
+    view?.unmount();
     expect(stop).toHaveBeenCalledOnce();
+    client.clear();
+  });
+
+  it("reads completed work in as Stats opens", async () => {
+    vi.mocked(benchmarkApi.getUsageLedger)
+      .mockResolvedValueOnce([entry])
+      .mockResolvedValue([entry, { ...entry, attemptId: "attempt-2" }]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    function Stats() {
+      useFreshBenchmarkUsage();
+      return <div>Stats</div>;
+    }
+    const view = render(
+      <QueryClientProvider client={client}>
+        <Shell />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledOnce());
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <Shell />
+        <Stats />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledTimes(2));
     client.clear();
   });
 
