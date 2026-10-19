@@ -151,6 +151,81 @@ export function renderable(
 }
 
 /**
+ * The page style that sizes a drawing's root `<svg>` to the frame, above any
+ * width, height or margin it sets on itself, as the judges see it
+ * (runner::SVG_FRAME).
+ */
+const SVG_FRAME =
+  "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body>svg{display:block!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;margin:0!important}";
+
+/**
+ * The one `<svg>`…`</svg>` of a body when only text surrounds it, else null
+ * (runner::lone_svg).
+ */
+function loneSvg(body: string): string | null {
+  const lowered = body.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  const lead = lowered.trimStart();
+  if (lead.startsWith("<!doctype") || lead.startsWith("<html")) return null;
+  const from = lowered.indexOf("<svg");
+  const close = lowered.lastIndexOf("</svg>");
+  if (from < 0 || close < from) return null;
+  const to = close + "</svg>".length;
+  if (body.slice(0, from).includes("<") || body.slice(to).includes("<"))
+    return null;
+  return body.slice(from, to);
+}
+
+/**
+ * The root `<svg>`'s attributes after its name, names lowered
+ * (runner::svg_attributes).
+ */
+function svgAttributes(tag: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  const pattern = /([^\s=/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+  for (const match of tag.matchAll(pattern))
+    attributes.set(
+      match[1].toLowerCase(),
+      match[2] ?? match[3] ?? match[4] ?? "",
+    );
+  return attributes;
+}
+
+/**
+ * The drawing with a viewBox from its root's plain or px width and height
+ * when it has those but no viewBox (runner::with_view_box).
+ */
+function withViewBox(svg: string): string {
+  const lowered = svg.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  const open = lowered.indexOf("<svg");
+  if (open < 0) return svg;
+  let quote: string | null = null;
+  let close = -1;
+  for (let index = open; index < svg.length; index++) {
+    const char = svg[index];
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === ">") {
+      close = index;
+      break;
+    }
+  }
+  if (close < 0) return svg;
+  const attributes = svgAttributes(svg.slice(open + 4, close));
+  if (attributes.has("viewbox")) return svg;
+  const length = (name: string) => {
+    const raw = attributes.get(name)?.trim();
+    if (raw === undefined) return null;
+    const value = Number((raw.endsWith("px") ? raw.slice(0, -2) : raw).trim());
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
+  const width = length("width");
+  const height = length("height");
+  if (width === null || height === null) return svg;
+  return `${svg.slice(0, open)}<svg viewBox="0 0 ${width} ${height}"${svg.slice(open + 4)}`;
+}
+
+/**
  * A standalone HTML document that shows the output, or null when the output
  * is not a drawing or a page.
  */
@@ -160,8 +235,11 @@ export function previewDocument(
 ): string | null {
   const markup = renderable(output, format);
   if (!markup) return null;
-  if (markup.kind === "svg") {
-    return `<!doctype html><html><head><meta charset="utf-8">${POLICY}<style>html,body{margin:0;height:100%;display:grid;place-items:center;background:#fff}svg{width:100%;height:auto;max-height:100%}</style></head><body>${markup.body}</body></html>`;
+  // Prose around one drawing is that drawing, as the judges see it.
+  const drawing =
+    loneSvg(markup.body) ?? (markup.kind === "svg" ? markup.body : null);
+  if (drawing !== null) {
+    return `<!doctype html><html><head><meta charset="utf-8">${POLICY}<style>${SVG_FRAME}</style></head><body>${withViewBox(drawing)}</body></html>`;
   }
   const head = /<head[^>]*>/i.exec(markup.body);
   if (head)

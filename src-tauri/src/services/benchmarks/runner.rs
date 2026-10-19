@@ -6055,7 +6055,9 @@ fn markup_body<'a>(output: &'a str, format: Option<&str>) -> Option<&'a str> {
     None
 }
 
-const JUDGE_RENDERER: &str = "chromium-1024x768-v1";
+/// v2 (10-18): a drawing fills the frame whatever its own size (see
+/// [`render_document`]); v1 showed a viewBox-only drawing as a thumbnail.
+const JUDGE_RENDERER: &str = "chromium-1024x768-v2";
 
 pub(super) fn requires_browser_runtime(draft: &BenchmarkDraft) -> bool {
     matches!(draft.evaluator.kind.as_str(), "javascript" | "browser")
@@ -6082,7 +6084,7 @@ fn judge_renderer(draft: &BenchmarkDraft) -> String {
     let viewport = if (width, height) == (1024, 768) {
         JUDGE_RENDERER.to_owned()
     } else {
-        format!("chromium-{width}x{height}-v1")
+        format!("chromium-{width}x{height}-v2")
     };
     format!("{viewport}:linux:{}", super::worker::runtime_revision())
 }
@@ -6240,15 +6242,138 @@ pub(super) fn frozen_judge_binding(draft: &BenchmarkDraft) -> Result<String> {
 
 /// A standalone document that shows a drawing or a page, or nothing when the
 /// output is neither.
+///
+/// A drawing's root `<svg>` fills the frame (the judge's viewport) whatever
+/// its own width and height, its content scaled to fit with its aspect kept
+/// (its `preserveAspectRatio`, centered by default). One with a width and a
+/// height but no viewBox gets one from them, so it scales like one that
+/// declares it. Before (10-18), a viewBox-only drawing sat in a grid track
+/// sized by its content, so its percentage width fell back to the browser's
+/// 300 by 150 default and judges saw a thumbnail.
 pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<String> {
     let body = markup_body(output, format)?;
+    // Prose around one drawing (an html-format answer that leads with a
+    // sentence, say) is that drawing.
+    let body = lone_svg(body).unwrap_or(body);
     let start = head(body);
     if start.starts_with("<svg") || (format == Some("svg") && start.contains("<svg")) {
-        return Some(format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><style>html,body{{margin:0;height:100%;display:grid;place-items:center;background:#fff}}svg{{width:100%;height:auto;max-height:100%}}</style></head><body>{body}</body></html>"
-        ));
+        let body = with_view_box(body);
+        return Some(format!("<!doctype html><html><head><meta charset=\"utf-8\"><style>{SVG_FRAME}</style></head><body>{body}</body></html>"));
     }
     Some(body.to_string())
+}
+
+/// The page style that sizes a drawing's root `<svg>` to the frame, above
+/// any width, height or margin the drawing sets on itself.
+const SVG_FRAME: &str = "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body>svg{display:block!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;margin:0!important}";
+
+/// The one `<svg>`...`</svg>` of `body` when nothing but text surrounds it
+/// (no other tag before or after); none for an HTML document or a page with
+/// other markup.
+fn lone_svg(body: &str) -> Option<&str> {
+    // ASCII lowering keeps byte offsets, and every offset found is ASCII.
+    let lowered = body.to_ascii_lowercase();
+    let lead = lowered.trim_start();
+    if lead.starts_with("<!doctype") || lead.starts_with("<html") {
+        return None;
+    }
+    let from = lowered.find("<svg")?;
+    let to = lowered.rfind("</svg>")? + "</svg>".len();
+    if to <= from || body[..from].contains('<') || body[to..].contains('<') {
+        return None;
+    }
+    Some(&body[from..to])
+}
+
+/// `svg` with a viewBox taken from its root element's width and height when
+/// it declares both as plain lengths but no viewBox; anything else as it is.
+fn with_view_box(svg: &str) -> std::borrow::Cow<'_, str> {
+    // ASCII lowering keeps byte offsets, and every offset found is ASCII.
+    let lowered = svg.to_ascii_lowercase();
+    let Some(open) = lowered.find("<svg") else {
+        return svg.into();
+    };
+    let mut quote = None;
+    let mut close = None;
+    for (offset, &byte) in svg.as_bytes()[open..].iter().enumerate() {
+        match quote {
+            Some(mark) if byte == mark => quote = None,
+            Some(_) => {}
+            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+            None if byte == b'>' => {
+                close = Some(open + offset);
+                break;
+            }
+            None => {}
+        }
+    }
+    let Some(close) = close else {
+        return svg.into();
+    };
+    let attributes = svg_attributes(&svg[open + 4..close]);
+    if attributes.iter().any(|(name, _)| name == "viewbox") {
+        return svg.into();
+    }
+    let length = |wanted: &str| {
+        attributes
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .and_then(|(_, value)| {
+                let value = value.trim();
+                value
+                    .strip_suffix("px")
+                    .unwrap_or(value)
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+            })
+            .filter(|value| value.is_finite() && *value > 0.0)
+    };
+    let (Some(width), Some(height)) = (length("width"), length("height")) else {
+        return svg.into();
+    };
+    format!(
+        "{}<svg viewBox=\"0 0 {width} {height}\"{}",
+        &svg[..open],
+        &svg[open + 4..]
+    )
+    .into()
+}
+
+/// The attributes of an opening tag's text after its name, names lowered.
+fn svg_attributes(tag: &str) -> Vec<(String, String)> {
+    let mut attributes = Vec::new();
+    let mut rest = tag;
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '/');
+        let end = rest
+            .find(|c: char| c == '=' || c == '/' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        if end == 0 {
+            break;
+        }
+        let name = rest[..end].to_ascii_lowercase();
+        rest = rest[end..].trim_start();
+        let mut value = String::new();
+        if let Some(after) = rest.strip_prefix('=') {
+            let after = after.trim_start();
+            match after.chars().next() {
+                Some(mark @ ('"' | '\'')) => {
+                    let inner = &after[1..];
+                    let stop = inner.find(mark).unwrap_or(inner.len());
+                    value = inner[..stop].to_owned();
+                    rest = inner.get(stop + 1..).unwrap_or("");
+                }
+                _ => {
+                    let stop = after.find(char::is_whitespace).unwrap_or(after.len());
+                    value = after[..stop].to_owned();
+                    rest = &after[stop..];
+                }
+            }
+        }
+        attributes.push((name, value));
+    }
+    attributes
 }
 
 fn judge_prompt(draft: &BenchmarkDraft, criteria: &[RubricCriterion]) -> String {
@@ -8701,6 +8826,69 @@ mod tests {
         assert!(super::render_document("I cannot draw.", Some("svg")).is_none());
     }
     #[test]
+    fn a_drawing_fills_the_judges_frame_whatever_its_own_size() {
+        // 10-18: a viewBox-only answer, as the creative briefs ask for, was
+        // judged as a 300 by 150 thumbnail.
+        let frame = "body>svg{display:block!important;width:100vw!important;height:100vh!important";
+        let view_box = super::render_document(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 768'><rect/></svg>",
+            Some("svg"),
+        )
+        .unwrap();
+        let sized = super::render_document(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='768'><rect/></svg>",
+            Some("svg"),
+        )
+        .unwrap();
+        // Both fill the same frame, scaled with their aspect kept.
+        for document in [&view_box, &sized] {
+            assert!(document.contains(frame), "{document}");
+            assert!(!document.contains("display:grid"), "{document}");
+        }
+        assert!(view_box.contains(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 768'><rect/></svg>"
+        ));
+        // A width and height without a viewBox scale like a declared one.
+        assert!(sized.contains(
+            "<svg viewBox=\"0 0 1024 768\" xmlns='http://www.w3.org/2000/svg' width='1024' height='768'>"
+        ));
+        // A declared viewBox, relative sizes, a missing height and another
+        // attribute that ends in "width" stay as written.
+        for kept in [
+            "<svg width=\"400px\" height=\"300px\" viewBox=\"0 0 40 30\"/>",
+            "<svg width=\"100%\" height=\"100%\"><rect/></svg>",
+            "<svg width='10'/>",
+            "<svg stroke-width='3' height='5'/>",
+        ] {
+            assert!(
+                super::render_document(kept, Some("svg"))
+                    .unwrap()
+                    .contains(kept),
+                "{kept}"
+            );
+        }
+        // Prose around one drawing is that drawing, in either format; a page
+        // with other markup stays a page.
+        let drawing = "<svg viewBox='0 0 4 3'><rect/></svg>";
+        for format in [Some("html"), Some("svg")] {
+            let framed =
+                super::render_document(&format!("Here it is: {drawing} Enjoy."), format).unwrap();
+            assert!(
+                framed.contains(&format!("<body>{drawing}</body>")),
+                "{framed}"
+            );
+        }
+        let page = format!("<p>Title</p>{drawing}");
+        assert_eq!(super::render_document(&page, Some("html")).unwrap(), page);
+        // Pixel units count, and a quoted '>' does not end the tag.
+        assert!(super::render_document(
+            "<svg data-note='a>b' width='10px' height=\"20\"/>",
+            Some("svg")
+        )
+        .unwrap()
+        .contains("<svg viewBox=\"0 0 10 20\" data-note='a>b' width='10px' height=\"20\"/>"));
+    }
+    #[test]
     fn a_session_s_own_memory_ceiling_on_the_candidate_s_command_is_its_budget() {
         // A Grok session (10-18): the session's own memory.max killed the
         // candidate's python3, the bridge died with the leaf, and the turn
@@ -9475,7 +9663,7 @@ mod tests {
         assert_eq!(
             judge_renderer(&draft),
             format!(
-                "chromium-1280x800-v1:linux:{}",
+                "chromium-1280x800-v2:linux:{}",
                 super::super::worker::runtime_revision()
             )
         );
