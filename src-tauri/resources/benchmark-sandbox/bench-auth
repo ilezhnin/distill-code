@@ -257,6 +257,28 @@ def local_credential_health(provider, value, at_ms):
     return "unknown", "unknown", None
 
 
+def claude_identity(account):
+    """The sign-in's account and organization ids from the account's own
+    .claude.json, lowercase, or "-" for each it does not hold. Only these
+    ids leave: never a token, an email or a name."""
+    try:
+        path = account / ".claude.json"
+        if path.resolve(strict=True) != path:
+            raise ValueError("unsafe credential path")
+        settings = credential_json(regular_bytes(path))
+        signed = settings.get("oauthAccount")
+        signed = signed if isinstance(signed, dict) else {}
+    except Exception:
+        signed = {}
+    ids = []
+    for key in ("accountUuid", "organizationUuid"):
+        value = signed.get(key)
+        uuid = isinstance(value, str) and re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value)
+        ids.append(value.lower() if uuid else "-")
+    return ids
+
+
 def account_status(value):
     import time
     account = account_path(value)
@@ -283,6 +305,8 @@ def account_status(value):
     usable = state == "current" or mode == "unbounded"
     print(f"account {provider} {account.parent.name} {'yes' if usable else 'no'}")
     print(f"account-health {provider} {account.parent.name} {mode} {state} {expiry if expiry is not None else '-'}")
+    if provider == "claude":
+        print(f"account-identity {provider} {account.parent.name} {' '.join(claude_identity(account))}")
 
 
 def failure_reason(error):

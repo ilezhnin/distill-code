@@ -439,6 +439,7 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(output.getvalue().splitlines(), [
             "account claude invented-account yes",
             f"account-health claude invented-account oauth current {(now + 7200) * 1000}",
+            "account-identity claude invented-account - -",
             "account grok invented-gone no",
             "account-health grok invented-gone unknown invalid -",
             "account zai invented-account yes",
@@ -493,6 +494,7 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(output.getvalue().splitlines(), [
             "account claude invented-account yes",
             f"account-health claude invented-account oauth current {expiry * 1000}",
+            "account-identity claude invented-account - -",
         ])
         target.write_text("synthetic-private-token-invalid-json", encoding="utf-8")
         output = io.StringIO()
@@ -501,7 +503,32 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(output.getvalue().splitlines(), [
             "account claude invented-account no",
             "account-health claude invented-account unknown invalid -",
+            "account-identity claude invented-account - -",
         ])
+
+    def test_status_names_the_sign_ins_ids_and_nothing_else_of_it(self):
+        expiry = int(time.time()) + 3600
+        account, _ = self.account("claude", claude(expiry, "synthetic-private-token"))
+        (account / ".claude.json").write_text(json.dumps({"oauthAccount": {
+            "accountUuid": "0A1B2C3D-0000-4000-8000-00000000000A",
+            "organizationUuid": "00000000-0000-4000-8000-00000000000b",
+            "emailAddress": "synthetic-private@example.invalid",
+            "displayName": "synthetic-private-name",
+        }}), encoding="utf-8")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["account_status"](str(account))
+        self.assertEqual(output.getvalue().splitlines()[-1],
+                         "account-identity claude invented-account "
+                         "0a1b2c3d-0000-4000-8000-00000000000a 00000000-0000-4000-8000-00000000000b")
+        self.assertNotIn("synthetic-private", output.getvalue())
+        # Ids that are not UUIDs are not passed on.
+        (account / ".claude.json").write_text(json.dumps({"oauthAccount": {
+            "accountUuid": "synthetic-private id", "organizationUuid": 7}}), encoding="utf-8")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["account_status"](str(account))
+        self.assertEqual(output.getvalue().splitlines()[-1], "account-identity claude invented-account - -")
 
 
 unittest.main(argv=["bench-auth-selftest"])
