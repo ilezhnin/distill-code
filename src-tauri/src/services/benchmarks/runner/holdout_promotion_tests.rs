@@ -197,17 +197,24 @@ async fn certificate_scenario() {
         (summary.status.as_str(), summary.look),
         ("not_certified", 3)
     );
-    sqlx::query("DELETE FROM selector_certifications WHERE id=?")
-        .bind(&failed.id)
-        .execute(&service.store.pool)
-        .await
-        .unwrap();
-    assert!(service
-        .store
-        .class_certificate("debug")
-        .await
-        .unwrap()
-        .is_some());
+    // The same fit on the same cells after that look is a new look, not the
+    // old certified one, and it certifies the class again.
+    let back = Box::pin(service.evaluate_class(request())).await.unwrap();
+    assert_eq!((back.status.as_str(), back.look), ("certified", 4));
+    assert_ne!(back.id, evaluation.id);
+    assert_eq!(back.snapshot_hash, evaluation.snapshot_hash);
+    let certificate_id = back.certificate_id.clone().unwrap();
+    assert_eq!(
+        service
+            .store
+            .class_certificate("debug")
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .id,
+        certificate_id
+    );
     // A revoked qualification of a counted case deactivates the certificate.
     service
         .store
@@ -231,7 +238,7 @@ async fn certificate_scenario() {
     );
     // The next look leaves that case out and is journaled as a new look.
     let after = Box::pin(service.evaluate_class(request())).await.unwrap();
-    assert_eq!(after.look, 3);
+    assert_eq!(after.look, 5);
     assert_eq!(after.unqualified_cases, 1);
     assert_eq!(after.cases.len(), 15);
     // Revocation returns the class to its declared order at once.

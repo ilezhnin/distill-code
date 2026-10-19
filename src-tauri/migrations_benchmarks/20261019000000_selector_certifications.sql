@@ -7,8 +7,7 @@ CREATE TABLE selector_certifications (
     snapshot_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     data_json TEXT NOT NULL,
-    artifact_hash TEXT NOT NULL,
-    UNIQUE (model_id, snapshot_hash)
+    artifact_hash TEXT NOT NULL
 );
 CREATE INDEX selector_certifications_by_class ON selector_certifications(work_class_id, created_at);
 -- Class certificates issued by a passing held-out evaluation. The evaluation

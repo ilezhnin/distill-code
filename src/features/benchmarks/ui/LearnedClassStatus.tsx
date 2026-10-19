@@ -56,14 +56,23 @@ function evaluationText(
     evaluation.reasons.includes(reason),
   ).map((reason) => t(`routing.evaluationReason.${reason}`));
   if (evaluation.status === "certified") {
-    return t("routing.evidenceEvaluationCertified", {
-      date,
-      look: evaluation.look,
-      cases: evaluation.heldOutCases,
-      groups: evaluation.groups,
-      quality: Math.round((evaluation.observedQuality ?? 0) * 100),
-      training: evaluation.trainingCases,
-    });
+    // A revoked or deactivated certificate no longer speaks for the class.
+    const active =
+      evaluation.certificateId !== null &&
+      policy.certificateId === evaluation.certificateId;
+    return t(
+      active
+        ? "routing.evidenceEvaluationCertified"
+        : "routing.evidenceEvaluationInactive",
+      {
+        date,
+        look: evaluation.look,
+        cases: evaluation.heldOutCases,
+        groups: evaluation.groups,
+        quality: Math.round((evaluation.observedQuality ?? 0) * 100),
+        training: evaluation.trainingCases,
+      },
+    );
   }
   return t("routing.evidenceEvaluation", {
     date,

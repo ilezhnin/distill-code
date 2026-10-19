@@ -863,8 +863,9 @@ lists the class's journaled evaluations, newest first.
 - **Journal.** Every evaluation is a look in the journal, numbered per class,
   with its fit, recipe, rule and recipe parameters, the order as sent and the
   keys it resolved to, the pool, the qualification ids, and every counted
-  repetition (attempt id and a hash of its evaluations). The same fit on the
-  same cells is the same look. One transaction checks for the same look,
+  repetition (attempt id and a hash of its evaluations). Repeating the class's
+  newest look (same fit, same cells) returns it; after any other look it is
+  journaled again. One transaction checks for the same look,
   numbers it, and writes the look and its certificate. A look runs on demand: once after each new fit
   (the command fits first) and again when the held-out cells change. No
   correction is made across looks; the look count is shown with the result.
