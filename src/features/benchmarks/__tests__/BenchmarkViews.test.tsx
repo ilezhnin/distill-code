@@ -2121,6 +2121,66 @@ describe("configuration history", () => {
   });
 });
 
+describe("model page history states", () => {
+  afterEach(cleanup);
+
+  function page() {
+    const row = leaderboardRow({ points: 900 });
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    wrap(
+      <BenchmarkConfigurationPage
+        row={row}
+        report={{ cohort, rows: [row] }}
+        runs={[]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+  }
+
+  it("says the history is loading instead of leaving an empty gap", async () => {
+    let settle: (points: never[]) => void = () => {};
+    vi.mocked(benchmarkApi.getHistory).mockReturnValue(
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    page();
+    expect(
+      screen.getByText(
+        /Loading the rating history: each point is recalculated/,
+      ),
+    ).toBeInTheDocument();
+    await act(async () => settle([]));
+    await waitFor(() =>
+      expect(screen.queryByText(/Loading the rating history/)).toBeNull(),
+    );
+  });
+
+  it("says why the history failed and reads it again on request", async () => {
+    vi.mocked(benchmarkApi.getHistory).mockRejectedValueOnce(
+      new Error("store busy"),
+    );
+    page();
+    expect(
+      await screen.findByText(
+        "The rating history could not be read: store busy",
+      ),
+    ).toBeInTheDocument();
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    const reads = vi.mocked(benchmarkApi.getHistory).mock.calls.length;
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/could not be read/)).toBeNull(),
+    );
+    expect(vi.mocked(benchmarkApi.getHistory).mock.calls.length).toBe(
+      reads + 1,
+    );
+  });
+});
+
 describe("model page fully tested points", () => {
   afterEach(cleanup);
 

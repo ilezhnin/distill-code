@@ -1203,8 +1203,8 @@ pub struct QueryData {
     /// Pool cases outside the measurement suite a row must cover to count as
     /// fully tested: the ones an evaluation reserves (a holdout plan or a
     /// workflow campaign names their family or split group) and the ones the
-    /// owner lists in the benchmark settings (`boardExclusions`). They stay
-    /// on the boards.
+    /// owner lists in the benchmark settings (`boardExclusions`). Boards
+    /// leave them out of every count; the case tracker still reads them.
     pub suite_exclusions: std::collections::BTreeSet<String>,
 }
 

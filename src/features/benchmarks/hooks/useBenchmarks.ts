@@ -343,11 +343,24 @@ export function useConfigurationHistory(
 ): {
   snapshots: HistorySnapshot[];
   loading: boolean;
+  /** Why the history could not be read; null while it loads or once read. */
+  error: unknown;
+  /** True while a read, a retry included, is under way. */
+  reading: boolean;
+  retry: () => void;
 } {
   const result = useQuery({
     queryKey: [...benchmarkKeys, "history", historyKey(configuration), model],
     queryFn: () => benchmarkApi.getHistory(configuration, model),
     staleTime: 60_000,
+    // A read takes seconds; a failure is shown at once, with a retry.
+    retry: 0,
   });
-  return { snapshots: result.data ?? [], loading: result.isPending };
+  return {
+    snapshots: result.data ?? [],
+    loading: result.isPending,
+    error: result.error,
+    reading: result.isFetching,
+    retry: () => void result.refetch(),
+  };
 }

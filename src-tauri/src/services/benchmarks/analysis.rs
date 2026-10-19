@@ -897,6 +897,16 @@ pub(super) fn is_ranked_split(split: &str) -> bool {
     matches!(split, "train" | "held_out")
 }
 
+/// The ranked pool a board measures: the suite. A case an evaluation
+/// reserves or the owner lists apart enters no count, rating, attempt total
+/// or cohort there; the case tracker still reads every pool case.
+fn suite_pool<'a>(data: &'a QueryData, query: &ResultQuery) -> Vec<&'a BenchmarkVersion> {
+    ranked_pool(data, query)
+        .into_iter()
+        .filter(|v| !data.suite_exclusions.contains(&v.id))
+        .collect()
+}
+
 pub(super) fn ranked_pool<'a>(
     data: &'a QueryData,
     query: &ResultQuery,
@@ -1328,7 +1338,7 @@ fn leaderboard_counting(data: &QueryData, query: &ResultQuery, own: OwnCases) ->
             .iter()
             .filter(|attempt| !judge_flagged(attempt, hidden))
             .collect::<Vec<_>>(),
-        ranked_pool(data, query),
+        suite_pool(data, query),
         own,
     )
 }
@@ -2073,7 +2083,7 @@ fn recalculated_history_report(
             data,
             &ResultQuery::default(),
             &selected,
-            ranked_pool(data, &ResultQuery::default()),
+            suite_pool(data, &ResultQuery::default()),
             OwnCases::Counted,
         )
     };
@@ -2188,7 +2198,7 @@ fn history_for(
         })
         .collect();
     // Today's pool: what every point is recalculated on.
-    let current_pool = ranked_pool(data, &ResultQuery::default());
+    let current_pool = suite_pool(data, &ResultQuery::default());
     let current: BTreeSet<&str> = current_pool.iter().map(|v| v.id.as_str()).collect();
     // The counted attempts of each run: its settled, unsuperseded cells.
     let mut cells: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
@@ -2770,15 +2780,39 @@ pub(super) mod tests {
         let mut data = dataset();
         add_case(&mut data, 6, 10);
         // A holdout reserves the new case's family: the suite is whole again,
-        // while the case stays on the board.
+        // and the board leaves the case out of every count.
         data.suite_exclusions =
             reserved_versions(&data.versions, &[("family".into(), "family-6".into())]);
         assert_eq!(data.suite_exclusions, BTreeSet::from(["v6".to_owned()]));
         let row = standing(&data);
         assert_eq!((row.suite_complete, row.suite_planned), (6, 6));
-        assert_eq!(row.planned, 7);
+        assert_eq!(row.planned, row.suite_planned);
         assert_eq!(row.status, "comparable");
         assert_eq!(row.fully_tested_at, Some(2));
+        // Neither the cohort nor a row's cells carry the reserved case.
+        let mut measured = data.attempts[0].clone();
+        measured.id = "after-v6".into();
+        measured.version_id = "v6".into();
+        measured.run_id = "after".into();
+        data.attempts.push(measured);
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert!(!report
+            .cohort
+            .unwrap()
+            .version_ids
+            .contains(&"v6".to_owned()));
+        assert!(!report.rows[0].attempt_ids.contains(&"after-v6".to_owned()));
+        assert_eq!(report.rows[0].scored, 6);
+        // The case tracker still reads it, so its stats stay visible.
+        let tracked = case_tracker(&data);
+        assert_eq!(
+            tracked
+                .iter()
+                .find(|case| case.version_id == "v6")
+                .unwrap()
+                .models,
+            1
+        );
     }
     #[test]
     fn an_unlisted_held_out_case_joins_the_suite_and_a_listed_one_does_not() {
@@ -2797,7 +2831,7 @@ pub(super) mod tests {
         ));
         let row = standing(&data);
         assert_eq!((row.suite_complete, row.suite_planned), (5, 5));
-        assert_eq!(row.planned, 7);
+        assert_eq!(row.planned, row.suite_planned);
         assert_eq!(row.status, "comparable");
     }
     #[test]

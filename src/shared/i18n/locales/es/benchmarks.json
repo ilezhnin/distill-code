@@ -757,6 +757,9 @@
   },
   "history": {
     "title": "Historial de puntuación",
+    "loading": "Cargando el historial de puntuación: cada punto se recalcula con los casos actuales, lo que tarda unos segundos.",
+    "failed": "No se pudo leer el historial de puntuación: {{reason}}",
+    "retry": "Reintentar",
     "recalculated": "Conjunto actual",
     "recorded": "Según el registro",
     "recalculatedDescription": "Cada punto cubre los casos actuales. Cada caso usa el resultado más reciente disponible en esa fecha, puntuado con las revisiones actuales; un caso aún no medido entonces es un hueco en ese punto.",
