@@ -2559,7 +2559,16 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
         serde_json::from_value(details.pointer("/protocol/panel")?.clone()).ok()?;
     let expected = usize::try_from(details["expectedJudges"].as_u64()?).ok()?;
     let answers = &evaluations[start + 1..];
-    if panel.len() != expected || answers.len() >= expected || !answers.iter().all(valid_vote) {
+    // Each seat answers `samplesPerJudge` times (see `judge_samples`).
+    let samples = details
+        .pointer("/protocol/samplesPerJudge")
+        .and_then(Value::as_u64)
+        .unwrap_or(1) as usize;
+    if panel.is_empty()
+        || panel.len() * samples != expected
+        || answers.len() >= expected
+        || !answers.iter().all(valid_vote)
+    {
         return None;
     }
     Some(OpenBatch {
@@ -2570,6 +2579,24 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
         rendering: marker.artifacts.first()?.path.clone(),
         rendering_hash: marker.artifacts.first()?.hash.clone(),
     })
+}
+
+/// The asks a batch owes: each seat of `panel` `samples` times, at index
+/// seat × samples + sample, less those `asked` already answered.
+fn seat_samples(
+    panel: &[Configuration],
+    samples: usize,
+    asked: &[Configuration],
+) -> Vec<(usize, Configuration)> {
+    panel
+        .iter()
+        .enumerate()
+        .flat_map(|(seat, judge)| {
+            let answered = asked.iter().filter(|seen| *seen == judge).count();
+            (answered.min(samples)..samples)
+                .map(move |sample| (seat * samples + sample, judge.clone()))
+        })
+        .collect()
 }
 
 async fn saved_rendering(open: &OpenBatch, textual: bool, max_text_bytes: u64) -> Result<Vec<u8>> {
@@ -3586,12 +3613,8 @@ impl NativeBackend {
         };
         let (batch, judges, expected, votes, png) = match open {
             Some((open, png)) => {
-                let judges: Vec<(usize, Configuration)> = open
-                    .panel
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(_, judge)| !open.asked.contains(judge))
-                    .collect();
+                let samples = open.expected / open.panel.len().max(1);
+                let judges = seat_samples(&open.panel, samples, &open.asked);
                 let waiting: Vec<Configuration> =
                     judges.iter().map(|(_, judge)| judge.clone()).collect();
                 if !self.judges_idle(&waiting).await? {
@@ -3652,16 +3675,25 @@ impl NativeBackend {
                 let directory = evidence.directory(store, &attempt);
                 tokio::fs::create_dir_all(&directory).await?;
                 let batch = uuid::Uuid::new_v4().to_string();
-                let expected = panel.len();
+                // A calibration measures single answers; a panel may ask each
+                // seat more than once (see `judge_samples`).
+                let samples = match &evidence {
+                    JudgeEvidence::Calibration { .. } => 1,
+                    _ => judge_samples(&version.manifest),
+                };
+                let expected = panel.len() * samples;
                 let mut protocol = judge_protocol(&version.manifest, &panel);
+                protocol["samplesPerJudge"] = json!(samples);
+                protocol["expectedJudges"] = json!(expected);
                 if let Some(installed) = &installed_renderer {
                     protocol["installedRendererRevision"] = json!(installed);
                 }
-                let protocol_hash = judge_protocol_hash(
+                let protocol_hash = sampled_protocol_hash(
                     &panel,
                     &prompt,
                     &renderer,
                     ordinary_recipe(&version.manifest),
+                    samples,
                 );
                 let extension = if textual { "txt" } else { "png" };
                 let path = directory.join(format!("rendering-{batch}.{extension}"));
@@ -3710,13 +3742,7 @@ impl NativeBackend {
                     attempt.outcome = Some("pending_review".into());
                 }
                 evidence.save(store, &attempt).await?;
-                (
-                    batch,
-                    panel.into_iter().enumerate().collect(),
-                    expected,
-                    0,
-                    png,
-                )
+                (batch, seat_samples(&panel, samples, &[]), expected, 0, png)
             }
         };
         let image = (!textual).then(|| OwnedTurnImage {
@@ -6290,7 +6316,31 @@ pub(crate) fn validate_judge_input(draft: &BenchmarkDraft) -> Vec<String> {
             );
         }
     }
+    if let Some(samples) = draft.environment.get("judgeSamples") {
+        if draft.evaluator.kind != "rubric"
+            || !matches!(samples.as_u64(), Some(1 | 3))
+            || draft.environment.get("judgePanel").is_some()
+            || judge_checks::enabled(draft)
+        {
+            issues.push("Judge samples are 1 or 3, for an ordinary panel on a rubric without critical checks".into());
+        }
+    }
     issues
+}
+
+/// How many times each seat of an ordinary panel judges a rendering: 1, or
+/// 3 where the rubric asks for it (`environment.judgeSamples`) for criteria
+/// that vary between asks, such as a likeness; each seat's samples count as
+/// their median (BuseyBench's practice). Off by default: it triples the
+/// judge calls.
+pub(super) fn judge_samples(draft: &BenchmarkDraft) -> usize {
+    if draft.environment["judgeSamples"].as_u64() == Some(3)
+        && validate_judge_input(draft).is_empty()
+    {
+        3
+    } else {
+        1
+    }
 }
 
 fn judge_document(draft: &BenchmarkDraft, output: &str) -> Option<String> {
@@ -6346,11 +6396,24 @@ fn ordinary_recipe(draft: &BenchmarkDraft) -> Option<&'static str> {
 /// `recipe` and the labs it seated instead: the pool's calibrated seats
 /// rotate by usage headroom, so one recipe, panel size and set of labs is
 /// one ruler, and pool scores never compare with the panels before it.
+#[cfg(test)]
 pub(crate) fn judge_protocol_hash(
     panel: &[Configuration],
     prompt: &str,
     renderer: &str,
     recipe: Option<&str>,
+) -> String {
+    sampled_protocol_hash(panel, prompt, renderer, recipe, 1)
+}
+
+/// [`judge_protocol_hash`] with `samples` per seat (see [`judge_samples`]);
+/// one sample hashes as it always did.
+fn sampled_protocol_hash(
+    panel: &[Configuration],
+    prompt: &str,
+    renderer: &str,
+    recipe: Option<&str>,
+    samples: usize,
 ) -> String {
     let mut judges: Vec<(&str, &str, &str, bool)> = panel
         .iter()
@@ -6370,7 +6433,7 @@ pub(crate) fn judge_protocol_hash(
     judges.sort();
     let identity = match recipe {
         None => json!({"judges": judges, "prompt": prompt, "renderer": renderer,
-            "samplesPerJudge": 1, "expectedJudges": panel.len()}),
+            "samplesPerJudge": samples, "expectedJudges": panel.len() * samples}),
         Some(recipe) => {
             let labs: std::collections::BTreeSet<&str> = panel
                 .iter()
@@ -6380,7 +6443,7 @@ pub(crate) fn judge_protocol_hash(
                 })
                 .collect();
             json!({"recipe": recipe, "labs": labs, "prompt": prompt, "renderer": renderer,
-                "samplesPerJudge": 1, "expectedJudges": panel.len()})
+                "samplesPerJudge": samples, "expectedJudges": panel.len() * samples})
         }
     };
     hex::encode(Sha256::digest(identity.to_string().as_bytes()))
@@ -9679,6 +9742,55 @@ mod tests {
             inventory_revision: Some("runtime".into()),
             model_name: None,
         }
+    }
+    #[test]
+    fn a_rubric_may_ask_each_seat_three_times_and_never_by_default() {
+        let panel = vec![judge_row("sonnet"), judge_row("haiku")];
+        // One sample hashes as panels always did; three are another ruler.
+        assert_eq!(
+            sampled_protocol_hash(&panel, "prompt", JUDGE_RENDERER, None, 1),
+            judge_protocol_hash(&panel, "prompt", JUDGE_RENDERER, None)
+        );
+        assert_ne!(
+            sampled_protocol_hash(&panel, "prompt", JUDGE_RENDERER, Some("r"), 3),
+            sampled_protocol_hash(&panel, "prompt", JUDGE_RENDERER, Some("r"), 1)
+        );
+        // Every seat three times; a resumed batch owes only what is left.
+        let asks = seat_samples(&panel, 3, &[]);
+        assert_eq!(
+            asks.iter()
+                .map(|(index, judge)| (*index, judge.model_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "sonnet"),
+                (1, "sonnet"),
+                (2, "sonnet"),
+                (3, "haiku"),
+                (4, "haiku"),
+                (5, "haiku")
+            ]
+        );
+        let left = seat_samples(
+            &panel,
+            3,
+            &[panel[0].clone(), panel[0].clone(), panel[1].clone()],
+        );
+        assert_eq!(
+            left.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![2, 4, 5]
+        );
+        assert_eq!(seat_samples(&panel, 1, &[panel[1].clone()]).len(), 1);
+        // Off unless asked; never on a frozen panel or with critical checks.
+        let mut draft = creative();
+        assert_eq!(judge_samples(&draft), 1);
+        draft.environment["judgeSamples"] = json!(3);
+        assert_eq!(judge_samples(&draft), 3);
+        draft.environment["judgeSamples"] = json!(2);
+        assert!(!validate_judge_input(&draft).is_empty());
+        assert_eq!(judge_samples(&draft), 1);
+        let mut critical = critical_text();
+        critical.environment["judgeSamples"] = json!(3);
+        assert!(!validate_judge_input(&critical).is_empty());
     }
     #[test]
     fn a_runtime_probe_or_account_never_changes_the_judge_protocol() {

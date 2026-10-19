@@ -109,7 +109,7 @@ fn judge_panel(evaluations: &[&Evaluation]) -> Panel {
         } else {
             &evaluations[start..end]
         };
-        let mut votes: Vec<f64> = answers
+        let scored: Vec<(&Evaluation, f64)> = answers
             .iter()
             .filter(|e| e.provenance == "judge")
             .filter_map(|e| {
@@ -125,10 +125,34 @@ fn judge_panel(evaluations: &[&Evaluation]) -> Panel {
                         _ => return None,
                     }
                 }
-                Some(score)
+                Some((*e, score))
             })
             .collect();
-        if votes.len() >= expected {
+        if scored.len() >= expected {
+            // A panel that asked each seat several times counts each seat once,
+            // as the median of its samples.
+            let samples = evaluations[start]
+                .details
+                .as_ref()
+                .and_then(|details| details.pointer("/protocol/samplesPerJudge"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            let mut votes: Vec<f64> = if samples > 1 {
+                let mut seats: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+                for (evaluation, score) in &scored {
+                    let seat = serde_json::to_string(&evaluation.judge).unwrap_or_default();
+                    seats.entry(seat).or_default().push(*score);
+                }
+                // Every seat with all its samples, or the batch has not settled.
+                if seats.len() as u64 * samples != expected as u64
+                    || seats.values().any(|seat| seat.len() as u64 != samples)
+                {
+                    continue;
+                }
+                seats.into_values().filter_map(median).collect()
+            } else {
+                scored.iter().map(|(_, score)| *score).collect()
+            };
             if critical_failed {
                 votes.fill(0.0);
             }
@@ -2036,6 +2060,61 @@ fn history_for(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    #[test]
+    fn a_panel_that_samples_each_seat_counts_each_seat_once_at_its_median() {
+        let evaluation = |provenance: &str,
+                          score: Option<f64>,
+                          judge: Option<&str>,
+                          details: serde_json::Value|
+         -> Evaluation {
+            serde_json::from_value(serde_json::json!({"id": uuid::Uuid::new_v4().to_string(),
+                "evaluatorRevision": "invented-v1", "verdict": "judged", "score": score,
+                "reason": "", "createdAt": 1, "provenance": provenance, "details": details,
+                "judge": judge.map(|model| serde_json::json!({"id": model, "providerId": "invented-acp",
+                    "accountId": "invented-account", "modelId": model, "effort": null, "fastMode": false,
+                    "billingMode": "subscription", "executionProfile": "native_text",
+                    "inventoryRevision": "invented-runtime"}))}))
+            .unwrap()
+        };
+        let marker = |samples: u64, expected: u64| {
+            evaluation(
+                "render",
+                None,
+                None,
+                serde_json::json!({"judgeBatchId": "invented-batch", "expectedJudges": expected,
+                    "protocol": {"samplesPerJudge": samples}}),
+            )
+        };
+        let seat_votes = |seat: &str, scores: &[f64]| -> Vec<Evaluation> {
+            scores
+                .iter()
+                .map(|score| evaluation("judge", Some(*score), Some(seat), serde_json::json!({})))
+                .collect()
+        };
+        let mut sampled = vec![marker(3, 6)];
+        sampled.extend(seat_votes("seat-a", &[0.2, 0.8, 0.9]));
+        sampled.extend(seat_votes("seat-b", &[0.5, 0.1, 0.5]));
+        let Panel::Settled { mut votes, .. } = judge_panel(&sampled.iter().collect::<Vec<_>>())
+        else {
+            panic!("a full sampled panel settles");
+        };
+        votes.sort_by(f64::total_cmp);
+        assert_eq!(votes, vec![0.5, 0.8]);
+        // Short of its samples, it waits.
+        sampled.pop();
+        assert!(matches!(
+            judge_panel(&sampled.iter().collect::<Vec<_>>()),
+            Panel::Pending
+        ));
+        // One sample a seat counts every vote, as before.
+        let mut single = vec![marker(1, 2)];
+        single.extend(seat_votes("seat-a", &[0.2]));
+        single.extend(seat_votes("seat-b", &[0.9]));
+        let Panel::Settled { votes, .. } = judge_panel(&single.iter().collect::<Vec<_>>()) else {
+            panic!("a full panel settles");
+        };
+        assert_eq!(votes, vec![0.2, 0.9]);
+    }
     #[test]
     fn points_share_one_scale() {
         assert_eq!(share_points(0.929), 929);

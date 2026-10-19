@@ -1126,6 +1126,7 @@ fn step_version(version: &BenchmarkVersion, saved: &SavedStep) -> BenchmarkVersi
                 "judgeViewport",
                 "textLimits",
                 "criticalChecks",
+                "judgeSamples",
             ] {
                 environment.remove(key);
             }
