@@ -955,10 +955,10 @@
     "reviewCase": "Review and qualify",
     "trainingHint": "The selector learns task-dependent provider, model and effort preferences from scored training evidence using soft targets and KL loss. A saved fit does not enable certified routing.",
     "prepareFit": "Prepare training",
-    "previewHint": "Preview fits this category from training measurements only, with every model that has at least eight complete training cases (providers that may train on submitted data left out), then replays the fit on held-out cases that were already measured. It makes no model calls and does not change routing.",
-    "previewLearned": "Preview learned choice",
-    "previewRunning": "Fitting and comparing on measured cases...",
-    "previewSaved": "Preview saved: {{cases}} held-out cases compared. The status under this category shows the result.",
+    "previewHint": "Evaluate fits this category from training measurements only, with every model that has at least eight complete training cases (providers that may train on submitted data left out), then replays the fit on the category's measured held-out cases against the fallback order. Each new fit or new set of held-out results is one journaled look; a passing look certifies the category. It makes no model calls.",
+    "previewLearned": "Evaluate learned choice",
+    "previewRunning": "Fitting and evaluating on measured cases...",
+    "previewSaved": "Look {{look}} saved: {{cases}} held-out cases compared, {{status}}. The status under this category shows the result.",
     "noFits": "No saved selector fits for this category.",
     "fitSummary": "{{groups}} training groups · {{candidates}} configurations · Research only",
     "comparisonsHint": "Freeze a held-out comparison and its acceptance rule before starting. Only a complete passing comparison can issue a certificate. Opening these tools does not start model calls.",
@@ -974,7 +974,12 @@
     "certificateSummary": "{{groups}} independent groups · {{quality}}% observed quality · {{floor}}% prediction floor",
     "contract": "{{role}} · {{runtime}} · {{seconds}}s step limit · {{steps}} steps",
     "manageCertificate": "Manage certificate",
-    "noRole": "No role restriction"
+    "noRole": "No role restriction",
+    "evaluationStatus": {
+      "certified": "certified",
+      "not_certified": "not certified",
+      "insufficient_evidence": "not enough held-out evidence yet"
+    }
   },
   "authoring": {
     "createVersion": "Create version",

@@ -1,6 +1,6 @@
 import { isWorkerLayerRole } from "@/features/conductor/roleLayers";
 import type { BenchmarkDraft, Evaluation } from "../types";
-import type { LearnedPreviewSummary } from "./benchmarkLearning";
+import type { ClassEvaluationSummary } from "./benchmarkLearning";
 
 // Mirrors the native qualification and promotion wire contracts.
 export interface QualificationControl {
@@ -74,8 +74,6 @@ export interface PromotionRule {
   minimumGroupUtilityGain: number;
   minimumObservedQuality: number;
   nonInferiorityMargin?: number;
-  /** Selection recipe only: groups an incomplete first measurement may lose. */
-  maxIncompleteGroups?: number;
 }
 export interface DeploymentContract {
   workClassId: string;
@@ -114,21 +112,6 @@ export interface RegisteredPromotionRule {
   qualificationHashes: string[];
   artifactHash: string;
 }
-/** The acceptance rule of a frozen executor holdout, before measurement. */
-export interface HoldoutRegistration {
-  requestKey: string;
-  planId: string;
-  operator: string;
-  rule: PromotionRule;
-  qualificationIds: string[];
-}
-export interface RegisteredHoldoutRule {
-  request: HoldoutRegistration;
-  createdAt: number;
-  planHash: string;
-  qualificationHashes: string[];
-  artifactHash: string;
-}
 export interface PromotionAssessment {
   rule: PromotionRule;
   groups: number;
@@ -162,8 +145,11 @@ export interface PromotionCertificate {
   priorKeys: string[];
   minPredictionQuality: number;
   artifactHash: string;
-  /** Present for a class certificate issued from an executor holdout. */
-  source?: "executor_holdout";
+  /**
+   * Present for a class certificate: issued from a journaled held-out
+   * evaluation, or (history only) from a retired executor holdout.
+   */
+  source?: "held_out_certification" | "executor_holdout";
   trajectory?: {
     rootBudgetSeconds: number;
     steps: {
@@ -203,6 +189,6 @@ export interface ClassPolicy {
   heldOutWorkflows: number;
   fits: number;
   campaigns: number;
-  /** Newest research preview of the class's learned choice; never routing. */
-  preview?: LearnedPreviewSummary | null;
+  /** Newest journaled held-out evaluation; a passing one issued the certificate. */
+  evaluation?: ClassEvaluationSummary | null;
 }

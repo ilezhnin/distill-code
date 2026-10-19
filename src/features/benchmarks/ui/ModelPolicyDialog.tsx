@@ -28,6 +28,23 @@ import {
 } from "./BenchmarkPrimitives";
 import { BenchmarkLearningDialog } from "./BenchmarkLearningDialog";
 import { WorkflowCampaignDialog } from "./WorkflowCampaignDialog";
+import {
+  isModelPreferenceClassId,
+  MODEL_PREFERENCE_CLASSES,
+} from "@/features/agents/lib/modelRanking";
+import type { RankedMatcher } from "../lib/benchmarkLearning";
+
+/**
+ * The class's manual order, as the comparator a held-out evaluation must
+ * beat: the app's own ranking of the class, with its platform and words.
+ */
+function manualOrder(classId: string): RankedMatcher[] {
+  const id = isModelPreferenceClassId(classId) ? classId : "general";
+  return MODEL_PREFERENCE_CLASSES[id].ranking.map((candidate) => ({
+    platform: candidate.platform,
+    needles: candidate.needles.map((set) => [...set]),
+  }));
+}
 
 /** One entry point to the existing qualification, fitting and promotion tools. */
 export function ModelPolicyDialog({
@@ -62,7 +79,10 @@ export function ModelPolicyDialog({
   const queryClient = useQueryClient();
   const previewLearned = useMutation({
     mutationFn: () =>
-      benchmarkGovernanceApi.previewLearnedClass({ workClassId: classId }),
+      benchmarkGovernanceApi.evaluateClass({
+        workClassId: classId,
+        personaOrder: manualOrder(classId),
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: ["benchmarks", "class-policies"],
@@ -261,7 +281,11 @@ export function ModelPolicyDialog({
               {previewLearned.data ? (
                 <p className="text-xs" role="status">
                   {t("policyManager.previewSaved", {
+                    look: previewLearned.data.look,
                     cases: previewLearned.data.cases.length,
+                    status: t(
+                      `policyManager.evaluationStatus.${previewLearned.data.status}`,
+                    ),
                   })}
                 </p>
               ) : null}
@@ -440,7 +464,7 @@ export function ModelPolicyDialog({
                           {JSON.stringify(certificate, null, 2)}
                         </pre>
                       </details>
-                      {certificate.source === "executor_holdout" ? (
+                      {certificate.source === "held_out_certification" ? (
                         revokedAt === null ? (
                           <HoldoutCertificateRevocation id={certificate.id} />
                         ) : null
@@ -485,7 +509,7 @@ export function ModelPolicyDialog({
 }
 
 /**
- * Revokes a certificate issued from an executor holdout. It has no workflow
+ * Revokes a certificate issued from a held-out evaluation. It has no workflow
  * campaign to manage, so its revocation lives here.
  */
 function HoldoutCertificateRevocation({ id }: { id: string }) {

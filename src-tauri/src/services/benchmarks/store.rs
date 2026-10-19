@@ -1209,7 +1209,9 @@ impl Store {
     /// Every family and split group an evaluation reserves, as (kind, value),
     /// whoever owns it.
     pub async fn evaluation_reservations(&self) -> Result<Vec<(String, String)>> {
-        sqlx::query("SELECT DISTINCT kind, value FROM evaluation_reservations")
+        // Reservations of the retired executor holdout are history: they
+        // never hold a case back from a suite, lane or run.
+        sqlx::query("SELECT DISTINCT kind, value FROM evaluation_reservations WHERE owner_kind<>'executor_holdout'")
             .fetch_all(&self.pool)
             .await?
             .into_iter()

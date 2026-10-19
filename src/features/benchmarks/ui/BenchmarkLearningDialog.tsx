@@ -16,7 +16,6 @@ import {
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { configurationLabel } from "../lib/benchmarkDraft";
-import { SelectorHoldoutForm } from "./SelectorHoldoutForm";
 import { shortId, workClassLabel } from "../lib/benchmarkLabels";
 import {
   publicSelectorTask,
@@ -393,11 +392,6 @@ export function BenchmarkLearningDialog({
                   ))}
                 </div>
               </details>
-              <SelectorHoldoutForm
-                key={artifact.data.model.id}
-                artifact={artifact.data}
-                versions={versions}
-              />
               <Field label={t("learning.target")}>
                 {(id) => (
                   <SelectField

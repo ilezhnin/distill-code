@@ -768,39 +768,11 @@ async fn campaign_preserves_refusal_and_requires_explicit_resume_after_restart()
 }
 
 #[tokio::test]
-async fn reservations_cover_historical_relations_exposure_and_existing_holdouts() {
+async fn reservations_cover_historical_relations_and_exposure() {
     let dir = crate::test_support::TempRoot::new();
     let backend = Arc::new(OfflineWorkers::default());
     let service = open(&dir, backend.clone()).await;
     let (train, fit) = training(&service).await;
-    let held = publish_with_entry(&service, "held_out", 8, true).await;
-    let holdout = learned::holdout::HoldoutRequest {
-        request_key: "executor-holdout".into(),
-        model_id: fit.model.id.clone(),
-        version_ids: held.iter().map(|v| v.id.clone()).collect(),
-        persona_prior: fit
-            .model
-            .candidates
-            .iter()
-            .map(|c| c.candidate_key.clone())
-            .collect(),
-        fallback_key: fit.model.candidates[0].candidate_key.clone(),
-        min_quality: 0.0,
-    };
-    service.freeze_selector_holdout(holdout).await.unwrap();
-    let roots_a = roots(&service, &train, "heldout-conflict").await;
-    // Publish historical family/group relations through the native catalog.
-    let mut bridge = roots_a[0].manifest.clone();
-    bridge.environment = held[0].manifest.environment.clone();
-    let d = service.store.save_draft(None, None, bridge).await.unwrap();
-    service
-        .publish_version(&d.id, d.draft_revision)
-        .await
-        .unwrap();
-    assert!(service
-        .freeze_workflow_campaign(request(&fit, &roots_a, "holdout-overlap"))
-        .await
-        .is_err());
     let roots_b = roots(&service, &train, "exposed").await;
     let policy = WorkflowPolicy {
         model_id: fit.model.id.clone(),
@@ -862,22 +834,6 @@ async fn reservations_cover_historical_relations_exposure_and_existing_holdouts(
                 .unwrap(),
         );
     }
-    assert!(service
-        .freeze_selector_holdout(learned::holdout::HoldoutRequest {
-            request_key: "conflicting-executor-holdout".into(),
-            model_id: fit.model.id.clone(),
-            version_ids: relatives.iter().map(|v| v.id.clone()).collect(),
-            persona_prior: fit
-                .model
-                .candidates
-                .iter()
-                .map(|c| c.candidate_key.clone())
-                .collect(),
-            fallback_key: fit.model.candidates[0].candidate_key.clone(),
-            min_quality: 0.0
-        })
-        .await
-        .is_err());
     // A newly published alias inherits reservation through its related group.
     let mut alias = relatives[0].manifest.clone();
     alias.task_family = "new-family-alias".into();

@@ -809,20 +809,46 @@ attempt, never from an auxiliary call inside a repository workflow. A silent
 vendor-side change inside one identity stays possible, so read the revision
 lists. Prospective held-out reports still require the exact frozen runtime.
 
-`benchmark_preview_learned_class({ request: { workClassId, excludedProviders } })`
-is a research shortcut for one class. It picks the class's largest public scope
-and, from training cells only, every candidate with at least eight complete
-training cases there. Providers that may train on submitted data under the
-provider data-use rule above, and any `excludedProviders`, are left out. The
-fewest-measured
-candidates are then dropped until at least eight cases in two groups are common
-to all that remain. It fits with `model_identity` and replays the frozen fit on
-the class's held-out cases that already have complete cells for every candidate,
-using the holdout report arithmetic (learned, training aggregate, best fixed,
-oracle and each fixed candidate). Those families were measured before the fit,
-so the result is a `retrospective_preview`: it is not an unseen evaluation and
-grants no routing, reservation or certificate. The newest preview of each class
-appears in `benchmark_class_policies` and in the class status in Settings.
+`benchmark_evaluate_class({ request: { workClassId, excludedProviders, personaOrder } })`
+fits one class and evaluates the fit; `benchmark_class_evaluations({ workClassId })`
+lists the class's journaled evaluations, newest first.
+
+- **Fit (recipe `family-weighted-softmax-kl-v2-random-subsets`).** The class's
+  largest public scope, training cells only, with `model_identity`.
+  - Every candidate with at least eight complete training cases there joins the
+    pool. Providers that may train on submitted data, and any `excludedProviders`,
+    are left out.
+  - Candidates need not share cases: every training case that measured two pool
+    candidates counts, and an unmeasured candidate is masked, never a zero.
+  - The selection head learns from each case's full measured set and seven seeded
+    random subsets of it (each candidate joins a subset with probability one half,
+    at least two per subset; the seed mixes in the case's version id), so it
+    chooses among whatever candidates a task has. A new model or effort joins at
+    the next fit once it has eight training cases; it needs no new tasks.
+  - A fit refuses any held-out version.
+- **Evaluation (recipe `held-out-certification-v1`).** The fit is replayed on
+  every held-out case of the class and scope that ordinary runs measured.
+  - A case counts when its version has a current, attested, unrevoked
+    qualification and at least two pool candidates have complete cells under the
+    single-run rule (3/3 in one run).
+  - A renderer-bound version's cells must have been graded by its qualified
+    renderer.
+  - The learned arm chooses among the candidates the case measured. The persona
+    arm is the first of them in the class's manual order (`personaOrder`, the
+    app's own ranking). The aggregate arm is the first in the fit's training
+    aggregate order.
+  - The fixed rule (`superiority-noninferiority-sign-holm-v1`, alpha 0.05, gain 0,
+    quality floor 0.5, margin 0.05) compares each worker only on the groups that
+    measured it. Each comparison needs at least eight groups, and Holm covers all
+    of them.
+- **Journal.** Every evaluation is a look in the journal, numbered per class,
+  with its fit, recipe and the hash of every counted cell. The same fit on the
+  same cells is the same look. A look runs on demand: once after each new fit
+  (the command fits first) and again when the held-out cells change. No
+  correction is made across looks; the look count is shown with the result.
+- **Certificate.** A passing look issues the class certificate (`source:
+  "held_out_certification"`). The newest evaluation of each class appears in
+  `benchmark_class_policies` and in the class status in Settings.
 
 If all candidates have indistinguishable utilities, labels are incomplete, or
 the selector simply reproduces one global winner without task-dependent evidence,
@@ -951,89 +977,33 @@ when new session events were last observed; hover for the detailed state.
 The clock includes preparation and waiting. Quiet activity or an unavailable
 check alone does not establish a hung model.
 
-### Class certificates from an executor holdout
+### Class certificates from held-out evaluations
 
-A class can also be certified for ordinary chats and waves without a workflow
-campaign. The basis is a frozen executor holdout (`benchmark_freeze_selector_holdout`)
-of single-step held-out versions in the fit's scope:
+A class is certified for ordinary chats and waves by a passing held-out
+evaluation (`benchmark_evaluate_class`, above); there is no reservation, freeze
+or single-use exam. Held-out cases are a permanent evaluation set:
+- Ordinary runs measure them for every model, and the boards show them.
+- A fit never reads them.
 
-1. Qualify every held-out version before freezing. No run may name it yet.
-2. Freeze the plan with the fit, the complete preference order (its first key
-   is the persona comparator), the fallback key and the quality floor.
-3. Register the rule with `benchmark_register_holdout_rule({ request })` before
-   any run names a frozen version. `request` holds `requestKey`, `planId`,
-   `operator`, `rule` and the held-out `qualificationIds`. Registration is
-   refused once any run plan or attempt names a version of the reserved
-   families or groups, sibling revisions and previews included.
-4. Measure each frozen candidate once: its first run after the reservation
-   counts, with the plan's exact configuration and runtime revision, the
-   required repetitions, a timeout of at least the cases' own, and no retries
-   of first attempts. A deploy between the fit and the last first attempt
-   changes the runtime revision, and the report then refuses those cells.
-   Executor holdout reservations do not stop ordinary runs: keep the reserved
-   families out of every other run, previews included. Promotion refuses if
-   any run other than the counted measurement ever named a version of the
-   reserved families.
-5. Call `benchmark_promote_holdout_selector({ planId })`. It evaluates the
-   immutable holdout report and assesses the registered rule. On a pass it
-   issues a certificate with `source: "executor_holdout"`.
+Overfitting is controlled by discipline:
+- the fit and evaluation recipes are frozen and versioned;
+- nothing is tuned on held-out results;
+- every look is journaled with its data snapshot, so the number of looks is visible.
 
-Freezing, registration and promotion refuse a pool with a provider that may
-train on submitted data under the provider data-use rule. A certifying plan's
-fallback key must be the head of its declared
-order, because an ordinary chat keeps its own order when the policy abstains.
-Promotion also refuses once a frozen family's reservation was released.
-Releasing the families after certification is fine.
+The certificate's authority is its journaled evaluation, its qualifications and
+its fit:
+- A revoked or changed qualification of a counted case deactivates it, and so
+  does a changed fit.
+- The renderer installed later plays no part: the evaluation already checked
+  which renderer graded the counted cells.
+- It never covers an owned native task: owned task mode, binding and dispatch
+  refuse it, and owned deployments still need a workflow campaign certificate.
+- Revocation works as for any certificate (`benchmark_revoke_promotion`).
 
-Registration requires each browser-graded qualification to name the renderer
-installed at that time. Promotion checks the renderer that graded the evidence
-instead:
-- every renderer that a counted repetition names must be the qualified one;
-- a renderer-graded repetition must name it (browser checks also name the
-  qualified worker), and each browser-checked version must have at least one
-  repetition that does;
-- a zero scored without the renderer passes: a budget failure, or a rubric
-  answer with nothing to render.
-
-A browser check whose candidate page drove the job past its ceiling records a
-failed evaluation that names the renderer and worker, so these zeros count too.
-
-A first measurement whose cell settled unusable (unscored, on another runtime,
-or unlike the frozen plan) is never replaced. Once every first attempt has
-settled, the report is saved anyway: such a case's whole group leaves every
-arm, the report lists it under `excluded` with status `incomplete`, and the
-remaining groups are summarized. Promotion refuses unless the registered rule
-tolerates that many lost groups: `maxIncompleteGroups` (selection recipe only,
-at most 4, none by default) is part of the rule registered before measurement,
-so the exclusion never follows the outcome. Assessment still needs at least
-eight remaining groups.
-
-Promotion also needs the app's browser worker unchanged since qualification. An
-issued holdout certificate does not depend on the renderer installed later,
-because a chat runs no evaluator. A campaign certificate still needs its
-renderer installed: owned dispatch stops after a renderer change until
-requalification, and a chat skips it while its renderer is unavailable.
-
-Such a certificate drives `benchmark_class_policies` and ordinary chat and wave
-selection exactly as a campaign certificate does. It never covers an owned
-native task: owned task mode, binding and dispatch refuse it, and owned
-deployments still need a workflow campaign certificate. Revocation works the
-same way.
-
-Use the `superiority-noninferiority-sign-holm-v1` rule for these holdouts. A
-per-task selector runs one of the fixed workers, so it ties each worker on the
-cases where it picks that worker. The original rule, which requires beating every
-worker, cannot pass such a selector. The selection rule requires:
-
-- **superiority** over the persona and the training aggregate: a sign test over
-  the groups whose utilities differ;
-- **non-inferiority** to every fixed worker: a group counts as a loss when the
-  worker leads by at least `nonInferiorityMargin`, a value in (0, 0.2];
-- Holm adjustment over all comparisons, and the observed-quality floor.
-
-Training versions of such a fit are not required to have qualified before
-their first measurement; only the held-out evaluation certifies. Disclose this
-when the training corpus was graded by evaluators revised after measurement.
+Certificates and reservations of the retired executor holdout (`source:
+"executor_holdout"`, `selector_holdouts`, `selector_holdout_reservations` and
+`executor_holdout` rows of `evaluation_reservations`) are history only. They
+never hold a case back from a suite, lane or run, and never authorize dispatch.
 
 ## 7. Promote and verify orchestration
 

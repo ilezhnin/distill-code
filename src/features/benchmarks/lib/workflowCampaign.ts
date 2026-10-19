@@ -4,7 +4,7 @@ import type {
   WorkflowPolicy,
   WorkflowTiming,
 } from "../types";
-import type { SelectorHoldoutReport } from "./benchmarkLearning";
+import type { SelectorPolicyResult } from "./benchmarkLearning";
 
 export interface WorkflowCampaignRequest {
   executionLimits?: RunRequest["executionLimits"];
@@ -105,7 +105,7 @@ export interface WorkflowCampaignReport {
       }[];
     }[];
   }[];
-  policies: SelectorHoldoutReport["policies"];
+  policies: SelectorPolicyResult[];
   groups: number;
   dispatchAllowed: false;
   limitations: string[];

@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkGovernanceApi as api } from "../api/benchmarkGovernance";
 import type { ClassPolicy } from "../lib/benchmarkGovernance";
-import type { LearnedPreviewSummary } from "../lib/benchmarkLearning";
+import type { ClassEvaluationSummary } from "../lib/benchmarkLearning";
 import { LearnedClassStatus } from "../ui/LearnedClassStatus";
 
 vi.mock("../api/benchmarkGovernance", () => ({
@@ -79,104 +79,66 @@ it("reports unreadable status and an absent class policy honestly", async () => 
   expect(await screen.findByText(/No certified task policy yet/)).toBeVisible();
 });
 
-const policyResult = (policy: string, utility: number, key: string | null) => ({
-  policy,
-  selectedFixedKey: key,
-  quality: utility,
-  utility,
-  meanDurationMs: null,
-  meanCost: null,
-  missingDurationCases: 0,
-  missingCostCases: 0,
-  utilityInterval: { lower: utility, upper: utility },
-  learnedUtilityGain: 0.71 - utility,
-  learnedGainInterval: { lower: -0.04, upper: 0.32 },
-});
-const preview: LearnedPreviewSummary = {
+const evaluation: ClassEvaluationSummary = {
+  id: "invented-evaluation",
   modelId: "invented-fit",
-  createdAt: Date.UTC(2026, 9, 18),
-  status: "retrospective_preview",
+  createdAt: Date.UTC(2026, 9, 19),
+  status: "not_certified",
+  look: 3,
   trainingCases: 10,
-  heldOutCases: 5,
-  groups: 5,
-  fallbackCases: 0,
-  candidates: [
-    {
-      candidateKey: "fast",
-      providerId: "invented-provider",
-      modelId: "fast-model",
-      modelName: "Fast Model",
-      effort: "low",
-      fastMode: null,
-      trainingQuality: 0.4,
-      learnedCases: 1,
-    },
-    {
-      candidateKey: "deep",
-      providerId: "invented-provider",
-      modelId: "deep-model",
-      modelName: null,
-      effort: "xhigh",
-      fastMode: null,
-      trainingQuality: 0.6,
-      learnedCases: 4,
-    },
-  ],
-  learned: policyResult("learned", 0.71, null),
-  bestFixed: policyResult("best_fixed", 0.58, "fast"),
-  aggregate: policyResult("aggregate", 0.6, null),
+  heldOutCases: 21,
+  groups: 21,
+  observedQuality: 0.62,
+  reasons: ["not_superior_to_every_registered_baseline"],
+  certificateId: null,
 };
 
-it("shows a learned preview as research next to the fallback order", async () => {
+it("shows the newest held-out evaluation next to the fallback order", async () => {
   vi.mocked(api.classPolicies).mockResolvedValue([
-    { ...empty, fits: 1, preview },
+    { ...empty, fits: 1, evaluation },
   ]);
   show("debug");
   const line = await screen.findByTestId("learned-class-preview");
-  expect(line).toHaveTextContent(/Learned preview from .+, not certified/);
   expect(line).toHaveTextContent(
-    /on 5 held-out cases in 5 groups that were measured earlier/,
+    /Held-out evaluation 3 from .+, not certified/,
   );
-  expect(line).toHaveTextContent(/reached utility 0\.71 against 0\.58/);
-  expect(line).toHaveTextContent(/best single model \(Fast Model · low\)/);
-  expect(line).toHaveTextContent(/a difference of \+0\.13/);
-  expect(line).toHaveTextContent(
-    /Paired 95% interval of the difference: -0\.04 to \+0\.32/,
-  );
-  expect(line).toHaveTextContent(/picks deep-model · xhigh on 4 of them/);
+  expect(line).toHaveTextContent(/on 21 held-out cases in 21 groups/);
+  expect(line).toHaveTextContent(/reached 62% quality/);
+  expect(line).toHaveTextContent(/did not clearly beat the fallback order/);
+  expect(line).toHaveTextContent(/Fitted on 10 training cases/);
   const status = screen.getByTestId("learned-class-status");
   expect(status).toHaveAttribute("data-preview", "true");
   expect(status).toHaveAttribute("data-certified", "false");
   expect(status).toHaveTextContent(/No certified task policy yet/);
 });
 
-it("says when a preview found no measured held-out case and hides it once certified", async () => {
+it("says when an evaluation found no held-out case and hides it once certified", async () => {
   vi.mocked(api.classPolicies).mockResolvedValue([
     {
       ...empty,
-      preview: {
-        ...preview,
-        status: "no_held_out_cases",
+      evaluation: {
+        ...evaluation,
+        status: "insufficient_evidence",
         heldOutCases: 0,
-        learned: null,
-        bestFixed: null,
-        aggregate: null,
+        groups: 0,
+        observedQuality: null,
+        reasons: [],
       },
     },
   ]);
   show("debug");
   expect(
-    await screen.findByText(/no measured held-out case of this class/),
+    await screen.findByText(/no qualified held-out case of this class/),
   ).toBeVisible();
   cleanup();
   vi.mocked(api.classPolicies).mockResolvedValue([
     {
       ...empty,
       certificateId: "certificate-1",
-      certifiedAt: Date.UTC(2026, 9, 18),
-      campaignId: "campaign-1",
+      certifiedAt: Date.UTC(2026, 9, 19),
+      campaignId: "evaluation-1",
       modelId: "invented-model",
-      preview,
+      evaluation: { ...evaluation, status: "certified", reasons: [] },
     },
   ]);
   show("debug");
@@ -184,17 +146,4 @@ it("says when a preview found no measured held-out case and hides it once certif
     await screen.findByText(/Certified task policy available/),
   ).toBeVisible();
   expect(screen.queryByTestId("learned-class-preview")).toBeNull();
-});
-
-it("shows no interval for a preview with fewer than four groups", async () => {
-  vi.mocked(api.classPolicies).mockResolvedValue([
-    { ...empty, preview: { ...preview, heldOutCases: 3, groups: 3 } },
-  ]);
-  show("debug");
-  const line = await screen.findByTestId("learned-class-preview");
-  expect(line).toHaveTextContent(/in 3 groups/);
-  expect(line).toHaveTextContent(
-    /Fewer than 4 groups, so no interval is shown/,
-  );
-  expect(line).not.toHaveTextContent(/95%/);
 });

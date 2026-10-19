@@ -522,9 +522,9 @@
     "status": {
       "certified": "Certificada",
       "fallback": "Respaldo",
-      "fallbackPreview": "Respaldo · vista previa",
       "loading": "Cargando…",
-      "unavailable": "No disponible"
+      "unavailable": "No disponible",
+      "fallbackEvaluated": "Respaldo · evaluada"
     },
     "fallbackOrder": "Orden de respaldo",
     "resetClass": "Usar orden predeterminado",
@@ -567,10 +567,13 @@
     "evidenceCertified": "Política certificada disponible. Se evalúa cada tarea con los modelos disponibles; si la política se abstiene, se usan las preferencias de respaldo.",
     "evidencePending": "Sin política certificada: se usan las preferencias de respaldo. Casos cualificados: {{training}} de entrenamiento, {{heldOut}} reservados; {{fits}} ajustes, {{campaigns}} comparaciones.",
     "managePolicy": "Políticas y certificados",
-    "evidencePreview": "Vista previa aprendida del {{date}}, sin certificar: en {{cases}} casos reservados de {{groups}} grupos ya medidos, la elección aprendida alcanzó una utilidad de {{learned}} frente a {{best}} del mejor modelo único ({{bestModel}}), una diferencia de {{gain}}. Elige {{model}} en {{chosen}} de ellos. Ajustada con {{training}} casos de entrenamiento.",
-    "evidencePreviewInterval": "Intervalo pareado del 95 % de la diferencia: {{low}} a {{high}}.",
-    "evidencePreviewFewGroups": "Menos de {{minimum}} grupos, así que no se muestra intervalo.",
-    "evidencePreviewEmpty": "Vista previa aprendida del {{date}}, sin certificar: ajustada con {{training}} casos de entrenamiento y {{candidates}} modelos, pero aún ningún caso reservado medido de esta clase los cubre a todos."
+    "evidenceEvaluation": "Evaluación reservada {{look}} del {{date}}, sin certificar: en {{cases}} casos reservados de {{groups}} grupos, la elección aprendida alcanzó una calidad del {{quality}} %. {{reasons}} Ajustada con {{training}} casos de entrenamiento.",
+    "evidenceEvaluationEmpty": "Evaluación reservada {{look}} del {{date}}: ajustada con {{training}} casos de entrenamiento, pero aún ningún caso reservado calificado de esta clase tiene dos modelos medidos.",
+    "evaluationReason": {
+      "fewer_than_eight_independent_groups": "Algunas comparaciones tienen menos de 8 grupos.",
+      "observed_quality_below_floor": "La calidad está por debajo del mínimo del 50 %.",
+      "not_superior_to_every_registered_baseline": "No superó claramente el orden de respaldo o quedó por detrás de un modelo."
+    }
   },
   "accounts": {
     "title": "Cuentas y límites",

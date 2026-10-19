@@ -955,10 +955,10 @@
     "reviewCase": "Revisar y calificar",
     "trainingHint": "El selector aprende preferencias de proveedor, modelo y esfuerzo según la tarea a partir de resultados puntuados mediante objetivos suaves y pérdida KL. Un ajuste guardado no habilita el enrutamiento certificado.",
     "prepareFit": "Preparar entrenamiento",
-    "previewHint": "La vista previa ajusta esta categoría solo con mediciones de entrenamiento, con cada modelo que tenga al menos ocho casos de entrenamiento completos (sin los proveedores que pueden entrenar con lo enviado), y luego repite el ajuste en casos reservados ya medidos. No llama a ningún modelo ni cambia el enrutamiento.",
-    "previewLearned": "Vista previa de la elección aprendida",
-    "previewRunning": "Ajustando y comparando con casos medidos...",
-    "previewSaved": "Vista previa guardada: {{cases}} casos reservados comparados. El estado de esta categoría muestra el resultado.",
+    "previewHint": "Evaluar ajusta esta categoría solo con mediciones de entrenamiento, con cada modelo que tenga al menos ocho casos de entrenamiento completos (sin los proveedores que pueden entrenar con lo enviado), y luego reproduce el ajuste en los casos reservados medidos de la categoría frente al orden de respaldo. Cada ajuste nuevo o conjunto nuevo de resultados reservados es una consulta registrada; una consulta aprobada certifica la categoría. No llama a ningún modelo.",
+    "previewLearned": "Evaluar la elección aprendida",
+    "previewRunning": "Ajustando y evaluando en casos medidos...",
+    "previewSaved": "Consulta {{look}} guardada: {{cases}} casos reservados comparados, {{status}}. El estado bajo esta categoría muestra el resultado.",
     "noFits": "No hay ajustes del selector guardados para esta categoría.",
     "fitSummary": "{{groups}} grupos de entrenamiento · {{candidates}} configuraciones · Solo investigación",
     "comparisonsHint": "Fija la comparación con flujos reservados y su regla de aceptación antes de empezar. Solo una comparación completa que apruebe permite emitir un certificado. Abrir estas herramientas no inicia llamadas a modelos.",
@@ -974,7 +974,12 @@
     "certificateSummary": "{{groups}} grupos independientes · {{quality}}% calidad observada · {{floor}}% umbral de predicción",
     "contract": "{{role}} · {{runtime}} · Límite de {{seconds}}s por paso · {{steps}} pasos",
     "manageCertificate": "Gestionar certificado",
-    "noRole": "Sin restricción de rol"
+    "noRole": "Sin restricción de rol",
+    "evaluationStatus": {
+      "certified": "certificada",
+      "not_certified": "sin certificar",
+      "insufficient_evidence": "aún sin suficientes datos reservados"
+    }
   },
   "authoring": {
     "createVersion": "Crear versión",

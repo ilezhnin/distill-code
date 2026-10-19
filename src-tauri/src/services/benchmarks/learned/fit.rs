@@ -89,6 +89,13 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
             ))
         })?;
         let version = versions[id.as_str()];
+        // A fit reads the train split only: held-out cases are the permanent
+        // evaluation set and never shape a model.
+        if version.manifest.split != "train" {
+            return Err(invalid(format!(
+                "Version {id} is not a training case; a fit never reads held-out cases"
+            )));
+        }
         if version.manifest.work_class_id != request.work_class_id {
             return Err(invalid(format!(
                 "Version {id} belongs to another work class"
@@ -114,15 +121,15 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
                     "Candidates must use the training task's execution profile",
                 ));
             }
-            let cell = matrix
+            // A candidate this case never measured, or measured incompletely,
+            // is absent here: masked, never a zero.
+            let Some(cell) = matrix
                 .iter()
                 .find(|cell| cell["configuration"]["candidateKey"] == configuration.id)
-                .ok_or_else(|| {
-                    coverage(format!(
-                        "Candidate {} has no eligible training column",
-                        configuration.model_id
-                    ))
-                })?;
+            else {
+                targets.push(absent(&configuration.id));
+                continue;
+            };
             if cell["configuration"]["inventoryRevision"].as_str()
                 != configuration.inventory_revision.as_deref()
             {
@@ -133,10 +140,8 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
             }
             let status = cell["observationStatus"].as_str().unwrap_or("unknown");
             if !matches!(status, "observed" | "not_planned" | "authored_by_candidate") {
-                return Err(coverage(format!(
-                    "Version {id}, candidate {}: {status}",
-                    configuration.model_id
-                )));
+                targets.push(absent(&configuration.id));
+                continue;
             }
             let observed = status == "observed";
             if observed && version.manifest.environment.get("judgePanel").is_some() {
@@ -202,8 +207,29 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
             targets,
         });
     }
-    if common_cases < MIN_CASES || common_groups.len() < 2 {
-        return Err(coverage(format!("Need at least 8 common training cases in 2 independent groups; found {common_cases} cases in {} groups", common_groups.len())));
+    let _ = common_groups;
+    let groups: BTreeSet<_> = examples.iter().map(|e| &e.split_group).collect();
+    if groups.len() < 2 {
+        return Err(coverage(
+            "Training cases must come from at least two independent groups",
+        ));
+    }
+    // Candidates need not share cases; each needs enough of its own.
+    for configuration in &request.configurations {
+        let measured = examples
+            .iter()
+            .filter(|e| {
+                e.targets
+                    .iter()
+                    .any(|t| t.candidate_key == configuration.id && t.reward.is_some())
+            })
+            .count();
+        if measured < MIN_CANDIDATE_CASES {
+            return Err(coverage(format!(
+                "Candidate {} has {measured} measured training cases; the pool needs {MIN_CANDIDATE_CASES}",
+                configuration.model_id
+            )));
+        }
     }
     if scopes.len() != 1 {
         return Err(invalid(
@@ -219,6 +245,19 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
         model,
         snapshot,
     })
+}
+
+/// A candidate a training case did not measure completely: masked.
+fn absent(candidate_key: &str) -> TrainingTarget {
+    TrainingTarget {
+        candidate_key: candidate_key.to_owned(),
+        status: "absent".into(),
+        reward: None,
+        utility: None,
+        mean_duration_ms: None,
+        mean_cost: None,
+        evidence: serde_json::Value::Null,
+    }
 }
 
 /// A ledger cell's mean repetition duration, unknown if any repetition lacks one.
@@ -344,6 +383,54 @@ pub(super) fn selection_distribution(
         .collect())
 }
 
+/// SplitMix64: a fixed, portable stream for the recipe's subset draws.
+fn split_mix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// The case's full measured distribution, then seeded random subsets of at
+/// least two of its candidates. A softmax restricted to a subset equals the
+/// full softmax renormalized over it, so each subset target is that. The
+/// stream depends only on the recipe seed and the case's version id.
+pub(super) fn subset_targets(
+    example: &TrainingExample,
+    full: &[(usize, f64)],
+) -> Result<Vec<Vec<(usize, f64)>>> {
+    let mut draws = vec![full.to_vec()];
+    if full.len() <= 2 {
+        return Ok(draws);
+    }
+    let digest = Sha256::digest(example.version_id.as_bytes());
+    let mut state =
+        SUBSET_SEED ^ u64::from_le_bytes(digest[..8].try_into().expect("eight digest bytes"));
+    let unit = |state: &mut u64| (split_mix(state) >> 11) as f64 / (1u64 << 53) as f64;
+    while draws.len() < SUBSET_DRAWS {
+        let mut subset: Vec<(usize, f64)> = Vec::new();
+        for member in full {
+            if unit(&mut state) < SUBSET_INCLUSION {
+                subset.push(*member);
+            }
+        }
+        while subset.len() < 2 {
+            let pick = full[(split_mix(&mut state) % full.len() as u64) as usize];
+            if subset.iter().all(|(index, _)| *index != pick.0) {
+                subset.push(pick);
+            }
+        }
+        subset.sort_by_key(|(index, _)| *index);
+        let total: f64 = subset.iter().map(|(_, p)| p).sum();
+        if !(total.is_finite() && total > 0.0) {
+            return Err(invalid("A selection subset has no probability mass"));
+        }
+        draws.push(subset.into_iter().map(|(i, p)| (i, p / total)).collect());
+    }
+    Ok(draws)
+}
+
 pub(super) fn train_selection(
     snapshot: &TrainingSnapshot,
     vectors: &[Vec<f64>],
@@ -352,26 +439,34 @@ pub(super) fn train_selection(
     for example in &snapshot.examples {
         *groups.entry(&example.split_group).or_insert(0usize) += 1;
     }
+    // Every case contributes its full measured set and seeded random subsets
+    // of it, each a softmax target of its own over the subset's utilities.
     let targets = snapshot
         .examples
         .iter()
-        .map(|example| selection_distribution(&example.targets, &snapshot.request.configurations))
+        .map(|example| {
+            let full = selection_distribution(&example.targets, &snapshot.request.configurations)?;
+            subset_targets(example, &full)
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut heads = vec![vec![0.0; DIMENSIONS]; snapshot.request.configurations.len()];
     for _ in 0..ITERATIONS {
         let mut gradients = vec![vec![0.0; DIMENSIONS]; heads.len()];
-        for ((example, x), target) in snapshot.examples.iter().zip(vectors).zip(&targets) {
-            // Each related group has equal total weight. Unobserved candidates
-            // enter neither the target nor the policy's training denominator.
-            let weight = 1.0 / (groups[&example.split_group] * groups.len()) as f64;
-            let logits: Vec<_> = target
-                .iter()
-                .map(|(index, _)| features::dot(x, &heads[*index]))
-                .collect();
-            for ((index, target), probability) in target.iter().zip(softmax(&logits)?) {
-                let error = weight * (probability - target);
-                for (gradient, feature) in gradients[*index].iter_mut().zip(x) {
-                    *gradient += error * feature;
+        for ((example, x), draws) in snapshot.examples.iter().zip(vectors).zip(&targets) {
+            // Each related group has equal total weight, shared by the case's
+            // draws. Unobserved candidates enter neither the target nor the
+            // policy's training denominator.
+            let weight = 1.0 / (groups[&example.split_group] * groups.len() * draws.len()) as f64;
+            for target in draws {
+                let logits: Vec<_> = target
+                    .iter()
+                    .map(|(index, _)| features::dot(x, &heads[*index]))
+                    .collect();
+                for ((index, target), probability) in target.iter().zip(softmax(&logits)?) {
+                    let error = weight * (probability - target);
+                    for (gradient, feature) in gradients[*index].iter_mut().zip(x) {
+                        *gradient += error * feature;
+                    }
                 }
             }
         }

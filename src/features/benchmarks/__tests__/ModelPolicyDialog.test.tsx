@@ -21,7 +21,7 @@ vi.mock("../api/benchmarks", () => ({
 vi.mock("../api/benchmarkGovernance", () => ({
   benchmarkGovernanceApi: {
     listPromotions: vi.fn(),
-    previewLearnedClass: vi.fn(),
+    evaluateClass: vi.fn(),
     revokePromotion: vi.fn(),
   },
 }));
@@ -253,14 +253,14 @@ it("lists issued and revoked scoped certificates without treating a fit as a cer
   );
 });
 
-it("revokes a holdout certificate in place, since it has no campaign to manage", async () => {
+it("revokes a held-out certificate in place, since it has no campaign to manage", async () => {
   vi.mocked(api.listPromotions).mockResolvedValue([
     {
       ...certificate,
       certificate: {
         ...certificate.certificate,
         id: "holdout-debug",
-        source: "executor_holdout",
+        source: "held_out_certification",
       },
     },
   ]);
@@ -296,16 +296,19 @@ it("does not describe unreadable certificate evidence as an empty registry", asy
   expect(screen.queryByText(/No issued certificates/)).toBeNull();
 });
 
-it("previews the learned choice of the category from its own training cells only", async () => {
+it("evaluates the learned choice of the category against its manual order", async () => {
   const user = userEvent.setup();
-  vi.mocked(api.previewLearnedClass).mockResolvedValue({
-    modelId: "fit-preview",
+  vi.mocked(api.evaluateClass).mockResolvedValue({
+    id: "evaluation",
     workClassId: "debug",
     createdAt: 3000,
-    recipe: "retrospective-exposed-holdout-preview-v1",
-    runtimeMatch: "model_identity",
-    trainingCases: 10,
-    trainingGroups: 10,
+    recipe: "held-out-certification-v1",
+    fitRecipe: "family-weighted-softmax-kl-v2-random-subsets",
+    modelId: "fit",
+    modelSnapshotHash: "snapshot",
+    look: 2,
+    personaKeys: ["a"],
+    aggregateKeys: ["a"],
     excludedProviders: ["kimi-acp", "zai-acp"],
     candidates: [],
     cases: Array.from({ length: 5 }, (_, index) => ({
@@ -315,37 +318,43 @@ it("previews the learned choice of the category from its own training cells only
       aggregateKey: "a",
       usedFallback: false,
     })),
-    groups: 5,
-    fallbackCases: 0,
-    policies: [],
+    unqualifiedCases: 0,
+    ungradedCells: 0,
+    snapshotHash: "snapshot",
+    assessment: null,
+    status: "not_certified",
     limitations: [],
-    status: "retrospective_preview",
-    dispatchAllowed: false,
+    qualificationIds: [],
+    certificateId: null,
     artifactHash: "hash",
   });
   show();
   await user.click(await screen.findByRole("tab", { name: "Training" }));
   await user.click(
-    screen.getByRole("button", { name: "Preview learned choice" }),
+    screen.getByRole("button", { name: "Evaluate learned choice" }),
   );
-  expect(api.previewLearnedClass).toHaveBeenCalledWith({
-    workClassId: "debug",
-  });
+  // The comparator is the class's own manual order from the app's ranking.
+  const request = vi.mocked(api.evaluateClass).mock.calls[0][0];
+  expect(request.workClassId).toBe("debug");
+  expect(request.personaOrder.length).toBeGreaterThan(0);
+  expect(request.personaOrder[0].needles.length).toBeGreaterThan(0);
   expect(
-    await screen.findByText(/Preview saved: 5 held-out cases compared/),
+    await screen.findByText(
+      /Look 2 saved: 5 held-out cases compared, not certified/,
+    ),
   ).toBeVisible();
   expect(screen.getByText(/makes no model calls/)).toBeVisible();
 });
 
-it("shows why a preview could not fit the category", async () => {
+it("shows why an evaluation could not fit the category", async () => {
   const user = userEvent.setup();
-  vi.mocked(api.previewLearnedClass).mockRejectedValue(
+  vi.mocked(api.evaluateClass).mockRejectedValue(
     new Error("Fewer than two candidates share eight complete training cases"),
   );
   show();
   await user.click(await screen.findByRole("tab", { name: "Training" }));
   await user.click(
-    screen.getByRole("button", { name: "Preview learned choice" }),
+    screen.getByRole("button", { name: "Evaluate learned choice" }),
   );
   expect(
     await screen.findByText(/Fewer than two candidates share eight/),
