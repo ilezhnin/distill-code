@@ -63,6 +63,15 @@ fn manifest_summary(json: &str) -> Result<ManifestSummary> {
     }
     Ok(summary)
 }
+/// How long a statement waits for another connection's write to finish.
+/// Tests run hundreds of stores side by side, and a loaded CI runner holds
+/// a test's own transactions far longer (10-18: a campaign test paused on
+/// "database is locked"), so tests wait longer; the app keeps 10 s.
+#[cfg(not(test))]
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 impl Store {
     pub async fn open(root: &Path) -> Result<Self> {
         tokio::fs::create_dir_all(root).await?;
@@ -72,7 +81,7 @@ impl Store {
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
-            .busy_timeout(std::time::Duration::from_secs(10));
+            .busy_timeout(BUSY_TIMEOUT);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(options)

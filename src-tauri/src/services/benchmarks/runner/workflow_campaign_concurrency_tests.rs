@@ -464,7 +464,11 @@ async fn concurrent_campaign_refills_while_slow_children_fly_and_drains_all_on_p
 #[tokio::test]
 async fn concurrent_campaign_slot_timeout_seals_unscored_first_evidence_without_dispatch_or_retry()
 {
-    let (dir, service, backend, frozen) = setup_with_timeout(8, 10).await;
+    // The waiting roots must run out of wall budget, and the roots that go on
+    // after the resume must not: 30 s leaves a loaded CI runner room for the
+    // latter (10-19: with 10 s, a root that went on after the resume ran out
+    // before its session started and paused the campaign).
+    let (dir, service, backend, frozen) = setup_with_timeout(8, 30).await;
     let frozen = legacy_bounded_plan(&service, frozen).await;
     service
         .control_workflow_campaign(&frozen.plan.id, "start")
@@ -503,7 +507,7 @@ async fn concurrent_campaign_slot_timeout_seals_unscored_first_evidence_without_
         .map(|(run, _)| run.clone())
         .collect();
     assert_eq!(dispatched.len(), 4);
-    let expired = tokio::time::timeout(Duration::from_secs(20), async {
+    let expired = tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             let waiting: Vec<_> = children(&service, &frozen)
                 .await
