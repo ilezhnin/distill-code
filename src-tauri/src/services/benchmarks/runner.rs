@@ -28,7 +28,11 @@ pub(crate) mod native_receipt;
 pub(crate) const MIN_JUDGES: usize = 2;
 /// Most judges on one panel; plan admission reserves this many calls.
 pub(crate) const MAX_JUDGES: usize = 3;
-pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 180;
+/// How long one judge turn may take. 10-18: Grok 4.7 high judged text
+/// rubrics in a median 122 s with a tenth at the old 180 s cap, and six of
+/// its sheets timed out; every other judge's 90th percentile stays near a
+/// minute, so a fast judge finishes as soon as before.
+pub(super) const JUDGE_TIMEOUT_SECONDS: u32 = 600;
 const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or cancelled";
 pub(super) const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
 pub(super) const RENDERER_BUSY: &str =

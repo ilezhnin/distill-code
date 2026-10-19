@@ -309,7 +309,8 @@ is marked `authorModel`. With fewer than two labs offered, more models of the
 seated labs fill the panel to two (a visual rubric's Opus and Sonnet while no
 other lab passed its visual calibration); with fewer than two judges a
 rendering stays unjudged (pending review, with the panel's reason). Each seat
-runs at its entry's effort, which its account must offer. The ordinary panel's
+runs at its entry's effort, which its account must offer, and a judge turn has
+ten minutes for its sheet (Grok 4.7 high takes two to three). The ordinary panel's
 recipe (`three-lab-v1`) and the labs it seated enter its protocol and its hash,
 so its scores never compare with earlier panels, and the hash names them
 instead of the seated judges: the calibrated seats rotate by usage, so one
