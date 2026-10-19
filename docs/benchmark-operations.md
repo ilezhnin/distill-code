@@ -594,7 +594,15 @@ them out. Workflow steps and rubric judges add calls; use
 formula. Qualification-control counts, candidate calls and judge calls are
 different quantities and should be reported separately.
 
-Set the research run's `executionLimits.retryPolicy` to `none`. Use at least
+Set the research run's `executionLimits.retryPolicy` to `none`. Such a run still
+waits out a usage limit: a turn the limit refused, or stopped before anything of
+it was evaluated, is discarded, and the same attempt goes again on the same
+account after the reset, never on another account. A try the limit refuses
+again before any answer waits again, so only one answer is ever measured. A
+limit no reset lifts (billing, an account on hold, no credit) settles the
+attempt as it ended, and so does a turn the runner had already stopped itself.
+A workflow root under it settles with its quota outcome instead, since its
+committed steps are never replayed. Use at least
 three repetitions for a complete leaderboard measurement. Set an explicit
 `maxExecutions` and a realistic `timeoutSeconds`; if applicable, also set
 `executionLimits.dispatchNotAfterMs`. Review a valid preview and resource budget
@@ -692,7 +700,8 @@ had its answer collected and sealed, and began its evaluation; with
 `startedAt` and the evaluation's `createdAt` these split its preparation,
 turn, collection and check. Attempts recorded
 before these fields existed, and attempts recovered after an application
-restart, do not have them. Compare speed across attempts admitted under
+restart, do not have them; a try that went back to the queue drops its phase
+times, so they always describe the attempt's last try. Compare speed across attempts admitted under
 similar conditions (the policy, the rule, the sessions running and the
 competing jobs), or stratify by them.
 

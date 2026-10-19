@@ -1894,6 +1894,49 @@ fn refused_for_quota(error: &Value, output: &str, usage: &TokenUsage) -> bool {
         && usage.output.unwrap_or(0) == 0
 }
 
+/// Whether the provider's usage limit stopped a dispatched turn before
+/// anything decided it. The answer it cut off was never finished, so none of
+/// it is measured: the turn is discarded and the attempt waits for the reset,
+/// as after a refusal before any answer ([`refused_for_quota`]). A turn that
+/// broke its policy, or passed its answer cap, already settled as that (the
+/// caller also keeps a turn it cancelled itself), and a limit no reset lifts
+/// ([`lasting_quota`]) settles as it ended.
+fn stopped_for_quota(error: &Value, capture: &TurnCapture, repository: bool) -> bool {
+    crate::services::provider_account_status::is_quota_error(error)
+        && !lasting_quota(error)
+        && capture.violation.is_none()
+        && (repository || !capture.answer_capped)
+}
+
+/// The quota kinds of an account that no usage reset brings back: billing,
+/// an account on hold, no credit left.
+const LASTING_QUOTA_KINDS: [&str; 3] = ["billing_error", "account_on_hold", "insufficient_quota"];
+
+/// Whether a quota error names a limit no reset lifts (see
+/// [`LASTING_QUOTA_KINDS`]), in a typed field or the provider's message.
+fn lasting_quota(error: &Value) -> bool {
+    let typed = [
+        "/data/errorKind",
+        "/errorKind",
+        "/data/codexErrorInfo",
+        "/codexErrorInfo",
+        "/data/code",
+        "/error/code",
+        "/code",
+    ];
+    let said = ["/message", "/data/message"];
+    typed
+        .iter()
+        .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .any(|kind| LASTING_QUOTA_KINDS.contains(&kind.as_str()))
+        || said
+            .iter()
+            .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+            .map(str::to_ascii_lowercase)
+            .any(|text| LASTING_QUOTA_KINDS.iter().any(|kind| text.contains(kind)))
+}
+
 /// The longest a run waits on one provider's usage limit. A 5-hour window
 /// resets within it, so a reset further off, or refusals that go on past it,
 /// are a limit the run cannot wait out.
@@ -2336,7 +2379,8 @@ async fn drop_collection_clock(store: &Store, attempt: &mut Attempt) -> Result<(
 }
 
 /// Puts `attempt` back in the queue with `reason`, without anything of the
-/// try the provider never saw.
+/// try it discards: its phase times go with its claim, so a session that try
+/// opened never counts as the next try's (see [`unstarted_timeout`]).
 pub(super) fn requeue(attempt: &mut Attempt, reason: String) {
     attempt.phase = "pending".into();
     attempt.started_at = None;
@@ -2346,6 +2390,7 @@ pub(super) fn requeue(attempt: &mut Attempt, reason: String) {
     attempt.event_cursor = 0;
     attempt.usage = TokenUsage::default();
     attempt.resolved_model = None;
+    attempt.phase_times = None;
     attempt.reason = Some(reason);
     attempt.wait_until = None;
 }
@@ -5479,7 +5524,9 @@ async fn wait_for_owned_turn(
             && attempt.event_cursor >= status.event_cursor
         {
             if let Some(error) = status.error.as_ref().filter(|e| {
-                is_quota_wait(e) || refused_for_quota(e, &capture.output, &attempt.usage)
+                is_quota_wait(e)
+                    || refused_for_quota(e, &capture.output, &attempt.usage)
+                    || (!cancelled && stopped_for_quota(e, capture, repository))
             }) {
                 return Err(BenchmarkError::new(QUOTA_WAIT, error.to_string()));
             }
@@ -7658,6 +7705,21 @@ impl BenchmarkService {
                 local_refusals_cleared(&a.id);
                 let retry_allowed = run.request.automatic_retry()
                     && run.request.require_dispatch_admission(now()).is_ok();
+                // A usage limit that stopped the turn before anything of it
+                // was evaluated waits for the reset under every retry policy:
+                // the unfinished turn is discarded and the same attempt goes
+                // again. A run that forbids retries never moves it to another
+                // account, and settles a workflow root, whose committed steps
+                // it never replays.
+                let waits_for_quota = error.code == QUOTA_WAIT
+                    && failed.evaluations.is_empty()
+                    && run.request.require_dispatch_admission(now()).is_ok()
+                    && (retry_allowed || version.manifest.workflow.is_none());
+                let back_to_queue = if error.code == QUOTA_WAIT {
+                    waits_for_quota
+                } else {
+                    retry_allowed
+                };
                 if retry_allowed && error.code == "account_busy" {
                     failed.phase = "pending".into();
                     failed.started_at = None;
@@ -7681,7 +7743,7 @@ impl BenchmarkService {
                 // operator resumed settles the cell instead.
                 // A limit that ran out on this account moves the test to
                 // another account of the provider with room, if there is one.
-                if retry_allowed && error.code == QUOTA_WAIT {
+                if retry_allowed && waits_for_quota {
                     if let Some(account) = a.configuration.account_id.as_deref() {
                         exhaust(
                             &run.id,
@@ -7710,7 +7772,7 @@ impl BenchmarkService {
                         return Ok(());
                     }
                 }
-                if retry_allowed
+                if back_to_queue
                     && returns_to_queue(&error.code, &failed.phase)
                     && !refused_again(&a, &error)
                 {
@@ -8123,6 +8185,10 @@ pub struct FakeBackend {
     pub quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     accepted_quota_waits: std::sync::atomic::AtomicU64,
+    /// Accepted turns that report a usage limit after their answer was
+    /// already evaluated.
+    #[cfg(test)]
+    evaluated_quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     inventory_delay_ms: std::sync::atomic::AtomicU64,
     #[cfg(test)]
@@ -8420,12 +8486,29 @@ impl ExecutionBackend for FakeBackend {
                 a.phase = "running".into();
                 a.session_id = Some(format!("accepted-session-{}", a.id));
                 a.host_run_id = Some(format!("accepted-turn-{}", a.id));
+                mark_phase(&mut a, "sessionOpened");
+                mark_phase(&mut a, "dispatched");
                 a.usage.input = Some(7);
                 store.save_attempt(&a).await?;
                 return Err(BenchmarkError::new(
                     QUOTA_WAIT,
                     json!({"kind":QUOTA_WAIT,"dispatchStarted":true,"nextReset":now()+60_000})
                         .to_string(),
+                ));
+            }
+            #[cfg(test)]
+            if take(&self.evaluated_quota_waits) {
+                a.phase = "running".into();
+                a.session_id = Some(format!("evaluated-session-{}", a.id));
+                a.host_run_id = Some(format!("evaluated-turn-{}", a.id));
+                a.usage.input = Some(7);
+                let output = v.manifest.evaluator.known_good.clone();
+                a.evaluations.push(evaluate(&v.manifest, &output).await?);
+                a.output = Some(output);
+                store.save_attempt(&a).await?;
+                return Err(BenchmarkError::new(
+                    QUOTA_WAIT,
+                    json!({"kind":QUOTA_WAIT,"dispatchStarted":true}).to_string(),
                 ));
             }
             let flying = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -11523,6 +11606,46 @@ mod tests {
         // A model the plan leaves out is no quota.
         let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
         assert!(!refused_for_quota(&refused, "", &empty));
+    }
+    #[test]
+    fn a_usage_limit_mid_answer_stops_the_turn_for_quota_unless_something_decided_it() {
+        // Claude Code's session limit as the host reports it after a long answer.
+        let limit = json!({"code":-32603,"data":{"accountId":"invented-account",
+            "dispatchStarted":true,"errorKind":"quota_exhausted","promptNotAccepted":false,
+            "sessionFailure":{"actions":[],"category":"limit","severity":"error",
+                "title":"You've hit your session limit · resets 7pm (America/Los_Angeles)"}},
+            "message":"You've hit your session limit · resets 7pm (America/Los_Angeles)"});
+        let mut capture = TurnCapture::new(1024);
+        capture.output = "an answer cut off midway".into();
+        assert!(stopped_for_quota(&limit, &capture, false));
+        // Anything else that ended the turn is no quota.
+        let crashed = json!({"code":-32603,"data":{"errorKind":"provider_failure",
+            "dispatchStarted":true},"message":"bridge exited"});
+        assert!(!stopped_for_quota(&crashed, &capture, false));
+        let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
+        assert!(!stopped_for_quota(&refused, &capture, false));
+        // A limit no reset lifts settles as it ended instead of waiting.
+        for kind in LASTING_QUOTA_KINDS {
+            let lasting = json!({"data":{"errorKind":kind,"dispatchStarted":true},
+                "message":"invented provider words"});
+            assert!(!stopped_for_quota(&lasting, &capture, false), "{kind}");
+        }
+        let said = json!({"message":"insufficient_quota: add credits to continue"});
+        assert!(crate::services::provider_account_status::is_quota_error(
+            &said
+        ));
+        assert!(!stopped_for_quota(&said, &capture, false));
+        // A broken policy settles as that, whatever stopped the turn after.
+        let mut violated = TurnCapture::new(1024);
+        violated.violation = Some("invented violation".into());
+        assert!(!stopped_for_quota(&limit, &violated, false));
+        // So does an answer past its cap, except in a repository, whose
+        // answer is its work tree.
+        let mut capped = TurnCapture::new(4);
+        capped.output = "longer than four bytes".into();
+        assert!(capped.cap_answer());
+        assert!(!stopped_for_quota(&limit, &capped, false));
+        assert!(stopped_for_quota(&limit, &capped, true));
     }
     #[tokio::test]
     async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {

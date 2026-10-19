@@ -14,10 +14,104 @@ async fn bounded_request(service: &BenchmarkService) -> RunRequest {
 }
 
 #[tokio::test]
-async fn execution_limits_accepted_quota_never_retries_or_changes_account() {
+async fn execution_limits_quota_waits_then_dispatches_once_on_the_same_account() {
+    // Before dispatch (the host saw the limit coming) and mid-turn (the
+    // provider stopped an accepted turn): both wait for the reset and then
+    // send the same attempt once, never on the other account.
+    for accepted in [false, true] {
+        let (dir, service, backend) = setup().await;
+        *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
+        if accepted {
+            backend.accepted_quota_waits.store(1, Ordering::SeqCst);
+        } else {
+            backend.quota_waits.store(1, Ordering::SeqCst);
+        }
+        let run = service
+            .start_run(bounded_request(&service).await)
+            .await
+            .unwrap();
+        service.tick().await.unwrap();
+        let held = service.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running", "accepted {accepted}");
+        assert_eq!(held.attempts.len(), 1);
+        let waiting = &held.attempts[0];
+        assert_eq!(waiting.phase, "pending");
+        assert!(waiting.wait_until.is_some_and(|until| until > now()));
+        // The unfinished turn is gone, so the next try is the cell's first.
+        assert!(waiting.session_id.is_none() && waiting.host_run_id.is_none());
+        assert!(waiting.phase_times.is_none());
+        assert_eq!(waiting.usage.input, None);
+        assert_eq!(
+            waiting.configuration.account_id.as_deref(),
+            Some("isolated")
+        );
+        // Nothing is sent before the reset.
+        service.tick().await.unwrap();
+        let sent = u64::from(accepted);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), sent);
+        PROVIDER_HOLDS
+            .lock()
+            .unwrap()
+            .retain(|(held, _), _| held != &run.id);
+        for _ in 0..3 {
+            service.tick().await.unwrap();
+        }
+        let completed = service.store.run(&run.id).await.unwrap();
+        assert_eq!(completed.state, "completed", "accepted {accepted}");
+        assert_eq!(completed.attempts.len(), 1);
+        let attempt = &completed.attempts[0];
+        assert_eq!(attempt.phase, "terminal");
+        assert_eq!(attempt.outcome.as_deref(), Some("pass"));
+        assert_eq!(
+            attempt.configuration.account_id.as_deref(),
+            Some("isolated")
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), sent + 1);
+        dir.close().await;
+    }
+}
+
+#[tokio::test]
+async fn execution_limits_quota_after_an_evaluation_never_discards_the_turn() {
+    for retry_policy in [RunRetryPolicy::None, RunRetryPolicy::Automatic] {
+        let (dir, service, backend) = setup().await;
+        *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
+        backend.evaluated_quota_waits.store(1, Ordering::SeqCst);
+        let mut request = bounded_request(&service).await;
+        request.execution_limits.as_mut().unwrap().retry_policy = retry_policy;
+        let run = service.start_run(request).await.unwrap();
+        for _ in 0..3 {
+            service.tick().await.unwrap();
+        }
+        let settled = service.store.run(&run.id).await.unwrap();
+        // It settles where it stands: unmeasured, for the operator in a run
+        // without retries.
+        let none = retry_policy == RunRetryPolicy::None;
+        assert_eq!(
+            settled.state,
+            if none { "needs_attention" } else { "completed" }
+        );
+        assert_eq!(settled.attempts.len(), 1);
+        let attempt = &settled.attempts[0];
+        assert_eq!(attempt.phase, "terminal", "{retry_policy:?}");
+        assert_eq!(attempt.outcome.as_deref(), Some(QUOTA_WAIT));
+        assert_eq!(attempt.evaluations.len(), 1);
+        assert!(attempt.session_id.is_some() && attempt.host_run_id.is_some());
+        assert_eq!(attempt.usage.input, Some(7));
+        assert_eq!(
+            attempt.configuration.account_id.as_deref(),
+            Some("isolated")
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+}
+
+#[tokio::test]
+async fn execution_limits_predispatch_refusals_settle_without_retry() {
     let (dir, service, backend) = setup().await;
+    backend.capability_refusals.store(1, Ordering::SeqCst);
     *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
-    backend.accepted_quota_waits.store(1, Ordering::SeqCst);
     let run = service
         .start_run(bounded_request(&service).await)
         .await
@@ -28,75 +122,17 @@ async fn execution_limits_accepted_quota_never_retries_or_changes_account() {
     let stopped = service.store.run(&run.id).await.unwrap();
     assert_eq!(stopped.state, "needs_attention");
     assert_eq!(stopped.attempts.len(), 1);
-    let attempt = &stopped.attempts[0];
-    assert_eq!(attempt.phase, "terminal");
-    assert_eq!(attempt.outcome.as_deref(), Some(QUOTA_WAIT));
-    assert!(attempt
-        .reason
-        .as_deref()
-        .unwrap()
-        .contains("\"dispatchStarted\":true"));
+    assert_eq!(stopped.attempts[0].phase, "terminal");
     assert_eq!(
-        attempt.configuration.account_id.as_deref(),
+        stopped.attempts[0].outcome.as_deref(),
+        Some("capability_missing")
+    );
+    assert_eq!(
+        stopped.attempts[0].configuration.account_id.as_deref(),
         Some("isolated")
     );
-    assert_eq!(attempt.usage.input, Some(7));
-    assert!(attempt.session_id.is_some() && attempt.host_run_id.is_some());
-    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-    let saved = serde_json::to_value(attempt).unwrap();
-    assert_eq!(
-        service.control(&run.id, "resume").await.unwrap_err().code,
-        "retry_forbidden"
-    );
-    assert_eq!(
-        service.extend_run(&run.id, &[]).await.unwrap_err().code,
-        "retry_forbidden"
-    );
-    service.store.recover().await.unwrap();
-    service.tick().await.unwrap();
-    let recovered = service.store.run(&run.id).await.unwrap();
-    assert_eq!(recovered.attempts.len(), 1);
-    assert_eq!(serde_json::to_value(&recovered.attempts[0]).unwrap(), saved);
-    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     dir.close().await;
-}
-
-#[tokio::test]
-async fn execution_limits_predispatch_refusals_settle_without_retry() {
-    for quota in [false, true] {
-        let (dir, service, backend) = setup().await;
-        if quota {
-            backend.quota_waits.store(1, Ordering::SeqCst);
-        } else {
-            backend.capability_refusals.store(1, Ordering::SeqCst);
-        }
-        *backend.accounts_of.lock().unwrap() = vec!["isolated".into(), "alternative".into()];
-        let run = service
-            .start_run(bounded_request(&service).await)
-            .await
-            .unwrap();
-        for _ in 0..3 {
-            service.tick().await.unwrap();
-        }
-        let stopped = service.store.run(&run.id).await.unwrap();
-        assert_eq!(stopped.state, "needs_attention");
-        assert_eq!(stopped.attempts.len(), 1);
-        assert_eq!(stopped.attempts[0].phase, "terminal");
-        assert_eq!(
-            stopped.attempts[0].outcome.as_deref(),
-            Some(if quota {
-                QUOTA_WAIT
-            } else {
-                "capability_missing"
-            })
-        );
-        assert_eq!(
-            stopped.attempts[0].configuration.account_id.as_deref(),
-            Some("isolated")
-        );
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
-        dir.close().await;
-    }
 }
 
 #[tokio::test]
