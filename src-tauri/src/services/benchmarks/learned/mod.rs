@@ -2,9 +2,9 @@
 //! Promotion and dispatch require separate evidence; this module grants neither.
 mod features;
 mod fit;
-pub mod holdout;
+
+pub mod certify;
 mod persistence;
-pub mod preview;
 pub mod report;
 #[cfg(test)]
 pub(super) mod tests;
@@ -17,7 +17,20 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 const LEGACY_RECIPE: &str = "family-weighted-ridge-v1";
-const RECIPE: &str = "family-weighted-softmax-kl-v1";
+const RECIPE_V1: &str = "family-weighted-softmax-kl-v1";
+/// Conductor-style: the selection head learns from seeded random subsets of
+/// the candidates each training case measured, so it chooses among whatever
+/// candidates are present and a candidate joins once it has training cells.
+const RECIPE: &str = "family-weighted-softmax-kl-v2-random-subsets";
+/// Subsets drawn per training case: the full measured set first, then
+/// `SUBSET_DRAWS - 1` random ones of at least two candidates.
+const SUBSET_DRAWS: usize = 8;
+/// Each measured candidate joins a random subset with this probability.
+const SUBSET_INCLUSION: f64 = 0.5;
+/// Seed of the subset stream; a case's own stream mixes in its version id.
+const SUBSET_SEED: u64 = 0x5355_4253_4554_0002;
+/// Training cases a candidate needs before it joins the pool.
+const MIN_CANDIDATE_CASES: usize = 8;
 const SELECTION_TEMPERATURE: f64 = 0.25;
 const FEATURE_VERSION: &str = "public-task-hash-v1";
 const DIMENSIONS: usize = 128;
@@ -285,12 +298,13 @@ fn model_hash(model: &LearnedModel) -> Result<String> {
 }
 
 fn validate_model(model: &LearnedModel) -> Result<()> {
-    if !matches!(model.recipe.as_str(), RECIPE | LEGACY_RECIPE)
+    if !matches!(model.recipe.as_str(), RECIPE | RECIPE_V1 | LEGACY_RECIPE)
         || model.feature_version != FEATURE_VERSION
         || model.candidate_key_algorithm != routing::CANDIDATE_KEY_ALGORITHM
         || model.id != model_hash(model)?
         || !(2..=MAX_CANDIDATES).contains(&model.candidates.len())
-        || model.common_cases < MIN_CASES
+        || (model.recipe != RECIPE && model.common_cases < MIN_CASES)
+        || model.training_cases < MIN_CASES
         || model.training_cases > MAX_CASES
         || model.training_groups.len() < 2
         || model.candidates.iter().any(|candidate| {
@@ -307,7 +321,7 @@ fn validate_model(model: &LearnedModel) -> Result<()> {
                 .iter()
                 .any(|head| head.len() != DIMENSIONS || head.iter().any(|v| !v.is_finite()))
                 || match (&candidate.selection_coefficients, model.recipe.as_str()) {
-                    (Some(head), RECIPE) => {
+                    (Some(head), RECIPE | RECIPE_V1) => {
                         head.len() != DIMENSIONS || head.iter().any(|v| !v.is_finite())
                     }
                     (None, LEGACY_RECIPE) => false,
@@ -340,7 +354,7 @@ fn softmax(logits: &[f64]) -> Result<Vec<f64>> {
 }
 
 fn rank_scores(model: &LearnedModel, x: &[f64], scores: &mut [PredictionScore]) -> Result<()> {
-    if model.recipe == RECIPE {
+    if matches!(model.recipe.as_str(), RECIPE | RECIPE_V1) {
         let logits: Vec<_> = scores
             .iter()
             .map(|score| {
@@ -530,4 +544,35 @@ pub fn predict_for_class(model: &LearnedModel, request: &PredictionRequest) -> R
         .into();
     }
     Ok(result)
+}
+
+/// The learned choice among the candidates a held-out case actually
+/// measured, as an ordinary chat of the class chooses among the trained
+/// candidates it has: the highest selection mass whose estimated quality
+/// reaches the floor, or none, when the caller's own order decides.
+pub(super) fn choose_among(
+    model: &LearnedModel,
+    task: &PublicTask,
+    present: &[String],
+    min_quality: f64,
+) -> Result<Option<String>> {
+    validate_model(model)?;
+    let x = features::extract(task)?;
+    let mut scores: Vec<PredictionScore> = model
+        .candidates
+        .iter()
+        .filter(|trained| present.contains(&trained.candidate_key))
+        .map(|trained| PredictionScore {
+            candidate_key: trained.candidate_key.clone(),
+            configuration: trained.configuration.clone(),
+            quality: features::dot(&x, &trained.quality_coefficients).clamp(0.0, 1.0),
+            utility: features::dot(&x, &trained.utility_coefficients).clamp(0.0, 1.0),
+            selection_probability: None,
+        })
+        .collect();
+    rank_scores(model, &x, &mut scores)?;
+    Ok(scores
+        .into_iter()
+        .find(|s| s.quality >= min_quality)
+        .map(|s| s.candidate_key))
 }

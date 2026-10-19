@@ -234,8 +234,9 @@ pub struct Certificate {
     /// never for a lone step of its first contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trajectory: Option<CertifiedTrajectory>,
-    /// `executor_holdout` for a class certificate issued from a preregistered
-    /// executor holdout, whose `campaign_*` fields name that holdout plan;
+    /// `held_out_certification` for a class certificate issued from a
+    /// journaled held-out evaluation, whose `campaign_id` names that
+    /// evaluation (`executor_holdout`: a retired holdout, history only);
     /// absent for workflow campaign certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -298,9 +299,9 @@ pub struct ClassPolicy {
     pub held_out_workflows: usize,
     pub fits: usize,
     pub campaigns: usize,
-    /// The newest retrospective preview of the class's learned choice. It is
-    /// research only: a certificate alone changes routing.
-    pub preview: Option<learned::preview::PreviewSummary>,
+    /// The newest journaled held-out evaluation of the class's learned
+    /// choice; a passing one issued the class certificate.
+    pub evaluation: Option<learned::certify::EvaluationSummary>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1169,22 +1170,29 @@ impl Store {
         }
     }
     pub async fn promotion(&self, id: &str) -> Result<State> {
-        let campaign_row=sqlx::query("SELECT artifact_json,artifact_hash,revoked_at,revocation_reason FROM selector_promotions WHERE id=?")
-            .bind(id).fetch_optional(&self.pool).await?;
-        let from_holdout_table = campaign_row.is_none();
-        let row = match campaign_row {
-            Some(row) => row,
-            None => sqlx::query("SELECT artifact_json,artifact_hash,revoked_at,revocation_reason FROM selector_holdout_promotions WHERE id=?")
-                .bind(id).fetch_optional(&self.pool).await?.ok_or_else(|| invalid("Promotion not found"))?,
-        };
+        // Each table holds one kind of certificate: campaign certificates,
+        // retired executor-holdout ones, and held-out class certificates.
+        let mut found = None;
+        for (table, source) in [
+            ("selector_promotions", None),
+            ("selector_holdout_promotions", Some(holdout::LEGACY_SOURCE)),
+            ("selector_class_certificates", Some(holdout::SOURCE)),
+        ] {
+            if let Some(row) = sqlx::query(&format!("SELECT artifact_json,artifact_hash,revoked_at,revocation_reason FROM {table} WHERE id=?"))
+                .bind(id).fetch_optional(&self.pool).await?
+            {
+                found = Some((row, source));
+                break;
+            }
+        }
+        let (row, table_source) = found.ok_or_else(|| invalid("Promotion not found"))?;
         let certificate: Certificate = serde_json::from_str(row.try_get("artifact_json")?)?;
         let mut body = certificate.clone();
         body.artifact_hash.clear();
         if certificate.id != id
             || hash(&body)? != certificate.artifact_hash
             || row.try_get::<String, _>("artifact_hash")? != certificate.artifact_hash
-            // Each table holds only its own kind of certificate.
-            || certificate.source.as_deref() != from_holdout_table.then_some(holdout::SOURCE)
+            || certificate.source.as_deref() != table_source
         {
             return Err(invalid("Promotion integrity check failed"));
         }
@@ -1291,10 +1299,10 @@ impl Store {
         if reason.trim().is_empty() || reason.len() > 4096 {
             return Err(invalid("Revocation needs a bounded reason"));
         }
-        let table = if self.promotion(id).await?.certificate.source.is_some() {
-            "selector_holdout_promotions"
-        } else {
-            "selector_promotions"
+        let table = match self.promotion(id).await?.certificate.source.as_deref() {
+            Some(holdout::SOURCE) => "selector_class_certificates",
+            Some(_) => "selector_holdout_promotions",
+            None => "selector_promotions",
         };
         sqlx::query(&format!(
             "UPDATE {table} SET revoked_at=?,revocation_reason=? WHERE id=? AND revoked_at IS NULL"
@@ -1314,7 +1322,7 @@ impl Store {
         work_class: &str,
     ) -> Result<Option<(Certificate, String)>> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM (SELECT id,created_at FROM selector_promotions WHERE revoked_at IS NULL UNION ALL SELECT id,created_at FROM selector_holdout_promotions WHERE revoked_at IS NULL) ORDER BY created_at DESC,id LIMIT 256",
+            "SELECT id FROM (SELECT id,created_at FROM selector_promotions WHERE revoked_at IS NULL UNION ALL SELECT id,created_at FROM selector_holdout_promotions WHERE revoked_at IS NULL UNION ALL SELECT id,created_at FROM selector_class_certificates WHERE revoked_at IS NULL) ORDER BY created_at DESC,id LIMIT 256",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1362,7 +1370,7 @@ impl Store {
                 held_out_workflows: 0,
                 fits: 0,
                 campaigns: 0,
-                preview: None,
+                evaluation: None,
             })
             .collect();
         // Policies follow WORK_CLASSES order, so a class finds its row there.
@@ -1432,9 +1440,14 @@ impl Store {
                 }
             }
         }
-        for preview in self.latest_selector_previews().await? {
-            if let Some(slot) = index(&preview.work_class_id) {
-                policies[slot].preview = Some(preview.summary());
+        for evaluation in self.latest_class_evaluations().await? {
+            if let Some(slot) = index(&evaluation.work_class_id) {
+                let training = self
+                    .selector_model(&evaluation.model_id)
+                    .await
+                    .map(|model| model.training_cases)
+                    .unwrap_or_default();
+                policies[slot].evaluation = Some(evaluation.summary(training));
             }
         }
         for (slot, policy) in policies.iter_mut().enumerate() {
@@ -1457,7 +1470,7 @@ impl Store {
 
     pub async fn promotions(&self) -> Result<Vec<State>> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM (SELECT id,created_at FROM selector_promotions UNION ALL SELECT id,created_at FROM selector_holdout_promotions) ORDER BY created_at DESC,id LIMIT 256",
+            "SELECT id FROM (SELECT id,created_at FROM selector_promotions UNION ALL SELECT id,created_at FROM selector_holdout_promotions UNION ALL SELECT id,created_at FROM selector_class_certificates) ORDER BY created_at DESC,id LIMIT 256",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1470,7 +1483,7 @@ impl Store {
 }
 
 mod holdout;
-pub use holdout::{HoldoutRegistration, RegisteredHoldoutRule};
+pub(crate) use holdout::qualified_renderer_grading;
 
 #[cfg(test)]
 mod tests;

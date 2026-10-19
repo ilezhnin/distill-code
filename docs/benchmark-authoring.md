@@ -500,7 +500,7 @@ evaluator contents are not inference features. Held-out data requires explicit
 export scope. Export files remain private local artifacts even when their schema
 is documented publicly.
 
-Learned fits, holdout reservations and reports are research artifacts. A fit or a
+Learned fits and reports are research artifacts. A fit or a
 positive isolated comparison does not authorize production dispatch. Promotion
 requires qualified independent coverage, frozen baselines and a preregistered
 evaluation, resource accounting and complete workflow verification. Explicit
@@ -533,7 +533,6 @@ for reservation, pause and timing semantics.
 The aggregate order uses equal-group mean utility on common cases from the
 fit's saved training snapshot. Its order is checked before admission.
 
-Campaign reservations share family/group ownership with executor holdouts.
 Related versions cannot be run outside the registered campaign. Campaign child
 runs cannot be extended, replaced, manually rescored or resumed independently.
 Stopping the app pauses the campaign; explicit resume preserves its first

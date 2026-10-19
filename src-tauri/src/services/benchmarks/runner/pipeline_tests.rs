@@ -589,45 +589,7 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
     let artifact = fit_or_explain(&service, query).await;
     assert_eq!(artifact.model.common_cases, 8);
     service.store.save_selector_fit(&artifact).await.unwrap();
-    let plan = service
-        .freeze_selector_holdout(learned::holdout::HoldoutRequest {
-            request_key: "offline-holdout".into(),
-            model_id: artifact.model.id.clone(),
-            version_ids: held.iter().map(|v| v.id.clone()).collect(),
-            persona_prior: artifact
-                .model
-                .candidates
-                .iter()
-                .map(|c| c.candidate_key.clone())
-                .collect(),
-            fallback_key: artifact.model.candidates[0].candidate_key.clone(),
-            min_quality: 0.5,
-        })
-        .await
-        .unwrap();
-    assert!(service
-        .store
-        .evaluate_selector_holdout(&plan.id)
-        .await
-        .is_err());
-    // Reservation and measurement must be distinct millisecond timestamps.
-    tokio::time::sleep(Duration::from_millis(2)).await;
     measure(&service, &held, "offline-held-out").await;
-    let report = service
-        .store
-        .evaluate_selector_holdout(&plan.id)
-        .await
-        .unwrap();
-    assert_eq!(report.cases.len(), 8);
-    assert_eq!(report.groups, 4);
-    assert_eq!(report.policies.len(), 7);
-    let best = report
-        .policies
-        .iter()
-        .find(|p| p.policy == "best_fixed")
-        .unwrap();
-    assert!(best.learned_utility_gain > 0.0);
-    assert!(!report.dispatch_allowed);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 96);
 
     let mut application = executor::ApplicationRequest {
@@ -771,16 +733,6 @@ async fn published_runs_reach_fit_holdout_selection_and_durable_host_outcome() {
             .unwrap()
             .artifact_hash,
         decision.artifact_hash
-    );
-    assert_eq!(
-        service
-            .store
-            .selector_holdout_report(&plan.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .artifact_hash,
-        report.artifact_hash
     );
     assert_eq!(
         service

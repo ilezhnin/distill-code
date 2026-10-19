@@ -748,7 +748,7 @@ fn train_split_cutoff_and_related_groups_are_enforced() {
     assert!(fit(&data, request(&data))
         .unwrap_err()
         .message
-        .contains("1 groups"));
+        .contains("at least two independent groups"));
 }
 
 #[test]

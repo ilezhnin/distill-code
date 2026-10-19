@@ -11,9 +11,6 @@ const RECIPE: &str = "independent-group-sign-holm-v1";
 pub(in crate::services::benchmarks) const SELECTION_RECIPE: &str =
     "superiority-noninferiority-sign-holm-v1";
 const MAX_NON_INFERIORITY_MARGIN: f64 = 0.2;
-/// The most independent groups a selection holdout may lose to incomplete
-/// evidence and still be assessed on the rest.
-pub(in crate::services::benchmarks) const MAX_INCOMPLETE_GROUPS: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -29,12 +26,6 @@ pub struct Rule {
     /// only the selection recipe takes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub non_inferiority_margin: Option<f64>,
-    /// Groups whose first measurement stayed incomplete (an unscored or
-    /// another-runtime cell) that a selection holdout tolerates: such groups
-    /// leave every arm, and the rest are assessed. Registered before any
-    /// measurement, so the exclusion can never follow the outcome.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_incomplete_groups: Option<u32>,
 }
 impl Rule {
     pub(in crate::services::benchmarks) fn validate(&self) -> Result<()> {
@@ -45,13 +36,7 @@ impl Rule {
             }
             _ => false,
         };
-        let tolerance = match (self.recipe.as_str(), self.max_incomplete_groups) {
-            (_, None) => true,
-            (SELECTION_RECIPE, Some(groups)) => groups <= MAX_INCOMPLETE_GROUPS,
-            _ => false,
-        };
         if !margin
-            || !tolerance
             || !self.alpha.is_finite()
             || !(0.0..=0.05).contains(&self.alpha)
             || self.alpha == 0.0
@@ -60,7 +45,7 @@ impl Rule {
             || !self.minimum_observed_quality.is_finite()
             || !(0.0..=1.0).contains(&self.minimum_observed_quality)
         {
-            return Err(invalid("Acceptance requires independent-group-sign-holm-v1, or superiority-noninferiority-sign-holm-v1 with a margin in (0,0.2], alpha in (0,.05], gain in [0,1), observed quality in [0,1], and at most four tolerated incomplete groups with the selection recipe only"));
+            return Err(invalid("Acceptance requires independent-group-sign-holm-v1, or superiority-noninferiority-sign-holm-v1 with a margin in (0,0.2], alpha in (0,.05], gain in [0,1), and observed quality in [0,1]"));
         }
         Ok(())
     }
@@ -288,6 +273,161 @@ pub(in crate::services::benchmarks) fn assess(
             "Passing this empirical screen does not establish semantic independence, verifier validity, deployment equivalence or permission to dispatch".into()] })
 }
 
+/// The selection recipe on cases where a candidate may be absent: the
+/// learned, aggregate and persona arms are always present (each chose among
+/// the candidates the case measured), and a fixed worker is compared only on
+/// the groups that measured it. Each comparison counts its own groups and
+/// needs at least eight; Holm covers all of them together.
+pub(in crate::services::benchmarks) fn assess_available(
+    rule: &Rule,
+    cases: &[ReportCase],
+    fixed_ids: &[String],
+) -> Result<Assessment> {
+    rule.validate()?;
+    if rule.recipe != SELECTION_RECIPE
+        || fixed_ids.len() < 2
+        || fixed_ids.len() > 32
+        || cases.len() > 4096
+        || cases
+            .iter()
+            .map(|c| &c.version_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != cases.len()
+    {
+        return Err(invalid(
+            "Assessment on available arms needs the selection recipe, distinct cases and a pool of 2 to 32",
+        ));
+    }
+    let arms = |case: &ReportCase, key: &str| {
+        case.cells
+            .iter()
+            .find(|c| c.candidate_key == key)
+            .map(|c| (c.quality, c.utility))
+    };
+    let mut grouped: BTreeMap<&str, Vec<&ReportCase>> = BTreeMap::new();
+    for case in cases {
+        let policy = ["learned", "aggregate", "persona"]
+            .iter()
+            .all(|key| arms(case, key).is_some());
+        if case.group.trim().is_empty()
+            || !policy
+            || case.cells.iter().any(|c| {
+                !c.quality.is_finite()
+                    || !(0.0..=1.0).contains(&c.quality)
+                    || !c.utility.is_finite()
+                    || !(0.0..=1.0).contains(&c.utility)
+            })
+        {
+            return Err(invalid(
+                "Assessment refuses a case without its policy arms or with invalid results",
+            ));
+        }
+        grouped.entry(&case.group).or_default().push(case);
+    }
+    let groups = grouped.len();
+    let observed_quality = if groups == 0 {
+        0.0
+    } else {
+        grouped
+            .values()
+            .map(|g| g.iter().map(|c| arms(c, "learned").unwrap().0).sum::<f64>() / g.len() as f64)
+            .sum::<f64>()
+            / groups as f64
+    };
+    let margin = rule.non_inferiority_margin.unwrap_or(0.0);
+    let baselines: Vec<String> = ["aggregate".into(), "persona".into()]
+        .into_iter()
+        .chain(fixed_ids.iter().map(|id| format!("worker:{id}")))
+        .collect();
+    let mut comparisons = Vec::new();
+    let mut thin = false;
+    for baseline in baselines {
+        // Per group: the mean gain over the cases that measured the baseline.
+        let gains: Vec<f64> = grouped
+            .values()
+            .filter_map(|group| {
+                let pairs: Vec<f64> = group
+                    .iter()
+                    .filter_map(|case| Some(arms(case, "learned")?.1 - arms(case, &baseline)?.1))
+                    .collect();
+                (!pairs.is_empty()).then(|| pairs.iter().sum::<f64>() / pairs.len() as f64)
+            })
+            .collect();
+        let n = gains.len();
+        thin |= n < 8;
+        let mean_utility_gain = if n == 0 {
+            0.0
+        } else {
+            gains.iter().sum::<f64>() / n as f64
+        };
+        let comparison = if baseline.starts_with("worker:") {
+            let wins = gains.iter().filter(|gain| **gain > -margin + 1e-12).count();
+            Comparison {
+                baseline,
+                test: Some("non_inferiority".into()),
+                tied_groups: None,
+                winning_groups: wins,
+                mean_utility_gain,
+                p_value: sign_tail(wins, n),
+                adjusted_p_value: 1.0,
+                passed: false,
+            }
+        } else {
+            let tied = gains.iter().filter(|gain| gain.abs() <= 1e-12).count();
+            let wins = gains
+                .iter()
+                .filter(|gain| **gain > rule.minimum_group_utility_gain + 1e-12)
+                .count();
+            Comparison {
+                baseline,
+                test: Some("superiority".into()),
+                tied_groups: Some(tied),
+                winning_groups: wins,
+                mean_utility_gain,
+                p_value: sign_tail(wins, n - tied),
+                adjusted_p_value: 1.0,
+                passed: false,
+            }
+        };
+        comparisons.push(comparison);
+    }
+    holm(&mut comparisons);
+    for comparison in &mut comparisons {
+        let required = if comparison.test.as_deref() == Some("non_inferiority") {
+            -margin
+        } else {
+            rule.minimum_group_utility_gain
+        };
+        comparison.passed = comparison.adjusted_p_value <= rule.alpha
+            && comparison.mean_utility_gain > required + 1e-12;
+    }
+    let mut reasons = Vec::new();
+    if thin {
+        reasons.push("fewer_than_eight_independent_groups".into());
+    }
+    if observed_quality < rule.minimum_observed_quality {
+        reasons.push("observed_quality_below_floor".into());
+    }
+    if comparisons.iter().any(|c| !c.passed) {
+        reasons.push("not_superior_to_every_registered_baseline".into());
+    }
+    Ok(Assessment {
+        rule: rule.clone(),
+        groups,
+        observed_quality,
+        comparisons,
+        passed: reasons.is_empty(),
+        reasons,
+        limitations: vec![
+            "Each comparison counts only the groups that measured its baseline; a candidate absent from a case is never scored as zero".into(),
+            "Superiority sign tests drop tied groups; non-inferiority counts a group as a loss when a fixed worker leads by at least the margin".into(),
+            "Holm adjustment covers the aggregate, persona and every fixed worker together within one evaluation, not across repeated evaluations".into(),
+            "Held-out cases are a permanent evaluation set every model has seen, not unseen families".into(),
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,7 +440,6 @@ mod tests {
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 0.8,
             non_inferiority_margin: None,
-            max_incomplete_groups: None,
         }
     }
     fn cases() -> Vec<ReportCase> {
@@ -451,7 +590,6 @@ mod tests {
             minimum_group_utility_gain: 0.0,
             minimum_observed_quality: 0.8,
             non_inferiority_margin: Some(0.05),
-            max_incomplete_groups: None,
         }
     }
     #[test]

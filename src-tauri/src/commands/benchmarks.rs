@@ -214,37 +214,6 @@ pub async fn benchmark_register_promotion_rule(
     s.changed().await;
     Ok(value)
 }
-/// Preregister the acceptance rule of a frozen executor holdout before any of
-/// its held-out cases is measured.
-#[tauri::command]
-pub async fn benchmark_register_holdout_rule(
-    app: AppHandle,
-    request: benchmarks::promotion::HoldoutRegistration,
-) -> Result<benchmarks::promotion::RegisteredHoldoutRule> {
-    let s = service(&app).await?;
-    let value = s.store.register_holdout_rule(request).await?;
-    s.changed().await;
-    Ok(value)
-}
-#[tauri::command]
-pub async fn benchmark_get_holdout_rule(
-    app: AppHandle,
-    plan_id: String,
-) -> Result<Option<benchmarks::promotion::RegisteredHoldoutRule>> {
-    service(&app).await?.store.holdout_rule(&plan_id).await
-}
-/// Issue a class certificate from a completely measured executor holdout that
-/// passes its registered rule. It covers ordinary chats and waves of the class.
-#[tauri::command]
-pub async fn benchmark_promote_holdout_selector(
-    app: AppHandle,
-    plan_id: String,
-) -> Result<benchmarks::promotion::State> {
-    let s = service(&app).await?;
-    let value = s.store.promote_holdout_selector(&plan_id).await?;
-    s.changed().await;
-    Ok(value)
-}
 /// Learned selection state of every work class: its certificate, or how far
 /// its qualified evidence still is from one.
 #[tauri::command]
@@ -784,15 +753,32 @@ pub async fn benchmark_fit_selector(
     s.store.save_selector_fit(&artifact).await
 }
 
-/// Fits a class from its training cells by a fixed candidate rule and previews
-/// the fit on the class's already measured held-out cases. Research only:
-/// no model call, routing change, reservation or certificate.
+/// Fits a class from its training cells by the fixed recipe and evaluates
+/// the fit on the class's held-out cells. Each new fit or new snapshot of
+/// held-out cells is one journaled look; a passing look issues the class
+/// certificate. No model call.
 #[tauri::command]
-pub async fn benchmark_preview_learned_class(
+pub async fn benchmark_evaluate_class(
     app: AppHandle,
-    request: benchmarks::learned::preview::PreviewRequest,
-) -> Result<benchmarks::learned::preview::LearnedPreview> {
-    service(&app).await?.preview_learned_class(request).await
+    request: benchmarks::learned::certify::EvaluationRequest,
+) -> Result<benchmarks::learned::certify::ClassEvaluation> {
+    let s = service(&app).await?;
+    let value = s.evaluate_class(request).await?;
+    s.changed().await;
+    Ok(value)
+}
+
+/// The journaled held-out evaluations of a class, newest first.
+#[tauri::command]
+pub async fn benchmark_class_evaluations(
+    app: AppHandle,
+    work_class_id: String,
+) -> Result<Vec<benchmarks::learned::certify::ClassEvaluation>> {
+    service(&app)
+        .await?
+        .store
+        .class_evaluations(&work_class_id)
+        .await
 }
 
 #[tauri::command]
@@ -950,54 +936,6 @@ pub async fn benchmark_observe_executor(
         .await?
         .store
         .observe_application_executor(&request_key, observation)
-        .await
-}
-
-/// Reserves unused related families and freezes choices without starting work.
-#[tauri::command]
-pub async fn benchmark_freeze_selector_holdout(
-    app: AppHandle,
-    request: benchmarks::learned::holdout::HoldoutRequest,
-) -> Result<benchmarks::learned::holdout::HoldoutPlan> {
-    let service = service(&app).await?;
-    let plan = service.freeze_selector_holdout(request).await?;
-    service.changed().await;
-    Ok(plan)
-}
-
-#[tauri::command]
-pub async fn benchmark_list_selector_holdouts(
-    app: AppHandle,
-    model_id: String,
-) -> Result<Vec<benchmarks::learned::holdout::HoldoutPlan>> {
-    service(&app)
-        .await?
-        .store
-        .selector_holdouts(&model_id)
-        .await
-}
-
-/// Evaluate only existing evidence; never starts generation or judging.
-#[tauri::command]
-pub async fn benchmark_evaluate_selector_holdout(
-    app: AppHandle,
-    plan_id: String,
-) -> Result<benchmarks::learned::report::HoldoutReport> {
-    let service = service(&app).await?;
-    let report = service.store.evaluate_selector_holdout(&plan_id).await?;
-    service.changed().await;
-    Ok(report)
-}
-
-#[tauri::command]
-pub async fn benchmark_get_selector_holdout_report(
-    app: AppHandle,
-    plan_id: String,
-) -> Result<Option<benchmarks::learned::report::HoldoutReport>> {
-    service(&app)
-        .await?
-        .store
-        .selector_holdout_report(&plan_id)
         .await
 }
 
