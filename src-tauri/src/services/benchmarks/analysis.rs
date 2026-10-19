@@ -109,7 +109,7 @@ fn judge_panel(evaluations: &[&Evaluation]) -> Panel {
         } else {
             &evaluations[start..end]
         };
-        let mut votes: Vec<f64> = answers
+        let scored: Vec<(&Evaluation, f64)> = answers
             .iter()
             .filter(|e| e.provenance == "judge")
             .filter_map(|e| {
@@ -125,10 +125,34 @@ fn judge_panel(evaluations: &[&Evaluation]) -> Panel {
                         _ => return None,
                     }
                 }
-                Some(score)
+                Some((*e, score))
             })
             .collect();
-        if votes.len() >= expected {
+        if scored.len() >= expected {
+            // A panel that asked each seat several times counts each seat once,
+            // as the median of its samples.
+            let samples = evaluations[start]
+                .details
+                .as_ref()
+                .and_then(|details| details.pointer("/protocol/samplesPerJudge"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            let mut votes: Vec<f64> = if samples > 1 {
+                let mut seats: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+                for (evaluation, score) in &scored {
+                    let seat = serde_json::to_string(&evaluation.judge).unwrap_or_default();
+                    seats.entry(seat).or_default().push(*score);
+                }
+                // Every seat with all its samples, or the batch has not settled.
+                if seats.len() as u64 * samples != expected as u64
+                    || seats.values().any(|seat| seat.len() as u64 != samples)
+                {
+                    continue;
+                }
+                seats.into_values().filter_map(median).collect()
+            } else {
+                scored.iter().map(|(_, score)| *score).collect()
+            };
             if critical_failed {
                 votes.fill(0.0);
             }
@@ -395,9 +419,16 @@ pub(crate) fn matches_selection(requested: &Configuration, observed: &Configurat
             .effort
             .as_ref()
             .is_none_or(|e| Some(e) == observed.effort.as_ref())
-        && requested
-            .fast_mode
-            .is_none_or(|f| Some(f) == observed.fast_mode)
+        && fast_mode_acknowledged(requested.fast_mode, observed.fast_mode)
+}
+
+/// Whether an acknowledged fast mode is the one asked for, where the request
+/// set one. A session that acknowledges none runs a model without fast mode,
+/// so it is off: it matches a request for off, never one for on (10-18:
+/// Claude sessions acknowledge none for every model but Opus, so frozen
+/// Sonnet judge seats pinned to off abstained every time).
+pub(crate) fn fast_mode_acknowledged(requested: Option<bool>, observed: Option<bool>) -> bool {
+    requested.is_none_or(|fast| fast == observed.unwrap_or(false))
 }
 
 /// What ran. A refused selection (another model, effort or fast mode) stays
@@ -1428,6 +1459,27 @@ fn measurement_report(
             for attempt in &every_cell {
                 contributing.insert(attempt.run_id.as_str());
             }
+            // Cases its provider's data use keeps this candidate from (cells
+            // the runner settled `excluded` unsent, its own cases aside): no
+            // catch-up can fill them, so they leave its plan and are listed
+            // apart, like a case the provider refused.
+            let refused_version_ids: Vec<String> = eligible
+                .iter()
+                .filter(|v| {
+                    attempts.iter().any(|a| {
+                        a.version_id == v.id
+                            && a.outcome.as_deref() == Some("excluded")
+                            && super::data_use::refused_for_data_use(a.reason.as_deref())
+                    }) && !attempts
+                        .iter()
+                        .any(|a| a.version_id == v.id && score_as_of(a, query.as_of).is_some())
+                })
+                .map(|v| v.id.clone())
+                .collect();
+            let eligible: Vec<&BenchmarkVersion> = eligible
+                .into_iter()
+                .filter(|v| !refused_version_ids.contains(&v.id))
+                .collect();
             // Speed and cost read every cell of the sitting, own cases included.
             let every_cells = case_cells(&every_cell, query.as_of, protocol);
             let every_scored: Vec<&Attempt> = every_cell
@@ -1473,7 +1525,15 @@ fn measurement_report(
                     median_duration_ms, median_output_tokens, cost, measured_at,
                     points: None, speed_share: resources.speed_share, cost_share: resources.cost_share,
                     status: "excluded".into(),
-                    reason: format!("{excluded} cases left out of quality: this candidate helped author every case in the pool; their speed and cost still count"),
+                    reason: if refused_version_ids.is_empty() {
+                        format!("{excluded} cases left out of quality: this candidate helped author every case in the pool; their speed and cost still count")
+                    } else {
+                        format!(
+                            "{} cases left out: this provider's data use keeps the candidate from them{}",
+                            refused_version_ids.len(),
+                            if excluded > 0 { format!(", and it authored {excluded}") } else { String::new() }
+                        )
+                    },
                     attempt_ids: Vec::new(),
                     result_attempt_ids: Vec::new(),
                     own_attempt_ids,
@@ -1481,6 +1541,7 @@ fn measurement_report(
                     axes: Vec::new(),
                     missing_version_ids: Vec::new(),
                     unsupported_version_ids: Vec::new(),
+                    refused_version_ids,
                     scored_version_ids: Vec::new(),
                     resolved_models: Vec::new(),
                     parallelism,
@@ -1605,6 +1666,7 @@ fn measurement_report(
                 axes,
                 missing_version_ids,
                 unsupported_version_ids,
+                refused_version_ids,
                 scored_version_ids: scored_attempts.iter().map(|a| a.version_id.clone())
                     .collect::<BTreeSet<_>>().into_iter().collect(),
                 resolved_models: scored_attempts.iter().filter_map(|a| a.resolved_model.clone())
@@ -1998,6 +2060,61 @@ fn history_for(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    #[test]
+    fn a_panel_that_samples_each_seat_counts_each_seat_once_at_its_median() {
+        let evaluation = |provenance: &str,
+                          score: Option<f64>,
+                          judge: Option<&str>,
+                          details: serde_json::Value|
+         -> Evaluation {
+            serde_json::from_value(serde_json::json!({"id": uuid::Uuid::new_v4().to_string(),
+                "evaluatorRevision": "invented-v1", "verdict": "judged", "score": score,
+                "reason": "", "createdAt": 1, "provenance": provenance, "details": details,
+                "judge": judge.map(|model| serde_json::json!({"id": model, "providerId": "invented-acp",
+                    "accountId": "invented-account", "modelId": model, "effort": null, "fastMode": false,
+                    "billingMode": "subscription", "executionProfile": "native_text",
+                    "inventoryRevision": "invented-runtime"}))}))
+            .unwrap()
+        };
+        let marker = |samples: u64, expected: u64| {
+            evaluation(
+                "render",
+                None,
+                None,
+                serde_json::json!({"judgeBatchId": "invented-batch", "expectedJudges": expected,
+                    "protocol": {"samplesPerJudge": samples}}),
+            )
+        };
+        let seat_votes = |seat: &str, scores: &[f64]| -> Vec<Evaluation> {
+            scores
+                .iter()
+                .map(|score| evaluation("judge", Some(*score), Some(seat), serde_json::json!({})))
+                .collect()
+        };
+        let mut sampled = vec![marker(3, 6)];
+        sampled.extend(seat_votes("seat-a", &[0.2, 0.8, 0.9]));
+        sampled.extend(seat_votes("seat-b", &[0.5, 0.1, 0.5]));
+        let Panel::Settled { mut votes, .. } = judge_panel(&sampled.iter().collect::<Vec<_>>())
+        else {
+            panic!("a full sampled panel settles");
+        };
+        votes.sort_by(f64::total_cmp);
+        assert_eq!(votes, vec![0.5, 0.8]);
+        // Short of its samples, it waits.
+        sampled.pop();
+        assert!(matches!(
+            judge_panel(&sampled.iter().collect::<Vec<_>>()),
+            Panel::Pending
+        ));
+        // One sample a seat counts every vote, as before.
+        let mut single = vec![marker(1, 2)];
+        single.extend(seat_votes("seat-a", &[0.2]));
+        single.extend(seat_votes("seat-b", &[0.9]));
+        let Panel::Settled { votes, .. } = judge_panel(&single.iter().collect::<Vec<_>>()) else {
+            panic!("a full panel settles");
+        };
+        assert_eq!(votes, vec![0.2, 0.9]);
+    }
     #[test]
     fn points_share_one_scale() {
         assert_eq!(share_points(0.929), 929);
@@ -2532,6 +2649,48 @@ pub(super) mod tests {
         let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
         assert_eq!(row.missing_version_ids, vec!["v0".to_string()]);
         assert!(row.unsupported_version_ids.is_empty());
+    }
+    /// A provider that may train on submissions runs train cases only; its
+    /// held-out cells settle `excluded` unsent. They leave its plan and are
+    /// listed apart, so the row can be complete without them.
+    #[test]
+    fn a_case_the_providers_data_use_keeps_out_leaves_the_plan() {
+        let mut data = dataset();
+        let before = leaderboard(&data, &ResultQuery::default()).rows[0].planned;
+        for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v0") {
+            attempt.outcome = Some("excluded".into());
+            attempt.reason = Some(
+                "Invented Lab may train on submitted data, so it runs only train tasks, not held_out ones"
+                    .into(),
+            );
+            attempt.evaluations.clear();
+        }
+        let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
+        assert_eq!(row.refused_version_ids, vec!["v0".to_string()]);
+        assert!(row.missing_version_ids.is_empty());
+        assert!(row.unsupported_version_ids.is_empty());
+        assert_eq!(row.planned, before - 1);
+        // A scored cell of the case keeps it in the plan.
+        let mut data = dataset();
+        data.attempts
+            .iter_mut()
+            .find(|a| a.version_id == "v0")
+            .unwrap()
+            .outcome = Some("excluded".into());
+        let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
+        assert!(row.refused_version_ids.is_empty());
+        assert_eq!(row.planned, before);
+        // A cell an older authorship rule settled is no data-use refusal: it
+        // stays a gap a catch-up fills.
+        let mut data = dataset();
+        for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v0") {
+            attempt.outcome = Some("excluded".into());
+            attempt.reason = Some("authored by this candidate".into());
+            attempt.evaluations.clear();
+        }
+        let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
+        assert!(row.refused_version_ids.is_empty());
+        assert_eq!(row.missing_version_ids, vec!["v0".to_string()]);
     }
     #[test]
     fn a_new_case_adds_a_gap_instead_of_resetting_history() {

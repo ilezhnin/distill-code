@@ -529,6 +529,11 @@ export interface LeaderboardRow {
    * Rows recorded before it was kept have none.
    */
   unsupportedVersionIds?: string[];
+  /**
+   * Pool cases the provider's data use keeps this configuration from: out
+   * of its plan and never owed. Rows recorded before it was kept have none.
+   */
+  refusedVersionIds?: string[];
   /** Every model the counted attempts' usage named, sorted. */
   resolvedModels?: string[];
   /** Attempts of this configuration its standing run flew at once. */
@@ -766,6 +771,11 @@ export interface JudgePoolEntry {
   modelId: string;
   effort?: string | null;
   inputs?: JudgeInput[] | null;
+  /**
+   * The account ids it may sit on, kept as stored; any enabled account of
+   * its provider when absent.
+   */
+  accounts?: string[] | null;
 }
 /**
  * The owner's word on one provider in the benchmark settings document
@@ -822,6 +832,8 @@ export interface JudgePoolRow {
   /** Its latest calibration for the current recipe. */
   calibration: JudgeCalibration | null;
   seats: boolean;
+  /** Whether it also takes seats on visual rubrics. */
+  seatsVisual?: boolean;
   /** Why it takes no seats, when it takes none. */
   reason: string | null;
 }

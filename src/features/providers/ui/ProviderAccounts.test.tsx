@@ -127,6 +127,29 @@ describe("account plan and credit display", () => {
     ).toBeInTheDocument();
   });
 
+  it("says when the benchmark sandbox spends the account under another login", () => {
+    const { rerender } = render(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={status("personal")}
+        now={now}
+      />,
+    );
+    expect(
+      screen.queryByText("Benchmark sandbox signed in as another login"),
+    ).toBeNull();
+    rerender(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={{ ...status("personal"), sandboxLoginMismatch: true }}
+        now={now}
+      />,
+    );
+    expect(
+      screen.getByText("Benchmark sandbox signed in as another login"),
+    ).toBeInTheDocument();
+  });
+
   it.each([
     ["USD", "58", "$58.00", "$100.00"],
     ["JPY", "58", "¥58", "¥100"],

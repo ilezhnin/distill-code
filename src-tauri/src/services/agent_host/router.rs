@@ -422,6 +422,26 @@ struct Selection {
     fast: Option<bool>,
 }
 
+/// Why a close waits for ordinary chats.
+pub const CHATS_ACTIVE: &str =
+    "Wait for active chats to finish or stop them before closing Distill.";
+
+/// Turns a close would cut among `sessions`: ordinary chats loading, running
+/// or with prompts queued, and owned (benchmark) sessions likewise.
+fn active_turns<'a>(sessions: impl Iterator<Item = &'a SessionRuntime>) -> (usize, usize) {
+    sessions
+        .filter(|runtime| {
+            runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
+        })
+        .fold((0, 0), |(chats, tests), runtime| {
+            if runtime.execution_profile.is_some() {
+                (chats, tests + 1)
+            } else {
+                (chats + 1, tests)
+            }
+        })
+}
+
 pub struct SessionRuntime {
     /// The harness and the bridge's own id for this session. Once the runtime
     /// is in a [`SessionTable`] they only change through the table, which
@@ -779,6 +799,17 @@ impl AgentHost {
         Ok(inner)
     }
 
+    /// Whether ordinary chats have turns a close would cut. A close checks
+    /// this before it pauses the benchmark runs, so a refused close pauses
+    /// nothing.
+    pub async fn chats_active(&self) -> bool {
+        let Some(inner) = self.inner.lock().await.clone() else {
+            return false;
+        };
+        let sessions = inner.sessions.lock().await;
+        active_turns(sessions.values()).0 > 0
+    }
+
     pub async fn prepare_shutdown(&self, prepared: bool) -> Result<(), String> {
         let inner = self.inner.lock().await.clone();
         let Some(inner) = inner else {
@@ -786,14 +817,16 @@ impl AgentHost {
         };
         {
             let sessions = inner.sessions.lock().await;
-            if prepared
-                && sessions.values().any(|runtime| {
-                    runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
-                })
-            {
-                return Err(
-                    "Wait for active chats to finish or stop them before closing Distill.".into(),
-                );
+            if prepared {
+                let (chats, tests) = active_turns(sessions.values());
+                if chats > 0 {
+                    return Err(CHATS_ACTIVE.into());
+                }
+                if tests > 0 {
+                    return Err(format!(
+                        "Benchmark runs are pausing: {tests} benchmark or task turn(s) still finish. Close Distill again once they settle."
+                    ));
+                }
             }
             inner.shutdown_prepared.store(prepared, Ordering::SeqCst);
         }
@@ -2020,10 +2053,34 @@ impl Inner {
     /// is the order the transcript keeps.
     async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) -> Result<(), String> {
         Self::persist_pending_events(&self.store, pending, |mut payload, id| {
+            if Self::evidence_only(&payload) {
+                return;
+            }
             Self::stamp_event_id(&mut payload, id);
             self.notify_frontend("session/update", payload);
         })
         .await
+    }
+
+    /// Marks an update the transcript keeps as evidence but the renderer
+    /// never shows (see [`Self::evidence_only`]).
+    fn mark_evidence_only(params: &mut Value) {
+        if let Some(update) = params.get_mut("update").and_then(Value::as_object_mut) {
+            let meta = update.entry("_meta").or_insert_with(|| json!({}));
+            if !meta.is_object() {
+                *meta = json!({});
+            }
+            if !meta["distill"].is_object() {
+                meta["distill"] = json!({});
+            }
+            meta["distill"]["evidenceOnly"] = json!(true);
+        }
+    }
+
+    /// Whether an update is an owned session's provider extension the host
+    /// keeps as evidence only.
+    fn evidence_only(payload: &Value) -> bool {
+        payload.pointer("/update/_meta/distill/evidenceOnly") == Some(&json!(true))
     }
 
     async fn persist_pending_events(
@@ -2122,9 +2179,14 @@ impl Inner {
         let benchmark = harness.contains("\u{1f}benchmark:");
         // An owned session also keeps grok's other session extension updates:
         // they are evidence, and grok reports its hooks and subagents there.
-        let method = if Self::normalize_xai_turn_usage(method, &mut params)
-            || (benchmark && Self::is_xai_session_extension(method))
-        {
+        // They are no ACP updates, so the renderer never sees them (10-17:
+        // its ACP client rejected every `session_summary_generated`).
+        let usage = Self::normalize_xai_turn_usage(method, &mut params);
+        let evidence_only = benchmark && !usage && Self::is_xai_session_extension(method);
+        if evidence_only {
+            Self::mark_evidence_only(&mut params);
+        }
+        let method = if usage || evidence_only {
             "session/update"
         } else {
             method
@@ -2274,7 +2336,7 @@ impl Inner {
         } else {
             None
         };
-        if !persist {
+        if !persist && !Self::evidence_only(&params) {
             self.notify_frontend("session/update", params);
         }
         stored
@@ -8803,6 +8865,44 @@ mod tests {
         ));
         assert!(Inner::is_xai_session_extension("_x.ai/session/update"));
         assert!(!Inner::is_xai_session_extension("_x.ai/sessions/changed"));
+        // Kept as evidence, never sent to the renderer, whose ACP client
+        // rejects such updates.
+        let mut summary = json!({"sessionId": "s1", "update": {
+            "sessionUpdate": "session_summary_generated", "session_summary": "t"}});
+        assert!(!Inner::evidence_only(&summary));
+        Inner::mark_evidence_only(&mut summary);
+        assert!(Inner::evidence_only(&summary));
+        assert_eq!(summary["update"]["session_summary"], "t");
+        assert!(!Inner::evidence_only(&retry));
+    }
+
+    #[test]
+    fn a_close_counts_chats_and_benchmark_turns_apart() {
+        let runtime = |owned: bool, loading: bool| SessionRuntime {
+            harness: "invented-acp".into(),
+            account_id: None,
+            execution_profile: owned.then(|| "native-text-v1".into()),
+            bridge_session_id: "invented-bridge-session".into(),
+            generation: 1,
+            loading,
+            run: None,
+            steer_queue: VecDeque::new(),
+            snapshot: json!({}),
+            has_model_option: false,
+            substitutions: Vec::new(),
+            last_active: std::time::Instant::now(),
+        };
+        let sessions = [
+            runtime(false, false),
+            runtime(true, true),
+            runtime(true, true),
+            runtime(true, false),
+        ];
+        // Only benchmark turns: the close pauses the runs and says how many
+        // still finish, instead of refusing before anything for a chat.
+        assert_eq!(active_turns(sessions.iter()), (0, 2));
+        let busy_chat = [runtime(false, true), runtime(true, true)];
+        assert_eq!(active_turns(busy_chat.iter()), (1, 1));
     }
 
     #[test]

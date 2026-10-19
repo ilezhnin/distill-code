@@ -24,6 +24,16 @@ const CONFIRMED: &[&str] = &["claude-acp", "codex-acp", "grok-acp"];
 /// The one split a provider that may train receives.
 pub(crate) const TRAIN: &str = "train";
 
+/// The words of a cell's reason when its provider's data use kept it from
+/// the case (see [`DataUse::refusal`]).
+const RUNS_TRAIN_ONLY: &str = "may train on submitted data, so it runs only train tasks";
+
+/// Whether a cell settled `excluded` because its provider's data use kept
+/// it from the case, not because its candidate wrote the case.
+pub(crate) fn refused_for_data_use(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| reason.contains(RUNS_TRAIN_ONLY))
+}
+
 /// The owner's word on every provider, as read for one decision.
 #[derive(Debug, Clone, Default)]
 pub struct DataUse {
@@ -88,12 +98,8 @@ impl DataUse {
 
     /// Why `provider` may not receive a task version of `split`.
     pub fn refusal(&self, provider: &str, split: &str) -> Option<String> {
-        (self.trains(provider) && split != TRAIN).then(|| {
-            format!(
-                "{} may train on submitted data, so it runs only train tasks, not {split} ones",
-                name(provider)
-            )
-        })
+        (self.trains(provider) && split != TRAIN)
+            .then(|| format!("{} {RUNS_TRAIN_ONLY}, not {split} ones", name(provider)))
     }
 
     /// Why `provider`'s models may not judge.

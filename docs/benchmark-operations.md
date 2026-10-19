@@ -564,10 +564,14 @@ coverage, verifier isolation and task usefulness before paying for model runs.
 
 The same rubric controls calibrate the ordinary judges. `benchmark_judge_pool`
 returns the pool from the benchmark settings (`judgePool`: `providerId`,
-`modelId`, `effort`, optional `inputs`), each entry with its newest calibration
-and whether it takes seats, plus every stored calibration.
+`modelId`, `effort`, optional `inputs`, optional `accounts`), each entry with
+its newest calibration and whether it takes seats, plus every stored
+calibration. `accounts` lists the account ids an entry may sit on, for seats
+and calibration alike, to steer seats off a shared login; without it any
+enabled account of the provider may take the seat. Settings keeps the list as
+written; edit it in `benchmarks/settings.json`.
 `benchmark_calibrate_judge` with one such `entry` starts a calibration in the
-background: the roomiest enabled account offering that model and effort judges
+background: the roomiest allowed account offering that model and effort judges
 each control alone, under the ordinary protocol, and the calibration fails at
 the first control outside its band. It costs one judge call per control. Only a
 pool entry is calibrated, and never one of a provider that may train on
@@ -601,6 +605,11 @@ account after the reset, never on another account. A try the limit refuses
 again before any answer waits again, so only one answer is ever measured. A
 limit no reset lifts (billing, an account on hold, no credit) settles the
 attempt as it ended, and so does a turn the runner had already stopped itself.
+A limit that names no reset (Claude's stop mid-answer says only "resets 7pm")
+waits until the reset the account's last usage read shows (a weekly window
+read spent makes it a reset the run cannot wait for, so the run stops for the
+operator), or asks again every five minutes where the read shows none. A judge whose turn a limit refused or
+cut off leaves the run's panels until that reset.
 A workflow root under it settles with its quota outcome instead, since its
 committed steps are never replayed. A try the provider refused before any
 answer (another model acknowledged at session open, a busy account, a prompt
@@ -625,13 +634,17 @@ the level doubles after each clean round, as many clean turns as the level that
 were admitted with every slot taken, so an account its demand keeps below its
 level never grows. The first sign the provider limits the account ends slow
 start: a rate-limit answer to a sent prompt (HTTP 429, "rate limit", "too many
-requests", "overloaded") halves the level, and so does a level of concurrency
-whose turns stream clearly slower (below three quarters of the tokens per
-second) than turns with fewer beside them, counting only turns admitted while
-the host was below the CPU line, so our own load never reads as the provider's
-slowdown; since providers limit by model, the
-level refused or slowed at (two or more) then stands for an hour as the most
-turns of that model the account flies at once. After slow start the pace grows
+requests", "overloaded") halves the level. A level of concurrency whose turns
+together stream clearly less (below three quarters of the tokens per second in
+all) than a lower level's turns together sends the pace below it, counting only
+turns admitted while the host's CPU, averaged over the same 30 seconds and held
+to the same 70 % line as the broker's load line, was below it (admissions from
+before that mean was kept use their one-second sample), so our own load never
+reads as the provider's slowdown. Each stream slowing as
+more fly at once is no slowdown while the account streams more in all. Since
+providers limit by model, the level a model's turns were refused at (two or
+more) then stands for an hour as the most turns of that model the account flies
+at once; a slowdown sets no such ceiling. After slow start the pace grows
 by one per stretch of clean turns, with no fixed most, never sooner than ten
 minutes after it last changed. Every configuration on the account shares its
 pace, and the app log records every move ("account pace ... -> ... turns at
@@ -643,11 +656,13 @@ moment a turn is admitted), whether it is still in slow start, and its standing
 model ceilings are kept in `account-pace.json` beside the benchmark store, so an
 app restart (a gap's deploy) resumes there: an account that flew turns within
 the hour before the restart goes on at its level, in the same slow start, and
-so does one idle for up to six hours whose last move was no refusal or
-slowdown (a gap's drain and deploy change nothing on the provider's side); one
-idle for longer, or over the hour right after a refusal or slowdown, resumes at
-half its stable level, in slow start again. A file
-written before activity was kept dates the stable level instead. While the app
+so does one idle for up to six hours whose stable level was last set by a clean
+round, not by a refusal or slowdown (a gap's drain and deploy change nothing on
+the provider's side); one idle for longer, or over the hour right after a
+refusal or slowdown, resumes at half its stable level, in slow start again. The
+file keeps when the provider last pushed back. A file written before activity
+was kept dates the stable level instead, and one written before push-backs were
+kept loses its model ceilings on restart, since slowdowns set some then. While the app
 keeps running, the pace stays as it is however long the account was idle.
 
 The app prepares only as many ordinary attempts at once as the sandbox's recent

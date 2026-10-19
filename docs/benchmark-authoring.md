@@ -335,7 +335,22 @@ judge model, so their share can be watched. A failed condition scores that judge
 makes it abstain. The judge instructions still ask for quotes on a pass, so the
 judge protocol and its hash stayed the same when the parser began accepting a
 pass without one, and when it began accepting quotes copied from the rendered
-response.
+response. The judge prompt's opening form names the checks beside the scores
+and notes, and its closing line asks for all three (a new protocol hash, so
+judgments from before compare apart). An ordinary panel also reads a sheet
+that says the same thing in another shape: one stray closing brace after it,
+or the sheet split into objects one after another whose shared members agree
+(scores and notes, then the whole sheet), or checks listed as entries that
+each name their condition id. An object closed early and continued, prose or
+a fence around the sheet, conflicting members, and more than four quotes stay
+invalid; a frozen panel reads only the declared sheet.
+
+A rubric whose criteria vary between asks (a likeness, say) may set
+`environment.judgeSamples` to 3: each seat of its ordinary panel then judges
+the rendering three times, and the seat counts once, as the median of its
+three scores. It triples the judge calls, so it is off (1) unless a rubric
+asks for it, and it is refused with critical checks or a frozen panel. The
+samples enter the protocol hash, so sampled judgments compare apart.
 
 Rubric tasks can freeze their judge seats in `environment.judgePanel`, with
 `recipe: "frozen-native-panel-v1"` and a `judges` array of two or three complete
@@ -343,7 +358,10 @@ configurations. Each seat pins its account, model, effort, fast mode, billing
 mode, native text profile and inventory revision. The rubric needs 1-32 distinct
 criteria with finite positive weights. Authors and candidates cannot
 occupy a seat. A null effort is allowed only when the model offers no effort
-selection; it never means a moving default. The runner checks current
+selection; it never means a moving default. Fast mode is always pinned off:
+no benchmark candidate, judge or campaign lane may ask for it, and a session
+that acknowledges no fast mode (a model without one, such as Sonnet) counts
+as off. The runner checks current
 availability and the pinned runtime
 before each judge call; it never substitutes another judge for a frozen seat.
 Text panels accept verified native text providers; visual panels additionally

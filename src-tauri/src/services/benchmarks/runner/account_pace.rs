@@ -4,13 +4,15 @@
 //! level that were admitted with every slot taken (an account its demand
 //! keeps below its level never grows). The first sign the provider limits
 //! the account ends slow start: a rate-limit answer to a sent prompt halves
-//! the level, and so does a level at which turns stream clearly slower than
-//! they do with fewer beside them. From then on it grows by one after a
-//! stretch of clean turns, with no fixed most, never sooner than ten minutes
-//! after it last changed, so it probes up slowly. The level the provider last
-//! refused or slowed a model's turns at stands as that model's ceiling on the
-//! account for an hour, since providers limit by model: its turns fly no
-//! more at once than that while the account's other models grow on.
+//! the level, and a level whose turns together stream clearly less than a
+//! lower level's do sends it below that level. From then on it grows by one
+//! after a stretch of clean turns, with no fixed most, never sooner than ten
+//! minutes after it last changed, so it probes up slowly. The level the
+//! provider last refused a model's turns at stands as that model's ceiling on
+//! the account for an hour, since providers limit by model: its turns fly no
+//! more at once than that while the account's other models grow on. A
+//! slowdown sets no ceiling: streams that slow down as more fly at once say
+//! nothing a refusal would, and our own load slows them too.
 //!
 //! The account's level, its last stable level (the one it last finished a
 //! clean round at, or a refusal sent it to), when it last flew turns, whether
@@ -28,8 +30,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-/// How long the level the provider last refused or slowed turns at stands
-/// as the account's ceiling before the pace may probe it again.
+/// How long the level the provider last refused turns at stands as the
+/// model's ceiling before the pace may probe it again.
 const CEILING_MS: i64 = 60 * 60 * 1000;
 /// How long an account may sit idle and still resume at the level it was
 /// flying, when the provider did not push back last (10-18: every gap's
@@ -44,8 +46,8 @@ const ACTIVE_STEP_MS: i64 = 60 * 1000;
 /// Speeds kept per concurrency level, and how many make a level comparable.
 const SPEEDS: usize = 20;
 const COMPARABLE: usize = 5;
-/// A level streaming slower than this share of a lower level's speed is a
-/// slowdown the provider imposes, not the tasks'.
+/// A level whose turns together stream less than this share of what a lower
+/// level's turns together stream gains nothing from flying more at once.
 const SLOWER: f64 = 0.75;
 /// Below these a turn's speed says more about its task than its provider.
 const MIN_TOKENS: u64 = 200;
@@ -68,8 +70,14 @@ pub(super) struct Pace {
     /// When the account last flew a turn (finished or refused), to the
     /// minute: what a restart measures staleness from.
     active: i64,
-    /// By model, the level the provider last refused or slowed its turns at
-    /// and since when: for CEILING_MS that model's turns fly no more at once.
+    /// Whether a turn flew since this process made the pace: a new or a
+    /// resumed pace dates `active` without any flight, which judge seating
+    /// must not read as the account flying (see [`last_flight`]).
+    flown: bool,
+    /// When the provider last pushed back (a refusal or a slowdown), if ever.
+    pushed_back: Option<i64>,
+    /// By model, the level the provider last refused its turns at and since
+    /// when: for CEILING_MS that model's turns fly no more at once.
     ceilings: BTreeMap<String, (usize, i64)>,
     /// Tokens per second of finished turns, by turns in flight at admission.
     speeds: BTreeMap<u32, Vec<f64>>,
@@ -92,6 +100,11 @@ pub(super) struct Saved {
     /// the stable level instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     active_at: Option<i64>,
+    /// When the provider last pushed back. Files from before it was kept
+    /// carry no such time; their ceilings may come from slowdowns, which no
+    /// longer set any, so a restart drops them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pushed_back_at: Option<i64>,
 }
 
 impl Pace {
@@ -105,19 +118,35 @@ impl Pace {
             full: 0,
             stable: (start, now),
             active: now,
+            flown: false,
+            pushed_back: None,
             ceilings: BTreeMap::new(),
             speeds: BTreeMap::new(),
         }
     }
 
     /// Whether a restart at `now` resumes `saved` where it was: it flew
-    /// within the hour, or within [`RESUME_MS`] when its last move was not
-    /// the provider's refusal or slowdown (which sets a model ceiling no
-    /// earlier than the stable level it sent the account to).
-    pub(super) fn resumes_where_it_was(saved: &Saved, now: i64) -> bool {
+    /// within the hour, or within [`RESUME_MS`] when its stable level was
+    /// last set by a clean round, not by the provider's refusal or slowdown
+    /// (which sets the stable level at the moment it pushes back). A file
+    /// from before push-backs were kept infers one from its ceilings.
+    fn resumes_where_it_was(saved: &Saved, now: i64) -> bool {
         let idle = now - saved.active_at.unwrap_or(saved.at);
-        let refused_last = saved.ceilings.values().any(|(_, since)| *since >= saved.at);
-        idle < CEILING_MS || (idle < RESUME_MS && !refused_last)
+        let pushed_back_last = Self::pushed_back_at(saved).is_some_and(|at| at >= saved.at);
+        idle < CEILING_MS || (idle < RESUME_MS && !pushed_back_last)
+    }
+
+    /// When `saved`'s provider last pushed back: as kept, or, in a file from
+    /// before it was kept, when the stable level was set if a ceiling dates
+    /// from then.
+    fn pushed_back_at(saved: &Saved) -> Option<i64> {
+        saved.pushed_back_at.or_else(|| {
+            saved
+                .ceilings
+                .values()
+                .any(|(_, since)| *since >= saved.at)
+                .then_some(saved.at)
+        })
     }
 
     /// The pace a restart resumes from `saved`. Staleness runs from the last
@@ -144,10 +173,18 @@ impl Pace {
             (level, now)
         };
         pace.active = if fresh { active } else { now };
+        // A fresh resume dates the account's last real flight; a stale one
+        // dates the restart, which is none.
+        pace.flown = fresh;
+        // A push-back inferred from an old file is kept, so the next save
+        // carries it although the ceilings it came from are dropped.
+        pace.pushed_back = Self::pushed_back_at(saved);
+        // Only a file that keeps push-backs keeps ceilings from refusals
+        // alone (see `Saved::pushed_back_at`).
         pace.ceilings = saved
             .ceilings
             .iter()
-            .filter(|(_, (_, since))| now - since < CEILING_MS)
+            .filter(|(_, (_, since))| saved.pushed_back_at.is_some() && now - since < CEILING_MS)
             .map(|(model, ceiling)| (model.clone(), *ceiling))
             .collect();
         pace
@@ -162,11 +199,13 @@ impl Pace {
             ceilings: self.ceilings.clone(),
             current: Some(self.limit),
             active_at: Some(self.active),
+            pushed_back_at: self.pushed_back,
         }
     }
 
     /// The account flew a turn at `now`, kept to the minute.
     fn flew(&mut self, now: i64) {
+        self.flown = true;
         if now - self.active >= ACTIVE_STEP_MS {
             self.active = now;
         }
@@ -180,8 +219,10 @@ impl Pace {
         }
     }
 
-    /// The level moved to `limit` for a reason the provider gave: slow start
-    /// ends, and the new level is the stable one.
+    /// The level moved to `limit` because the provider pushed back (a
+    /// refusal or a slowdown): slow start ends, the new level is the stable
+    /// one, and a restart soon after resumes at half (see
+    /// [`Self::resumes_where_it_was`]).
     fn limited(&mut self, limit: usize, now: i64) {
         self.limit = limit;
         self.clean = 0;
@@ -189,12 +230,13 @@ impl Pace {
         self.slow_start = false;
         self.hold_until = now + HOLD_MS;
         self.stable = (limit, now);
+        self.pushed_back = Some(now);
     }
 
-    /// The provider refused or slowed `model`'s turns at `level`: for
-    /// CEILING_MS they fly no more at once than that, nor than a lower
-    /// ceiling still standing. A lone turn refused says the rate ran out, not
-    /// how many turns it takes at once, and sets none.
+    /// The provider refused `model`'s turns at `level`: for CEILING_MS they
+    /// fly no more at once than that, nor than a lower ceiling still
+    /// standing. A lone turn refused says the rate ran out, not how many
+    /// turns it takes at once, and sets none.
     fn observed(&mut self, model: &str, level: usize, now: i64) {
         if level < 2 {
             return;
@@ -230,7 +272,11 @@ impl Pace {
     /// under the current limit (or not known) halves it again.
     pub(super) fn throttled(&mut self, model: &str, admitted_limit: Option<usize>, now: i64) {
         self.flew(now);
-        if admitted_limit.is_some_and(|limit| limit > self.limit) {
+        if let Some(admitted) = admitted_limit.filter(|limit| *limit > self.limit) {
+            // The level already went down (a refusal of the same burst, or a
+            // slowdown, which sets no ceiling): it is not halved again, but
+            // the provider did refuse the model at that level.
+            self.observed(model, admitted, now);
             return;
         }
         self.observed(model, admitted_limit.unwrap_or(self.limit), now);
@@ -242,7 +288,7 @@ impl Pace {
     /// In slow start the level doubles once as many turns as the level
     /// finished cleanly that were admitted with all its slots taken; after
     /// it, the level grows by one per hold and stretch of clean turns.
-    pub(super) fn finished(&mut self, model: &str, turns: u32, speed: Option<f64>, now: i64) {
+    pub(super) fn finished(&mut self, turns: u32, speed: Option<f64>, now: i64) {
         self.flew(now);
         if let Some(speed) = speed.filter(|speed| speed.is_finite() && *speed > 0.0) {
             let ring = self.speeds.entry(turns.max(1)).or_default();
@@ -252,8 +298,8 @@ impl Pace {
             }
         }
         if let Some(slower) = self.slowed() {
-            // Back to the level below the first one that streams slower.
-            self.observed(model, slower as usize, now);
+            // Back to the level below the first one that streams less in all,
+            // with no ceiling: the pace may probe it again after a hold.
             self.limited(
                 self.limit.min((slower as usize).saturating_sub(1).max(1)),
                 now,
@@ -286,20 +332,25 @@ impl Pace {
         }
     }
 
-    /// The lowest concurrency level that streams clearly slower than the
-    /// lowest level measured below it, if any.
+    /// The lowest concurrency level whose turns together stream clearly less
+    /// than a lower measured level's do, if any: a level's whole stream is
+    /// its median speed times its turns. Each stream slowing as more fly at
+    /// once is no slowdown while the account still streams more in all (eleven
+    /// turns at three quarters of the speed of seven stream more than seven).
     fn slowed(&self) -> Option<u32> {
-        let comparable: Vec<(u32, f64)> = self
+        let mut best_below: Option<f64> = None;
+        for (level, ring) in self
             .speeds
             .iter()
             .filter(|(_, ring)| ring.len() >= COMPARABLE)
-            .map(|(level, ring)| (*level, median(ring)))
-            .collect();
-        let (base_level, base) = *comparable.first()?;
-        comparable
-            .iter()
-            .find(|(level, speed)| *level > base_level && *speed < SLOWER * base)
-            .map(|(level, _)| *level)
+        {
+            let whole = median(ring) * f64::from(*level);
+            if best_below.is_some_and(|best| whole < SLOWER * best) {
+                return Some(*level);
+            }
+            best_below = Some(best_below.map_or(whole, |best| best.max(whole)));
+        }
+        None
     }
 }
 
@@ -409,7 +460,7 @@ pub(super) fn last_flight(account: &str) -> Option<i64> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .filter(|(key, _)| key.rsplit(char::from(0x1e)).next() == Some(account))
+        .filter(|(key, pace)| pace.flown && key.rsplit(char::from(0x1e)).next() == Some(account))
         .map(|(_, pace)| pace.active)
         .max()
 }
@@ -447,7 +498,7 @@ pub(super) fn record_throttle(account: &str, model: &str, admitted_limit: Option
 pub(super) fn record_turn(account: &str, model: &str, turns: u32, speed: Option<f64>, now: i64) {
     with_pace(account, |pace| {
         let before = (pace.limit(), pace.ceiling(model, now));
-        pace.finished(model, turns, speed, now);
+        pace.finished(turns, speed, now);
         log_move(
             account,
             model,
@@ -554,24 +605,24 @@ mod tests {
     use super::*;
 
     /// As many clean turns as the level, each admitted with every slot taken.
-    fn round(pace: &mut Pace, model: &str, clock: i64) {
+    fn round(pace: &mut Pace, clock: i64) {
         for _ in 0..pace.limit() {
-            pace.finished(model, pace.limit() as u32, None, clock);
+            pace.finished(pace.limit() as u32, None, clock);
         }
     }
 
     #[test]
     fn slow_start_doubles_each_full_clean_round_until_the_first_throttle() {
         let mut pace = Pace::new(4, 0);
-        round(&mut pace, "m", 0);
+        round(&mut pace, 0);
         assert_eq!(pace.limit(), 8);
-        round(&mut pace, "m", 1);
+        round(&mut pace, 1);
         assert_eq!(pace.limit(), 16);
         // The level a round finished at is the stable one a restart resumes.
         assert_eq!(pace.saved().level, 8);
         // One turn short of a round does not double it, holds or not.
         for _ in 0..15 {
-            pace.finished("m", 16, None, 2 * HOLD_MS);
+            pace.finished(16, None, 2 * HOLD_MS);
         }
         assert_eq!(pace.limit(), 16);
         // The first throttle halves it and ends slow start for good: full
@@ -588,13 +639,14 @@ mod tests {
                 ceilings: BTreeMap::from([("m".to_owned(), (16, 3 * HOLD_MS))]),
                 current: Some(8),
                 active_at: Some(3 * HOLD_MS),
+                pushed_back_at: Some(3 * HOLD_MS),
             }
         );
         for _ in 0..3 {
-            round(&mut pace, "m", 3 * HOLD_MS + 1);
+            round(&mut pace, 3 * HOLD_MS + 1);
         }
         assert_eq!(pace.limit(), 8);
-        pace.finished("m", 8, None, 4 * HOLD_MS);
+        pace.finished(8, None, 4 * HOLD_MS);
         assert_eq!(pace.limit(), 9);
     }
 
@@ -603,30 +655,31 @@ mod tests {
         let mut pace = Pace::new(4, 0);
         // Three of four slots taken, round after round, hold after hold.
         for clock in 0..100 {
-            pace.finished("m", 3, None, clock * HOLD_MS);
+            pace.finished(3, None, clock * HOLD_MS);
         }
         assert_eq!(pace.limit(), 4);
         // A round counts the turns that found every slot taken: three of them
         // and any number below are none.
         for _ in 0..3 {
-            pace.finished("m", 4, None, 0);
+            pace.finished(4, None, 0);
         }
         for _ in 0..20 {
-            pace.finished("m", 2, None, 0);
+            pace.finished(2, None, 0);
         }
         assert_eq!(pace.limit(), 4);
-        pace.finished("m", 4, None, 0);
+        pace.finished(4, None, 0);
         assert_eq!(pace.limit(), 8);
         // Turns admitted with four in flight do not fill eight.
         for _ in 0..20 {
-            pace.finished("m", 4, None, 0);
+            pace.finished(4, None, 0);
         }
         assert_eq!(pace.limit(), 8);
     }
 
     #[test]
     fn a_restart_resumes_the_saved_level_and_a_stale_one_at_half() {
-        // A file from before activity was kept: the stable level dates it.
+        // A file that keeps push-backs: the provider refused "m" at eight
+        // when the stable level was set.
         let saved = Saved {
             level: 16,
             at: 0,
@@ -637,6 +690,7 @@ mod tests {
             ]),
             current: None,
             active_at: None,
+            pushed_back_at: Some(0),
         };
         let pace = Pace::resume(&saved, CEILING_MS - 1);
         assert_eq!(pace.limit(), 16);
@@ -644,14 +698,68 @@ mod tests {
         assert_eq!(pace.saved().at, 0);
         assert_eq!(pace.limit_for("m", CEILING_MS - 1), 8);
         assert_eq!(pace.limit_for("lapsed", CEILING_MS - 1), 16);
-        // A level older than a ceiling's hour resumes at half, in slow start
-        // again: the evidence that ended it lapsed with it.
+        // Idle for an hour right after the provider pushed back, it resumes
+        // at half, in slow start again, its ceilings lapsed.
         let stale = Pace::resume(&saved, CEILING_MS);
         assert_eq!(stale.limit(), 8);
         assert!(stale.slow_start);
         assert!(stale.ceilings.is_empty());
-        let single = Saved { level: 1, ..saved };
+        let single = Saved {
+            level: 1,
+            ..saved.clone()
+        };
         assert_eq!(Pace::resume(&single, CEILING_MS).limit(), 1);
+        // A file from before push-backs were kept infers one from a ceiling
+        // set when the stable level was, but drops its ceilings: they may
+        // come from slowdowns, which set none now.
+        let old = Saved {
+            pushed_back_at: None,
+            ..saved
+        };
+        let resumed = Pace::resume(&old, CEILING_MS - 1);
+        assert_eq!(resumed.limit_for("m", CEILING_MS - 1), 16);
+        // The inferred push-back is kept, so a second restart halves too.
+        assert_eq!(resumed.saved().pushed_back_at, Some(0));
+        assert_eq!(Pace::resume(&old, CEILING_MS).limit(), 8);
+    }
+
+    #[test]
+    fn a_clean_round_after_a_push_back_lets_a_restart_resume_where_it_was() {
+        let mut pace = Pace::new(4, 0);
+        round(&mut pace, 0);
+        assert_eq!(pace.limit(), 8);
+        // A refusal of a lone turn (the pace at one during quota recovery)
+        // sets no ceiling, yet a restart within six hours of it resumes at
+        // half.
+        pace.throttled("m", Some(1), HOLD_MS);
+        assert_eq!(pace.limit(), 4);
+        assert!(pace.ceilings.is_empty());
+        let refused = pace.saved();
+        assert_eq!(refused.pushed_back_at, Some(HOLD_MS));
+        assert_eq!(Pace::resume(&refused, HOLD_MS + 2 * CEILING_MS).limit(), 2);
+        // A clean round after the hold confirms the level: a restart two
+        // hours later goes on where it was.
+        let clock = 3 * HOLD_MS;
+        round(&mut pace, clock);
+        let confirmed = pace.saved();
+        assert_eq!(confirmed.at, clock);
+        assert_eq!(Pace::resume(&confirmed, clock + 2 * CEILING_MS).limit(), 4);
+        // A slowdown counts as a push-back too.
+        let mut slowed = Pace::new(4, 0);
+        for _ in 0..COMPARABLE {
+            slowed.finished(1, Some(100.0), 0);
+            slowed.finished(2, Some(100.0), 0);
+        }
+        for _ in 0..COMPARABLE {
+            slowed.finished(4, Some(20.0), HOLD_MS);
+        }
+        let saved = slowed.saved();
+        assert_eq!(saved.pushed_back_at, Some(HOLD_MS));
+        assert!(saved.ceilings.is_empty());
+        assert_eq!(
+            Pace::resume(&saved, HOLD_MS + 2 * CEILING_MS).limit(),
+            (saved.level / 2).max(1)
+        );
     }
 
     #[test]
@@ -661,11 +769,11 @@ mod tests {
         // until a minute before the stop (10-18: a 25-minute gap sent b55a
         // from 16 to 6, Codex from 19 to 9, Grok from 21 to 5).
         let mut pace = Pace::new(4, 0);
-        round(&mut pace, "m", 0);
-        round(&mut pace, "m", 0);
+        round(&mut pace, 0);
+        round(&mut pace, 0);
         assert_eq!(pace.limit(), 16);
         for minute in 0..120 {
-            pace.finished("m", 3, None, minute * ACTIVE_STEP_MS);
+            pace.finished(3, None, minute * ACTIVE_STEP_MS);
         }
         let saved = pace.saved();
         let last = 119 * ACTIVE_STEP_MS;
@@ -694,11 +802,15 @@ mod tests {
         let saved = refused.saved();
         assert_eq!(Pace::resume(&saved, last + CEILING_MS - 1).limit(), 8);
         assert_eq!(Pace::resume(&saved, last + CEILING_MS).limit(), 4);
+        // Only a real flight counts as the account flying for judge seating:
+        // a resume within the hour dates one, a new or stale pace none.
+        assert!(resumed.flown);
+        assert!(!idle.flown && !Pace::new(4, 0).flown);
         // Activity is kept to the minute, so a burst of turns saves once.
         let mut steady = Pace::new(4, 0);
-        steady.finished("m", 1, None, ACTIVE_STEP_MS);
+        steady.finished(1, None, ACTIVE_STEP_MS);
         let before = steady.saved();
-        steady.finished("m", 1, None, ACTIVE_STEP_MS + 30_000);
+        steady.finished(1, None, ACTIVE_STEP_MS + 30_000);
         assert_eq!(steady.saved(), before);
     }
 
@@ -740,6 +852,7 @@ mod tests {
                 ceilings: BTreeMap::new(),
                 current: None,
                 active_at: None,
+                pushed_back_at: None,
             },
         );
         std::fs::write(
@@ -763,7 +876,7 @@ mod tests {
         // A new account its demand keeps below its level does not grow,
         // however many clean turns finish.
         for clock in 0..50 {
-            pace.finished("m", 1, None, clock * HOLD_MS);
+            pace.finished(1, None, clock * HOLD_MS);
         }
         assert_eq!(pace.limit(), 4);
         pace.throttled("m", Some(4), 0);
@@ -779,26 +892,26 @@ mod tests {
         assert_eq!(pace.limit(), 1);
         // Clean turns inside the hold do not grow it.
         for _ in 0..10 {
-            pace.finished("m", 1, None, 1_000);
+            pace.finished(1, None, 1_000);
         }
         assert_eq!(pace.limit(), 1);
         // After the hold, two clean turns per slot add one, and the next step
         // waits for another hold.
         let mut clock = 2 + HOLD_MS;
-        pace.finished("m", 1, None, clock);
+        pace.finished(1, None, clock);
         assert_eq!(pace.limit(), 2);
         for _ in 0..10 {
-            pace.finished("m", 2, None, clock);
+            pace.finished(2, None, clock);
         }
         assert_eq!(pace.limit(), 2);
         clock += HOLD_MS;
-        pace.finished("m", 2, None, clock);
+        pace.finished(2, None, clock);
         assert_eq!(pace.limit(), 3);
         // With no signal it keeps growing: no fixed most bounds an account.
         for _ in 0..20 {
             clock += HOLD_MS;
             for _ in 0..2 * pace.limit() {
-                pace.finished("m", 3, None, clock);
+                pace.finished(3, None, clock);
             }
         }
         assert!(pace.limit() > 8, "{}", pace.limit());
@@ -813,7 +926,7 @@ mod tests {
         let mut pace = Pace::new(4, 0);
         let mut clock = HOLD_MS;
         // A full clean round doubles the account to eight at once.
-        round(&mut pace, "fast", clock);
+        round(&mut pace, clock);
         assert_eq!(pace.limit(), 8);
         // The provider refuses one model at eight: the account halves, and
         // that model's turns fly no more than eight at once for an hour.
@@ -823,7 +936,7 @@ mod tests {
         for _ in 0..5 {
             clock += HOLD_MS;
             for _ in 0..2 * pace.limit() {
-                pace.finished("fast", 1, None, clock);
+                pace.finished(1, None, clock);
             }
         }
         // The account grows on for its other models; the refused one stays
@@ -845,38 +958,67 @@ mod tests {
     fn a_level_that_streams_slower_than_fewer_turns_sends_the_pace_below_it() {
         let mut pace = Pace::new(4, 0);
         for _ in 0..COMPARABLE {
-            pace.finished("m", 1, Some(100.0), 0);
-            pace.finished("m", 2, Some(95.0), 0);
+            pace.finished(1, Some(100.0), 0);
+            pace.finished(2, Some(95.0), 0);
         }
         assert!(pace.slowed().is_none());
         let before = pace.limit();
         assert_eq!(before, 4);
+        // Four turns at 30 tokens per second stream 120 in all, less than
+        // three quarters of two turns' 190.
         for _ in 0..COMPARABLE - 1 {
-            pace.finished("m", 4, Some(60.0), 0);
+            pace.finished(4, Some(30.0), 0);
         }
         // Four slow samples are not yet comparable (their full round doubled
         // the level meanwhile); the fifth is.
         assert!(pace.limit() >= before);
-        pace.finished("m", 4, Some(60.0), 0);
+        pace.finished(4, Some(30.0), 0);
         assert_eq!(pace.limit(), 3);
         assert!(!pace.speeds.contains_key(&4));
+        // A slowdown sets no model ceiling: only a refusal does.
+        assert!(pace.ceilings.is_empty());
+        assert_eq!(pace.limit_for("m", 0), 3);
+        // A refusal of a turn admitted at four, the level the slowdown left,
+        // sets the ceiling the slowdown did not, and halves nothing more.
+        pace.throttled("m", Some(4), 0);
+        assert_eq!(pace.limit(), 3);
+        assert_eq!(pace.ceiling("m", 0), Some(4));
         // A slowdown ends slow start as a refusal does: full rounds no longer
         // double the level.
         assert!(!pace.slow_start);
-        round(&mut pace, "m", 0);
+        round(&mut pace, 0);
         assert_eq!(pace.limit(), 3);
         // With no lower level measured there is nothing to compare with: only
         // the full round at four doubled it.
         let mut alone = Pace::new(4, 0);
         for _ in 0..3 * COMPARABLE {
-            alone.finished("m", 4, Some(10.0), 0);
+            alone.finished(4, Some(10.0), 0);
         }
         assert!(alone.slowed().is_none());
         assert_eq!(alone.limit(), 8);
+        // Each stream slower at a higher level is no slowdown while the level
+        // streams more in all (10-19: eleven Luna turns at three quarters of
+        // seven turns' speed taught a ceiling of seven).
+        let mut busier = Pace::new(4, 0);
+        for _ in 0..COMPARABLE {
+            busier.speeds.entry(7).or_default().push(100.0);
+            busier.speeds.entry(11).or_default().push(75.0);
+        }
+        assert!(busier.slowed().is_none());
+        // A level is held against the best lower level, not the nearest: four
+        // turns streaming 140 in all are slower than two's 200, though not
+        // than three's 160.
+        let mut uneven = Pace::new(4, 0);
+        for _ in 0..COMPARABLE {
+            uneven.speeds.entry(2).or_default().push(100.0);
+            uneven.speeds.entry(3).or_default().push(160.0 / 3.0);
+            uneven.speeds.entry(4).or_default().push(35.0);
+        }
+        assert_eq!(uneven.slowed(), Some(4));
         // Unknown speeds teach nothing either way.
         let mut quiet = Pace::new(4, 0);
         for _ in 0..50 {
-            quiet.finished("m", 8, None, 0);
+            quiet.finished(8, None, 0);
         }
         assert!(quiet.speeds.is_empty());
     }

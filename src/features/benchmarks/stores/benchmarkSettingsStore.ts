@@ -35,6 +35,9 @@ export const MAX_JUDGE_POOL_ENTRIES = 32;
 export const MAX_JUDGE_ID_LENGTH = 256;
 /** The longest effort a pool entry keeps. */
 export const MAX_JUDGE_EFFORT_LENGTH = 64;
+/** The most account ids, and the longest one, a pool entry keeps. */
+export const MAX_JUDGE_ACCOUNTS = 16;
+export const MAX_JUDGE_ACCOUNT_LENGTH = 128;
 /** Every kind of rubric a judge can be limited to, in stored order. */
 export const JUDGE_INPUTS: readonly JudgeInput[] = ["text", "visual"];
 /** The longest provider id the owner's data-use word is kept for. */
@@ -98,6 +101,7 @@ export function normalizeJudgePoolEntry(raw: unknown): JudgePoolEntry | null {
     modelId?: unknown;
     effort?: unknown;
     inputs?: unknown;
+    accounts?: unknown;
   };
   const providerId = boundedText(stored.providerId, MAX_JUDGE_ID_LENGTH);
   const modelId = boundedText(stored.modelId, MAX_JUDGE_ID_LENGTH);
@@ -118,6 +122,26 @@ export function normalizeJudgePoolEntry(raw: unknown): JudgePoolEntry | null {
     )
       return null;
     entry.inputs = JUDGE_INPUTS.filter((input) => inputs.includes(input));
+  }
+  if (stored.accounts !== undefined && stored.accounts !== null) {
+    // The accounts an entry may sit on, as the backend reads them: exact
+    // ids, never trimmed, or the backend drops the entry.
+    const accounts = stored.accounts;
+    if (
+      !Array.isArray(accounts) ||
+      accounts.length === 0 ||
+      accounts.length > MAX_JUDGE_ACCOUNTS ||
+      !accounts.every(
+        (account) =>
+          typeof account === "string" &&
+          account.length > 0 &&
+          new TextEncoder().encode(account).length <=
+            MAX_JUDGE_ACCOUNT_LENGTH &&
+          account.trim() === account,
+      )
+    )
+      return null;
+    entry.accounts = [...accounts];
   }
   return entry;
 }
@@ -221,6 +245,7 @@ export function serializeBenchmarkSettings(settings: BenchmarkSettings) {
       modelId: entry.modelId,
       effort: entry.effort ?? null,
       ...(entry.inputs ? { inputs: [...entry.inputs] } : {}),
+      ...(entry.accounts ? { accounts: [...entry.accounts] } : {}),
     })),
     providerDataUse: Object.fromEntries(
       Object.entries(settings.providerDataUse).map(([providerId, stated]) => [

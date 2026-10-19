@@ -596,6 +596,7 @@
     "notReported": "Not reported",
     "stale": "Out of date",
     "onCredits": "Running on credits",
+    "sandboxLoginMismatch": "Benchmark sandbox signed in as another login",
     "usagePaused": "Usage updates paused",
     "usageRetryIn": "The provider paused usage requests. Retry in {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Waiting for the next usage update.",
@@ -740,6 +741,7 @@
         "more_other": "and {{count}} more"
       },
       "seats": "Takes judge seats",
+      "seatsWithVisual": "Takes judge seats, visual rubrics included",
       "noSeats": "Takes no seats: {{reason}}",
       "noSeatsPlain": "Takes no seats yet",
       "calibrate": "Calibrate",

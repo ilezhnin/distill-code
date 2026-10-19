@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluationCriteria,
+  oneRootSvg,
   previewDocument,
   renderable,
   rubricCriteriaOf,
@@ -75,6 +76,20 @@ describe("previewDocument", () => {
     expect(previewDocument(`<p>Title</p>${drawing}`, "html")).not.toContain(
       "body>svg",
     );
+  });
+
+  it("shows several root drawings, or one with more markup, as a page", () => {
+    const sprite =
+      "<svg style='display:none'><symbol id='s'><circle r='4'/></symbol></svg><svg viewBox='0 0 8 8'><use href='#s'/></svg>";
+    const page = previewDocument(sprite, "svg");
+    expect(page).not.toContain("body>svg");
+    expect(page).toContain("<use href='#s'/>");
+    expect(oneRootSvg("<svg viewBox='0 0 9 9'><svg x='1'/><g/></svg>\n")).toBe(
+      true,
+    );
+    expect(oneRootSvg("<svg/>")).toBe(true);
+    expect(oneRootSvg("<svg><rect/>")).toBe(false);
+    expect(oneRootSvg("<svg></svg><p>More</p>")).toBe(false);
   });
 
   it("renders nothing for prose or code", () => {

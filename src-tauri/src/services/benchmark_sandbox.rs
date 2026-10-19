@@ -163,6 +163,11 @@ pub struct Admission {
     /// Busy share of all Windows CPUs over the second before admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_cpu_busy: Option<f64>,
+    /// Mean busy share of all Windows CPUs over the 30 seconds before
+    /// admission, the window bench-budget's load line compares; the app
+    /// records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_cpu_mean: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_cpus: Option<u32>,
     /// What the memory guard counted (anonymous, shared and kernel memory)
@@ -567,6 +572,7 @@ pub(crate) async fn reserve(
     reservation.admission.host_cpus = std::thread::available_parallelism()
         .ok()
         .and_then(|count| u32::try_from(count.get()).ok());
+    reservation.admission.host_cpu_mean = host_cpu_mean();
     record_session_admission(id, reservation.admission.clone());
     Ok(reservation)
 }
@@ -723,26 +729,62 @@ fn host_headroom() -> io::Result<HostHeadroom> {
     ))
 }
 
-/// Busy share of all Windows CPUs over one second, in thousandths, from a
-/// thread that samples once a second for every admission's evidence; None in
-/// the first second, and where Windows reports nothing.
-fn host_cpu_permille() -> Option<u32> {
-    static LATEST: OnceLock<Arc<std::sync::atomic::AtomicU32>> = OnceLock::new();
-    let latest = LATEST.get_or_init(|| {
-        let latest = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-        let writer = Arc::clone(&latest);
+/// How many one-second samples the host CPU mean covers: the 30 seconds over
+/// which bench-budget smooths the gate's samples for its load line.
+const HOST_CPU_WINDOW: usize = 30;
+
+/// The host CPU samples of the last [`HOST_CPU_WINDOW`] seconds, in
+/// thousandths, newest last; filled by a thread that samples once a second
+/// from the first admission on.
+fn host_cpu_samples() -> &'static std::sync::Mutex<std::collections::VecDeque<u32>> {
+    static SAMPLES: OnceLock<Arc<std::sync::Mutex<std::collections::VecDeque<u32>>>> =
+        OnceLock::new();
+    SAMPLES.get_or_init(|| {
+        let samples = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        let writer = Arc::clone(&samples);
         let started = std::thread::Builder::new()
             .name("benchmark-host-cpu".into())
             .spawn(move || loop {
                 let busy = host_cpu_busy_over(Duration::from_secs(1)).unwrap_or(u32::MAX);
-                writer.store(busy, std::sync::atomic::Ordering::Relaxed);
+                let mut samples = writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                samples.push_back(busy);
+                while samples.len() > HOST_CPU_WINDOW {
+                    samples.pop_front();
+                }
             });
         if started.is_err() {
             log::warn!("[benchmarks] cannot sample Windows CPU use for sandbox admission");
         }
-        latest
-    });
-    Some(latest.load(std::sync::atomic::Ordering::Relaxed)).filter(|busy| *busy <= 1000)
+        samples
+    })
+}
+
+/// Busy share of all Windows CPUs over the last second, in thousandths, for
+/// the broker's evidence; None in the first second, and where Windows
+/// reports nothing.
+fn host_cpu_permille() -> Option<u32> {
+    let samples = host_cpu_samples()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    samples.back().copied().filter(|busy| *busy <= 1000)
+}
+
+/// Mean busy share of all Windows CPUs over the last 30 seconds (as much of
+/// it as was sampled), from 0 to 1: what the broker's load line compares, so
+/// a turn admitted in a quiet second of a busy stretch still reads as busy.
+fn host_cpu_mean() -> Option<f64> {
+    let samples = host_cpu_samples()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    mean_share(samples.iter().copied())
+}
+
+/// The mean of the known thousandths among `samples`, as a share.
+fn mean_share(samples: impl Iterator<Item = u32>) -> Option<f64> {
+    let known: Vec<u32> = samples.filter(|busy| *busy <= 1000).collect();
+    (!known.is_empty()).then(|| f64::from(known.iter().sum::<u32>()) / known.len() as f64 / 1000.0)
 }
 
 #[cfg(not(windows))]
@@ -1004,6 +1046,9 @@ pub(crate) struct Status {
     conflicts: BTreeMap<(String, String), u32>,
     /// Credential copies bench-clean kept aside after a failed save.
     unsaved: u32,
+    /// By provider and account, the login the sandbox holds for it (its
+    /// account uuid), where the helpers report one; never a credential.
+    identities: BTreeMap<(String, String), Option<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1856,6 +1901,7 @@ async fn observe_status() -> io::Result<Status> {
     }
     let status = parse_status(&String::from_utf8_lossy(&out.stdout))?;
     report_conflicts(&status);
+    remember_logins(&status);
     Ok(status)
 }
 
@@ -1991,6 +2037,52 @@ fn parse_status(text: &str) -> io::Result<Status> {
             return Err(io::Error::other("Malformed sandbox credential conflict"));
         }
     }
+    // The login each sandbox account holds; helpers from before it was
+    // reported print none, which leaves it unknown. It only informs, so a
+    // line that is not one leaves that login unknown instead of refusing
+    // the status.
+    let mut identities = BTreeMap::new();
+    let mut doubtful = std::collections::BTreeSet::new();
+    for parts in &lines {
+        if parts.first() != Some(&"account-identity") {
+            continue;
+        }
+        let parse = |value: &str| match value {
+            "-" => Some(None),
+            value => uuid::Uuid::parse_str(value)
+                .ok()
+                .map(|id| Some(id.to_string())),
+        };
+        let read = match parts.as_slice() {
+            [_, provider, account, account_uuid, organization_uuid]
+                if valid_id(provider).is_ok() && valid_id(account).is_ok() =>
+            {
+                parse(organization_uuid)
+                    .and(parse(account_uuid))
+                    .map(|login| ((provider.to_string(), account.to_string()), login))
+            }
+            _ => None,
+        };
+        match read {
+            Some((key, login)) if !doubtful.contains(&key) => {
+                if identities.insert(key.clone(), login).is_some() {
+                    // Reported twice: neither report is trusted.
+                    identities.remove(&key);
+                    doubtful.insert(key);
+                }
+            }
+            Some(_) => {}
+            None => {
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    log::warn!(
+                        "[benchmarks] the sandbox status has an account identity line that is not one; its login stays unknown"
+                    );
+                }
+            }
+        }
+    }
     // Reported for the operator, never a reason to refuse the status.
     let unsaved = lines
         .iter()
@@ -2005,7 +2097,30 @@ fn parse_status(text: &str) -> io::Result<Status> {
         account_health,
         conflicts,
         unsaved,
+        identities,
     })
+}
+
+/// The logins the last sandbox status reported, by provider and account.
+static SANDBOX_LOGINS: std::sync::Mutex<BTreeMap<(String, String), Option<String>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn remember_logins(status: &Status) {
+    *SANDBOX_LOGINS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = status.identities.clone();
+}
+
+/// The account uuid of the login the sandbox holds for `account` of
+/// `provider` (the sandbox's provider key, such as `claude`), as the last
+/// sandbox status reported it; none where it reported none.
+pub(crate) fn sandbox_login(provider: &str, account: &str) -> Option<String> {
+    SANDBOX_LOGINS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(provider.to_owned(), account.to_owned()))
+        .cloned()
+        .flatten()
 }
 
 /// Logs each sandbox account with credential conflicts once per count, and
@@ -3010,6 +3125,27 @@ mod tests {
     }
 
     #[test]
+    fn the_host_cpu_mean_averages_the_known_seconds() {
+        // Unknown seconds (u32::MAX) are left out; no known second is no mean.
+        assert_eq!(mean_share([200, 400, u32::MAX].into_iter()), Some(0.3));
+        assert_eq!(mean_share([u32::MAX].into_iter()), None);
+        assert_eq!(mean_share(std::iter::empty()), None);
+        let mut admission: Admission = serde_json::from_value(serde_json::json!({
+            "lane": "heavy", "competing": {}, "competingHeavy": 0,
+            "reservedMemory": 0, "reservedCpu": 0, "memoryCurrent": 0,
+            "guestLoad": [0.0, 0.0, 0.0], "guestCpus": 16, "guestMemAvailable": 0,
+            "hostAvailableRam": 0, "hostAvailableCommit": 0,
+        }))
+        .unwrap();
+        assert_eq!(admission.host_cpu_mean, None);
+        admission.host_cpu_mean = Some(0.42);
+        assert_eq!(
+            serde_json::to_value(&admission).unwrap()["hostCpuMean"],
+            0.42
+        );
+    }
+
+    #[test]
     fn a_session_admission_record_is_parsed_and_handed_out_once() {
         // The shape bench-budget prints beside a reservation token.
         let printed = serde_json::json!({
@@ -3341,6 +3477,45 @@ mod tests {
         assert!(unbounded
             .require_account_window("grok", "account-1", 1_800_000_000_000, 3600)
             .is_ok());
+    }
+
+    #[test]
+    fn the_sandbox_login_of_an_account_is_volatile_evidence_read_when_reported() {
+        let base = status();
+        let original = parse_status(&base).unwrap();
+        // Helpers that print no identity leave every login unknown.
+        assert!(original.identities.is_empty());
+        let uuid = "0D3C2F0E-6A1B-4C9A-9B1E-3F6D2A7C8E01";
+        let signed = parse_status(&format!(
+            "{base}\naccount claude account-1 yes\naccount-identity claude account-1 {uuid} -"
+        ))
+        .unwrap();
+        assert_eq!(signed.revision, original.revision);
+        assert_eq!(
+            signed.identities[&("claude".to_owned(), "account-1".to_owned())],
+            Some(uuid.to_lowercase())
+        );
+        let unknown =
+            parse_status(&format!("{base}\naccount-identity claude account-1 - -")).unwrap();
+        assert_eq!(
+            unknown.identities[&("claude".to_owned(), "account-1".to_owned())],
+            None
+        );
+        // It only informs: a line that is not one, or an account reported
+        // twice, leaves that login unknown and never refuses the status.
+        for malformed in [
+            "account-identity claude account-1 not-a-uuid -",
+            "account-identity claude account-1 -",
+            "account-identity claude account-1 - - extra",
+        ] {
+            let status = parse_status(&format!("{base}\n{malformed}")).unwrap();
+            assert!(status.identities.is_empty(), "{malformed}");
+        }
+        let twice = parse_status(&format!(
+            "{base}\naccount-identity claude account-1 {uuid} -\naccount-identity claude account-1 - -\naccount-identity claude account-1 {uuid} -"
+        ))
+        .unwrap();
+        assert!(twice.identities.is_empty());
     }
 
     #[test]

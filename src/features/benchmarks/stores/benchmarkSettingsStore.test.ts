@@ -200,6 +200,24 @@ describe("benchmark judge pool", () => {
     }
   });
 
+  it("keeps the accounts an entry may sit on and drops a malformed list", () => {
+    const kept = pool([
+      { providerId: "claude-acp", modelId: "sonnet", accounts: ["acct-b"] },
+      { providerId: "claude-acp", modelId: "haiku", accounts: [] },
+      { providerId: "claude-acp", modelId: "opus", accounts: [" padded"] },
+      { providerId: "claude-acp", modelId: "fable", accounts: "acct-b" },
+      { providerId: "codex-acp", modelId: "sol" },
+    ]);
+
+    expect(kept.map((entry) => entry.modelId)).toEqual(["sonnet", "sol"]);
+    expect(kept[0].accounts).toEqual(["acct-b"]);
+    expect(kept[1]).not.toHaveProperty("accounts");
+    const written = serializeBenchmarkSettings(
+      parseBenchmarkSettings({ judgePool: kept }),
+    );
+    expect(written.judgePool[0].accounts).toEqual(["acct-b"]);
+  });
+
   it("keeps the first of entries with the same model and effort", () => {
     const beta = { providerId: "codex-acp", modelId: "judge-beta" };
     const other = { ...alpha, providerId: "claude-acp" };
