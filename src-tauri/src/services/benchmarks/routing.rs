@@ -752,7 +752,6 @@ mod tests {
             runs: vec![],
             attempts: vec![],
             required_repetitions: 1,
-            suite_exclusions: Default::default(),
         };
         let candidates = vec![config("low"), config("high")];
         for difficulty in ["easy", "hard"] {
@@ -783,6 +782,8 @@ mod tests {
                         created_at: 900,
                         updated_at: 1000,
                         baked_at: None,
+                        paused_ms: 0,
+                        paused_since: None,
                         request: run_request,
                         attempts: vec![],
                     });

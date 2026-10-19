@@ -248,6 +248,10 @@ export interface BenchmarkRun {
   updatedAt: number;
   /** When the run's window closed and its cells became final; absent while it is open. */
   bakedAt?: number | null;
+  /** Time the run spent paused before its current pause: its window leaves it out. */
+  pausedMs?: number;
+  /** When the run's current pause began. */
+  pausedSince?: number | null;
   request: RunRequest;
   attempts: Attempt[];
 }
@@ -259,6 +263,10 @@ export interface RunSummary {
   updatedAt: number;
   /** When the run's window closed and its cells became final; absent while it is open. */
   bakedAt?: number | null;
+  /** Time the run spent paused before its current pause: its window leaves it out. */
+  pausedMs?: number;
+  /** When the run's current pause began. */
+  pausedSince?: number | null;
   request: RunRequest;
   attemptCount: number;
   settledCount: number;

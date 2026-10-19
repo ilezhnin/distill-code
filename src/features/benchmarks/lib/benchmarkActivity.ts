@@ -2,7 +2,6 @@
 // Benchmarks pages and a model's rows show it while runs have work left.
 import type { Configuration, LeaderboardRow, RunSummary } from "../types";
 import { requests } from "./benchmarkCatchUp";
-import { runWindowOpen } from "./benchmarkPlan";
 import type { WorkflowCampaign } from "./workflowCampaign";
 
 /** Only the native campaign child request namespace establishes membership. */
@@ -139,19 +138,19 @@ export function rowActivity(
 }
 
 /**
- * The row's open run: the newest run measuring it whose window is still
- * open, the sitting a run from the model page joins; a baked run is history.
+ * The row's open run: the newest run measuring it that is not baked yet,
+ * the sitting a run from the model page joins while its window is open and
+ * explains once it closed; a baked run is history.
  */
 export function rowOpenRun(
   row: LeaderboardRow,
   runs: RunSummary[],
-  now: number,
 ): RunSummary | null {
   return runs
     .filter(
       (run) =>
         !run.request.preview &&
-        runWindowOpen(run, now) &&
+        run.bakedAt == null &&
         run.request.configurations.some((entry) =>
           requests(entry, row.configuration, run),
         ),

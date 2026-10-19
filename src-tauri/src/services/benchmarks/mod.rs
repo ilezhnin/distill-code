@@ -371,9 +371,6 @@ impl BenchmarkService {
         }
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
         let releases = self.store.releases().await?;
-        let mut suite_exclusions =
-            analysis::reserved_versions(&versions, &self.store.evaluation_reservations().await?);
-        suite_exclusions.extend(board_exclusions(&self.store.root).await);
         // Every analysis reads this data, so a measurement of an unknown
         // effort is left out of all of them alike, and an attempt its event
         // record stopped is unscored in all of them alike; the store keeps
@@ -386,7 +383,6 @@ impl BenchmarkService {
                 runs,
                 attempts,
                 required_repetitions: analysis::REQUIRED_REPETITIONS,
-                suite_exclusions,
             },
         )))
     }
@@ -740,9 +736,9 @@ impl BenchmarkService {
         self.store.run(&id).await
     }
     /// A run resumes with the cases it has not finished, inside its window.
-    /// A case short of its repetitions starts over, every repetition anew, so
-    /// a cell never spans two sittings; a complete case, passed or failed,
-    /// stands. A test the app restarted under was settled as uncertain and
+    /// A case short of its repetitions keeps the ones it measured and owes
+    /// only the rest: the cell is the run's, across pauses and stops; a
+    /// complete case, passed or failed, stands. A test the app restarted under was settled as uncertain and
     /// is measured again as a new attempt, never under its own key. Once the
     /// window closed the run is final and nothing resumes it.
     pub async fn control(&self, id: &str, action: &str) -> Result<BenchmarkRun> {
@@ -969,6 +965,22 @@ impl BenchmarkService {
         }
         let planned = run.request.repetitions.max(1);
         let mut unfinished = false;
+        // A rendering whose panel a stop cut short keeps its sealed answer:
+        // it goes back to its judges instead of being measured again.
+        for attempt in &run.attempts {
+            if attempt.phase == "terminal"
+                && attempt.reason.as_deref() == Some(runner::JUDGING_STOPPED)
+                && attempt.outcome.as_deref() == Some("pending_review")
+                && analysis::score(attempt).is_none()
+            {
+                let mut waiting = attempt.clone();
+                waiting.phase = runner::AWAITING_JUDGES.into();
+                waiting.reason = None;
+                self.store.save_attempt(&waiting).await?;
+                unfinished = true;
+            }
+        }
+        let run = &self.store.run(&run.id).await?;
         for (_, attempts) in analysis::run_cells(run) {
             let measured = attempts.iter().filter(|a| analysis::is_measured(a)).count() as u32;
             if measured >= planned || never_measured(&attempts) {
@@ -976,10 +988,12 @@ impl BenchmarkService {
             }
             unfinished = true;
             for attempt in attempts {
-                // A queued repetition runs as planned; a rendering awaiting
-                // its judges or a verdict keeps its paid generation.
+                // A queued repetition runs as planned. A measured one, scored
+                // or awaiting its verdict, stands: the cell belongs to the
+                // run, not to a sitting, so only a cancelled, failed or
+                // unscored repetition is measured again.
                 if attempt.phase != "terminal"
-                    || (analysis::is_measured(&attempt) && analysis::score(&attempt).is_none())
+                    || analysis::is_measured(&attempt)
                     || matches!(attempt.outcome.as_deref(), Some("excluded" | "unsupported"))
                 {
                     continue;
@@ -992,7 +1006,7 @@ impl BenchmarkService {
                 );
                 let mut superseded = attempt;
                 superseded.reason = Some(format!(
-                    "Measured again from the start on resume: {measured} of {planned} repetitions were measured when the run stopped (this one: {})",
+                    "Measured again on resume: {measured} of {planned} repetitions were measured when the run stopped (this one: {})",
                     superseded.outcome.as_deref().unwrap_or("unfinished")
                 ));
                 superseded.outcome = Some(analysis::SUPERSEDED.into());
@@ -1374,26 +1388,5 @@ impl BenchmarkService {
             }
         }
         Ok(())
-    }
-}
-
-/// The owner's suite exclusions from the benchmark settings document. A
-/// missing or unreadable document lists none: the exclusions only narrow
-/// which rows rank, so reading none never lets a private task out.
-async fn board_exclusions(root: &std::path::Path) -> BTreeSet<String> {
-    match tokio::fs::read_to_string(root.join("settings.json")).await {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(settings) => analysis::board_exclusions_from(&settings),
-            Err(error) => {
-                log::warn!("[benchmarks] board exclusions unreadable: {error}");
-                BTreeSet::new()
-            }
-        },
-        Err(error) => {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                log::warn!("[benchmarks] board exclusions unreadable: {error}");
-            }
-            BTreeSet::new()
-        }
     }
 }

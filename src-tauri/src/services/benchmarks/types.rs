@@ -429,6 +429,13 @@ pub struct BenchmarkRun {
     /// finishing; none is changed after this.
     #[serde(default)]
     pub baked_at: Option<i64>,
+    /// Time the run spent paused before its current pause, if any: its
+    /// window leaves it out.
+    #[serde(default)]
+    pub paused_ms: i64,
+    /// When the run's current pause began.
+    #[serde(default)]
+    pub paused_since: Option<i64>,
     pub request: RunRequest,
     pub attempts: Vec<Attempt>,
 }
@@ -443,6 +450,12 @@ pub struct RunSummary {
     /// See [`BenchmarkRun::baked_at`].
     #[serde(default)]
     pub baked_at: Option<i64>,
+    /// See [`BenchmarkRun::paused_ms`].
+    #[serde(default)]
+    pub paused_ms: i64,
+    /// See [`BenchmarkRun::paused_since`].
+    #[serde(default)]
+    pub paused_since: Option<i64>,
     pub request: RunRequest,
     pub attempt_count: u64,
     pub settled_count: u64,
@@ -1200,12 +1213,6 @@ pub struct QueryData {
     /// The protocol the ledger is read under: how many scored repetitions a
     /// cell needs before its case counts. A case may declare more.
     pub required_repetitions: u32,
-    /// Pool cases outside the measurement suite a row must cover to count as
-    /// fully tested: the ones an evaluation reserves (a holdout plan or a
-    /// workflow campaign names their family or split group) and the ones the
-    /// owner lists in the benchmark settings (`boardExclusions`). Boards
-    /// leave them out of every count; the case tracker still reads them.
-    pub suite_exclusions: std::collections::BTreeSet<String>,
 }
 
 fn is_zero(value: &u32) -> bool {
