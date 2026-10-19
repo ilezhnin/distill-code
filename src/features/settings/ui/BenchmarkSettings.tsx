@@ -654,7 +654,11 @@ function JudgeRow({
           ) : row ? (
             <p className="text-xs text-muted-foreground">
               {row.seats
-                ? t("benchmarks.judges.seats")
+                ? t(
+                    row.seatsVisual
+                      ? "benchmarks.judges.seatsWithVisual"
+                      : "benchmarks.judges.seats",
+                  )
                 : row.reason
                   ? t("benchmarks.judges.noSeats", { reason: row.reason })
                   : t("benchmarks.judges.noSeatsPlain")}

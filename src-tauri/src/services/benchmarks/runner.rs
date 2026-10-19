@@ -3196,7 +3196,14 @@ impl NativeBackend {
             })
             .await?;
         let judge_owner = format!("{}:judge:{batch}:{index}", attempt.id);
-        let _sandbox_cleanup = sandbox::Cleanup(Some(text_execution::attempt_id(&judge_owner)));
+        let job = text_execution::attempt_id(&judge_owner);
+        // The sandbox's cgroup leaf names no judge; this line maps it.
+        log::info!(
+            "[benchmarks] sandbox job session-{job} = judge {index} ({}) of attempt {}",
+            judge.model_id,
+            attempt.id
+        );
+        let _sandbox_cleanup = sandbox::Cleanup(Some(job));
         let session = host
             .create_owned_session(
                 OwnedSessionRequest {

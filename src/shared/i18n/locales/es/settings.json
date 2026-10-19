@@ -741,6 +741,7 @@
         "more_other": "y {{count}} más"
       },
       "seats": "Ocupa puestos de juez",
+      "seatsWithVisual": "Ocupa puestos de juez, también en rúbricas visuales",
       "noSeats": "No ocupa puestos: {{reason}}",
       "noSeatsPlain": "Todavía no ocupa puestos",
       "calibrate": "Calibrar",

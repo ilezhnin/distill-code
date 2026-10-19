@@ -964,8 +964,13 @@ fn extract_zip(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            // Permission bits only: a set-user-id, set-group-id or sticky bit
+            // an archive carries is never kept.
             if let Some(mode) = entry.unix_mode() {
-                let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode));
+                let _ = std::fs::set_permissions(
+                    &out_path,
+                    std::fs::Permissions::from_mode(mode & 0o777),
+                );
             }
         }
     }

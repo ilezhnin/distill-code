@@ -832,6 +832,8 @@ export interface JudgePoolRow {
   /** Its latest calibration for the current recipe. */
   calibration: JudgeCalibration | null;
   seats: boolean;
+  /** Whether it also takes seats on visual rubrics. */
+  seatsVisual?: boolean;
   /** Why it takes no seats, when it takes none. */
   reason: string | null;
 }

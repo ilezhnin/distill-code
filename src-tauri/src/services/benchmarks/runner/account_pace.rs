@@ -70,6 +70,10 @@ pub(super) struct Pace {
     /// When the account last flew a turn (finished or refused), to the
     /// minute: what a restart measures staleness from.
     active: i64,
+    /// Whether a turn flew since this process made the pace: a new or a
+    /// resumed pace dates `active` without any flight, which judge seating
+    /// must not read as the account flying (see [`last_flight`]).
+    flown: bool,
     /// When the provider last pushed back (a refusal or a slowdown), if ever.
     pushed_back: Option<i64>,
     /// By model, the level the provider last refused its turns at and since
@@ -114,6 +118,7 @@ impl Pace {
             full: 0,
             stable: (start, now),
             active: now,
+            flown: false,
             pushed_back: None,
             ceilings: BTreeMap::new(),
             speeds: BTreeMap::new(),
@@ -168,6 +173,9 @@ impl Pace {
             (level, now)
         };
         pace.active = if fresh { active } else { now };
+        // A fresh resume dates the account's last real flight; a stale one
+        // dates the restart, which is none.
+        pace.flown = fresh;
         // A push-back inferred from an old file is kept, so the next save
         // carries it although the ceilings it came from are dropped.
         pace.pushed_back = Self::pushed_back_at(saved);
@@ -197,6 +205,7 @@ impl Pace {
 
     /// The account flew a turn at `now`, kept to the minute.
     fn flew(&mut self, now: i64) {
+        self.flown = true;
         if now - self.active >= ACTIVE_STEP_MS {
             self.active = now;
         }
@@ -447,7 +456,7 @@ pub(super) fn last_flight(account: &str) -> Option<i64> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .filter(|(key, _)| key.rsplit(char::from(0x1e)).next() == Some(account))
+        .filter(|(key, pace)| pace.flown && key.rsplit(char::from(0x1e)).next() == Some(account))
         .map(|(_, pace)| pace.active)
         .max()
 }
@@ -789,6 +798,10 @@ mod tests {
         let saved = refused.saved();
         assert_eq!(Pace::resume(&saved, last + CEILING_MS - 1).limit(), 8);
         assert_eq!(Pace::resume(&saved, last + CEILING_MS).limit(), 4);
+        // Only a real flight counts as the account flying for judge seating:
+        // a resume within the hour dates one, a new or stale pace none.
+        assert!(resumed.flown);
+        assert!(!idle.flown && !Pace::new(4, 0).flown);
         // Activity is kept to the minute, so a burst of turns saves once.
         let mut steady = Pace::new(4, 0);
         steady.finished(1, None, ACTIVE_STEP_MS);

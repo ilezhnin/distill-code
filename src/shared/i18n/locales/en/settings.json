@@ -741,6 +741,7 @@
         "more_other": "and {{count}} more"
       },
       "seats": "Takes judge seats",
+      "seatsWithVisual": "Takes judge seats, visual rubrics included",
       "noSeats": "Takes no seats: {{reason}}",
       "noSeatsPlain": "Takes no seats yet",
       "calibrate": "Calibrate",
