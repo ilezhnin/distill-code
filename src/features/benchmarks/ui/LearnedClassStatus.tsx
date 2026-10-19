@@ -4,7 +4,6 @@ import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { benchmarkGovernanceApi } from "../api/benchmarkGovernance";
 import type { ClassPolicy } from "../lib/benchmarkGovernance";
-import type { LearnedPreviewCandidate } from "../lib/benchmarkLearning";
 
 /** Every work class's learned selection state, shared by all its readers. */
 export function useClassPolicies() {
@@ -20,81 +19,54 @@ function certifiedPolicy(policy: ClassPolicy | undefined): boolean {
 }
 
 /**
- * Whether an uncertified class has a preview that compared held-out cases.
+ * Whether an uncertified class has a held-out evaluation that compared cases.
  * The class still routes by its fallback order either way.
  */
-export function hasComparedPreview(policy: ClassPolicy | undefined): boolean {
+export function hasEvaluatedFallback(policy: ClassPolicy | undefined): boolean {
   return (
-    !certifiedPolicy(policy) &&
-    policy?.preview?.status === "retrospective_preview"
+    !certifiedPolicy(policy) && policy?.evaluation?.status === "not_certified"
   );
 }
 
-/** Fewer independent groups than a frozen holdout needs give no interval. */
-const MIN_INTERVAL_GROUPS = 4;
+const REASONS = [
+  "fewer_than_eight_independent_groups",
+  "observed_quality_below_floor",
+  "not_superior_to_every_registered_baseline",
+] as const;
 
-function candidateLabel(candidate: LearnedPreviewCandidate): string {
-  const name = candidate.modelName || candidate.modelId;
-  return candidate.effort ? `${name} · ${candidate.effort}` : name;
-}
-
-const utility = (value: number) => value.toFixed(2);
-const signed = (value: number) =>
-  value > 0.005 ? `+${value.toFixed(2)}` : value.toFixed(2);
-
-/** The research line for an uncertified class's newest preview. */
-function previewText(
+/** The line for an uncertified class's newest held-out evaluation. */
+function evaluationText(
   policy: ClassPolicy,
   t: ReturnType<typeof useTranslation>["t"],
   date: string,
 ): string | null {
-  const preview = policy.preview;
-  if (!preview) return null;
-  const { learned, bestFixed } = preview;
-  const top = [...preview.candidates].sort(
-    (a, b) => b.learnedCases - a.learnedCases,
-  )[0];
-  if (
-    preview.status !== "retrospective_preview" ||
-    !learned ||
-    !bestFixed ||
-    !top
-  ) {
-    return t("routing.evidencePreviewEmpty", {
+  const evaluation = policy.evaluation;
+  if (!evaluation) return null;
+  if (evaluation.status === "insufficient_evidence") {
+    return t("routing.evidenceEvaluationEmpty", {
       date,
-      training: preview.trainingCases,
-      candidates: preview.candidates.length,
+      look: evaluation.look,
+      training: evaluation.trainingCases,
     });
   }
-  const best = preview.candidates.find(
-    (candidate) => candidate.candidateKey === bestFixed.selectedFixedKey,
-  );
-  const summary = t("routing.evidencePreview", {
+  const reasons = REASONS.filter((reason) =>
+    evaluation.reasons.includes(reason),
+  ).map((reason) => t(`routing.evaluationReason.${reason}`));
+  return t("routing.evidenceEvaluation", {
     date,
-    cases: preview.heldOutCases,
-    groups: preview.groups,
-    model: candidateLabel(top),
-    chosen: top.learnedCases,
-    learned: utility(learned.utility),
-    best: utility(bestFixed.utility),
-    bestModel: best ? candidateLabel(best) : "",
-    gain: signed(bestFixed.learnedUtilityGain),
-    training: preview.trainingCases,
+    look: evaluation.look,
+    cases: evaluation.heldOutCases,
+    groups: evaluation.groups,
+    quality: Math.round((evaluation.observedQuality ?? 0) * 100),
+    training: evaluation.trainingCases,
+    reasons: reasons.join(" "),
   });
-  const interval =
-    preview.groups >= MIN_INTERVAL_GROUPS
-      ? t("routing.evidencePreviewInterval", {
-          low: signed(bestFixed.learnedGainInterval.lower),
-          high: signed(bestFixed.learnedGainInterval.upper),
-        })
-      : t("routing.evidencePreviewFewGroups", { minimum: MIN_INTERVAL_GROUPS });
-  return `${summary} ${interval}`;
 }
 
 /**
  * Class certification makes selection available; individual tasks can still
- * abstain when evidence or available models do not match. A preview is shown
- * as research next to the fallback order it does not replace.
+ * abstain when evidence or available models do not match. An uncertified
+ * class shows its newest held-out evaluation next to the fallback order.
  */
 export function LearnedClassStatus({
   classId,
@@ -109,11 +81,11 @@ export function LearnedClassStatus({
   const policy = policies.data?.find((row) => row.workClassId === classId);
   const certified = certifiedPolicy(policy);
   const preview =
-    policy?.preview && !certified
-      ? previewText(
+    policy?.evaluation && !certified
+      ? evaluationText(
           policy,
           t,
-          formatDate(policy.preview.createdAt, {
+          formatDate(policy.evaluation.createdAt, {
             dateStyle: "short",
             timeStyle: "short",
           }),

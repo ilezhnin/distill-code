@@ -18,7 +18,6 @@ vi.mock("../api/benchmarks", () => ({
     getSelectorFit: vi.fn(),
     getVersion: vi.fn(),
     predictSelector: vi.fn(),
-    listSelectorHoldouts: vi.fn(async () => []),
   },
 }));
 afterEach(cleanup);

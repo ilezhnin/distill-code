@@ -22,7 +22,7 @@ import {
 } from "@/features/agents/stores/routingPolicyStore";
 import {
   LearnedClassStatus,
-  hasComparedPreview,
+  hasEvaluatedFallback,
   useClassPolicies,
 } from "@/features/benchmarks/ui/LearnedClassStatus";
 import { ModelPolicyDialog } from "@/features/benchmarks/ui/ModelPolicyDialog";
@@ -81,7 +81,7 @@ export function ModelSelectionSettings({
     policies.error
       ? []
       : policies.data
-          ?.filter((entry) => hasComparedPreview(entry))
+          ?.filter((entry) => hasEvaluatedFallback(entry))
           .map((entry) => entry.workClassId),
   );
   const certifiedCount = classes.filter((id) =>
@@ -146,7 +146,7 @@ export function ModelSelectionSettings({
                 : certified
                   ? "certified"
                   : previewClasses.has(classId)
-                    ? "fallbackPreview"
+                    ? "fallbackEvaluated"
                     : "fallback";
             return (
               <Collapsible

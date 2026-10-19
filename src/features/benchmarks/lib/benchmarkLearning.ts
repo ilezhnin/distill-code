@@ -177,121 +177,71 @@ export interface SelectorPrediction {
   }[];
 }
 
-export interface SelectorHoldoutRequest {
-  requestKey: string;
-  modelId: string;
-  versionIds: string[];
-  personaPrior: string[];
-  fallbackKey: string;
-  minQuality: number;
-}
-export interface SelectorHoldoutPlan {
-  id: string;
-  createdAt: number;
-  protocol: string;
-  request: SelectorHoldoutRequest;
-  modelSnapshotHash: string;
-  configurations: Configuration[];
-  cases: {
-    versionId: string;
-    contentHash: string;
-    evaluatorRevision: string;
-    requiredRepetitions: number;
-    minimumTimeoutSeconds: number;
-    family: string;
-    splitGroup: string;
-    publicTaskHash: string;
-    learnedKey: string;
-    learnedAbstention: string | null;
-    aggregateKey: string;
-    aggregateSource: string;
-  }[];
-  policies: string[];
-  evaluation?: {
-    recipe: string;
-    bootstrapSamples: number;
-    intervalMass: number;
-  } | null;
-  dispatchAllowed: false;
-  status: "reserved_research_holdout";
+/** One fixed policy's result in a research report's paired bootstrap. */
+export interface SelectorPolicyResult {
+  policy: string;
+  selectedFixedKey: string | null;
+  quality: number;
+  utility: number;
+  meanDurationMs: number | null;
+  meanCost: number | null;
+  missingDurationCases: number;
+  missingCostCases: number;
+  utilityInterval: { lower: number; upper: number };
+  learnedUtilityGain: number;
+  learnedGainInterval: { lower: number; upper: number };
 }
 
-export interface SelectorHoldoutReport {
-  planId: string;
-  planHash: string;
-  artifactHash: string;
-  createdAt: number;
-  groups: number;
-  fallbackCases: number;
-  policies: {
-    policy: string;
-    selectedFixedKey: string | null;
-    quality: number;
-    utility: number;
-    meanDurationMs: number | null;
-    meanCost: number | null;
-    missingDurationCases: number;
-    missingCostCases: number;
-    utilityInterval: { lower: number; upper: number };
-    learnedUtilityGain: number;
-    learnedGainInterval: { lower: number; upper: number };
-  }[];
-  limitations: string[];
-  /** "incomplete" when groups left every arm (see `excluded`). */
-  status: "research_only" | "incomplete";
-  /** Frozen cases whose group lost a cell for good; absent when none. */
-  excluded?: {
-    versionId: string;
-    group: string;
-    reasons: string[];
-    runIds: string[];
-  }[];
-  dispatchAllowed: false;
+/** One entry of a class's manual order, as the app's ranking names it. */
+export interface RankedMatcher {
+  platform?: string;
+  needles: string[][];
 }
-
-export type SelectorPolicyResult = SelectorHoldoutReport["policies"][number];
-
-/** A class's learned choice replayed on already measured held-out cases. */
-export interface LearnedPreviewRequest {
+/** Fit a class from its training cells and evaluate it on its held-out cells. */
+export interface ClassEvaluationRequest {
   workClassId: string;
   excludedProviders?: string[];
+  personaOrder: RankedMatcher[];
 }
-export interface LearnedPreviewCandidate {
+export type ClassEvaluationStatus =
+  | "certified"
+  | "not_certified"
+  | "insufficient_evidence";
+export interface ClassEvaluationComparison {
+  baseline: string;
+  test?: "superiority" | "non_inferiority";
+  tiedGroups?: number;
+  winningGroups: number;
+  meanUtilityGain: number;
+  pValue: number;
+  adjustedPValue: number;
+  passed: boolean;
+}
+export interface ClassEvaluationCandidate {
   candidateKey: string;
   providerId: string;
   modelId: string;
   modelName: string | null;
   effort: string | null;
   fastMode: boolean | null;
-  trainingQuality: number;
-  learnedCases: number;
-}
-export type LearnedPreviewStatus =
-  | "retrospective_preview"
-  | "no_held_out_cases";
-export interface LearnedPreviewSummary {
-  modelId: string;
-  createdAt: number;
-  status: LearnedPreviewStatus;
   trainingCases: number;
   heldOutCases: number;
-  groups: number;
-  fallbackCases: number;
-  candidates: LearnedPreviewCandidate[];
-  learned: SelectorPolicyResult | null;
-  bestFixed: SelectorPolicyResult | null;
-  aggregate: SelectorPolicyResult | null;
+  learnedCases: number;
 }
-export interface LearnedPreview {
-  modelId: string;
+/** One journaled look: a fit replayed on the class's held-out cells. */
+export interface ClassEvaluation {
+  id: string;
   workClassId: string;
   createdAt: number;
   recipe: string;
-  runtimeMatch: RuntimeMatch;
-  trainingCases: number;
-  trainingGroups: number;
+  fitRecipe: string;
+  modelId: string;
+  modelSnapshotHash: string;
+  look: number;
+  personaKeys: string[];
+  aggregateKeys: string[];
   excludedProviders: string[];
-  candidates: LearnedPreviewCandidate[];
+  candidates: ClassEvaluationCandidate[];
   cases: {
     versionId: string;
     group: string;
@@ -299,11 +249,34 @@ export interface LearnedPreview {
     aggregateKey: string;
     usedFallback: boolean;
   }[];
-  groups: number;
-  fallbackCases: number;
-  policies: SelectorPolicyResult[];
+  unqualifiedCases: number;
+  ungradedCells: number;
+  snapshotHash: string;
+  assessment: {
+    groups: number;
+    observedQuality: number;
+    comparisons: ClassEvaluationComparison[];
+    passed: boolean;
+    reasons: string[];
+    limitations: string[];
+  } | null;
+  status: ClassEvaluationStatus;
   limitations: string[];
-  status: LearnedPreviewStatus;
-  dispatchAllowed: false;
+  qualificationIds: string[];
+  certificateId: string | null;
   artifactHash: string;
+}
+/** What a class's status line shows about its newest evaluation. */
+export interface ClassEvaluationSummary {
+  id: string;
+  modelId: string;
+  createdAt: number;
+  status: ClassEvaluationStatus;
+  look: number;
+  trainingCases: number;
+  heldOutCases: number;
+  groups: number;
+  observedQuality: number | null;
+  reasons: string[];
+  certificateId: string | null;
 }
