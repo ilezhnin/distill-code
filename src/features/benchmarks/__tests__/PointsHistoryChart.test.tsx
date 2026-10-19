@@ -95,7 +95,11 @@ beforeAll(() => {
 afterAll(() => {
   window.PointerEvent = pointerEvent;
 });
-afterEach(cleanup);
+afterEach(async () => {
+  cleanup();
+  // A test that switched the language and failed midway leaves no trace.
+  if (i18n.language !== "en") await i18n.changeLanguage("en");
+});
 
 describe("points history zoom", () => {
   it("opens on the whole history and narrows to the chosen range", () => {
@@ -493,6 +497,35 @@ describe("points history coverage", () => {
         "6 cases still have repetitions to run",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("marks fully tested points by the measurement suite, not the board pool", () => {
+    chart([
+      // 23 of 66 pool cases, yet every suite case has every repetition.
+      point({ id: "full", at: start, suite: { complete: 40, planned: 40 } }),
+      point({
+        id: "short",
+        at: start + DAY,
+        series: "short",
+        scored: 66,
+        planned: 66,
+        complete: 66,
+        suite: { complete: 39, planned: 40 },
+      }),
+    ]);
+    expect(marker("full")).toHaveAttribute("data-coverage", "complete");
+    expect(marker("short")).toHaveAttribute("data-coverage", "partial");
+    act(() => marker("full").focus());
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "Fully tested: every suite case has every repetition",
+    );
+    // The pool counts no longer speak for a point that has its suite.
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(/Partial/);
+    act(() => marker("full").blur());
+    act(() => marker("short").focus());
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "Not fully tested: 39/40 suite cases have every repetition",
+    );
   });
 
   it("keeps a selected partial point a ring", () => {

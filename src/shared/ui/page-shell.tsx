@@ -23,6 +23,11 @@ interface ShellProps {
   contentAlign?: "top" | "center";
   showBottomFade?: boolean;
   showTopFade?: boolean;
+  /**
+   * The page scrollbar: hidden until a scroller opts in, or always shown for
+   * a long page whose reader needs to see where it is.
+   */
+  scrollbar?: "default" | "visible";
 }
 
 /**
@@ -86,6 +91,7 @@ export function PageShell({
   contentAlign = "top",
   showBottomFade = true,
   showTopFade = false,
+  scrollbar = "default",
 }: ShellProps) {
   return (
     <PageScrollFrame
@@ -95,6 +101,7 @@ export function PageShell({
       contentAlign={contentAlign}
       showBottomFade={showBottomFade}
       showTopFade={showTopFade}
+      scrollbar={scrollbar}
       minContentHeight
     >
       {children}
@@ -110,6 +117,7 @@ function PageScrollFrame({
   contentAlign = "top",
   showBottomFade = true,
   showTopFade = false,
+  scrollbar = "default",
   minContentHeight = false,
 }: ShellProps & { minContentHeight?: boolean }) {
   const widthClassName = SHELL_WIDTH_CLASSES[contentWidth];
@@ -125,7 +133,13 @@ function PageScrollFrame({
           className="absolute inset-x-0 top-0 z-10"
         />
       ) : null}
-      <div ref={setScrollElement} className={PAGE_SCROLL_CLASS}>
+      <div
+        ref={setScrollElement}
+        className={cn(
+          PAGE_SCROLL_CLASS,
+          scrollbar === "visible" && "scrollbar-visible",
+        )}
+      >
         <div
           data-page-gutter=""
           className={cn(

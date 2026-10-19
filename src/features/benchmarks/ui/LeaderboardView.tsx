@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
 import { motion, useReducedMotion } from "motion/react";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import {
@@ -14,6 +15,8 @@ import {
 } from "@/shared/ui/table";
 import { Spinner } from "@/shared/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
   modelNameKey,
   useModelCatalog,
@@ -56,6 +59,7 @@ import {
   RatingValue,
   StateBadge,
 } from "./BenchmarkPrimitives";
+import { JudgeFlagFilter, type JudgeFlag } from "./JudgeFlagFilter";
 import { ModelFilter } from "./ModelFilter";
 
 interface Props {
@@ -72,9 +76,58 @@ interface Props {
   onOpen: (key: string) => void;
   /** The page actions, last in the boards row. */
   actions?: ReactNode;
+  /** Judge panel marks whose scores the board leaves out. */
+  hiddenJudgeFlags?: readonly JudgeFlag[];
+  onHiddenJudgeFlagsChange?: (hidden: JudgeFlag[]) => void;
 }
 
 const MotionRow = motion.create(TableRow);
+
+/**
+ * When a row last covered its measurement suite. A row short of the suite
+ * shows its coverage; a date from before the suite grew stays muted, with a
+ * hint, since that full measurement no longer stands.
+ */
+function FullyTested({ row }: { row: LeaderboardRow }) {
+  const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
+  const planned = row.suitePlanned;
+  if (planned == null || planned === 0)
+    return <span className="text-muted-foreground">–</span>;
+  const complete = row.suiteComplete ?? 0;
+  const at = row.fullyTestedAt ?? null;
+  const date = at == null ? null : formatDate(at, { dateStyle: "medium" });
+  if (complete === planned && date) return <span>{date}</span>;
+  const coverage = (
+    <span className="block text-xs">
+      {t("leaderboard.fullyTestedCoverage", { complete, planned })}
+    </span>
+  );
+  if (!date)
+    return (
+      <span className="text-muted-foreground">
+        <span className="block">–</span>
+        {coverage}
+      </span>
+    );
+  return (
+    <Tooltip delayDuration={TOOLTIP_DELAY.restedHover}>
+      <TooltipTrigger asChild>
+        <span
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip trigger must take focus to show its hint
+          tabIndex={0}
+          className="rounded-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="block">{date}</span>
+          {coverage}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-72">
+        {t("leaderboard.fullyTestedEarlier", { date, complete, planned })}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function LeaderboardView({
   report,
@@ -86,6 +139,8 @@ export function LeaderboardView({
   onPageChange,
   onOpen,
   actions,
+  hiddenJudgeFlags = [],
+  onHiddenJudgeFlagsChange,
 }: Props) {
   const { t } = useTranslation("benchmarks");
   const reduceMotion = useReducedMotion();
@@ -257,6 +312,16 @@ export function LeaderboardView({
       </>
     );
   };
+  const fullyTestedCell = (entry: RankedRow) => (
+    <TableCell
+      className={cn(
+        "whitespace-nowrap text-right tabular-nums",
+        view === "table" && "px-1 text-xs",
+      )}
+    >
+      <FullyTested row={entry.row} />
+    </TableCell>
+  );
   const detailsCell = (entry: RankedRow) => (
     <TableCell className="w-8 px-1 text-right">
       <Button
@@ -284,6 +349,7 @@ export function LeaderboardView({
       {rankCell(entry)}
       {modelCell(entry)}
       {cells}
+      {fullyTestedCell(entry)}
       {factCells(entry)}
       {detailsCell(entry)}
     </MotionRow>
@@ -309,6 +375,12 @@ export function LeaderboardView({
                 onPageChange(0);
               }}
             />
+            {onHiddenJudgeFlagsChange ? (
+              <JudgeFlagFilter
+                hidden={hiddenJudgeFlags}
+                onChange={onHiddenJudgeFlagsChange}
+              />
+            ) : null}
             <ToggleGroup
               type="single"
               size="sm"
@@ -356,6 +428,9 @@ export function LeaderboardView({
               </TableHead>
               <TableHead>{t("leaderboard.allAxes")}</TableHead>
               <TableHead className="text-right">
+                {t("leaderboard.fullyTested")}
+              </TableHead>
+              <TableHead className="text-right">
                 {t("leaderboard.price")}
               </TableHead>
               <TableHead className="text-right">
@@ -377,7 +452,8 @@ export function LeaderboardView({
                       className={cn(
                         "font-display text-lg font-semibold tabular-nums",
                         entry.rank === 1 && "text-chart-1",
-                        entry.points == null && "text-muted-foreground",
+                        // A partial score reads, but never as comparable.
+                        entry.rank == null && "text-muted-foreground",
                       )}
                     />
                   </TableCell>
@@ -431,6 +507,9 @@ export function LeaderboardView({
                 </TableHead>
               ))}
               <TableHead className="px-1 text-right text-xs">
+                {t("leaderboard.fullyTested")}
+              </TableHead>
+              <TableHead className="px-1 text-right text-xs">
                 {t("leaderboard.priceShort")}
               </TableHead>
               <TableHead className="px-1 text-right text-xs">
@@ -444,11 +523,10 @@ export function LeaderboardView({
               row(
                 entry,
                 boards.map((axis) => {
-                  const points =
-                    standings
-                      .get(axis.id)
-                      ?.rows.get(modelKey(entry.row.configuration))?.points ??
-                    null;
+                  const standing = standings
+                    .get(axis.id)
+                    ?.rows.get(modelKey(entry.row.configuration));
+                  const points = standing?.points ?? null;
                   return (
                     <TableCell
                       key={axis.id}
@@ -458,7 +536,10 @@ export function LeaderboardView({
                         axis.id === board.id &&
                           entry.rank === 1 &&
                           "text-chart-1",
-                        points == null && "text-muted-foreground",
+                        // Each board's own rank decides whether its
+                        // score reads as comparable.
+                        (points == null || standing?.rank == null) &&
+                          "text-muted-foreground",
                       )}
                     >
                       <RatingValue

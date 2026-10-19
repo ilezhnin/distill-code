@@ -83,12 +83,14 @@ describe("benchmark settings", () => {
       creditLimit: null,
       judgePool: [],
       providerDataUse: {},
+      boardExclusions: [],
     });
     expect(parseBenchmarkSettings(null)).toEqual({
       timeLimitMinutes: DEFAULT_TIME_LIMIT_MINUTES,
       creditLimit: null,
       judgePool: [],
       providerDataUse: {},
+      boardExclusions: [],
     });
     for (const stored of ["500", -1, Number.NaN, null]) {
       expect(parseBenchmarkSettings({ creditLimit: stored }).creditLimit).toBe(
@@ -103,6 +105,32 @@ describe("benchmark settings", () => {
     );
     expect(normalizeCreditLimit(0)).toBe(0);
     expect(normalizeCreditLimit(Number.POSITIVE_INFINITY)).toBeNull();
+  });
+});
+
+describe("benchmark board exclusions", () => {
+  it("keeps distinct trimmed version ids and drops anything else", () => {
+    expect(
+      parseBenchmarkSettings({
+        boardExclusions: ["v1", " v2 ", "", 7, null, "v1"],
+      }).boardExclusions,
+    ).toEqual(["v1", "v2"]);
+    expect(
+      parseBenchmarkSettings({ boardExclusions: "v1" }).boardExclusions,
+    ).toEqual([]);
+  });
+
+  it("carries the list through a write of another setting", async () => {
+    mocks.readDistillDocument.mockResolvedValue(
+      JSON.stringify({ timeLimitMinutes: 60, boardExclusions: ["v1", "v2"] }),
+    );
+    await hydrateBenchmarkSettingsStore();
+    useBenchmarkSettingsStore.getState().setTimeLimitMinutes(90);
+    await flushBenchmarkSettings();
+    expect(lastWrite()).toMatchObject({
+      timeLimitMinutes: 90,
+      boardExclusions: ["v1", "v2"],
+    });
   });
 });
 
@@ -357,6 +385,7 @@ describe("benchmark judge pool", () => {
       creditLimit: null,
       judgePool: [alpha],
       providerDataUse: { "zai-acp": { trainsOnSubmissions: false } },
+      boardExclusions: [],
     });
     expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
   });

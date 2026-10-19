@@ -979,6 +979,124 @@ pub fn case_tracker(data: &QueryData) -> Vec<CaseStats> {
         .collect()
 }
 
+/// The versions the owner lists apart from the measurement suite in the
+/// benchmark settings document: `boardExclusions`, an array of version ids.
+/// Anything else in it is ignored.
+pub fn board_exclusions_from(settings: &serde_json::Value) -> BTreeSet<String> {
+    settings["boardExclusions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The versions an evaluation reserves: every version whose family or split
+/// group a reservation names, closed over the families and groups those
+/// versions share, the closure a reserved campaign refuses ordinary runs by.
+pub fn reserved_versions(
+    versions: &[BenchmarkVersion],
+    reservations: &[(String, String)],
+) -> BTreeSet<String> {
+    let group =
+        |version: &BenchmarkVersion| super::export::split_group(&version.manifest).to_owned();
+    let mut families: BTreeSet<String> = BTreeSet::new();
+    let mut groups: BTreeSet<String> = BTreeSet::new();
+    for (kind, value) in reservations {
+        if kind == "family" {
+            families.insert(value.clone());
+        } else {
+            groups.insert(value.clone());
+        }
+    }
+    if families.is_empty() && groups.is_empty() {
+        return BTreeSet::new();
+    }
+    loop {
+        let before = (families.len(), groups.len());
+        for version in versions {
+            let split_group = group(version);
+            if families.contains(&version.manifest.task_family) || groups.contains(&split_group) {
+                families.insert(version.manifest.task_family.clone());
+                groups.insert(split_group);
+            }
+        }
+        if before == (families.len(), groups.len()) {
+            break;
+        }
+    }
+    versions
+        .iter()
+        .filter(|version| {
+            families.contains(&version.manifest.task_family) || groups.contains(&group(version))
+        })
+        .map(|version| version.id.clone())
+        .collect()
+}
+
+/// When a version's case entered the pool: the oldest publication of its
+/// evaluator-only chain, whose cells it carries, or, once pool releases
+/// exist, the first release that held the case, if later.
+fn entered_pool(
+    versions: &BTreeMap<&str, &BenchmarkVersion>,
+    releases: &[PoolRelease],
+    version: &BenchmarkVersion,
+) -> i64 {
+    let mut at = version.published_at;
+    let mut seen = BTreeSet::from([version.id.as_str()]);
+    let mut next = version.carries_from.as_deref();
+    while let Some(id) = next {
+        let Some(earlier) = versions.get(id).filter(|_| seen.insert(id)) else {
+            break;
+        };
+        at = at.min(earlier.published_at);
+        next = earlier.carries_from.as_deref();
+    }
+    releases
+        .iter()
+        .filter(|release| {
+            release
+                .version_ids
+                .iter()
+                .any(|id| seen.contains(id.as_str()))
+        })
+        .map(|release| release.created_at)
+        .min()
+        .map_or(at, |released| released.max(at))
+}
+
+/// The last time a row covered its suite: the latest moment at which every
+/// suite case in the pool by then held a complete cell finished by then. Each
+/// case is (entered the pool, when each of its complete cells completed, in
+/// any of the row's runs). A row that covers the suite today gets the moment
+/// its newest complete cell completed; one short of it, the last moment it
+/// was whole before the suite grew. A re-run in progress keeps the date its
+/// earlier cells earned.
+fn fully_tested_at(cases: &[(i64, Vec<i64>)]) -> Option<i64> {
+    let mut times: Vec<i64> = cases
+        .iter()
+        .flat_map(|(_, done)| done.iter().copied())
+        .collect();
+    times.sort_unstable();
+    times.dedup();
+    times.into_iter().rev().find(|&at| {
+        let mut covered = false;
+        for (entered, done) in cases {
+            if *entered > at {
+                continue;
+            }
+            if !done.iter().any(|completed| *completed <= at) {
+                return false;
+            }
+            covered = true;
+        }
+        covered
+    })
+}
+
 /// Each version an evaluator-only republication replaced, to the version
 /// that carries its cells now: the end of its chain.
 pub fn carried_versions(versions: &[BenchmarkVersion]) -> BTreeMap<String, String> {
@@ -1202,13 +1320,33 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
 }
 
 fn leaderboard_counting(data: &QueryData, query: &ResultQuery, own: OwnCases) -> LeaderboardReport {
+    let hidden = query.exclude_judge_flags.as_deref().unwrap_or_default();
     leaderboard_from_attempts(
         data,
         query,
-        &data.attempts.iter().collect::<Vec<_>>(),
+        &data
+            .attempts
+            .iter()
+            .filter(|attempt| !judge_flagged(attempt, hidden))
+            .collect::<Vec<_>>(),
         ranked_pool(data, query),
         own,
     )
+}
+
+/// Whether a panel that judged `attempt` carries one of `flags`, the marks
+/// a render records when a judge shares the candidate's lab or model or is
+/// the case author's model.
+fn judge_flagged(attempt: &Attempt, flags: &[String]) -> bool {
+    !flags.is_empty()
+        && attempt.evaluations.iter().any(|evaluation| {
+            evaluation.provenance == "render"
+                && evaluation.details.as_ref().is_some_and(|details| {
+                    flags
+                        .iter()
+                        .any(|flag| details.get(flag) == Some(&serde_json::Value::Bool(true)))
+                })
+        })
 }
 
 fn leaderboard_from_attempts(
@@ -1267,6 +1405,7 @@ fn model_cell_attempts<'a>(
     by_run: &BTreeMap<&str, Vec<&'a Attempt>>,
     runs: &BTreeMap<&str, &BenchmarkRun>,
     as_of: Option<i64>,
+    by_execution: bool,
 ) -> Vec<&'a Attempt> {
     let mut cells: BTreeMap<(&str, &str, &str, String), Vec<&Attempt>> = BTreeMap::new();
     for (&run, attempts) in by_run {
@@ -1276,7 +1415,14 @@ fn model_cell_attempts<'a>(
                     &attempt.version_id,
                     run,
                     &attempt.configuration.id,
-                    configuration_key(&execution_configuration(attempt)),
+                    // A model row spans configurations, so a cell keeps to
+                    // one execution; a configuration row's attempts already
+                    // share it, auxiliary relabels included.
+                    if by_execution {
+                        configuration_key(&execution_configuration(attempt))
+                    } else {
+                        String::new()
+                    },
                 ))
                 .or_default()
                 .push(attempt);
@@ -1295,6 +1441,10 @@ fn model_cell_attempts<'a>(
         )
     };
     for ((version, _, _, _), cell) in cells {
+        // Work that never began measured nothing: no cell of the case.
+        if !cell.iter().any(|a| a.started_at.is_some()) {
+            continue;
+        }
         if selected
             .get(version)
             .is_none_or(|current| order(&cell) > order(current))
@@ -1316,6 +1466,11 @@ fn measurement_report(
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
     let pool_versions: BTreeMap<&str, &BenchmarkVersion> =
         pool.iter().map(|v| (v.id.as_str(), *v)).collect();
+    let published: BTreeMap<&str, &BenchmarkVersion> =
+        data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
+    // The measurement suite: the pool without what an evaluation reserves or
+    // the owner lists apart.
+    let in_suite = |v: &BenchmarkVersion| !data.suite_exclusions.contains(&v.id);
     let runs: BTreeMap<&str, &BenchmarkRun> = data
         .runs
         .iter()
@@ -1399,19 +1554,19 @@ fn measurement_report(
             if by_run.is_empty() {
                 return None;
             }
-            // The newest run that began measuring stands whole: one session's
-            // cells, its gaps its own. A run still queued leaves the standing
-            // one in place until its first cell starts.
+            // The newest run that began measuring, whose request the row
+            // reports (how many attempts flew at once). A run still queued
+            // leaves the standing one in place until its first cell starts.
             let standing = by_run
                 .iter()
                 .filter(|(_, list)| list.iter().any(|a| a.started_at.is_some()))
                 .max_by_key(|(id, _)| (runs[**id].created_at, **id));
             let standing_request = standing.as_ref().map(|(id, _)| &runs[**id].request);
-            let mut attempts: Vec<&Attempt> = if by_model {
-                model_cell_attempts(&by_run, &runs, query.as_of)
-            } else {
-                standing.map(|(_, list)| list.clone()).unwrap_or_default()
-            };
+            // Each case stands on its newest scored cell, one run's
+            // repetitions, whichever run measured it: runs taken in chunks
+            // fill a row together, while a cell never mixes runs.
+            let mut attempts: Vec<&Attempt> =
+                model_cell_attempts(&by_run, &runs, query.as_of, by_model);
             // Keep the newest concrete configuration for the next run;
             // each attempt retains its original runtime and account evidence.
             if let Some(latest) = attempts
@@ -1545,6 +1700,9 @@ fn measurement_report(
                     scored_version_ids: Vec::new(),
                     resolved_models: Vec::new(),
                     parallelism,
+                    suite_planned: 0,
+                    suite_complete: 0,
+                    fully_tested_at: None,
                 });
             }
             let planned = eligible.len() as u32;
@@ -1607,6 +1765,47 @@ fn measurement_report(
             });
             let (passed, scored, quality) = (overall.passed, overall.scored, overall.quality);
             let complete = overall.complete;
+            // The measurement suite: the eligible cases no evaluation holds
+            // back. A row is fully tested when each has a complete cell; the
+            // cell completed when its last scored repetition settled.
+            let suite: Vec<&BenchmarkVersion> =
+                eligible.iter().copied().filter(|v| in_suite(v)).collect();
+            let suite_planned = suite.len() as u32;
+            let suite_complete = suite
+                .iter()
+                .filter(|v| cells.get(v.id.as_str()).is_some_and(|cell| cell.complete))
+                .count() as u32;
+            // Every complete cell the row ever held, by case: one run's
+            // repetitions under one requested configuration.
+            let mut completions: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+            for list in by_run.values() {
+                let mut by_request: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
+                for &attempt in list.iter().filter(|a| !own_cell(a)) {
+                    by_request.entry(attempt.configuration.id.as_str()).or_default().push(attempt);
+                }
+                for cell_attempts in by_request.values() {
+                    for (version, cell) in case_cells(cell_attempts, query.as_of, protocol) {
+                        let done = cell_attempts
+                            .iter()
+                            .filter(|a| a.version_id == version && score_as_of(a, query.as_of).is_some())
+                            .filter_map(|a| settled_at(a))
+                            .max();
+                        if let (true, Some(done)) = (cell.complete, done) {
+                            completions.entry(version).or_default().push(done);
+                        }
+                    }
+                }
+            }
+            let suite_cases: Vec<(i64, Vec<i64>)> = suite
+                .iter()
+                .map(|v| {
+                    (
+                        entered_pool(&published, &data.releases, v),
+                        completions.get(v.id.as_str()).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            let fully_tested = suite_planned > 0 && suite_complete == suite_planned;
             // A case without a score whose standing cell the provider refused
             // (an `unsupported` outcome, such as a model the account's plan
             // leaves out) is no gap a catch-up fills: asking again would
@@ -1641,15 +1840,17 @@ fn measurement_report(
                 cost_share: resources.cost_share,
                 status: if attempted == 0 {
                     "untested"
-                } else if complete == planned && standard_budgets {
+                } else if fully_tested && standard_budgets {
+                    // Only a row that covers the whole measurement suite with
+                    // every repetition ranks; every other score is partial.
                     "comparable"
                 } else {
                     "preliminary"
                 }
                 .into(),
                 reason: format!(
-                    "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; {}; every repetition must pass{}{}",
-                    if by_model { "each test uses its newest scored cell across the model's runs" } else { "the newest run stands whole" },
+                    "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; {suite_complete}/{suite_planned} measurement-suite cases complete; {}; every repetition must pass{}{}",
+                    if by_model { "each test uses its newest scored cell across the model's runs" } else { "each test uses its newest scored cell across this configuration's runs" },
                     if excluded > 0 {
                         format!("; {excluded} cases authored by this candidate left out of quality, their speed and cost counted")
                     } else if counts_own && !own_version_ids.is_empty() {
@@ -1672,6 +1873,9 @@ fn measurement_report(
                 resolved_models: scored_attempts.iter().filter_map(|a| a.resolved_model.clone())
                     .collect::<BTreeSet<_>>().into_iter().collect(),
                 parallelism,
+                suite_planned,
+                suite_complete,
+                fully_tested_at: fully_tested_at(&suite_cases),
             })
         })
         .collect();
@@ -1695,17 +1899,38 @@ fn measurement_report(
             work_classes: work_classes.clone(),
         }
     });
-    // Author exclusions can produce different measured pools. One reference set
-    // keeps the shared rank: the full pool when a comparable row covers it, else
-    // the set most comparable rows share (then the larger, then the first by id).
-    // Only the rows whose set differs lose the rank.
+    // Author exclusions can produce different measurement suites. One
+    // reference suite keeps the shared rank: the whole suite when a comparable
+    // row covers it, else the suite most comparable rows share (then the
+    // larger, then the first by id). Only the rows whose suite differs lose
+    // the rank.
+    // The points also average any scored case outside the suite (one an
+    // evaluation reserved after a run measured it), so ranked rows must share
+    // those too.
+    let suite_of = |row: &LeaderboardRow| -> Vec<String> {
+        let mut set: BTreeSet<String> = pool
+            .iter()
+            .filter(|v| in_suite(v))
+            .filter(|v| own == OwnCases::Counted || !row.own_version_ids.contains(&v.id))
+            .map(|v| v.id.clone())
+            .collect();
+        set.extend(row.scored_version_ids.iter().cloned());
+        set.into_iter().collect()
+    };
+    let suites: Vec<Vec<String>> = rows.iter().map(suite_of).collect();
     let mut ranked_sets: BTreeMap<&Vec<String>, usize> = BTreeMap::new();
-    for row in rows.iter().filter(|r| r.status == "comparable") {
-        *ranked_sets.entry(&row.scored_version_ids).or_default() += 1;
+    for (row, suite) in rows.iter().zip(&suites) {
+        if row.status == "comparable" {
+            *ranked_sets.entry(suite).or_default() += 1;
+        }
     }
-    let full_pool: Vec<String> = pool.iter().map(|v| v.id.clone()).collect();
-    let reference = if ranked_sets.contains_key(&full_pool) {
-        Some(full_pool)
+    let full_suite: Vec<String> = pool
+        .iter()
+        .filter(|v| in_suite(v))
+        .map(|v| v.id.clone())
+        .collect();
+    let reference = if ranked_sets.contains_key(&full_suite) {
+        Some(full_suite)
     } else {
         ranked_sets
             .iter()
@@ -1713,9 +1938,10 @@ fn measurement_report(
             .map(|(set, _)| (*set).clone())
     };
     if let Some(reference) = reference {
-        for row in rows
+        for (row, _) in rows
             .iter_mut()
-            .filter(|r| r.status == "comparable" && r.scored_version_ids != reference)
+            .zip(&suites)
+            .filter(|(r, suite)| r.status == "comparable" && **suite != reference)
         {
             row.status = "preliminary".into();
             row.reason.push_str(
@@ -1820,7 +2046,9 @@ fn recalculated_history_report(
                 && current.contains(a.version_id.as_str())
                 && !is_superseded(a)
                 && a.finished_at.is_some_and(|end| end <= at)
-                && score_as_of(a, None).is_some()
+                // A refusal by the provider stays, so the point lists the
+                // case as refused, as the board does, not as an open gap.
+                && (score_as_of(a, None).is_some() || a.outcome.as_deref() == Some("unsupported"))
         })
         .collect();
     let backfilled: Vec<String> = Vec::new();
@@ -2446,7 +2674,220 @@ pub(super) mod tests {
             // The fixtures measure one repetition per case; the product
             // protocol of `REQUIRED_REPETITIONS` has its own tests.
             required_repetitions: 1,
+            suite_exclusions: Default::default(),
         }
+    }
+    /// A case published at `at` whose family no run has measured yet.
+    fn add_case(data: &mut QueryData, index: usize, at: i64) {
+        let mut version = data.versions[0].clone();
+        version.id = format!("v{index}");
+        version.definition_id = format!("d{index}");
+        version.published_at = at;
+        version.manifest.task_family = format!("family-{index}");
+        data.versions.push(version);
+    }
+    fn standing(data: &QueryData) -> LeaderboardRow {
+        let report = leaderboard(data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 1);
+        report.rows[0].clone()
+    }
+    #[test]
+    fn a_row_covering_the_suite_ranks_and_dates_its_last_completion() {
+        let row = standing(&dataset());
+        assert_eq!((row.suite_complete, row.suite_planned), (6, 6));
+        assert_eq!(row.status, "comparable");
+        // Every cell of the standing run settled at 2.
+        assert_eq!(row.fully_tested_at, Some(2));
+    }
+    #[test]
+    fn a_configuration_row_fills_from_earlier_runs_cell_by_cell() {
+        let mut data = dataset();
+        // The newer run skipped v5: the earlier run's cell stands for it.
+        data.attempts.retain(|a| a.id != "after-v5");
+        let row = standing(&data);
+        assert_eq!((row.suite_complete, row.suite_planned), (6, 6));
+        assert_eq!(row.status, "comparable");
+        assert!(row.attempt_ids.contains(&"before-v5".to_owned()));
+        assert!(row.attempt_ids.contains(&"after-v0".to_owned()));
+    }
+    #[test]
+    fn a_row_short_of_the_suite_has_no_rank_and_no_date() {
+        let mut data = dataset();
+        // No run measured v5.
+        data.attempts.retain(|a| a.version_id != "v5");
+        let row = standing(&data);
+        assert_eq!((row.suite_complete, row.suite_planned), (5, 6));
+        assert_eq!(row.status, "preliminary");
+        assert_eq!(row.fully_tested_at, None);
+    }
+    #[test]
+    fn an_unscored_cell_does_not_complete_a_case() {
+        let mut data = dataset();
+        for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v2") {
+            attempt.outcome = Some("infrastructure_failure".into());
+        }
+        let row = standing(&data);
+        assert_eq!((row.suite_complete, row.suite_planned), (5, 6));
+        assert_eq!(row.status, "preliminary");
+        assert_eq!(row.fully_tested_at, None);
+    }
+    #[test]
+    fn a_grown_suite_takes_the_rank_and_keeps_the_last_full_date() {
+        let mut data = dataset();
+        add_case(&mut data, 6, 10);
+        let row = standing(&data);
+        assert_eq!((row.suite_complete, row.suite_planned), (6, 7));
+        assert_eq!(row.status, "preliminary");
+        // Full at 2, before the case published at 10 joined the suite.
+        assert_eq!(row.fully_tested_at, Some(2));
+    }
+    #[test]
+    fn a_case_an_evaluation_reserves_is_no_part_of_the_suite() {
+        let mut data = dataset();
+        add_case(&mut data, 6, 10);
+        // A holdout reserves the new case's family: the suite is whole again,
+        // while the case stays on the board.
+        data.suite_exclusions =
+            reserved_versions(&data.versions, &[("family".into(), "family-6".into())]);
+        assert_eq!(data.suite_exclusions, BTreeSet::from(["v6".to_owned()]));
+        let row = standing(&data);
+        assert_eq!((row.suite_complete, row.suite_planned), (6, 6));
+        assert_eq!(row.planned, 7);
+        assert_eq!(row.status, "comparable");
+        assert_eq!(row.fully_tested_at, Some(2));
+    }
+    #[test]
+    fn an_unlisted_held_out_case_joins_the_suite_and_a_listed_one_does_not() {
+        let mut data = dataset();
+        add_case(&mut data, 6, 10);
+        data.versions[6].manifest.split = "held_out".into();
+        // Nobody ran it: it is still owed, nothing infers it away.
+        let row = standing(&data);
+        assert_eq!((row.suite_complete, row.suite_planned), (6, 7));
+        assert_eq!(row.status, "preliminary");
+        // The owner lists it apart, and reservations add to the list.
+        data.suite_exclusions = BTreeSet::from(["v6".to_owned()]);
+        data.suite_exclusions.extend(reserved_versions(
+            &data.versions,
+            &[("family".into(), "family-5".into())],
+        ));
+        let row = standing(&data);
+        assert_eq!((row.suite_complete, row.suite_planned), (5, 5));
+        assert_eq!(row.planned, 7);
+        assert_eq!(row.status, "comparable");
+    }
+    #[test]
+    fn a_history_point_lists_a_refused_case_as_refused() {
+        let mut data = dataset();
+        for attempt in data.attempts.iter_mut().filter(|a| a.id == "after-v5") {
+            attempt.outcome = Some("unsupported".into());
+        }
+        let configuration = data.attempts[0].configuration.clone();
+        let points = history(&data, &configuration);
+        let row = &points.last().unwrap().recalculated_report.rows[0];
+        assert_eq!(row.unsupported_version_ids, vec!["v5".to_owned()]);
+        assert!(row.missing_version_ids.is_empty());
+    }
+    #[test]
+    fn a_board_can_leave_out_scores_a_marked_panel_gave() {
+        let mut data = dataset();
+        // v0 was judged by a one-judge panel that sat a judge of the
+        // candidate's lab.
+        let judged =
+            |id: String, at: i64, provenance: &str, score: Option<f64>, details| Evaluation {
+                id,
+                evaluator_revision: "1".into(),
+                verdict: if score.is_some() {
+                    "judged"
+                } else {
+                    "rendered"
+                }
+                .into(),
+                score,
+                reason: String::new(),
+                created_at: at,
+                provenance: provenance.into(),
+                artifacts: Vec::new(),
+                details,
+                judge: None,
+                usage: None,
+            };
+        for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v0") {
+            attempt.outcome = Some("judged".into());
+            attempt.evaluations = vec![
+                judged(
+                    format!("{}-render", attempt.id),
+                    2,
+                    "render",
+                    None,
+                    Some(serde_json::json!({ "expectedJudges": 1, "sameVendor": true })),
+                ),
+                judged(format!("{}-vote", attempt.id), 2, "judge", Some(1.0), None),
+            ];
+        }
+        let row = |flags: Option<Vec<String>>| {
+            leaderboard(
+                &data,
+                &ResultQuery {
+                    exclude_judge_flags: flags,
+                    ..Default::default()
+                },
+            )
+            .rows[0]
+                .clone()
+        };
+        assert_eq!(row(None).suite_complete, 6);
+        assert_eq!(row(Some(vec!["ownModel".into()])).suite_complete, 6);
+        let hidden = row(Some(vec!["sameVendor".into(), "ownModel".into()]));
+        assert_eq!((hidden.suite_complete, hidden.suite_planned), (5, 6));
+        assert_eq!(hidden.status, "preliminary");
+    }
+    #[test]
+    fn the_owner_lists_suite_exclusions_by_version_id() {
+        let settings = serde_json::json!({
+            "timeLimitMinutes": 240,
+            "boardExclusions": ["v1", " v2 ", "", 7, "v1"]
+        });
+        assert_eq!(
+            board_exclusions_from(&settings),
+            BTreeSet::from(["v1".to_owned(), "v2".to_owned()])
+        );
+        assert!(board_exclusions_from(&serde_json::json!({})).is_empty());
+        assert!(board_exclusions_from(&serde_json::Value::Null).is_empty());
+    }
+    #[test]
+    fn a_reservation_closes_over_shared_families_and_groups() {
+        let mut data = dataset();
+        // v1 shares a split group with v0's family; v2 shares v1's family.
+        data.versions[1].manifest.environment = serde_json::json!({ "splitGroup": "shared" });
+        data.versions[0].manifest.environment = serde_json::json!({ "splitGroup": "shared" });
+        data.versions[2].manifest.task_family = "family-1".into();
+        let reserved = reserved_versions(&data.versions, &[("family".into(), "family-0".into())]);
+        assert_eq!(
+            reserved,
+            BTreeSet::from(["v0".to_owned(), "v1".to_owned(), "v2".to_owned()])
+        );
+        assert!(reserved_versions(&data.versions, &[]).is_empty());
+    }
+    #[test]
+    fn the_full_date_is_the_last_moment_every_published_case_was_complete() {
+        // (entered the pool, completions of its complete cells)
+        assert_eq!(fully_tested_at(&[(1, vec![4]), (1, vec![7])]), Some(7));
+        // A case entered at 9 and never completed: full at 7, before it.
+        assert_eq!(
+            fully_tested_at(&[(1, vec![4]), (1, vec![7]), (9, vec![])]),
+            Some(7)
+        );
+        // A case entered at 5 but completed only at 12: full from 12 on.
+        assert_eq!(
+            fully_tested_at(&[(1, vec![4]), (5, vec![12]), (1, vec![7])]),
+            Some(12)
+        );
+        // An earlier complete cell keeps the date while a re-run is open.
+        assert_eq!(fully_tested_at(&[(1, vec![4, 20]), (1, vec![7])]), Some(20));
+        // A case in the pool from 1 that never completed: never full.
+        assert_eq!(fully_tested_at(&[(1, vec![4]), (1, vec![])]), None);
+        assert_eq!(fully_tested_at(&[]), None);
     }
     #[test]
     fn the_tracker_tells_discriminating_flaky_and_smoke_cases_apart() {
@@ -2551,10 +2992,11 @@ pub(super) mod tests {
         assert_eq!(report.rows[0].own_attempt_ids.len(), 6);
         assert!(report.cohort.is_some());
     }
-    /// A run is one sitting: the newest run that began stands whole, and
-    /// a case it never measured is its gap, however an earlier run scored it.
+    /// A cell is one sitting: each case stands on its newest scored cell,
+    /// whichever run measured it, so a later run that left cases out keeps
+    /// the earlier cells of those cases.
     #[test]
-    fn the_newest_run_stands_whole_and_coverage_follows_the_pool() {
+    fn each_case_stands_on_its_newest_scored_cell_and_coverage_follows_the_pool() {
         let mut data = dataset();
         for version in data.versions.iter_mut().take(2) {
             version.manifest.work_class_id = "planning".into();
@@ -2567,20 +3009,24 @@ pub(super) mod tests {
         let cohort = report.cohort.as_ref().unwrap();
         assert_eq!(cohort.work_classes.len(), 2);
         assert_eq!(cohort.version_ids.len(), 6);
-        assert_eq!(cohort.run_ids, vec!["after".to_string()]);
+        assert_eq!(
+            cohort.run_ids,
+            vec!["after".to_string(), "before".to_string()]
+        );
         let row = &report.rows[0];
-        assert_eq!(row.status, "preliminary");
-        assert_eq!((row.scored, row.planned), (4, 6));
-        assert_eq!(row.quality, Some(0.0));
-        assert_eq!(row.points, Some(0));
-        // The earlier passes of v0 and v1 fill no gap of this sitting.
+        assert_eq!(row.status, "comparable");
+        assert_eq!((row.scored, row.planned), (6, 6));
+        // The earlier passes of v0 and v1 stand beside the later fails.
         let planning = row.axes.iter().find(|axis| axis.id == "planning").unwrap();
         assert_eq!(
-            (planning.scored, planning.planned, planning.points),
-            (0, 2, None)
+            (planning.scored, planning.planned, planning.passed),
+            (2, 2, 2)
         );
-        assert_eq!(row.missing_version_ids, vec!["v0", "v1"]);
-        assert!(row.attempt_ids.iter().all(|id| id.starts_with("after-")));
+        assert!(row.missing_version_ids.is_empty());
+        for id in ["before-v0", "before-v1", "after-v2", "after-v5"] {
+            assert!(row.attempt_ids.contains(&id.to_owned()), "{id}");
+        }
+        assert_eq!(row.attempt_ids.len(), 6);
         assert_eq!(row.measured_at, Some(2));
         // Both runs whole: the newest stands, every case failed.
         let whole = dataset();
@@ -3069,11 +3515,10 @@ pub(super) mod tests {
         attempt.evaluations.push(judge(0.35, "human"));
         assert_eq!(score(&attempt), Some(0.35));
     }
-    /// A run of one case is a sitting of one case: it stands alone, with
-    /// five gaps, and the earlier full run is history. Re-measuring only the
-    /// cases a model failed can never lift its row.
+    /// A run of one case replaces that case's cell only: the other five keep
+    /// their cells from the earlier full run.
     #[test]
-    fn a_narrow_follow_up_run_stands_alone() {
+    fn a_narrow_follow_up_run_replaces_only_its_case() {
         let mut data = dataset();
         let mut follow_up = data.runs[1].clone();
         follow_up.id = "follow-up".into();
@@ -3091,14 +3536,18 @@ pub(super) mod tests {
         let report = leaderboard(&data, &query);
         let cohort = report.cohort.as_ref().unwrap();
         assert_eq!(cohort.version_ids.len(), 6);
-        assert_eq!(cohort.run_ids, vec!["follow-up".to_string()]);
+        assert_eq!(
+            cohort.run_ids,
+            vec!["after".to_string(), "follow-up".to_string()]
+        );
         let row = &report.rows[0];
         assert_eq!(
             (row.scored, row.planned, row.status.as_str()),
-            (1, 6, "preliminary")
+            (6, 6, "comparable")
         );
-        assert_eq!(row.points, Some(1000));
-        assert_eq!(row.attempt_ids, vec!["follow-up-v0".to_string()]);
+        assert_eq!(row.passed, 1);
+        assert!(row.attempt_ids.contains(&"follow-up-v0".to_string()));
+        assert!(!row.attempt_ids.contains(&"after-v0".to_string()));
         assert_eq!(cohort.timeout_seconds, 600);
         // Planned but not begun, a run leaves the standing one in place.
         data.attempts.last_mut().unwrap().started_at = None;

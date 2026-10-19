@@ -370,6 +370,9 @@ impl BenchmarkService {
         }
         let attempts = runs.iter().flat_map(|r| r.attempts.clone()).collect();
         let releases = self.store.releases().await?;
+        let mut suite_exclusions =
+            analysis::reserved_versions(&versions, &self.store.evaluation_reservations().await?);
+        suite_exclusions.extend(board_exclusions(&self.store.root).await);
         // Every analysis reads this data, so a measurement of an unknown
         // effort is left out of all of them alike, and an attempt its event
         // record stopped is unscored in all of them alike; the store keeps
@@ -382,6 +385,7 @@ impl BenchmarkService {
                 runs,
                 attempts,
                 required_repetitions: analysis::REQUIRED_REPETITIONS,
+                suite_exclusions,
             },
         )))
     }
@@ -1369,5 +1373,26 @@ impl BenchmarkService {
             }
         }
         Ok(())
+    }
+}
+
+/// The owner's suite exclusions from the benchmark settings document. A
+/// missing or unreadable document lists none: the exclusions only narrow
+/// which rows rank, so reading none never lets a private task out.
+async fn board_exclusions(root: &std::path::Path) -> BTreeSet<String> {
+    match tokio::fs::read_to_string(root.join("settings.json")).await {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(settings) => analysis::board_exclusions_from(&settings),
+            Err(error) => {
+                log::warn!("[benchmarks] board exclusions unreadable: {error}");
+                BTreeSet::new()
+            }
+        },
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("[benchmarks] board exclusions unreadable: {error}");
+            }
+            BTreeSet::new()
+        }
     }
 }

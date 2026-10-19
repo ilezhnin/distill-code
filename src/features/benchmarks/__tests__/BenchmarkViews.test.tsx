@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { i18n } from "@/shared/i18n";
 import { benchmarkApi } from "../api/benchmarks";
 import { BenchmarkAttemptList } from "../ui/BenchmarkAttemptList";
 import { BenchmarkEditor } from "../ui/BenchmarkEditor";
@@ -676,8 +677,8 @@ describe("benchmark authoring and saved evidence", () => {
     expect(within(row).getAllByRole("cell")[0]).toHaveTextContent("–");
     expect(within(row).queryByText("Preliminary")).not.toBeInTheDocument();
     expect(within(row).queryByText(/measured/)).not.toBeInTheDocument();
-    // Rank, points, price and context all stay unknown.
-    expect(within(row).getAllByText("–")).toHaveLength(4);
+    // Rank, points, full-test date, price and context all stay unknown.
+    expect(within(row).getAllByText("–")).toHaveLength(5);
     expect(row).not.toHaveTextContent("0.0%");
     // Avoid unrelated summary counters above the rows.
     expect(screen.queryByText(/scored ·/)).not.toBeInTheDocument();
@@ -1182,8 +1183,9 @@ describe("benchmark authoring and saved evidence", () => {
           const cells = within(row).getAllByRole("cell");
           return `${cells[0].textContent} ${cells[1].querySelector(".font-medium")?.textContent}`;
         });
-    // Scores determine display order; preliminary rows still have no rank.
-    expect(order()).toEqual(["1 alpha", "1 gamma", "– delta", "3 beta"]);
+    // Ranked rows by score first; a row not fully tested has no rank and
+    // follows them.
+    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
     const profile = within(screen.getAllByRole("row")[1]).getByRole("img");
     expect(profile).toHaveAccessibleName("Algorithms and clean code: 200");
     expect(
@@ -1197,14 +1199,14 @@ describe("benchmark authoring and saved evidence", () => {
     await userEvent.click(
       screen.getByRole("tab", { name: "Algorithms and clean code" }),
     );
-    expect(order()).toEqual(["1 beta", "– delta", "2 alpha", "3 gamma"]);
+    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
     await userEvent.click(screen.getByRole("radio", { name: "Table" }));
     await userEvent.click(screen.getByRole("button", { name: "Overall" }));
-    expect(order()).toEqual(["1 alpha", "1 gamma", "– delta", "3 beta"]);
+    expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
     await userEvent.click(
       screen.getByRole("button", { name: "Algorithms and clean code" }),
     );
-    expect(order()).toEqual(["1 beta", "– delta", "2 alpha", "3 gamma"]);
+    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
     expect(
       screen.getByRole("button", { name: "Algorithms and clean code" }),
     ).toHaveAttribute("aria-pressed", "true");
@@ -1219,6 +1221,8 @@ describe("benchmark authoring and saved evidence", () => {
       "ClaudebetahighAnthropic",
       "500",
       "1000",
+      // Fully tested, then price and context: unknown here.
+      "–",
       "–",
       "–",
       "",
@@ -2117,6 +2121,59 @@ describe("configuration history", () => {
   });
 });
 
+describe("model page fully tested points", () => {
+  afterEach(cleanup);
+
+  it("marks the history points that covered the measurement suite", async () => {
+    // Both points cover 1 of 2 pool cases; the suite holds only one.
+    const short = leaderboardRow({
+      points: 600,
+      planned: 2,
+      suitePlanned: 1,
+      suiteComplete: 0,
+      attemptIds: ["attempt-0"],
+    });
+    const full = leaderboardRow({
+      points: 900,
+      planned: 2,
+      suitePlanned: 1,
+      suiteComplete: 1,
+    });
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
+      {
+        id: "short",
+        runId: "run-0",
+        createdAt: 1_000,
+        report: { cohort, rows: [short] },
+      },
+      {
+        id: "full",
+        runId: runSummary.id,
+        createdAt: 2_000,
+        report: { cohort, rows: [full] },
+      },
+    ]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    wrap(
+      <BenchmarkConfigurationPage
+        row={full}
+        report={{ cohort, rows: [full] }}
+        runs={[runSummary]}
+        versions={definition.versions}
+        onEvidence={vi.fn()}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: /: 600 points/ }),
+    ).toHaveAttribute("data-coverage", "partial");
+    expect(
+      screen.getByRole("button", { name: /: 900 points/ }),
+    ).toHaveAttribute("data-coverage", "complete");
+  });
+});
+
 describe("model page effort", () => {
   afterEach(cleanup);
 
@@ -2143,7 +2200,7 @@ describe("model page effort", () => {
 
   it("names the level the model was measured at", () => {
     const title = page("high");
-    expect(title.getByText("high")).toBeInTheDocument();
+    expect(title.getByText("Effort: high")).toBeInTheDocument();
     expect(title.queryByText("No effort setting")).not.toBeInTheDocument();
   });
 
@@ -2161,6 +2218,99 @@ describe("model page effort", () => {
     const title = page("default");
     expect(title.queryByText("default")).not.toBeInTheDocument();
     expect(title.queryByText("No effort setting")).not.toBeInTheDocument();
+  });
+});
+
+describe("leaderboard fully tested", () => {
+  afterEach(cleanup);
+
+  const at = Date.UTC(2026, 9, 18, 12);
+  function board() {
+    const full = leaderboardRow({
+      configuration: { ...configuration, id: "a", modelId: "alpha" },
+      points: 700,
+      suitePlanned: 285,
+      suiteComplete: 285,
+      fullyTestedAt: at,
+    });
+    // Covered the suite once; two new cases joined since.
+    const grown = leaderboardRow({
+      configuration: { ...configuration, id: "b", modelId: "beta" },
+      points: 950,
+      status: "preliminary",
+      suitePlanned: 285,
+      suiteComplete: 283,
+      fullyTestedAt: at - 86_400_000,
+    });
+    const partial = leaderboardRow({
+      configuration: { ...configuration, id: "c", modelId: "gamma" },
+      points: 990,
+      status: "preliminary",
+      suitePlanned: 285,
+      suiteComplete: 174,
+      fullyTestedAt: null,
+    });
+    wrap(
+      <LeaderboardView
+        {...scopeProps}
+        onOpen={vi.fn()}
+        report={{ cohort, rows: [partial, grown, full] }}
+      />,
+    );
+    const rowOf = (model: string) =>
+      screen
+        .getByRole("button", { name: `Open ${model} · high` })
+        .closest("tr") as HTMLElement;
+    const cell = (model: string) => {
+      const index = screen
+        .getAllByRole("columnheader")
+        .findIndex((header) => header.textContent === "Fully tested");
+      return within(rowOf(model)).getAllByRole("cell")[index];
+    };
+    return { rowOf, cell };
+  }
+
+  it("ranks only fully tested rows and lists partial scores muted below them", () => {
+    const { rowOf, cell } = board();
+    const order = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell")[0].textContent);
+    // Higher partial scores still follow the one ranked row.
+    expect(order).toEqual(["1", "–", "–"]);
+    expect(within(rowOf("alpha")).getByText("700")).not.toHaveClass(
+      "text-muted-foreground",
+    );
+    expect(within(rowOf("gamma")).getByText("990")).toHaveClass(
+      "text-muted-foreground",
+    );
+    expect(cell("alpha")).toHaveTextContent("Oct 18, 2026");
+    expect(cell("gamma")).toHaveTextContent("–174/285");
+  });
+
+  it("mutes a full date from before the suite grew and says so", async () => {
+    const { cell } = board();
+    const date = within(cell("beta")).getByText("Oct 17, 2026");
+    expect(date.parentElement).toHaveClass("text-muted-foreground");
+    expect(cell("beta")).toHaveTextContent("283/285");
+    await userEvent.hover(date);
+    expect(
+      await screen.findByRole("tooltip", {}, { timeout: 4_000 }),
+    ).toHaveTextContent(
+      "Fully tested on Oct 17, 2026. The suite has grown since: now 283/285 cases have every repetition.",
+    );
+  });
+
+  it("names the column in Spanish", async () => {
+    await act(() => i18n.changeLanguage("es"));
+    try {
+      board();
+      expect(
+        screen.getByRole("columnheader", { name: "Probado por completo" }),
+      ).toBeInTheDocument();
+    } finally {
+      await act(() => i18n.changeLanguage("en"));
+    }
   });
 });
 

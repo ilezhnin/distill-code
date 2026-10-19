@@ -54,6 +54,12 @@ export interface HistoryPoint {
   /** Cases measured here and not at the previous point, and the reverse. */
   added?: number;
   removed?: number;
+  /**
+   * The measurement suite at this point: its cases with every repetition
+   * and its size. A point is a fully tested one only when they meet; absent
+   * on older snapshots, which fall back to the pool counts.
+   */
+  suite?: { complete: number; planned: number };
 }
 
 /** Cases the point's rating stands on, borrowed ones included. */
@@ -74,6 +80,10 @@ export function owedRepetitions(point: HistoryPoint): number {
  * they are no trend of the model on their own.
  */
 export function partialCoverage(point: HistoryPoint): boolean {
+  if (point.suite)
+    return (
+      point.suite.planned === 0 || point.suite.complete < point.suite.planned
+    );
   return coveredCases(point) < point.planned || owedRepetitions(point) > 0;
 }
 
@@ -151,7 +161,8 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
  * ranges, a plot whose hover band snaps to the nearest measurement, and a
  * navigator over the whole history. Every measurement is a point that selects
  * it for the page; lines connect only the same measured case set, and a
- * point short of the whole pool or of its repetitions shows as a dashed ring.
+ * point that is not fully tested (short of the measurement suite or of its
+ * repetitions) shows as a dashed ring, a fully tested one as a solid dot.
  */
 export function PointsHistoryChart({
   points,
@@ -406,10 +417,22 @@ export function PointsHistoryChart({
   const tooltipId = `${ids}-tooltip`;
   const later = active
     ? [
-        coveredCases(active) < active.planned ? t("history.partial") : null,
-        owedRepetitions(active)
-          ? t("history.owedRepetitions", { count: owedRepetitions(active) })
-          : null,
+        ...(active.suite
+          ? [
+              partialCoverage(active)
+                ? t("history.suitePartial", active.suite)
+                : t("history.suiteFull"),
+            ]
+          : [
+              coveredCases(active) < active.planned
+                ? t("history.partial")
+                : null,
+              owedRepetitions(active)
+                ? t("history.owedRepetitions", {
+                    count: owedRepetitions(active),
+                  })
+                : null,
+            ]),
         active.added ? t("history.addedCases", { count: active.added }) : null,
         active.removed
           ? t("history.removedCases", { count: active.removed })

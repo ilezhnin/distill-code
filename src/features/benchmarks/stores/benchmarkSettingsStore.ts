@@ -42,6 +42,10 @@ export const MAX_JUDGE_ACCOUNT_LENGTH = 128;
 export const JUDGE_INPUTS: readonly JudgeInput[] = ["text", "visual"];
 /** The longest provider id the owner's data-use word is kept for. */
 export const MAX_DATA_USE_PROVIDER_ID_LENGTH = 128;
+/** The most version ids the owner's suite exclusions keep. */
+export const MAX_BOARD_EXCLUSIONS = 4096;
+/** The longest version id an exclusion keeps. */
+export const MAX_VERSION_ID_LENGTH = 128;
 
 export interface BenchmarkSettings {
   timeLimitMinutes: number;
@@ -66,6 +70,12 @@ export interface BenchmarkSettings {
    * the default the backend owns, so this holds only what the owner stated.
    */
   providerDataUse: Record<string, ProviderDataUseSetting>;
+  /**
+   * Version ids the owner keeps out of the measurement suite a board row
+   * must cover to count as fully tested, beside the cases a holdout or a
+   * campaign reserves. Edited in the document itself; every write keeps it.
+   */
+  boardExclusions: string[];
 }
 
 export function clampTimeLimitMinutes(minutes: number): number {
@@ -209,6 +219,18 @@ export function normalizeProviderDataUse(
   return Object.fromEntries(stated);
 }
 
+/** The owner's suite exclusions as stored: distinct trimmed version ids. */
+export function normalizeBoardExclusions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set<string>();
+  for (const item of raw) {
+    const id = boundedText(item, MAX_VERSION_ID_LENGTH);
+    if (id) ids.add(id);
+    if (ids.size === MAX_BOARD_EXCLUSIONS) break;
+  }
+  return [...ids];
+}
+
 export function parseBenchmarkSettings(raw: unknown): BenchmarkSettings {
   const stored =
     raw && typeof raw === "object"
@@ -217,6 +239,7 @@ export function parseBenchmarkSettings(raw: unknown): BenchmarkSettings {
           creditLimit?: unknown;
           judgePool?: unknown;
           providerDataUse?: unknown;
+          boardExclusions?: unknown;
         })
       : {};
   return {
@@ -227,6 +250,7 @@ export function parseBenchmarkSettings(raw: unknown): BenchmarkSettings {
     creditLimit: normalizeCreditLimit(stored.creditLimit),
     judgePool: normalizeJudgePool(stored.judgePool),
     providerDataUse: normalizeProviderDataUse(stored.providerDataUse),
+    boardExclusions: normalizeBoardExclusions(stored.boardExclusions),
   };
 }
 
@@ -253,6 +277,11 @@ export function serializeBenchmarkSettings(settings: BenchmarkSettings) {
         { trainsOnSubmissions: stated.trainsOnSubmissions },
       ]),
     ),
+    // Written only when the owner listed some, so a document without the
+    // list stays as it was.
+    ...(settings.boardExclusions.length
+      ? { boardExclusions: [...settings.boardExclusions] }
+      : {}),
   };
 }
 
@@ -298,6 +327,7 @@ export const DEFAULT_BENCHMARK_SETTINGS: BenchmarkSettings = {
   creditLimit: null,
   judgePool: [],
   providerDataUse: {},
+  boardExclusions: [],
 };
 
 export const useBenchmarkSettingsStore = create<BenchmarkSettingsState>(
