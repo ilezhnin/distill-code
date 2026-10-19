@@ -262,8 +262,11 @@ publication starts reference execution.
 Repository tasks use immutable public snapshots and an isolated workspace.
 The workspace holds exactly the files of the snapshot's tree, so the tree must
 survive `git archive` unchanged. `text` and `text=auto` keep committed line
-endings; `export-ignore`, `eol=crlf` and `ident` would change the files, and
-publication refuses a snapshot whose archive does not hold its tree.
+endings; `export-ignore`, `eol=crlf`, `ident`, `filter` and
+`working-tree-encoding` would change the files, as would symbolic links and
+submodules, and publication refuses a snapshot whose archive does not hold its
+tree. Host-wide attribute files (the global `core.attributesFile` and the system
+file) never apply to the export.
 Protected evaluator code and expected observations remain outside the candidate's
 view. Where submitted code must run, the trusted checker and candidate process
 communicate through the supported isolated probe boundary. Candidate stdout or

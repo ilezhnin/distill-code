@@ -600,7 +600,9 @@ pub fn is_repository_case(manifest: &BenchmarkDraft) -> bool {
 }
 
 /// A git command in `dir`, with no window, no prompt, no line ending
-/// conversion and no hooks, failing after two minutes.
+/// conversion, no hooks and no host-wide attributes, failing after two
+/// minutes. The sandbox helpers export with the same attribute isolation, so a
+/// global or system attributes file cannot shape one archive and not the other.
 ///
 /// Boxed like the sandbox's own process calls: its streams would otherwise
 /// sit inline in every repository step that awaits it, and an unoptimized
@@ -620,10 +622,13 @@ fn git<'a>(
                 "core.hooksPath=",
                 "-c",
                 "commit.gpgsign=false",
+                "-c",
+                "core.attributesFile=",
             ])
             .args(args)
             .current_dir(dir)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ATTR_NOSYSTEM", "1")
             .stdin(if input.is_some() {
                 Stdio::piped()
             } else {
@@ -1012,7 +1017,7 @@ fn snapshot_refusal(error: std::io::Error) -> BenchmarkError {
     {
         return BenchmarkError::new(
             "validation",
-            "The snapshot's archive does not hold its published tree: remove export-ignore, export-subst and line-ending (text, eol) attributes from the snapshot",
+            "The snapshot's archive does not hold its published tree: remove export-ignore, eol=crlf, ident, filter and working-tree-encoding attributes, symbolic links and submodules from the snapshot",
         );
     }
     sandbox_error(error)
@@ -1600,6 +1605,29 @@ else:
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_attributes_file_from_git_config_cannot_shape_the_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let (snapshot, _) = source(root.path()).await;
+        let attributes = root.path().join("host-attributes");
+        tokio::fs::write(&attributes, "* export-ignore\n")
+            .await
+            .unwrap();
+        let attributes = attributes.to_string_lossy().replace('\\', "/");
+        git(
+            &snapshot.path,
+            &["config", "core.attributesFile", &attributes],
+            None,
+        )
+        .await
+        .unwrap();
+        let archive = archive(&snapshot).await.unwrap();
+        assert_eq!(
+            file_from_archive(&archive, "sum.js"),
+            b"exports.sum = (a, b) => a - b;\n"
+        );
     }
 
     #[tokio::test]
