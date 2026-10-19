@@ -159,6 +159,49 @@ const SVG_FRAME =
   "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body>svg{display:block!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;margin:0!important}";
 
 /**
+ * The index of the `>` that ends the tag opening at `open`, past any quoted
+ * attribute value, or -1 (runner::tag_close).
+ */
+function tagClose(text: string, open: number): number {
+  let quote: string | null = null;
+  for (let index = open; index < text.length; index++) {
+    const char = text[index];
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === ">") return index;
+  }
+  return -1;
+}
+
+/**
+ * Whether a body, from its first `<svg`, is one root `<svg>` element with
+ * only white space after it (runner::one_root_svg).
+ */
+export function oneRootSvg(body: string): boolean {
+  const lowered = body.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  let at = lowered.indexOf("<svg");
+  if (at < 0) return false;
+  let depth = 0;
+  for (;;) {
+    const open = lowered.indexOf("<svg", at);
+    const close = lowered.indexOf("</svg>", at);
+    if (open < 0 && close < 0) return false;
+    if (open >= 0 && (close < 0 || open < close)) {
+      const end = tagClose(lowered, open);
+      if (end < 0) return false;
+      if (lowered[end - 1] !== "/") depth += 1;
+      at = end + 1;
+    } else {
+      if (depth === 0) return false;
+      depth -= 1;
+      at = close + "</svg>".length;
+    }
+    if (depth === 0) return lowered.slice(at).trim() === "";
+  }
+}
+
+/**
  * The one `<svg>`…`</svg>` of a body when only text surrounds it, else null
  * (runner::lone_svg).
  */
@@ -198,18 +241,7 @@ function withViewBox(svg: string): string {
   const lowered = svg.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
   const open = lowered.indexOf("<svg");
   if (open < 0) return svg;
-  let quote: string | null = null;
-  let close = -1;
-  for (let index = open; index < svg.length; index++) {
-    const char = svg[index];
-    if (quote) {
-      if (char === quote) quote = null;
-    } else if (char === '"' || char === "'") quote = char;
-    else if (char === ">") {
-      close = index;
-      break;
-    }
-  }
+  const close = tagClose(svg, open);
   if (close < 0) return svg;
   const attributes = svgAttributes(svg.slice(open + 4, close));
   if (attributes.has("viewbox")) return svg;
@@ -238,9 +270,12 @@ export function previewDocument(
   // Prose around one drawing is that drawing, as the judges see it.
   const drawing =
     loneSvg(markup.body) ?? (markup.kind === "svg" ? markup.body : null);
-  if (drawing !== null) {
+  if (drawing !== null && oneRootSvg(drawing)) {
     return `<!doctype html><html><head><meta charset="utf-8">${POLICY}<style>${SVG_FRAME}</style></head><body>${withViewBox(drawing)}</body></html>`;
   }
+  // Several root drawings, or one with more markup after it, are a page.
+  if (drawing !== null)
+    return `<!doctype html><html><head><meta charset="utf-8">${POLICY}</head><body>${drawing}</body></html>`;
   const head = /<head[^>]*>/i.exec(markup.body);
   if (head)
     return (

@@ -6214,6 +6214,8 @@ fn markup_body<'a>(output: &'a str, format: Option<&str>) -> Option<&'a str> {
 
 /// v2 (10-18): a drawing fills the frame whatever its own size (see
 /// [`render_document`]); v1 showed a viewBox-only drawing as a thumbnail.
+/// Since 10-19 v2 frames only an answer that is one root drawing; several
+/// roots render as a page (no stored judgment had one, so the id stands).
 const JUDGE_RENDERER: &str = "chromium-1024x768-v2";
 
 pub(super) fn requires_browser_runtime(draft: &BenchmarkDraft) -> bool {
@@ -6422,9 +6424,17 @@ pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<Stri
     // sentence, say) is that drawing.
     let body = lone_svg(body).unwrap_or(body);
     let start = head(body);
-    if start.starts_with("<svg") || (format == Some("svg") && start.contains("<svg")) {
+    if (start.starts_with("<svg") || (format == Some("svg") && start.contains("<svg")))
+        && one_root_svg(body)
+    {
         let body = with_view_box(body);
         return Some(format!("<!doctype html><html><head><meta charset=\"utf-8\"><style>{SVG_FRAME}</style></head><body>{body}</body></html>"));
+    }
+    // Several root drawings are a page of them, in a standard document.
+    if start.starts_with("<svg") {
+        return Some(format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>{body}</body></html>"
+        ));
     }
     Some(body.to_string())
 }
@@ -6432,6 +6442,63 @@ pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<Stri
 /// The page style that sizes a drawing's root `<svg>` to the frame, above
 /// any width, height or margin the drawing sets on itself.
 const SVG_FRAME: &str = "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body>svg{display:block!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;margin:0!important}";
+
+/// The offset of the `>` that ends the tag opening at `open`, past any
+/// quoted attribute value (a quoted `>` does not end it).
+fn tag_close(text: &str, open: usize) -> Option<usize> {
+    let mut quote = None;
+    for (offset, &byte) in text.as_bytes()[open..].iter().enumerate() {
+        match quote {
+            Some(mark) if byte == mark => quote = None,
+            Some(_) => {}
+            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+            None if byte == b'>' => return Some(open + offset),
+            None => {}
+        }
+    }
+    None
+}
+
+/// Whether `body`, from its first `<svg`, is one root `<svg>` element with
+/// nothing but white space after it. Several root drawings (a hidden sprite
+/// sheet before the drawing that uses it, say) or a drawing followed by more
+/// markup are a page: the frame would show only the first root, or blank it.
+fn one_root_svg(body: &str) -> bool {
+    // ASCII lowering keeps byte offsets, and every offset found is ASCII.
+    let lowered = body.to_ascii_lowercase();
+    let Some(mut at) = lowered.find("<svg") else {
+        return false;
+    };
+    let mut depth = 0usize;
+    loop {
+        let open = lowered[at..].find("<svg").map(|i| at + i);
+        let close = lowered[at..].find("</svg>").map(|i| at + i);
+        let (next, opening) = match (open, close) {
+            (Some(open), Some(close)) if open < close => (open, true),
+            (Some(open), None) => (open, true),
+            (_, Some(close)) => (close, false),
+            (None, None) => return false,
+        };
+        if opening {
+            let Some(end) = tag_close(&lowered, next) else {
+                return false;
+            };
+            if !lowered[..end].ends_with('/') {
+                depth += 1;
+            }
+            at = end + 1;
+        } else {
+            let Some(inner) = depth.checked_sub(1) else {
+                return false;
+            };
+            depth = inner;
+            at = next + "</svg>".len();
+        }
+        if depth == 0 {
+            return lowered[at..].trim().is_empty();
+        }
+    }
+}
 
 /// The one `<svg>`...`</svg>` of `body` when nothing but text surrounds it
 /// (no other tag before or after); none for an HTML document or a page with
@@ -6459,21 +6526,7 @@ fn with_view_box(svg: &str) -> std::borrow::Cow<'_, str> {
     let Some(open) = lowered.find("<svg") else {
         return svg.into();
     };
-    let mut quote = None;
-    let mut close = None;
-    for (offset, &byte) in svg.as_bytes()[open..].iter().enumerate() {
-        match quote {
-            Some(mark) if byte == mark => quote = None,
-            Some(_) => {}
-            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
-            None if byte == b'>' => {
-                close = Some(open + offset);
-                break;
-            }
-            None => {}
-        }
-    }
-    let Some(close) = close else {
+    let Some(close) = tag_close(svg, open) else {
         return svg.into();
     };
     let attributes = svg_attributes(&svg[open + 4..close]);
@@ -9063,6 +9116,36 @@ mod tests {
         let document = super::render_document(&preamble, Some("svg")).unwrap();
         assert!(document.contains("<body><svg xmlns='x'><rect/></svg></body>"));
         assert!(super::render_document("I cannot draw.", Some("svg")).is_none());
+    }
+    #[test]
+    fn several_root_drawings_or_a_drawing_with_more_markup_are_a_page() {
+        let frame = "body>svg{display:block!important";
+        // A hidden sprite sheet before the drawing that uses it, framed,
+        // would show a blank first screen; as a page both stand.
+        let sprite = "<svg style='display:none'><symbol id='s'><circle r='4'/></symbol></svg><svg viewBox='0 0 8 8'><use href='#s'/></svg>";
+        let page = super::render_document(sprite, Some("svg")).unwrap();
+        assert!(!page.contains(frame));
+        assert!(page.contains("<use href='#s'/>"));
+        assert!(
+            !super::render_document("<svg viewBox='0 0 1 1'></svg><p>More</p>", Some("html"))
+                .unwrap()
+                .contains(frame)
+        );
+        // One root, nested drawings and a self-closing one included, is a drawing.
+        for drawing in [
+            "<svg viewBox='0 0 9 9'><svg x='1'><rect/></svg><g/></svg>",
+            "<svg viewBox='0 0 9 9'/>",
+            "<svg viewBox='0 0 9 9'><rect/></svg>\n",
+        ] {
+            assert!(
+                super::render_document(drawing, Some("svg"))
+                    .unwrap()
+                    .contains(frame),
+                "{drawing}"
+            );
+        }
+        assert!(!super::one_root_svg("<svg><rect/>"));
+        assert!(!super::one_root_svg("<p>no drawing</p>"));
     }
     #[test]
     fn a_drawing_fills_the_judges_frame_whatever_its_own_size() {
