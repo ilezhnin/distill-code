@@ -15,8 +15,6 @@ import {
 } from "@/shared/ui/table";
 import { Spinner } from "@/shared/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
-import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
   modelNameKey,
   useModelCatalog,
@@ -84,9 +82,10 @@ interface Props {
 const MotionRow = motion.create(TableRow);
 
 /**
- * When a row last covered its measurement suite. A row short of the suite
- * shows its coverage; a date from before the suite grew stays muted, with a
- * hint, since that full measurement no longer stands.
+ * When a row covered its measurement suite: a date only while every suite
+ * case has a complete cell today. A row short of it shows a dash and its
+ * coverage, the leaderboard's complete-cell count, whatever it covered
+ * before the suite grew.
  */
 function FullyTested({ row }: { row: LeaderboardRow }) {
   const { t } = useTranslation("benchmarks");
@@ -96,36 +95,15 @@ function FullyTested({ row }: { row: LeaderboardRow }) {
     return <span className="text-muted-foreground">–</span>;
   const complete = row.suiteComplete ?? 0;
   const at = row.fullyTestedAt ?? null;
-  const date = at == null ? null : formatDate(at, { dateStyle: "medium" });
-  if (complete === planned && date) return <span>{date}</span>;
-  const coverage = (
-    <span className="block text-xs">
-      {t("leaderboard.fullyTestedCoverage", { complete, planned })}
-    </span>
-  );
-  if (!date)
-    return (
-      <span className="text-muted-foreground">
-        <span className="block">–</span>
-        {coverage}
-      </span>
-    );
+  if (complete === planned && at != null)
+    return <span>{formatDate(at, { dateStyle: "medium" })}</span>;
   return (
-    <Tooltip delayDuration={TOOLTIP_DELAY.restedHover}>
-      <TooltipTrigger asChild>
-        <span
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip trigger must take focus to show its hint
-          tabIndex={0}
-          className="rounded-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="block">{date}</span>
-          {coverage}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-72">
-        {t("leaderboard.fullyTestedEarlier", { date, complete, planned })}
-      </TooltipContent>
-    </Tooltip>
+    <span className="text-muted-foreground">
+      <span className="block">–</span>
+      <span className="block text-xs">
+        {t("leaderboard.fullyTestedCoverage", { complete, planned })}
+      </span>
+    </span>
   );
 }
 

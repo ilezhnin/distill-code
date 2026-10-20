@@ -1456,13 +1456,15 @@ fn measurement_report(
     };
     let records = case_records(&data.attempts, &runs, query.as_of, protocol);
     let acknowledged = run_acknowledgments(&data.attempts);
-    // Every attempt on a pool case from a counted run, by configuration and run.
-    let mut cells: BTreeMap<String, (Configuration, BTreeMap<&str, Vec<&Attempt>>)> =
-        BTreeMap::new();
+    // Every attempt on a pool case from a counted run, by configuration and
+    // run, with the repetitions set aside (superseded): a configuration
+    // whose every repetition was dropped still has its row, so no measured
+    // configuration disappears from the board.
+    type Grouped<'a> = (Configuration, BTreeMap<&'a str, Vec<&'a Attempt>>, u32);
+    let mut cells: BTreeMap<String, Grouped> = BTreeMap::new();
     for &attempt in source {
         if !pool_ids.contains(attempt.version_id.as_str())
             || !runs.contains_key(attempt.run_id.as_str())
-            || is_superseded(attempt)
             || query
                 .as_of
                 .is_some_and(|at| attempt.finished_at.is_none_or(|finished| finished > at))
@@ -1476,7 +1478,11 @@ fn measurement_report(
             } else {
                 leaderboard_key(&configuration)
             })
-            .or_insert_with(|| (configuration.into_owned(), BTreeMap::new()));
+            .or_insert_with(|| (configuration.into_owned(), BTreeMap::new(), 0));
+        if is_superseded(attempt) {
+            entry.2 += 1;
+            continue;
+        }
         entry
             .1
             .entry(attempt.run_id.as_str())
@@ -1486,9 +1492,10 @@ fn measurement_report(
     let mut contributing: BTreeSet<&str> = BTreeSet::new();
     let mut rows: Vec<LeaderboardRow> = cells
         .into_values()
-        .filter_map(|(mut configuration, by_run)| {
+        .filter_map(|(mut configuration, by_run, set_aside)| {
             // A sealed sitting contributes only if it retained a complete
-            // cell. Provider refusals remain evidence, not an empty result.
+            // cell. Provider refusals remain evidence, not an empty result,
+            // and alone leave no row; measured repetitions set aside do.
             let by_run: BTreeMap<_, _> = by_run
                 .into_iter()
                 .filter(|(id, list)| {
@@ -1498,7 +1505,7 @@ fn measurement_report(
                             .any(|cell| cell.complete)
                 })
                 .collect();
-            if by_run.is_empty() {
+            if by_run.is_empty() && set_aside == 0 {
                 return None;
             }
             // The newest run that began measuring, whose request the row
@@ -1770,7 +1777,7 @@ fn measurement_report(
                 }
                 .into(),
                 reason: format!(
-                    "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; {suite_complete}/{suite_planned} measurement-suite cases complete; {}; every repetition must pass{}{}",
+                    "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; {suite_complete}/{suite_planned} measurement-suite cases complete; {}; every repetition must pass{}{}{}",
                     if by_model { "each test uses its newest scored cell across the model's runs" } else { "each test uses its newest scored cell across this configuration's runs" },
                     if excluded > 0 {
                         format!("; {excluded} cases authored by this candidate left out of quality, their speed and cost counted")
@@ -1779,7 +1786,12 @@ fn measurement_report(
                     } else {
                         String::new()
                     },
-                    if standard_budgets { "" } else { "; a run shortened the published task budget, so no shared rank is assigned" }
+                    if standard_budgets { "" } else { "; a run shortened the published task budget, so no shared rank is assigned" },
+                    if set_aside > 0 {
+                        format!("; {set_aside} repetitions set aside, measured again or dropped when their run closed before their case had every repetition")
+                    } else {
+                        String::new()
+                    }
                 ),
                 attempt_ids: attempts.iter().map(|a| a.id.clone()).collect(),
                 result_attempt_ids: scored_attempts.iter().map(|a| a.id.clone()).collect(),
@@ -2661,6 +2673,30 @@ pub(super) mod tests {
             .contains(&"v0-evaluator".to_owned()));
         assert!(!row.complete_version_ids.contains(&"v0".to_owned()));
         assert_eq!(row.complete_version_ids.len() as u32, row.suite_complete);
+    }
+    /// A configuration whose every repetition was set aside (its runs closed
+    /// before any case had all of them) keeps its row: measured, never
+    /// complete, and saying why, instead of vanishing from the board.
+    #[test]
+    fn a_configuration_whose_repetitions_were_all_dropped_keeps_its_row() {
+        let mut data = dataset();
+        for attempt in data
+            .attempts
+            .iter_mut()
+            .chain(data.runs.iter_mut().flat_map(|run| run.attempts.iter_mut()))
+        {
+            attempt.outcome = Some(SUPERSEDED.into());
+        }
+        let row = standing(&data);
+        assert_eq!(row.complete, 0);
+        assert_eq!(row.suite_complete, 0);
+        assert!(row.complete_version_ids.is_empty());
+        assert_eq!(row.fully_tested_at, None);
+        assert!(
+            row.reason.contains("repetitions set aside"),
+            "{}",
+            row.reason
+        );
     }
     #[test]
     fn a_row_covering_the_suite_ranks_and_dates_its_last_completion() {

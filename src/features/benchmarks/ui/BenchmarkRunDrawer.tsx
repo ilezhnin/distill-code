@@ -88,7 +88,10 @@ export function BenchmarkRunDrawer({
     setError(null);
     try {
       await operation(runId);
-      await client.invalidateQueries({ queryKey: benchmarkKeys });
+      // The views refresh in the background: refetching every benchmark
+      // query (the board included) can take seconds, and the controls must
+      // stay usable meanwhile, Stop during a pause drain above all.
+      void client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
     } finally {

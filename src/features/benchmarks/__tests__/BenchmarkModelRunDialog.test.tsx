@@ -447,6 +447,23 @@ it("pauses a running run and resumes a paused one from the dialog", async () => 
   expect(benchmarkApi.resumeRun).toHaveBeenCalledWith("run-2");
 });
 
+it("keeps Stop usable while a pause drains and the views refresh", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.pauseRun).mockResolvedValue(liveRun("pausing"));
+  show({ runId: "run-2" });
+  const pause = await screen.findByRole("button", { name: "Pause" });
+  await waitFor(() => expect(pause).toBeEnabled());
+  // From now on the run reads as pausing, and the refresh of the attempt
+  // summaries never finishes, as a slow board refresh would.
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(liveRun("pausing"));
+  vi.mocked(benchmarkApi.listAttempts).mockReturnValue(new Promise(() => {}));
+  await user.click(pause);
+  const stop = screen.getByRole("button", { name: "Stop" });
+  await waitFor(() => expect(stop).toBeEnabled());
+  await user.click(stop);
+  expect(benchmarkApi.cancelRun).toHaveBeenCalledWith("run-2");
+});
+
 it("reads a stopping run as cancelling and offers no second stop", async () => {
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(liveRun("cancelling"));
   show({ runId: "run-2" });

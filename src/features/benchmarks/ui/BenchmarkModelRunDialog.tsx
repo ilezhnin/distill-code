@@ -463,7 +463,10 @@ export function BenchmarkModelRunDialog({
           : await benchmarkApi.startRun(request);
       setRunId(started.id);
       setRequestKey(crypto.randomUUID());
-      await client.invalidateQueries({ queryKey: benchmarkKeys });
+      // The views refresh in the background: refetching every benchmark
+      // query (the board included) can take seconds, and the controls must
+      // stay usable meanwhile, Stop during a pause drain above all.
+      void client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
     } finally {
@@ -476,7 +479,7 @@ export function BenchmarkModelRunDialog({
     setError(null);
     try {
       await benchmarkApi.cancelRun(runId);
-      await client.invalidateQueries({ queryKey: benchmarkKeys });
+      void client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
     } finally {
@@ -491,7 +494,7 @@ export function BenchmarkModelRunDialog({
     setError(null);
     try {
       await act(runId);
-      await client.invalidateQueries({ queryKey: benchmarkKeys });
+      void client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
     } finally {
@@ -510,7 +513,7 @@ export function BenchmarkModelRunDialog({
         runId,
         (all ? missing : added).map((version) => version.id),
       );
-      await client.invalidateQueries({ queryKey: benchmarkKeys });
+      void client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
     } finally {

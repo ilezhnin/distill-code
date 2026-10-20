@@ -770,6 +770,8 @@ describe("benchmark authoring and saved evidence", () => {
     }));
     const row = leaderboardRow({
       planned: 3,
+      suitePlanned: 3,
+      suiteComplete: 1,
       scoredVersionIds: ["version-1"],
       missingVersionIds: ["unmeasured-task"],
       unsupportedVersionIds: ["unsupported-task"],
@@ -794,9 +796,10 @@ describe("benchmark authoring and saved evidence", () => {
     expect(
       await screen.findByText("Tests · 3 cases · 9 attempts"),
     ).toBeInTheDocument();
+    // The leaderboard's own count and name: suite cases with a complete cell.
     expect(
-      screen.getByText("Tests", { selector: "dt" }).nextElementSibling,
-    ).toHaveTextContent("1 / 3");
+      screen.getByText("Fully tested", { selector: "dt" }).nextElementSibling,
+    ).toHaveTextContent("1/3");
     expect(
       screen.getByRole("button", { name: "Task 1: A measured task" }),
     ).toBeInTheDocument();
@@ -853,6 +856,8 @@ describe("benchmark authoring and saved evidence", () => {
       passed: 1,
       scored: 2,
       planned: 7,
+      suitePlanned: 7,
+      suiteComplete: 1,
       status: "preliminary",
       axes: [
         {
@@ -894,9 +899,10 @@ describe("benchmark authoring and saved evidence", () => {
     );
     expect(security.getByText("2/5")).toBeInTheDocument();
     expect(screen.getByText("2/7")).toBeInTheDocument();
+    // Two cases scored, one complete: the page shows the board's count.
     expect(
-      screen.getByText("Tests", { selector: "dt" }).nextElementSibling,
-    ).toHaveTextContent("2 / 7");
+      screen.getByText("Fully tested", { selector: "dt" }).nextElementSibling,
+    ).toHaveTextContent("1/7");
     expect(screen.queryByText(/Passed: 1/)).not.toBeInTheDocument();
     expect(screen.queryByText(/not tested: 3/)).not.toBeInTheDocument();
     expect(screen.queryByText("Preliminary")).not.toBeInTheDocument();
@@ -2411,17 +2417,11 @@ describe("leaderboard fully tested", () => {
     expect(cell("gamma")).toHaveTextContent("–174/285");
   });
 
-  it("mutes a full date from before the suite grew and says so", async () => {
+  it("shows a dash for a row short of today's suite, whatever it covered before", async () => {
     const { cell } = board();
-    const date = within(cell("beta")).getByText("Oct 17, 2026");
-    expect(date.parentElement).toHaveClass("text-muted-foreground");
-    expect(cell("beta")).toHaveTextContent("283/285");
-    await userEvent.hover(date);
-    expect(
-      await screen.findByRole("tooltip", {}, { timeout: 4_000 }),
-    ).toHaveTextContent(
-      "Fully tested on Oct 17, 2026. The suite has grown since: now 283/285 cases have every repetition.",
-    );
+    // Beta covered the suite on Oct 17, before it grew.
+    expect(cell("beta")).toHaveTextContent("–283/285");
+    expect(cell("beta")).not.toHaveTextContent("Oct 17, 2026");
   });
 
   it("names the column in Spanish", async () => {
