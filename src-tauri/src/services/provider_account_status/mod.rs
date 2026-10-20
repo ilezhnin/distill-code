@@ -1045,6 +1045,23 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
     })
 }
 
+/// Renews the app's own grant of `account` on Windows (see the agent host's
+/// `app_sign_in`): Claude's from its stored refresh token, or with `natural`
+/// the CLI's own refresh inside its window; Codex's through its native
+/// account read with a refresh.
+pub(crate) async fn renew_app_grant(
+    app: &AppHandle,
+    account: &ProviderAccount,
+    natural: bool,
+) -> Result<(), String> {
+    match account.provider_id.as_str() {
+        "claude-acp" if natural => claude::refresh_in_window(app, account).await,
+        "claude-acp" => claude::renew_grant(app, account).await,
+        "codex-acp" => codex::refresh_grant(app, account).await,
+        _ => Err("Distill does not renew this provider's sign-in".into()),
+    }
+}
+
 pub(crate) async fn record_quota_error(
     app: &AppHandle,
     account_id: &str,

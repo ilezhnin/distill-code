@@ -701,8 +701,254 @@ fn window_minutes(kind: &str) -> Option<u32> {
     }
 }
 
+/// Where a forced renewal keeps the grant before it, in the account's home,
+/// until the CLI left a grant at least as long.
+const RENEWAL_COPY: &str = ".credentials.renewal-copy.json";
+
+/// How long the CLI may take to renew a grant.
+const RENEWAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The expiry of the usable grant in the `.credentials.json` at `path`, or
+/// none for a document that is not one.
+fn usable_grant_expiry(path: &std::path::Path) -> Option<i64> {
+    let bytes = std::fs::read(path).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let grant = value.get("claudeAiOauth")?;
+    grant["accessToken"]
+        .as_str()
+        .filter(|token| !token.is_empty())?;
+    grant["expiresAt"].as_i64()
+}
+
+/// A renewal killed before it settled left its copy behind: a grant the CLI
+/// left stays, a document that is no grant gives way to the earlier one.
+fn recover_renewal_copy(home: &std::path::Path) -> Result<(), String> {
+    let (path, copy) = (home.join(".credentials.json"), home.join(RENEWAL_COPY));
+    if !copy.exists() {
+        return Ok(());
+    }
+    let restored = if usable_grant_expiry(&path).is_none() && usable_grant_expiry(&copy).is_some() {
+        std::fs::rename(&copy, &path)
+    } else {
+        std::fs::remove_file(&copy)
+    };
+    restored.map_err(|_| "Cannot settle an earlier Claude renewal".to_string())
+}
+
+/// What a forced renewal sends the CLI: the stored refresh token and scopes,
+/// with the grant's expiry before it. None when no refresh token is stored.
+fn renewal_source(document: &[u8]) -> Option<(String, String, i64)> {
+    let value: Value = serde_json::from_slice(document).ok()?;
+    let grant = value.get("claudeAiOauth")?;
+    let token = grant["refreshToken"]
+        .as_str()
+        .filter(|token| !token.is_empty())?;
+    let scopes = grant["scopes"]
+        .as_array()
+        .map(|scopes| {
+            scopes
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let before = grant["expiresAt"].as_i64().unwrap_or(0);
+    Some((token.to_owned(), scopes, before))
+}
+
+/// Keeps what the CLI left only if it is a grant at least as long as the one
+/// before; else puts the earlier grant back. Returns the expiry it kept.
+fn settle_renewal(home: &std::path::Path, before: i64) -> Result<Option<i64>, String> {
+    let (path, copy) = (home.join(".credentials.json"), home.join(RENEWAL_COPY));
+    let left = usable_grant_expiry(&path).filter(|left| *left >= before);
+    let settled = if left.is_some() {
+        std::fs::remove_file(&copy)
+    } else {
+        std::fs::rename(&copy, &path)
+    };
+    settled.map_err(|_| "Cannot settle the Claude renewal".to_string())?;
+    Ok(left)
+}
+
+/// Renews the app's Claude grant of `account` outside the CLI's own window:
+/// the pinned CLI signs in from the grant's stored refresh token
+/// (`claude auth login` with the token in its environment, never on its
+/// command line), in the account's own home. The grant before it is kept
+/// until the CLI left one that lasts longer; otherwise it is put back.
+pub(crate) async fn renew_grant(app: &AppHandle, account: &ProviderAccount) -> Result<(), String> {
+    let _changing = provider_accounts::begin_account_change(&account.id)?;
+    let root = distill_root::app_root(app)?;
+    let home = provider_accounts::account_home(app, account)?;
+    let path = home.join(".credentials.json");
+    let copy = home.join(RENEWAL_COPY);
+    distill_root::reject_document_links(&root, &path)?;
+    distill_root::reject_document_links(&root, &copy)?;
+    recover_renewal_copy(&home)?;
+    let mut document =
+        std::fs::read(&path).map_err(|_| "Cannot read Claude authorization".to_string())?;
+    let source = renewal_source(&document);
+    let Some((mut token, scopes, before)) = source else {
+        crate::services::credential_lease::wipe(&mut document);
+        return Err("no refresh token is stored; sign in again in Settings".into());
+    };
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&copy)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(&document)?;
+            file.sync_all()
+        });
+    crate::services::credential_lease::wipe(&mut document);
+    if written.is_err() {
+        let _ = std::fs::remove_file(&copy);
+        // SAFETY: zeroes stay valid UTF-8.
+        crate::services::credential_lease::wipe(unsafe { token.as_bytes_mut() });
+        return Err("Cannot keep the Claude grant before its renewal".into());
+    }
+    let ran = run_renewal(app, account, &home, &token, &scopes).await;
+    // SAFETY: zeroes stay valid UTF-8.
+    crate::services::credential_lease::wipe(unsafe { token.as_bytes_mut() });
+    let kept = settle_renewal(&home, before)?;
+    ran?;
+    match kept {
+        Some(after) if after > before => Ok(()),
+        _ => Err("the provider refused the stored refresh token".into()),
+    }
+}
+
+async fn run_renewal(
+    app: &AppHandle,
+    account: &ProviderAccount,
+    home: &std::path::Path,
+    token: &str,
+    scopes: &str,
+) -> Result<(), String> {
+    let mut env: HashMap<String, String> = provider_accounts::scoped_env(
+        app,
+        account,
+        managed_acp_tools::provider_env(app)
+            .await
+            .into_iter()
+            .collect(),
+    )?
+    .into_iter()
+    .collect();
+    env.insert("CLAUDE_CODE_OAUTH_REFRESH_TOKEN".into(), token.into());
+    env.insert("CLAUDE_CODE_OAUTH_SCOPES".into(), scopes.into());
+    let binary = managed_acp_tools::native_cli_path(app, "claude-acp")
+        .ok_or("Install the Claude provider to renew its sign-in")?;
+    let mut command = Command::new(binary);
+    command
+        .env_clear()
+        .envs(&env)
+        .current_dir(home)
+        .args(["auth", "login"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    drop(env);
+    process::apply_no_window_async(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Could not start the Claude sign-in".to_string())?;
+    drop(command);
+    let tree = process::ProcessTree::contain(&child);
+    // A CLI that hangs is stopped; what it left is settled either way.
+    let _ = tokio::time::timeout(RENEWAL_TIMEOUT, child.wait()).await;
+    if let Some(tree) = &tree {
+        tree.kill();
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    Ok(())
+}
+
+/// Lets the CLI refresh the app's Claude grant of `account` its own way, as
+/// it does inside its last five minutes or once the grant expired: the usage
+/// read it refreshes before.
+pub(crate) async fn refresh_in_window(
+    app: &AppHandle,
+    account: &ProviderAccount,
+) -> Result<(), String> {
+    read_usage(app, account, true).await.map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
+    fn grant(expiry: i64, marker: &str) -> Vec<u8> {
+        json!({"claudeAiOauth": {"accessToken": marker, "refreshToken": marker,
+            "expiresAt": expiry, "scopes": ["user:inference", "user:profile"]}})
+        .to_string()
+        .into_bytes()
+    }
+
+    /// A forced renewal keeps the grant before it until the CLI left a
+    /// grant at least as long; anything else puts the earlier one back.
+    #[test]
+    fn a_failed_renewal_keeps_the_grant() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".credentials.json");
+        let copy = home.path().join(super::RENEWAL_COPY);
+        let (token, scopes, before) = super::renewal_source(&grant(1000, "invented")).unwrap();
+        assert_eq!(
+            (token.as_str(), scopes.as_str(), before),
+            ("invented", "user:inference user:profile", 1000)
+        );
+        // The CLI wrote nothing usable: the earlier grant comes back.
+        std::fs::write(&copy, grant(1000, "earlier")).unwrap();
+        std::fs::write(&path, b"{\"claudeAiOauth\":{}}").unwrap();
+        assert_eq!(super::settle_renewal(home.path(), 1000).unwrap(), None);
+        assert_eq!(std::fs::read(&path).unwrap(), grant(1000, "earlier"));
+        assert!(!copy.exists());
+        // A shorter grant is not kept either.
+        std::fs::write(&copy, grant(1000, "earlier")).unwrap();
+        std::fs::write(&path, grant(900, "shorter")).unwrap();
+        assert_eq!(super::settle_renewal(home.path(), 1000).unwrap(), None);
+        assert_eq!(std::fs::read(&path).unwrap(), grant(1000, "earlier"));
+        // A longer grant stays and the copy goes.
+        std::fs::write(&copy, grant(1000, "earlier")).unwrap();
+        std::fs::write(&path, grant(2000, "renewed")).unwrap();
+        assert_eq!(
+            super::settle_renewal(home.path(), 1000).unwrap(),
+            Some(2000)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), grant(2000, "renewed"));
+        assert!(!copy.exists());
+        // Nothing to renew from without a refresh token.
+        assert!(super::renewal_source(
+            json!({"claudeAiOauth":{"accessToken":"a","expiresAt":1}})
+                .to_string()
+                .as_bytes()
+        )
+        .is_none());
+    }
+
+    /// A renewal stopped before it settled: a grant the CLI left stays, a
+    /// document that is no grant gives way to the copy.
+    #[test]
+    fn a_stopped_renewal_is_settled_next_time() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".credentials.json");
+        let copy = home.path().join(super::RENEWAL_COPY);
+        std::fs::write(&copy, grant(1000, "earlier")).unwrap();
+        std::fs::write(&path, b"half").unwrap();
+        super::recover_renewal_copy(home.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), grant(1000, "earlier"));
+        assert!(!copy.exists());
+        std::fs::write(&copy, grant(1000, "earlier")).unwrap();
+        std::fs::write(&path, grant(2000, "renewed")).unwrap();
+        super::recover_renewal_copy(home.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), grant(2000, "renewed"));
+        assert!(!copy.exists());
+        super::recover_renewal_copy(home.path()).unwrap();
+    }
+
     #[test]
     fn first_usage_failure_retains_the_native_plan_and_identity() {
         let mut status = super::ProviderAccountStatus::empty("a", "claude-acp", super::now_ms());

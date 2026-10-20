@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+use super::app_sign_in;
 use super::bridge::{error_text, Bridge, BridgeEvent, SpawnEnv};
 use super::execution::ExecutionProfile;
 use super::execution::{
@@ -994,6 +995,15 @@ impl Inner {
         tokio::spawn(Arc::clone(&inner).accept_loop(listener, token));
         tokio::spawn(Arc::clone(&inner).bridge_event_loop(events_rx));
         tokio::spawn(Self::reap_idle_bridges_periodically(Arc::downgrade(&inner)));
+        if inner
+            .app
+            .try_state::<crate::services::e2e_mode::E2eMode>()
+            .is_none()
+        {
+            tokio::spawn(Self::keep_app_sign_ins_alive_periodically(Arc::downgrade(
+                &inner,
+            )));
+        }
         log::info!("[agent-host] listening on 127.0.0.1:{port}");
         Ok(inner)
     }
@@ -7371,6 +7381,147 @@ impl Inner {
         })
     }
 
+    /// Makes the app's sign-in of `provider`'s `account` last until `until_ms`
+    /// for a lease, renewing it on Windows when it does not (see
+    /// [`app_sign_in::ensure`]), and returns its expiry (none: it does not
+    /// expire, or the provider is not leased). A renewal holds the account's
+    /// gate alone: no lease is staged while it runs, and it waits for every
+    /// live lease of the account to end.
+    ///
+    /// Boxed for the same stack reason as [`Self::ensure_execution_bridge`].
+    pub fn renew_app_sign_in<'a>(
+        self: &'a Arc<Self>,
+        provider: &'a str,
+        account: &'a str,
+        until_ms: i64,
+    ) -> BoxFuture<'a, Result<Option<i64>, String>> {
+        Box::pin(async move {
+            let Some(native) = NativeProvider::for_harness(provider)
+                .filter(|native| crate::services::credential_lease::leased(*native))
+            else {
+                return Ok(None);
+            };
+            let key = account_route_key(provider, Some(account));
+            let gate = self.sign_in_renewals.gate(&key);
+            let _renewing = gate.write().await;
+            let mut io = AppRenewal {
+                host: self,
+                native,
+                account,
+                key: &key,
+            };
+            app_sign_in::ensure(&self.sign_in_renewals, &key, native, until_ms, &mut io).await
+        })
+    }
+
+    /// Every [`app_sign_in::KEEPALIVE_INTERVAL`], renew each app sign-in a
+    /// benchmark can lease that would otherwise reach its CLI's own window
+    /// within [`app_sign_in::KEEPALIVE_LEAD_MS`], whether or not anything
+    /// runs on it. Holds the host weakly, as the bridge reaper does.
+    async fn keep_app_sign_ins_alive_periodically(host: Weak<Inner>) {
+        loop {
+            tokio::time::sleep(app_sign_in::KEEPALIVE_INTERVAL).await;
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            host.keep_app_sign_ins_alive().await;
+        }
+    }
+
+    async fn keep_app_sign_ins_alive(self: &Arc<Self>) {
+        let mut accounts: Vec<(String, String)> = provider_accounts::snapshot(&self.app)
+            .map(|snapshot| snapshot.accounts)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|account| {
+                account.enabled
+                    && account.auth_method == provider_accounts::AuthMethod::OAuth
+                    && matches!(account.provider_id.as_str(), "claude-acp" | "codex-acp")
+            })
+            .map(|account| (account.provider_id, account.id))
+            .collect();
+        let grok = NativeProvider::Grok.harness_id();
+        if matches!(
+            grok::read_grok_auth_session(),
+            grok::GrokAuthReadResult::Ok(ref session) if session.expires_at_ms.is_some()
+        ) {
+            if let Some(id) = provider_accounts::cli_login_account_id(grok) {
+                accounts.push((grok.to_owned(), id));
+            }
+        }
+        for (provider, account) in accounts {
+            let until = chrono::Utc::now()
+                .timestamp_millis()
+                .saturating_add(app_sign_in::KEEPALIVE_LEAD_MS);
+            // Failures are logged where the renewal ran; a wait for live
+            // leases is retried on the next pass.
+            if let Err(error) = self.renew_app_sign_in(&provider, &account, until).await {
+                log::debug!(
+                    "[agent-host] keep-alive of the {provider} sign-in of {account}: {error}"
+                );
+            }
+        }
+    }
+
+    /// Shuts down the app's idle chat processes on `routes` once their
+    /// account's sign-in was renewed: a CLI keeps the refresh token it
+    /// started with, which the renewal replaced. One that a chat is attached
+    /// to, that a request waits on, or that a task holds, stays; its CLI
+    /// reads the renewed grant the next time it refreshes.
+    async fn retire_idle_chat_bridges(&self, routes: &[String]) {
+        let mut chats: HashMap<String, usize> = HashMap::new();
+        for runtime in self.sessions.lock().await.values() {
+            *chats.entry(runtime.route_key()).or_default() += 1;
+        }
+        let mut idle = Vec::new();
+        self.bridges.lock().await.retain(|route, bridge| {
+            let retire = routes.contains(route)
+                && chats.get(route).copied().unwrap_or(0) == 0
+                && bridge.in_flight() == 0
+                && Arc::strong_count(bridge) == 1;
+            if retire {
+                idle.push(Arc::clone(bridge));
+            }
+            !retire
+        });
+        for bridge in idle {
+            log::info!(
+                "[agent-host] {} bridge retired after its sign-in was renewed",
+                bridge.harness
+            );
+            bridge.kill();
+        }
+    }
+
+    /// One renewal of the user's Grok sign-in on Windows: a Grok process
+    /// started with a renewal window a minute longer than what is left of the
+    /// grant (`expiry`), so it renews it before its first request, the model
+    /// listing of the session it opens. No model is called.
+    async fn windows_grok_renewal(&self, expiry: i64) -> Result<(), String> {
+        let spec = harness::harness(NativeProvider::Grok.harness_id())
+            .ok_or("capability_missing: Grok is not available")?;
+        let mut env = (*self.spawn_env().await).clone();
+        let renewal = grok::sandbox_renewal_env(expiry, chrono::Utc::now().timestamp_millis());
+        env.extra_env.retain(|(key, _)| key != &renewal.0);
+        env.extra_env.push(renewal);
+        let route = format!("{}\u{1f}renewal:{}", spec.id, uuid::Uuid::new_v4());
+        let bridge = Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route, None).await?;
+        let result = async {
+            let cwd = crate::services::distill_root::app_root(&self.app)?;
+            let opened = bridge
+                .request("session/new", json!({"cwd": cwd, "mcpServers": []}))
+                .await
+                .map_err(|error| error_text(&error))?;
+            if let Some(session) = protocol::session_id(&opened) {
+                bridge.close_session(&session).await;
+            }
+            Ok::<_, String>(())
+        }
+        .await;
+        bridge.kill();
+        result
+    }
+
     /// How many benchmark bridges of the account `account_key` names are
     /// alive: each runs on a copy of the account's sandbox sign-in.
     async fn live_benchmark_bridges(&self, account_key: &str) -> usize {
@@ -8287,6 +8438,64 @@ impl Inner {
             }
             _ => false,
         }
+    }
+}
+
+/// What a renewal of an app sign-in does through the host.
+struct AppRenewal<'a> {
+    host: &'a Arc<Inner>,
+    native: NativeProvider,
+    account: &'a str,
+    key: &'a str,
+}
+
+impl app_sign_in::RenewalIo for AppRenewal<'_> {
+    fn expiry(&mut self) -> Result<Option<i64>, String> {
+        crate::services::credential_lease::read(
+            &self.host.app,
+            self.native,
+            self.account,
+            self.now(),
+        )
+        .map(|lease| lease.expires_at_ms())
+    }
+
+    fn live_leases(&mut self) -> BoxFuture<'_, usize> {
+        Box::pin(self.host.live_benchmark_bridges(self.key))
+    }
+
+    fn renew(&mut self, natural: bool) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            if self.native == NativeProvider::Grok {
+                let expiry = self.expiry()?.unwrap_or_default();
+                return self.host.windows_grok_renewal(expiry).await;
+            }
+            let account = provider_accounts::account(&self.host.app, self.account)?;
+            let renewed = crate::services::provider_account_status::renew_app_grant(
+                &self.host.app,
+                &account,
+                natural,
+            )
+            .await;
+            crate::services::provider_account_status::invalidate(&self.host.app, self.account)
+                .await;
+            renewed
+        })
+    }
+
+    fn renewed(&mut self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            // Grok chats run on the CLI sign-in without an account.
+            let mut routes = vec![self.key.to_owned()];
+            if provider_accounts::is_cli_login_account(self.native.harness_id(), self.account) {
+                routes.push(self.native.harness_id().to_owned());
+            }
+            self.host.retire_idle_chat_bridges(&routes).await;
+        })
+    }
+
+    fn now(&self) -> i64 {
+        chrono::Utc::now().timestamp_millis()
     }
 }
 

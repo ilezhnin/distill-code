@@ -33,6 +33,15 @@ struct Account {
     gate: Arc<RwLock<()>>,
     /// The expiry of the grant a renewal waits to replace, while it waits.
     due: Option<i64>,
+    /// The last renewal that failed: the grant it tried to replace, when,
+    /// and what its callers were told.
+    failure: Option<Failure>,
+}
+
+struct Failure {
+    expiry: i64,
+    at: i64,
+    message: String,
 }
 
 /// Renewal state of every account, by account route key.
@@ -81,6 +90,48 @@ impl SignInRenewals {
     /// waiting for it.
     pub(super) fn defer(&self, key: &str, expiry: i64) {
         self.with(key, |account| account.due = Some(expiry));
+    }
+
+    /// What a renewal of `key`'s grant that expires at `expiry` failed with,
+    /// when it failed less than `retry_ms` before `now`: that grant is not
+    /// renewed again yet. A new sign-in is another grant and renews at once.
+    pub(super) fn recent_failure(
+        &self,
+        key: &str,
+        expiry: i64,
+        now: i64,
+        retry_ms: i64,
+    ) -> Option<String> {
+        self.with(key, |account| {
+            account
+                .failure
+                .as_ref()
+                .filter(|failure| failure.expiry == expiry && now - failure.at < retry_ms)
+                .map(|failure| failure.message.clone())
+        })
+    }
+
+    /// Records that the renewal of `key`'s grant that expires at `expiry`
+    /// failed at `now` with `message`; whether this grant had not failed
+    /// before (what is worth a warning).
+    pub(super) fn fail(&self, key: &str, expiry: i64, now: i64, message: &str) -> bool {
+        self.with(key, |account| {
+            let news = account
+                .failure
+                .as_ref()
+                .is_none_or(|failure| failure.expiry != expiry);
+            account.failure = Some(Failure {
+                expiry,
+                at: now,
+                message: message.to_owned(),
+            });
+            news
+        })
+    }
+
+    /// A renewal of `key` succeeded: no failure holds it back any more.
+    pub(super) fn clear_failure(&self, key: &str) {
+        self.with(key, |account| account.failure = None);
     }
 }
 

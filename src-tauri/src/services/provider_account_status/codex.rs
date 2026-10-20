@@ -90,6 +90,12 @@ async fn with_client(
     account: &ProviderAccount,
     consume: Option<Value>,
 ) -> Result<(Value, Value), String> {
+    read_usage_command(account_command(app, account).await?, consume).await
+}
+
+/// The native Codex CLI of `account`, in its own home with its own
+/// environment and nothing else.
+async fn account_command(app: &AppHandle, account: &ProviderAccount) -> Result<Command, String> {
     let base = managed_acp_tools::provider_env(app).await;
     let env: HashMap<String, String> =
         provider_accounts::scoped_env(app, account, base.into_iter().collect())?
@@ -103,7 +109,7 @@ async fn with_client(
         command.current_dir(home);
     }
     command.env_clear().envs(&env);
-    read_usage_command(command, consume).await
+    Ok(command)
 }
 
 pub(super) async fn read_usage_command(
@@ -435,6 +441,55 @@ fn plan_label(plan: &str) -> Option<String> {
         _ => return None,
     };
     Some(label.into())
+}
+
+/// Renews the app's Codex grant of `account`: the native app-server's own
+/// account read with a refresh, in the account's home. Native Codex rotates
+/// and saves the tokens; nothing here reads or writes them.
+pub(crate) async fn refresh_grant(
+    app: &AppHandle,
+    account: &ProviderAccount,
+) -> Result<(), String> {
+    let mut command = account_command(app, account).await?;
+    command
+        .arg("app-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    process::apply_no_window_async(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Could not start the Codex account service".to_string())?;
+    let tree = process::ProcessTree::contain(&child);
+    let mut client = Client {
+        input: child.stdin.take().ok_or("Codex input unavailable")?,
+        output: BufReader::new(child.stdout.take().ok_or("Codex output unavailable")?),
+        next_id: 0,
+    };
+    let operation = async {
+        client.request("initialize", json!({"clientInfo":{"name":"distill_accounts","title":"Distill","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
+        client
+            .send(json!({"method":"initialized","params":{}}))
+            .await?;
+        let identity = client
+            .request("account/read", json!({"refreshToken":true}))
+            .await?;
+        if identity["account"].is_null() {
+            return Err("Codex reports the account signed out".to_string());
+        }
+        Ok(())
+    };
+    let result = tokio::time::timeout(RPC_TIMEOUT, operation)
+        .await
+        .unwrap_or_else(|_| Err("Codex account service timed out".into()));
+    drop(client);
+    if let Some(tree) = &tree {
+        tree.kill();
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    result
 }
 
 #[cfg(test)]

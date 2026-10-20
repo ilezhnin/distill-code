@@ -3,6 +3,7 @@
 //! (claude-agent-acp, codex-acp, ...) on demand, and keeps sessions, history,
 //! defaults, MCP configuration, and skill/agent/project files itself.
 
+mod app_sign_in;
 pub mod bridge;
 pub mod execution;
 #[cfg(feature = "app-test-driver")]
