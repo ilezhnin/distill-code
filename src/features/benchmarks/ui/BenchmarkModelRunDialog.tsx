@@ -551,7 +551,8 @@ export function BenchmarkModelRunDialog({
   // A run that has not finished is steered here: paused, resumed or stopped.
   const runState = run.data?.state ?? null;
   const steering = runState != null && !FINISHED_RUN.has(runState);
-  // A test of a profile the run does not carry brings the model's
+  // A test of a profile the run does not carry, added now or planned before
+  // the run carried one configuration per profile, brings the model's
   // configuration of that profile into the same run; none while that
   // profile has no configuration today.
   const joiningFor = (
@@ -560,7 +561,10 @@ export function BenchmarkModelRunDialog({
     const carried = new Set(
       runConfigurations.map((entry) => entry.executionProfile),
     );
-    const joining = profilesOf(tests)
+    const joining = profilesOf([
+      ...eligible.filter((version) => inRunIds.has(version.id)),
+      ...tests,
+    ])
       .filter((profile) => !carried.has(profile))
       .map(pinnedFor);
     return joining.every((entry) => entry != null)

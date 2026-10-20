@@ -1047,6 +1047,35 @@ it("finishes a text run with repository tests by bringing the repository configu
   );
 });
 
+it("finishes an old text run that already holds a repository test on its repository configuration", async () => {
+  const user = userEvent.setup();
+  bothProfiles();
+  // Planned before runs carried one configuration per profile: the Ledger
+  // test sits on the text configuration, cancelled.
+  const old = stoppedRun("cancelled", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-2", outcome: "cancelled", score: null },
+  ]);
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(old.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(old.summaries);
+  vi.mocked(benchmarkApi.extendRun).mockResolvedValue({
+    ...old.run,
+    state: "running",
+  });
+  show({
+    runId: "run-2",
+    definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
+  });
+  const finish = await screen.findByRole("button", { name: "Finish run" });
+  await waitFor(() => expect(finish).toBeEnabled());
+  await user.click(finish);
+  expect(benchmarkApi.extendRun).toHaveBeenCalledWith(
+    "run-2",
+    [],
+    [expect.objectContaining({ executionProfile: "protected_repository" })],
+  );
+});
+
 it("stops a run whose repository configuration went stale", async () => {
   bothProfiles("repository-newer");
   const paused = stoppedRun("paused", [

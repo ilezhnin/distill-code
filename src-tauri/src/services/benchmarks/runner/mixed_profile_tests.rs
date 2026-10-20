@@ -143,3 +143,79 @@ async fn finish_takes_the_repository_configuration_into_a_text_run() {
         .all(|a| a.configuration.execution_profile == "native_text"));
     dir.close().await;
 }
+
+/// A run planned before runs carried one configuration per profile holds a
+/// repository case on its text configuration (the owner's run dbd396a0).
+/// Resume never queues that pair again; Finish takes the repository
+/// configuration and plans the case on it, the text cases going on as they
+/// were.
+#[tokio::test]
+async fn an_old_text_run_with_a_repository_case_finishes_on_its_profile() {
+    let (dir, s, _) = setup().await;
+    let mut req = request(&s).await;
+    let text = req.version_ids[0].clone();
+    let mut draft = seed_definitions().remove(1);
+    draft.split = "train".into();
+    let d = s.store.save_draft(None, None, draft).await.unwrap();
+    let ledger = s.store.publish(&d.id, 1).await.unwrap().id;
+    req.version_ids.push(ledger.clone());
+    req.repetitions = 3;
+    req.max_executions = 6;
+    let native = req.configurations[0].clone();
+    let run = s.start_run(req).await.unwrap();
+    s.control(&run.id, "cancel").await.unwrap();
+    s.tick().await.unwrap();
+    assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelled");
+    // The second case turns out to be a repository case, as such cases were
+    // planned on the text configuration before.
+    let manifest: String =
+        sqlx::query_scalar("SELECT manifest_json FROM benchmark_versions WHERE id=?")
+            .bind(&ledger)
+            .fetch_one(&s.store.pool)
+            .await
+            .unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    manifest["evaluator"]["kind"] = json!(repository::EVALUATOR);
+    manifest["executionProfile"] = json!("protected_repository");
+    sqlx::query("UPDATE benchmark_versions SET manifest_json=?,content_hash='invented-repository' WHERE id=?")
+        .bind(manifest.to_string())
+        .bind(&ledger)
+        .execute(&s.store.pool)
+        .await
+        .unwrap();
+    let queued_on = |run: &BenchmarkRun, version: &str, profile: &str| {
+        run.attempts
+            .iter()
+            .filter(|a| {
+                a.version_id == version
+                    && a.phase == "pending"
+                    && a.configuration.execution_profile == profile
+            })
+            .count()
+    };
+    // Finish without the repository configuration changes nothing.
+    let refused = s.extend_run(&run.id, &[], &[]).await.unwrap_err();
+    assert!(
+        refused.message.contains("add the repository configuration"),
+        "{}",
+        refused.message
+    );
+    // Resume goes on with the text case and never queues the repository
+    // case on the text configuration.
+    s.control(&run.id, "resume").await.unwrap();
+    let resumed = s.store.run(&run.id).await.unwrap();
+    assert_eq!(queued_on(&resumed, &text, "native_text"), 3);
+    assert_eq!(queued_on(&resumed, &ledger, "native_text"), 0);
+    s.control(&run.id, "cancel").await.unwrap();
+    s.tick().await.unwrap();
+    // Finish takes the repository configuration and plans the case on it.
+    let finished = s
+        .extend_run(&run.id, &[], &[repository_configuration(&native)])
+        .await
+        .unwrap();
+    assert_eq!(finished.request.configurations.len(), 2);
+    assert_eq!(queued_on(&finished, &ledger, "protected_repository"), 3);
+    assert_eq!(queued_on(&finished, &ledger, "native_text"), 0);
+    assert_eq!(queued_on(&finished, &text, "native_text"), 3);
+    dir.close().await;
+}

@@ -932,13 +932,16 @@ impl BenchmarkService {
             .map(|a| (a.version_id.clone(), a.configuration.id.clone()))
             .collect();
         let mut request = join_configurations(&run.request, joining)?;
-        // Nothing changes until every added case has a configuration of its
-        // own profile.
-        let mut added = Vec::new();
-        for version_id in version_ids {
-            added.push(self.store.version(version_id).await?);
+        // Nothing changes until every case of the run, its own and the
+        // added ones, has a configuration of its profile: a run planned
+        // before it carried one per profile takes the missing one now.
+        let mut cases: Vec<BenchmarkVersion> = Vec::new();
+        for version_id in run.request.version_ids.iter().chain(version_ids) {
+            if !cases.iter().any(|v| &v.id == version_id) {
+                cases.push(self.store.version(version_id).await?);
+            }
         }
-        if let Some(gap) = profile_gaps(&added, &request.configurations)
+        if let Some(gap) = profile_gaps(&cases, &request.configurations)
             .into_iter()
             .next()
         {
@@ -947,11 +950,13 @@ impl BenchmarkService {
         if request.configurations.len() != run.request.configurations.len() {
             self.store.set_run_request(id, &request).await?;
         }
-        for version_id in version_ids {
-            let version = self.store.version(version_id).await?;
+        // Every case on each configuration that runs it and has no cell of it
+        // yet: the added cases, and the run's own on a joining profile.
+        for version in &cases {
+            let version_id = &version.id;
             for configuration in &request.configurations {
                 if planned.contains(&(version.id.clone(), configuration.id.clone()))
-                    || !owed(&request, &version, configuration)
+                    || !owed(&request, version, configuration)
                 {
                     continue;
                 }
@@ -969,7 +974,7 @@ impl BenchmarkService {
             if !request.version_ids.contains(version_id) {
                 request.version_ids.push(version_id.clone());
                 let mut tx = self.store.pool.begin().await?;
-                routing::persist_snapshot(&mut tx, &routing::snapshot(id, &version, &request))
+                routing::persist_snapshot(&mut tx, &routing::snapshot(id, version, &request))
                     .await?;
                 tx.commit().await?;
             }
@@ -1041,7 +1046,27 @@ impl BenchmarkService {
             }
         }
         let run = &self.store.run(&run.id).await?;
-        for (_, attempts) in analysis::run_cells(run) {
+        for ((version_id, _), attempts) in analysis::run_cells(run) {
+            // A cell planned on a configuration of another execution profile,
+            // before a run carried one per profile, never runs: its queued
+            // repetitions are set aside, and the case is measured on its own
+            // profile's configuration once the run has one.
+            let version = self.store.version(&version_id).await?;
+            if attempts
+                .first()
+                .is_some_and(|a| !fits(&version.manifest, &a.configuration))
+            {
+                for mut queued in attempts.into_iter().filter(|a| a.phase == "pending") {
+                    queued.phase = "terminal".into();
+                    queued.outcome = Some(analysis::SUPERSEDED.into());
+                    queued.reason = Some(
+                        "Planned on a configuration of another execution profile; the case runs on its own profile's configuration".into(),
+                    );
+                    queued.finished_at = Some(now());
+                    self.store.supersede_attempt(&queued).await?;
+                }
+                continue;
+            }
             let measured = attempts.iter().filter(|a| analysis::is_measured(a)).count() as u32;
             if measured >= planned || never_measured(&attempts) {
                 continue;
