@@ -13,7 +13,6 @@
 //!
 //! Kimi keeps its own sandbox-only grant (see the benchmark operations
 //! guide); it is never leased.
-#![allow(dead_code)]
 use crate::services::agent_host::execution::NativeProvider;
 use crate::services::provider_rate_limits::grok;
 use crate::services::{distill_root, provider_accounts};
@@ -36,7 +35,10 @@ const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 
 /// Whether `provider`'s sandbox sessions run on a lease of the app's sign-in.
 pub(crate) fn leased(provider: NativeProvider) -> bool {
-    provider != NativeProvider::Kimi
+    matches!(
+        provider,
+        NativeProvider::Claude | NativeProvider::Codex | NativeProvider::Grok
+    )
 }
 
 /// How long before a grant expires the app's own CLI for `provider` renews it
@@ -111,6 +113,7 @@ impl Lease {
         self.expires_at_ms
     }
 
+    #[cfg(test)]
     pub(crate) fn file_names(&self) -> Vec<&'static str> {
         self.files.keys().copied().collect()
     }
@@ -735,6 +738,6 @@ mod tests {
             until + grok::cli_renewal_window_ms() + MARGIN_MS
         );
         assert!(required_expiry(claude, i64::MAX) == i64::MAX);
-        assert!(leased(NativeProvider::Zai) && !leased(NativeProvider::Kimi));
+        assert!(leased(NativeProvider::Grok) && !leased(NativeProvider::Kimi));
     }
 }

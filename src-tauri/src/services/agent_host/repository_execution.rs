@@ -2,6 +2,7 @@
 use super::{
     bridge::OwnedLaunch,
     execution::{self, NativeProvider, OwnedSessionRequest},
+    text_execution,
 };
 use crate::services::benchmark_sandbox as sandbox;
 use base64::Engine;
@@ -37,9 +38,11 @@ pub(crate) async fn readiness(
             None => format!("capability_missing: {message}"),
         }
     })?;
-    status
-        .require_account(provider.key(), account)
-        .map_err(|error| format!("capability_missing: {error}"))?;
+    if text_execution::requires_sandbox_sign_in(provider) {
+        status
+            .require_account(provider.key(), account)
+            .map_err(|error| format!("capability_missing: {error}"))?;
+    }
     Ok(status)
 }
 

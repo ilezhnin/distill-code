@@ -7,7 +7,7 @@ use super::{
 };
 use crate::services::{
     agent_host::{execution::*, repository_execution, text_execution, AgentHost},
-    benchmark_sandbox as sandbox,
+    benchmark_sandbox as sandbox, credential_lease,
 };
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
@@ -1119,7 +1119,9 @@ async fn text_runtime_snapshot(
     let status = text_execution::readiness(provider, c.account_id.as_deref().unwrap_or_default())
         .await
         .map_err(host_error)?;
-    if let Some(timeout) = budget {
+    // A leased provider's credentials are the Distill grant `with_app_sign_in`
+    // checked; only a sandbox sign-in (Kimi) is checked here.
+    if let Some(timeout) = budget.filter(|_| !credential_lease::leased(provider)) {
         status
             .require_account_window(
                 provider.key(),
@@ -1150,7 +1152,9 @@ async fn repository_runtime_snapshot(
         repository_execution::readiness(provider, c.account_id.as_deref().unwrap_or_default())
             .await
             .map_err(host_error)?;
-    if let Some(timeout) = budget {
+    // A leased provider's credentials are the Distill grant `with_app_sign_in`
+    // checked; only a sandbox sign-in (Kimi) is checked here.
+    if let Some(timeout) = budget.filter(|_| !credential_lease::leased(provider)) {
         status
             .require_account_window(
                 provider.key(),
@@ -1163,55 +1167,103 @@ async fn repository_runtime_snapshot(
     Ok((repository_execution::revision(provider, &status), status))
 }
 
-/// How much longer than an attempt and its cleanup margin a renewed sandbox
-/// sign-in must last: the checks between the renewal and admission.
+/// How much longer than an attempt and its cleanup margin the Distill grant
+/// its lease is staged from must last: the checks between the renewal and
+/// admission.
 const RENEWAL_SLACK_MS: i64 = 60_000;
 
-/// Runs `admit`, an attempt's sandbox runtime and credential checks, which
-/// start no provider turn. When it refuses `c`'s account, or a renewal of the
-/// account's sandbox sign-in waits, the sign-in is renewed first and `admit`
-/// runs again (see `Inner::renew_sandbox_sign_in`). `budget` is the attempt's
-/// time limit in seconds, none for planning; the renewed sign-in must outlast
-/// it and the cleanup margin. With `drain`, an attempt whose own limit the
-/// sign-in still covers waits for a waiting renewal too. The admission rule
-/// stays `admit`'s own: a renewal never admits what it refuses.
-fn with_sign_in_renewal<'a, T, F, Fut>(
+/// The Distill sign-in an admitted attempt's lease is staged from: its
+/// provider, and when its grant expires (none: it does not). None for a
+/// provider that keeps its own sandbox sign-in (Kimi).
+type AppGrant = Option<(NativeProvider, Option<i64>)>;
+
+/// What the credentials of an admitted attempt last until: the Distill grant
+/// its lease is staged from, or the sandbox's own sign-in (Kimi).
+enum CredentialWindow {
+    Lease(NativeProvider, Option<i64>),
+    Sandbox(sandbox::Status),
+}
+
+impl CredentialWindow {
+    fn new(grant: AppGrant, status: sandbox::Status) -> Self {
+        match grant {
+            Some((provider, expiry)) => Self::Lease(provider, expiry),
+            None => Self::Sandbox(status),
+        }
+    }
+
+    /// Whether these credentials cover an attempt of `timeout_seconds` from
+    /// `now_ms` and its cleanup margin, for `provider`'s `account`.
+    fn require(
+        &self,
+        provider: &str,
+        account: &str,
+        now_ms: i64,
+        timeout_seconds: u32,
+    ) -> Result<()> {
+        let missing = |error: String| BenchmarkError::new("capability_missing", error);
+        match self {
+            Self::Sandbox(status) => status
+                .require_account_window(provider, account, now_ms, timeout_seconds)
+                .map_err(|error| missing(error.to_string())),
+            Self::Lease(native, expiry) => {
+                let deadline = sandbox::admission_deadline(now_ms, timeout_seconds)
+                    .map_err(|error| missing(error.to_string()))?;
+                if credential_lease::covers(*native, *expiry, deadline) {
+                    Ok(())
+                } else {
+                    Err(missing(
+                        "The Distill sign-in this test's lease comes from does not cover its time limit and cleanup margin; it is renewed before the next try".into(),
+                    ))
+                }
+            }
+        }
+    }
+}
+
+/// Runs `admit`, an attempt's sandbox runtime checks, which start no
+/// provider turn, once the Distill sign-in of `c`'s account lasts for the
+/// attempt: `budget` seconds (none for planning) and the cleanup margin,
+/// renewed first on Windows when it does not (see
+/// `Inner::renew_app_sign_in`). With `drain`, an attempt whose own limit the
+/// grant still covers waits for a waiting renewal too. Returns what `admit`
+/// returned and the grant its lease will be staged from; a provider that
+/// keeps its own sandbox sign-in (Kimi) runs `admit` alone, whose checks
+/// cover it.
+fn with_app_sign_in<'a, T, F, Fut>(
     host: &'a Arc<crate::services::agent_host::router::Inner>,
     c: &'a Configuration,
     budget: Option<u32>,
     drain: bool,
-    mut admit: F,
-) -> BoxFuture<'a, Result<T>>
+    admit: F,
+) -> BoxFuture<'a, Result<(T, AppGrant)>>
 where
     T: Send + 'a,
-    F: FnMut() -> Fut + Send + 'a,
+    F: FnOnce() -> Fut + Send + 'a,
     Fut: std::future::Future<Output = Result<T>> + Send + 'a,
 {
     Box::pin(async move {
-        if !NativeProvider::for_harness(&c.provider_id).is_some_and(text_execution::renews_sign_in)
-        {
-            return admit().await;
-        }
-        let account = c.account_id.as_deref().unwrap_or_default();
-        if !(drain && host.sandbox_sign_in_renewal_due(&c.provider_id, account)) {
-            match admit().await {
-                Err(error) if error.code == "capability_missing" => {}
-                admitted => return admitted,
-            }
-        }
+        let Some(provider) =
+            NativeProvider::for_harness(&c.provider_id).filter(|p| credential_lease::leased(*p))
+        else {
+            return admit().await.map(|admitted| (admitted, None));
+        };
         let until = match budget {
             Some(seconds) => sandbox::admission_deadline(now(), seconds)
                 .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?,
             None => now(),
         };
-        host.renew_sandbox_sign_in(
-            &c.provider_id,
-            account,
-            until.saturating_add(RENEWAL_SLACK_MS),
-        )
-        .await
-        .map_err(host_error)?;
-        admit().await
+        let expiry = host
+            .renew_app_sign_in(
+                &c.provider_id,
+                c.account_id.as_deref().unwrap_or_default(),
+                until.saturating_add(RENEWAL_SLACK_MS),
+                drain,
+            )
+            .await
+            .map_err(host_error)?;
+        let admitted = admit().await?;
+        Ok((admitted, Some((provider, expiry))))
     })
 }
 
@@ -3274,8 +3326,8 @@ impl NativeBackend {
                 judge.provider_id.as_str(),
                 account.as_str(),
             );
-            let offered =
-                with_sign_in_renewal(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
+            let (offered, _) =
+                with_app_sign_in(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
                     let (host, run, provider, account) = listing;
                     async move {
                         let listed = self
@@ -3293,11 +3345,12 @@ impl NativeBackend {
             }
         }
         let timeout = Duration::from_secs(u64::from(JUDGE_TIMEOUT_SECONDS));
-        let (_, credential_snapshot) =
-            with_sign_in_renewal(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
+        let ((_, status), grant) =
+            with_app_sign_in(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
                 text_runtime_snapshot(judge, Some(JUDGE_TIMEOUT_SECONDS))
             })
             .await?;
+        let credentials = CredentialWindow::new(grant, status);
         let judge_owner = format!("{}:judge:{batch}:{index}", attempt.id);
         let job = text_execution::attempt_id(&judge_owner);
         // The sandbox's cgroup leaf names no judge; this line maps it.
@@ -3344,16 +3397,14 @@ impl NativeBackend {
             return Ok(abstention);
         }
         let key = format!("benchmark:{}:judge:{batch}:{index}", attempt.id);
-        credential_snapshot
-            .require_account_window(
-                NativeProvider::for_harness(&judge.provider_id)
-                    .expect("validated judge")
-                    .key(),
-                judge.account_id.as_deref().unwrap_or_default(),
-                now(),
-                JUDGE_TIMEOUT_SECONDS,
-            )
-            .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?;
+        credentials.require(
+            NativeProvider::for_harness(&judge.provider_id)
+                .expect("validated judge")
+                .key(),
+            judge.account_id.as_deref().unwrap_or_default(),
+            now(),
+            JUDGE_TIMEOUT_SECONDS,
+        )?;
         let mut placeholder =
             judge_abstention(version, judge, batch, "Judge turn in flight".into());
         placeholder.details = Some(
@@ -3570,8 +3621,8 @@ impl NativeBackend {
 
 impl NativeBackend {
     /// Whether the sandbox can run `c`, for an attempt of `budget` seconds
-    /// (planning: none); a sandbox sign-in whose CLI can renew it is renewed
-    /// first when it is what refuses (see [`with_sign_in_renewal`]).
+    /// (planning: none), once the Distill sign-in its lease comes from lasts
+    /// for it (see [`with_app_sign_in`]).
     fn sandbox_readiness<'a>(
         &'a self,
         c: &'a Configuration,
@@ -3591,9 +3642,7 @@ impl NativeBackend {
                 }
                 Ok::<_, BenchmarkError>(())
             };
-            if !NativeProvider::for_harness(&c.provider_id)
-                .is_some_and(text_execution::renews_sign_in)
-            {
+            if !NativeProvider::for_harness(&c.provider_id).is_some_and(credential_lease::leased) {
                 return check().await;
             }
             let host = self
@@ -3602,7 +3651,9 @@ impl NativeBackend {
                 .get_or_start(&self.app)
                 .await
                 .map_err(host_error)?;
-            with_sign_in_renewal(&host, c, budget, false, check).await
+            with_app_sign_in(&host, c, budget, false, check)
+                .await
+                .map(|((), _)| ())
         })
     }
 
@@ -4800,7 +4851,7 @@ impl ExecutionBackend for NativeBackend {
                 .entry_state
                 .as_ref()
                 .is_some_and(|entry| entry.parent_step_id.is_some());
-            let (inventory, runtime_revision, credential_snapshot) = with_sign_in_renewal(
+            let ((inventory, runtime_revision, status), grant) = with_app_sign_in(
                 &host,
                 &attempt.configuration,
                 Some(timeout),
@@ -4817,6 +4868,7 @@ impl ExecutionBackend for NativeBackend {
                 },
             )
             .await?;
+            let credentials = CredentialWindow::new(grant, status);
             // The pin guards the account the run was planned on. A test the
             // run moved to another account (its usage limit ran out) runs on
             // that account's runtime, which lists that account's models, and
@@ -5016,20 +5068,16 @@ impl ExecutionBackend for NativeBackend {
                 // a newer shared refresh cannot extend that copy's lifetime.
                 // Check after the final awaited probe so its own latency
                 // cannot consume the original credential's cleanup margin.
-                credential_snapshot
-                    .require_account_window(
-                        provider.key(),
-                        attempt
-                            .configuration
-                            .account_id
-                            .as_deref()
-                            .unwrap_or_default(),
-                        now(),
-                        timeout_seconds,
-                    )
-                    .map_err(|error| {
-                        BenchmarkError::new("capability_missing", error.to_string())
-                    })?;
+                credentials.require(
+                    provider.key(),
+                    attempt
+                        .configuration
+                        .account_id
+                        .as_deref()
+                        .unwrap_or_default(),
+                    now(),
+                    timeout_seconds,
+                )?;
             }
             let credit = self
                 .credit_turn(&store.root, &attempt.configuration)

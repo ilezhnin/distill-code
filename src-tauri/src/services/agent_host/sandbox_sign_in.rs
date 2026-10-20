@@ -1,9 +1,9 @@
-//! When the host renews the sandbox sign-in of an account, and what waits for
-//! it.
+//! When the app renews the sign-in of an account a benchmark uses, and what
+//! waits for it.
 //!
-//! Every benchmark session in the sandbox starts on a private copy of its
-//! account's sign-in, and admission keeps each one inside the lifetime of
-//! that copy. A renewal replaces the account's grant and its refresh token,
+//! Every benchmark session in the sandbox starts on a lease of its account's
+//! Distill sign-in, and admission keeps each one inside the lifetime of that
+//! lease. A renewal replaces the account's grant and its refresh token,
 //! so it runs only while no session of the account is alive, and no session
 //! of the account starts while it runs. While running sessions keep a renewal
 //! waiting, new tests of the account wait as well, so the account drains
@@ -67,6 +67,7 @@ impl SignInRenewals {
     }
 
     /// Whether a renewal of `key` waits for its running sessions to end.
+    #[cfg(test)]
     pub(super) fn is_due(&self, key: &str) -> bool {
         self.with(key, |account| account.due.is_some())
     }
@@ -83,13 +84,6 @@ impl SignInRenewals {
     /// The renewal of `key` ran, whatever its result: nothing waits for it.
     pub(super) fn settle(&self, key: &str) {
         self.with(key, |account| account.due = None);
-    }
-
-    /// The renewal of `key`, for a grant that expires at `expiry`, could not
-    /// start yet (no sandbox lane was free): sessions of the account keep
-    /// waiting for it.
-    pub(super) fn defer(&self, key: &str, expiry: i64) {
-        self.with(key, |account| account.due = Some(expiry));
     }
 
     /// What a renewal of `key`'s grant that expires at `expiry` failed with,
@@ -221,14 +215,6 @@ mod tests {
         ));
         renewals.settle("grok\u{1f}a");
         assert!(!renewals.is_due("grok\u{1f}a"));
-        // A renewal that found no free lane keeps the account waiting, and
-        // runs with the next request once no session is alive.
-        renewals.defer("grok\u{1f}a", EXPIRY);
-        assert!(renewals.is_due("grok\u{1f}a"));
-        assert_eq!(
-            renewals.step("grok\u{1f}a", EXPIRY, EXPIRY - 1, 0),
-            Step::Renew
-        );
     }
 
     /// A renewal holds the gate alone: a session start waits for it, and a

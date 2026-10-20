@@ -1127,21 +1127,6 @@ impl Status {
         }
         Ok(())
     }
-
-    /// When the sandbox OAuth grant of `account` expires, for a grant whose
-    /// structure and expiry bench-auth reads, current or already expired:
-    /// one the provider's CLI can renew with the refresh token it keeps.
-    /// None for every other credential: an API key, a missing or unreadable
-    /// grant, or one whose expiry is unknown.
-    pub fn oauth_expiry(&self, provider: &str, account: &str) -> Option<i64> {
-        let health = self
-            .account_health
-            .get(&(provider.to_owned(), account.to_owned()))?;
-        if health.mode != "oauth" || !matches!(health.state.as_str(), "current" | "expired") {
-            return None;
-        }
-        health.expires_at_ms
-    }
 }
 
 /// The latest moment an attempt admitted at `now_ms` may still hold its
@@ -2205,60 +2190,35 @@ pub(crate) async fn store_api_key(account: &str, key: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// How long a Claude renewal may wait for a lane and run, as the broker's
-/// deadline: 300 s of queue, 120 s of CLI and 60 s for the WSL clock to drift
-/// by (the gate refuses one further off). The host waits a minute longer, so a
-/// renewal still queued ends as the broker's `resource_busy` (deferred), never
-/// as this call's own timeout (a stop).
-const RENEWAL_WINDOW: Duration = Duration::from_secs(510);
-const RENEWAL_HOST_TIMEOUT: Duration = Duration::from_secs(570);
-
-/// Renews the sandbox Claude sign-in of `account` from its own stored
-/// refresh token (`bench-login claude ACCOUNT --renew DEADLINE-MS`). The
-/// token never leaves the sandbox: the helper's login confinement reads it
-/// from the account's grant and hands it to `claude auth login` in its
-/// environment, and keeps the grant before it until the new one reads as a
-/// grant. The error names what to do: `resource_busy:` when the broker had no
-/// room (nothing ran), `needs bench-login:` when the provider refused the
-/// token or none is stored.
-pub(crate) async fn renew_claude_sign_in(account: &str) -> Result<(), String> {
-    valid_id(account).map_err(|error| error.to_string())?;
-    let deadline = now_ms().map_err(|error| error.to_string())? + RENEWAL_WINDOW.as_millis() as u64;
-    let deadline = deadline.to_string();
-    let out = invoke_raw(
-        "/usr/local/sbin/bench-login",
-        &["claude", account, "--renew", &deadline],
-        None,
-        TAIL_BYTES,
-        RENEWAL_HOST_TIMEOUT,
-        None,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    if out.success() {
-        // Readiness reads the renewed expiry now, not after the reuse window.
-        STATUS.forget();
-        return Ok(());
-    }
-    Err(claude_renewal_error(out.code, &out.reason()))
+/// The arguments of `bench-auth stage` for the lease of `provider` in
+/// attempt `id`: never a credential, which travels on standard input alone.
+fn stage_arguments<'a>(id: &'a str, provider: &'a str) -> [&'a str; 3] {
+    ["stage", id, provider]
 }
 
-/// What a refused `bench-login claude ACCOUNT --renew` tells its caller.
-fn claude_renewal_error(code: Option<i32>, reason: &str) -> String {
-    // The broker's queue lines come first; only the last says how it ended.
-    let last = reason
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default();
-    match code {
-        Some(65 | 66) => format!("needs bench-login: {reason}"),
-        _ if last.contains("resource_busy") || last.contains("resource_waiting") => {
-            format!("resource_busy: {reason}")
-        }
-        _ => reason.to_owned(),
-    }
+/// Stages `lease`, built from the Distill app's own sign-in, into attempt
+/// `id`'s private home, before its session starts (`bench-auth stage`). The
+/// lease travels on the helper's standard input only: never as an argument,
+/// a variable or in a diagnostic, which carries the helper's own short
+/// reason alone. The helper refuses a lease with a refresh token.
+pub(crate) async fn stage_lease(
+    id: &str,
+    lease: &crate::services::credential_lease::Lease,
+) -> io::Result<()> {
+    valid_id(id)?;
+    let mut input = lease.stage_input();
+    let staged = invoke_raw(
+        "/usr/local/sbin/bench-auth",
+        &stage_arguments(id, lease.provider().key()),
+        Some(&input),
+        TAIL_BYTES,
+        Duration::from_secs(60),
+        None,
+    )
+    .await;
+    crate::services::credential_lease::wipe(&mut input);
+    staged?.require_success("credential lease")?;
+    Ok(())
 }
 
 pub(crate) async fn copy(id: &str, archive: &[u8]) -> io::Result<()> {
@@ -2960,6 +2920,25 @@ impl Drop for Cleanup {
 mod tests {
     use super::*;
 
+    /// A lease reaches the sandbox on standard input alone: the helper's
+    /// arguments name the attempt and the provider, never a credential.
+    #[test]
+    fn a_lease_is_staged_on_standard_input_alone() {
+        let lease = crate::services::credential_lease::claude(
+            br#"{"claudeAiOauth":{"accessToken":"invented-access-token","expiresAt":1800000000000}}"#,
+            None,
+        )
+        .unwrap();
+        let args = stage_arguments("text-invented", lease.provider().key());
+        assert_eq!(args, ["stage", "text-invented", "claude"]);
+        let input: serde_json::Value = serde_json::from_slice(&lease.stage_input()).unwrap();
+        let encoded = input["files"][".credentials.json"].as_str().unwrap();
+        assert!(!args
+            .iter()
+            .any(|arg| arg.contains("invented") && *arg != "text-invented"));
+        assert!(!args.contains(&encoded));
+    }
+
     fn status() -> String {
         let mut lines: Vec<String> = FILES
             .iter()
@@ -3044,37 +3023,6 @@ mod tests {
             assert!(take_outcome_trailer(&mut stderr, &nonce).is_none(), "{text}");
             assert_eq!(stderr, text.into_bytes());
         }
-    }
-
-    #[test]
-    fn a_refused_claude_renewal_names_what_to_do() {
-        for code in [65, 66] {
-            assert!(claude_renewal_error(Some(code), "refused").starts_with("needs bench-login:"));
-        }
-        assert!(claude_renewal_error(
-            Some(75),
-            "resource_busy: the sandbox has no room for a login"
-        )
-        .starts_with("resource_busy:"));
-        assert_eq!(claude_renewal_error(Some(1), "other"), "other");
-        // A renewal that queued and then failed is a failure, not a wait.
-        let failed = "resource_waiting: benchmark queued for login capacity\n\
-            bench-login: the Claude renewal failed (OSError); the stored sign-in is kept";
-        assert_eq!(claude_renewal_error(Some(70), failed), failed);
-        assert!(claude_renewal_error(
-            Some(70),
-            "resource_waiting: benchmark queued for login capacity\n\
-             resource_busy: benchmark resource queue expired before execution"
-        )
-        .starts_with("resource_busy:"));
-    }
-
-    #[test]
-    fn a_queued_claude_renewal_ends_with_the_brokers_refusal_before_the_host_gives_up() {
-        // The broker's queue (300 s) and the CLI's own limit (120 s) fit the
-        // window, and the host outlasts it by more than a drifted WSL clock.
-        assert!(RENEWAL_WINDOW >= Duration::from_secs(300 + 120 + 60));
-        assert!(RENEWAL_HOST_TIMEOUT >= RENEWAL_WINDOW + Duration::from_secs(60));
     }
 
     #[test]
@@ -3713,43 +3661,9 @@ mod tests {
             .is_err());
     }
 
-    /// What a renewal may act on: a grant bench-auth reads, even an expired
-    /// one, whose refresh token the CLI still holds. The admission window
-    /// itself stays the one `require_account_window` computes.
+    /// The admission window: the attempt's time limit and the cleanup margin.
     #[test]
-    fn only_a_readable_oauth_grant_has_an_expiry_its_cli_can_renew() {
-        let base = status();
-        let health = |line: &str| {
-            parse_status(&format!(
-                "{base}\naccount grok account-1 no\naccount-health grok account-1 {line}"
-            ))
-            .unwrap()
-        };
-        assert_eq!(
-            health("oauth current 1800000900000").oauth_expiry("grok", "account-1"),
-            Some(1_800_000_900_000)
-        );
-        assert_eq!(
-            health("oauth expired 1700000000000").oauth_expiry("grok", "account-1"),
-            Some(1_700_000_000_000)
-        );
-        for line in [
-            "oauth unknown -",
-            "oauth current -",
-            "oauth missing -",
-            "oauth invalid -",
-            "unbounded unknown -",
-            "unknown invalid -",
-        ] {
-            assert_eq!(
-                health(line).oauth_expiry("grok", "account-1"),
-                None,
-                "{line}"
-            );
-        }
-        let signed = health("oauth current 1800000900000");
-        assert_eq!(signed.oauth_expiry("grok", "account-2"), None);
-        assert_eq!(signed.oauth_expiry("claude", "account-1"), None);
+    fn the_admission_deadline_adds_the_cleanup_margin() {
         assert_eq!(
             admission_deadline(1_800_000_000_000, 600).unwrap(),
             1_800_000_000_000 + 600_000 + 300_000

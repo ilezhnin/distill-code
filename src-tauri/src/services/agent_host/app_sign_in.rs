@@ -33,6 +33,11 @@ const RETRY_AFTER_FAILURE_MS: i64 = 15 * 60_000;
 
 /// How far ahead the keep-alive asks every grant to last: it renews a grant
 /// this long before its CLI's own window, whether or not a session runs.
+/// Why a test waits when the grant its lease would come from no longer lasts
+/// for it at the start: its next try renews the grant first.
+pub(crate) const APP_SIGN_IN_SHORT: &str =
+    "the Distill sign-in this test runs on is renewed before it starts";
+
 pub(crate) const KEEPALIVE_LEAD_MS: i64 = 30 * 60_000;
 
 /// How often the keep-alive looks at every app sign-in.
@@ -66,6 +71,7 @@ pub(super) async fn ensure(
     key: &str,
     provider: NativeProvider,
     until_ms: i64,
+    drain: bool,
     io: &mut impl RenewalIo,
 ) -> Result<Option<i64>, String> {
     let expiry = io
@@ -75,6 +81,11 @@ pub(super) async fn ensure(
         renewals.settle(key);
         return Ok(None);
     };
+    // A later step of work already running needs only a grant that lasts;
+    // new work also waits while the account drains for a renewal.
+    if !drain && credential_lease::covers(provider, Some(expiry), until_ms) {
+        return Ok(Some(expiry));
+    }
     let needed = credential_lease::required_expiry(provider, until_ms);
     let live = io.live_leases().await;
     match renewals.step(key, expiry, needed, live) {
@@ -204,15 +215,30 @@ mod tests {
     async fn a_grant_that_lasts_is_not_renewed() {
         let renewals = SignInRenewals::default();
         let mut io = Scripted::new(Some(NOW + 8 * HOUR), None);
-        let expiry = ensure(&renewals, KEY, NativeProvider::Claude, NOW + HOUR, &mut io)
-            .await
-            .unwrap();
+        let expiry = ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            NOW + HOUR,
+            true,
+            &mut io,
+        )
+        .await
+        .unwrap();
         assert_eq!(expiry, Some(NOW + 8 * HOUR));
         assert!(io.renewals.is_empty());
         // A key that does not expire never renews.
         let mut key = Scripted::new(None, None);
         assert_eq!(
-            ensure(&renewals, "zai", NativeProvider::Zai, i64::MAX, &mut key).await,
+            ensure(
+                &renewals,
+                "zai",
+                NativeProvider::Zai,
+                i64::MAX,
+                true,
+                &mut key
+            )
+            .await,
             Ok(None)
         );
         assert!(key.renewals.is_empty());
@@ -229,6 +255,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 2 * HOUR,
+            true,
             &mut early,
         )
         .await
@@ -238,7 +265,7 @@ mod tests {
         assert_eq!(early.retired, 1);
         for left in [credential_lease::CLAUDE_RENEWAL_WINDOW_MS, 0, -HOUR] {
             let mut late = Scripted::new(Some(NOW + left), Some(NOW + 8 * HOUR));
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, &mut late)
+            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut late)
                 .await
                 .unwrap();
             assert_eq!(late.renewals, [true], "{left}");
@@ -257,6 +284,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 2 * HOUR,
+            true,
             &mut busy,
         )
         .await
@@ -266,14 +294,28 @@ mod tests {
         assert!(renewals.is_due(KEY));
         // A short test the grant still covers waits as well.
         assert!(
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, &mut busy)
+            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut busy)
                 .await
                 .unwrap_err()
                 .starts_with("sign_in_wait:")
         );
+        // A later step of work already running goes on while its grant lasts.
+        assert_eq!(
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW,
+                false,
+                &mut busy
+            )
+            .await,
+            Ok(Some(NOW + HOUR))
+        );
+        assert!(renewals.is_due(KEY));
         busy.leases = 0;
         assert_eq!(
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, &mut busy).await,
+            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut busy).await,
             Ok(Some(NOW + 8 * HOUR))
         );
         assert_eq!(busy.renewals, [false]);
@@ -288,31 +330,58 @@ mod tests {
         let mut refused = Scripted::new(Some(NOW + HOUR), Some(NOW + 8 * HOUR));
         refused.outcome = Err("invented refusal".into());
         let until = NOW + 2 * HOUR;
-        let error = ensure(&renewals, KEY, NativeProvider::Claude, until, &mut refused)
-            .await
-            .unwrap_err();
+        let error = ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            until,
+            true,
+            &mut refused,
+        )
+        .await
+        .unwrap_err();
         assert!(error.starts_with("capability_missing:"), "{error}");
         assert!(error.contains("invented refusal") && error.contains("kept"));
         assert_eq!(refused.grant, Ok(Some(NOW + HOUR)));
         assert_eq!(refused.retired, 0);
-        let again = ensure(&renewals, KEY, NativeProvider::Claude, until, &mut refused)
-            .await
-            .unwrap_err();
+        let again = ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            until,
+            true,
+            &mut refused,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(again, error);
         assert_eq!(refused.renewals.len(), 1);
         assert!(!renewals.is_due(KEY));
         refused.now = NOW + RETRY_AFTER_FAILURE_MS;
-        let _ = ensure(&renewals, KEY, NativeProvider::Claude, until, &mut refused).await;
+        let _ = ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            until,
+            true,
+            &mut refused,
+        )
+        .await;
         assert_eq!(refused.renewals.len(), 2);
         // A grant that came back no longer is a failure too.
         let renewals = SignInRenewals::default();
         let mut stale = Scripted::new(Some(NOW + HOUR), None);
-        assert!(
-            ensure(&renewals, KEY, NativeProvider::Claude, until, &mut stale)
-                .await
-                .unwrap_err()
-                .contains("no newer grant")
-        );
+        assert!(ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            until,
+            true,
+            &mut stale
+        )
+        .await
+        .unwrap_err()
+        .contains("no newer grant"));
         // Another grant than the one that failed is renewed at once.
         let mut signed_in_again = Scripted::new(Some(NOW + HOUR + 1), Some(NOW + 8 * HOUR));
         assert!(ensure(
@@ -320,6 +389,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             until,
+            true,
             &mut signed_in_again
         )
         .await
@@ -333,7 +403,15 @@ mod tests {
         let mut missing = Scripted::new(None, None);
         missing.grant = Err("not signed in".to_owned());
         assert_eq!(
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, &mut missing).await,
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW,
+                true,
+                &mut missing
+            )
+            .await,
             Err("capability_missing: not signed in".into())
         );
         assert!(missing.renewals.is_empty());
@@ -351,6 +429,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + KEEPALIVE_LEAD_MS,
+            true,
             &mut idle,
         )
         .await
