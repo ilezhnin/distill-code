@@ -272,13 +272,25 @@ fn sandbox_account_route(profile: &str) -> bool {
 /// from before) is a busy refusal before any provider process started, so the
 /// test waits in the queue instead of stopping the run.
 fn stage_failure(error: &str) -> String {
-    const REFUSALS: &[&str] = &["refresh token", "invalid lease", "lease too large"];
-    if REFUSALS.iter().any(|refusal| error.contains(refusal)) {
-        format!("capability_missing: {error}")
-    } else {
+    // The helper names the error it stopped on; only these pass with a retry
+    // (a folder left from before goes with the attempt's next cleanup).
+    const TRANSIENT: &[&str] = &[
+        "FileExistsError",
+        "BlockingIOError",
+        "TimeoutError",
+        "InterruptedError",
+    ];
+    let transient = match error.split_once("bench-auth: ") {
+        Some((_, reason)) => TRANSIENT.iter().any(|name| reason.trim().starts_with(name)),
+        // Not the helper's own word: the WSL transport or a time limit.
+        None => true,
+    };
+    if transient {
         format!(
             "resource_busy: the sign-in for this test was not staged ({error}); it starts again"
         )
+    } else {
+        format!("capability_missing: {error}")
     }
 }
 
@@ -8400,6 +8412,8 @@ mod tests {
         for refused in [
             "Sandbox credential lease failed: bench-auth: a lease must never carry a refresh token",
             "Sandbox credential lease failed: bench-auth: invalid lease document",
+            "Sandbox credential lease failed: bench-auth: unsafe credential directory",
+            "Sandbox credential lease failed: bench-auth: PermissionError",
         ] {
             assert!(
                 stage_failure(refused).starts_with("capability_missing:"),

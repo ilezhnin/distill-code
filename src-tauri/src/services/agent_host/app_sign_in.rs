@@ -117,19 +117,15 @@ pub(super) async fn ensure(
             provider.key()
         ));
     }
-    let live = io.live_leases().await;
-    match renewals.step(key, expiry, needed, live) {
-        Step::Covered => return Ok(Some(expiry)),
-        Step::Wait => return Err(format!("sign_in_wait: {APP_SIGN_IN_DRAIN}")),
-        Step::Renew => {}
-    }
     let natural = io.now() >= expiry.saturating_sub(credential_lease::natural_window_ms(provider));
     // A forced renewal rotates the refresh token; a chat or CLI of the
     // account that still holds the old one could replay it. Whether each CLI
     // reads its store again before it refreshes is not verified, so a forced
     // renewal waits until none of them runs. A renewal in the CLI's own window
     // is the refresh every CLI of the account would make anyway.
-    if !natural {
+    // Checked before the drain: a renewal that cannot run yet must not make
+    // the account drain for it.
+    if !natural && !lasts {
         let others = io.other_holders().await;
         if others > 0 {
             renewals.settle(key);
@@ -137,12 +133,20 @@ pub(super) async fn ensure(
                 "[agent-host] the Distill {} sign-in of {key} renews once its {others} chat or CLI process(es) stop",
                 provider.key()
             );
-            return if lasts {
-                Ok(Some(expiry))
-            } else {
-                Err(format!("sign_in_wait: {APP_SIGN_IN_HELD}"))
-            };
+            return Err(format!("sign_in_wait: {APP_SIGN_IN_HELD}"));
         }
+    }
+    let live = io.live_leases().await;
+    match renewals.step(key, expiry, needed, live) {
+        Step::Covered => return Ok(Some(expiry)),
+        Step::Wait => return Err(format!("sign_in_wait: {APP_SIGN_IN_DRAIN}")),
+        Step::Renew => {}
+    }
+    // A grant that still lasts renews only for a drain other waiters asked
+    // for; that renewal waits for the same holders, and the drain ends.
+    if !natural && lasts && io.other_holders().await > 0 {
+        renewals.settle(key);
+        return Ok(Some(expiry));
     }
     log::info!(
         "[agent-host] renewing the Distill {} sign-in of {key}{}",
@@ -564,6 +568,9 @@ mod tests {
         let renewals = SignInRenewals::default();
         let mut held = Scripted::new(Some(NOW + HOUR), Some(NOW + 8 * HOUR));
         held.holders = 1;
+        // Live leases do not make the account drain for a renewal that
+        // cannot run yet.
+        held.leases = 2;
         assert_eq!(
             ensure(
                 &renewals,
@@ -590,6 +597,7 @@ mod tests {
             .unwrap();
         assert_eq!(late.renewals, [true]);
         held.holders = 0;
+        held.leases = 0;
         ensure(
             &renewals,
             KEY,
