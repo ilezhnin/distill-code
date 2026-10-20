@@ -11746,6 +11746,37 @@ mod tests {
         assert_eq!(history[0].run_id, old.id);
         dir.close().await;
     }
+    /// A run holds every attempt it planned, however many: a full suite at
+    /// three repetitions is over a thousand, and the run, the analyses and
+    /// a resume read all of them.
+    #[tokio::test]
+    async fn a_run_of_more_than_a_thousand_attempts_loads_whole() {
+        let (dir, s, _) = setup().await;
+        let mut req = request(&s).await;
+        req.repetitions = 3;
+        req.max_executions = 3;
+        let run = s.start_run(req).await.unwrap();
+        let first = run.attempts[0].clone();
+        for repetition in 3..1103 {
+            s.store
+                .insert_attempt(&super::super::pending_attempt(
+                    &run.id,
+                    &first.version_id,
+                    &first.configuration,
+                    repetition,
+                ))
+                .await
+                .unwrap();
+        }
+        let loaded = s.store.run(&run.id).await.unwrap();
+        assert_eq!(loaded.attempts.len(), 1103);
+        assert_eq!(loaded.attempts.last().unwrap().repetition, 1102);
+        let every = s.store.all_runs().await.unwrap();
+        assert_eq!(every[0].attempts.len(), 1103);
+        let data = s.query_data().await.unwrap();
+        assert_eq!(data.runs[0].attempts.len(), 1103);
+        dir.close().await;
+    }
     #[tokio::test]
     async fn sealing_and_restarting_preserve_superseded_evidence() {
         let (dir, s, _) = setup().await;
