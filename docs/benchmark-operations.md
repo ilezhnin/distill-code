@@ -427,10 +427,11 @@ nothing; `bench-status` names each as `grant-left <provider> <account>` until
 moves them to `/var/lib/distill-bench/retired-grants/<date>/`, root's alone. It
 never deletes or overwrites; delete that folder once it is checked.
 
-Admission requires the app's grant to cover the complete attempt, five minutes
-for cleanup, the CLI's own renewal window (Claude: its last five minutes; Grok:
-the window its chat bridge starts with) and two more minutes, so a lease never
-runs while the app's own CLIs renew the grant. A grant that falls short is
+Admission requires the app's grant to cover the complete attempt, nine
+minutes for its start and cleanup, the CLI's own renewal window (Claude: its
+last five minutes; Grok: the window its chat bridge starts with) and two more
+minutes, so a lease never runs while the app's own CLIs renew the grant. A
+grant that falls short is
 renewed on Windows first, in the account's own home: Claude through its pinned
 CLI from the stored refresh token (the grant before it is kept until the CLI
 left a longer one), Codex through its native account read with a refresh, Grok

@@ -1168,9 +1168,12 @@ async fn repository_runtime_snapshot(
 }
 
 /// How much longer than an attempt and its cleanup margin the Distill grant
-/// its lease is staged from must last: the checks between the renewal and
-/// admission.
-const RENEWAL_SLACK_MS: i64 = 60_000;
+/// its lease is staged from must last: the session's own start margin (its
+/// lease must cover the turn and 480 s, see `Inner::ensure_execution_bridge`,
+/// 180 s more than the cleanup margin) and a minute for the checks between
+/// the renewal and the start, so a test admitted here is never refused at
+/// staging.
+const RENEWAL_SLACK_MS: i64 = 240_000;
 
 /// The Distill sign-in an admitted attempt's lease is staged from: its
 /// provider, and when its grant expires (none: it does not). None for a

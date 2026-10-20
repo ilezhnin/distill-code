@@ -7428,7 +7428,10 @@ impl Inner {
                 chrono::Utc::now().timestamp_millis(),
                 120,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            // The listing session's lease must cover 120 s and its 480 s
+            // start margin, plus a minute for the checks before it starts.
+            .saturating_add(240_000);
             self.renew_app_sign_in(provider, account, until, true)
                 .await?;
             let status = text_execution::readiness(native, account).await?;
