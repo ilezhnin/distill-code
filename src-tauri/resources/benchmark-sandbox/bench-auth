@@ -1,5 +1,12 @@
 #!/usr/bin/python3
-"""Prepare private CLI homes; retain only changed OAuth files after a stop.
+"""Stage credential leases and private CLI homes; retain only changed Kimi
+OAuth files after a stop.
+
+Claude, Codex and Grok sessions run on a lease: the host builds it from the
+Distill app's own sign-in, with no refresh token, and pipes it to
+`bench-auth stage ATTEMPT PROVIDER` on standard input before the session
+starts. Nothing a leased session writes is ever saved back; the app is the
+only process that refreshes those grants.
 
 A Z.ai account holds one API key that Distill copied in with bench-login.
 Attempts get a private copy and nothing they write is ever saved back.
@@ -10,6 +17,7 @@ conflict record, root's alone, and the save still succeeds, so the attempt's
 cleanup goes on. bench-status reports an account with records as
 `account-conflict PROVIDER ACCOUNT COUNT` until the operator removes them.
 """
+import base64
 import fcntl
 import hashlib
 import json
@@ -30,6 +38,15 @@ LIMIT = 1024 * 1024
 CONFLICTS = Path("/var/lib/distill-bench/auth-conflicts")
 # Records of one account that also keep the refreshed grant itself.
 CONFLICT_EVIDENCE = 20
+# Providers whose sessions run on a lease the host stages, and the files a
+# lease of each may hold: its first one is required.
+LEASED = {
+    "claude": (".credentials.json", ".claude.json"),
+    "codex": ("auth.json",),
+    "grok": ("auth.json",),
+}
+CLAUDE_GRANT = {"accessToken", "expiresAt", "scopes", "subscriptionType", "rateLimitTier"}
+GROK_ENTRY = {"key", "auth_mode", "create_time", "expires_at", "user_id", "email"}
 
 
 def regular_bytes(path):
@@ -71,6 +88,128 @@ def account_path(value):
     return path
 
 
+def account_selector(value):
+    """A leased session's account folder names its provider and egress only:
+    it holds no grant and need not exist."""
+    path = Path(value)
+    relative = path.relative_to(ACCOUNTS)
+    if (len(relative.parts) != 2
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", relative.parts[0])
+            or relative.parts[1] not in LEASED):
+        raise ValueError("invalid sandbox account")
+    return path
+
+
+def refresh_token_free(value):
+    """Refuses a document that carries a refresh token anywhere: a field named
+    for one, in any spelling, that is not empty."""
+    if isinstance(value, dict):
+        for key, field in value.items():
+            if re.sub(r"[-_]", "", str(key)).lower() == "refreshtoken" and field not in (None, ""):
+                raise ValueError("a lease must never carry a refresh token")
+            refresh_token_free(field)
+    elif isinstance(value, list):
+        for item in value:
+            refresh_token_free(item)
+
+
+def lease_document(provider, name, data):
+    """One file of a lease, checked against its provider's shape: what the
+    host's builder writes and nothing more."""
+    value = credential_json(data)
+    refresh_token_free(value)
+    shaped = False
+    if provider == "claude" and name == ".credentials.json":
+        grant = value.get("claudeAiOauth")
+        shaped = (set(value) == {"claudeAiOauth"} and isinstance(grant, dict)
+                  and set(grant) <= CLAUDE_GRANT
+                  and isinstance(grant.get("accessToken"), str) and grant["accessToken"] != "")
+    elif provider == "claude":
+        shaped = set(value) <= {"oauthAccount", "userID"}
+    elif provider == "codex":
+        tokens = value.get("tokens")
+        shaped = (set(value) <= {"OPENAI_API_KEY", "tokens", "last_refresh"}
+                  and value.get("OPENAI_API_KEY") is None and isinstance(tokens, dict)
+                  and set(tokens) <= {"id_token", "access_token", "refresh_token", "account_id"}
+                  and tokens.get("refresh_token", "") == ""
+                  and isinstance(tokens.get("access_token"), str) and tokens["access_token"] != "")
+    elif provider == "grok":
+        shaped = bool(value) and all(
+            isinstance(entry, dict) and set(entry) <= GROK_ENTRY
+            and not any(isinstance(field, (dict, list)) for field in entry.values())
+            for entry in value.values())
+    if not shaped:
+        raise ValueError("invalid lease document")
+    return data
+
+
+def write_exclusive(path, data):
+    """A new file, never through a link or over another file: 0600, owned by
+    the candidate."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+        os.fchown(output.fileno(), CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+
+
+def stage(provider):
+    """Writes the lease the host built from the app's own sign-in into this
+    attempt's private home: read from standard input alone, refused if any
+    file carries a refresh token, staged once per attempt. Its receipt
+    records no original, so a save imports nothing."""
+    import shutil
+    if provider not in LEASED:
+        raise ValueError("invalid lease provider")
+    data = sys.stdin.buffer.read(LIMIT + 1)
+    if len(data) > LIMIT:
+        raise ValueError("lease too large")
+    request = credential_json(data)
+    files = request.get("files")
+    names = LEASED[provider]
+    if (set(request) != {"files"} or not isinstance(files, dict)
+            or not set(files) <= set(names) or names[0] not in files):
+        raise ValueError("invalid lease")
+    documents = {}
+    for name, encoded in files.items():
+        if not isinstance(encoded, str):
+            raise ValueError("invalid lease")
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            raise ValueError("invalid lease") from None
+        documents[name] = lease_document(provider, name, decoded)
+    # An attempt is staged once: a folder left from before is refused.
+    directory.mkdir(mode=0o700)
+    try:
+        home = directory / "home"
+        home.mkdir(mode=0o700)
+        os.chown(home, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
+        for name, document in documents.items():
+            write_exclusive(home / name, document)
+        replace_private(directory / "receipt.json",
+                        json.dumps({"leased": provider, "originals": {}}).encode())
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
+def leased_prepare(value):
+    """A leased session starts only on the lease staged for its attempt."""
+    provider = account_selector(value).name
+    receipt = directory / "receipt.json"
+    home = directory / "home"
+    try:
+        staged = json.loads(regular_bytes(receipt))
+        info = home.lstat()
+    except FileNotFoundError:
+        raise ValueError("no credential lease is staged for this attempt") from None
+    if (staged.get("leased") != provider or staged.get("originals") != {}
+            or not stat.S_ISDIR(info.st_mode) or info.st_uid != CANDIDATE.pw_uid):
+        raise ValueError("no credential lease is staged for this attempt")
+
+
 def replace_private(path, data):
     """write_private by rename, so a stopped writer leaves the old file or
     the new one, never half of one."""
@@ -92,6 +231,9 @@ def write_private(path, data, candidate=False):
 
 
 def prepare(value):
+    if Path(value).name in LEASED:
+        leased_prepare(value)
+        return
     account = account_path(value)
     provider = account.name
     directory.mkdir(mode=0o700)
@@ -407,6 +549,9 @@ def settle(receipt_file):
     except FileNotFoundError:
         # Another cleanup of the same attempt removed it: nothing to save.
         return
+    if receipt.get("leased"):
+        # A lease is never saved back: the app keeps the only grant.
+        return
     account = account_path(receipt["account"])
     failures = []
     pending = []
@@ -478,9 +623,11 @@ try:
     directory = ROOT / attempt
     with open("/run/lock/distill-bench-auth", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if action == "prepare":
+        if action == "prepare" and len(sys.argv) == 4:
             prepare(sys.argv[3])
-        elif action == "save":
+        elif action == "stage" and len(sys.argv) == 4:
+            stage(sys.argv[3])
+        elif action == "save" and len(sys.argv) == 3:
             save()
         else:
             raise ValueError("invalid operation")

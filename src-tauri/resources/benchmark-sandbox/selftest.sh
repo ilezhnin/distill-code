@@ -108,6 +108,7 @@ rm -rf /tmp/selftest-cached /tmp/selftest-cached.tar "/srv/bench/cache/$tree.tar
 # invented accounts. It never executes the helper's Linux command entrypoint.
 python3 - /usr/local/sbin/bench-auth <<'BENCH_AUTH_UNIT_TESTS'
 import ast
+import base64
 import contextlib
 from datetime import datetime, timezone
 import hashlib
@@ -135,9 +136,17 @@ class TestOS:
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
-scope = dict(Path=Path, os=TestOS(), stat=stat, json=json, re=re,
+scope = dict(Path=Path, os=TestOS(), stat=stat, json=json, re=re, base64=base64,
              hashlib=hashlib, tomllib=tomllib, LIMIT=1024 * 1024, CONFLICT_EVIDENCE=20,
              CANDIDATE=types.SimpleNamespace(pw_uid=0, pw_gid=0))
+# The helper's literal constants (provider tables), as the helper defines them.
+for node in ast.parse(source).body:
+    if (isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name) and node.targets[0].id.isupper()):
+        try:
+            scope.setdefault(node.targets[0].id, ast.literal_eval(node.value))
+        except ValueError:
+            pass
 exec(compile(ast.Module(body=functions, type_ignores=[]), "bench-auth-functions", "exec"), scope)
 
 
@@ -174,8 +183,14 @@ class CredentialTests(unittest.TestCase):
         return account, target
 
     def prepare(self, account, target, attempt, document):
+        # An attempt on an account's own sandbox grant, as prepare leaves
+        # one for Kimi: a copy and the digest of the original it may save
+        # back. The save rules are the same for every document.
         scope["directory"] = scope["ROOT"] / attempt
-        scope["prepare"](str(account))
+        (scope["directory"] / "home").mkdir(parents=True)
+        receipt = {"account": str(account),
+                   "originals": {target.name: scope["digest"](target.read_bytes())}}
+        (scope["directory"] / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
         path = scope["directory"] / "home" / target.name
         path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -531,26 +546,186 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(output.getvalue().splitlines()[-1], "account-identity claude invented-account - -")
 
 
+def lease_input(files):
+    """What the host pipes to `bench-auth stage`: each file base64-encoded."""
+    encoded = {name: base64.b64encode(document if isinstance(document, bytes)
+                                      else json.dumps(document).encode()).decode()
+               for name, document in files.items()}
+    return types.SimpleNamespace(buffer=io.BytesIO(json.dumps({"files": encoded}).encode()))
+
+
+class LeaseTests(unittest.TestCase):
+    """Leases of the app's sign-in: staged from standard input, never with a
+    refresh token, never saved back."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name).resolve()
+        scope["ROOT"] = root / "attempts"
+        scope["ACCOUNTS"] = root / "accounts"
+        scope["CONFLICTS"] = root / "conflicts"
+        scope["ROOT"].mkdir()
+        # Staged files are the candidate's: here, whoever runs the tests.
+        self.candidate = scope["CANDIDATE"]
+        scope["CANDIDATE"] = types.SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+
+    def tearDown(self):
+        scope["CANDIDATE"] = self.candidate
+        self.temporary.cleanup()
+
+    def stage(self, attempt, provider, files):
+        scope["directory"] = scope["ROOT"] / attempt
+        scope["sys"] = types.SimpleNamespace(stdin=lease_input(files))
+        scope["stage"](provider)
+
+    def grant(self):
+        return {"claudeAiOauth": {"accessToken": "invented-access",
+                                  "expiresAt": (int(time.time()) + 3600) * 1000,
+                                  "scopes": ["user:inference"]}}
+
+    def test_a_lease_is_staged_privately_and_never_saved_back(self):
+        self.stage("leased", "claude", {".credentials.json": self.grant(),
+                                        ".claude.json": {"oauthAccount": {"accountUuid": "invented"}}})
+        directory = scope["ROOT"] / "leased"
+        home = directory / "home"
+        self.assertEqual(json.loads((home / ".credentials.json").read_text()), self.grant())
+        for path, mode in ((directory, 0o700), (home, 0o700),
+                           (home / ".credentials.json", 0o600), (home / ".claude.json", 0o600)):
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode, path)
+        self.assertEqual(json.loads((directory / "receipt.json").read_text()),
+                         {"leased": "claude", "originals": {}})
+        # The account folder only selects the provider: it need not exist.
+        scope["prepare"](str(scope["ACCOUNTS"] / "invented-account" / "claude"))
+        # Whatever the session leaves is never imported anywhere.
+        (home / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "changed", "refreshToken": "minted", "expiresAt": 1}}))
+        scope["save"]()
+        self.assertFalse(scope["ACCOUNTS"].exists())
+        self.assertFalse(scope["CONFLICTS"].exists())
+        # An attempt is staged once.
+        with self.assertRaises(FileExistsError):
+            self.stage("leased", "claude", {".credentials.json": self.grant()})
+
+    def test_a_refresh_token_is_refused_in_every_lease(self):
+        cases = [
+            ("claude", {".credentials.json": {"claudeAiOauth": {
+                "accessToken": "a", "refreshToken": "invented-refresh"}}}),
+            ("claude", {".credentials.json": self.grant(),
+                        ".claude.json": {"oauthAccount": {"refresh_token": "invented-refresh"}}}),
+            ("codex", {"auth.json": {"tokens": {"access_token": "a",
+                                                "refresh_token": "invented-refresh"}}}),
+            ("grok", {"auth.json": {"https://auth.x.ai": {
+                "key": "a", "Refresh-Token": "invented-refresh"}}}),
+        ]
+        for index, (provider, files) in enumerate(cases):
+            with self.subTest(provider=provider, index=index):
+                with self.assertRaises(ValueError) as refused:
+                    self.stage(f"refused{index}", provider, files)
+                self.assertNotIn("invented-refresh", str(refused.exception))
+                self.assertFalse((scope["ROOT"] / f"refused{index}").exists())
+
+    def test_a_lease_holds_its_providers_shape_alone(self):
+        cases = [
+            ("claude", {"auth.json": self.grant()}),
+            ("claude", {".claude.json": {}}),
+            ("claude", {".credentials.json": {"claudeAiOauth": {"accessToken": "a", "other": 1}}}),
+            ("claude", {".credentials.json": {"claudeAiOauth": {"accessToken": ""}}}),
+            ("codex", {"auth.json": {"OPENAI_API_KEY": "invented", "tokens": {"access_token": "a"}}}),
+            ("codex", {"auth.json": {"tokens": {"access_token": "a", "extra": "b"}}}),
+            ("grok", {"auth.json": {"https://auth.x.ai": {"key": "a", "nested": {}}}}),
+            ("grok", {"auth.json": {}}),
+            ("kimi", {"credentials": {}}),
+            ("claude", {".credentials.json": b"not json"}),
+        ]
+        for index, (provider, files) in enumerate(cases):
+            with self.subTest(provider=provider, index=index):
+                with self.assertRaises(ValueError):
+                    self.stage(f"shape{index}", provider, files)
+                self.assertFalse((scope["ROOT"] / f"shape{index}").exists())
+        scope["directory"] = scope["ROOT"] / "encoding"
+        scope["sys"] = types.SimpleNamespace(stdin=types.SimpleNamespace(buffer=io.BytesIO(
+            json.dumps({"files": {"auth.json": "not base64!"}}).encode())))
+        with self.assertRaises(ValueError):
+            scope["stage"]("codex")
+        # Valid leases of every provider pass.
+        self.stage("codex", "codex", {"auth.json": {"OPENAI_API_KEY": None, "tokens": {
+            "id_token": "i", "access_token": "a", "refresh_token": ""}, "last_refresh": "x"}})
+        self.stage("grok", "grok", {"auth.json": {"https://auth.x.ai": {
+            "key": "a", "auth_mode": "oidc", "expires_at": "2030-01-01T00:00:00Z"}}})
+
+    def test_a_leased_session_needs_its_staged_lease(self):
+        scope["directory"] = scope["ROOT"] / "unstaged"
+        with self.assertRaises(ValueError):
+            scope["prepare"](str(scope["ACCOUNTS"] / "invented-account" / "codex"))
+        self.stage("other", "grok", {"auth.json": {"https://auth.x.ai": {"key": "a"}}})
+        # A lease staged for another provider does not serve.
+        with self.assertRaises(ValueError):
+            scope["prepare"](str(scope["ACCOUNTS"] / "invented-account" / "codex"))
+        with self.assertRaises(ValueError):
+            scope["prepare"](str(scope["ACCOUNTS"] / "invented account" / "grok"))
+        scope["prepare"](str(scope["ACCOUNTS"] / "invented-account" / "grok"))
+
+    def test_staged_files_never_follow_a_link(self):
+        outside = Path(self.temporary.name) / "outside"
+        outside.write_text("kept")
+        link = Path(self.temporary.name) / "link"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            self.skipTest("symbolic links need privileges on this host")
+        with self.assertRaises(OSError):
+            scope["write_exclusive"](link, b"invented")
+        self.assertEqual(outside.read_text(), "kept")
+
+
 unittest.main(argv=["bench-auth-selftest"])
 BENCH_AUTH_UNIT_TESTS
 [[ $? == 0 ]] || failed=1
 auth_account=$(mktemp -d /home/candidate/accounts/selftest-auth-XXXXXXXX)
-auth_home=$auth_account/codex
-install -d -m 700 -o candidate -g candidate "$auth_home"
-printf '{"token":"original"}\n' >"$auth_home/auth.json"
-printf 'previous answer\n' >"$auth_home/history.txt"
-chown candidate:candidate "$auth_home/auth.json" "$auth_home/history.txt"
-check "account history is not mounted" "$(run session selftest-a "DISTILL_BENCH_ACCOUNT_HOME=$auth_home" -- bash -c '
+auth_id=$(basename "$auth_account")
+# Claude, Codex and Grok sessions run on a lease the host stages from the
+# Distill app's own sign-in: read from standard input alone, never with a
+# refresh token, never saved back. The account folder only selects the
+# provider; it holds no grant and need not exist.
+lease() { python3 -c 'import base64, json, sys
+files = json.loads(sys.argv[1])
+print(json.dumps({"files": {name: base64.b64encode(json.dumps(document).encode()).decode()
+                            for name, document in files.items()}}))' "$1"; }
+codex_lease=$(lease '{"auth.json":{"OPENAI_API_KEY":null,"tokens":{"id_token":"invented-id","access_token":"invented-access","refresh_token":""},"last_refresh":"2026-01-01T00:00:00Z"}}')
+/usr/local/sbin/bench-copy selftest-lease </tmp/selftest.tar >/dev/null
+check "a lease is read from standard input alone" "$(printf '%s' "$codex_lease" | /usr/local/sbin/bench-auth stage selftest-lease codex extra >/dev/null 2>&1; echo $?)" 70
+check "a lease with a refresh token is refused" "$(lease '{"auth.json":{"tokens":{"id_token":"i","access_token":"a","refresh_token":"invented-refresh"}}}' | /usr/local/sbin/bench-auth stage selftest-lease codex >/dev/null 2>&1; echo $?)$(test -e /srv/bench/auth/selftest-lease && echo left)" 70
+check "a leased session needs its staged lease" "$(run session selftest-lease "DISTILL_BENCH_ACCOUNT_HOME=$auth_account/codex" -- true && echo ran)" ""
+printf '%s' "$codex_lease" | /usr/local/sbin/bench-auth stage selftest-lease codex
+check "a lease is staged once" "$(printf '%s' "$codex_lease" | /usr/local/sbin/bench-auth stage selftest-lease codex >/dev/null 2>&1; echo $?)" 70
+check "a staged lease is the candidate's alone" "$(stat -c '%U %a' /srv/bench/auth/selftest-lease /srv/bench/auth/selftest-lease/home /srv/bench/auth/selftest-lease/home/auth.json | tr '\n' ' ')" "root 700 candidate 700 candidate 600 "
+check "a session runs on its staged lease" "$(run session selftest-lease "DISTILL_BENCH_ACCOUNT_HOME=$auth_account/codex" -- bash -c '
+  grep -o invented-access /tmp/provider/auth.json
+  printf "{\"tokens\":{\"refresh_token\":\"minted\"}}" >/tmp/provider/auth.json')" invented-access
+/usr/local/sbin/bench-kill session selftest-lease
+check "a lease is never saved back" "$(/usr/local/sbin/bench-clean selftest-lease >/dev/null 2>&1; echo $?; ls -A "$auth_account")" 0
+
+# Kimi keeps its own sandbox sign-in: a session gets a private copy of its
+# credentials, and only a refreshed credential file is saved back.
+kimi_home=$auth_account/kimi
+kimi_file=credentials/kimi-code.json
+install -d -m 700 -o candidate -g candidate "$kimi_home" "$kimi_home/credentials"
+printf 'default_provider = "test"\n' >"$kimi_home/config.toml"
+printf '{"access_token":"original","refresh_token":"original","expires_at":100}\n' >"$kimi_home/$kimi_file"
+printf 'previous answer\n' >"$kimi_home/history.txt"
+chown candidate:candidate "$kimi_home/config.toml" "$kimi_home/$kimi_file" "$kimi_home/history.txt"
+kimi_token() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["access_token"])' "$1"; }
+check "account history is not mounted" "$(run session selftest-a "DISTILL_BENCH_ACCOUNT_HOME=$kimi_home" -- bash -c '
   test ! -e /tmp/provider/history.txt || exit 1
   printf marker >/tmp/provider/previous-attempt
-  printf "{\"token\":\"refreshed\"}\n" >/tmp/provider/auth.json
+  printf "{\"access_token\":\"refreshed\",\"refresh_token\":\"refreshed\",\"expires_at\":200}\n" >/tmp/provider/credentials/kimi-code.json
   echo private
 ')" private
 /usr/local/sbin/bench-kill session selftest-a
 /usr/local/sbin/bench-clean selftest-a
-check "OAuth refresh survives a stopped attempt" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$auth_home/auth.json")" refreshed
-check "arbitrary provider files are not persisted" "$(test -e "$auth_home/previous-attempt" && echo leaked)" ""
-check "next attempt cannot read previous state" "$(run session selftest-b "DISTILL_BENCH_ACCOUNT_HOME=$auth_home" -- bash -c '
+check "OAuth refresh survives a stopped attempt" "$(kimi_token "$kimi_home/$kimi_file")" refreshed
+check "arbitrary provider files are not persisted" "$(test -e "$kimi_home/previous-attempt" && echo leaked)" ""
+check "next attempt cannot read previous state" "$(run session selftest-b "DISTILL_BENCH_ACCOUNT_HOME=$kimi_home" -- bash -c '
   test ! -e /tmp/provider/history.txt && test ! -e /tmp/provider/previous-attempt && echo private
 ')" private
 /usr/local/sbin/bench-kill session selftest-b
@@ -558,33 +733,29 @@ check "next attempt cannot read previous state" "$(run session selftest-b "DISTI
 # A stale or linked credential must never overwrite the selected account. The
 # save keeps it in a conflict record for the operator and the attempt is
 # still removed.
-auth_id=$(basename "$auth_account")
 conflicts=/var/lib/distill-bench/auth-conflicts/$auth_id
-/usr/local/sbin/bench-auth prepare selftest-auth-a "$auth_home"
-/usr/local/sbin/bench-auth prepare selftest-auth-b "$auth_home"
-printf '{"token":"first"}\n' >/srv/bench/auth/selftest-auth-a/home/auth.json
-printf '{"token":"second"}\n' >/srv/bench/auth/selftest-auth-b/home/auth.json
+/usr/local/sbin/bench-auth prepare selftest-auth-a "$kimi_home"
+/usr/local/sbin/bench-auth prepare selftest-auth-b "$kimi_home"
+printf '{"access_token":"first","expires_at":300}\n' >"/srv/bench/auth/selftest-auth-a/home/$kimi_file"
+printf '{"access_token":"second","expires_at":300}\n' >"/srv/bench/auth/selftest-auth-b/home/$kimi_file"
 /usr/local/sbin/bench-auth save selftest-auth-a
 check "concurrent refresh settles without an overwrite" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?)" 0
-check "the other refresh is kept for the operator" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$conflicts/codex/selftest-auth-b/evidence/auth.json")" second
-check "conflict records are root's alone" "$(stat -c '%u %a' /var/lib/distill-bench/auth-conflicts "$conflicts/codex/selftest-auth-b/conflict.json" | tr '\n' ' ')" "0 700 0 600 "
-check "status reports the conflicted account" "$(/usr/local/sbin/bench-status 2>/dev/null | grep -c "^account-conflict codex $auth_id 1$")" 1
-rm /srv/bench/auth/selftest-auth-b/home/auth.json
-ln -s "$auth_home/auth.json" /srv/bench/auth/selftest-auth-b/home/auth.json
-check "credential links are recorded, never followed" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?) $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["files"][0]["reason"])' "$conflicts/codex/selftest-auth-b/conflict.json")" "0 unsafe refreshed credential path"
-check "refused refresh preserves the newer credential" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$auth_home/auth.json")" first
+check "the other refresh is kept for the operator" "$(kimi_token "$conflicts/kimi/selftest-auth-b/evidence/$kimi_file")" second
+check "conflict records are root's alone" "$(stat -c '%u %a' /var/lib/distill-bench/auth-conflicts "$conflicts/kimi/selftest-auth-b/conflict.json" | tr '\n' ' ')" "0 700 0 600 "
+check "status reports the conflicted account" "$(/usr/local/sbin/bench-status 2>/dev/null | grep -c "^account-conflict kimi $auth_id 1$")" 1
+rm "/srv/bench/auth/selftest-auth-b/home/$kimi_file"
+ln -s "$kimi_home/$kimi_file" "/srv/bench/auth/selftest-auth-b/home/$kimi_file"
+check "credential links are recorded, never followed" "$(/usr/local/sbin/bench-auth save selftest-auth-b >/dev/null 2>&1; echo $?) $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["files"][0]["reason"])' "$conflicts/kimi/selftest-auth-b/conflict.json")" "0 unsafe refreshed credential path"
+check "refused refresh preserves the newer credential" "$(kimi_token "$kimi_home/$kimi_file")" first
 check "a conflicted attempt is still removed" "$(/usr/local/sbin/bench-clean selftest-auth-b >/dev/null 2>&1; echo $?)$(test -e /srv/bench/auth/selftest-auth-b && echo kept)" 0
 # A save that fails outright keeps the attempt's copy aside and says so.
-/usr/local/sbin/bench-auth prepare selftest-auth-c "$auth_home"
+/usr/local/sbin/bench-auth prepare selftest-auth-c "$kimi_home"
 printf 'invented {' >/srv/bench/auth/selftest-auth-c/receipt.json
 check "a failed save keeps the attempt's copy aside" "$(/usr/local/sbin/bench-clean selftest-auth-c >/dev/null 2>&1; echo $?) $(test -d /srv/bench/auth-unsaved/selftest-auth-c && echo kept)$(test -e /srv/bench/auth/selftest-auth-c && echo left)" "70 kept"
 check "status counts copies kept aside" "$(/usr/local/sbin/bench-status 2>/dev/null | grep -c '^auth-unsaved [1-9][0-9]*$')" 1
 rm -rf /srv/bench/auth/selftest-auth-a /srv/bench/auth/selftest-auth-b /srv/bench/auth-unsaved/selftest-auth-c* "$conflicts"
 
-kimi_home=$auth_account/kimi
-install -d -m 700 -o candidate -g candidate "$kimi_home/credentials"
-printf 'default_provider = "test"\n' >"$kimi_home/config.toml"
-printf '{"access_token":"original","refresh_token":"original","expires_at":100}\n' >"$kimi_home/credentials/kimi-code.json"
+printf '{"access_token":"original","refresh_token":"original","expires_at":100}\n' >"$kimi_home/$kimi_file"
 for item in a b; do /usr/local/sbin/bench-auth prepare "selftest-kimi-$item" "$kimi_home"; done
 printf '{"access_token":"older","refresh_token":"older","expires_at":200}\n' >/srv/bench/auth/selftest-kimi-a/home/credentials/kimi-code.json
 printf '{"access_token":"newer","refresh_token":"newer","expires_at":300}\n' >/srv/bench/auth/selftest-kimi-b/home/credentials/kimi-code.json
@@ -603,15 +774,15 @@ for item in a b; do /usr/local/sbin/bench-clean "selftest-kimi-$item"; done
 # A sign-in or account service sees the one account home it names, writable,
 # over an empty /home and a read-only root; every other account stays hidden.
 login_other=$(mktemp -d /home/candidate/accounts/selftest-other-XXXXXXXX)
-login() { run login selftest-login "DISTILL_BENCH_LOGIN_HOME=$auth_home" "CODEX_HOME=$auth_home" -- "$@"; }
+login() { run login selftest-login "DISTILL_BENCH_LOGIN_HOME=$kimi_home" "KIMI_CODE_HOME=$kimi_home" -- "$@"; }
 check "a sign-in sees its account home alone" "$(login bash -c 'ls -A /home/candidate/accounts /home/candidate/accounts/*' | tr '\n' ' ')" \
-  "/home/candidate/accounts: $auth_id  /home/candidate/accounts/$auth_id: codex "
-check "a sign-in writes its account home" "$(login bash -c 'printf signed >"$CODEX_HOME/selftest-login"'; cat "$auth_home/selftest-login" 2>/dev/null)" signed
+  "/home/candidate/accounts: $auth_id  /home/candidate/accounts/$auth_id: kimi "
+check "a sign-in writes its account home" "$(login bash -c 'printf signed >"$KIMI_CODE_HOME/selftest-login"'; cat "$kimi_home/selftest-login" 2>/dev/null)" signed
 check "a sign-in runs on a read-only root" "$(login awk '$5 == "/" {split($6, o, ","); print o[1]}' /proc/self/mountinfo)" ro
 check "a sign-in home is temporary" "$(login bash -c 'touch ~/.selftest-login && echo ok'; test -e /home/candidate/.selftest-login && echo kept)" ok
 check "a login home must be an account home" "$(run login selftest-login DISTILL_BENCH_LOGIN_HOME=/home/candidate -- true && echo ran)" ""
-check "a session cannot name a login home" "$(run session selftest-a "DISTILL_BENCH_LOGIN_HOME=$auth_home" -- true && echo ran)" ""
-rm -f "$auth_home/selftest-login"
+check "a session cannot name a login home" "$(run session selftest-a "DISTILL_BENCH_LOGIN_HOME=$kimi_home" -- true && echo ran)" ""
+rm -f "$kimi_home/selftest-login"
 rm -rf "$login_other"
 
 # Z.ai: an invented key, piped in as the host pipes the real one.
