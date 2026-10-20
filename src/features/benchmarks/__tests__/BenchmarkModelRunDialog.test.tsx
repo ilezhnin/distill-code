@@ -768,7 +768,11 @@ it("finishes a stopped run inside its window, adding the tests it lacks, instead
     screen.queryByRole("button", { name: "Start" }),
   ).not.toBeInTheDocument();
   await user.click(finish);
-  expect(benchmarkApi.extendRun).toHaveBeenCalledWith("run-2", ["version-4"]);
+  expect(benchmarkApi.extendRun).toHaveBeenCalledWith(
+    "run-2",
+    ["version-4"],
+    [],
+  );
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
 });
 
@@ -918,6 +922,157 @@ it("owes exactly what the board names incomplete, a carried cell included", asyn
       "checkbox",
     ),
   ).not.toBeChecked();
+});
+
+/** Today's inventory lists the model on both profiles. */
+function bothProfiles(repositoryRevision = "repository-now") {
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration: { ...configuration, inventoryRevision: "runtime-now" },
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: true,
+      available: true,
+      reason: null,
+    },
+    {
+      configuration: {
+        ...configuration,
+        id: "config-1-repository",
+        executionProfile: "protected_repository",
+        inventoryRevision: repositoryRevision,
+      },
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: true,
+      available: true,
+      reason: null,
+    },
+  ]);
+}
+
+/** A live repository test. */
+function repositoryTest(index: number, name: string): BenchmarkDefinition {
+  const base = test(index, name, "repository");
+  return {
+    ...base,
+    versions: [
+      {
+        ...base.versions[0],
+        manifest: {
+          ...base.versions[0].manifest,
+          executionProfile: "protected_repository",
+        },
+      },
+    ],
+  };
+}
+
+it("starts a mixed suite with one configuration per profile", async () => {
+  const user = userEvent.setup();
+  bothProfiles();
+  show({ definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")] });
+  const start = await screen.findByRole("button", { name: "Start" });
+  await waitFor(() => expect(start).toBeEnabled());
+  await user.click(start);
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
+  const request = vi.mocked(benchmarkApi.startRun).mock.calls[0][0];
+  expect(
+    request.configurations.map((entry) => [
+      entry.executionProfile,
+      entry.inventoryRevision,
+    ]),
+  ).toEqual([
+    ["native_text", "runtime-now"],
+    ["protected_repository", "repository-now"],
+  ]);
+  expect(request.versionIds).toEqual(
+    expect.arrayContaining(["version-1", "version-2"]),
+  );
+});
+
+it("starts text tests alone on the text configuration", async () => {
+  const user = userEvent.setup();
+  bothProfiles();
+  show({ definitions: [test(1, "Alpha"), test(3, "Charlie")] });
+  const start = await screen.findByRole("button", { name: "Start" });
+  await waitFor(() => expect(start).toBeEnabled());
+  await user.click(start);
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
+  const request = vi.mocked(benchmarkApi.startRun).mock.calls[0][0];
+  expect(request.configurations.map((entry) => entry.executionProfile)).toEqual(
+    ["native_text"],
+  );
+});
+
+it("says why a repository test cannot start when the model has no repository configuration", async () => {
+  show({ definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")] });
+  expect(
+    await screen.findByText(
+      /Test model on repository tasks|model-1 on repository tasks/,
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+});
+
+it("finishes a text run with repository tests by bringing the repository configuration in", async () => {
+  const user = userEvent.setup();
+  bothProfiles();
+  // A stopped text run that measured Alpha; the Ledger test joins it.
+  const stopped = stoppedRun("needs_attention", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+  ]);
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(stopped.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(stopped.summaries);
+  vi.mocked(benchmarkApi.extendRun).mockResolvedValue({
+    ...stopped.run,
+    state: "running",
+  });
+  show({
+    runId: "run-2",
+    definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
+  });
+  const finish = await screen.findByRole("button", { name: "Finish run" });
+  await waitFor(() => expect(finish).toBeEnabled());
+  await user.click(finish);
+  expect(benchmarkApi.extendRun).toHaveBeenCalledWith(
+    "run-2",
+    ["version-2"],
+    [
+      expect.objectContaining({
+        executionProfile: "protected_repository",
+        inventoryRevision: "repository-now",
+      }),
+    ],
+  );
+});
+
+it("stops a run whose repository configuration went stale", async () => {
+  bothProfiles("repository-newer");
+  const paused = stoppedRun("paused", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-2", outcome: null, score: null },
+  ]);
+  paused.run.request.configurations = [
+    ...paused.run.request.configurations,
+    {
+      ...configuration,
+      id: "config-1-repository",
+      executionProfile: "protected_repository",
+      inventoryRevision: "repository-now",
+    },
+  ];
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(paused.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(paused.summaries);
+  show({
+    runId: "run-2",
+    definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
+  });
+  expect(
+    await screen.findByText(/made for an older sandbox or CLI version/),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
 });
 
 it("waits for today's inventory before offering to resume a paused run", async () => {

@@ -18,7 +18,13 @@ import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Label } from "@/shared/ui/label";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
-import { resolveCatchUpConfiguration, stalePin } from "../lib/benchmarkCatchUp";
+import {
+  EXECUTION_PROFILES,
+  type ExecutionProfile,
+  executionProfileOf,
+  resolveCatchUpConfiguration,
+  stalePin,
+} from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
 import { currentVersions, isRankedSplit } from "../lib/benchmarkReleases";
@@ -36,6 +42,7 @@ import type {
   BenchmarkDefinitionSummary,
   BenchmarkVersionSummary,
   Configuration,
+  InventoryModel,
   LeaderboardRow,
   RunRequest,
 } from "../types";
@@ -132,21 +139,59 @@ export function BenchmarkModelRunDialog({
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 0,
   });
-  const resolution = inventory.data
-    ? resolveCatchUpConfiguration(configuration, inventory.data)
-    : null;
-  const pinned =
-    resolution && "configuration" in resolution
+  // Each test runs on the model's configuration of its execution profile:
+  // a text case on its text configuration, a repository case on its
+  // repository one, both as today's inventory lists them.
+  const resolutions = useMemo(
+    () =>
+      inventory.data
+        ? new Map(
+            EXECUTION_PROFILES.map((executionProfile) => [
+              executionProfile,
+              resolveCatchUpConfiguration(
+                { ...configuration, executionProfile },
+                inventory.data,
+              ),
+            ]),
+          )
+        : null,
+    [inventory.data, configuration],
+  );
+  const pinnedFor = (profile: ExecutionProfile): Configuration | null => {
+    const resolution = resolutions?.get(profile);
+    return resolution && "configuration" in resolution
       ? resolution.configuration
       : null;
+  };
+  const profilesOf = (versions: readonly BenchmarkVersionSummary[]) =>
+    EXECUTION_PROFILES.filter((profile) =>
+      versions.some(
+        (version) => executionProfileOf(version.manifest) === profile,
+      ),
+    );
+  // The configurations a set of tests needs, one per profile; none while a
+  // needed profile has no configuration today.
+  const configurationsFor = (
+    versions: readonly BenchmarkVersionSummary[],
+  ): Configuration[] | null => {
+    const needed = profilesOf(versions).map(pinnedFor);
+    return needed.length > 0 && needed.every((entry) => entry != null)
+      ? (needed as Configuration[])
+      : null;
+  };
+  // Whatever the model can run today orders the plan.
+  const listed = EXECUTION_PROFILES.flatMap((profile) => {
+    const entry = pinnedFor(profile);
+    return entry ? [entry] : [];
+  });
   const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
   const requestFor = (
     versions: BenchmarkVersionSummary[],
-    candidate: Configuration,
+    configurations: Configuration[],
   ): RunRequest => ({
     requestKey,
     versionIds: versions.map((version) => version.id),
-    configurations: [candidate],
+    configurations,
     repetitions: REQUIRED_REPETITIONS,
     timeoutSeconds: runTimeLimitSeconds(versions),
     maxExecutions: Math.max(1, plannedTurns(versions) * REQUIRED_REPETITIONS),
@@ -175,12 +220,11 @@ export function BenchmarkModelRunDialog({
     queryKey: [
       "benchmark-model-run-order",
       requestKey,
-      pinned?.id ?? null,
+      listed.map((entry) => entry.id),
       eligible.map((version) => version.id),
     ],
-    queryFn: () =>
-      benchmarkApi.previewRun(requestFor(eligible, pinned as Configuration)),
-    enabled: pinned != null && eligible.length > 0 && mine.length === 0,
+    queryFn: () => benchmarkApi.previewRun(requestFor(eligible, listed)),
+    enabled: listed.length > 0 && eligible.length > 0 && mine.length === 0,
     staleTime: Number.POSITIVE_INFINITY,
   });
   const ordered = useMemo(() => {
@@ -330,14 +374,16 @@ export function BenchmarkModelRunDialog({
   );
   // The run was planned on a runtime the inventory no longer lists (an
   // older sandbox or CLI): the runner refuses every further test of it.
-  const runConfiguration =
-    run.data?.request.configurations.find((entry) =>
-      sameConfiguration(entry, configuration),
-    ) ?? null;
+  // A run of both profiles carries both configurations: either one stale
+  // stops it.
+  const runConfigurations = (run.data?.request.configurations ?? []).filter(
+    (entry) => sameConfiguration(entry, configuration),
+  );
   const outdatedPin =
-    runConfiguration != null &&
     inventory.data != null &&
-    stalePin(runConfiguration, inventory.data);
+    runConfigurations.some((entry) =>
+      stalePin(entry, inventory.data as InventoryModel[]),
+    );
   // A run that can no longer go on, its window closed or its runtime gone,
   // with tests it did not finish, is over: it says so, it can only be
   // stopped, and a new run takes what the model still owes.
@@ -447,10 +493,11 @@ export function BenchmarkModelRunDialog({
     const tests = ordered.filter(
       (version) => isChecked(version.id) || (all && eligible.includes(version)),
     );
-    if (!pinned || tests.length === 0) return;
+    const configurations = configurationsFor(tests);
+    if (!configurations || tests.length === 0) return;
     setBusy(true);
     setError(null);
-    const request = requestFor(tests, pinned);
+    const request = requestFor(tests, configurations);
     try {
       const check = await benchmarkApi.previewRun(request);
       if (!check.valid) {
@@ -504,14 +551,34 @@ export function BenchmarkModelRunDialog({
   // A run that has not finished is steered here: paused, resumed or stopped.
   const runState = run.data?.state ?? null;
   const steering = runState != null && !FINISHED_RUN.has(runState);
+  // A test of a profile the run does not carry brings the model's
+  // configuration of that profile into the same run; none while that
+  // profile has no configuration today.
+  const joiningFor = (
+    tests: readonly BenchmarkVersionSummary[],
+  ): Configuration[] | null => {
+    const carried = new Set(
+      runConfigurations.map((entry) => entry.executionProfile),
+    );
+    const joining = profilesOf(tests)
+      .filter((profile) => !carried.has(profile))
+      .map(pinnedFor);
+    return joining.every((entry) => entry != null)
+      ? (joining as Configuration[])
+      : null;
+  };
   const finish = async (all = false) => {
     if (!runId) return;
+    const tests = all ? missing : added;
+    const joining = joiningFor(tests);
+    if (!joining) return;
     setBusy(true);
     setError(null);
     try {
       await benchmarkApi.extendRun(
         runId,
-        (all ? missing : added).map((version) => version.id),
+        tests.map((version) => version.id),
+        joining,
       );
       void client.invalidateQueries({ queryKey: benchmarkKeys });
     } catch (failure) {
@@ -551,18 +618,28 @@ export function BenchmarkModelRunDialog({
               {benchmarkErrorMessage(inventory.error)}
             </BenchmarkAlert>
           ) : null}
-          {resolution && "issue" in resolution ? (
-            <BenchmarkAlert>
-              {resolution.issue === "unavailable"
-                ? (resolution.reason ?? t("states.unsupported"))
-                : t(
-                    resolution.issue === "missing"
-                      ? "run.catchUpMissing"
-                      : "run.catchUpChanged",
-                    { model: name },
-                  )}
-            </BenchmarkAlert>
-          ) : null}
+          {/* Each profile the checked tests need and today's inventory
+              cannot run says why; Start waits for it. */}
+          {profilesOf(chosen).map((profile) => {
+            const resolution = resolutions?.get(profile);
+            if (!resolution || !("issue" in resolution)) return null;
+            const model =
+              profile === "protected_repository"
+                ? t("modelRun.repositoryProfile", { model: name })
+                : name;
+            return (
+              <BenchmarkAlert key={profile}>
+                {resolution.issue === "unavailable"
+                  ? (resolution.reason ?? t("states.unsupported"))
+                  : t(
+                      resolution.issue === "missing"
+                        ? "run.catchUpMissing"
+                        : "run.catchUpChanged",
+                      { model },
+                    )}
+              </BenchmarkAlert>
+            );
+          })}
           {finishing && run.data ? (
             <p className="text-sm text-muted-foreground">
               {t("modelRun.finishHint", {
@@ -750,6 +827,7 @@ export function BenchmarkModelRunDialog({
                   disabled={
                     busy ||
                     pinUnknown ||
+                    joiningFor(added) == null ||
                     (cells.left === 0 && added.length === 0)
                   }
                   onClick={() => void finish()}
@@ -768,8 +846,11 @@ export function BenchmarkModelRunDialog({
                   variant="outline"
                   disabled={
                     busy ||
-                    (!finishing &&
-                      (!pinned || resolvingStanding || resolvingRun))
+                    (finishing
+                      ? joiningFor(missing) == null
+                      : !configurationsFor(eligible) ||
+                        resolvingStanding ||
+                        resolvingRun)
                   }
                   onClick={() => void (finishing ? finish(true) : start(true))}
                 >
@@ -783,6 +864,7 @@ export function BenchmarkModelRunDialog({
                   disabled={
                     busy ||
                     pinUnknown ||
+                    joiningFor(added) == null ||
                     (cells.left === 0 && added.length === 0)
                   }
                   onClick={() => void finish()}
@@ -795,7 +877,7 @@ export function BenchmarkModelRunDialog({
                   variant="primary"
                   disabled={
                     busy ||
-                    !pinned ||
+                    !configurationsFor(chosen) ||
                     resolvingStanding ||
                     resolvingRun ||
                     chosen.length === 0

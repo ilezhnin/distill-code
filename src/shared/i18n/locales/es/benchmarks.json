@@ -383,7 +383,8 @@
     "allMeasuredHint": "Cada prueba actual tiene una medición completa en el tablero, aprobada o fallada. Usa Medir todo de nuevo solo para repetirla, con su coste completo.",
     "outdatedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar: reanudarla o completarla solo sería rechazado. Detenla; después Iniciar mide en una nueva ejecución las {{owed}} pruebas que el tablero aún debe.",
     "outdatedStoppedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar. Las {{owed}} pruebas que el tablero aún debe están marcadas; Iniciar las mide en una nueva ejecución.",
-    "measureAll": "Medir todo de nuevo ({{attempts}} intentos)"
+    "measureAll": "Medir todo de nuevo ({{attempts}} intentos)",
+    "repositoryProfile": "{{model}} en tareas de repositorio"
   },
   "runs": {
     "title": "Ejecuciones e historial",

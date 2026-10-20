@@ -94,12 +94,89 @@ pub(super) fn judge_execution_count(draft: &BenchmarkDraft) -> usize {
         .map_or(runner::MAX_JUDGES, |panel| panel.len())
 }
 
-/// A plan owes every cell, its candidate's own cases included, unless it was
-/// admitted before author cells were measured: such a plan never owed the
-/// cases its candidate helped write.
+/// Whether `configuration` runs `case` at all: a repository case runs only on
+/// a protected_repository configuration and a bounded text case only on a
+/// native_text one, so one run of a model carries one configuration per
+/// profile and pairs each case with its own. Other profiles pair as before.
+fn fits(case: &BenchmarkDraft, configuration: &Configuration) -> bool {
+    match configuration.execution_profile.as_str() {
+        "native_text" => !repository::is_repository_case(case),
+        "protected_repository" => repository::is_repository_case(case),
+        _ => true,
+    }
+}
+
+/// A plan owes every cell of a case on a configuration that runs it, its
+/// candidate's own cases included, unless it was admitted before author
+/// cells were measured: such a plan never owed the cases its candidate
+/// helped write.
 fn owed(request: &RunRequest, version: &BenchmarkVersion, configuration: &Configuration) -> bool {
-    request.measures_author_cells()
-        || !routing::authored_by_candidate(&version.manifest, configuration)
+    fits(&version.manifest, configuration)
+        && (request.measures_author_cells()
+            || !routing::authored_by_candidate(&version.manifest, configuration))
+}
+
+/// The cells a plan creates, in its seeded order: every repetition of every
+/// owed pair, so each case runs only on the configuration of its profile.
+fn planned_cells(
+    request: &RunRequest,
+    versions: &[BenchmarkVersion],
+) -> Result<Vec<(String, Configuration, u32)>> {
+    let by_id: HashMap<&str, &BenchmarkVersion> =
+        versions.iter().map(|v| (v.id.as_str(), v)).collect();
+    Ok(randomized_matrix(request)?
+        .into_iter()
+        .filter(|(version, configuration, _)| {
+            by_id
+                .get(version.as_str())
+                .is_some_and(|v| owed(request, v, configuration))
+        })
+        .collect())
+}
+
+/// The cases no configuration of their profile can run, named for the operator.
+fn profile_gaps(versions: &[BenchmarkVersion], configurations: &[Configuration]) -> Vec<String> {
+    versions
+        .iter()
+        .filter(|v| !configurations.iter().any(|c| fits(&v.manifest, c)))
+        .map(|v| {
+            format!(
+                "{}: add the {} configuration of this model to run this case",
+                v.manifest.name,
+                if repository::is_repository_case(&v.manifest) {
+                    "repository"
+                } else {
+                    "native text"
+                }
+            )
+        })
+        .collect()
+}
+
+/// `request` with `joining` added: the same model on execution profiles the
+/// run does not have yet, so cases of those profiles can join it.
+fn join_configurations(request: &RunRequest, joining: &[Configuration]) -> Result<RunRequest> {
+    let mut joined = request.clone();
+    for configuration in joining {
+        let same_model = request.configurations.iter().any(|c| {
+            c.provider_id == configuration.provider_id
+                && c.account_id == configuration.account_id
+                && c.model_id == configuration.model_id
+                && c.effort == configuration.effort
+                && c.fast_mode.unwrap_or(false) == configuration.fast_mode.unwrap_or(false)
+        });
+        let taken = joined.configurations.iter().any(|c| {
+            c.execution_profile == configuration.execution_profile || c.id == configuration.id
+        });
+        if !same_model || taken {
+            return Err(BenchmarkError::new(
+                "validation",
+                "A run takes another configuration only for the same model on an execution profile it does not have yet",
+            ));
+        }
+        joined.configurations.push(configuration.clone());
+    }
+    Ok(joined)
 }
 
 /// Executions a plan owes: every owed cell's turns and judge reservation, per repetition.
@@ -435,7 +512,9 @@ impl BenchmarkService {
                 .iter()
                 .any(|c| !versions.iter().any(|v| owed(request, v, c)))
         {
-            issues.push("A configuration authored every selected case and owes none".into());
+            issues.push(
+                "A configuration owes none of the selected cases: its candidate authored them, or they run on another execution profile".into(),
+            );
         }
         // Quota and capacity batches are retired; a version published for one
         // measures nothing the boards read.
@@ -556,12 +635,15 @@ impl BenchmarkService {
         for version in &versions {
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest)
                 .await?;
-            for config in workers {
+            // Only the pairs the run plans are checked.
+            for config in workers.iter().filter(|c| fits(&version.manifest, c)) {
                 if let Some(reason) = self.backend.unsupported(config, &version.manifest) {
                     issues.push(reason);
                 }
             }
         }
+        // A case no configuration of its profile runs is named once.
+        issues.extend(profile_gaps(&versions, workers));
         issues.sort();
         issues.dedup();
         let mut seen = std::collections::HashSet::new();
@@ -645,23 +727,10 @@ impl BenchmarkService {
             versions.push(self.store.version(version_id).await?);
         }
         let path = self.store.root.join("runs").join(&id);
-        // Only a plan admitted before author cells were measured leaves them out.
-        let authored: BTreeSet<(&str, &str)> = versions
-            .iter()
-            .flat_map(|v| {
-                request
-                    .configurations
-                    .iter()
-                    .filter(|c| !owed(&request, v, c))
-                    .map(|c| (v.id.as_str(), c.id.as_str()))
-            })
-            .collect();
-        let cells: Vec<_> = randomized_matrix(&request)?
-            .into_iter()
-            .filter(|(version, configuration, _)| {
-                !authored.contains(&(version.as_str(), configuration.id.as_str()))
-            })
-            .collect();
+        // Only a plan admitted before author cells were measured leaves the
+        // cases its candidate wrote out, and no plan pairs a case with a
+        // configuration of another execution profile.
+        let cells = planned_cells(&request, &versions)?;
         let mut manifest = serde_json::to_value(&request)?;
         manifest["executionOrder"] = serde_json::json!({
             "algorithm": MATRIX_ORDER_ALGORITHM,
@@ -819,7 +888,15 @@ impl BenchmarkService {
         self.changed().await;
         self.store.run(id).await
     }
-    pub async fn extend_run(&self, id: &str, version_ids: &[String]) -> Result<BenchmarkRun> {
+    /// `joining` adds the configuration of another execution profile of the
+    /// same model, for added cases no configuration of the run can run: a
+    /// repository case joining a run of text cases, or the reverse.
+    pub async fn extend_run(
+        &self,
+        id: &str,
+        version_ids: &[String],
+        joining: &[Configuration],
+    ) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
         self.store
             .require_current_versions(&run.request.version_ids)
@@ -854,12 +931,27 @@ impl BenchmarkService {
             .iter()
             .map(|a| (a.version_id.clone(), a.configuration.id.clone()))
             .collect();
-        let mut request = run.request.clone();
+        let mut request = join_configurations(&run.request, joining)?;
+        // Nothing changes until every added case has a configuration of its
+        // own profile.
+        let mut added = Vec::new();
+        for version_id in version_ids {
+            added.push(self.store.version(version_id).await?);
+        }
+        if let Some(gap) = profile_gaps(&added, &request.configurations)
+            .into_iter()
+            .next()
+        {
+            return Err(BenchmarkError::new("validation", gap));
+        }
+        if request.configurations.len() != run.request.configurations.len() {
+            self.store.set_run_request(id, &request).await?;
+        }
         for version_id in version_ids {
             let version = self.store.version(version_id).await?;
-            for configuration in &run.request.configurations {
+            for configuration in &request.configurations {
                 if planned.contains(&(version.id.clone(), configuration.id.clone()))
-                    || !owed(&run.request, &version, configuration)
+                    || !owed(&request, &version, configuration)
                 {
                     continue;
                 }
@@ -882,7 +974,9 @@ impl BenchmarkService {
                 tx.commit().await?;
             }
         }
-        if request.version_ids != run.request.version_ids {
+        if request.version_ids != run.request.version_ids
+            || request.configurations.len() != run.request.configurations.len()
+        {
             // The cap grows with the plan, so judged cases keep their panel.
             let executions = self.planned_executions(&request).await?;
             request.max_executions = request

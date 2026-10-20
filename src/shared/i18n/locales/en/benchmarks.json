@@ -383,7 +383,8 @@
     "allMeasuredHint": "Every current test has a complete measurement on the board, passed or failed. Measure all again only to repeat it, at full cost.",
     "outdatedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue: resuming or finishing would only be refused. Stop it; then Start measures the {{owed}} tests the board still owes in a new run.",
     "outdatedStoppedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue. The {{owed}} tests the board still owes are checked; Start measures them in a new run.",
-    "measureAll": "Measure all again ({{attempts}} attempts)"
+    "measureAll": "Measure all again ({{attempts}} attempts)",
+    "repositoryProfile": "{{model}} on repository tasks"
   },
   "runs": {
     "title": "Runs and history",

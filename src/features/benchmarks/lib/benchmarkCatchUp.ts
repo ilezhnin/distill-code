@@ -21,6 +21,25 @@ function executionProfile(profile: string): string {
   return profile === "native_text_auxiliary" ? "native_text" : profile;
 }
 
+/** The execution profiles a model's tests run on, text first. */
+export const EXECUTION_PROFILES = [
+  "native_text",
+  "protected_repository",
+] as const;
+export type ExecutionProfile = (typeof EXECUTION_PROFILES)[number];
+
+/**
+ * The profile a test runs on (repository::is_repository_case): a repository
+ * case on the model's repository configuration, every other on its text one.
+ */
+export function executionProfileOf(manifest: {
+  evaluator: { kind: string };
+}): ExecutionProfile {
+  return manifest.evaluator.kind === "repository"
+    ? "protected_repository"
+    : "native_text";
+}
+
 /** The row's model, effort, fast mode and billing, pinned to today's runtime. */
 export function resolveCatchUpConfiguration(
   row: Configuration,

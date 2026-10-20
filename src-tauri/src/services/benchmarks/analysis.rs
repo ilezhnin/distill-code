@@ -2698,6 +2698,35 @@ pub(super) mod tests {
             row.reason
         );
     }
+    /// A model's cases on two execution profiles, a text configuration and a
+    /// repository one, make one model row: each case stands on the cell of
+    /// its own profile.
+    #[test]
+    fn a_model_row_merges_its_text_and_repository_configurations() {
+        let mut data = dataset();
+        let mut repository = data.runs[0].request.configurations[0].clone();
+        repository.id = format!("{}:repository", repository.id);
+        repository.execution_profile = "protected_repository".into();
+        for attempt in data
+            .attempts
+            .iter_mut()
+            .chain(data.runs.iter_mut().flat_map(|run| run.attempts.iter_mut()))
+        {
+            if ["v3", "v4", "v5"].contains(&attempt.version_id.as_str()) {
+                attempt.configuration = repository.clone();
+                attempt.observed = Some(repository.clone());
+            }
+        }
+        for run in &mut data.runs {
+            run.request.configurations.push(repository.clone());
+        }
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.models.len(), 1);
+        let model = &report.models[0];
+        assert_eq!(model.configuration_keys.len(), 2);
+        assert_eq!(model.row.suite_complete, model.row.suite_planned);
+        assert_eq!(model.row.complete_version_ids.len(), 6);
+    }
     #[test]
     fn a_row_covering_the_suite_ranks_and_dates_its_last_completion() {
         let row = standing(&dataset());

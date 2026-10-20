@@ -472,8 +472,16 @@ pub async fn benchmark_extend_run(
     app: AppHandle,
     id: String,
     version_ids: Vec<String>,
+    configurations: Option<Vec<Configuration>>,
 ) -> Result<BenchmarkRun> {
-    service(&app).await?.extend_run(&id, &version_ids).await
+    service(&app)
+        .await?
+        .extend_run(
+            &id,
+            &version_ids,
+            configurations.as_deref().unwrap_or_default(),
+        )
+        .await
 }
 #[tauri::command]
 pub async fn benchmark_cancel_run(app: AppHandle, id: String) -> Result<BenchmarkRun> {

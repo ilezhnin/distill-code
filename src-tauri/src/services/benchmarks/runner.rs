@@ -9064,6 +9064,9 @@ mod collection_context_tests;
 mod turn_seat_tests;
 
 #[cfg(test)]
+mod mixed_profile_tests;
+
+#[cfg(test)]
 mod tests {
     #[tokio::test]
     async fn native_task_history_and_wave_prefixes_use_sealed_bytes_after_workspace_changes() {
@@ -11102,7 +11105,7 @@ mod tests {
         stopped.finished_at = Some(2);
         s.store.save_attempt(&stopped).await.unwrap();
         s.store.set_run_state(&run.id, "cancelled").await.unwrap();
-        let finished = s.extend_run(&run.id, &[]).await.unwrap();
+        let finished = s.extend_run(&run.id, &[], &[]).await.unwrap();
         // The same run goes on, and the answer waits for its judges again.
         assert_eq!(finished.id, run.id);
         assert_eq!(finished.state, "running");
@@ -11612,7 +11615,7 @@ mod tests {
         s.control(&run.id, "cancel").await.unwrap();
         s.tick().await.unwrap();
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelled");
-        let finished = s.extend_run(&run.id, &[]).await.unwrap();
+        let finished = s.extend_run(&run.id, &[], &[]).await.unwrap();
         assert_eq!(finished.id, run.id);
         for _ in 0..3 {
             s.tick().await.unwrap();
@@ -11690,7 +11693,7 @@ mod tests {
             .iter()
             .all(|a| a.outcome.as_deref() == Some("fail")));
         assert!(s.control(&old.id, "resume").await.is_err());
-        assert!(s.extend_run(&old.id, &[]).await.is_err());
+        assert!(s.extend_run(&old.id, &[], &[]).await.is_err());
         assert_ne!(new.id, old.id);
         assert_eq!(new.attempts.len(), 3);
         assert!(new.attempts.iter().all(|a| a.phase == "pending"));
@@ -11804,7 +11807,7 @@ mod tests {
         assert_eq!(refused.code, "validation");
         let second = second_case(&s).await;
         let grown = s
-            .extend_run(&run.id, std::slice::from_ref(&second))
+            .extend_run(&run.id, std::slice::from_ref(&second), &[])
             .await
             .unwrap();
         assert_eq!(grown.state, "running");
@@ -11837,7 +11840,7 @@ mod tests {
             2
         );
         // The same test again adds nothing and the run is complete.
-        let again = s.extend_run(&run.id, &[second]).await.unwrap_err();
+        let again = s.extend_run(&run.id, &[second], &[]).await.unwrap_err();
         assert_eq!(again.message, "Every case of this run is complete");
         assert_eq!(s.store.run(&run.id).await.unwrap().attempts.len(), 4);
         dir.close().await;
@@ -11881,7 +11884,7 @@ mod tests {
             "{}",
             refused.message
         );
-        let grown = s.extend_run(&run.id, &[]).await.unwrap_err();
+        let grown = s.extend_run(&run.id, &[], &[]).await.unwrap_err();
         assert!(grown.message.contains("window closed"), "{}", grown.message);
         s.tick().await.unwrap();
         let baked = s.store.run(&run.id).await.unwrap();
@@ -12465,7 +12468,7 @@ mod tests {
         hold_provider_until(&run.id, &scope, now() + QUOTA_WAIT_LIMIT_MS);
         assert!(s.dispatchable(&run).await.unwrap().is_empty());
         // Adding cases to a run still going on keeps what its turns learned.
-        s.extend_run(&run.id, &[]).await.unwrap();
+        s.extend_run(&run.id, &[], &[]).await.unwrap();
         assert!(quota_waiting(&run.id, &scope));
         assert!(exhausted(&run.id, "isolated"));
         assert!(provider_held(&run.id, &scope));
@@ -14222,7 +14225,7 @@ mod tests {
             "version_retired"
         );
         assert_eq!(
-            s.extend_run(&run.id, &[]).await.unwrap_err().code,
+            s.extend_run(&run.id, &[], &[]).await.unwrap_err().code,
             "version_retired"
         );
         assert_eq!(

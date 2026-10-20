@@ -892,7 +892,7 @@ async fn reservations_cover_historical_relations_and_exposure() {
         .find(|r| r.request.request_key == "campaign-training")
         .unwrap();
     assert!(service
-        .extend_run(&training_run.id, &[alias.id])
+        .extend_run(&training_run.id, &[alias.id], &[])
         .await
         .is_err());
     service

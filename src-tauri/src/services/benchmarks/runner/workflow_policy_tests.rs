@@ -197,7 +197,7 @@ async fn research_workflow_selects_each_step_and_preserves_whole_trajectory_evid
             .runs
             .iter()
             .any(|r| r.id == run.id));
-        assert!(service.extend_run(&run.id, &[]).await.is_err());
+        assert!(service.extend_run(&run.id, &[], &[]).await.is_err());
         assert!(service.set_parallelism(&run.id, 2).await.is_err());
     }
     // Selection observes a changed pool at dispatch, even after admission.
