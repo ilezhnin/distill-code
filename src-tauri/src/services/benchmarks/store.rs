@@ -536,7 +536,16 @@ impl Store {
                         AND json_extract(a.data_json,'$.outcome') IS NOT NULL
                         AND json_extract(a.data_json,'$.outcome')<>'superseded')
                 END,
-                r.paused_ms,r.paused_since
+                r.paused_ms,r.paused_since,
+                (SELECT COUNT(*) FROM (SELECT 1 FROM attempts a WHERE a.run_id=r.id
+                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'
+                    GROUP BY a.configuration_id,a.version_id)),
+                (SELECT COUNT(*) FROM (SELECT 1 FROM attempts a WHERE a.run_id=r.id
+                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'
+                    GROUP BY a.configuration_id,a.version_id
+                    HAVING SUM(a.phase<>'terminal' OR (json_extract(a.data_json,'$.outcome')='pending_review'
+                        AND NOT EXISTS (SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
+                            WHERE e.type='object' AND json_extract(e.value,'$.score') IS NOT NULL)))=0))
              FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
         .fetch_all(&self.pool)
@@ -555,6 +564,8 @@ impl Store {
                     request: serde_json::from_str(r.get(5))?,
                     attempt_count: r.get::<i64, _>(6) as u64,
                     settled_count: r.get::<i64, _>(7) as u64,
+                    cell_count: r.get::<i64, _>(15) as u64,
+                    settled_cell_count: r.get::<i64, _>(16) as u64,
                     observed_selections: observed_selections(r.get(8)),
                     open_cells: open_cells(r.get(9)),
                     attention: run_attention(r.get(10)),
@@ -2427,6 +2438,9 @@ mod tests {
         assert_eq!(summaries[0].id, "run-104");
         assert_eq!(summaries[0].attempt_count, 123);
         assert_eq!(summaries[0].settled_count, 61);
+        // Two cells: the first case's repetitions all settled, the second's pending.
+        assert_eq!(summaries[0].cell_count, 2);
+        assert_eq!(summaries[0].settled_cell_count, 1);
         assert_eq!(summaries[1].attempt_count, 0);
         assert!(!summaries.iter().any(|r| r.id == "run-0"));
         let serialized = serde_json::to_value(&summaries).unwrap();

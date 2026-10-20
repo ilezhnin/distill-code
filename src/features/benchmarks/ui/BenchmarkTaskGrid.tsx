@@ -16,6 +16,7 @@ import type {
 import {
   type DotState,
   FAILING_OUTCOMES,
+  FINISHED_RUN,
   passed,
   RepetitionDots,
   TestStatusMark,
@@ -102,6 +103,8 @@ export type CellAttempt = Pick<
 > & {
   versionId: string;
   repetition: number;
+  /** The run that made the attempt, where cells span runs. */
+  runId?: string;
   score?: number | null;
   startedAt?: number | null;
   reason?: string | null;
@@ -127,6 +130,15 @@ function median(values: number[]): number | null {
 }
 
 /**
+ * The state of the run an attempt belongs to: one state for the cells of a
+ * single run, a lookup by run id where cells span runs.
+ */
+export type RunStateOf =
+  | string
+  | null
+  | ((runId: string | undefined) => string | null);
+
+/**
  * One cell per case in `order`, from the attempts that measured it. A case
  * without an attempt is a gap. Time is the median repetition, spend their
  * mean, unknown when any repetition's spend is.
@@ -134,9 +146,15 @@ function median(values: number[]): number | null {
 export function taskCells(
   order: { id: string; name: string; number?: number }[],
   attempts: CellAttempt[],
-  runState: string | null,
+  runState: RunStateOf,
   minimumRepetitions = REQUIRED_REPETITIONS,
 ): TaskCell[] {
+  const stateOf = (attempt: CellAttempt | undefined): string | null =>
+    typeof runState === "function" ? runState(attempt?.runId) : runState;
+  const finished = (attempt: CellAttempt) => {
+    const state = stateOf(attempt);
+    return state != null && FINISHED_RUN.has(state);
+  };
   const byCase = new Map<string, CellAttempt[]>();
   for (const attempt of attempts) {
     // A repetition superseded by a restart, or dropped when the run's
@@ -155,10 +173,12 @@ export function taskCells(
     const dots: DotState[] = list.map((a) => {
       const score = a.score ?? null;
       if (score != null) return passed(score) ? "passed" : "failed";
+      // A rendering owed its panel works on while its run can resume; in a
+      // finished run it awaits review and counts nowhere.
       if (
         WORKING.has(a.phase) ||
         a.phase === "awaiting_judges" ||
-        a.outcome === "pending_review"
+        (a.outcome === "pending_review" && !finished(a))
       )
         return "running";
       // Before its score arrives a settled attempt reads by its outcome, as
@@ -172,7 +192,7 @@ export function taskCells(
     });
     while (dots.length < minimumRepetitions) dots.push("queued");
     const status =
-      list.length === 0 ? null : testStatus(list, scores, runState);
+      list.length === 0 ? null : testStatus(list, scores, stateOf(list[0]));
     return {
       versionId: version.id,
       number: version.number ?? index + 1,
@@ -190,6 +210,37 @@ export function taskCells(
       attemptIds: list.map((a) => a.id),
       dots,
       verdict: verdictOf(dots, status),
+    };
+  });
+}
+
+/**
+ * The cells as the active run measuring them reads: a case the run works on
+ * now is in progress, one it has queued and that has no result yet is not
+ * started; a queued case with a result keeps it until the run replaces it.
+ * `open` maps the run's cases to whether one of them runs now.
+ */
+export function withOpenCells(
+  cells: TaskCell[],
+  open: Map<string, boolean>,
+): TaskCell[] {
+  if (open.size === 0) return cells;
+  return cells.map((cell) => {
+    const running = open.get(cell.versionId);
+    if (running == null || cell.verdict === "running") return cell;
+    if (running)
+      return {
+        ...cell,
+        status: { kind: "running", startedAt: null },
+        dots: cell.dots.map((_, index) => (index === 0 ? "running" : "queued")),
+        verdict: "running",
+      };
+    if (cell.verdict !== "queued") return cell;
+    return {
+      ...cell,
+      status: { kind: "queued" },
+      dots: cell.dots.map(() => "queued"),
+      verdict: "queued",
     };
   });
 }

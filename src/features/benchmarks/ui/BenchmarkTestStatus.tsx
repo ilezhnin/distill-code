@@ -162,9 +162,13 @@ export function testStatus(
   if (attempts.length === 0) return null;
   const runFinished = runState != null && FINISHED_RUN.has(runState);
   const working = attempts.find((a) => WORKING.has(a.phase));
-  const judging = attempts.find(
-    (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
-  );
+  // A rendering still owed its panel waits for judges only while its run
+  // can resume; in a finished run it stays open to Evaluate, awaiting review.
+  const judging = runFinished
+    ? undefined
+    : attempts.find(
+        (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
+      );
   // A paused run neither works nor judges: its cells wait for it to
   // resume. A stopping or cancelling run may still land a flight, so its
   // cells keep their clock.

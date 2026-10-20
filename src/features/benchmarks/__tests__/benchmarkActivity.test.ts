@@ -26,6 +26,8 @@ function summary(overrides: Partial<RunSummary>): RunSummary {
     },
     attemptCount: 4,
     settledCount: 1,
+    cellCount: 4,
+    settledCellCount: 1,
     openCells: [
       { configurationId: "config-1", versionId: "version-2", running: true },
       { configurationId: "config-2", versionId: "version-1", running: true },
@@ -52,6 +54,8 @@ describe("benchmark activity", () => {
     const child = summary({
       attemptCount: 1,
       settledCount: 0,
+      cellCount: 1,
+      settledCellCount: 0,
       request: {
         ...runSummary.request,
         requestKey: "workflow-campaign:campaign-1:1",

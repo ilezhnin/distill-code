@@ -62,6 +62,7 @@ import {
 } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
 import type { Configuration, LeaderboardRow, RunSummary } from "../types";
+import { cellProgress } from "../lib/benchmarkActivity";
 import { boardShares, type Board } from "../lib/benchmarkBoards";
 
 export interface Option {
@@ -592,10 +593,7 @@ export function AttentionMark({
                   timeStyle: "short",
                 })}
                 {" · "}
-                {t("activity.progress", {
-                  settled: run.settledCount,
-                  total: run.attemptCount,
-                })}
+                {t("activity.progress", cellProgress(run))}
               </span>
               <br />
               {attentionLabel(

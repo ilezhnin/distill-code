@@ -67,7 +67,21 @@ export function stalledRuns(runs: RunSummary[]): RunSummary[] {
   );
 }
 
-/** Attempts settled and planned over `runs`, and their cells running now. */
+/**
+ * A run's progress in tests: its cells settled and planned. A summary from
+ * a host that counted only attempts reads by those.
+ */
+export function cellProgress(run: RunSummary): {
+  settled: number;
+  total: number;
+} {
+  return {
+    settled: run.settledCellCount ?? run.settledCount,
+    total: run.cellCount ?? run.attemptCount,
+  };
+}
+
+/** Cells settled and planned over `runs`, and those running now: a run's progress in tests. */
 export function runProgress(runs: RunSummary[]): {
   settled: number;
   total: number;
@@ -77,8 +91,9 @@ export function runProgress(runs: RunSummary[]): {
   let total = 0;
   let running = 0;
   for (const run of runs) {
-    settled += run.settledCount;
-    total += run.attemptCount;
+    const cells = cellProgress(run);
+    settled += cells.settled;
+    total += cells.total;
     running += (run.openCells ?? []).filter((cell) => cell.running).length;
   }
   return { settled, total, running };

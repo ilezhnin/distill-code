@@ -135,14 +135,6 @@ export function BenchmarkRunDrawer({
       return inventory != null && stalePin(entry, inventory);
     });
   const attempts = run?.attempts ?? [];
-  // Repetitions a resume set aside keep their evidence and count nowhere.
-  const counted = attempts.filter(
-    (attempt) => attempt.outcome !== "superseded",
-  );
-  const settled = counted.filter(
-    (attempt) => attempt.phase === "terminal",
-  ).length;
-  const total = counted.length;
   // Summaries carry each attempt's score.
   const attemptIds = useMemo(
     () => attempts.map((attempt) => attempt.id),
@@ -217,6 +209,14 @@ export function BenchmarkRunDrawer({
   }, [attempts, models, names, scores, run?.state, taskOrder, summaries.data]);
   // Keep the configuration that works now in view as a matrix run moves on.
   const rows = useRef(new Map<string, HTMLDivElement>());
+  // Progress in tests: a cell, one configuration measuring one case, is
+  // settled once every repetition of it has its result.
+  const cells = grids.flatMap((grid) => grid.cells);
+  const total = cells.filter((cell) => cell.status != null).length;
+  const settled = cells.filter(
+    (cell) =>
+      cell.status?.kind === "scored" || cell.status?.kind === "unscored",
+  ).length;
   const runningKey = grids.find((grid) =>
     grid.cells.some(
       (cell) =>

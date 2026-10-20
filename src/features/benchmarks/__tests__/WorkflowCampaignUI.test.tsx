@@ -804,6 +804,8 @@ it.each([
           state,
           attemptCount: 1,
           settledCount: 1,
+          cellCount: 1,
+          settledCellCount: 1,
           attention,
           request: {
             ...runSummary.request,
@@ -854,6 +856,8 @@ it.each([
           state,
           attemptCount: 1,
           settledCount: 1,
+          cellCount: 1,
+          settledCellCount: 1,
           workflowResult: {
             outcome,
             reason: 'Provider error {"accountId":"private-account"}',

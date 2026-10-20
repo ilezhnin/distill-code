@@ -128,6 +128,8 @@ export const runSummary: RunSummary = {
   request: run.request,
   attemptCount: 1,
   settledCount: 1,
+  cellCount: 1,
+  settledCellCount: 1,
   observedSelections: [],
 };
 

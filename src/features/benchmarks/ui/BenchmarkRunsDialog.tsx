@@ -12,6 +12,7 @@ import {
 } from "@/shared/ui/dialog";
 import { shortId } from "../lib/benchmarkLabels";
 import type { RunSummary } from "../types";
+import { cellProgress } from "../lib/benchmarkActivity";
 import { BenchmarkEmpty, StateBadge } from "./BenchmarkPrimitives";
 
 export function BenchmarkRunsDialog({
@@ -61,8 +62,8 @@ export function BenchmarkRunsDialog({
                       <StateBadge state={run.state} />
                       <span>
                         {t("runs.progress", {
-                          completed: run.settledCount,
-                          total: run.attemptCount,
+                          completed: cellProgress(run).settled,
+                          total: cellProgress(run).total,
                         })}
                       </span>
                       {run.request.preview ? (

@@ -179,7 +179,7 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(screen.queryByText("Finished")).not.toBeInTheDocument();
   // One model's run names it once, in the title, not on every block.
   expect(screen.queryByText(/claude-acp/)).not.toBeInTheDocument();
-  expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
+  expect(screen.getByText("1 / 3 tests settled")).toBeInTheDocument();
 });
 
 it("counts no repetition a resume set aside", async () => {
@@ -192,7 +192,7 @@ it("counts no repetition a resume set aside", async () => {
     ],
   });
   expect(await found("Alpha")).toBeInTheDocument();
-  expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
+  expect(screen.getByText("1 / 3 tests settled")).toBeInTheDocument();
 });
 
 it("keeps a paused run's waiting tests queued and names each model of a matrix", async () => {
@@ -408,7 +408,7 @@ it("counts a case once, by what its attempts add up to", async () => {
   ]) {
     expect(screen.getByText(label).nextSibling?.textContent).toBe(value);
   }
-  expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
+  expect(screen.getByText("0 / 1 tests settled")).toBeInTheDocument();
   expect(screen.queryByText("Finished")).not.toBeInTheDocument();
 });
 

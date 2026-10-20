@@ -11,6 +11,7 @@ import {
   useWorkflowCampaigns,
 } from "../hooks/useBenchmarks";
 import {
+  cellProgress,
   activeRuns,
   activeCampaigns,
   campaignIdForRun,
@@ -208,10 +209,7 @@ export function BenchmarkActivity({
               timeStyle: "short",
             })}
             {" · "}
-            {t("activity.progress", {
-              settled: run.settledCount,
-              total: run.attemptCount,
-            })}
+            {t("activity.progress", cellProgress(run))}
           </span>
           <span className="min-w-0 flex-1">
             {attentionLabel(

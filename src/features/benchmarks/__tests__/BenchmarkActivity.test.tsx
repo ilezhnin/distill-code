@@ -125,8 +125,10 @@ it("distinguishes same-state comparisons by their creation time and exposes the 
 it("names the model of a run that waits with nothing running", () => {
   const row = show({
     request: { ...runSummary.request, configurations: [many[0]] },
-    attemptCount: 66,
-    settledCount: 20,
+    attemptCount: 198,
+    settledCount: 60,
+    cellCount: 66,
+    settledCellCount: 20,
     openCells: [{ configurationId: "config-1", versionId: "version-1" }],
   });
   expect(row.getByText("Model One")).toBeInTheDocument();

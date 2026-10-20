@@ -24,8 +24,8 @@ import {
   rowKey,
 } from "../lib/benchmarkBoards";
 import { reportModels, modelKey, modelActivity } from "../lib/benchmarkModels";
-import { rowOpenRun } from "../lib/benchmarkActivity";
-import { catchUpCases } from "../lib/benchmarkCatchUp";
+import { activeRuns, rowOpenRun } from "../lib/benchmarkActivity";
+import { catchUpCases, requests } from "../lib/benchmarkCatchUp";
 import { effortUnset, explicitEffort } from "../lib/benchmarkEffort";
 import { historyMeasurements } from "../lib/benchmarkHistory";
 import {
@@ -52,6 +52,7 @@ import {
   TaskGrid,
   TaskSummary,
   taskCells,
+  withOpenCells,
   poolTaskOrder,
 } from "./BenchmarkTaskGrid";
 import { listByIds } from "./BenchmarkTestStatus";
@@ -192,14 +193,41 @@ export function BenchmarkConfigurationPage({
     const order = poolTaskOrder(versions, shownReport.cohort).filter(
       (version) => pool.has(version.id) && eligible.has(version.id),
     );
-    return taskCells(order, summaries.data ?? [], null);
+    // A run the list no longer holds is history: nothing judges it further.
+    const states = new Map(runs.map((run) => [run.id, run.state]));
+    const cells = taskCells(order, summaries.data ?? [], (runId) =>
+      runId == null ? null : (states.get(runId) ?? "completed"),
+    );
+    // The page reads the present: the cases an active run measures for this
+    // row now are in progress or queued, whatever stood before. A selected
+    // point in history shows what stood then.
+    if (selected) return cells;
+    const open = new Map<string, boolean>();
+    for (const run of activeRuns(runs)) {
+      const ids = new Set(
+        run.request.configurations
+          .filter((entry) => requests(entry, shownRow.configuration, run))
+          .map((entry) => entry.id),
+      );
+      for (const cell of run.openCells ?? []) {
+        if (!ids.has(cell.configurationId)) continue;
+        open.set(
+          cell.versionId,
+          (open.get(cell.versionId) ?? false) || cell.running === true,
+        );
+      }
+    }
+    return withOpenCells(cells, open);
   }, [
     shownReport.cohort,
     shownRow.scoredVersionIds,
     shownRow.missingVersionIds,
     shownRow.unsupportedVersionIds,
+    shownRow.configuration,
     versions,
     summaries.data,
+    runs,
+    selected,
   ]);
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(

@@ -391,8 +391,8 @@
     "description": "Cada plan congelado con su progreso. Abre una ejecución para pausarla, reanudarla o cancelarla.",
     "empty": "Todavía no hay ejecuciones de benchmark.",
     "runTitle": "Ejecución {{id}}",
-    "progress": "{{completed}} / {{total}} intentos resueltos",
-    "progressLabel": "Intentos resueltos",
+    "progress": "{{completed}} / {{total}} pruebas resueltas",
+    "progressLabel": "Pruebas resueltas",
     "preview": "Vista previa de desarrollo"
   },
   "attention": {
@@ -409,7 +409,7 @@
     "title": "Ejecuciones en curso",
     "progress": "{{settled}} / {{total}}",
     "more": "+{{count}}",
-    "sidebar": "{{settled}} de {{total}} intentos resueltos",
+    "sidebar": "{{settled}} de {{total}} pruebas resueltas",
     "left": "En espera",
     "running": "En curso",
     "campaign": "Comparación de flujos",

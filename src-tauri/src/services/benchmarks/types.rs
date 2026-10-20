@@ -459,6 +459,13 @@ pub struct RunSummary {
     pub request: RunRequest,
     pub attempt_count: u64,
     pub settled_count: u64,
+    /// The run's cells, one requested configuration measuring one case, and
+    /// those with every repetition settled, a rendering still owed its panel
+    /// not among them: the run's progress in tests.
+    #[serde(default)]
+    pub cell_count: u64,
+    #[serde(default)]
+    pub settled_cell_count: u64,
     /// What each requested configuration's attempts acknowledged in a run that
     /// may still start attempts, so a request that left effort or fast mode to
     /// the provider names the row it fills. Empty once the run has finished.

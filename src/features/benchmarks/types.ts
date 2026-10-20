@@ -270,6 +270,12 @@ export interface RunSummary {
   request: RunRequest;
   attemptCount: number;
   settledCount: number;
+  /**
+   * The run's cells, one configuration measuring one case, and those with
+   * every repetition settled; absent on a summary an older host wrote.
+   */
+  cellCount?: number;
+  settledCellCount?: number;
   /** What each requested configuration's attempts acknowledged while the run can still start attempts. */
   observedSelections: ObservedRunSelection[];
   /** The cells an unfinished run still has a non-terminal attempt in; absent on older summaries. */

@@ -391,8 +391,8 @@
     "description": "Every frozen plan with its progress. Open a run to pause, resume or cancel it.",
     "empty": "No benchmark runs yet.",
     "runTitle": "Run {{id}}",
-    "progress": "{{completed}} / {{total}} attempts settled",
-    "progressLabel": "Settled attempts",
+    "progress": "{{completed}} / {{total}} tests settled",
+    "progressLabel": "Settled tests",
     "preview": "Development preview"
   },
   "attention": {
@@ -409,7 +409,7 @@
     "title": "Runs in progress",
     "progress": "{{settled}} / {{total}}",
     "more": "+{{count}}",
-    "sidebar": "{{settled}} of {{total}} attempts settled",
+    "sidebar": "{{settled}} of {{total}} tests settled",
     "left": "Waiting",
     "running": "Running",
     "campaign": "Workflow comparison",
