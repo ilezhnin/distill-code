@@ -51,6 +51,9 @@ pub struct ProviderAccountStatusState {
     reset_lock: Mutex<()>,
 }
 
+/// Where a session's account signs in: the Windows app (`Native`), or the
+/// benchmark sandbox (`Repository`), which owned repository and tool-free
+/// text sessions both use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AccountRuntime {
     Native,
@@ -712,8 +715,9 @@ pub async fn select_account_excluding(
     .map(|(selection, _)| selection)
 }
 
-/// Owned repository sessions keep their frozen account and use its WSL status.
-/// Never publish this sample as the Windows account's authorization state.
+/// Owned sandbox sessions (repository and tool-free text) keep their frozen
+/// account and use its WSL status. Never publish this sample as the Windows
+/// account's authorization state.
 pub(crate) async fn select_repository_account(
     app: &AppHandle,
     provider_id: &str,

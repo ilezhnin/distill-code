@@ -165,9 +165,7 @@ fn owned_runtime_root(root: &std::path::Path) -> PathBuf {
 fn discard_route_sign_in(runtime_root: &std::path::Path, route_key: &str) -> std::io::Result<()> {
     if route_key
         .split_once(BENCHMARK_ROUTE)
-        .is_some_and(|(_, profile)| {
-            repository_execution::is_route(profile) || text_execution::is_route(profile)
-        })
+        .is_some_and(|(_, profile)| sandbox_account_route(profile))
     {
         return Ok(());
     }
@@ -268,6 +266,14 @@ fn owned_turn_deadline(timeout_ms: u64, absolute_ms: Option<i64>) -> tokio::time
         .unwrap_or(timeout_ms)
         .min(timeout_ms);
     tokio::time::Instant::now() + std::time::Duration::from_millis(remaining)
+}
+
+/// Whether an owned session's runtime runs on its account's sandbox sign-in,
+/// so dispatch reads that sign-in's status rather than the Windows app's.
+/// Repository and tool-free text sessions both run in the Linux sandbox on the
+/// sandbox grant; an expired Windows sign-in must never stop them.
+fn sandbox_account_route(profile: &str) -> bool {
+    repository_execution::is_route(profile) || text_execution::is_route(profile)
 }
 
 fn check_owned_deadline(deadline: Option<tokio::time::Instant>) -> Result<(), Value> {
@@ -5477,7 +5483,7 @@ impl Inner {
             if runtime
                 .execution_profile
                 .as_deref()
-                .is_some_and(repository_execution::is_route)
+                .is_some_and(sandbox_account_route)
             {
                 AccountRuntime::Repository
             } else {
@@ -8287,6 +8293,17 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A benchmark text session runs on its account's sandbox grant, like a
+    /// repository session, so a Windows sign-in that needs re-auth (b55a,
+    /// 2026-10-19) never refuses it; an ordinary profile stays on Windows.
+    #[test]
+    fn sandbox_sessions_take_their_account_status_from_the_sandbox() {
+        assert!(sandbox_account_route(&text_execution::profile_key("owner")));
+        assert!(sandbox_account_route("repository:invented"));
+        assert!(!sandbox_account_route("native"));
+        assert!(!sandbox_account_route(""));
+    }
 
     #[test]
     fn sandbox_location_never_grants_text_or_judge_tool_permissions() {
