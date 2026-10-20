@@ -8608,6 +8608,23 @@ impl BenchmarkService {
     }
 }
 
+/// How the fake backend grades an answer. It has no sandbox, so a
+/// repository case is graded here, never by the repository check: its
+/// answers are the case's references, the reference patch passes and any
+/// other output fails. Every other evaluator runs as the service runs it.
+#[cfg(test)]
+async fn fake_evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation> {
+    if draft.evaluator.kind != super::repository::EVALUATOR {
+        return evaluate(draft, output).await;
+    }
+    let reference = Evaluator {
+        kind: "exact".into(),
+        expected: draft.evaluator.known_good.clone(),
+        ..draft.evaluator.clone()
+    };
+    super::evaluation::evaluate(&reference, output)
+}
+
 /// Used only when the app has registered its validated, isolated E2E mode.
 #[derive(Default)]
 pub struct FakeBackend {
@@ -8751,7 +8768,7 @@ impl ExecutionBackend for FakeBackend {
                 self.evaluation_ms.load(Ordering::SeqCst),
             ))
             .await;
-            evaluate(draft, output).await
+            fake_evaluate(draft, output).await
         })
     }
     fn accounts<'a>(&'a self, _: &'a str, _: bool) -> BoxFuture<'a, Result<Vec<String>>> {
@@ -8960,7 +8977,8 @@ impl ExecutionBackend for FakeBackend {
                 a.host_run_id = Some(format!("evaluated-turn-{}", a.id));
                 a.usage.input = Some(7);
                 let output = v.manifest.evaluator.known_good.clone();
-                a.evaluations.push(evaluate(&v.manifest, &output).await?);
+                a.evaluations
+                    .push(fake_evaluate(&v.manifest, &output).await?);
                 a.output = Some(output);
                 store.save_attempt(&a).await?;
                 return Err(BenchmarkError::new(

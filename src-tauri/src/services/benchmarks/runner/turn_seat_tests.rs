@@ -5,6 +5,7 @@
 //! planning lab's turn keeps its seat until its verdict.
 use super::tests::{serial_request, setup};
 use super::*;
+use crate::services::benchmarks::{fixtures, repository};
 use std::sync::atomic::Ordering;
 
 async fn until(what: &str, mut done: impl FnMut() -> bool) {
@@ -22,7 +23,34 @@ async fn serial_cells(service: &BenchmarkService, cells: u32, profile: &str) -> 
     let mut request = serial_request(service).await;
     request.request_key = format!("turn-seat-{profile}-{cells}");
     cells_of(&mut request, cells, profile);
+    of_profile(service, &request, profile).await;
     request
+}
+
+/// A repository configuration runs repository cases only, so its cases
+/// become ones. Publishing a repository case needs the sandbox's reference
+/// check, so the published text case's stored manifest is turned into a
+/// repository case and published to the blob store under its new hash,
+/// which the run verifies. The fake backend grades it without a sandbox.
+async fn of_profile(service: &BenchmarkService, request: &RunRequest, profile: &str) {
+    if profile != "protected_repository" {
+        return;
+    }
+    for id in &request.version_ids {
+        let mut manifest = service.store.version(id).await.unwrap().manifest;
+        manifest.evaluator.kind = repository::EVALUATOR.into();
+        manifest.execution_profile = "protected_repository".into();
+        let hash = fixtures::publish_blob(&service.store.root, &manifest)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE benchmark_versions SET manifest_json=?,content_hash=? WHERE id=?")
+            .bind(serde_json::to_string(&manifest).unwrap())
+            .bind(&hash)
+            .bind(id)
+            .execute(&service.store.pool)
+            .await
+            .unwrap();
+    }
 }
 
 /// The same cells of an invented planning lab.
@@ -37,6 +65,7 @@ async fn planning_cells(service: &BenchmarkService, cells: u32, profile: &str) -
     request.request_key = format!("turn-seat-planning-{profile}-{cells}");
     request.version_ids = vec![version.id];
     cells_of(&mut request, cells, profile);
+    of_profile(service, &request, profile).await;
     request
 }
 
