@@ -455,8 +455,10 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| BenchmarkError::new("validation", "Run not found"))?;
-        // Detailed output is loaded only through the evidence endpoint.
-        let rows=sqlx::query_scalar::<_,String>("SELECT json_set(data_json,'$.output',NULL) FROM attempts WHERE run_id=? ORDER BY rowid LIMIT 1000").bind(id).fetch_all(&self.pool).await?;
+        // Detailed output is loaded only through the evidence endpoint. Every
+        // attempt is loaded: a full suite at three repetitions is over a
+        // thousand, and a run missing some would plan, resume and bake wrong.
+        let rows=sqlx::query_scalar::<_,String>("SELECT json_set(data_json,'$.output',NULL) FROM attempts WHERE run_id=? ORDER BY rowid").bind(id).fetch_all(&self.pool).await?;
         Ok(BenchmarkRun {
             id: id.into(),
             state: r.get(0),
