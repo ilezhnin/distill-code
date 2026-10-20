@@ -986,6 +986,12 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
 /// `app_sign_in`): Claude's from its stored refresh token, or with `natural`
 /// the CLI's own refresh inside its window; Codex's through its native
 /// account read with a refresh.
+/// Settles a Claude renewal a stopped app left behind in `home` (see the
+/// Claude status adapter): before the grant there is read.
+pub(crate) fn recover_claude_renewal(home: &std::path::Path) -> Result<(), String> {
+    claude::recover_renewal_copy(home)
+}
+
 pub(crate) async fn renew_app_grant(
     app: &AppHandle,
     account: &ProviderAccount,

@@ -266,6 +266,22 @@ fn sandbox_account_route(profile: &str) -> bool {
     repository_execution::is_route(profile) || text_execution::is_route(profile)
 }
 
+/// What a failed `bench-auth stage` tells the runner: the helper refusing
+/// the lease itself (a refresh token, a shape it does not take) is a missing
+/// capability; anything else (the WSL transport, a time limit, a folder left
+/// from before) is a busy refusal before any provider process started, so the
+/// test waits in the queue instead of stopping the run.
+fn stage_failure(error: &str) -> String {
+    const REFUSALS: &[&str] = &["refresh token", "invalid lease", "lease too large"];
+    if REFUSALS.iter().any(|refusal| error.contains(refusal)) {
+        format!("capability_missing: {error}")
+    } else {
+        format!(
+            "resource_busy: the sign-in for this test was not staged ({error}); it starts again"
+        )
+    }
+}
+
 fn check_owned_deadline(deadline: Option<tokio::time::Instant>) -> Result<(), Value> {
     if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
         return Err(protocol::error_with_data(
@@ -1525,7 +1541,15 @@ impl Inner {
                 // under the account's renewal gate held above: no renewal
                 // replaces the grant between this read and the start.
                 if credential_lease::leased(owned.provider) {
-                    self.stage_lease(owned.provider, &request.account_id, id, deadline)
+                    let span = credential_lease::lease_span_ms(
+                        owned.provider,
+                        i64::try_from(owned.turn_limit_ms).unwrap_or(i64::MAX),
+                    );
+                    let until = chrono::Utc::now()
+                        .timestamp_millis()
+                        .saturating_add(span)
+                        .saturating_add(480_000);
+                    self.stage_lease(owned.provider, &request.account_id, id, until)
                         .await?;
                 }
                 let separator = launch
@@ -7228,12 +7252,11 @@ impl Inner {
         provider: NativeProvider,
         account: &str,
         id: &str,
-        deadline_ms: u64,
+        until: i64,
     ) -> Result<(), Value> {
         let now = chrono::Utc::now().timestamp_millis();
         let lease = credential_lease::read(&self.app, provider, account, now)
             .map_err(|error| protocol::internal(format!("capability_missing: {error}")))?;
-        let until = i64::try_from(deadline_ms).unwrap_or(i64::MAX);
         if !credential_lease::covers(provider, lease.expires_at_ms(), until) {
             return Err(protocol::internal(format!(
                 "sign_in_wait: {}",
@@ -7242,7 +7265,7 @@ impl Inner {
         }
         crate::services::benchmark_sandbox::stage_lease(id, &lease)
             .await
-            .map_err(|error| protocol::internal(format!("capability_missing: {error}")))
+            .map_err(|error| protocol::internal(stage_failure(&error.to_string())))
     }
 
     /// Makes the app's sign-in of `provider`'s `account` last until `until_ms`
@@ -7266,13 +7289,36 @@ impl Inner {
             else {
                 return Ok(None);
             };
-            let key = account_route_key(provider, Some(account));
+            // Its own task: a caller that gives up (a stopped run, a closed
+            // listing) never cuts a token exchange in half, which could leave
+            // the app holding a refresh token the provider already rotated.
+            // The gate stays held until the renewal settles.
+            let host = Arc::clone(self);
+            let account = account.to_owned();
+            tokio::spawn(async move {
+                host.renew_app_sign_in_now(native, account, until_ms, drain)
+                    .await
+            })
+            .await
+            .map_err(|error| format!("capability_missing: the sign-in renewal stopped: {error}"))?
+        })
+    }
+
+    async fn renew_app_sign_in_now(
+        self: Arc<Self>,
+        native: NativeProvider,
+        account: String,
+        until_ms: i64,
+        drain: bool,
+    ) -> Result<Option<i64>, String> {
+        {
+            let key = account_route_key(native.harness_id(), Some(&account));
             let gate = self.sign_in_renewals.gate(&key);
             let _renewing = gate.write().await;
             let mut io = AppRenewal {
-                host: self,
+                host: &self,
                 native,
-                account,
+                account: &account,
                 key: &key,
             };
             app_sign_in::ensure(
@@ -7284,7 +7330,7 @@ impl Inner {
                 &mut io,
             )
             .await
-        })
+        }
     }
 
     /// Every [`app_sign_in::KEEPALIVE_INTERVAL`], renew each app sign-in a
@@ -7292,8 +7338,10 @@ impl Inner {
     /// within [`app_sign_in::KEEPALIVE_LEAD_MS`], whether or not anything
     /// runs on it. Holds the host weakly, as the bridge reaper does.
     async fn keep_app_sign_ins_alive_periodically(host: Weak<Inner>) {
+        let mut wait = app_sign_in::KEEPALIVE_FIRST_PASS;
         loop {
-            tokio::time::sleep(app_sign_in::KEEPALIVE_INTERVAL).await;
+            tokio::time::sleep(wait).await;
+            wait = app_sign_in::KEEPALIVE_INTERVAL;
             let Some(host) = host.upgrade() else {
                 return;
             };
@@ -7337,6 +7385,16 @@ impl Inner {
                 );
             }
         }
+    }
+
+    /// How many chat bridges on `routes` are alive.
+    async fn live_chat_bridges(&self, routes: &[String]) -> usize {
+        self.bridges
+            .lock()
+            .await
+            .iter()
+            .filter(|(route, bridge)| routes.contains(route) && bridge.is_alive())
+            .count()
     }
 
     /// Shuts down the app's idle chat processes on `routes` once their
@@ -7394,6 +7452,11 @@ impl Inner {
             Ok::<_, String>(())
         }
         .await;
+        if let Err(error) = &result {
+            log::warn!(
+                "[agent-host] the Grok sign-in renewal did not finish ({error}); if the provider already rotated its refresh token, Grok needs one sign-in"
+            );
+        }
         bridge.kill();
         result
     }
@@ -8254,6 +8317,33 @@ impl app_sign_in::RenewalIo for AppRenewal<'_> {
         Box::pin(self.host.live_benchmark_bridges(self.key))
     }
 
+    fn other_holders(&mut self) -> BoxFuture<'_, usize> {
+        Box::pin(async move {
+            let mut routes = vec![self.key.to_owned()];
+            if provider_accounts::is_cli_login_account(self.native.harness_id(), self.account) {
+                routes.push(self.native.harness_id().to_owned());
+            }
+            let chats = self.host.live_chat_bridges(&routes).await;
+            // The user's own Grok sign-in is shared by every Grok process;
+            // which Codex home a codex process runs on is not visible, so
+            // every one counts.
+            let image = match self.native {
+                NativeProvider::Grok => Some("grok.exe"),
+                NativeProvider::Codex => Some("codex.exe"),
+                _ => None,
+            };
+            let processes = match image {
+                Some(image) => tokio::task::spawn_blocking(move || {
+                    crate::services::process::count_processes_named(&[image])
+                })
+                .await
+                .unwrap_or(1),
+                None => 0,
+            };
+            chats + processes
+        })
+    }
+
     fn renew(&mut self, natural: bool) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
             if self.native == NativeProvider::Grok {
@@ -8292,6 +8382,31 @@ impl app_sign_in::RenewalIo for AppRenewal<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transport or helper hiccup while staging requeues the test; only a
+    /// lease the helper refuses is a missing capability.
+    #[test]
+    fn a_staging_hiccup_waits_and_a_refused_lease_does_not() {
+        for transient in [
+            "Sandbox credential lease failed: bench-auth: FileExistsError",
+            "timed out",
+            "The system cannot find the file specified. (os error 2)",
+        ] {
+            assert!(
+                stage_failure(transient).starts_with("resource_busy:"),
+                "{transient}"
+            );
+        }
+        for refused in [
+            "Sandbox credential lease failed: bench-auth: a lease must never carry a refresh token",
+            "Sandbox credential lease failed: bench-auth: invalid lease document",
+        ] {
+            assert!(
+                stage_failure(refused).starts_with("capability_missing:"),
+                "{refused}"
+            );
+        }
+    }
 
     /// A benchmark text session runs on its account's sandbox grant, like a
     /// repository session, so a Windows sign-in that needs re-auth (b55a,

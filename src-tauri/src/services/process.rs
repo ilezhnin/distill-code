@@ -158,9 +158,34 @@ pub(crate) fn process_is_alive(pid: ProcessId) -> bool {
     system.process(pid).is_some()
 }
 
+/// How many running processes have one of `names` (an executable's file
+/// name, such as `grok.exe`; any case) as their name.
+pub(crate) fn count_processes_named(names: &[&str]) -> usize {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    system
+        .processes()
+        .values()
+        .filter(|process| {
+            let name = process.name().to_string_lossy();
+            names.iter().any(|wanted| name.eq_ignore_ascii_case(wanted))
+        })
+        .count()
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn processes_are_counted_by_name() {
+        assert_eq!(count_processes_named(&["no-such-process-invented.exe"]), 0);
+        let own = std::env::current_exe().unwrap();
+        let own = own.file_name().unwrap().to_string_lossy().to_uppercase();
+        assert!(count_processes_named(&[own.as_str()]) >= 1);
+    }
 
     const CONSOLE_WINDOW_PROBE: &str = r#"
         Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }';

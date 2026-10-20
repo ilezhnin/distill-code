@@ -1175,6 +1175,13 @@ async fn repository_runtime_snapshot(
 /// staging.
 const RENEWAL_SLACK_MS: i64 = 240_000;
 
+/// How many seconds of a test of `timeout_seconds` a lease of `provider`
+/// must cover (see [`credential_lease::lease_span_ms`]).
+fn lease_seconds(provider: NativeProvider, timeout_seconds: u32) -> u32 {
+    let span = credential_lease::lease_span_ms(provider, i64::from(timeout_seconds) * 1000);
+    u32::try_from(span / 1000).unwrap_or(timeout_seconds)
+}
+
 /// The Distill sign-in an admitted attempt's lease is staged from: its
 /// provider, and when its grant expires (none: it does not). None for a
 /// provider that keeps its own sandbox sign-in (Kimi).
@@ -1210,8 +1217,9 @@ impl CredentialWindow {
                 .require_account_window(provider, account, now_ms, timeout_seconds)
                 .map_err(|error| missing(error.to_string())),
             Self::Lease(native, expiry) => {
-                let deadline = sandbox::admission_deadline(now_ms, timeout_seconds)
-                    .map_err(|error| missing(error.to_string()))?;
+                let deadline =
+                    sandbox::admission_deadline(now_ms, lease_seconds(*native, timeout_seconds))
+                        .map_err(|error| missing(error.to_string()))?;
                 if credential_lease::covers(*native, *expiry, deadline) {
                     Ok(())
                 } else {
@@ -1252,8 +1260,10 @@ where
             return admit().await.map(|admitted| (admitted, None));
         };
         let until = match budget {
-            Some(seconds) => sandbox::admission_deadline(now(), seconds)
-                .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?,
+            Some(seconds) => {
+                sandbox::admission_deadline(now(), lease_seconds(provider, seconds))
+                    .map_err(|error| BenchmarkError::new("capability_missing", error.to_string()))?
+            }
             None => now(),
         };
         let expiry = host

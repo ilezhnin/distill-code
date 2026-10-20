@@ -688,6 +688,10 @@ const RENEWAL_COPY: &str = ".credentials.renewal-copy.json";
 /// How long the CLI may take to renew a grant.
 const RENEWAL_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How much longer a CLI past [`RENEWAL_TIMEOUT`] may take before it is
+/// stopped: one stopped mid-exchange can leave a rotated refresh token.
+const RENEWAL_GRACE: Duration = Duration::from_secs(60);
+
 /// The expiry of the usable grant in the `.credentials.json` at `path`, or
 /// none for a document that is not one.
 fn usable_grant_expiry(path: &std::path::Path) -> Option<i64> {
@@ -702,7 +706,7 @@ fn usable_grant_expiry(path: &std::path::Path) -> Option<i64> {
 
 /// A renewal killed before it settled left its copy behind: a grant the CLI
 /// left stays, a document that is no grant gives way to the earlier one.
-fn recover_renewal_copy(home: &std::path::Path) -> Result<(), String> {
+pub(crate) fn recover_renewal_copy(home: &std::path::Path) -> Result<(), String> {
     let (path, copy) = (home.join(".credentials.json"), home.join(RENEWAL_COPY));
     if !copy.exists() {
         return Ok(());
@@ -737,11 +741,17 @@ fn renewal_source(document: &[u8]) -> Option<(String, String, i64)> {
     Some((token.to_owned(), scopes, before))
 }
 
-/// Keeps what the CLI left only if it is a grant at least as long as the one
-/// before; else puts the earlier grant back. Returns the expiry it kept.
-fn settle_renewal(home: &std::path::Path, before: i64) -> Result<Option<i64>, String> {
+/// Keeps what the CLI left if it is a grant at least as long as the one
+/// before, or any usable grant from a CLI that exited successfully: that CLI
+/// may have rotated the refresh token the earlier grant holds. Else puts the
+/// earlier grant back. Returns the expiry it kept.
+fn settle_renewal(
+    home: &std::path::Path,
+    before: i64,
+    succeeded: bool,
+) -> Result<Option<i64>, String> {
     let (path, copy) = (home.join(".credentials.json"), home.join(RENEWAL_COPY));
-    let left = usable_grant_expiry(&path).filter(|left| *left >= before);
+    let left = usable_grant_expiry(&path).filter(|left| succeeded || *left >= before);
     let settled = if left.is_some() {
         std::fs::remove_file(&copy)
     } else {
@@ -791,7 +801,8 @@ pub(crate) async fn renew_grant(app: &AppHandle, account: &ProviderAccount) -> R
     let ran = run_renewal(app, account, &home, &token, &scopes).await;
     // SAFETY: zeroes stay valid UTF-8.
     crate::services::credential_lease::wipe(unsafe { token.as_bytes_mut() });
-    let kept = settle_renewal(&home, before)?;
+    let succeeded = matches!(ran, Ok(true));
+    let kept = settle_renewal(&home, before, succeeded)?;
     ran?;
     match kept {
         Some(after) if after > before => Ok(()),
@@ -799,13 +810,15 @@ pub(crate) async fn renew_grant(app: &AppHandle, account: &ProviderAccount) -> R
     }
 }
 
+/// Runs `claude auth login` from the stored refresh token; whether it exited
+/// successfully.
 async fn run_renewal(
     app: &AppHandle,
     account: &ProviderAccount,
     home: &std::path::Path,
     token: &str,
     scopes: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut env: HashMap<String, String> = provider_accounts::scoped_env(
         app,
         account,
@@ -837,14 +850,29 @@ async fn run_renewal(
         .map_err(|_| "Could not start the Claude sign-in".to_string())?;
     drop(command);
     let tree = process::ProcessTree::contain(&child);
-    // A CLI that hangs is stopped; what it left is settled either way.
-    let _ = tokio::time::timeout(RENEWAL_TIMEOUT, child.wait()).await;
+    // A CLI that hangs gets a grace period, then is stopped; what it left is
+    // settled either way.
+    let mut exited = tokio::time::timeout(RENEWAL_TIMEOUT, child.wait()).await;
+    if exited.is_err() {
+        log::warn!(
+            "[providers] the Claude sign-in renewal of {} is slow; it gets another minute",
+            account.id
+        );
+        exited = tokio::time::timeout(RENEWAL_GRACE, child.wait()).await;
+    }
+    let succeeded = matches!(exited, Ok(Ok(status)) if status.success());
+    if exited.is_err() {
+        log::warn!(
+            "[providers] the Claude sign-in renewal of {} was stopped before it finished; if the provider already rotated its refresh token, this account needs one sign-in in Settings",
+            account.id
+        );
+    }
     if let Some(tree) = &tree {
         tree.kill();
     }
     let _ = child.kill().await;
     let _ = child.wait().await;
-    Ok(())
+    Ok(succeeded)
 }
 
 /// Lets the CLI refresh the app's Claude grant of `account` its own way, as
@@ -883,19 +911,34 @@ mod tests {
         // The CLI wrote nothing usable: the earlier grant comes back.
         std::fs::write(&copy, grant(1000, "earlier")).unwrap();
         std::fs::write(&path, b"{\"claudeAiOauth\":{}}").unwrap();
-        assert_eq!(super::settle_renewal(home.path(), 1000).unwrap(), None);
+        assert_eq!(
+            super::settle_renewal(home.path(), 1000, true).unwrap(),
+            None
+        );
         assert_eq!(std::fs::read(&path).unwrap(), grant(1000, "earlier"));
         assert!(!copy.exists());
-        // A shorter grant is not kept either.
+        // A shorter grant is not kept either, unless the CLI exited
+        // successfully: then it may already have rotated the earlier one.
         std::fs::write(&copy, grant(1000, "earlier")).unwrap();
         std::fs::write(&path, grant(900, "shorter")).unwrap();
-        assert_eq!(super::settle_renewal(home.path(), 1000).unwrap(), None);
+        assert_eq!(
+            super::settle_renewal(home.path(), 1000, true).unwrap(),
+            Some(900)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), grant(900, "shorter"));
+        assert!(!copy.exists());
+        std::fs::write(&copy, grant(1000, "earlier")).unwrap();
+        std::fs::write(&path, grant(900, "shorter")).unwrap();
+        assert_eq!(
+            super::settle_renewal(home.path(), 1000, false).unwrap(),
+            None
+        );
         assert_eq!(std::fs::read(&path).unwrap(), grant(1000, "earlier"));
         // A longer grant stays and the copy goes.
         std::fs::write(&copy, grant(1000, "earlier")).unwrap();
         std::fs::write(&path, grant(2000, "renewed")).unwrap();
         assert_eq!(
-            super::settle_renewal(home.path(), 1000).unwrap(),
+            super::settle_renewal(home.path(), 1000, false).unwrap(),
             Some(2000)
         );
         assert_eq!(std::fs::read(&path).unwrap(), grant(2000, "renewed"));

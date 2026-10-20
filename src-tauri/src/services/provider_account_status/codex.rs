@@ -16,6 +16,9 @@ use provider_accounts::ProviderAccount;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(25);
 
+/// How much longer than [`RPC_TIMEOUT`] a forced refresh may take.
+const REFRESH_GRACE: Duration = Duration::from_secs(60);
+
 struct Client {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -480,9 +483,17 @@ pub(crate) async fn refresh_grant(
         }
         Ok(())
     };
-    let result = tokio::time::timeout(RPC_TIMEOUT, operation)
+    // A refresh gets its usual time and a grace minute before it is
+    // stopped: one stopped mid-exchange can leave a rotated refresh token.
+    let result = tokio::time::timeout(RPC_TIMEOUT + REFRESH_GRACE, operation)
         .await
-        .unwrap_or_else(|_| Err("Codex account service timed out".into()));
+        .unwrap_or_else(|_| {
+            log::warn!(
+                "[providers] the Codex sign-in renewal of {} was stopped before it finished; if the provider already rotated its refresh token, this account needs one sign-in in Settings",
+                account.id
+            );
+            Err("Codex account service timed out".into())
+        });
     drop(client);
     if let Some(tree) = &tree {
         tree.kill();

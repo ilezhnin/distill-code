@@ -440,11 +440,39 @@ grant; no model is called. A renewal runs only while no lease of the account is
 alive, so the account drains first: its new tests return to the queue as
 unstarted admissions while later steps of workflows already running finish on
 the grant they were admitted with. A renewal the provider refuses keeps the
-grant and is not retried for the same grant for 15 minutes; sign in again in
-Settings > AI providers. Every five minutes the app also renews each Claude,
-Codex and Grok sign-in that would otherwise reach its CLI's own window within
-30 minutes, whether or not anything runs, so a quiet night never ends with an
-expired sign-in.
+grant and is not retried for the same grant for 15 minutes, nor does the
+account drain for it meanwhile (tests the grant still covers go on); sign in
+again in Settings > AI providers. Thirty seconds after the app starts and every five
+minutes after that, the app also renews each Claude, Codex and Grok sign-in
+that would otherwise reach its CLI's own window within 30 minutes, whether or
+not anything runs, so a quiet night never ends with an expired sign-in; the
+first pass also settles a Claude renewal a stopped app cut short. A renewal
+runs as its own task: a stopped run or a closed listing never cuts a token
+exchange in half, and a CLI that is slow gets a further minute before it is
+stopped (a stopped exchange is logged, since it may cost one sign-in).
+
+A forced renewal rotates the refresh token. Whether each pinned CLI (Claude,
+Codex app-server, Grok 1.0.40) reads its credential store again before it
+refreshes, instead of replaying the token it loaded, has not been verified.
+So Distill renews by force only while nothing else may hold the token: no chat
+of the account runs in the app, no `grok.exe` runs for Grok (the user's Grok
+sign-in is shared), and no `codex.exe` runs for Codex (which home a Codex
+process uses is not visible). Until then a test the grant still covers goes
+on, and one it does not waits ("renewed once the chats and CLIs running on
+that account stop"). A renewal in the CLI's own window is the refresh every
+CLI of the account makes anyway and is not held back. Codex refreshes a grant
+by itself once it is eight days old, so a Codex lease must end before that as
+before the access token's own expiry.
+
+A Grok lease covers at most one hour of a turn, as Grok sign-ins did before
+leases: a Grok turn that runs longer than its lease ends with it, unscored,
+and is run again. That keeps a six-hour Grok grant open to new tests for most
+of its life at the 4 h default limit, where covering whole turns would admit
+new tests only in the first ~47 minutes and drain the account the rest. A run
+whose time limit no fresh grant of a provider covers (Claude about 7 h 45 min
+on an 8 h grant) is refused when it is created; a forced renewal never runs
+for a test it could not admit.
+
 
 Kimi keeps its own sandbox-only sign-in (`node scripts/benchmark-sandbox.mjs
 login kimi ACCOUNT-ID`), never a copy of the user's Kimi home. A Kimi session

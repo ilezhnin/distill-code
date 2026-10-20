@@ -605,6 +605,31 @@ impl BenchmarkService {
                 "Run time limit must be between 1 and {MAX_TIME_LIMIT_SECONDS} seconds"
             ));
         }
+        // A sandbox test signs in with a lease of the app's grant, which must
+        // outlast it: a limit no fresh grant covers would never start.
+        let mut too_long = std::collections::BTreeSet::new();
+        for c in workers {
+            if let Some(provider) =
+                crate::services::agent_host::execution::NativeProvider::for_harness(&c.provider_id)
+                    .filter(|provider| crate::services::credential_lease::leased(*provider))
+                    .filter(|provider| {
+                        matches!(
+                            c.execution_profile.as_str(),
+                            "native_text" | "protected_repository"
+                        ) && !crate::services::credential_lease::fresh_grant_covers(
+                            *provider,
+                            request.timeout_seconds,
+                        )
+                    })
+            {
+                too_long.insert(provider.key());
+            }
+        }
+        for provider in too_long {
+            issues.push(format!(
+                "The time limit is longer than a {provider} sign-in lasts, so its tests could never start; choose a shorter time limit"
+            ));
+        }
         let mut ids = std::collections::HashSet::new();
         for v in &request.version_ids {
             if !ids.insert(v) {

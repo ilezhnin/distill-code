@@ -30,6 +30,23 @@ pub(crate) const MARGIN_MS: i64 = 120_000;
 /// The Claude CLI renews a grant in its last five minutes.
 pub(crate) const CLAUDE_RENEWAL_WINDOW_MS: i64 = 300_000;
 
+/// How old a Codex sign-in grows before the Codex CLI refreshes it by
+/// itself, whatever its access token's expiry (codex-rs refreshes a grant
+/// whose `last_refresh` is older than eight days).
+pub(crate) const CODEX_REFRESH_AGE_MS: i64 = 8 * 24 * 60 * 60 * 1000;
+
+/// The longest part of a Grok turn its lease must cover: a turn that runs
+/// past its lease ends with it, unscored, as before leases. A Grok sign-in
+/// lasts six hours and its CLI renews it in the last 65 minutes, so leases
+/// sized for whole multi-hour turns would admit new tests only in the
+/// first minutes of each grant.
+pub(crate) const GROK_TURN_CAP_MS: i64 = 60 * 60 * 1000;
+
+/// What a session holds its lease for beyond its turn: the start margin a
+/// staged lease must cover (480 s past the turn), the cleanup after it, and
+/// a minute for the checks between admission and the start.
+pub(crate) const SESSION_OVERHEAD_MS: i64 = 540_000;
+
 /// The largest credential document a lease carries.
 const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 
@@ -56,6 +73,59 @@ pub(crate) fn required_expiry(provider: NativeProvider, until_ms: i64) -> i64 {
     until_ms
         .saturating_add(natural_window_ms(provider))
         .saturating_add(MARGIN_MS)
+}
+
+/// How much of a turn of `turn_ms` a lease of `provider` must cover: all of
+/// it, but at most [`GROK_TURN_CAP_MS`] of a Grok turn.
+pub(crate) fn lease_span_ms(provider: NativeProvider, turn_ms: i64) -> i64 {
+    if provider == NativeProvider::Grok {
+        turn_ms.min(GROK_TURN_CAP_MS)
+    } else {
+        turn_ms
+    }
+}
+
+/// How long a fresh grant of `provider` lasts: the lifetime the last renewal
+/// returned, else the provider's usual one (Claude 8 h, Grok 6 h, Codex its
+/// eight-day refresh age). None for a key that does not expire.
+pub(crate) fn fresh_lifetime_ms(provider: NativeProvider) -> Option<i64> {
+    let usual = match provider {
+        NativeProvider::Claude => 8 * 60 * 60 * 1000,
+        NativeProvider::Grok => 6 * 60 * 60 * 1000,
+        NativeProvider::Codex => CODEX_REFRESH_AGE_MS,
+        NativeProvider::Kimi | NativeProvider::Zai => return None,
+    };
+    Some(
+        LIFETIMES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider.key())
+            .copied()
+            .unwrap_or(usual),
+    )
+}
+
+static LIFETIMES: std::sync::Mutex<BTreeMap<&'static str, i64>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Records how long the grant a renewal of `provider` returned lasts.
+pub(crate) fn record_fresh_lifetime(provider: NativeProvider, lifetime_ms: i64) {
+    if lifetime_ms > 0 {
+        LIFETIMES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider.key(), lifetime_ms);
+    }
+}
+
+/// Whether even a fresh grant of `provider` covers a test of
+/// `timeout_seconds`: its lease span, the session overhead, the CLI's own
+/// window and the margin. A run whose tests no grant can cover is refused
+/// when it is created, never by renewing grants that cannot last.
+pub(crate) fn fresh_grant_covers(provider: NativeProvider, timeout_seconds: u32) -> bool {
+    let span = lease_span_ms(provider, i64::from(timeout_seconds) * 1000)
+        .saturating_add(SESSION_OVERHEAD_MS);
+    fresh_lifetime_ms(provider).is_none_or(|lifetime| required_expiry(provider, span) <= lifetime)
 }
 
 /// Whether a grant that expires at `expires_at_ms` (none: it does not
@@ -283,7 +353,20 @@ pub(crate) fn codex(auth: &[u8], now_ms: i64) -> Result<Lease, String> {
     };
     let access = text("access_token").ok_or_else(|| invalid("Codex"))?;
     let id = text("id_token").ok_or_else(|| invalid("Codex"))?;
-    let expires_at_ms = jwt_expiry_ms(access).ok_or_else(|| invalid("Codex"))?;
+    // The Windows CLI refreshes the grant by itself once it is eight days
+    // old: a lease must end before that, as before its expiry.
+    let refreshed_by_age = document
+        .get("last_refresh")
+        .and_then(Value::as_str)
+        .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
+        .map(|stamp| {
+            stamp
+                .timestamp_millis()
+                .saturating_add(CODEX_REFRESH_AGE_MS)
+        });
+    let expires_at_ms = jwt_expiry_ms(access)
+        .ok_or_else(|| invalid("Codex"))?
+        .min(refreshed_by_age.unwrap_or(i64::MAX));
     let mut leased = json!({
         "id_token": id,
         "access_token": access,
@@ -464,6 +547,13 @@ pub(crate) fn read(
                 )
             };
             if provider == NativeProvider::Claude {
+                // A renewal a stopped app cut short is settled first, so its
+                // good copy is not left beside a broken document.
+                if let Err(error) =
+                    crate::services::provider_account_status::recover_claude_renewal(&home)
+                {
+                    log::warn!("[benchmarks] Claude account {}: {error}", account.id);
+                }
                 let mut credentials = read_file(".credentials.json")?.ok_or_else(signed_out)?;
                 let mut profile = read_file(".claude.json")?;
                 let lease = claude(&credentials, profile.as_deref());
@@ -553,7 +643,7 @@ mod tests {
             json!({"OPENAI_API_KEY": null, "tokens": {
                 "id_token": jwt(NOW / 1000 + 600), "access_token": jwt(NOW / 1000 + 864_000),
                 "refresh_token": "invented-refresh", "account_id": "invented-account"},
-                "last_refresh": "2026-01-01T00:00:00Z"})
+                "last_refresh": "2027-01-14T08:00:00Z"})
             .to_string()
             .as_bytes(),
             NOW,
@@ -564,7 +654,12 @@ mod tests {
         assert_eq!(auth["tokens"]["account_id"], "invented-account");
         assert_eq!(auth["last_refresh"], "2027-01-15T08:00:00Z");
         assert!(auth["OPENAI_API_KEY"].is_null());
-        assert_eq!(codex.expires_at_ms(), Some(NOW + 864_000_000));
+        // Eight days after its last refresh the Windows CLI refreshes it by
+        // itself: that comes before the access token's own expiry here.
+        assert_eq!(
+            codex.expires_at_ms(),
+            Some(NOW - 86_400_000 + CODEX_REFRESH_AGE_MS)
+        );
 
         let zai = super::zai(" invented-zai-key \n").unwrap();
         assert_eq!(text(&zai, "api-key"), "invented-zai-key\n");
@@ -703,6 +798,25 @@ mod tests {
         assert_eq!(jwt_expiry_ms("a.b.c"), None);
         assert_eq!(jwt_expiry_ms("plain"), None);
         assert_eq!(jwt_expiry_ms(&jwt(0)), None);
+    }
+
+    /// A Grok lease covers at most an hour of a turn, so a 4 h limit fits a
+    /// six-hour grant; a limit no fresh grant can cover is refused outright.
+    #[test]
+    fn only_limits_a_fresh_grant_covers_are_admitted() {
+        assert_eq!(
+            lease_span_ms(NativeProvider::Grok, 4 * 3_600_000),
+            GROK_TURN_CAP_MS
+        );
+        assert_eq!(
+            lease_span_ms(NativeProvider::Claude, 4 * 3_600_000),
+            4 * 3_600_000
+        );
+        assert!(fresh_grant_covers(NativeProvider::Grok, 24 * 3600));
+        assert!(fresh_grant_covers(NativeProvider::Claude, 7 * 3600));
+        assert!(!fresh_grant_covers(NativeProvider::Claude, 8 * 3600));
+        assert!(fresh_grant_covers(NativeProvider::Zai, u32::MAX));
+        assert!(fresh_grant_covers(NativeProvider::Codex, 24 * 3600));
     }
 
     /// A lease must outlast its session, the CLI's own renewal window and

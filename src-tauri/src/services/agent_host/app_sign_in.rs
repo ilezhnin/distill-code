@@ -27,6 +27,10 @@ use futures_util::future::BoxFuture;
 /// Why a test waits while its account drains for a renewal.
 pub(crate) const APP_SIGN_IN_DRAIN: &str = "the Distill sign-in of this account renews once the tests running on it finish; this test starts then";
 
+/// Why a test waits while a chat or CLI of its account keeps its sign-in
+/// from being renewed.
+pub(crate) const APP_SIGN_IN_HELD: &str = "the Distill sign-in this test needs is renewed once the chats and CLIs running on that account stop; this test starts then";
+
 /// How long after a failed renewal of the same grant the next one may run:
 /// a refused refresh token is not retried by every admission.
 const RETRY_AFTER_FAILURE_MS: i64 = 15 * 60_000;
@@ -39,6 +43,10 @@ pub(crate) const APP_SIGN_IN_SHORT: &str =
     "the Distill sign-in this test runs on is renewed before it starts";
 
 pub(crate) const KEEPALIVE_LEAD_MS: i64 = 30 * 60_000;
+
+/// When the keep-alive first looks, after the host starts: soon, so a renewal
+/// a stopped app cut short is settled and a grant near its end renewed.
+pub(crate) const KEEPALIVE_FIRST_PASS: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How often the keep-alive looks at every app sign-in.
 pub(crate) const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
@@ -54,6 +62,9 @@ pub(super) trait RenewalIo: Send {
     /// Asks the provider for a new grant: with `natural`, the way the CLI
     /// refreshes inside its own window; otherwise forced.
     fn renew(&mut self, natural: bool) -> BoxFuture<'_, Result<(), String>>;
+    /// How many chats or CLI processes of the app may hold the account's
+    /// refresh token in memory: a forced renewal waits for none.
+    fn other_holders(&mut self) -> BoxFuture<'_, usize>;
     /// After a renewal: retire the app's idle chat processes of the account,
     /// which may still hold the refresh token the renewal replaced.
     fn renewed(&mut self) -> BoxFuture<'_, ()>;
@@ -81,23 +92,58 @@ pub(super) async fn ensure(
         renewals.settle(key);
         return Ok(None);
     };
+    let needed = credential_lease::required_expiry(provider, until_ms);
+    let lasts = expiry >= needed;
     // A later step of work already running needs only a grant that lasts;
     // new work also waits while the account drains for a renewal.
-    if !drain && credential_lease::covers(provider, Some(expiry), until_ms) {
+    if !drain && lasts {
         return Ok(Some(expiry));
     }
-    let needed = credential_lease::required_expiry(provider, until_ms);
+    // A renewal of this grant failed a moment ago: the account does not
+    // drain for another try, and what the grant still covers goes on.
+    if let Some(error) = renewals.recent_failure(key, expiry, io.now(), RETRY_AFTER_FAILURE_MS) {
+        renewals.settle(key);
+        return if lasts { Ok(Some(expiry)) } else { Err(error) };
+    }
+    // A test no fresh grant could cover is refused before any renewal: a
+    // rotation would not help it.
+    if !lasts
+        && credential_lease::fresh_lifetime_ms(provider)
+            .is_some_and(|lifetime| needed.saturating_sub(io.now()) > lifetime)
+    {
+        renewals.settle(key);
+        return Err(format!(
+            "capability_missing: This test may run longer than a {} sign-in lasts; choose a shorter time limit",
+            provider.key()
+        ));
+    }
     let live = io.live_leases().await;
     match renewals.step(key, expiry, needed, live) {
         Step::Covered => return Ok(Some(expiry)),
         Step::Wait => return Err(format!("sign_in_wait: {APP_SIGN_IN_DRAIN}")),
         Step::Renew => {}
     }
-    if let Some(error) = renewals.recent_failure(key, expiry, io.now(), RETRY_AFTER_FAILURE_MS) {
-        renewals.settle(key);
-        return Err(error);
-    }
     let natural = io.now() >= expiry.saturating_sub(credential_lease::natural_window_ms(provider));
+    // A forced renewal rotates the refresh token; a chat or CLI of the
+    // account that still holds the old one could replay it. Whether each CLI
+    // reads its store again before it refreshes is not verified, so a forced
+    // renewal waits until none of them runs. A renewal in the CLI's own window
+    // is the refresh every CLI of the account would make anyway.
+    if !natural {
+        let others = io.other_holders().await;
+        if others > 0 {
+            renewals.settle(key);
+            log::info!(
+                "[agent-host] the Distill {} sign-in of {key} renews once its {others} chat or CLI process(es) stop",
+                provider.key()
+            );
+            return if lasts {
+                Ok(Some(expiry))
+            } else {
+                Err(format!("sign_in_wait: {APP_SIGN_IN_HELD}"))
+            };
+        }
+    }
     log::info!(
         "[agent-host] renewing the Distill {} sign-in of {key}{}",
         provider.key(),
@@ -120,6 +166,9 @@ pub(super) async fn ensure(
         ));
     }
     renewals.clear_failure(key);
+    if let Some(after) = after {
+        credential_lease::record_fresh_lifetime(provider, after.saturating_sub(io.now()));
+    }
     io.renewed().await;
     log::info!(
         "[agent-host] Distill {} sign-in of {key} renewed",
@@ -166,6 +215,7 @@ mod tests {
         grant: Result<Option<i64>, String>,
         renewed_grant: Option<i64>,
         leases: usize,
+        holders: usize,
         renewals: Vec<bool>,
         outcome: Result<(), String>,
         retired: usize,
@@ -178,6 +228,7 @@ mod tests {
                 grant: Ok(grant),
                 renewed_grant,
                 leases: 0,
+                holders: 0,
                 renewals: Vec::new(),
                 outcome: Ok(()),
                 retired: 0,
@@ -192,6 +243,9 @@ mod tests {
         }
         fn live_leases(&mut self) -> BoxFuture<'_, usize> {
             Box::pin(async move { self.leases })
+        }
+        fn other_holders(&mut self) -> BoxFuture<'_, usize> {
+            Box::pin(async move { self.holders })
         }
         fn renew(&mut self, natural: bool) -> BoxFuture<'_, Result<(), String>> {
             self.renewals.push(natural);
@@ -435,5 +489,117 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(idle.renewals, [false]);
+    }
+    /// A failed renewal does not make the account drain again: what the
+    /// grant still covers goes on, and the keep-alive sets no wait.
+    #[tokio::test]
+    async fn a_recent_failure_neither_drains_nor_blocks_covered_tests() {
+        let renewals = SignInRenewals::default();
+        let mut refused = Scripted::new(Some(NOW + HOUR), None);
+        refused.outcome = Err("invented refusal".into());
+        assert!(ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            NOW + 2 * HOUR,
+            true,
+            &mut refused
+        )
+        .await
+        .is_err());
+        refused.leases = 3;
+        // The keep-alive asks again: no wait is recorded.
+        assert!(ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            NOW + 2 * HOUR,
+            true,
+            &mut refused
+        )
+        .await
+        .unwrap_err()
+        .starts_with("capability_missing:"));
+        assert!(!renewals.is_due(KEY));
+        // A short test the grant covers starts.
+        assert_eq!(
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW,
+                true,
+                &mut refused
+            )
+            .await,
+            Ok(Some(NOW + HOUR))
+        );
+        assert_eq!(refused.renewals.len(), 1);
+    }
+
+    /// A test longer than any fresh grant is refused without a rotation.
+    #[tokio::test]
+    async fn a_test_no_fresh_grant_covers_is_refused_without_renewing() {
+        let renewals = SignInRenewals::default();
+        let mut io = Scripted::new(Some(NOW + HOUR), Some(NOW + 8 * HOUR));
+        let error = ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            NOW + 9 * HOUR,
+            true,
+            &mut io,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("shorter time limit"), "{error}");
+        assert!(io.renewals.is_empty());
+        assert!(!renewals.is_due(KEY));
+    }
+
+    /// A forced renewal waits while a chat or CLI of the account runs; one
+    /// in the CLI's own window does not.
+    #[tokio::test]
+    async fn a_forced_renewal_waits_for_the_accounts_chats_and_clis() {
+        let renewals = SignInRenewals::default();
+        let mut held = Scripted::new(Some(NOW + HOUR), Some(NOW + 8 * HOUR));
+        held.holders = 1;
+        assert_eq!(
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW + 2 * HOUR,
+                true,
+                &mut held
+            )
+            .await,
+            Err(format!("sign_in_wait: {APP_SIGN_IN_HELD}"))
+        );
+        // What the grant covers still starts.
+        assert_eq!(
+            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut held).await,
+            Ok(Some(NOW + HOUR))
+        );
+        assert!(held.renewals.is_empty());
+        assert!(!renewals.is_due(KEY));
+        let mut late = Scripted::new(Some(NOW + 60_000), Some(NOW + 8 * HOUR));
+        late.holders = 2;
+        ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut late)
+            .await
+            .unwrap();
+        assert_eq!(late.renewals, [true]);
+        held.holders = 0;
+        ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            NOW + 2 * HOUR,
+            true,
+            &mut held,
+        )
+        .await
+        .unwrap();
+        assert_eq!(held.renewals, [false]);
     }
 }
