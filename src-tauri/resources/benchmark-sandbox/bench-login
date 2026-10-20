@@ -5,10 +5,6 @@
 # here prints a link or a code to open in a browser on Windows; nothing
 # inside the sandbox can reach a browser or a callback on the host.
 #
-# Z.ai accounts have no sign-in flow: Distill pipes the account's saved API
-# key to `bench-login zai ACCOUNT-ID` on standard input. The key is never an
-# argument, never typed into a terminal and never printed.
-#
 # `bench-login claude ACCOUNT-ID --renew` renews the stored Claude sign-in
 # without a person: inside the same login confinement, the account's own
 # stored refresh token goes to `claude auth login` in its environment (the
@@ -24,7 +20,7 @@
 set -euo pipefail
 provider=${1:-}
 account=${2:-}
-[[ $account =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "usage: bench-login claude|codex|grok|kimi|zai ACCOUNT-ID [--renew]" >&2; exit 64; }
+[[ $account =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { echo "usage: bench-login claude|codex|grok|kimi ACCOUNT-ID [--renew]" >&2; exit 64; }
 home=/home/candidate/accounts/$account/$provider
 if [[ ${3:-} == --renew ]]; then
   [[ $provider == claude && ($# == 3 || ($# == 4 && ${4:-} =~ ^[0-9]{1,16}$)) ]] || { echo "bench-login: only a Claude sign-in renews with --renew [DEADLINE-MS]" >&2; exit 64; }
@@ -120,29 +116,6 @@ except Exception as error:
     print("bench-login: the Claude renewal failed (" + type(error).__name__ + "); the stored sign-in is kept", file=sys.stderr)
     sys.exit(70)
 '
-fi
-if [[ $provider == zai ]]; then
-  [[ ! -t 0 ]] || { echo "bench-login: Distill supplies the Z.ai key; do not type it here" >&2; exit 64; }
-  install -d -o candidate -g candidate -m 700 "/home/candidate/accounts/$account" "$home"
-  exec /usr/bin/python3 -c '
-import os, sys
-data = sys.stdin.buffer.read(4098)
-key = data[:-1] if data.endswith(b"\n") else data
-# Printable ASCII on one line, as a provider key is. Never echo the input.
-if len(data) > 4097 or not 0 < len(key) <= 4096 or any(byte < 0x21 or byte > 0x7e for byte in key):
-    print("bench-login: the Z.ai key is empty, too long or not one printable line", file=sys.stderr)
-    sys.exit(65)
-home = sys.argv[1]
-temporary = os.path.join(home, ".api-key.new")
-fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-try:
-    os.write(fd, key + b"\n")
-    os.fsync(fd)
-finally:
-    os.close(fd)
-os.replace(temporary, os.path.join(home, "api-key"))
-print("stored")
-' "$home"
 fi
 case $provider in
   claude) variable=CLAUDE_CONFIG_DIR command=(claude auth login --claudeai) ;;

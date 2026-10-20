@@ -359,7 +359,6 @@ pub fn run() {
             commands::benchmarks::benchmark_events_since,
             commands::benchmarks::benchmark_get_inventory,
             commands::benchmarks::benchmark_get_capabilities,
-            commands::benchmarks::benchmark_sandbox_sign_in,
             commands::benchmarks::benchmark_get_leaderboard,
             commands::benchmarks::benchmark_get_history,
             commands::benchmarks::benchmark_get_case_stats,

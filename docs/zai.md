@@ -43,15 +43,13 @@ model allowance. The integration never redeems quota resets automatically.
 Benchmark sessions run the Linux build of the same OpenCode release inside the
 `distill-bench` sandbox (see [benchmark operations](benchmark-operations.md)).
 Benchmark configurations record Coding Plan use as `subscription`, since the
-plan's endpoint is the only one configured. The sandbox keeps its own copy of
-each account's key: **Copy key to benchmark sandbox** in Settings > Benchmarks
-(the `benchmark_sandbox_sign_in` command) passes the saved key to
-`bench-login zai <account-id>` on standard input, never as an argument or in a
-log. Copy it again after changing the key in Distill. Removing the
-account's sandbox folder (`/home/candidate/accounts/<account-id>/zai`) removes
-the copy; signing out in Distill does not.
+plan's endpoint is the only one configured. The sandbox keeps no key of its
+own: before each session starts, Distill stages the account's saved key into
+that session's private folder (`bench-auth stage`, on the helper's standard
+input, never as an argument or in a log), so a changed key is used from the
+next session on, and removing the key in Distill stops Z.ai benchmarks.
 
-Each attempt gets a private copy of the key and may reach only `api.z.ai` on
+Each attempt gets its private copy of the key and may reach only `api.z.ai` on
 port 443, at the addresses it resolves to when the attempt starts; it has no
 DNS and no other host. OpenCode runs with its project configuration, Claude
 compatibility, external skills, default plugins, model catalog fetch, sharing,

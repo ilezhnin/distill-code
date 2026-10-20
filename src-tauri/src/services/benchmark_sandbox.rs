@@ -1780,8 +1780,7 @@ async fn invoke(
 /// executable inside the half-CPU control group: about six seconds, eight
 /// times an attempt. Within this window the checks share the last
 /// observation. Helper updates refuse while any job runs, and every native
-/// receipt observes again after its turn ([`observe_now`]), as does a
-/// sign-in renewal; a key copied into the sandbox drops the observation.
+/// receipt observes again after its turn ([`observe_now`]).
 pub(crate) const OBSERVATION_REUSE: Duration = Duration::from_secs(10);
 
 /// What the sandbox reported, shared by the checks within a reuse window of
@@ -1857,6 +1856,7 @@ impl<K: Ord + Clone, T: Clone> Recent<K, T> {
 
     /// Drops every kept observation, so the next check observes again: for
     /// an action of the app's own that changed what the sandbox reports.
+    #[cfg(test)]
     pub(crate) fn forget(&self) {
         self.slots
             .lock()
@@ -2080,42 +2080,6 @@ fn report_conflicts(status: &Status) {
             );
         }
     }
-}
-
-/// What `bench-login zai` reads on standard input: the key as one printable
-/// ASCII line, the form the sandbox stores and accepts.
-fn api_key_input(key: &str) -> io::Result<Vec<u8>> {
-    let key = key.trim();
-    if key.is_empty() || key.len() > 4096 || !key.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "The saved key is not one printable line; save it again in Distill",
-        ));
-    }
-    Ok(format!("{key}\n").into_bytes())
-}
-
-/// Copies a Z.ai account's saved key into its sandbox home, where every
-/// benchmark session of the account reads a private copy. The key travels
-/// only on the helper's standard input: never as an argument, a variable or
-/// in a diagnostic, which carries only the helper's own short message.
-pub(crate) async fn store_api_key(account: &str, key: &str) -> io::Result<()> {
-    valid_id(account)?;
-    let input = api_key_input(key)?;
-    invoke_raw(
-        "/usr/local/sbin/bench-login",
-        &["zai", account],
-        Some(&input),
-        TAIL_BYTES,
-        Duration::from_secs(60),
-        None,
-    )
-    .await?
-    .require_success("Z.ai key copy")?;
-    // The account is signed in from now on, not after the reuse window.
-    STATUS.forget();
-    Ok(())
 }
 
 /// The arguments of `bench-auth stage` for the lease of `provider` in
@@ -3687,27 +3651,6 @@ mod tests {
         ] {
             let line = base.lines().find(|line| line.starts_with(pin)).unwrap();
             assert!(parse_status(&base.replace(line, &format!("{pin} changed"))).is_err());
-        }
-    }
-
-    #[test]
-    fn a_saved_key_reaches_bench_login_as_one_line_or_not_at_all() {
-        assert_eq!(
-            api_key_input("  invented-zai-key.Part2  ").unwrap(),
-            b"invented-zai-key.Part2\n"
-        );
-        let long = "k".repeat(4097);
-        for invalid in [
-            "",
-            "   ",
-            "invented key",
-            "invented\nkey",
-            "invented\u{e9}key",
-            long.as_str(),
-        ] {
-            let error = api_key_input(invalid).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-            assert!(!error.to_string().contains("invented"));
         }
     }
 

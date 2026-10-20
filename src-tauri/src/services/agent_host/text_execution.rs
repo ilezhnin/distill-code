@@ -364,8 +364,8 @@ mod tests {
 
     /// A leased session's launch names its account only as the provider and
     /// egress selector: its sign-in is staged on standard input, never on the
-    /// command line `wsl.exe` shows every process. Only Kimi and Z.ai still
-    /// need a sandbox sign-in at readiness.
+    /// command line `wsl.exe` shows every process. Only Kimi still needs a
+    /// sandbox sign-in at readiness.
     #[test]
     fn no_lease_reaches_the_launch_arguments() {
         let lease = crate::services::credential_lease::claude(
@@ -396,7 +396,7 @@ mod tests {
             );
             assert_eq!(
                 requires_sandbox_sign_in(provider),
-                matches!(provider, NativeProvider::Kimi | NativeProvider::Zai)
+                provider == NativeProvider::Kimi
             );
         }
     }

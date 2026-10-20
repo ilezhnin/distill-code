@@ -18,8 +18,8 @@
 // It samples the Windows headroom the sandbox admits work against
 // (DISTILL_BENCH_HOST_GATE) and runs bench-login in a terminal with it; a
 // bare `wsl ... bench-login` carries no gate and is refused.
-// A Z.ai account has no sign-in: Distill copies its saved API key in
-// (benchmark_sandbox_sign_in), piping it to `bench-login zai <account-id>`.
+// A Z.ai account has no sign-in here: every session gets a lease of its
+// saved key, staged by Distill (`bench-auth stage`).
 //
 // The provider tools are the versions Distill runs on Windows: the managed
 // bridges from acp-tools.lock.json (installed with npm ci from the same

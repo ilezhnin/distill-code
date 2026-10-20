@@ -773,16 +773,6 @@
         "title": "Modelos calibrados fuera del grupo",
         "addToPool": "Añadir al grupo"
       }
-    },
-    "sandboxKeys": {
-      "title": "Claves de Z.ai en el entorno aislado de benchmarks",
-      "description": "Las pruebas de Z.ai se ejecutan en el entorno aislado de benchmarks, que guarda su propia copia de la clave guardada de la cuenta. Vuelve a copiarla después de cambiar la clave.",
-      "none": "No hay cuentas de Z.ai Coding Plan",
-      "noneDescription": "Añade una cuenta de Coding Plan en Proveedores de IA y luego copia aquí su clave.",
-      "copy": "Copiar clave al entorno aislado",
-      "copying": "Copiando...",
-      "done": "Clave copiada al entorno aislado de benchmarks.",
-      "failed": "No se copió: {{message}}"
     }
   },
   "mcpManager": {

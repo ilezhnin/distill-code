@@ -35,10 +35,7 @@ const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 
 /// Whether `provider`'s sandbox sessions run on a lease of the app's sign-in.
 pub(crate) fn leased(provider: NativeProvider) -> bool {
-    matches!(
-        provider,
-        NativeProvider::Claude | NativeProvider::Codex | NativeProvider::Grok
-    )
+    provider != NativeProvider::Kimi
 }
 
 /// How long before a grant expires the app's own CLI for `provider` renews it

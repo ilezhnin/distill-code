@@ -2,14 +2,12 @@
 """Stage credential leases and private CLI homes; retain only changed Kimi
 OAuth files after a stop.
 
-Claude, Codex and Grok sessions run on a lease: the host builds it from the
-Distill app's own sign-in, with no refresh token, and pipes it to
-`bench-auth stage ATTEMPT PROVIDER` on standard input before the session
-starts. Nothing a leased session writes is ever saved back; the app is the
-only process that refreshes those grants.
-
-A Z.ai account holds one API key that Distill copied in with bench-login.
-Attempts get a private copy and nothing they write is ever saved back.
+Claude, Codex, Grok and Z.ai sessions run on a lease: the host builds it
+from the Distill app's own sign-in (a Z.ai account's saved key), with no
+refresh token, and pipes it to `bench-auth stage ATTEMPT PROVIDER` on
+standard input before the session starts. Nothing a leased session writes
+is ever saved back; the app is the only process that refreshes those
+grants.
 
 What a save cannot settle (a refresh that cannot be ordered against the
 stored grant, an unreadable or linked file) is kept for the operator in a
@@ -44,6 +42,7 @@ LEASED = {
     "claude": (".credentials.json", ".claude.json"),
     "codex": ("auth.json",),
     "grok": ("auth.json",),
+    "zai": ("api-key",),
 }
 CLAUDE_GRANT = {"accessToken", "expiresAt", "scopes", "subscriptionType", "rateLimitTier"}
 GROK_ENTRY = {"key", "auth_mode", "create_time", "expires_at", "user_id", "email"}
@@ -116,6 +115,8 @@ def refresh_token_free(value):
 def lease_document(provider, name, data):
     """One file of a lease, checked against its provider's shape: what the
     host's builder writes and nothing more."""
+    if provider == "zai":
+        return api_key(data)
     value = credential_json(data)
     refresh_token_free(value)
     shaped = False
@@ -240,15 +241,6 @@ def prepare(value):
     home = directory / "home"
     home.mkdir(mode=0o700)
     os.chown(home, CANDIDATE.pw_uid, CANDIDATE.pw_gid)
-    if provider == "zai":
-        # A static key: no original is recorded, so save never imports a
-        # file from the attempt into the account.
-        source = account / "api-key"
-        if source.resolve(strict=True) != source:
-            raise ValueError("unsafe credential path")
-        write_private(home / "api-key", api_key(regular_bytes(source)), True)
-        replace_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": {}}).encode())
-        return
     if provider == "kimi":
         credentials = account / "credentials"
         if credentials.resolve(strict=True) != credentials:

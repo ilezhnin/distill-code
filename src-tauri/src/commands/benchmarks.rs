@@ -619,36 +619,6 @@ pub async fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
     }
     capabilities
 }
-/// Copies the saved key of the Z.ai Coding Plan account `account_id` into
-/// the benchmark sandbox, where that account's benchmark sessions read it.
-/// Run it again after changing the key in Distill. Device-login providers
-/// sign in inside the sandbox with `bench-login` instead.
-#[tauri::command]
-pub async fn benchmark_sandbox_sign_in(
-    app: AppHandle,
-    provider_id: String,
-    account_id: String,
-) -> Result<()> {
-    if provider_id != NativeProvider::Zai.harness_id() {
-        return Err(BenchmarkError::new(
-            "validation",
-            "Only Z.ai keys are copied into the sandbox; other providers sign in there with bench-login",
-        ));
-    }
-    let account = provider_accounts::account(&app, &account_id)
-        .map_err(|message| BenchmarkError::new("validation", message))?;
-    if account.provider_id != provider_id {
-        return Err(BenchmarkError::new(
-            "validation",
-            "The account belongs to another provider",
-        ));
-    }
-    let key = provider_accounts::api_key(&app, &account)
-        .map_err(|message| BenchmarkError::new("validation", message))?;
-    crate::services::benchmark_sandbox::store_api_key(&account.id, &key)
-        .await
-        .map_err(|error| BenchmarkError::new("infrastructure_failure", error.to_string()))
-}
 /// Ledger analysis is CPU work over every attempt; it runs off the async
 /// workers so a long history never stalls other commands.
 async fn analyze<T: Send + 'static>(
