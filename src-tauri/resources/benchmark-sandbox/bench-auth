@@ -9,7 +9,8 @@ standard input before the session starts. Nothing a leased session writes
 is ever saved back; the app is the only process that refreshes those
 grants.
 
-What a save cannot settle (a refresh that cannot be ordered against the
+Kimi alone keeps its own sandbox sign-in: a session gets a private copy and
+only a refreshed credential file is saved back. What a save cannot settle (a refresh that cannot be ordered against the
 stored grant, an unreadable or linked file) is kept for the operator in a
 conflict record, root's alone, and the save still succeeds, so the attempt's
 cleanup goes on. bench-status reports an account with records as
@@ -254,7 +255,7 @@ def prepare(value):
         config = {k: config[k] for k in ("default_provider", "default_model", "providers", "models") if k in config}
         write_private(home / "config.json", json.dumps(config).encode(), True)
     else:
-        names = [Path(".credentials.json" if provider == "claude" else "auth.json")]
+        raise ValueError("invalid sandbox account")
     originals = {}
     for name in names:
         source = account / name
@@ -264,10 +265,6 @@ def prepare(value):
         credential_json(data)
         originals[str(name)] = digest(data)
         write_private(home / name, data, True)
-    if provider == "claude" and (account / ".claude.json").exists():
-        settings = json.loads(regular_bytes(account / ".claude.json"))
-        settings = {k: settings[k] for k in ("oauthAccount", "userID", "machineID") if k in settings}
-        write_private(home / ".claude.json", json.dumps(settings).encode(), True)
     replace_private(directory / "receipt.json", json.dumps({"account": str(account), "originals": originals}).encode())
 
 
@@ -340,109 +337,6 @@ def prefer_refreshed_grant(provider, previous, updated):
     return after > before
 
 
-def local_credential_health(provider, value, at_ms):
-    """Redacted local structure/expiry only, never remote authentication.
-
-    Non-expiring Grok key documents remain compatible with the existing host
-    contract. Neither they nor an OAuth refresh token prove refreshability.
-    """
-    if provider == "claude":
-        grant = value.get("claudeAiOauth")
-        if not isinstance(grant, dict):
-            return "unknown", "invalid", None
-        token = grant.get("accessToken")
-        if not isinstance(token, str) or not token.strip():
-            return "oauth", "missing", None
-        expiry = grant_expiry(provider, value)
-        if expiry is None:
-            return "oauth", "unknown", None
-        expiry_ms = int(expiry * 1000)
-        return "oauth", "current" if expiry_ms > at_ms else "expired", expiry_ms
-    if provider == "grok":
-        preferred = [key for key in sorted(value)
-                     if key == "https://auth.x.ai" or key.startswith("https://auth.x.ai::")]
-        issuers = preferred or sorted(value)
-        first = None
-        for issuer in issuers:
-            grant = value[issuer]
-            if not isinstance(grant, dict):
-                continue
-            token = grant.get("key")
-            if not isinstance(token, str) or not token.strip():
-                continue
-            expiry = grant_expiry(provider, {issuer: grant})
-            if expiry is not None:
-                expiry_ms = int(expiry * 1000)
-                health = ("oauth", "current" if expiry_ms > at_ms else "expired", expiry_ms)
-            elif "expires_at" not in grant and grant.get("auth_mode") != "oidc":
-                health = ("unbounded", "unknown", None)
-            else:
-                health = ("oauth", "unknown", None)
-            # The host treats unreadable expiry as selectable, so an earlier
-            # unknown grant must not borrow a later issuer's validity window.
-            # An unrelated issuer cannot mask a preferred entry either.
-            if not preferred:
-                return health
-            if expiry is None or health[1] == "current":
-                return health
-            if first is None:
-                first = health
-        return first or ("unknown", "missing", None)
-    return "unknown", "unknown", None
-
-
-def claude_identity(account):
-    """The sign-in's account and organization ids from the account's own
-    .claude.json, lowercase, or "-" for each it does not hold. Only these
-    ids leave: never a token, an email or a name."""
-    try:
-        path = account / ".claude.json"
-        if path.resolve(strict=True) != path:
-            raise ValueError("unsafe credential path")
-        settings = credential_json(regular_bytes(path))
-        signed = settings.get("oauthAccount")
-        signed = signed if isinstance(signed, dict) else {}
-    except Exception:
-        signed = {}
-    ids = []
-    for key in ("accountUuid", "organizationUuid"):
-        value = signed.get(key)
-        uuid = isinstance(value, str) and re.fullmatch(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value)
-        ids.append(value.lower() if uuid else "-")
-    return ids
-
-
-def account_status(value):
-    import time
-    account = account_path(value)
-    provider = account.name
-    try:
-        name = {"claude": ".credentials.json", "zai": "api-key"}.get(provider, "auth.json")
-        source = account / name
-        if source.resolve(strict=True) != source:
-            raise ValueError("unsafe credential path")
-        if provider == "zai":
-            # An API key makes no expiry claim; its usage policy decides.
-            api_key(regular_bytes(source))
-            health = ("unbounded", "unknown", None)
-        else:
-            health = local_credential_health(provider, credential_json(regular_bytes(source)),
-                                             int(time.time() * 1000))
-    except FileNotFoundError:
-        health = ("unknown", "missing", None)
-    except Exception:
-        health = ("unknown", "invalid", None)
-    mode, state, expiry = health
-    # Compatibility hint for existing consumers; only local usability, never
-    # evidence that a provider accepted the credential.
-    usable = state == "current" or mode == "unbounded"
-    print(f"account {provider} {account.parent.name} {'yes' if usable else 'no'}")
-    print(f"account-health {provider} {account.parent.name} {mode} {state} {expiry if expiry is not None else '-'}")
-    if provider == "claude":
-        print(f"account-identity {provider} {account.parent.name} {' '.join(claude_identity(account))}")
-
-
 def failure_reason(error):
     # Never include provider data or parser excerpts: a helper's own
     # ValueError carries its message first, any document after it.
@@ -474,12 +368,6 @@ def refreshed_file(account, name, before):
     if after == before:
         return None
     updated = credential_json(data)
-    if account.name in ("claude", "grok"):
-        # Validate structure only, not freshness or remote acceptance. An
-        # expired but well-formed grant still belongs to the evidence.
-        mode, state, _ = local_credential_health(account.name, updated, 0)
-        if state != "current" and mode != "unbounded":
-            raise ValueError("unreadable refreshed credential; inspect sandbox account before retrying")
     target = account / name
     if target.resolve(strict=True) != target:
         raise ValueError("unsafe account credential path")
@@ -586,28 +474,7 @@ def settle(receipt_file):
         replace_private(receipt_file, json.dumps(receipt).encode())
 
 
-def account_statuses(values):
-    """account_status for each account in order; one it cannot read is
-    reported as signed out with invalid health, as a failed call was."""
-    for value in values:
-        try:
-            account_status(value)
-        except Exception:
-            path = Path(value)
-            print(f"account {path.name} {path.parent.name} no")
-            print(f"account-health {path.name} {path.parent.name} unknown invalid -")
-
-
 try:
-    if len(sys.argv) >= 3 and sys.argv[1] == "status":
-        # Status never copies grants, refreshes tokens, or starts a session.
-        with open("/run/lock/distill-bench-auth", "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_SH)
-            if len(sys.argv) == 3:
-                account_status(sys.argv[2])
-            else:
-                account_statuses(sys.argv[2:])
-        sys.exit(0)
     action, attempt = sys.argv[1:3]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", attempt):
         raise ValueError("invalid attempt")

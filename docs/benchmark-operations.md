@@ -64,18 +64,19 @@ node scripts/benchmark-sandbox.mjs selftest
 ```
 
 Provisioning installs dependencies and restarts that distribution. Schedule it
-before measurement, not during a run. Sign in to the selected account with
-`node scripts/benchmark-sandbox.mjs login claude|codex|grok|kimi ACCOUNT-ID`
-(see the top of [the provisioning script](../scripts/benchmark-sandbox.mjs)).
-It samples the Windows headroom the sandbox admits work against and runs
-`bench-login` in your terminal with it; a bare `wsl ... bench-login` carries no
-headroom sample and is refused. Use the account ID from the application and the
-provider's normal login flow. Never put credentials
-in a task, command transcript intended for publication, or source file. A Z.ai
-Coding Plan account has no login flow: **Copy key to benchmark sandbox** in
-Settings > Benchmarks (the `benchmark_sandbox_sign_in` command) copies its saved
-key into the sandbox on the helper's standard input (see
-[Z.ai Coding Plan](zai.md#benchmarks)). Z.ai sessions reach only the Z.ai API.
+before measurement, not during a run. Claude, Codex, Grok and Z.ai accounts
+sign in once, in Distill (Settings > AI providers; Grok through its own CLI
+sign-in): every sandbox session of theirs runs on a lease of that sign-in (see
+below), so there is nothing to sign in inside the sandbox, and the Z.ai key
+reaches it the same way (see [Z.ai Coding Plan](zai.md#benchmarks)). Z.ai
+sessions reach only the Z.ai API. Kimi alone keeps its own sandbox sign-in:
+`node scripts/benchmark-sandbox.mjs login kimi ACCOUNT-ID` (see the top of
+[the provisioning script](../scripts/benchmark-sandbox.mjs)). It samples the
+Windows headroom the sandbox admits work against and runs `bench-login` in your
+terminal with it; a bare `wsl ... bench-login` carries no headroom sample and is
+refused. Use the account ID from the application and Kimi's normal login flow.
+Never put credentials in a task, command transcript intended for publication,
+or source file.
 
 For an existing distribution, update helpers without downloading dependencies
 or restarting other WSL distributions:
@@ -381,10 +382,8 @@ link count. The recorded digests live in a root-only directory under `/run`,
 which empties at every WSL start; a damaged or unprotected record is read as
 absent. One sandbox observation answers the readiness checks that follow it
 within ten seconds, and checks that arrive while it runs share it. The receipt
-sealed after each turn, and each step of a sign-in renewal, always observe the
-sandbox again, so the checks after a renewal read the renewed grant; those that
-ask while one such observation runs share the next one. Copying a Z.ai key into
-the sandbox drops the shared observation. The supervisors' own CPU (status,
+sealed after each turn always observes the sandbox again; receipts that ask
+while one such observation runs share the next one. The supervisors' own CPU (status,
 cleanup and admission work) is one CPU of its own, outside the jobs' share. A
 watchdog in the sandbox reaps expired jobs and samples their CPU use every five
 seconds. It records its pid with the process's start time, so a reused pid
@@ -405,74 +404,64 @@ identity includes installed browser libraries and fonts, so previous Windows
 rendering results do not qualify the new renderer.
 
 Before dispatch, verify sandbox readiness, the exact account's authentication,
-quota and billing mode, and the provider/model/effort acknowledgement. Windows
-and sandbox authentication are separate runtime checks even for the same
-account. Refresh expiring credentials only after that account's active sessions
-have drained. Choose a dispatch deadline that leaves a complete attempt budget
-before a known authentication deadline.
+quota and billing mode, and the provider/model/effort acknowledgement. A
+sandbox session spends the account's one allowance under its Distill sign-in,
+so dispatch reads the account's status in the app for it.
 
-Sandbox status reports redacted local credential health separately from its
-runtime identity. Claude/Grok benchmark admission requires an OAuth
-expiry that covers the complete attempt plus five minutes for cleanup, and checks again
-before execution. Missing or invalid OAuth metadata refuses admission. A local
-expiry does not prove remote acceptance or refreshability; non-expiring key
-accounts make no expiry claim and retain their existing usage-policy checks.
-Providers without an expiry adapter retain their existing account checks.
+The Distill application is the only place an account signs in, and the only
+process that refreshes a grant. A Claude, Codex, Grok or Z.ai benchmark session
+runs on a lease of the app's own sign-in: once the broker reserved the session
+and before it starts, the host reads the account's current grant (the Claude
+or Codex home of the account, the user's Grok CLI sign-in, the Z.ai account's
+saved key), reduces it to what a session runs on, with no refresh token, and
+pipes it to `bench-auth stage ATTEMPT PROVIDER` on the helper's standard input,
+never as an argument or in a log. The helper refuses a lease that carries a
+refresh token under any name or is not the shape the host writes, writes each
+file once, 0600 and the candidate's, into the attempt's private folder, and
+never saves anything back: nothing in the sandbox can rotate a grant. The
+account folder a session names (`/home/candidate/accounts/<account>/<provider>`)
+only selects the provider and the egress; it holds no grant.
 
-When an attempt ends, bench-auth saves a refreshed credential file back to its
-account only when it can order it against the stored grant. What it cannot
-settle (two refreshes it cannot order, an unreadable, linked or oversized
-file) is kept in a conflict record under
-`/var/lib/distill-bench/auth-conflicts/<account>/<provider>/<attempt>/`,
-readable by root alone: `conflict.json` names each file and the reason, and
-`evidence/` holds a refreshed grant itself while the account has fewer than 20
-records. The stored grant stays, the attempt is still removed, and
-`bench-status` (and so `node scripts/benchmark-sandbox.mjs status`) prints
-`account-conflict <provider> <account> <count>`; the application logs it once
-per count. Admission goes on with the stored grant. Inspect the records, keep
-or sign in again as needed, then remove the account's conflict directory as
-root. Should a save fail outright, bench-clean still removes the attempt but
-keeps its credential copy in `/srv/bench/auth-unsaved/<attempt>/` (root only),
-and `bench-status` prints `auth-unsaved <count>`, which the application logs
-once per count; remove the copy once it is recovered.
+Admission requires the app's grant to cover the complete attempt, five minutes
+for cleanup, the CLI's own renewal window (Claude: its last five minutes; Grok:
+the window its chat bridge starts with) and two more minutes, so a lease never
+runs while the app's own CLIs renew the grant. A grant that falls short is
+renewed on Windows first, in the account's own home: Claude through its pinned
+CLI from the stored refresh token (the grant before it is kept until the CLI
+left a longer one), Codex through its native account read with a refresh, Grok
+through a short Grok process whose renewal window covers what is left of the
+grant; no model is called. A renewal runs only while no lease of the account is
+alive, so the account drains first: its new tests return to the queue as
+unstarted admissions while later steps of workflows already running finish on
+the grant they were admitted with. A renewal the provider refuses keeps the
+grant and is not retried for the same grant for 15 minutes; sign in again in
+Settings > AI providers. Every five minutes the app also renews each Claude,
+Codex and Grok sign-in that would otherwise reach its CLI's own window within
+30 minutes, whether or not anything runs, so a quiet night never ends with an
+expired sign-in.
 
-A sign-in (`bench-login`) and the application's sandbox account service see
-only the account home they name, writable, over an empty `/home` and a
-read-only root, never another account's sign-in.
+Kimi keeps its own sandbox-only sign-in (`node scripts/benchmark-sandbox.mjs
+login kimi ACCOUNT-ID`), never a copy of the user's Kimi home. A Kimi session
+gets a private copy of it, and when the attempt ends bench-auth saves a
+refreshed credential file back only when it can order it against the stored
+grant. What it cannot settle (two refreshes it cannot order, an unreadable,
+linked or oversized file) is kept in a conflict record under
+`/var/lib/distill-bench/auth-conflicts/<account>/kimi/<attempt>/`, readable by
+root alone: `conflict.json` names each file and the reason, and `evidence/`
+holds a refreshed grant itself while the account has fewer than 20 records.
+The stored grant stays, the attempt is still removed, and `bench-status` (and so
+`node scripts/benchmark-sandbox.mjs status`) prints
+`account-conflict kimi <account> <count>`; the application logs it once per
+count. Inspect the records, keep or sign in again as needed, then remove the
+account's conflict directory as root. Should a save fail outright, bench-clean
+still removes the attempt but keeps its credential copy in
+`/srv/bench/auth-unsaved/<attempt>/` (root only), and `bench-status` prints
+`auth-unsaved <count>`, which the application logs once per count; remove the
+copy once it is recovered.
 
-Distill renews a sandbox Grok sign-in itself when an attempt, judge turn or
-model listing needs it to last longer than it does, or when it has expired.
-Every session of the account runs on a private copy of that sign-in, so the
-renewal waits until none of them is alive. Meanwhile the account's new tests
-return to the queue ("Waits for a running Grok test") as unstarted
-admissions, under every retry policy, while later steps of workflows already
-running finish on the sign-in they were admitted with. A later step whose own
-limit needs the renewal waits for it inside its workflow, under every retry
-policy, as for sandbox room: nothing of the workflow is sent again. It waits
-for at most a quarter of the step's time limit; past that, a run without
-automatic retry stops for the operator as before. The renewal then starts
-one short session on the account, admitted as a text session under the same
-rules as every other job (a host build that keeps the measured load above the
-light line defers it), whose Grok CLI begins with
-`GROK_AUTH_EARLY_INVALIDATION_SECS` past the sign-in's remaining lifetime and
-renews it before its model listing; no model is called. Stopping that session
-saves the renewed grant to the account with bench-auth's rules for a
-refreshed OAuth file. Admission then reads the renewed grant under the
-unchanged rule. If the CLI does not renew it, the run stops with the reason,
-and the account needs `bench-login` again. The Claude CLI renews a sign-in
-only in its last five minutes and has no such setting, so a sandbox Claude
-sign-in renews the same way through `bench-login claude ACCOUNT-ID --renew`
-instead: under the same drain, the login confinement hands the account's own
-stored refresh token to `claude auth login` in its environment (never as an
-argument, never printed), and the CLI saves the renewed grant to the account.
-The grant before it stays in a private copy until what the CLI left reads as
-a grant at least as long; otherwise the copy is put back, so a renewal that
-breaks, refuses or is killed never signs an account out early. The app gives
-the renewal a deadline of 510 seconds and waits 570: a renewal still queued
-for a lane ends as the broker's `resource_busy` and waits again, not as a
-stop. If the provider refuses that token, the run stops with the reason and
-the account needs one `bench-login`. Codex and Kimi renew inside their own sessions
-and have no expiry check here; a Z.ai key does not expire.
+A Kimi sign-in (`bench-login kimi`) sees only the account home it names,
+writable, over an empty `/home` and a read-only root, never another account's
+sign-in.
 
 `benchmark_get_capabilities` reports supported execution profiles and reasons
 for refusals. Resolve the reported prerequisite; do not substitute a different

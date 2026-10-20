@@ -472,29 +472,18 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
       authTests,
     );
     pass("invented credential merge/privacy regressions", true);
-    // A Claude renewal of an account with no stored sign-in refuses before
-    // any session (exit 65), and only Claude renews this way (exit 64).
+    // Claude, Codex, Grok and Z.ai sign in in Distill alone: bench-login
+    // refuses them before any sign-in starts (exit 64), and takes Kimi alone.
+    for (const provider of ["claude", "codex", "grok", "zai"])
+      pass(
+        `${provider} never signs in inside the sandbox`,
+        call("/usr/local/sbin/bench-login", [provider, "selftest-x"]).status ===
+          64,
+      );
     pass(
-      "Claude renewal needs a stored sign-in",
-      call("/usr/local/sbin/bench-login", [
-        "claude",
-        `selftest-${randomUUID().slice(0, 8)}`,
-        "--renew",
-      ]).status === 65,
-    );
-    pass(
-      "only a Claude sign-in renews",
-      call("/usr/local/sbin/bench-login", ["codex", "selftest-x", "--renew"])
+      "a Kimi sign-in takes one account id",
+      call("/usr/local/sbin/bench-login", ["kimi", "selftest-x", "--renew"])
         .status === 64,
-    );
-    pass(
-      "a Claude renewal deadline is Unix milliseconds",
-      call("/usr/local/sbin/bench-login", [
-        "claude",
-        "selftest-x",
-        "--renew",
-        "soon",
-      ]).status === 64,
     );
     // Readiness digests: a pass from the record reports exactly what a cold
     // pass reads, the record is root's alone, and a changed file is read again.

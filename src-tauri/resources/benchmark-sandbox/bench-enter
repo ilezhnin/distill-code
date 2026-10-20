@@ -58,10 +58,10 @@ ln -s /proc/self/fd/2 /dev/stderr
 mount -t tmpfs -o mode=1777,size=128M,nr_inodes=4096 none /dev/shm
 mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none /sys
 mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none /run
-# A session sees a private copy of its selected sandbox sign-in, never
-# shared CLI state or other accounts. A sign-in or an account service (no
-# workspace) sees the one persistent account home it names, at its own path,
-# and nothing else of /home.
+# A session sees the private home staged for its attempt (a lease of the
+# Distill app's sign-in, or a copy of its Kimi sandbox sign-in), never shared
+# CLI state or other accounts. A Kimi sign-in (no workspace) sees the one
+# persistent account home it names, at its own path, and nothing else of /home.
 if [[ -n $dir && -n $account_home ]]; then
   [[ $user == candidate && $account_home =~ ^/home/candidate/accounts/[A-Za-z0-9_-]{1,80}/(claude|codex|grok|kimi|zai)$ ]] || exit 64
   account_home=/srv/bench/auth/$(basename "$dir")/home
@@ -70,7 +70,7 @@ if [[ -n $dir && -n $account_home ]]; then
   mount --bind "$account_home" /tmp/provider
 fi
 if [[ -n $login_home ]]; then
-  [[ -z $dir && $user == candidate && $login_home =~ ^/home/candidate/accounts/[A-Za-z0-9_-]{1,80}/(claude|codex|grok|kimi)$ ]] || exit 64
+  [[ -z $dir && $user == candidate && $login_home =~ ^/home/candidate/accounts/[A-Za-z0-9_-]{1,80}/kimi$ ]] || exit 64
   [[ $(realpath -e "$login_home") == "$login_home" ]] || exit 64
   install -d -m 700 /tmp/.login-home
   mount --bind "$login_home" /tmp/.login-home

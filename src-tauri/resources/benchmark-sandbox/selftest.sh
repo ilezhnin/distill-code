@@ -211,28 +211,6 @@ class CredentialTests(unittest.TestCase):
                     self.save(second + suffix)
                     self.assertEqual(json.loads(target.read_text()), document(300, "newer"))
 
-    def test_a_renewal_session_saves_the_renewed_grok_grant_and_nothing_else(self):
-        # The host's renewal session starts on the account's expired grant;
-        # the Grok CLI writes the renewed one into the private copy.
-        now = int(time.time())
-        account, target = self.account("grok", grok(now - 600, "expired"))
-        self.prepare(account, target, "renewal", grok(now + 21600, "renewed"))
-        (scope["ROOT"] / "renewal" / "home" / "session.log").write_text("invented", encoding="utf-8")
-        self.save("renewal")
-        self.assertEqual(json.loads(target.read_text()), grok(now + 21600, "renewed"))
-        self.assertFalse((account / "session.log").exists())
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            scope["account_status"](str(account))
-        self.assertEqual(output.getvalue().splitlines(), [
-            "account grok invented-account yes",
-            f"account-health grok invented-account oauth current {(now + 21600) * 1000}",
-        ])
-        # A session whose CLI did not renew leaves the account as it was.
-        self.prepare(account, target, "unrenewed", grok(now + 21600, "renewed"))
-        self.save("unrenewed")
-        self.assertEqual(json.loads(target.read_text()), grok(now + 21600, "renewed"))
-
     def conflict(self, provider, attempt):
         path = scope["CONFLICTS"] / "invented-account" / provider / attempt / "conflict.json"
         return json.loads(path.read_text())
@@ -258,20 +236,6 @@ class CredentialTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o600)
                 self.assertEqual(stat.S_IMODE(scope["CONFLICTS"].stat().st_mode), 0o700)
             self.assertFalse((scope["CONFLICTS"] / "invented-account" / provider / (provider + "a")).exists())
-
-    def test_malformed_refreshed_credentials_do_not_overwrite_account(self):
-        for provider, document in (("claude", claude), ("grok", grok)):
-            original = document(100, "original")
-            account, target = self.account(provider, original)
-            self.prepare(account, target, provider, {"unreadable": "invented-secret"})
-            self.save(provider)
-            self.assertEqual(json.loads(target.read_text()), original)
-            record = self.conflict(provider, provider)
-            self.assertEqual([entry["kept"] for entry in record["files"]], [False])
-            self.assertIn("unreadable refreshed credential", record["files"][0]["reason"])
-            records = scope["CONFLICTS"] / "invented-account" / provider
-            self.assertNotIn("invented-secret", "".join(
-                path.read_text() for path in records.rglob("*") if path.is_file()))
 
     def test_an_unparsable_or_removed_copy_never_stops_the_save(self):
         account, target = self.account("codex", {"token": "original"})
@@ -395,138 +359,6 @@ class CredentialTests(unittest.TestCase):
             updated["claudeAiOauth"]["expiresAt"] = expiry
             with self.assertRaisesRegex(ValueError, "concurrent credential refresh"):
                 scope["prefer_refreshed_grant"]("claude", claude(100, "old"), updated)
-
-    def test_local_health_distinguishes_current_expired_and_unknown(self):
-        for provider, document in (("claude", claude), ("grok", grok)):
-            self.assertEqual(scope["local_credential_health"](provider, document(200, "key"), 150000),
-                             ("oauth", "current", 200000))
-            self.assertEqual(scope["local_credential_health"](provider, document(100, "key"), 150000),
-                             ("oauth", "expired", 100000))
-        value = claude(200, "key")
-        del value["claudeAiOauth"]["expiresAt"]
-        self.assertEqual(scope["local_credential_health"]("claude", value, 150000),
-                         ("oauth", "unknown", None))
-
-    def test_grok_preferred_expired_issuer_is_not_masked_by_other_current_issuer(self):
-        value = grok(100, "expired") | grok(900, "unrelated", "https://other.example.invalid")
-        self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
-                         ("oauth", "expired", 100000))
-
-    def test_grok_selected_unknown_expiry_cannot_borrow_later_preferred_window(self):
-        for expiry in (None, "invalid-invented-expiry"):
-            grant = {"key": "synthetic-unknown-key", "auth_mode": "oidc"}
-            if expiry is not None:
-                grant["expires_at"] = expiry
-            # Deliberately insert the current grant first: host selection uses
-            # issuer ordering rather than the document's insertion order.
-            value = grok(900, "current", "https://auth.x.ai::b")
-            value["https://auth.x.ai::a"] = grant
-            for earlier_expired in (False, True):
-                if earlier_expired:
-                    value |= grok(100, "expired", "https://auth.x.ai")
-                self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
-                                 ("oauth", "unknown", None))
-
-    def test_grok_unbounded_keys_remain_unknown_without_fabricated_expiry(self):
-        value = {"invented-api": {"key": "synthetic-api-key"}}
-        self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
-                         ("unbounded", "unknown", None))
-        value["invented-api"]["auth_mode"] = "oidc"
-        self.assertEqual(scope["local_credential_health"]("grok", value, 150000),
-                         ("oauth", "unknown", None))
-
-    def zai_account(self, key):
-        account = scope["ACCOUNTS"] / "invented-account" / "zai"
-        account.mkdir(parents=True, exist_ok=True)
-        (account / "api-key").write_bytes(key)
-        return account
-
-    def test_one_status_pass_reads_every_account_in_order(self):
-        # bench-status reads all OAuth and key accounts in one call; one it
-        # cannot read is reported as before, without hiding the others.
-        now = int(time.time())
-        account, _ = self.account("claude", claude(now + 7200, "current"))
-        zai = self.zai_account(b"invented-zai-key\n")
-        missing = scope["ACCOUNTS"] / "invented-gone" / "grok"
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            scope["account_statuses"]([str(account), str(missing), str(zai)])
-        self.assertEqual(output.getvalue().splitlines(), [
-            "account claude invented-account yes",
-            f"account-health claude invented-account oauth current {(now + 7200) * 1000}",
-            "account-identity claude invented-account - -",
-            "account grok invented-gone no",
-            "account-health grok invented-gone unknown invalid -",
-            "account zai invented-account yes",
-            "account-health zai invented-account unbounded unknown -",
-        ])
-
-    def test_zai_status_is_unbounded_and_never_prints_the_key(self):
-        account = self.zai_account(b"synthetic-private-zai-key\n")
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            scope["account_status"](str(account))
-        self.assertEqual(output.getvalue().splitlines(), [
-            "account zai invented-account yes",
-            "account-health zai invented-account unbounded unknown -",
-        ])
-        invalid_keys = (b"", b"\n", b"synthetic private\n", b"synthetic\nprivate\n", b"x" * 4097)
-        for index, invalid in enumerate(invalid_keys):
-            with self.subTest(invalid=index):
-                (account / "api-key").write_bytes(invalid)
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    scope["account_status"](str(account))
-                self.assertEqual(output.getvalue().splitlines(), [
-                    "account zai invented-account no",
-                    "account-health zai invented-account unknown invalid -",
-                ])
-                self.assertNotIn("synthetic", output.getvalue())
-
-    def test_status_never_prints_tokens_or_invalid_document_excerpts(self):
-        expiry = int(time.time()) + 3600
-        account, target = self.account("claude", claude(expiry, "synthetic-private-token"))
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            scope["account_status"](str(account))
-        self.assertEqual(output.getvalue().splitlines(), [
-            "account claude invented-account yes",
-            f"account-health claude invented-account oauth current {expiry * 1000}",
-            "account-identity claude invented-account - -",
-        ])
-        target.write_text("synthetic-private-token-invalid-json", encoding="utf-8")
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            scope["account_status"](str(account))
-        self.assertEqual(output.getvalue().splitlines(), [
-            "account claude invented-account no",
-            "account-health claude invented-account unknown invalid -",
-            "account-identity claude invented-account - -",
-        ])
-
-    def test_status_names_the_sign_ins_ids_and_nothing_else_of_it(self):
-        expiry = int(time.time()) + 3600
-        account, _ = self.account("claude", claude(expiry, "synthetic-private-token"))
-        (account / ".claude.json").write_text(json.dumps({"oauthAccount": {
-            "accountUuid": "0A1B2C3D-0000-4000-8000-00000000000A",
-            "organizationUuid": "00000000-0000-4000-8000-00000000000b",
-            "emailAddress": "synthetic-private@example.invalid",
-            "displayName": "synthetic-private-name",
-        }}), encoding="utf-8")
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            scope["account_status"](str(account))
-        self.assertEqual(output.getvalue().splitlines()[-1],
-                         "account-identity claude invented-account "
-                         "0a1b2c3d-0000-4000-8000-00000000000a 00000000-0000-4000-8000-00000000000b")
-        self.assertNotIn("synthetic-private", output.getvalue())
-        # Ids that are not UUIDs are not passed on.
-        (account / ".claude.json").write_text(json.dumps({"oauthAccount": {
-            "accountUuid": "synthetic-private id", "organizationUuid": 7}}), encoding="utf-8")
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            scope["account_status"](str(account))
-        self.assertEqual(output.getvalue().splitlines()[-1], "account-identity claude invented-account - -")
 
 
 def lease_input(files):

@@ -4,7 +4,7 @@
 //
 //   node scripts/benchmark-sandbox.mjs            provision (create if missing)
 //   node scripts/benchmark-sandbox.mjs status     print bench-status
-//   node scripts/benchmark-sandbox.mjs login PROVIDER ACCOUNT-ID  sign in (below)
+//   node scripts/benchmark-sandbox.mjs login kimi ACCOUNT-ID  Kimi sign-in (below)
 //   node scripts/benchmark-sandbox.mjs selftest   check the confinement from inside
 //   node scripts/benchmark-sandbox.mjs deploy-helpers  network-free helper update
 //   node scripts/benchmark-sandbox.mjs heavy-cap N|off  cap CPU-heavy jobs at once
@@ -13,13 +13,13 @@
 //                                     tools (downloads them; helpers, users and
 //                                     the browser stay as they are)
 //
-// Provider sign-in happens inside the sandbox, by hand, once per account:
-//   node scripts/benchmark-sandbox.mjs login claude|codex|grok|kimi <account-id>
+// Claude, Codex, Grok and Z.ai sign in once, in Distill: every session gets a
+// lease of that sign-in (`bench-auth stage`), and nothing signs in here.
+// Kimi alone keeps its own sandbox sign-in, made by hand once per account:
+//   node scripts/benchmark-sandbox.mjs login kimi <account-id>
 // It samples the Windows headroom the sandbox admits work against
 // (DISTILL_BENCH_HOST_GATE) and runs bench-login in a terminal with it; a
 // bare `wsl ... bench-login` carries no gate and is refused.
-// A Z.ai account has no sign-in here: every session gets a lease of its
-// saved key, staged by Distill (`bench-auth stage`).
 //
 // The provider tools are the versions Distill runs on Windows: the managed
 // bridges from acp-tools.lock.json (installed with npm ci from the same
@@ -275,11 +275,11 @@ function hostGate() {
   return gate;
 }
 
-/** Signs `provider` in for `account` inside the sandbox, in this terminal. */
+/** Signs Kimi in for `account` inside the sandbox, in this terminal. */
 function login(provider, account) {
-  if (!/^(claude|codex|grok|kimi)$/u.test(provider ?? ""))
+  if (provider !== "kimi")
     throw new Error(
-      "login takes claude|codex|grok|kimi and an account id; Distill copies Z.ai keys itself",
+      "login takes kimi and an account id; Claude, Codex, Grok and Z.ai sign in in Distill",
     );
   if (!/^[A-Za-z0-9_-]{1,80}$/u.test(account ?? ""))
     throw new Error("login takes the account id from the application");

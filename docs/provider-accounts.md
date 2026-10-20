@@ -174,19 +174,15 @@ appears in Settings, and has no home, key file or usage source of its own:
 the account environment for it is the shell environment unchanged. Chats keep
 running on the CLI without an account, and their activity counts as the
 identity's activity, since both share one sign-in and one allowance. A Grok
-benchmark bridge runs on a private Grok home and is handed the user's session
-reduced to its access token, issue and expiry times and identity (`key`,
+benchmark session in the sandbox runs on a lease of the user's Grok CLI
+sign-in: its access token, issue and expiry times and identity (`key`,
 `auth_mode`, `create_time`, `expires_at`, `user_id`, `email`), with no refresh
-or other token, so it can never rotate the sign-in the user's own Grok keeps:
-Grok reads it once, while it answers `initialize`, from a file in an
-owner-only folder outside that home (`GROK_AUTH_PATH`), which the host removes
-as soon as the bridge has answered, and again when the agent host starts or
-the app quits should Distill have stopped in between; Grok 1.0.40 does not
-accept a session through `GROK_AUTH`. The user's `auth.json` is read, never written. A Kimi benchmark bridge runs on the user's own Kimi home
-(`KIMI_CODE_HOME`), which keeps and refreshes the sign-in as in chats; only its
-OS home and application data folders are redirected, and what it would load
-from the Kimi home besides the
-sign-in, models and settings is removed in process. The v2 account
+or other token, staged for that session alone, so it can never rotate the
+sign-in the user's own Grok keeps. Distill reads the user's `auth.json` and
+never writes it; when a session needs the sign-in to last longer, a short
+Grok process on Windows renews it the CLI's own way (see
+[benchmark operations](benchmark-operations.md)). A Kimi benchmark session runs
+on Kimi's own sandbox sign-in, never a copy of the user's Kimi home. The v2 account
 index drops the old external-login entries while retaining saved Distill
 accounts, their credentials and routing preferences. The database migration
 clears external account references without changing transcripts. Selecting a
