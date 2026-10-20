@@ -1057,9 +1057,6 @@ pub(crate) struct Status {
     conflicts: BTreeMap<(String, String), u32>,
     /// Credential copies bench-clean kept aside after a failed save.
     unsaved: u32,
-    /// By provider and account, the login the sandbox holds for it (its
-    /// account uuid), where the helpers report one; never a credential.
-    identities: BTreeMap<(String, String), Option<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1150,6 +1147,7 @@ pub(crate) fn valid_id(id: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn command(program: &str, args: &[&str]) -> tokio::process::Command {
     command_with_host_buffers(program, args, 0, None)
 }
@@ -1904,7 +1902,6 @@ async fn observe_status() -> io::Result<Status> {
     }
     let status = parse_status(&String::from_utf8_lossy(&out.stdout))?;
     report_conflicts(&status);
-    remember_logins(&status);
     Ok(status)
 }
 
@@ -2040,52 +2037,6 @@ fn parse_status(text: &str) -> io::Result<Status> {
             return Err(io::Error::other("Malformed sandbox credential conflict"));
         }
     }
-    // The login each sandbox account holds; helpers from before it was
-    // reported print none, which leaves it unknown. It only informs, so a
-    // line that is not one leaves that login unknown instead of refusing
-    // the status.
-    let mut identities = BTreeMap::new();
-    let mut doubtful = std::collections::BTreeSet::new();
-    for parts in &lines {
-        if parts.first() != Some(&"account-identity") {
-            continue;
-        }
-        let parse = |value: &str| match value {
-            "-" => Some(None),
-            value => uuid::Uuid::parse_str(value)
-                .ok()
-                .map(|id| Some(id.to_string())),
-        };
-        let read = match parts.as_slice() {
-            [_, provider, account, account_uuid, organization_uuid]
-                if valid_id(provider).is_ok() && valid_id(account).is_ok() =>
-            {
-                parse(organization_uuid)
-                    .and(parse(account_uuid))
-                    .map(|login| ((provider.to_string(), account.to_string()), login))
-            }
-            _ => None,
-        };
-        match read {
-            Some((key, login)) if !doubtful.contains(&key) => {
-                if identities.insert(key.clone(), login).is_some() {
-                    // Reported twice: neither report is trusted.
-                    identities.remove(&key);
-                    doubtful.insert(key);
-                }
-            }
-            Some(_) => {}
-            None => {
-                static WARNED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    log::warn!(
-                        "[benchmarks] the sandbox status has an account identity line that is not one; its login stays unknown"
-                    );
-                }
-            }
-        }
-    }
     // Reported for the operator, never a reason to refuse the status.
     let unsaved = lines
         .iter()
@@ -2100,30 +2051,7 @@ fn parse_status(text: &str) -> io::Result<Status> {
         account_health,
         conflicts,
         unsaved,
-        identities,
     })
-}
-
-/// The logins the last sandbox status reported, by provider and account.
-static SANDBOX_LOGINS: std::sync::Mutex<BTreeMap<(String, String), Option<String>>> =
-    std::sync::Mutex::new(BTreeMap::new());
-
-fn remember_logins(status: &Status) {
-    *SANDBOX_LOGINS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = status.identities.clone();
-}
-
-/// The account uuid of the login the sandbox holds for `account` of
-/// `provider` (the sandbox's provider key, such as `claude`), as the last
-/// sandbox status reported it; none where it reported none.
-pub(crate) fn sandbox_login(provider: &str, account: &str) -> Option<String> {
-    SANDBOX_LOGINS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&(provider.to_owned(), account.to_owned()))
-        .cloned()
-        .flatten()
 }
 
 /// Logs each sandbox account with credential conflicts once per count, and
@@ -3693,45 +3621,6 @@ mod tests {
         assert!(unbounded
             .require_account_window("grok", "account-1", 1_800_000_000_000, 3600)
             .is_ok());
-    }
-
-    #[test]
-    fn the_sandbox_login_of_an_account_is_volatile_evidence_read_when_reported() {
-        let base = status();
-        let original = parse_status(&base).unwrap();
-        // Helpers that print no identity leave every login unknown.
-        assert!(original.identities.is_empty());
-        let uuid = "0D3C2F0E-6A1B-4C9A-9B1E-3F6D2A7C8E01";
-        let signed = parse_status(&format!(
-            "{base}\naccount claude account-1 yes\naccount-identity claude account-1 {uuid} -"
-        ))
-        .unwrap();
-        assert_eq!(signed.revision, original.revision);
-        assert_eq!(
-            signed.identities[&("claude".to_owned(), "account-1".to_owned())],
-            Some(uuid.to_lowercase())
-        );
-        let unknown =
-            parse_status(&format!("{base}\naccount-identity claude account-1 - -")).unwrap();
-        assert_eq!(
-            unknown.identities[&("claude".to_owned(), "account-1".to_owned())],
-            None
-        );
-        // It only informs: a line that is not one, or an account reported
-        // twice, leaves that login unknown and never refuses the status.
-        for malformed in [
-            "account-identity claude account-1 not-a-uuid -",
-            "account-identity claude account-1 -",
-            "account-identity claude account-1 - - extra",
-        ] {
-            let status = parse_status(&format!("{base}\n{malformed}")).unwrap();
-            assert!(status.identities.is_empty(), "{malformed}");
-        }
-        let twice = parse_status(&format!(
-            "{base}\naccount-identity claude account-1 {uuid} -\naccount-identity claude account-1 - -\naccount-identity claude account-1 {uuid} -"
-        ))
-        .unwrap();
-        assert!(twice.identities.is_empty());
     }
 
     #[test]

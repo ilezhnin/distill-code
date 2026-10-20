@@ -148,13 +148,14 @@ inventories and native session IDs are scoped to the provider and account.
 Inherited credentials from a different account are removed for managed entries.
 Updating credentials or removing an account is blocked while it runs a turn.
 
-Repository benchmarks use the selected account's authorization and quota inside
-the dedicated WSL sandbox. Windows and WSL snapshots have separate caches and
-refresh gates for the same account ID. A Windows sign-in failure cannot reject
-an authenticated WSL session; a WSL quota rejection cannot overwrite the Windows
-status panel. Owned sessions retain their frozen account. Sandbox status reads
-use native CLI control requests without prompts or quota redemption, and their
-Linux processes are stopped on completion, timeout or cancellation.
+Benchmark sessions in the dedicated WSL sandbox run on leases of the selected
+account's sign-in in Distill: a copy of its current grant without a refresh
+token, staged for each session (see
+[benchmark operations](benchmark-operations.md)). Distill is the only place an
+account signs in and the only process that refreshes its grant, so a sandbox
+session spends the same allowance under the same sign-in, and dispatch reads
+the same account status for it as for chats: a quota rejection in the sandbox
+blocks the account in Settings too. Owned sessions retain their frozen account.
 
 Benchmarks run Codex on the same account home, and Codex loads that home into
 every thread. A Codex account is benchmarked only while its home holds no

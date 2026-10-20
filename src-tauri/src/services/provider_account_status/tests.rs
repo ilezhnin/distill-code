@@ -647,14 +647,8 @@ fn the_last_good_usage_read_is_kept_through_failed_reads_until_the_account_chang
     empty.limits.clear();
     native.remember_good_read(&empty);
     assert_eq!(windows_headroom(&read().unwrap().0, None), Some(60.0));
-    // Each runtime keeps its own reads: the sandbox's sign-in is another
-    // identity than the Windows one judges are ranked by.
-    let repository = AccountStatusCache::default();
-    repository.remember_good_read(&status("invented-good-read", 99.0, 5000));
-    assert_eq!(windows_headroom(&read().unwrap().0, None), Some(60.0));
     native.forget_good_read("invented-good-read");
     assert!(read().is_none());
-    assert!(repository.good_read("invented-good-read").is_some());
 }
 
 #[test]
@@ -750,141 +744,65 @@ fn reset_outcomes_keep_idempotent_success_distinct() {
 }
 
 #[tokio::test]
-async fn authorization_quota_and_invalidation_stay_in_the_executing_runtime() {
-    for (blocked, executing) in [
-        (AccountRuntime::Native, AccountRuntime::Repository),
-        (AccountRuntime::Repository, AccountRuntime::Native),
-    ] {
-        let state = ProviderAccountStatusState::default();
-        let target = account("same-account");
-        let mut signed_out = fresh_status(&target.id);
-        signed_out.state = AccountState::NeedsAuth;
-        state
-            .runtime(blocked)
-            .refresh(&target, false, async { signed_out.clone() })
-            .await;
-        let ready = state
-            .runtime(executing)
-            .refresh(&target, false, async { fresh_status(&target.id) })
-            .await;
-        assert!(matches!(
-            choose_account(
-                std::slice::from_ref(&target),
-                &[ready],
-                &target.id,
-                false,
-                None,
-                now_ms()
-            ),
-            Ok(AccountSelection::Ready { .. })
-        ));
-        assert!(choose_account(
+async fn a_sandbox_quota_rejection_blocks_the_accounts_one_status() {
+    // A sandbox session runs on a lease of the app's own sign-in and spends
+    // the same allowance: its rejection lands in the status dispatch reads.
+    let state = ProviderAccountStatusState::default();
+    let target = account("same-account");
+    let ready = state
+        .native
+        .refresh(&target, false, async { fresh_status(&target.id) })
+        .await;
+    assert!(matches!(
+        choose_account(
             std::slice::from_ref(&target),
-            std::slice::from_ref(&signed_out),
+            &[ready],
             &target.id,
             false,
             None,
             now_ms()
-        )
-        .is_err());
-
-        state.runtime(executing).record_limited(&target).await;
-        assert_eq!(
-            state.runtime(blocked).cache.lock().await[&target.id],
-            signed_out
-        );
-        state.runtime(blocked).invalidate(&target.id).await;
-        let limited = state
-            .runtime(executing)
-            .refresh(&target, false, async {
-                panic!("fresh rejection must block dispatch without polling")
-            })
-            .await;
-        assert!(matches!(
-            choose_account(
-                std::slice::from_ref(&target),
-                &[limited],
-                &target.id,
-                false,
-                None,
-                now_ms()
-            ),
-            Ok(AccountSelection::Wait { .. })
-        ));
-
-        // Failed telemetry cannot undo a known quota rejection in this runtime.
-        state.runtime(executing).invalidate(&target.id).await;
-        let failed = state
-            .runtime(executing)
-            .refresh(&target, false, async {
-                let mut status = fresh_status(&target.id);
-                status.state = AccountState::Error;
-                status
-            })
-            .await;
-        assert!(matches!(
-            choose_account(
-                std::slice::from_ref(&target),
-                &[failed],
-                &target.id,
-                false,
-                None,
-                now_ms()
-            ),
-            Ok(AccountSelection::Wait { .. })
-        ));
-    }
-}
-
-#[tokio::test]
-async fn a_native_refresh_does_not_hold_the_repository_gate_for_the_same_account() {
-    let state = ProviderAccountStatusState::default();
-    let slot = state.native.refresh_slot("a").await;
-    let _guard = slot.gate.lock().await;
-    let result = tokio::time::timeout(
-        Duration::from_secs(1),
-        state
-            .repository
-            .refresh(&account("a"), false, async { fresh_status("a") }),
-    )
-    .await;
-    assert_eq!(result.unwrap().state, AccountState::Ready);
-}
-
-#[test]
-fn repository_claude_usage_recognizes_auth_and_model_specific_quota() {
-    let mut target = account("sandbox-account");
-    target.provider_id = "claude-acp".into();
-    let usage = json!({"subscription_type":"pro","rate_limits_available":true,"rate_limits":{"limits":[{"kind":"session","percent":12},{"kind":"weekly_all","percent":42},{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Sonnet"}}}]}});
-    let status =
-        claude::repository_status(&target, &json!({"subscriptionType":"claude_pro"}), &usage);
-    assert_eq!(status.subscription.as_deref(), Some("Claude Pro"));
-    assert!(matches!(
-        choose_account(
-            std::slice::from_ref(&target),
-            std::slice::from_ref(&status),
-            &target.id,
-            false,
-            Some("haiku"),
-            now_ms()
         ),
         Ok(AccountSelection::Ready { .. })
     ));
+    state.native.record_limited(&target).await;
+    let limited = state
+        .native
+        .refresh(&target, false, async {
+            panic!("fresh rejection must block dispatch without polling")
+        })
+        .await;
     assert!(matches!(
         choose_account(
             std::slice::from_ref(&target),
-            &[status],
+            &[limited],
             &target.id,
             false,
-            Some("sonnet"),
+            None,
             now_ms()
         ),
         Ok(AccountSelection::Wait { .. })
     ));
-    assert_eq!(
-        claude::repository_status(&target, &Value::Null, &usage).state,
-        AccountState::NeedsAuth
-    );
+    // Failed telemetry cannot undo a known quota rejection.
+    state.native.invalidate(&target.id).await;
+    let failed = state
+        .native
+        .refresh(&target, false, async {
+            let mut status = fresh_status(&target.id);
+            status.state = AccountState::Error;
+            status
+        })
+        .await;
+    assert!(matches!(
+        choose_account(
+            std::slice::from_ref(&target),
+            &[failed],
+            &target.id,
+            false,
+            None,
+            now_ms()
+        ),
+        Ok(AccountSelection::Wait { .. })
+    ));
 }
 
 fn on_credits(id: &str, reset: i64) -> ProviderAccountStatus {

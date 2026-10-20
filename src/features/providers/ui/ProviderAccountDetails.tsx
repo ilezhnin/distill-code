@@ -40,7 +40,6 @@ export function ProviderAccountDetails({
       resetTokens={status?.resetTokens}
       onUseReset={canUseAccountReset(status, now) ? onUseReset : undefined}
       resetDisabled={resetDisabled}
-      sandboxLoginMismatch={status?.sandboxLoginMismatch === true}
     />
   );
 }
@@ -60,7 +59,6 @@ export function ProviderUsageDetails({
   resetTokens,
   onUseReset,
   resetDisabled = false,
-  sandboxLoginMismatch = false,
 }: {
   usage: ProviderRateLimits;
   now: number;
@@ -69,8 +67,6 @@ export function ProviderUsageDetails({
   resetTokens?: ProviderAccountStatus["resetTokens"];
   onUseReset?: (credit: ProviderAccountResetCredit, label: string) => void;
   resetDisabled?: boolean;
-  /** The benchmark sandbox spends the account under another login. */
-  sandboxLoginMismatch?: boolean;
 }) {
   const { t } = useTranslation("settings");
   const { formatDate, formatNumber } = useLocaleFormatting();
@@ -109,11 +105,6 @@ export function ProviderUsageDetails({
           <Badge variant="secondary">{t("accounts.onCredits")}</Badge>
         ) : null}
         {stale ? <Badge variant="outline">{t("accounts.stale")}</Badge> : null}
-        {sandboxLoginMismatch ? (
-          <Badge variant="destructive">
-            {t("accounts.sandboxLoginMismatch")}
-          </Badge>
-        ) : null}
       </div>
       {getUsageSections(usage).length ? (
         <UsageLimits provider={usage} now={now} />

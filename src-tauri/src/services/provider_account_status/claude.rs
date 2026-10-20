@@ -154,26 +154,6 @@ pub(super) async fn read_usage_command(
     result
 }
 
-pub(super) fn repository_status(
-    account: &ProviderAccount,
-    identity: &Value,
-    usage: &Value,
-) -> ProviderAccountStatus {
-    let mut status = ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms());
-    status.subscription = plan_label(identity, &Value::Null);
-    if is_api_billed(identity, usage) {
-        status.subscription = Some("API".into());
-        status.state = AccountState::Ready;
-        return status;
-    }
-    if identity.is_null() {
-        status.state = AccountState::NeedsAuth;
-        return status;
-    }
-    // The CLI wraps the HTTP usage document in rate_limits.
-    usage_status(status, usage.get("rate_limits").unwrap_or(usage), now_ms())
-}
-
 /// What a status read needs from the account's files, its native CLI and the
 /// usage endpoint. Tests replace them to drive the real control flow.
 trait UsageIo: Send {

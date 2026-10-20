@@ -260,10 +260,8 @@ fn owned_turn_deadline(timeout_ms: u64, absolute_ms: Option<i64>) -> tokio::time
     tokio::time::Instant::now() + std::time::Duration::from_millis(remaining)
 }
 
-/// Whether an owned session's runtime runs on its account's sandbox sign-in,
-/// so dispatch reads that sign-in's status rather than the Windows app's.
-/// Repository and tool-free text sessions both run in the Linux sandbox on the
-/// sandbox grant; an expired Windows sign-in must never stop them.
+/// Whether an owned session's runtime runs in the Linux sandbox: repository
+/// and tool-free text sessions both do, on leases of the app's sign-in.
 fn sandbox_account_route(profile: &str) -> bool {
     repository_execution::is_route(profile) || text_execution::is_route(profile)
 }
@@ -5357,10 +5355,7 @@ impl Inner {
                 .ok_or_else(|| invalid_params("sessionId required"))?;
             let record = self.session_record(&session_id).await?;
             if !crate::services::provider_account_status::record_quota_error(
-                &self.app,
-                account_id,
-                self.dispatch_account_runtime(&session_id).await?,
-                error,
+                &self.app, account_id, error,
             )
             .await
             {
@@ -5445,39 +5440,6 @@ impl Inner {
             .unwrap_or(false))
     }
 
-    async fn dispatch_account_runtime(
-        &self,
-        session_id: &str,
-    ) -> Result<crate::services::provider_account_status::AccountRuntime, Value> {
-        use crate::services::provider_account_status::AccountRuntime;
-        if self
-            .store
-            .execution_owner(session_id)
-            .await
-            .map_err(protocol::internal)?
-            .is_none()
-        {
-            return Ok(AccountRuntime::Native);
-        }
-        let sessions = self.sessions.lock().await;
-        let runtime = sessions.get(session_id).ok_or_else(|| {
-            protocol::internal(
-                "dispatch_uncertain: owned session runtime is unavailable; no automatic reopen",
-            )
-        })?;
-        Ok(
-            if runtime
-                .execution_profile
-                .as_deref()
-                .is_some_and(sandbox_account_route)
-            {
-                AccountRuntime::Repository
-            } else {
-                AccountRuntime::Native
-            },
-        )
-    }
-
     async fn route_account_for_dispatch(
         self: &Arc<Self>,
         record: &SessionRecord,
@@ -5496,14 +5458,11 @@ impl Inner {
             .await
             .map_err(protocol::internal)?
             .is_some();
-        let runtime = self.dispatch_account_runtime(&record.id).await?;
         let automatic = !owned && self.automatic_account_switching(&record.harness)?;
         let mut unavailable = std::collections::HashSet::new();
         loop {
-            let selection = if runtime
-                == crate::services::provider_account_status::AccountRuntime::Repository
-            {
-                crate::services::provider_account_status::select_repository_account(
+            let selection = if owned {
+                crate::services::provider_account_status::select_owned_account(
                     &self.app,
                     &record.harness,
                     account_id,
@@ -5629,7 +5588,6 @@ impl Inner {
                 .await?;
             record = self.session_record(&session_id).await?;
         }
-        let account_runtime = self.dispatch_account_runtime(&session_id).await?;
         let (bridge, _) = self.attach_session(&record).await?;
         let lock = self.attach_lock(&session_id).await;
         let admission = lock.lock().await;
@@ -5802,10 +5760,7 @@ impl Inner {
             error["data"] = Value::Object(data);
             if let Some(account_id) = &record.account_id {
                 crate::services::provider_account_status::record_quota_error(
-                    &self.app,
-                    account_id,
-                    account_runtime,
-                    error,
+                    &self.app, account_id, error,
                 )
                 .await;
             }
@@ -5910,12 +5865,7 @@ impl Inner {
         }
         if result.is_ok() {
             if let Some(account_id) = &record.account_id {
-                crate::services::provider_account_status::invalidate_in_runtime(
-                    &self.app,
-                    account_id,
-                    account_runtime,
-                )
-                .await;
+                crate::services::provider_account_status::invalidate(&self.app, account_id).await;
             }
         }
         result

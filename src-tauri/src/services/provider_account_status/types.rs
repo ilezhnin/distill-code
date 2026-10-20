@@ -72,10 +72,6 @@ pub struct ProviderAccountStatus {
     /// Usage endpoint cooldown, independent of the account's message allowance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_retry_at: Option<i64>,
-    /// The benchmark sandbox spends this account under another login than
-    /// the one these usage figures read, so they say nothing about it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub sandbox_login_mismatch: bool,
 }
 
 impl ProviderAccountStatus {
@@ -95,7 +91,6 @@ impl ProviderAccountStatus {
             stale: false,
             error: None,
             usage_retry_at: None,
-            sandbox_login_mismatch: false,
         }
     }
 }

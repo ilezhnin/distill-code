@@ -601,7 +601,6 @@
     "notReported": "Not reported",
     "stale": "Out of date",
     "onCredits": "Running on credits",
-    "sandboxLoginMismatch": "Benchmark sandbox signed in as another login",
     "usagePaused": "Usage updates paused",
     "usageRetryIn": "The provider paused usage requests. Retry in {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Waiting for the next usage update.",

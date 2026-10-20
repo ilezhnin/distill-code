@@ -4,8 +4,6 @@
 mod claude;
 mod claude_resets;
 mod codex;
-mod repository;
-pub(crate) mod sandbox_login;
 mod types;
 mod zai;
 
@@ -47,33 +45,14 @@ async fn read_response_line(
 #[derive(Default)]
 pub struct ProviderAccountStatusState {
     native: AccountStatusCache,
-    repository: AccountStatusCache,
     reset_lock: Mutex<()>,
-}
-
-/// Where a session's account signs in: the Windows app (`Native`), or the
-/// benchmark sandbox (`Repository`), which owned repository and tool-free
-/// text sessions both use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AccountRuntime {
-    Native,
-    Repository,
-}
-
-impl ProviderAccountStatusState {
-    fn runtime(&self, runtime: AccountRuntime) -> &AccountStatusCache {
-        match runtime {
-            AccountRuntime::Native => &self.native,
-            AccountRuntime::Repository => &self.repository,
-        }
-    }
 }
 
 #[derive(Default)]
 struct AccountStatusCache {
     cache: Mutex<HashMap<String, ProviderAccountStatus>>,
     refreshes: Mutex<HashMap<String, Arc<AccountRefresh>>>,
-    /// This runtime's last good usage reads, kept through later failed reads
+    /// The last good usage reads, kept through later failed reads
     /// (see [`usage_headroom`]); an account's is forgotten with its status.
     good_reads: std::sync::Mutex<GoodReads>,
 }
@@ -215,16 +194,8 @@ pub(super) fn timestamp(value: &Value) -> Option<i64> {
 }
 
 pub async fn invalidate(app: &AppHandle, account_id: &str) {
-    invalidate_in_runtime(app, account_id, AccountRuntime::Native).await;
-}
-
-pub(crate) async fn invalidate_in_runtime(
-    app: &AppHandle,
-    account_id: &str,
-    runtime: AccountRuntime,
-) {
     if let Some(state) = app.try_state::<ProviderAccountStatusState>() {
-        state.runtime(runtime).invalidate(account_id).await;
+        state.native.invalidate(account_id).await;
     }
 }
 
@@ -233,7 +204,6 @@ pub(crate) async fn invalidate_in_runtime(
 pub async fn prepare_account_change(app: &AppHandle, account_id: &str) {
     if let Some(state) = app.try_state::<ProviderAccountStatusState>() {
         state.native.forget_account(account_id).await;
-        state.repository.forget_account(account_id).await;
     }
 }
 
@@ -256,13 +226,8 @@ pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
 
 /// Whether the last known status of `account_id` has a usage window spent
 /// now, counting a plan window its credits cover as spent unless `credits`
-/// may be used; false while nothing is known, and while the benchmark
-/// sandbox spends the account under another login than the app reads (see
-/// [`sandbox_login`]). Reads the cache only.
+/// may be used; false while nothing is known. Reads the cache only.
 pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str, credits: bool) -> bool {
-    if sandbox_login::mismatch(app, account_id) {
-        return false;
-    }
     let state = app.state::<ProviderAccountStatusState>();
     let cache = state.native.cache.lock().await;
     cache
@@ -272,17 +237,13 @@ pub(crate) async fn usage_spent(app: &AppHandle, account_id: &str, credits: bool
 
 /// When the spent usage limit of `account_id` for `model_id` resets, by its
 /// last known status: the latest reset among its spent windows, while every
-/// one of them names a reset still ahead; none while no window shows spent,
-/// and none while the benchmark sandbox spends the account under another
-/// login (see [`sandbox_login`]). Reads the cache only.
+/// one of them names a reset still ahead; none while no window shows spent.
+/// Reads the cache only.
 pub(crate) async fn spent_until(
     app: &AppHandle,
     account_id: &str,
     model_id: Option<&str>,
 ) -> Option<i64> {
-    if sandbox_login::mismatch(app, account_id) {
-        return None;
-    }
     let state = app.state::<ProviderAccountStatusState>();
     let cache = state.native.cache.lock().await;
     match blocked(cache.get(account_id)?, model_id, false, now_ms()) {
@@ -292,17 +253,13 @@ pub(crate) async fn spent_until(
 }
 
 /// The least share left, in percent, across the last known usage windows of
-/// `account_id` that apply to `model_id`; `None` while nothing is known, and
-/// while the benchmark sandbox spends the account under another login than
-/// the app reads (see [`sandbox_login`]). Reads the cache only.
+/// `account_id` that apply to `model_id`; `None` while nothing is known.
+/// Reads the cache only.
 pub(crate) async fn usage_headroom(
     app: &AppHandle,
     account_id: &str,
     model_id: Option<&str>,
 ) -> Option<Headroom> {
-    if sandbox_login::mismatch(app, account_id) {
-        return None;
-    }
     let state = app.state::<ProviderAccountStatusState>();
     let cache = state.native.cache.lock().await;
     let status = cache.get(account_id);
@@ -314,7 +271,7 @@ pub(crate) async fn usage_headroom(
     }
     drop(cache);
     // A status with no usage windows (an error before any read since the
-    // status was replaced) falls back to this runtime's last read that had
+    // status was replaced) falls back to the last read that had
     // them, while that read is recent enough to rank by.
     let (limits, read_at) = state
         .native
@@ -482,12 +439,6 @@ async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSn
     let accounts = provider_accounts::snapshot(app)?.accounts;
     let state = app.state::<ProviderAccountStatusState>();
     let now = now_ms();
-    // Worked out before the cache is locked: it may read a CLI home.
-    let mismatched: std::collections::HashSet<&str> = accounts
-        .iter()
-        .filter(|account| sandbox_login::mismatch(app, &account.id))
-        .map(|account| account.id.as_str())
-        .collect();
     let mut cache = state.native.cache.lock().await;
     cache.retain(|id, _| accounts.iter().any(|account| &account.id == id));
     let snapshot = ProviderAccountStatusSnapshot {
@@ -496,7 +447,6 @@ async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSn
             .filter_map(|account| cache.get(&account.id).cloned())
             .map(|mut status| {
                 status.stale |= now - status.last_updated_at > STALE_MS;
-                status.sandbox_login_mismatch = mismatched.contains(status.account_id.as_str());
                 status
             })
             .collect(),
@@ -716,9 +666,9 @@ pub async fn select_account_excluding(
 }
 
 /// Owned sandbox sessions (repository and tool-free text) keep their frozen
-/// account and use its WSL status. Never publish this sample as the Windows
-/// account's authorization state.
-pub(crate) async fn select_repository_account(
+/// account. They run on leases of the app's own sign-in, so the account's
+/// status in the app is theirs: one sign-in and one allowance.
+pub(crate) async fn select_owned_account(
     app: &AppHandle,
     provider_id: &str,
     account_id: &str,
@@ -726,21 +676,8 @@ pub(crate) async fn select_repository_account(
     credits: bool,
 ) -> Result<AccountSelection, String> {
     let account = provider_accounts::resolve_account(app, provider_id, Some(account_id))?;
-    let state = app.state::<ProviderAccountStatusState>();
-    let status = state
-        .repository
-        .refresh(&account, false, async {
-            match provider_accounts::account(app, account_id) {
-                Ok(current) => repository::fetch(&current).await,
-                Err(_) => {
-                    let mut status =
-                        ProviderAccountStatus::empty(account_id, provider_id, now_ms());
-                    status.state = AccountState::Disabled;
-                    status
-                }
-            }
-        })
-        .await;
+    let status = refresh_account(app, &account, false).await;
+    let _ = emit_cached_snapshot(app).await;
     choose(
         &[account],
         &[status],
@@ -1062,12 +999,7 @@ pub(crate) async fn renew_app_grant(
     }
 }
 
-pub(crate) async fn record_quota_error(
-    app: &AppHandle,
-    account_id: &str,
-    runtime: AccountRuntime,
-    error: &Value,
-) -> bool {
+pub(crate) async fn record_quota_error(app: &AppHandle, account_id: &str, error: &Value) -> bool {
     if !is_quota_error(error) {
         return false;
     }
@@ -1075,10 +1007,8 @@ pub(crate) async fn record_quota_error(
         return false;
     };
     let state = app.state::<ProviderAccountStatusState>();
-    state.runtime(runtime).record_limited(&account).await;
-    if runtime == AccountRuntime::Native {
-        let _ = emit_cached_snapshot(app).await;
-    }
+    state.native.record_limited(&account).await;
+    let _ = emit_cached_snapshot(app).await;
     true
 }
 

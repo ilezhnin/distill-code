@@ -68,8 +68,6 @@ export interface ProviderAccountStatus {
   stale: boolean;
   error: string | null;
   usageRetryAt?: number | null;
-  /** The benchmark sandbox spends this account under another login. */
-  sandboxLoginMismatch?: boolean;
 }
 
 export interface ProviderAccountStatuses {
