@@ -421,6 +421,11 @@ file once, 0600 and the candidate's, into the attempt's private folder, and
 never saves anything back: nothing in the sandbox can rotate a grant. The
 account folder a session names (`/home/candidate/accounts/<account>/<provider>`)
 only selects the provider and the egress; it holds no grant.
+Grants these providers kept in the sandbox from before leases are used by
+nothing; `bench-status` names each as `grant-left <provider> <account>` until
+`node scripts/benchmark-sandbox.mjs retire-grants` (`bench-auth retire DAY`)
+moves them to `/var/lib/distill-bench/retired-grants/<date>/`, root's alone. It
+never deletes or overwrites; delete that folder once it is checked.
 
 Admission requires the app's grant to cover the complete attempt, five minutes
 for cleanup, the CLI's own renewal window (Claude: its last five minutes; Grok:

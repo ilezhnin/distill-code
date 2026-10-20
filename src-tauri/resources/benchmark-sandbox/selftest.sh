@@ -133,6 +133,9 @@ class TestOS:
     def chown(self, *args):
         pass
 
+    def lchown(self, *args):
+        pass
+
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
@@ -510,6 +513,75 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(outside.read_text(), "kept")
 
 
+class RetireTests(unittest.TestCase):
+    """Grants leased providers kept in the account tree are moved aside,
+    never deleted or overwritten; Kimi's own sign-in stays."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        scope["ACCOUNTS"] = self.root / "accounts"
+        scope["RETIRED"] = self.root / "retired"
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def grant(self, account, provider, text="invented"):
+        home = scope["ACCOUNTS"] / account / provider
+        home.mkdir(parents=True)
+        (home / "grant.json").write_text(text, encoding="utf-8")
+        return home
+
+    def retire(self, day):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            scope["retire"](day)
+        return output.getvalue()
+
+    def test_every_leased_grant_moves_aside_and_kimi_stays(self):
+        for provider in ("claude", "codex", "grok", "zai"):
+            self.grant("invented-a", provider)
+        kimi = self.grant("invented-a", "kimi")
+        self.grant("invented-b", "claude")
+        self.assertEqual(self.retire("2026-10-20"), "retired 5\n")
+        self.assertEqual([path.name for path in (scope["ACCOUNTS"] / "invented-a").iterdir()], ["kimi"])
+        self.assertTrue((kimi / "grant.json").exists())
+        self.assertFalse((scope["ACCOUNTS"] / "invented-b" / "claude").exists())
+        day = scope["RETIRED"] / "2026-10-20"
+        self.assertEqual((day / "invented-a" / "claude" / "grant.json").read_text(), "invented")
+        for folder in (scope["RETIRED"], day, day / "invented-a", day / "invented-b"):
+            self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700, folder)
+        # Nothing is left to move.
+        self.assertEqual(self.retire("2026-10-20"), "retired 0\n")
+
+    def test_a_retired_grant_is_never_overwritten(self):
+        self.grant("invented-a", "claude", "first")
+        self.retire("2026-10-20")
+        self.grant("invented-a", "claude", "second")
+        self.grant("invented-b", "codex")
+        with self.assertRaises(ValueError):
+            self.retire("2026-10-20")
+        # The refused pass moved nothing.
+        self.assertTrue((scope["ACCOUNTS"] / "invented-b" / "codex").exists())
+        self.assertEqual((scope["RETIRED"] / "2026-10-20" / "invented-a" / "claude" / "grant.json")
+                         .read_text(), "first")
+        self.assertEqual(self.retire("2026-10-21"), "retired 2\n")
+
+    def test_links_are_left_and_days_are_checked(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (scope["ACCOUNTS"] / "invented-a").mkdir(parents=True)
+        try:
+            (scope["ACCOUNTS"] / "invented-a" / "claude").symlink_to(outside)
+        except OSError:
+            self.skipTest("symbolic links need privileges on this host")
+        self.assertEqual(self.retire("2026-10-20"), "retired 0\n")
+        self.assertTrue(outside.is_dir())
+        for day in ("2026-10-2", "../2026-10-20", "today", ""):
+            with self.assertRaises(ValueError):
+                self.retire(day)
+
+
 unittest.main(argv=["bench-auth-selftest"])
 BENCH_AUTH_UNIT_TESTS
 [[ $? == 0 ]] || failed=1
@@ -536,6 +608,9 @@ check "a session runs on its staged lease" "$(run session selftest-lease "DISTIL
   printf "{\"tokens\":{\"refresh_token\":\"minted\"}}" >/tmp/provider/auth.json')" invented-access
 /usr/local/sbin/bench-kill session selftest-lease
 check "a lease is never saved back" "$(/usr/local/sbin/bench-clean selftest-lease >/dev/null 2>&1; echo $?; ls -A "$auth_account")" 0
+# Grants from before leases are moved aside by the operator's
+# `bench-auth retire DAY`; a day is a date and nothing else.
+check "a retirement takes a date alone" "$(/usr/local/sbin/bench-auth retire ../x >/dev/null 2>&1; echo $?)$(test -e /var/lib/distill-bench/retired-grants/../x && echo made)" 70
 
 # Kimi keeps its own sandbox sign-in: a session gets a private copy of its
 # credentials, and only a refreshed credential file is saved back.

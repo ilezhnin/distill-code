@@ -35,6 +35,9 @@ LIMIT = 1024 * 1024
 # Outside every session, sign-in and account home: no candidate process
 # sees it, and the account tree holds account homes alone.
 CONFLICTS = Path("/var/lib/distill-bench/auth-conflicts")
+# Grants leased providers kept in the account tree before their sessions ran
+# on leases, moved aside by `bench-auth retire`, root's alone.
+RETIRED = Path("/var/lib/distill-bench/retired-grants")
 # Records of one account that also keep the refreshed grant itself.
 CONFLICT_EVIDENCE = 20
 # Providers whose sessions run on a lease the host stages, and the files a
@@ -337,6 +340,37 @@ def prefer_refreshed_grant(provider, previous, updated):
     return after > before
 
 
+def retire(day):
+    """Moves every grant a leased provider still keeps in the account tree,
+    from before its sessions ran on leases, to RETIRED/DAY/ACCOUNT/PROVIDER,
+    root's alone: nothing reads them any more, and the operator deletes them.
+    Never deletes, never overwrites, never follows a link: when any
+    destination exists already nothing moves. Prints how many moved."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("invalid day")
+    moves = []
+    for account in sorted(ACCOUNTS.iterdir()) if ACCOUNTS.is_dir() else []:
+        if account.is_symlink() or not account.is_dir():
+            continue
+        for provider in LEASED:
+            home = account / provider
+            if home.is_symlink() or not home.is_dir():
+                continue
+            moves.append((home, RETIRED / day / account.name / provider))
+    if any(os.path.lexists(destination) for _, destination in moves):
+        raise ValueError("a retired grant of this day is already there")
+    for home, destination in moves:
+        for folder in (RETIRED, RETIRED / day, destination.parent):
+            folder.mkdir(mode=0o700, exist_ok=True)
+            os.lchown(folder, 0, 0)
+            folder.chmod(0o700)
+        os.rename(home, destination)
+        # Root's alone from here: no candidate process reaches it again.
+        for path in [destination, *destination.rglob("*")]:
+            os.lchown(path, 0, 0)
+    print(f"retired {len(moves)}")
+
+
 def failure_reason(error):
     # Never include provider data or parser excerpts: a helper's own
     # ValueError carries its message first, any document after it.
@@ -475,6 +509,13 @@ def settle(receipt_file):
 
 
 try:
+    if sys.argv[1:2] == ["retire"]:
+        if len(sys.argv) != 3:
+            raise ValueError("invalid operation")
+        with open("/run/lock/distill-bench-auth", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            retire(sys.argv[2])
+        sys.exit(0)
     action, attempt = sys.argv[1:3]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", attempt):
         raise ValueError("invalid attempt")

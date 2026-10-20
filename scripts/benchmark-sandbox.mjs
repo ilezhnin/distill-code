@@ -6,6 +6,8 @@
 //   node scripts/benchmark-sandbox.mjs status     print bench-status
 //   node scripts/benchmark-sandbox.mjs login kimi ACCOUNT-ID  Kimi sign-in (below)
 //   node scripts/benchmark-sandbox.mjs selftest   check the confinement from inside
+//   node scripts/benchmark-sandbox.mjs retire-grants  move the sandbox grants
+//                                     leases replaced aside (root only)
 //   node scripts/benchmark-sandbox.mjs deploy-helpers  network-free helper update
 //   node scripts/benchmark-sandbox.mjs heavy-cap N|off  cap CPU-heavy jobs at once
 //                                     (1-8); admission is dynamic without it
@@ -304,6 +306,39 @@ function login(provider, account) {
     throw new Error(`bench-login exited ${result.status}`);
 }
 
+/**
+ * Moves the Claude, Codex, Grok and Z.ai grants the sandbox kept from before
+ * leases to /var/lib/distill-bench/retired-grants/<UTC date>/, root's alone
+ * (`bench-auth retire`). It never deletes or overwrites; delete the folder
+ * once it is checked.
+ */
+function retireGrants() {
+  const day = new Date().toISOString().slice(0, 10);
+  const result = spawnSync(
+    "wsl.exe",
+    [
+      "-d",
+      DISTRO,
+      "-u",
+      "root",
+      "--exec",
+      "/usr/local/sbin/bench-auth",
+      "retire",
+      day,
+    ],
+    { encoding: "utf8" },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0)
+    throw new Error(
+      `bench-auth retire exited ${result.status}: ${(result.stderr ?? "").trim()}`,
+    );
+  process.stdout.write(result.stdout ?? "");
+  console.log(
+    `Retired grants are in /var/lib/distill-bench/retired-grants/${day} (root only).`,
+  );
+}
+
 const [command, argument, ...rest] = process.argv.slice(2);
 if (!command) provision();
 else if (command === "install-tool") {
@@ -312,6 +347,7 @@ else if (command === "install-tool") {
 } else if (command === "login") login(argument, rest[0]);
 else if (command === "status") status();
 else if (command === "selftest") selftest();
+else if (command === "retire-grants") retireGrants();
 else if (command === "deploy-helpers") deployHelpers();
 else if (command === "heavy-cap")
   setting(
