@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { Badge } from "@/shared/ui/badge";
@@ -21,6 +21,7 @@ import {
   useBenchmarkDefinitions,
   useBenchmarkRuns,
 } from "../hooks/useBenchmarks";
+import { stalePin } from "../lib/benchmarkCatchUp";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import {
@@ -96,6 +97,28 @@ export function BenchmarkRunDrawer({
   };
   const run = query.data;
   const terminal = run ? FINISHED_RUN.has(run.state) : false;
+  // A run planned on a runtime the inventory no longer lists cannot go on:
+  // every further test would be refused, so it is only stopped.
+  const inventories = useQueries({
+    queries: (terminal ? [] : (run?.request.configurations ?? [])).map(
+      (entry) => ({
+        queryKey: [
+          "benchmark-catch-up-inventory",
+          entry.providerId,
+          entry.accountId ?? null,
+        ],
+        queryFn: () =>
+          benchmarkApi.getInventory(entry.providerId, entry.accountId ?? null),
+        staleTime: Number.POSITIVE_INFINITY,
+      }),
+    ),
+  });
+  const outdated =
+    !terminal &&
+    (run?.request.configurations ?? []).some((entry, index) => {
+      const inventory = inventories[index]?.data;
+      return inventory != null && stalePin(entry, inventory);
+    });
   const attempts = run?.attempts ?? [];
   // Repetitions a resume set aside keep their evidence and count nowhere.
   const counted = attempts.filter(
@@ -218,6 +241,9 @@ export function BenchmarkRunDrawer({
               {error ?? benchmarkErrorMessage(query.error)}
             </BenchmarkAlert>
           ) : null}
+          {outdated ? (
+            <BenchmarkAlert>{t("run.outdatedHint")}</BenchmarkAlert>
+          ) : null}
           {query.isPending ? (
             <BenchmarkEmpty title={t("loading")} compact />
           ) : null}
@@ -297,25 +323,31 @@ export function BenchmarkRunDrawer({
           </Button>
           {run && !terminal ? (
             <>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy || run.state !== "running"}
-                onClick={() => void control(benchmarkApi.pauseRun)}
-              >
-                {t("actions.pause")}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  busy ||
-                  !["paused", "needs_attention", "planned"].includes(run.state)
-                }
-                onClick={() => void control(benchmarkApi.resumeRun)}
-              >
-                {t("actions.resume")}
-              </Button>
+              {outdated ? null : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy || run.state !== "running"}
+                    onClick={() => void control(benchmarkApi.pauseRun)}
+                  >
+                    {t("actions.pause")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={
+                      busy ||
+                      !["paused", "needs_attention", "planned"].includes(
+                        run.state,
+                      )
+                    }
+                    onClick={() => void control(benchmarkApi.resumeRun)}
+                  >
+                    {t("actions.resume")}
+                  </Button>
+                </>
+              )}
               <Button
                 type="button"
                 variant="outline"

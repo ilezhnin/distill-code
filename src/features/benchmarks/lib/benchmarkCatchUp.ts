@@ -165,3 +165,21 @@ export function catchUpCases(
     queuedRunId: queuedRun?.id ?? null,
   };
 }
+
+/**
+ * Whether a run planned `planned` on a runtime today's inventory no longer
+ * lists: the runner refuses every further test of it, so resuming or
+ * finishing the run can only fail and a new run is the way on.
+ */
+export function stalePin(
+  planned: Configuration,
+  inventory: InventoryModel[],
+): boolean {
+  const today = resolveCatchUpConfiguration(planned, inventory);
+  return (
+    "configuration" in today &&
+    planned.inventoryRevision != null &&
+    today.configuration.inventoryRevision != null &&
+    planned.inventoryRevision !== today.configuration.inventoryRevision
+  );
+}

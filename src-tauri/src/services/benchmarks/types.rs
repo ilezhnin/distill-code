@@ -892,6 +892,11 @@ pub struct LeaderboardRow {
     /// fully tested, and can rank, when this reaches `suite_planned`.
     #[serde(default)]
     pub suite_complete: u32,
+    /// Those suite cases by their current version: what a run of this row
+    /// no longer owes. A cell carried from an earlier version counts for the
+    /// version it was carried to.
+    #[serde(default)]
+    pub complete_version_ids: Vec<String>,
     /// The last time every suite case of that time had a complete cell: now,
     /// the moment the last missing case completed; for a row short of the
     /// suite today, when it last covered the suite before it grew. None when

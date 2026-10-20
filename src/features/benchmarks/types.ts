@@ -574,6 +574,12 @@ export interface LeaderboardRow {
   /** Suite cases whose cell holds every repetition. */
   suiteComplete?: number;
   /**
+   * Those suite cases by their current version, a carried cell under the
+   * version that carries it: what a run of this row no longer owes. Absent
+   * on older snapshots.
+   */
+  completeVersionIds?: string[];
+  /**
    * The last time the row covered its suite: now when it covers it, else
    * before the suite grew; null when it never did.
    */

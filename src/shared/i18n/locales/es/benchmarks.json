@@ -350,7 +350,8 @@
     "checkPlan": "Comprobar plan",
     "start": "Iniciar lote",
     "preview": "Vista previa de desarrollo. Excluida de los tableros y del gráfico histórico.",
-    "budgetTitle": "Ajustes de ejecución"
+    "budgetTitle": "Ajustes de ejecución",
+    "outdatedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar: reanudarla solo sería rechazado. Cancélala y luego inicia una nueva ejecución para las pruebas pendientes desde la página del modelo."
   },
   "modelRun": {
     "allTests": "Todas las pruebas",
@@ -379,10 +380,15 @@
     "stop": "Detener",
     "stopping": "Deteniendo…",
     "finish": "Terminar la ejecución",
-    "startAgain": "Medir de nuevo",
     "finishHint": "Ejecución del {{at}}, abierta hasta {{until}}: {{left}} pruebas por medir; {{partial}} de ellas conservan las repeticiones ya puntuadas y solo ejecutan el resto.",
-    "expiredHint": "La ejecución del {{at}} se cerró a las {{until}}: su ventana de 24 horas, sin contar las pausas, terminó, así que ya no puede reanudarse ni completarse. Las {{owed}} pruebas que no terminó están marcadas; Iniciar las mide en una nueva ejecución.",
-    "measuredHint": "Medida por completo {{at}}: {{measured}} pruebas, todas las repeticiones. Repetir esta medición es un gasto innecesario. Confirma con Medir de nuevo para guardar este resultado en el historial e iniciar una nueva ejecución con su coste completo."
+    "expiredHint": "La ejecución del {{at}} se cerró a las {{until}}: su ventana de 24 horas, sin contar las pausas, terminó, así que ya no puede reanudarse ni completarse. Las {{owed}} pruebas que el tablero aún debe están marcadas; Iniciar las mide en una nueva ejecución.",
+    "measuredHint": "Medida por completo {{at}}: {{measured}} pruebas, todas las repeticiones. Repetir esta medición es un gasto innecesario. Medir todo de nuevo guarda este resultado en el historial e inicia una nueva ejecución con su coste completo.",
+    "toMeasure": "{{selected}} de {{total}} pruebas, {{attempts}} intentos",
+    "owedHint": "{{owed}} pruebas pendientes: el tablero no tiene una medición completa de ellas y empiezan marcadas. {{measured}} pruebas medidas por completo, aprobadas o falladas, se mantienen y empiezan sin marcar.",
+    "allMeasuredHint": "Cada prueba actual tiene una medición completa en el tablero, aprobada o fallada. Usa Medir todo de nuevo solo para repetirla, con su coste completo.",
+    "outdatedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar: reanudarla o completarla solo sería rechazado. Detenla; después Iniciar mide en una nueva ejecución las {{owed}} pruebas que el tablero aún debe.",
+    "outdatedStoppedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar. Las {{owed}} pruebas que el tablero aún debe están marcadas; Iniciar las mide en una nueva ejecución.",
+    "measureAll": "Medir todo de nuevo ({{attempts}} intentos)"
   },
   "runs": {
     "title": "Ejecuciones e historial",

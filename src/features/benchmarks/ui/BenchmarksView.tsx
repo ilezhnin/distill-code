@@ -397,10 +397,12 @@ export function BenchmarksView({
       ) : null}
       {modelRun ? (
         <BenchmarkModelRunDialog
+          // The model's own row, refreshed: its cells span every
+          // configuration of the model, so the dialog owes what the board
+          // owes, never what one configuration alone lacks.
           row={
-            leaderboard.data?.rows.find(
-              (row) => rowKey(row) === rowKey(modelRun.row),
-            ) ?? modelRun.row
+            models.find((model) => rowKey(model.row) === rowKey(modelRun.row))
+              ?.row ?? modelRun.row
           }
           definitions={definitions.data ?? []}
           runId={modelRun.runId}

@@ -172,12 +172,19 @@ const running: AttemptSummary[] = [
   summary("version-8", "pending", null, null),
 ];
 
+/** The run's configurations on the runtime the inventory lists today. */
+const current = run.request.configurations.map((entry) => ({
+  ...entry,
+  inventoryRevision: "runtime-now",
+}));
+
 function liveRun(state: string): BenchmarkRun {
   return {
     ...run,
     id: "run-2",
     state,
     createdAt: Date.now() - 60_000,
+    request: { ...run.request, configurations: current },
     attempts: running.map((entry) => ({
       ...attempt,
       id: entry.id,
@@ -254,12 +261,12 @@ it("runs only train tests for a model whose provider may train on submitted data
   expect(row("Juliet").getByRole("checkbox")).toBeDisabled();
   expect(row("Alpha").queryByText("Held out")).not.toBeInTheDocument();
   expect(row("Alpha").getByRole("checkbox")).toBeChecked();
-  expect(screen.getByText("6 of 7 selected")).toBeInTheDocument();
+  expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
   // Checking every test checks every test it may receive.
   await user.click(screen.getByText("All tests"));
-  expect(screen.getByText("0 of 7 selected")).toBeInTheDocument();
+  expect(screen.getByText("0 of 7 tests, 0 attempts")).toBeInTheDocument();
   await user.click(screen.getByText("All tests"));
-  expect(screen.getByText("6 of 7 selected")).toBeInTheDocument();
+  expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
   expect(row("Juliet").getByRole("checkbox")).not.toBeChecked();
   const start = screen.getByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());
@@ -283,7 +290,7 @@ it("checks a held-out test for a model whose provider does not train on submitte
   expect(juliet.getByRole("checkbox")).toBeEnabled();
   expect(juliet.queryByText("Held out")).not.toBeInTheDocument();
   expect(screen.queryByText(/Runs train tasks only/)).not.toBeInTheDocument();
-  expect(screen.getByText("7 of 7 selected")).toBeInTheDocument();
+  expect(screen.getByText("7 of 7 tests, 21 attempts")).toBeInTheDocument();
 });
 
 it("shows why the runner refused to finish a run with a test its provider may not receive", async () => {
@@ -309,7 +316,7 @@ it("shows why the runner refused to finish a run with a test its provider may no
 it("keeps archived versions and development tests out of new runs", async () => {
   show();
   await screen.findByRole("dialog");
-  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
+  expect(screen.getByText("6 of 6 tests, 18 attempts")).toBeInTheDocument();
   expect(screen.getAllByText("Hotel")).toHaveLength(1);
   expect(screen.queryByText("Golf")).not.toBeInTheDocument();
   expect(screen.queryByText("Infrastructure only")).not.toBeInTheDocument();
@@ -328,23 +335,17 @@ it("checks every current test, tags the model's own, and runs them on today's ru
   expect(within(dialog).getByRole("heading")).toHaveTextContent("high");
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
-  // Seven current tests, the one the model wrote included, all checked.
-  expect(screen.getByText("7 of 7 selected")).toBeInTheDocument();
-  for (const name of [
-    "Alpha",
-    "Bravo",
-    "Charlie",
-    "Delta",
-    "Echo",
-    "Foxtrot",
-    "Hotel",
-  ])
+  // Seven current tests, all owed but the one the model wrote: its board
+  // leaves it out, so it is listed and runnable, never owed.
+  expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
+  for (const name of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Hotel"])
     expect(
       within(screen.getByText(name).closest("label") as HTMLElement).getByRole(
         "checkbox",
       ),
     ).toBeChecked();
   const written = screen.getByText("Foxtrot").closest("label") as HTMLElement;
+  expect(within(written).getByRole("checkbox")).not.toBeChecked();
   expect(within(written).getByRole("checkbox")).toBeEnabled();
   expect(within(written).getByText("Own task")).toBeInTheDocument();
   expect(
@@ -359,7 +360,10 @@ it("checks every current test, tags the model's own, and runs them on today's ru
       "checkbox",
     ),
   );
-  expect(screen.getByText("6 of 7 selected")).toBeInTheDocument();
+  expect(screen.getByText("5 of 7 tests, 15 attempts")).toBeInTheDocument();
+  // The own test runs when asked for, for its speed and cost.
+  await user.click(within(written).getByRole("checkbox"));
+  expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
   const start = screen.getByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());
   await user.click(start);
@@ -620,49 +624,69 @@ it("lists the tests in the order the run takes them and times the one running no
   expect(row("Alpha").getByText("Queued")).toBeInTheDocument();
 });
 
-it("checks every test whatever its standing, a run being one sitting, and shows each standing", async () => {
+it("checks only the tests the board owes, a failure measured in full included, and shows each standing", async () => {
   const user = userEvent.setup();
-  // Alpha solved three times; Charlie failed once; Delta passed once.
+  // Across older runs Alpha solved three times and Charlie failed three
+  // times, both complete cells; Delta passed once, a cell still short.
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
     { ...summary("version-1", "terminal", "pass", 1), id: "s-1a" },
     { ...summary("version-1", "terminal", "pass", 1), id: "s-1b" },
     { ...summary("version-1", "terminal", "pass", 1), id: "s-1c" },
-    { ...summary("version-3", "terminal", "fail", 0), id: "s-3" },
+    { ...summary("version-3", "terminal", "fail", 0), id: "s-3a" },
+    { ...summary("version-3", "terminal", "fail", 0), id: "s-3b" },
+    { ...summary("version-3", "terminal", "fail", 0), id: "s-3c" },
     { ...summary("version-4", "terminal", "pass", 1), id: "s-4" },
   ]);
+  const ids = ["s-1a", "s-1b", "s-1c", "s-3a", "s-3b", "s-3c", "s-4"];
   show({
     measured: {
       versionIds: ["version-1", "version-3", "version-4"],
-      attemptIds: ["s-1a", "s-1b", "s-1c", "s-3", "s-4"],
+      attemptIds: ids,
     },
   });
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
-  // A new run measures every test again, the solved one included: only a
-  // whole sitting can stand on the board.
-  expect(await screen.findByText("6 of 6 selected")).toBeInTheDocument();
-  for (const name of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Hotel"])
-    expect(row(name).getByRole("checkbox")).toBeChecked();
+  // Complete cells stand, passed or failed: only owed tests start checked,
+  // and the header names them with their attempts.
   expect(
-    await row("Alpha").findByRole("img", {
-      name: "3 of 3 passed, 3 repetitions",
-    }),
+    await screen.findByText("4 of 6 tests, 12 attempts"),
   ).toBeInTheDocument();
   expect(
-    row("Charlie").getByRole("img", { name: "0 of 1 passed, 1 repetitions" }),
+    screen.getByText(
+      "4 tests owed: the board holds no complete measurement of them, and they start checked. 2 tests measured in full, passed or failed, stand and start unchecked.",
+    ),
+  ).toBeInTheDocument();
+  for (const name of ["Alpha", "Charlie"])
+    expect(row(name).getByRole("checkbox")).not.toBeChecked();
+  for (const name of ["Bravo", "Delta", "Echo", "Hotel"])
+    expect(row(name).getByRole("checkbox")).toBeChecked();
+  expect(
+    row("Alpha").getByRole("img", { name: "3 of 3 passed, 3 repetitions" }),
+  ).toBeInTheDocument();
+  expect(
+    row("Charlie").getByRole("img", { name: "0 of 3 passed, 3 repetitions" }),
   ).toBeInTheDocument();
   expect(
     row("Delta").getByRole("img", { name: "1 of 1 passed, 1 repetitions" }),
   ).toBeInTheDocument();
   expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
-    attemptIds: ["s-1a", "s-1b", "s-1c", "s-3", "s-4"],
+    attemptIds: ids,
     limit: 100,
   });
-  // Leaving a test out stays one click away, and so does taking it back.
+  // A measured test stays one click away.
   await user.click(row("Alpha").getByRole("checkbox"));
-  expect(screen.getByText("5 of 6 selected")).toBeInTheDocument();
-  await user.click(screen.getByText("All tests"));
-  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
+  expect(screen.getByText("5 of 6 tests, 15 attempts")).toBeInTheDocument();
+  await user.click(row("Alpha").getByRole("checkbox"));
+  // Measuring everything again is its own action, with its cost.
+  const again = screen.getByRole("button", {
+    name: "Measure all again (18 attempts)",
+  });
+  await waitFor(() => expect(again).toBeEnabled());
+  await user.click(again);
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
+  expect(
+    vi.mocked(benchmarkApi.startRun).mock.calls[0][0].versionIds,
+  ).toHaveLength(6);
 });
 
 /** The model's newest run, stopped an hour into its window. */
@@ -693,7 +717,8 @@ function stoppedRun(
       state,
       createdAt: Date.now() - 3_600_000,
       updatedAt: Date.now() - 600_000,
-      request: { ...run.request, repetitions: 3 },
+      // Planned on the runtime the inventory lists today.
+      request: { ...run.request, repetitions: 3, configurations: current },
       attempts: summaries.map((entry) => ({
         ...attempt,
         id: entry.id,
@@ -755,7 +780,7 @@ it("says a run's window closed and offers a new run for the tests it still owed"
   const user = userEvent.setup();
   // Alpha passed and Charlie failed in full; Echo never started. The run
   // was paused for two hours, which its window leaves out, and still closed.
-  const expired = stoppedRun("needs_attention", [
+  const expired = stoppedRun("cancelled", [
     { versionId: "version-1", outcome: "pass", score: 1 },
     { versionId: "version-3", outcome: "fail", score: 0 },
     { versionId: "version-5", outcome: null, score: null },
@@ -764,11 +789,18 @@ it("says a run's window closed and offers a new run for the tests it still owed"
   expired.run.pausedMs = 2 * 3_600_000;
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(expired.run);
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(expired.summaries);
-  show({ runId: "run-2" });
+  // The board holds the run's complete cells.
+  show({
+    runId: "run-2",
+    measured: {
+      versionIds: ["version-1", "version-3"],
+      attemptIds: expired.summaries.map((entry) => entry.id),
+    },
+  });
   const start = await screen.findByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());
   expect(screen.getByRole("alert")).toHaveTextContent(
-    /its 24-hour window, pauses left out, is over, so it can no longer resume or finish\. 4 tests it did not finish are checked; Start measures them in a new run/,
+    /its 24-hour window, pauses left out, is over, so it can no longer resume or finish\. The 4 tests the board still owes are checked; Start measures them in a new run/,
   );
   // Nothing offers to go on with the closed run.
   for (const name of ["Resume", "Pause", "Finish run"])
@@ -788,6 +820,145 @@ it("says a run's window closed and offers a new run for the tests it still owed"
   );
   expect(vi.mocked(benchmarkApi.startRun).mock.calls[0]).toHaveLength(1);
   expect(benchmarkApi.resumeRun).not.toHaveBeenCalled();
+});
+
+it("says a paused run made for an older runtime cannot go on and offers only Stop", async () => {
+  const user = userEvent.setup();
+  const old = stoppedRun("paused", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-5", outcome: null, score: null },
+  ]);
+  // Planned on a sandbox version the inventory no longer lists.
+  old.run.request.configurations = old.run.request.configurations.map(
+    (entry) => ({ ...entry, inventoryRevision: "older-sandbox" }),
+  );
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(old.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(old.summaries);
+  vi.mocked(benchmarkApi.cancelRun).mockResolvedValue({
+    ...old.run,
+    state: "cancelled",
+  });
+  show({ runId: "run-2" });
+  expect(
+    await screen.findByText(/made for an older sandbox or CLI version/),
+  ).toHaveTextContent(
+    /so it cannot continue: resuming or finishing would only be refused\. Stop it; then Start measures/,
+  );
+  for (const name of ["Resume", "Pause", "Finish run", "Start"])
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Stop" }));
+  expect(benchmarkApi.cancelRun).toHaveBeenCalledWith("run-2");
+  expect(benchmarkApi.resumeRun).not.toHaveBeenCalled();
+});
+
+it("offers a new run for the owed tests once a run made for an older runtime is stopped", async () => {
+  const user = userEvent.setup();
+  const old = stoppedRun("cancelled", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-5", outcome: null, score: null },
+  ]);
+  old.run.request.configurations = old.run.request.configurations.map(
+    (entry) => ({ ...entry, inventoryRevision: "older-sandbox" }),
+  );
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(old.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(old.summaries);
+  show({
+    runId: "run-2",
+    measured: {
+      versionIds: ["version-1"],
+      attemptIds: old.summaries.map((entry) => entry.id),
+    },
+  });
+  const start = await screen.findByRole("button", { name: "Start" });
+  await waitFor(() => expect(start).toBeEnabled());
+  expect(
+    screen.getByText(/The 5 tests the board still owes are checked/),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Finish run" }),
+  ).not.toBeInTheDocument();
+  const row = (name: string) =>
+    within(screen.getByText(name).closest("label") as HTMLElement);
+  expect(row("Alpha").getByRole("checkbox")).not.toBeChecked();
+  expect(row("Echo").getByRole("checkbox")).toBeChecked();
+  await user.click(start);
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
+  const [request, replacing] = vi.mocked(benchmarkApi.startRun).mock.calls[0];
+  expect(replacing).toBeUndefined();
+  expect(request.versionIds).toHaveLength(5);
+  expect(request.versionIds).not.toContain("version-1");
+  // The new run is pinned to today's runtime.
+  expect(request.configurations[0].inventoryRevision).toBe("runtime-now");
+  expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
+});
+
+it("owes exactly what the board names incomplete, a carried cell included", async () => {
+  // The board counts Bravo complete through a cell carried from its earlier
+  // version, which no standing attempt of the current version shows.
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkModelRunDialog
+        row={leaderboardRow({
+          configuration,
+          scoredVersionIds: ["version-2"],
+          attemptIds: [],
+          completeVersionIds: ["version-2"],
+        })}
+        definitions={definitions}
+        runId={null}
+        onClose={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  expect(
+    await screen.findByText("5 of 6 tests, 15 attempts"),
+  ).toBeInTheDocument();
+  expect(
+    within(screen.getByText("Bravo").closest("label") as HTMLElement).getByRole(
+      "checkbox",
+    ),
+  ).not.toBeChecked();
+});
+
+it("waits for today's inventory before offering to resume a paused run", async () => {
+  const paused = stoppedRun("paused", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-5", outcome: null, score: null },
+  ]);
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(paused.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(paused.summaries);
+  let answer: (
+    value: Awaited<ReturnType<typeof benchmarkApi.getInventory>>,
+  ) => void = () => {};
+  vi.mocked(benchmarkApi.getInventory).mockReturnValue(
+    new Promise((resolve) => {
+      answer = resolve;
+    }),
+  );
+  show({ runId: "run-2" });
+  const resume = await screen.findByRole("button", { name: "Resume" });
+  expect(resume).toBeDisabled();
+  answer([
+    {
+      configuration: { ...configuration, inventoryRevision: "runtime-now" },
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: true,
+      available: true,
+      reason: null,
+    },
+  ]);
+  await waitFor(() => expect(resume).toBeEnabled());
+});
+
+it("shows the test list's scrollbar", async () => {
+  show();
+  await screen.findByRole("dialog");
+  expect(screen.getByRole("list")).toHaveClass("scrollbar-visible");
 });
 
 it("keeps a run open past 24 hours by the time it spent paused", async () => {
@@ -824,20 +995,31 @@ it("warns before measuring a model again whose run inside its window is complete
   );
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(complete.run);
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(complete.summaries);
-  show({ runId: "run-2" });
-  expect(
-    await screen.findByRole("button", { name: "Measure again" }),
-  ).toBeEnabled();
+  show({
+    runId: "run-2",
+    measured: {
+      versionIds: complete.summaries.map((entry) => entry.versionId),
+      attemptIds: complete.summaries.map((entry) => entry.id),
+    },
+  });
+  const again = await screen.findByRole("button", {
+    name: "Measure all again (18 attempts)",
+  });
+  await waitFor(() => expect(again).toBeEnabled());
   expect(screen.getByRole("alert")).toHaveTextContent(
     /Measured in full .*: 6 tests, every repetition\. Repeating this measurement is unnecessary spending/,
   );
   expect(
     screen.queryByRole("button", { name: "Finish run" }),
   ).not.toBeInTheDocument();
-  // Every test is checked for the new sitting.
-  expect(screen.getByText("6 of 6 selected")).toBeInTheDocument();
+  // Nothing is owed, so nothing starts checked and Start says why it waits.
+  expect(screen.getByText("0 of 6 tests, 0 attempts")).toBeInTheDocument();
+  expect(
+    screen.getByText(/Every current test has a complete measurement/),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: "Measure again" }));
+  await user.click(again);
   expect(benchmarkApi.startRun).toHaveBeenCalledWith(
     expect.objectContaining({ repetitions: 3 }),
     "run-2",

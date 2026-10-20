@@ -1650,6 +1650,7 @@ fn measurement_report(
                     parallelism,
                     suite_planned: 0,
                     suite_complete: 0,
+                    complete_version_ids: Vec::new(),
                     fully_tested_at: None,
                 });
             }
@@ -1718,10 +1719,12 @@ fn measurement_report(
             // its last scored repetition settled.
             let suite: Vec<&BenchmarkVersion> = eligible.clone();
             let suite_planned = suite.len() as u32;
-            let suite_complete = suite
+            let complete_version_ids: Vec<String> = suite
                 .iter()
                 .filter(|v| cells.get(v.id.as_str()).is_some_and(|cell| cell.complete))
-                .count() as u32;
+                .map(|v| v.id.clone())
+                .collect();
+            let suite_complete = complete_version_ids.len() as u32;
             // Every complete cell the row ever held, by case: one run's
             // repetitions under one requested configuration.
             let mut completions: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
@@ -1823,6 +1826,7 @@ fn measurement_report(
                 parallelism,
                 suite_planned,
                 suite_complete,
+                complete_version_ids,
                 fully_tested_at: fully_tested_at(&suite_cases),
             })
         })
@@ -2653,6 +2657,41 @@ pub(super) mod tests {
         let report = leaderboard(data, &ResultQuery::default());
         assert_eq!(report.rows.len(), 1);
         report.rows[0].clone()
+    }
+    /// A row names its complete suite cases by their current version, so a
+    /// run owes exactly what the board lacks: a cell carried from an earlier
+    /// version counts for the version that carries it.
+    #[test]
+    fn a_row_names_its_complete_cases_by_their_current_version() {
+        let mut data = dataset();
+        let row = standing(&data);
+        assert_eq!(row.complete_version_ids.len() as u32, row.suite_complete);
+        assert!(row.complete_version_ids.contains(&"v0".to_owned()));
+        // v0 republished with only its evaluator changed: its cell moves.
+        let mut carrying = data.versions[0].clone();
+        carrying.id = "v0-evaluator".into();
+        carrying.published_at = 2;
+        carrying.carries_from = Some("v0".into());
+        data.versions.push(carrying);
+        // As the service loads them: the cells are the carrying version's.
+        for run in &mut data.runs {
+            for attempt in &mut run.attempts {
+                if attempt.version_id == "v0" {
+                    attempt.version_id = "v0-evaluator".into();
+                }
+            }
+        }
+        for attempt in &mut data.attempts {
+            if attempt.version_id == "v0" {
+                attempt.version_id = "v0-evaluator".into();
+            }
+        }
+        let row = standing(&data);
+        assert!(row
+            .complete_version_ids
+            .contains(&"v0-evaluator".to_owned()));
+        assert!(!row.complete_version_ids.contains(&"v0".to_owned()));
+        assert_eq!(row.complete_version_ids.len() as u32, row.suite_complete);
     }
     #[test]
     fn a_row_covering_the_suite_ranks_and_dates_its_last_completion() {

@@ -3,6 +3,7 @@ import {
   catchUpCases,
   requests,
   resolveCatchUpConfiguration,
+  stalePin,
 } from "../lib/benchmarkCatchUp";
 import type { Configuration, InventoryModel, RunSummary } from "../types";
 import { configuration, leaderboardRow, runSummary } from "./fixtures";
@@ -299,5 +300,29 @@ describe("catch-up cases", () => {
     ];
     expect(at("high")).toEqual({ owed: [], queuedRunId: "campaign" });
     expect(at("low").queuedRunId).toBeNull();
+  });
+});
+
+describe("stalePin", () => {
+  const listed = (revision: string) => [
+    {
+      configuration: { ...configuration, inventoryRevision: revision },
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: false,
+      available: true,
+      reason: null,
+    },
+  ];
+  it("names a run planned on a runtime today's inventory no longer lists", () => {
+    expect(stalePin(configuration, listed("sandbox-now"))).toBe(true);
+    expect(
+      stalePin(
+        configuration,
+        listed(configuration.inventoryRevision as string),
+      ),
+    ).toBe(false);
+    // A model the inventory lost is another problem, said elsewhere.
+    expect(stalePin(configuration, [])).toBe(false);
   });
 });

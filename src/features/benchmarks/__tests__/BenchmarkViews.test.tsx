@@ -1045,7 +1045,9 @@ describe("benchmark authoring and saved evidence", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Run" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("heading")).toHaveTextContent("model-1");
-    expect(within(dialog).getByText("1 of 1 selected")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("1 of 1 tests, 3 attempts"),
+    ).toBeInTheDocument();
     const start = within(dialog).getByRole("button", { name: "Start" });
     await waitFor(() => expect(start).toBeEnabled());
     await userEvent.click(start);
@@ -1067,6 +1069,65 @@ describe("benchmark authoring and saved evidence", () => {
       "claude-acp",
       "account-1",
     );
+  });
+  it("hands the run dialog the model's own row, whose cells span its configurations", async () => {
+    // The model ran on two runtimes: each configuration row holds part of
+    // its cells, the model row holds them all.
+    const older = { ...configuration, inventoryRevision: "runtime-older" };
+    const own = leaderboardRow({
+      configuration,
+      scoredVersionIds: [],
+      attemptIds: [],
+      completeVersionIds: [],
+    });
+    const other = leaderboardRow({
+      configuration: older,
+      scoredVersionIds: ["version-2"],
+      attemptIds: ["older-only"],
+    });
+    const model = leaderboardRow({
+      configuration,
+      scoredVersionIds: ["version-1"],
+      attemptIds: ["older-only"],
+      completeVersionIds: ["version-1"],
+    });
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort,
+      rows: [own, other],
+      models: [
+        {
+          key: "model-1",
+          providerId: configuration.providerId,
+          modelId: configuration.modelId,
+          configurationKeys: [rowKey(own), rowKey(other)],
+          row: model,
+        },
+      ],
+    });
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getInventory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
+    vi.mocked(invoke).mockResolvedValue({
+      accounts: [],
+      defaults: {},
+      automaticSwitching: {},
+    });
+    wrap(
+      <BenchmarksView
+        location={{ section: "leaderboard", configurationId: rowKey(own) }}
+        onNavigate={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Run" }));
+    const dialog = await screen.findByRole("dialog");
+    // The model row holds the test complete, measured on the older runtime:
+    // nothing is owed, though this configuration alone has no cell of it.
+    expect(
+      await within(dialog).findByText("0 of 1 tests, 0 attempts"),
+    ).toBeInTheDocument();
   });
   it("starts a different attempt set on its first page", async () => {
     serveListedPages();

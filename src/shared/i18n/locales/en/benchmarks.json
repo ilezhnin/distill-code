@@ -350,7 +350,8 @@
     "checkPlan": "Check plan",
     "start": "Start batch",
     "preview": "Development preview. Excluded from the boards and the history chart.",
-    "budgetTitle": "Run settings"
+    "budgetTitle": "Run settings",
+    "outdatedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue: resuming would only be refused. Cancel it, then start a new run for the tests still owed from the model's page."
   },
   "modelRun": {
     "allTests": "All tests",
@@ -379,10 +380,15 @@
     "stop": "Stop",
     "stopping": "Stopping…",
     "finish": "Finish run",
-    "startAgain": "Measure again",
     "finishHint": "Run of {{at}}, open until {{until}}: {{left}} tests to measure, {{partial}} of them keep the repetitions already scored and run only the rest.",
-    "expiredHint": "The run of {{at}} closed at {{until}}: its 24-hour window, pauses left out, is over, so it can no longer resume or finish. {{owed}} tests it did not finish are checked; Start measures them in a new run.",
-    "measuredHint": "Measured in full {{at}}: {{measured}} tests, every repetition. Repeating this measurement is unnecessary spending. Confirm with Measure again to save this result in history and start a new run at full cost."
+    "expiredHint": "The run of {{at}} closed at {{until}}: its 24-hour window, pauses left out, is over, so it can no longer resume or finish. The {{owed}} tests the board still owes are checked; Start measures them in a new run.",
+    "measuredHint": "Measured in full {{at}}: {{measured}} tests, every repetition. Repeating this measurement is unnecessary spending. Measure all again saves this result in history and starts a new run at full cost.",
+    "toMeasure": "{{selected}} of {{total}} tests, {{attempts}} attempts",
+    "owedHint": "{{owed}} tests owed: the board holds no complete measurement of them, and they start checked. {{measured}} tests measured in full, passed or failed, stand and start unchecked.",
+    "allMeasuredHint": "Every current test has a complete measurement on the board, passed or failed. Measure all again only to repeat it, at full cost.",
+    "outdatedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue: resuming or finishing would only be refused. Stop it; then Start measures the {{owed}} tests the board still owes in a new run.",
+    "outdatedStoppedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue. The {{owed}} tests the board still owes are checked; Start measures them in a new run.",
+    "measureAll": "Measure all again ({{attempts}} attempts)"
   },
   "runs": {
     "title": "Runs and history",

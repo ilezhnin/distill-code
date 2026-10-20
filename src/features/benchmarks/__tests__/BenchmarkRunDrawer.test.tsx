@@ -16,6 +16,7 @@ vi.mock("../api/benchmarks", () => ({
     pauseRun: vi.fn(),
     resumeRun: vi.fn(),
     cancelRun: vi.fn(),
+    getInventory: vi.fn(),
   },
 }));
 
@@ -97,9 +98,24 @@ const found = async (name: string) =>
     })
   )[0];
 
+/** Today's inventory lists the model on `revision`. */
+const listing = (revision: string) => [
+  {
+    configuration: { ...configuration, inventoryRevision: revision },
+    name: "Test model",
+    efforts: ["high"],
+    supportsFastMode: false,
+    available: true,
+    reason: null,
+  },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   Element.prototype.scrollIntoView = vi.fn();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(
+    listing(configuration.inventoryRevision as string),
+  );
   vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([
     named("version-a", "Alpha"),
     named("version-b", "Bravo"),
@@ -393,4 +409,27 @@ it("partitions the actual attempts without counting failed ones a second time", 
   }
   expect(screen.getByText("1 / 3 attempts settled")).toBeInTheDocument();
   expect(screen.queryByText("Finished")).not.toBeInTheDocument();
+});
+
+it("offers a paused run made for an older runtime only Cancel, and says why", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(
+    listing("sandbox-now"),
+  );
+  show({ ...run, id: "run-old", state: "paused", attempts: attempts() });
+  expect(
+    await screen.findByText(/made for an older sandbox or CLI version/),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Cancel run" })).toBeEnabled();
+  expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
+    configuration.providerId,
+    configuration.accountId,
+  );
+});
+
+it("keeps Resume for a paused run on today's runtime", async () => {
+  show({ ...run, id: "run-today", state: "paused", attempts: attempts() });
+  expect(await screen.findByRole("button", { name: "Resume" })).toBeEnabled();
+  expect(screen.queryByText(/made for an older sandbox/)).toBeNull();
 });
