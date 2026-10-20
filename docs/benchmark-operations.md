@@ -116,21 +116,22 @@ stages declared task inputs and the selected provider's credential material.
 Provider inference sends those inputs to its endpoint under the account's
 existing data-use policy.
 
-A provider that may train on submitted data would learn the private tasks, so
-it receives only `train` versions and never judges. The owner states each
-provider's data use in Settings > Benchmarks > Provider data use
-(`providerDataUse` in the benchmark settings document,
+Every provider runs every split, train and held-out alike: a candidate
+receives only the public task (prompt, role context, public fixtures and, for
+a repository task, the snapshot), never the evaluator, an expected answer, a
+protected check, a rubric or its own score. A judge reads the rubric and the
+response, so a provider that may train on submitted data never judges. The
+owner states each provider's data use in Settings > Benchmarks > Provider data
+use (`providerDataUse` in the benchmark settings document,
 `{"<providerId>": {"trainsOnSubmissions": true|false}}`); a provider it does not
 name keeps its default: Anthropic, OpenAI and xAI, whose accounts the owner
 confirmed (10-18), do not train, and every other native provider is assumed
 to, Z.ai and Moonshot today. A settings document that cannot be read counts
-every native provider as training. The rule holds before anything is sent: a
-run preview refuses each such cell with the reason, adding tests to a run
-refuses, a pending cell planned before is settled `excluded` unsent, a workflow
-step or policy pick never goes to such a worker, a workflow campaign (held-out
-cases) refuses such a candidate, and the judge pool, its calibrations and
-frozen judge seats refuse such a judge. `benchmark_get_provider_data_use` lists
-what holds for every native provider.
+every native provider as training. The judge pool, its calibrations and frozen
+judge seats refuse such a judge. `benchmark_get_provider_data_use` lists what
+holds for every native provider. Until 2026-10-19 such a provider received
+`train` versions only; a cell that rule settled `excluded` unsent holds no
+measurement, so its case is owed again.
 
 A repository attempt works in its own copy of the published snapshot, with a
 pristine root-only base beside it from which its answer is read. Every check
@@ -817,8 +818,7 @@ lists the class's journaled evaluations, newest first.
   largest public scope, training cells only, with `model_identity`.
   - Every candidate with at least eight complete training cases there joins the
     pool; a candidate that falls below eight once cases without a second pool
-    candidate are dropped leaves it. Providers that may train on submitted data,
-    and any `excludedProviders`, are left out.
+    candidate are dropped leaves it. Any `excludedProviders` are left out.
   - Candidates need not share cases: every training case that measured two pool
     candidates counts, and an unmeasured candidate is masked, never a zero.
   - The selection head learns from each case's full measured set and seven seeded

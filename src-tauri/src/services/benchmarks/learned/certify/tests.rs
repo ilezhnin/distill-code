@@ -1,9 +1,10 @@
 use super::super::tests::data;
 use super::*;
 
-/// The training fixture, a train-only vendor that solves every training case,
-/// and `held` held-out cases in their own groups, copied from training cases
-/// of the same prompt kind with the same measurements.
+/// The training fixture, a Z.ai vendor that solves every training case and
+/// was never measured on held-out cases, and `held` held-out cases in their
+/// own groups, copied from training cases of the same prompt kind with the
+/// same measurements.
 fn measured(held: usize) -> QueryData {
     let mut data = data();
     let mut vendor = data.runs[0].request.configurations[0].clone();
@@ -51,11 +52,6 @@ fn measured(held: usize) -> QueryData {
     data
 }
 
-/// The default provider data use: Z.ai and Kimi may train on submissions.
-fn data_use() -> DataUse {
-    DataUse::from_settings(&serde_json::Value::Null)
-}
-
 fn matcher(word: &str) -> RankedMatcher {
     RankedMatcher {
         platform: None,
@@ -68,7 +64,10 @@ fn matcher(word: &str) -> RankedMatcher {
 fn request() -> EvaluationRequest {
     EvaluationRequest {
         work_class_id: "debug".into(),
-        excluded_providers: vec![],
+        // The user leaves the vendor out, so the pool is the two fixture
+        // candidates (`a_vendor_that_may_train_joins_the_pool` shows it would
+        // join otherwise).
+        excluded_providers: vec!["zai-acp".into()],
         // The manual order prefers the painter everywhere.
         persona_order: vec![matcher("painter")],
     }
@@ -104,9 +103,25 @@ fn countable(data: &QueryData) -> BTreeMap<String, Countable> {
 }
 
 #[test]
-fn candidates_come_from_training_cells_and_skip_train_only_vendors() {
+fn a_vendor_that_may_train_joins_the_pool() {
+    // Every provider runs every split (owner, 2026-10-19): one that may train
+    // on submitted data is a candidate like any other.
     let data = measured(8);
-    let fit_request = training_request(&data, &request(), 10, &data_use()).unwrap();
+    let mut everyone = request();
+    everyone.excluded_providers.clear();
+    let models: BTreeSet<_> = training_request(&data, &everyone, 10)
+        .unwrap()
+        .configurations
+        .into_iter()
+        .map(|c| c.model_id)
+        .collect();
+    assert!(models.contains("vendor-model"), "{models:?}");
+}
+
+#[test]
+fn candidates_come_from_training_cells_and_skip_excluded_providers() {
+    let data = measured(8);
+    let fit_request = training_request(&data, &request(), 10).unwrap();
     let models: BTreeSet<_> = fit_request
         .configurations
         .iter()
@@ -119,29 +134,26 @@ fn candidates_come_from_training_cells_and_skip_train_only_vendors() {
         .iter()
         .any(|v| &v.id == id && v.manifest.split == "train")));
     assert_eq!(fit_request.runtime_match, Some(RuntimeMatch::ModelIdentity));
-    assert!(require_held_out_pool(&fit_request.configurations, &data_use()).is_ok());
-    // A user exclusion applies on top; with no pair left there is no fit.
+    // Another exclusion applies on top; with no pair left there is no fit.
     let mut excluded = request();
-    excluded.excluded_providers = vec![" claude ".into()];
+    excluded.excluded_providers.push(" claude ".into());
     assert_eq!(
-        training_request(&data, &excluded, 10, &data_use())
-            .unwrap_err()
-            .code,
+        training_request(&data, &excluded, 10).unwrap_err().code,
         "insufficient_training_evidence"
     );
     // An evaluation needs a known class and the class's manual order.
     let mut unknown = request();
     unknown.work_class_id = "invented-class".into();
-    assert!(training_request(&data, &unknown, 10, &data_use()).is_err());
+    assert!(training_request(&data, &unknown, 10).is_err());
     let mut unordered = request();
     unordered.persona_order.clear();
-    assert!(training_request(&data, &unordered, 10, &data_use()).is_err());
+    assert!(training_request(&data, &unordered, 10).is_err());
 }
 
 #[test]
 fn a_fit_never_reads_held_out_cases() {
     let data = measured(8);
-    let mut fit_request = training_request(&data, &request(), 10, &data_use()).unwrap();
+    let mut fit_request = training_request(&data, &request(), 10).unwrap();
     fit_request.version_ids.pop();
     fit_request.version_ids.push("held-00".into());
     let refused = fit(&data, fit_request).unwrap_err();
@@ -172,7 +184,7 @@ fn candidates_need_not_share_training_cases() {
         !(a.configuration.model_id == "painter"
             && ["v00", "v01", "v02", "v03"].contains(&a.version_id.as_str()))
     });
-    let fit_request = training_request(&data, &request(), 10, &data_use()).unwrap();
+    let fit_request = training_request(&data, &request(), 10).unwrap();
     assert_eq!(fit_request.configurations.len(), 3);
     assert_eq!(fit_request.version_ids.len(), 16);
     let artifact = fit(&data, fit_request).unwrap();
@@ -186,11 +198,7 @@ fn candidates_need_not_share_training_cases() {
         .unwrap();
     assert_eq!(painter.cases, 12);
     // The recipe is deterministic: the same cells fit the same model.
-    let again = fit(
-        &data,
-        training_request(&data, &request(), 10, &data_use()).unwrap(),
-    )
-    .unwrap();
+    let again = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
     assert_eq!(again.model.id, artifact.model.id);
 }
 
@@ -199,14 +207,11 @@ const RECIPE_PATH_V2: &str = "family-weighted-softmax-kl-v2-random-subsets";
 #[test]
 fn random_subsets_are_seeded_renormalized_and_keep_the_full_set_first() {
     let mut data = measured(0);
-    let mut example = fit(
-        &data,
-        training_request(&data, &request(), 10, &data_use()).unwrap(),
-    )
-    .unwrap()
-    .snapshot
-    .examples
-    .remove(0);
+    let mut example = fit(&data, training_request(&data, &request(), 10).unwrap())
+        .unwrap()
+        .snapshot
+        .examples
+        .remove(0);
     let full = vec![(0, 0.4), (1, 0.3), (2, 0.2), (3, 0.1)];
     let draws = fit::subset_targets(&example, &full).unwrap();
     assert_eq!(draws.len(), 8);
@@ -261,11 +266,7 @@ fn random_subsets_are_seeded_renormalized_and_keep_the_full_set_first() {
 #[test]
 fn the_fallback_order_maps_to_the_candidates_it_names_only() {
     let data = measured(0);
-    let artifact = fit(
-        &data,
-        training_request(&data, &request(), 10, &data_use()).unwrap(),
-    )
-    .unwrap();
+    let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
     let key = |model: &str| {
         artifact
             .model
@@ -332,11 +333,7 @@ fn held_out_cases_count_present_candidates_only_and_certify_on_enough_groups() {
     data.attempts.retain(|a| {
         !(a.version_id == "held-15" && a.configuration.model_id == "parser" && a.repetition == 2)
     });
-    let artifact = fit(
-        &data,
-        training_request(&data, &request(), 10, &data_use()).unwrap(),
-    )
-    .unwrap();
+    let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
     let persona = persona_keys(&artifact.model, &request().persona_order);
     let mut eligible = countable(&data);
     eligible.remove("held-14");
@@ -406,11 +403,7 @@ fn held_out_cases_count_present_candidates_only_and_certify_on_enough_groups() {
 #[test]
 fn a_class_without_measured_held_out_cases_has_no_cases() {
     let data = measured(0);
-    let artifact = fit(
-        &data,
-        training_request(&data, &request(), 10, &data_use()).unwrap(),
-    )
-    .unwrap();
+    let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
     let persona = persona_keys(&artifact.model, &request().persona_order);
     let held = held_out_cases(&data, &artifact, &persona, &BTreeMap::new(), 10).unwrap();
     assert!(held.cases.is_empty());
@@ -458,11 +451,7 @@ fn a_candidate_on_fewer_than_eight_held_out_groups_leaves_the_certified_pool() {
             && a.version_id.starts_with("held-")
             && a.version_id["held-".len()..].parse::<usize>().unwrap() >= 5)
     });
-    let artifact = fit(
-        &data,
-        training_request(&data, &request(), 10, &data_use()).unwrap(),
-    )
-    .unwrap();
+    let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
     assert_eq!(artifact.model.candidates.len(), 3);
     let key = |model: &str| {
         artifact

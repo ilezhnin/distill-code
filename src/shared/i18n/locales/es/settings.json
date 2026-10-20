@@ -703,7 +703,7 @@
     },
     "dataUse": {
       "title": "Uso de datos de los proveedores",
-      "description": "Un proveedor que puede entrenar con los datos enviados solo recibe tareas de entrenamiento, nunca las reservadas, y sus modelos nunca juzgan. Antes de cambiarlo aquí, comprueba en la configuración de su cuenta qué hace el proveedor con los datos enviados.",
+      "description": "Todos los proveedores ejecutan todas las pruebas, de entrenamiento y reservadas: un candidato solo ve la tarea, nunca una respuesta, una comprobación ni su puntuación. Un proveedor que puede entrenar con los datos enviados nunca juzga, porque los jueces leen las rúbricas. Antes de cambiarlo aquí, comprueba en la configuración de su cuenta qué hace el proveedor con los datos enviados.",
       "trains": "Puede entrenar con los datos enviados",
       "default": "Predeterminado",
       "stated": "Indicado por ti",

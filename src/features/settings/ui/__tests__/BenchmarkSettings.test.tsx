@@ -435,10 +435,12 @@ describe("BenchmarkSettings provider data use", () => {
       screen.getByRole("heading", { name: "Provider data use" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/receives only train tasks, never held-out ones/),
+      screen.getByText(/Every provider runs every test, train and held-out/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/its models never judge/, { selector: "p" }),
+      screen.getByText(/never judges, because judges read rubrics/, {
+        selector: "p",
+      }),
     ).toBeInTheDocument();
     expect(screen.getByText(/in its account settings/)).toBeInTheDocument();
 

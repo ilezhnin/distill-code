@@ -1,11 +1,9 @@
 import type { ProviderDataUse } from "../types";
 
-/** The one split a provider that may train on submitted data receives. */
-export const TRAIN_SPLIT = "train";
-
 /**
  * What the service says of `providerId` when it may train on submitted
- * data; null when it does not, or while its data use is not read yet.
+ * data, so its models never judge; null when it does not, or while its data
+ * use is not read yet. Every provider runs every split as a candidate.
  */
 export function trainingProvider(
   rows: readonly ProviderDataUse[] | undefined,
@@ -16,9 +14,4 @@ export function trainingProvider(
       (row) => row.providerId === providerId && row.trainsOnSubmissions,
     ) ?? null
   );
-}
-
-/** Whether a provider that may train on submitted data receives `split`. */
-export function trainingProviderReceives(split: string): boolean {
-  return split === TRAIN_SPLIT;
 }

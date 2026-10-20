@@ -231,9 +231,9 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("runs only train tests for a model whose provider may train on submitted data", async () => {
+it("runs held-out tests for a model whose provider may train on submitted data", async () => {
   const user = userEvent.setup();
-  // The owner's word, read from the service: this provider may train.
+  // Every provider runs every split; data use only keeps it from judging.
   vi.mocked(benchmarkApi.providerDataUse).mockResolvedValue([
     {
       providerId: "claude-acp",
@@ -243,38 +243,20 @@ it("runs only train tests for a model whose provider may train on submitted data
     },
   ]);
   show({ definitions: [...definitions, heldOut(10, "Juliet")] });
-  const dialog = await screen.findByRole("dialog");
-  expect(
-    await within(dialog).findByText(
-      "Runs train tasks only: Anthropic may train on submitted data",
-    ),
-  ).toBeInTheDocument();
-  const row = (name: string) =>
-    within(screen.getByText(name).closest("label") as HTMLElement);
-  // The held-out test stays listed, tagged, unchecked and closed.
-  expect(row("Juliet").getByText("Held out")).toBeInTheDocument();
-  expect(row("Juliet").getByText("Held out")).toHaveAttribute(
-    "title",
-    "Anthropic may train on submitted data, so held-out tests are never sent to it.",
+  await screen.findByRole("dialog");
+  const juliet = within(
+    screen.getByText("Juliet").closest("label") as HTMLElement,
   );
-  expect(row("Juliet").getByRole("checkbox")).not.toBeChecked();
-  expect(row("Juliet").getByRole("checkbox")).toBeDisabled();
-  expect(row("Alpha").queryByText("Held out")).not.toBeInTheDocument();
-  expect(row("Alpha").getByRole("checkbox")).toBeChecked();
-  expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
-  // Checking every test checks every test it may receive.
-  await user.click(screen.getByText("All tests"));
-  expect(screen.getByText("0 of 7 tests, 0 attempts")).toBeInTheDocument();
-  await user.click(screen.getByText("All tests"));
-  expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
-  expect(row("Juliet").getByRole("checkbox")).not.toBeChecked();
+  expect(juliet.getByRole("checkbox")).toBeChecked();
+  expect(juliet.getByRole("checkbox")).toBeEnabled();
+  expect(screen.getByText("7 of 7 tests, 21 attempts")).toBeInTheDocument();
   const start = screen.getByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());
   await user.click(start);
   await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
   const request = vi.mocked(benchmarkApi.startRun).mock.calls[0][0];
-  expect(request.versionIds).toHaveLength(6);
-  expect(request.versionIds).not.toContain("version-10");
+  expect(request.versionIds).toHaveLength(7);
+  expect(request.versionIds).toContain("version-10");
 });
 
 it("checks a held-out test for a model whose provider does not train on submitted data", async () => {
@@ -288,12 +270,10 @@ it("checks a held-out test for a model whose provider does not train on submitte
   );
   expect(juliet.getByRole("checkbox")).toBeChecked();
   expect(juliet.getByRole("checkbox")).toBeEnabled();
-  expect(juliet.queryByText("Held out")).not.toBeInTheDocument();
-  expect(screen.queryByText(/Runs train tasks only/)).not.toBeInTheDocument();
   expect(screen.getByText("7 of 7 tests, 21 attempts")).toBeInTheDocument();
 });
 
-it("shows why the runner refused to finish a run with a test its provider may not receive", async () => {
+it("shows why the runner refused to finish a run", async () => {
   const user = userEvent.setup();
   // A run stopped inside its window that measured Alpha alone.
   const stopped = stoppedRun("needs_attention", [
@@ -301,15 +281,14 @@ it("shows why the runner refused to finish a run with a test its provider may no
   ]);
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(stopped.run);
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(stopped.summaries);
-  // The provider's data use changed after the dialog read it; the runner
-  // has the last word, and the dialog shows it like any other refusal.
+  // The runner has the last word, and the dialog shows its refusal.
   vi.mocked(benchmarkApi.extendRun).mockRejectedValue(
-    "model-1 on Bravo: Anthropic may train on submitted data, so it runs only train tasks, not held_out ones",
+    "model-1 on Bravo: the account's plan no longer offers this model",
   );
   show({ runId: "run-2" });
   await user.click(await screen.findByRole("button", { name: "Finish run" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Anthropic may train on submitted data, so it runs only train tasks",
+    "the account's plan no longer offers this model",
   );
 });
 

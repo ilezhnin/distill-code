@@ -703,7 +703,7 @@
     },
     "dataUse": {
       "title": "Provider data use",
-      "description": "A provider that may train on submitted data receives only train tasks, never held-out ones, and its models never judge. Check what a provider does with submitted data in its account settings before you change it here.",
+      "description": "Every provider runs every test, train and held-out alike: a candidate sees only the task, never an answer, a check or its score. A provider that may train on submitted data never judges, because judges read rubrics. Check what a provider does with submitted data in its account settings before you change it here.",
       "trains": "May train on submitted data",
       "default": "Default",
       "stated": "Set by you",

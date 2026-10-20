@@ -17,7 +17,7 @@ import {
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Label } from "@/shared/ui/label";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
-import { benchmarkKeys, useProviderDataUse } from "../hooks/useBenchmarks";
+import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { resolveCatchUpConfiguration, stalePin } from "../lib/benchmarkCatchUp";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
@@ -30,10 +30,6 @@ import {
   runWindowCloses,
   runWindowOpen,
 } from "../lib/benchmarkPlan";
-import {
-  trainingProvider,
-  trainingProviderReceives,
-} from "../lib/providerDataUse";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   Attempt,
@@ -116,25 +112,6 @@ export function BenchmarkModelRunDialog({
       ),
     };
   }, [definitions, configuration]);
-  // A provider that may train on submitted data receives train tests only:
-  // the others stay listed, unchecked and closed, so the default selection
-  // is one the runner accepts.
-  const dataUse = useProviderDataUse();
-  const training = trainingProvider(dataUse.data, configuration.providerId);
-  const refused = useMemo(
-    () =>
-      new Set(
-        training
-          ? eligible
-              .filter(
-                (version) => !trainingProviderReceives(version.manifest.split),
-              )
-              .map((version) => version.id)
-          : [],
-      ),
-    [eligible, training],
-  );
-  const selectable = eligible.filter((version) => !refused.has(version.id));
   // A click overrides a test's default until a run finishes.
   const [overrides, setOverrides] = useState<Map<string, boolean>>(
     () => new Map(),
@@ -290,7 +267,6 @@ export function BenchmarkModelRunDialog({
     const byVersion = new Map<string, number>();
     const inRun = new Set<string>();
     for (const attempt of mine) {
-      if (refused.has(attempt.versionId)) continue;
       inRun.add(attempt.versionId);
       if (scores.get(attempt.id) != null)
         byVersion.set(
@@ -314,7 +290,7 @@ export function BenchmarkModelRunDialog({
       if (scored > 0) partial += 1;
     }
     return { left, partial, remaining, complete, measured: inRun.size - left };
-  }, [mine, scores, run.data, refused]);
+  }, [mine, scores, run.data]);
   const windowOpen = run.data ? runWindowOpen(run.data, clock) : false;
   const resolvingRun =
     runId != null &&
@@ -328,7 +304,7 @@ export function BenchmarkModelRunDialog({
   );
   // Tests the run never planned: inside its window they join it. One its
   // provider never receives is never missing.
-  const missing = selectable.filter((version) => !inRunIds.has(version.id));
+  const missing = eligible.filter((version) => !inRunIds.has(version.id));
   // What the board already holds: a test is measured once its standing
   // cell, the newest scored one across all of the model's runs, holds every
   // required repetition. Passed or failed, it stands; a failure is a
@@ -349,7 +325,7 @@ export function BenchmarkModelRunDialog({
   );
   // A test the model wrote is no case of its board: listed and runnable for
   // its speed and cost, never owed.
-  const owedOnBoard = selectable.filter(
+  const owedOnBoard = eligible.filter(
     (version) => !measuredOnBoard.has(version.id) && !own.has(version.id),
   );
   // The run was planned on a runtime the inventory no longer lists (an
@@ -365,7 +341,7 @@ export function BenchmarkModelRunDialog({
   // A run that can no longer go on, its window closed or its runtime gone,
   // with tests it did not finish, is over: it says so, it can only be
   // stopped, and a new run takes what the model still owes.
-  const unfinishedInRun = selectable.some(
+  const unfinishedInRun = eligible.some(
     (version) => !cells.complete.has(version.id),
   );
   const expired =
@@ -402,11 +378,10 @@ export function BenchmarkModelRunDialog({
   const complete = stopped && cells.left === 0 && missing.length === 0;
   const following = !over && (runActive || finishing) && mine.length > 0;
   // What a test the run does not hold yet starts as: checked only while the
-  // board owes it, and never when its provider may not receive it.
+  // board owes it.
   const chosenByDefault = (versionId: string) =>
-    !refused.has(versionId) &&
-    (overrides.get(versionId) ??
-      (!measuredOnBoard.has(versionId) && !own.has(versionId)));
+    overrides.get(versionId) ??
+    (!measuredOnBoard.has(versionId) && !own.has(versionId));
   const locked = runActive && !over;
   const isChecked = (versionId: string) => {
     if (!following) return chosenByDefault(versionId);
@@ -424,8 +399,8 @@ export function BenchmarkModelRunDialog({
   // Measuring every test again, complete ones included, is its own action.
   const everything = following
     ? cells.remaining + missing.length * REQUIRED_REPETITIONS
-    : selectable.length * REQUIRED_REPETITIONS;
-  const remeasurable = selectable.some((version) =>
+    : eligible.length * REQUIRED_REPETITIONS;
+  const remeasurable = eligible.some((version) =>
     measuredOnBoard.has(version.id),
   );
   // A finished run measured its tests: the next one starts from what is
@@ -470,8 +445,7 @@ export function BenchmarkModelRunDialog({
   const start = async (all = false) => {
     // The checked tests in list order, so the plan order stays the queue.
     const tests = ordered.filter(
-      (version) =>
-        isChecked(version.id) || (all && selectable.includes(version)),
+      (version) => isChecked(version.id) || (all && eligible.includes(version)),
     );
     if (!pinned || tests.length === 0) return;
     setBusy(true);
@@ -543,7 +517,7 @@ export function BenchmarkModelRunDialog({
       setBusy(false);
     }
   };
-  const allChecked = selectable.every((version) => isChecked(version.id));
+  const allChecked = eligible.every((version) => isChecked(version.id));
   return (
     <Dialog
       open
@@ -566,11 +540,6 @@ export function BenchmarkModelRunDialog({
           <DialogDescription>
             {providerVendor(configuration.providerId)}
           </DialogDescription>
-          {training ? (
-            <p className="text-sm text-muted-foreground">
-              {t("modelRun.trainOnly", { vendor: training.name })}
-            </p>
-          ) : null}
         </DialogHeader>
         <DialogBody className="space-y-3">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
@@ -625,7 +594,7 @@ export function BenchmarkModelRunDialog({
               {owedOnBoard.length > 0
                 ? t("modelRun.owedHint", {
                     owed: owedOnBoard.length,
-                    measured: selectable.length - owedOnBoard.length,
+                    measured: eligible.length - owedOnBoard.length,
                   })
                 : t("modelRun.allMeasuredHint")}
             </p>
@@ -640,10 +609,10 @@ export function BenchmarkModelRunDialog({
           ) : null}
           <Label className="flex items-center gap-3 border-b border-border px-2 pb-2 text-sm font-medium">
             <Checkbox
-              disabled={locked || selectable.length === 0}
+              disabled={locked || eligible.length === 0}
               checked={
                 allChecked
-                  ? selectable.length > 0
+                  ? eligible.length > 0
                   : chosen.length === 0
                     ? false
                     : "indeterminate"
@@ -651,7 +620,7 @@ export function BenchmarkModelRunDialog({
               onCheckedChange={(checked) =>
                 setOverrides(
                   new Map(
-                    selectable.map((version) => [version.id, checked === true]),
+                    eligible.map((version) => [version.id, checked === true]),
                   ),
                 )
               }
@@ -688,9 +657,7 @@ export function BenchmarkModelRunDialog({
                   <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
                     <Checkbox
                       disabled={
-                        locked ||
-                        (finishing && inRunIds.has(version.id)) ||
-                        refused.has(version.id)
+                        locked || (finishing && inRunIds.has(version.id))
                       }
                       checked={isChecked(version.id)}
                       onCheckedChange={(checked) =>
@@ -708,16 +675,6 @@ export function BenchmarkModelRunDialog({
                         title={t("modelRun.authoredHint")}
                       >
                         {t("modelRun.authored")}
-                      </span>
-                    ) : null}
-                    {training && refused.has(version.id) ? (
-                      <span
-                        className="shrink-0 text-xs text-muted-foreground"
-                        title={t("modelRun.heldOutHint", {
-                          vendor: training.name,
-                        })}
-                      >
-                        {t("modelRun.heldOut")}
                       </span>
                     ) : null}
                     {status ? (
@@ -809,10 +766,7 @@ export function BenchmarkModelRunDialog({
                   disabled={
                     busy ||
                     (!finishing &&
-                      (!pinned ||
-                        resolvingStanding ||
-                        resolvingRun ||
-                        dataUse.isPending))
+                      (!pinned || resolvingStanding || resolvingRun))
                   }
                   onClick={() => void (finishing ? finish(true) : start(true))}
                 >
@@ -841,9 +795,6 @@ export function BenchmarkModelRunDialog({
                     !pinned ||
                     resolvingStanding ||
                     resolvingRun ||
-                    // Until it is read, the checks may hold tests its
-                    // provider never receives.
-                    dataUse.isPending ||
                     chosen.length === 0
                   }
                   onClick={() => void start()}

@@ -8,7 +8,6 @@
 //! single use: the discipline is the frozen recipe, the train-only fit and
 //! the journal.
 use super::super::{
-    data_use::DataUse,
     export::{self, RuntimeMatch},
     qualification,
     store::{now, Store},
@@ -168,24 +167,17 @@ fn coverage(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("insufficient_training_evidence", message)
 }
 
-/// The user's exclusions and every provider that may train on submitted
-/// data: those see training tasks only, so they never join a pool compared on
-/// held-out tasks.
-fn excluded(request: &EvaluationRequest, data_use: &DataUse) -> Vec<String> {
-    let mut providers: BTreeSet<String> = data_use
-        .providers()
+/// The providers the user excluded. Every provider runs every split, so data
+/// use excludes none.
+fn excluded(request: &EvaluationRequest) -> Vec<String> {
+    request
+        .excluded_providers
+        .iter()
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
+        .collect::<BTreeSet<String>>()
         .into_iter()
-        .filter(|provider| provider.trains_on_submissions)
-        .map(|provider| provider.provider_id)
-        .collect();
-    providers.extend(
-        request
-            .excluded_providers
-            .iter()
-            .map(|p| p.trim().to_owned())
-            .filter(|p| !p.is_empty()),
-    );
-    providers.into_iter().collect()
+        .collect()
 }
 
 /// The candidate a ledger column names, in the fit's canonical form.
@@ -238,10 +230,9 @@ pub(super) fn training_request(
     data: &QueryData,
     request: &EvaluationRequest,
     cutoff: i64,
-    data_use: &DataUse,
 ) -> Result<FitRequest> {
     validate_request(request)?;
-    let excluded = excluded(request, data_use);
+    let excluded = excluded(request);
     let rows = export::ledger_rows_matching(
         data,
         false,
@@ -919,12 +910,11 @@ impl BenchmarkService {
     pub async fn evaluate_class(&self, request: EvaluationRequest) -> Result<ClassEvaluation> {
         validate_request(&request)?;
         let data = self.query_data().await?;
-        let data_use = DataUse::load(&self.store.root).await;
         let countable = self
             .store
             .countable_held_out(&data, &request.work_class_id)
             .await?;
-        let excluded = excluded(&request, &data_use);
+        let excluded = excluded(&request);
         let eligible = countable.clone();
         let order = request.persona_order.clone();
         let (artifact, persona, held) = tauri::async_runtime::spawn_blocking(move || {
@@ -933,19 +923,7 @@ impl BenchmarkService {
             // the same training cells always give the same fit.
             let fit_cutoff =
                 training_cutoff(&data, &request.work_class_id, cutoff)?.unwrap_or(cutoff);
-            let artifact = fit(
-                &data,
-                training_request(&data, &request, fit_cutoff, &data_use)?,
-            )?;
-            require_held_out_pool(
-                &artifact
-                    .model
-                    .candidates
-                    .iter()
-                    .map(|c| c.configuration.clone())
-                    .collect::<Vec<_>>(),
-                &data_use,
-            )?;
+            let artifact = fit(&data, training_request(&data, &request, fit_cutoff)?)?;
             let persona = persona_keys(&artifact.model, &request.persona_order);
             let held = held_out_cases(&data, &artifact, &persona, &eligible, cutoff)?;
             Ok::<_, BenchmarkError>((artifact, persona, held))

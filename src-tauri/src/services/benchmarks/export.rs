@@ -77,8 +77,8 @@ fn observation(
     let score = attempt.and_then(|a| super::analysis::score_as_of(a, cutoff));
     let reward = if authored { None } else { score };
     // Why a cell carries no reward on purpose: its candidate wrote the case,
-    // or the provider's data use kept the candidate from it (settled
-    // `excluded` unsent).
+    // or the retired train-only rule (until 2026-10-19) kept the candidate
+    // from it (settled `excluded` unsent).
     let excluded = if authored {
         Some("authored_by_candidate")
     } else if attempt.is_some_and(|a| {

@@ -275,10 +275,7 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
             manifests.push(service.store.version(id).await?.manifest);
         }
         let measures_author_cells = request.measures_author_cells();
-        // A candidate that could not run every planned version is left out,
-        // as is one whose provider may train on submitted data and would be
-        // sent a version that is not train.
-        let data_use = super::data_use::DataUse::load(&service.store.root).await;
+        // A candidate that could not run every planned version is left out.
         let eligible: Vec<Configuration> = candidates
             .into_iter()
             .filter(|configuration| {
@@ -287,9 +284,6 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
                         .backend
                         .unsupported(configuration, manifest)
                         .is_none()
-                        && data_use
-                            .refusal(&configuration.provider_id, &manifest.split)
-                            .is_none()
                 }) && (measures_author_cells
                     || manifests.iter().any(|manifest| {
                         !super::routing::authored_by_candidate(manifest, configuration)

@@ -79,18 +79,10 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("marks a chosen model whose provider may train on submitted data and leaves the refusal to the plan check", async () => {
+it("leaves a refusal to the plan check", async () => {
   const user = userEvent.setup();
-  vi.mocked(benchmarkApi.providerDataUse).mockResolvedValue([
-    {
-      providerId: "claude-acp",
-      name: "Anthropic",
-      trainsOnSubmissions: true,
-      stated: true,
-    },
-  ]);
   const refusal =
-    "model-1 on Test: Anthropic may train on submitted data, so it runs only train tasks, not held_out ones";
+    "model-1 on Test: the account's plan no longer offers this model";
   vi.mocked(benchmarkApi.previewRun).mockResolvedValue({
     valid: false,
     issues: [refusal],
@@ -119,11 +111,7 @@ it("marks a chosen model whose provider may train on submitted data and leaves t
   await user.click(screen.getByRole("combobox", { name: "Model" }));
   await user.click(screen.getByRole("option", { name: "Test model" }));
   await user.click(screen.getByRole("button", { name: "Add configuration" }));
-  const label = await screen.findByText("Train tasks only");
-  expect(label).toHaveAttribute(
-    "title",
-    "Anthropic may train on submitted data, so it runs only train tasks. Check plan names each test it cannot run.",
-  );
+  expect(screen.queryByText("Train tasks only")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Check plan" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(refusal);
   expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();

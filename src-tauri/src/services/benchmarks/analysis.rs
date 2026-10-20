@@ -1561,27 +1561,6 @@ fn measurement_report(
             for attempt in &every_cell {
                 contributing.insert(attempt.run_id.as_str());
             }
-            // Cases its provider's data use keeps this candidate from (cells
-            // the runner settled `excluded` unsent, its own cases aside): no
-            // catch-up can fill them, so they leave its plan and are listed
-            // apart, like a case the provider refused.
-            let refused_version_ids: Vec<String> = eligible
-                .iter()
-                .filter(|v| {
-                    attempts.iter().any(|a| {
-                        a.version_id == v.id
-                            && a.outcome.as_deref() == Some("excluded")
-                            && super::data_use::refused_for_data_use(a.reason.as_deref())
-                    }) && !attempts
-                        .iter()
-                        .any(|a| a.version_id == v.id && score_as_of(a, query.as_of).is_some())
-                })
-                .map(|v| v.id.clone())
-                .collect();
-            let eligible: Vec<&BenchmarkVersion> = eligible
-                .into_iter()
-                .filter(|v| !refused_version_ids.contains(&v.id))
-                .collect();
             // Speed and cost read every cell of the sitting, own cases included.
             let every_cells = case_cells(&every_cell, query.as_of, protocol);
             let every_scored: Vec<&Attempt> = every_cell
@@ -1628,15 +1607,7 @@ fn measurement_report(
                     median_duration_ms, median_output_tokens, cost, priced, measured_at,
                     points: None, speed_share: resources.speed_share, cost_share: resources.cost_share,
                     status: "excluded".into(),
-                    reason: if refused_version_ids.is_empty() {
-                        format!("{excluded} cases left out of quality: this candidate helped author every case in the pool; their speed and cost still count")
-                    } else {
-                        format!(
-                            "{} cases left out: this provider's data use keeps the candidate from them{}",
-                            refused_version_ids.len(),
-                            if excluded > 0 { format!(", and it authored {excluded}") } else { String::new() }
-                        )
-                    },
+                    reason: format!("{excluded} cases left out of quality: this candidate helped author every case in the pool; their speed and cost still count"),
                     attempt_ids: Vec::new(),
                     result_attempt_ids: Vec::new(),
                     own_attempt_ids,
@@ -1644,7 +1615,6 @@ fn measurement_report(
                     axes: Vec::new(),
                     missing_version_ids: Vec::new(),
                     unsupported_version_ids: Vec::new(),
-                    refused_version_ids,
                     scored_version_ids: Vec::new(),
                     resolved_models: Vec::new(),
                     parallelism,
@@ -1818,7 +1788,6 @@ fn measurement_report(
                 axes,
                 missing_version_ids,
                 unsupported_version_ids,
-                refused_version_ids,
                 scored_version_ids: scored_attempts.iter().map(|a| a.version_id.clone())
                     .collect::<BTreeSet<_>>().into_iter().collect(),
                 resolved_models: scored_attempts.iter().filter_map(|a| a.resolved_model.clone())
@@ -3036,11 +3005,11 @@ pub(super) mod tests {
         assert_eq!(row.missing_version_ids, vec!["v0".to_string()]);
         assert!(row.unsupported_version_ids.is_empty());
     }
-    /// A provider that may train on submissions runs train cases only; its
-    /// held-out cells settle `excluded` unsent. They leave its plan and are
-    /// listed apart, so the row can be complete without them.
+    /// Every provider runs every split since 2026-10-19: a held-out cell the
+    /// retired train-only rule settled `excluded` unsent holds no measurement,
+    /// so the case stays in the plan and is owed again.
     #[test]
-    fn a_case_the_providers_data_use_keeps_out_leaves_the_plan() {
+    fn a_case_the_retired_train_only_rule_kept_out_is_owed_again() {
         let mut data = dataset();
         let before = leaderboard(&data, &ResultQuery::default()).rows[0].planned;
         for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v0") {
@@ -3052,31 +3021,9 @@ pub(super) mod tests {
             attempt.evaluations.clear();
         }
         let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
-        assert_eq!(row.refused_version_ids, vec!["v0".to_string()]);
-        assert!(row.missing_version_ids.is_empty());
-        assert!(row.unsupported_version_ids.is_empty());
-        assert_eq!(row.planned, before - 1);
-        // A scored cell of the case keeps it in the plan.
-        let mut data = dataset();
-        data.attempts
-            .iter_mut()
-            .find(|a| a.version_id == "v0")
-            .unwrap()
-            .outcome = Some("excluded".into());
-        let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
-        assert!(row.refused_version_ids.is_empty());
         assert_eq!(row.planned, before);
-        // A cell an older authorship rule settled is no data-use refusal: it
-        // stays a gap a catch-up fills.
-        let mut data = dataset();
-        for attempt in data.attempts.iter_mut().filter(|a| a.version_id == "v0") {
-            attempt.outcome = Some("excluded".into());
-            attempt.reason = Some("authored by this candidate".into());
-            attempt.evaluations.clear();
-        }
-        let row = &leaderboard(&data, &ResultQuery::default()).rows[0];
-        assert!(row.refused_version_ids.is_empty());
         assert_eq!(row.missing_version_ids, vec!["v0".to_string()]);
+        assert!(row.unsupported_version_ids.is_empty());
     }
     #[test]
     fn a_new_case_adds_a_gap_instead_of_resetting_history() {

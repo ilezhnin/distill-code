@@ -257,10 +257,6 @@ impl WorkflowPolicy {
                 && service
                     .backend
                     .unsupported(configuration, &version.manifest)
-                    .is_none()
-                && super::data_use::DataUse::load(&service.store.root)
-                    .await
-                    .refusal(&configuration.provider_id, &version.manifest.split)
                     .is_none();
             candidates.push(RoutingCandidate {
                 configuration: configuration.clone(),

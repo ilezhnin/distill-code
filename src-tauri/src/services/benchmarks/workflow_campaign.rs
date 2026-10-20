@@ -465,16 +465,6 @@ impl BenchmarkService {
         let mut persona = base.clone();
         persona.mode = "persona".into();
         policies.push(persona);
-        // Campaign cases are held out, which a provider that may train on
-        // submitted data never receives.
-        let data_use = super::data_use::DataUse::load(&self.store.root).await;
-        if let Some(reason) = request.candidates.iter().find_map(|candidate| {
-            versions.iter().find_map(|version| {
-                data_use.refusal(&candidate.provider_id, &version.manifest.split)
-            })
-        }) {
-            return Err(BenchmarkError::new("validation", reason));
-        }
         for candidate in &request.candidates {
             let mut fixed = base.clone();
             fixed.mode = "fixed".into();

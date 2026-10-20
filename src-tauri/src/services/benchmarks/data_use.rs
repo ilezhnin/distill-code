@@ -1,7 +1,8 @@
-//! What a provider may do with what benchmark turns send it. A provider that
-//! may train on submitted data would learn the private tasks, so it runs only
-//! `train` versions and never judges; the others run every split and may
-//! judge. The owner's word is data: `providerDataUse` in the benchmark
+//! What a provider may do with what benchmark turns send it. Every provider
+//! runs every split as a candidate (owner, 2026-10-19: equal conditions; a
+//! candidate sees only the public task, never an answer, a check or its
+//! score). A judge reads the rubric and the response, so a provider that may
+//! train on submitted data never judges. The owner's word is data: `providerDataUse` in the benchmark
 //! settings document, `{"<providerId>": {"trainsOnSubmissions": bool}}`. A
 //! provider it does not name keeps its default: the native providers the
 //! owner confirmed (Anthropic, OpenAI and xAI, 10-18) do not train, every
@@ -21,15 +22,14 @@ const SETTINGS: &str = "settings.json";
 /// The native providers the owner confirmed do not train on what they are
 /// sent, unless the settings say otherwise.
 const CONFIRMED: &[&str] = &["claude-acp", "codex-acp", "grok-acp"];
-/// The one split a provider that may train receives.
-pub(crate) const TRAIN: &str = "train";
 
-/// The words of a cell's reason when its provider's data use kept it from
-/// the case (see [`DataUse::refusal`]).
+/// The words of a cell's reason when the retired train-only rule (until
+/// 2026-10-19) kept its provider from the case.
 const RUNS_TRAIN_ONLY: &str = "may train on submitted data, so it runs only train tasks";
 
-/// Whether a cell settled `excluded` because its provider's data use kept
-/// it from the case, not because its candidate wrote the case.
+/// Whether a cell settled `excluded` because the retired train-only rule kept
+/// its provider from the case, not because its candidate wrote the case. Such
+/// a cell holds no measurement: the case is owed again.
 pub(crate) fn refused_for_data_use(reason: Option<&str>) -> bool {
     reason.is_some_and(|reason| reason.contains(RUNS_TRAIN_ONLY))
 }
@@ -96,12 +96,6 @@ impl DataUse {
         }
     }
 
-    /// Why `provider` may not receive a task version of `split`.
-    pub fn refusal(&self, provider: &str, split: &str) -> Option<String> {
-        (self.trains(provider) && split != TRAIN)
-            .then(|| format!("{} {RUNS_TRAIN_ONLY}, not {split} ones", name(provider)))
-    }
-
     /// Why `provider`'s models may not judge.
     pub fn judge_refusal(&self, provider: &str) -> Option<String> {
         self.trains(provider).then(|| {
@@ -153,24 +147,25 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn confirmed_providers_run_every_split_and_the_others_only_train() {
+    fn confirmed_providers_judge_and_the_others_never_do() {
         let defaults = DataUse::from_settings(&json!({}));
         for provider in CONFIRMED {
             assert!(!defaults.trains(provider), "{provider}");
-            assert!(defaults.refusal(provider, "held_out").is_none());
             assert!(defaults.judge_refusal(provider).is_none());
         }
         for provider in ["zai-acp", "kimi-acp"] {
             assert!(defaults.trains(provider), "{provider}");
-            assert!(defaults.refusal(provider, TRAIN).is_none());
-            for split in ["held_out", "development"] {
-                assert!(defaults
-                    .refusal(provider, split)
-                    .unwrap()
-                    .contains("may train on submitted data"));
-            }
-            assert!(defaults.judge_refusal(provider).is_some());
+            assert!(defaults
+                .judge_refusal(provider)
+                .unwrap()
+                .contains("never judge"));
         }
+        // A cell the retired train-only rule settled is recognized by its
+        // reason, so it counts as owed again.
+        assert!(refused_for_data_use(Some(
+            "Z.ai may train on submitted data, so it runs only train tasks, not held_out ones"
+        )));
+        assert!(!refused_for_data_use(Some("authored by this candidate")));
         // A provider with no native profile runs nothing natively.
         assert!(!defaults.trains("invented-provider"));
     }
