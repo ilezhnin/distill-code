@@ -235,7 +235,7 @@ type ToggleGroupSize = NonNullable<
 >;
 type SwitchLabelPosition = "none" | "start" | "end";
 type ToggleGroupSelectionType = "single" | "multiple";
-type AlertVariant = "default" | "destructive";
+type AlertVariant = "default" | "destructive" | "warning";
 type DropdownMenuItemVariant = "default" | "destructive";
 type AccordionTriggerStyle = "default" | "section";
 type AccordionBehavior = "single" | "multiple";
@@ -3764,7 +3764,7 @@ function AlertPage() {
     variant: playgroundVariant,
   });
   const AlertIcon =
-    playgroundVariant === "destructive" ? IconAlertTriangle : IconSparkles;
+    playgroundVariant === "default" ? IconSparkles : IconAlertTriangle;
 
   return (
     <>
@@ -3782,7 +3782,9 @@ function AlertPage() {
             <AlertTitle>
               {playgroundVariant === "destructive"
                 ? "Destructive alert"
-                : "Default alert"}
+                : playgroundVariant === "warning"
+                  ? "Warning alert"
+                  : "Default alert"}
             </AlertTitle>
             <AlertDescription>
               Alert description text shows the supporting message color.

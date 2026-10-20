@@ -19,7 +19,11 @@ import {
 } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
-import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
+import {
+  benchmarkApi,
+  benchmarkErrorMessage,
+  isRefusal,
+} from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
@@ -351,7 +355,9 @@ export function BenchmarkRunDialog({
               <BenchmarkEmpty title={t("loading")} compact />
             ) : null}
             {inventory.error ? (
-              <BenchmarkAlert>
+              <BenchmarkAlert
+                tone={isRefusal(inventory.error) ? "warning" : "error"}
+              >
                 {benchmarkErrorMessage(inventory.error)}
               </BenchmarkAlert>
             ) : null}
@@ -460,7 +466,9 @@ export function BenchmarkRunDialog({
               </p>
             ) : null}
             {validPreview && !validPreview.valid ? (
-              <BenchmarkAlert>{validPreview.issues.join("\n")}</BenchmarkAlert>
+              <BenchmarkAlert tone="warning">
+                {validPreview.issues.join("\n")}
+              </BenchmarkAlert>
             ) : null}
           </Card>
           <Card className="gap-3 p-4">

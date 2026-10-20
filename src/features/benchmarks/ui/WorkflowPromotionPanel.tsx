@@ -463,7 +463,9 @@ export function WorkflowPromotionPanel({
             })}
           </p>
           {promotion.revocationReason ? (
-            <BenchmarkAlert>{promotion.revocationReason}</BenchmarkAlert>
+            <BenchmarkAlert tone="warning">
+              {promotion.revocationReason}
+            </BenchmarkAlert>
           ) : null}
           {promotion.certificate.assessment.limitations.map((limitation) => (
             <p key={limitation} className="text-xs text-muted-foreground">

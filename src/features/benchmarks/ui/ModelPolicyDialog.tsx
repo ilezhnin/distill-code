@@ -466,7 +466,9 @@ export function ModelPolicyDialog({
                         })}
                       </p>
                       {revocationReason ? (
-                        <BenchmarkAlert>{revocationReason}</BenchmarkAlert>
+                        <BenchmarkAlert tone="warning">
+                          {revocationReason}
+                        </BenchmarkAlert>
                       ) : null}
                       <details>
                         <summary className="cursor-pointer text-xs">

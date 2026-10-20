@@ -265,7 +265,9 @@ export function BenchmarkRunDrawer({
             </BenchmarkAlert>
           ) : null}
           {outdated ? (
-            <BenchmarkAlert>{t("run.outdatedHint")}</BenchmarkAlert>
+            <BenchmarkAlert tone="warning">
+              {t("run.outdatedHint")}
+            </BenchmarkAlert>
           ) : null}
           {query.isPending ? (
             <BenchmarkEmpty title={t("loading")} compact />

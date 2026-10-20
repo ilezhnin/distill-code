@@ -526,7 +526,7 @@ function CampaignResult({
         })}
       </p>
       {campaign.stateReason ? (
-        <BenchmarkAlert>{campaign.stateReason}</BenchmarkAlert>
+        <BenchmarkAlert tone="warning">{campaign.stateReason}</BenchmarkAlert>
       ) : null}
       {campaign.state === "paused" &&
       campaign.plan.orderAlgorithm ===

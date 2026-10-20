@@ -228,7 +228,7 @@ export function BenchmarkQualificationPanel({
               </p>
               <code className="block break-all text-xs">{binding.id}</code>
               {binding.revokedAt !== null ? (
-                <BenchmarkAlert>
+                <BenchmarkAlert tone="warning">
                   {t("qualification.revoked")}: {binding.revocationReason}
                 </BenchmarkAlert>
               ) : null}

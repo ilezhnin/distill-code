@@ -56,6 +56,20 @@ import type {
   RoutingEvidenceQuery,
 } from "../types";
 
+/**
+ * Whether an error is the sandbox refusing to start work for now (its CPU
+ * or memory line, a busy broker): the request is asked again later, nothing
+ * failed.
+ */
+export function isRefusal(error: unknown): boolean {
+  return (
+    error != null &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "resource_busy"
+  );
+}
+
 export function benchmarkErrorMessage(error: unknown): string {
   if (error && typeof error === "object" && "message" in error)
     return String(error.message);

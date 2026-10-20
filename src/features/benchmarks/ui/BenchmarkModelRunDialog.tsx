@@ -16,7 +16,11 @@ import {
 } from "@/shared/ui/dialog";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Label } from "@/shared/ui/label";
-import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
+import {
+  benchmarkApi,
+  benchmarkErrorMessage,
+  isRefusal,
+} from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import {
   EXECUTION_PROFILES,
@@ -642,7 +646,9 @@ export function BenchmarkModelRunDialog({
         <DialogBody className="space-y-3">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
           {inventory.error ? (
-            <BenchmarkAlert>
+            <BenchmarkAlert
+              tone={isRefusal(inventory.error) ? "warning" : "error"}
+            >
               {benchmarkErrorMessage(inventory.error)}
             </BenchmarkAlert>
           ) : null}
@@ -656,7 +662,7 @@ export function BenchmarkModelRunDialog({
                 ? t("modelRun.repositoryProfile", { model: name })
                 : name;
             return (
-              <BenchmarkAlert key={profile}>
+              <BenchmarkAlert key={profile} tone="warning">
                 {resolution.issue === "unavailable"
                   ? (resolution.reason ?? t("states.unsupported"))
                   : t(
@@ -679,7 +685,7 @@ export function BenchmarkModelRunDialog({
             </p>
           ) : null}
           {expired && run.data ? (
-            <BenchmarkAlert>
+            <BenchmarkAlert tone="warning">
               {t("modelRun.expiredHint", {
                 at: formatDate(run.data.createdAt),
                 until: formatDate(runWindowCloses(run.data, clock)),
@@ -688,7 +694,7 @@ export function BenchmarkModelRunDialog({
             </BenchmarkAlert>
           ) : null}
           {outdated ? (
-            <BenchmarkAlert>
+            <BenchmarkAlert tone="warning">
               {t(
                 steering
                   ? "modelRun.outdatedHint"
@@ -708,7 +714,7 @@ export function BenchmarkModelRunDialog({
             </p>
           ) : null}
           {complete && run.data ? (
-            <BenchmarkAlert>
+            <BenchmarkAlert tone="warning">
               {t("modelRun.measuredHint", {
                 at: formatDate(run.data.updatedAt),
                 measured: cells.measured,

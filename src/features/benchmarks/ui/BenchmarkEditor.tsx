@@ -419,7 +419,9 @@ export function BenchmarkEditor({
       </div>
       {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
       {validation && !validation.valid ? (
-        <BenchmarkAlert>{validation.issues.join("\n")}</BenchmarkAlert>
+        <BenchmarkAlert tone="warning">
+          {validation.issues.join("\n")}
+        </BenchmarkAlert>
       ) : null}
       {validation?.valid ? (
         <p role="status" className="text-sm text-muted-foreground">
@@ -767,7 +769,7 @@ export function BenchmarkEditor({
                 {(id) => (
                   <div id={id} className="space-y-3">
                     {hasLegacyAuthors ? (
-                      <BenchmarkAlert>
+                      <BenchmarkAlert tone="warning">
                         {t("benchmarks:editor.legacyAuthors")}
                       </BenchmarkAlert>
                     ) : null}

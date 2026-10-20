@@ -203,9 +203,20 @@ export function BenchmarkToolbar({
   );
 }
 
-export function BenchmarkAlert({ children }: { children: ReactNode }) {
+/**
+ * A benchmark message block. An error is something that failed; a warning
+ * is a state the operator should know about that nothing broke: a refused
+ * admission, a run that cannot go on, a measurement already complete.
+ */
+export function BenchmarkAlert({
+  children,
+  tone = "error",
+}: {
+  children: ReactNode;
+  tone?: "error" | "warning";
+}) {
   return (
-    <Alert variant="destructive">
+    <Alert variant={tone === "warning" ? "warning" : "destructive"}>
       <AlertDescription className="whitespace-pre-wrap">
         {children}
       </AlertDescription>

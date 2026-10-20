@@ -230,7 +230,7 @@ export const designSystemComponentManifest = [
       {
         name: "alertVariants",
         variants: {
-          variant: ["default", "destructive"],
+          variant: ["default", "destructive", "warning"],
         },
         defaultVariants: {
           variant: "default",
@@ -238,10 +238,12 @@ export const designSystemComponentManifest = [
         compoundVariantCount: 0,
         tokenClasses: [
           "*:data-[slot=alert-description]:text-destructive/90",
+          "*:data-[slot=alert-description]:text-warning/90",
           "bg-background",
           "border-border",
           "text-destructive",
           "text-foreground",
+          "text-warning",
         ],
         stateClasses: [],
         sourceTokenClasses: [
@@ -255,11 +257,13 @@ export const designSystemComponentManifest = [
     ],
     tokenClasses: [
       "*:data-[slot=alert-description]:text-destructive/90",
+      "*:data-[slot=alert-description]:text-warning/90",
       "bg-background",
       "border-border",
       "text-destructive",
       "text-foreground",
       "text-muted-foreground",
+      "text-warning",
     ],
     stateClasses: [],
     sourceTokenClasses: [
