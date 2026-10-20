@@ -502,8 +502,7 @@
     "context": "Contexto",
     "priceShort": "Precio API",
     "fullyTested": "Probado por completo",
-    "fullyTestedCoverage": "{{complete}}/{{planned}}",
-    "fullyTestedEarlier": "Probado por completo el {{date}}. El conjunto creció desde entonces: ahora {{complete}}/{{planned}} casos tienen todas las repeticiones."
+    "fullyTestedCoverage": "{{complete}}/{{planned}}"
   },
   "design": {
     "brief": "Encargo",
@@ -715,7 +714,6 @@
     "apiModelId": "ID de modelo de la API",
     "runtime": "Revisión del runtime",
     "context": "Ventana de contexto",
-    "cases": "Pruebas",
     "attempts": "Intentos",
     "parallelism": "Intentos a la vez",
     "measured": "Medido",

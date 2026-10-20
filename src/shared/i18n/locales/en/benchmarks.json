@@ -502,8 +502,7 @@
     "context": "Context",
     "priceShort": "API price",
     "fullyTested": "Fully tested",
-    "fullyTestedCoverage": "{{complete}}/{{planned}}",
-    "fullyTestedEarlier": "Fully tested on {{date}}. The suite has grown since: now {{complete}}/{{planned}} cases have every repetition."
+    "fullyTestedCoverage": "{{complete}}/{{planned}}"
   },
   "design": {
     "brief": "Brief",
@@ -715,7 +714,6 @@
     "apiModelId": "API model ID",
     "runtime": "Runtime revision",
     "context": "Context window",
-    "cases": "Tests",
     "attempts": "Attempts",
     "parallelism": "Attempts at once",
     "measured": "Measured",

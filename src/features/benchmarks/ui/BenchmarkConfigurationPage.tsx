@@ -269,7 +269,15 @@ export function BenchmarkConfigurationPage({
       t("configuration.context"),
       formatContext(fact?.contextTokens) ?? t("unknown"),
     ],
-    [t("configuration.cases"), `${shownRow.scored} / ${shownRow.planned}`],
+    // The leaderboard's own count and name: suite cases with a complete
+    // cell, so the page and the board never disagree.
+    [
+      t("leaderboard.fullyTested"),
+      t("leaderboard.fullyTestedCoverage", {
+        complete: shownRow.suiteComplete ?? 0,
+        planned: shownRow.suitePlanned ?? shownRow.planned,
+      }),
+    ],
     // Attempts out of every case's three: the unit the grid counts in.
     [
       t("configuration.attempts"),
