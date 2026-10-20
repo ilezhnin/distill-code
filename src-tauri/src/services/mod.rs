@@ -4,6 +4,7 @@ pub(crate) mod benchmark_sandbox;
 pub mod benchmarks;
 pub mod bundled_agents;
 pub mod bundled_skills;
+pub(crate) mod credential_lease;
 pub(crate) mod diagnostic_log;
 pub(crate) mod dir_env;
 pub mod distill_root;
