@@ -626,12 +626,7 @@ export function BenchmarkConfigurationPage({
         </section>
       ) : null}
       <section className="space-y-4">
-        <SectionHeading
-          title={t("grid.title", {
-            cases: cells.length,
-            attempts: cells.reduce((sum, cell) => sum + cell.dots.length, 0),
-          })}
-        />
+        <SectionHeading title={t("grid.title", { cases: cells.length })} />
         <TaskSummary cells={cells} />
         <TaskGrid
           cells={cells}

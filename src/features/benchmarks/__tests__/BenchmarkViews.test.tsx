@@ -742,9 +742,7 @@ describe("benchmark authoring and saved evidence", () => {
         onOpenRun={vi.fn()}
       />,
     );
-    expect(
-      await screen.findByText("Tests · 1 cases · 3 attempts"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Tests · 1 cases")).toBeInTheDocument();
     // Every standing attempt shows in the grid, the refused call as a
     // failed repetition of its case; only the scored one is a result.
     await waitFor(() =>
@@ -793,9 +791,7 @@ describe("benchmark authoring and saved evidence", () => {
         onOpenRun={vi.fn()}
       />,
     );
-    expect(
-      await screen.findByText("Tests · 3 cases · 9 attempts"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Tests · 3 cases")).toBeInTheDocument();
     // The leaderboard's own count and name: suite cases with a complete cell.
     expect(
       screen.getByText("Fully tested", { selector: "dt" }).nextElementSibling,

@@ -366,7 +366,7 @@ it("keeps the pool task number and uses measured time and priced cost in a filte
   expect(await row("Alpha").findByText("$0.04")).toBeInTheDocument();
 });
 
-it("partitions the actual attempts without counting failed ones a second time", async () => {
+it("counts a case once, by what its attempts add up to", async () => {
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
   show({
     ...run,
@@ -398,11 +398,13 @@ it("partitions the actual attempts without counting failed ones a second time", 
     ],
   });
   await found("Alpha");
+  // One case with a failed, a working and a queued repetition is one case
+  // in progress; the summary never counts repetitions.
   for (const [label, value] of [
-    ["Not started", "1"],
+    ["Not started", "0"],
     ["In progress", "1"],
     ["Passed", "0"],
-    ["Failed", "1"],
+    ["Failed", "0"],
   ]) {
     expect(screen.getByText(label).nextSibling?.textContent).toBe(value);
   }

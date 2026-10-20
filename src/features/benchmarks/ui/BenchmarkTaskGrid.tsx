@@ -194,20 +194,29 @@ export function taskCells(
   });
 }
 
-/** Disjoint attempt states; the run header already shows the completed total. */
+/**
+ * The cases by what their dots add up to, one count per case rather than
+ * per repetition: not started, in progress, passed, failed, and, when any,
+ * cases whose attempts stopped before a result.
+ */
 export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   const { t } = useTranslation("benchmarks");
-  const dots = cells.flatMap((cell) => cell.dots);
-  const count = (state: DotState) => dots.filter((dot) => dot === state).length;
-  const passed = count("passed");
+  const count = (verdict: TaskCell["verdict"]) =>
+    cells.filter((cell) => cell.verdict === verdict).length;
+  // A case not done yet whose attempt stopped on infrastructure or
+  // admission is not counted, rather than not started.
+  const stopped = cells.filter(
+    (cell) => cell.verdict === "queued" && cell.dots.includes("stopped"),
+  ).length;
+  const passed = count("solved");
   const failed = count("failed");
   const items: [string, number][] = [
-    ["grid.queued", count("queued")],
+    ["grid.queued", count("queued") - stopped],
     ["grid.inProgress", count("running")],
     ["grid.passed", passed],
     ["grid.attention", failed],
   ];
-  if (count("stopped") > 0) items.push(["grid.stopped", count("stopped")]);
+  if (stopped > 0) items.push(["grid.stopped", stopped]);
   return (
     <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {items.map(([key, value]) => (

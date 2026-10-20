@@ -461,7 +461,7 @@
   "grid": {
     "repetitions": "{{passes}} of {{scored}} passed, {{of}} repetitions",
     "taskNamed": "Task {{number}}: {{name}}",
-    "title": "Tests · {{cases}} cases · {{attempts}} attempts",
+    "title": "Tests · {{cases}} cases",
     "task": "Task {{number}}",
     "inProgress": "In progress",
     "queued": "Not started",
