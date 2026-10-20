@@ -12160,11 +12160,11 @@ mod tests {
         assert_eq!(run.request.parallelism, Some(AS_ADMITTED));
         let run = drain(&s, &run.id).await;
         assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
-        // As many as the account's pace takes at once.
-        assert_eq!(
-            backend.peak_in_flight.load(Ordering::SeqCst),
-            ACCOUNT_SLOTS as u64
-        );
+        // In parallel, never above the account's pace. How many fly at once
+        // also depends on the host's measured headroom, so a busy machine (a
+        // CI runner: 2 of 4 on 10-19) may admit fewer than the full pace.
+        let peak = backend.peak_in_flight.load(Ordering::SeqCst);
+        assert!((2..=ACCOUNT_SLOTS as u64).contains(&peak), "peak {peak}");
         assert!(run
             .attempts
             .iter()

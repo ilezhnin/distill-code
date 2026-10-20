@@ -33,6 +33,11 @@ unpack = load_source('benchmark_snapshot_cache_fixture', str(SOURCE))
 production = SimpleNamespace(os=unpack.os, trusted=unpack.trusted, CACHE=unpack.CACHE,
                              CACHE_BYTES=unpack.CACHE_BYTES, CACHE_ENTRIES=unpack.CACHE_ENTRIES)
 LINUX_ROOT = os.name == 'posix' and os.geteuid() == 0
+# The helper accepts only a root-owned staging parent. Windows reports every
+# owner as 0 and root owns its own temporary folders; anywhere else (a macOS
+# CI runner, a Linux user) the parent belongs to the user and the helper
+# rightly refuses it, so the suite has nothing to exercise there.
+ROOT_OWNED_STAGING = os.name == 'nt' or LINUX_ROOT
 
 
 def archive(files):
@@ -112,6 +117,8 @@ class CacheTests(unittest.TestCase):
         return path
 
     def run_main(self, *arguments, stdin=b''):
+        if not ROOT_OWNED_STAGING:
+            self.skipTest('needs a root-owned staging parent: Windows, or root on Linux')
         argv, standard_input = sys.argv, sys.stdin
         sys.argv = ['bench-unpack', *map(str, arguments)]
         sys.stdin = SimpleNamespace(buffer=io.BytesIO(stdin))
