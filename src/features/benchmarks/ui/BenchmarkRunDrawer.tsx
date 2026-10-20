@@ -30,6 +30,7 @@ import {
   shortId,
 } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
+import type { Configuration } from "../types";
 import {
   BenchmarkAlert,
   BenchmarkEmpty,
@@ -43,6 +44,17 @@ import {
 } from "./BenchmarkTaskGrid";
 import { FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
 import { BenchmarkWorkflowProgress } from "./BenchmarkWorkflowProgress";
+
+/** The model a configuration runs, whatever its execution profile. */
+function modelIdentity(configuration: Configuration): string {
+  return JSON.stringify([
+    configuration.providerId,
+    configuration.accountId ?? null,
+    configuration.modelId,
+    explicitEffort(configuration.effort),
+    configuration.fastMode ?? false,
+  ]);
+}
 
 /**
  * One frozen run: its progress, every test in the order the run takes them
@@ -151,50 +163,58 @@ export function BenchmarkRunDrawer({
       ),
     [summaries.data],
   );
-  // One model's run is titled by the model, a matrix by its id.
+  // A model's configurations, one per execution profile, are one model:
+  // its run is titled by the model and shows one grid; a matrix of models
+  // is titled by its id, one grid per model.
   const configurations = run?.request.configurations ?? [];
-  const single = configurations.length === 1 ? configurations[0] : null;
-  const effort = single ? explicitEffort(single.effort) : null;
-  // One grid per configuration, its cases in the run's dispatch order.
-  const grids = useMemo(() => {
-    const order: { id: string; name: string; number?: number }[] = [];
-    const seen = new Set<string>();
-    for (const attempt of attempts) {
-      if (seen.has(attempt.versionId)) continue;
-      seen.add(attempt.versionId);
-      order.push({
-        id: attempt.versionId,
-        name: names.get(attempt.versionId) ?? shortId(attempt.versionId),
-        number: taskOrder.find((task) => task.id === attempt.versionId)?.number,
-      });
+  const models = useMemo(() => {
+    const grouped = new Map<string, Configuration[]>();
+    for (const configuration of configurations) {
+      const key = modelIdentity(configuration);
+      grouped.set(key, [...(grouped.get(key) ?? []), configuration]);
     }
-    return configurations.map((configuration) => ({
-      key: configuration.id,
-      label: configurationLabel(configuration),
-      cells: taskCells(
-        order,
-        attempts
-          .filter((attempt) => attempt.configuration.id === configuration.id)
-          .map((attempt) => ({
+    return [...grouped.entries()];
+  }, [configurations]);
+  const single = models.length === 1 ? models[0][1][0] : null;
+  const effort = single ? explicitEffort(single.effort) : null;
+  // One grid per model, its cases in the run's dispatch order.
+  const grids = useMemo(() => {
+    return models.map(([key, entries]) => {
+      const ids = new Set(entries.map((entry) => entry.id));
+      const own = attempts.filter((attempt) =>
+        ids.has(attempt.configuration.id),
+      );
+      // Only the cases the model's configurations planned.
+      const order: { id: string; name: string; number?: number }[] = [];
+      const seen = new Set<string>();
+      for (const attempt of own) {
+        if (seen.has(attempt.versionId)) continue;
+        seen.add(attempt.versionId);
+        order.push({
+          id: attempt.versionId,
+          name: names.get(attempt.versionId) ?? shortId(attempt.versionId),
+          number: taskOrder.find((task) => task.id === attempt.versionId)
+            ?.number,
+        });
+      }
+      return {
+        key,
+        label: configurationLabel(entries[0]),
+        cells: taskCells(
+          order,
+          own.map((attempt) => ({
             ...attempt,
             cost:
               summaries.data?.find((entry) => entry.id === attempt.id)?.cost ??
               attempt.usage.cost,
             score: scores.get(attempt.id) ?? null,
           })),
-        run?.state ?? null,
-        0, // A run counts only its actual attempts, never placeholder repetitions.
-      ),
-    }));
-  }, [
-    attempts,
-    configurations,
-    names,
-    scores,
-    run?.state,
-    taskOrder,
-    summaries.data,
-  ]);
+          run?.state ?? null,
+          0, // A run counts only its actual attempts, never placeholder repetitions.
+        ),
+      };
+    });
+  }, [attempts, models, names, scores, run?.state, taskOrder, summaries.data]);
   // Keep the configuration that works now in view as a matrix run moves on.
   const rows = useRef(new Map<string, HTMLDivElement>());
   const runningKey = grids.find((grid) =>

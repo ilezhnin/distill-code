@@ -266,9 +266,11 @@ pub fn snapshot(
         public_prompt: d.prompt.clone(),
         public_fixtures: d.fixtures.clone(),
         role_prompt: d.role_prompt.clone(),
+        // Only the configurations of the case's own execution profile.
         candidates: request
             .configurations
             .iter()
+            .filter(|c| super::fits(d, c))
             .map(|c| RoutingCandidate {
                 configuration: c.clone(),
                 available: true,

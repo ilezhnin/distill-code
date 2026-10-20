@@ -205,15 +205,27 @@ export function BenchmarkModelRunDialog({
   });
   // The run's own attempts, in the order it dispatches them; a repetition
   // superseded by a restart is no attempt of the run.
-  const mine = useMemo(
-    () =>
-      (run.data?.attempts ?? []).filter(
-        (attempt) =>
-          attempt.outcome !== "superseded" &&
-          sameConfiguration(attempt.configuration, configuration),
-      ),
-    [run.data, configuration],
-  );
+  // A test planned on a configuration of another profile, before a run
+  // carried one per profile, is no test of the run: it reads as missing,
+  // and Finish plans it on its own profile's configuration.
+  const mine = useMemo(() => {
+    const profiles = new Map(
+      eligible.map((version) => [
+        version.id,
+        executionProfileOf(version.manifest),
+      ]),
+    );
+    return (run.data?.attempts ?? []).filter((attempt) => {
+      const profile = profiles.get(attempt.versionId);
+      return (
+        attempt.outcome !== "superseded" &&
+        sameConfiguration(attempt.configuration, configuration) &&
+        (profile == null ||
+          attempt.configuration.executionProfile.replace(/_auxiliary$/, "") ===
+            profile)
+      );
+    });
+  }, [run.data, configuration, eligible]);
   // Before a run, the plan names the order: the request key seeds it, and
   // leaving a test out never reorders the rest.
   const plan = useQuery({
@@ -374,16 +386,20 @@ export function BenchmarkModelRunDialog({
   );
   // The run was planned on a runtime the inventory no longer lists (an
   // older sandbox or CLI): the runner refuses every further test of it.
-  // A run of both profiles carries both configurations: either one stale
-  // stops it.
+  // A run of both profiles carries both configurations: a stale one stops
+  // it only while a test of its profile is unfinished.
   const runConfigurations = (run.data?.request.configurations ?? []).filter(
     (entry) => sameConfiguration(entry, configuration),
   );
-  const outdatedPin =
-    inventory.data != null &&
-    runConfigurations.some((entry) =>
-      stalePin(entry, inventory.data as InventoryModel[]),
-    );
+  const staleProfiles = new Set(
+    inventory.data == null
+      ? []
+      : runConfigurations
+          .filter((entry) =>
+            stalePin(entry, inventory.data as InventoryModel[]),
+          )
+          .map((entry) => entry.executionProfile),
+  );
   // A run that can no longer go on, its window closed or its runtime gone,
   // with tests it did not finish, is over: it says so, it can only be
   // stopped, and a new run takes what the model still owes.
@@ -397,6 +413,11 @@ export function BenchmarkModelRunDialog({
     mine.length > 0 &&
     !summaries.isPending &&
     unfinishedInRun;
+  const outdatedPin = eligible.some(
+    (version) =>
+      !cells.complete.has(version.id) &&
+      staleProfiles.has(executionProfileOf(version.manifest)),
+  );
   const outdated =
     !expired &&
     outdatedPin &&
@@ -561,8 +582,11 @@ export function BenchmarkModelRunDialog({
     const carried = new Set(
       runConfigurations.map((entry) => entry.executionProfile),
     );
+    // Every test the run planned counts, a wrongly paired one included:
+    // the backend refuses a Finish that leaves one without its profile.
+    const planned = new Set(run.data?.request.versionIds ?? []);
     const joining = profilesOf([
-      ...eligible.filter((version) => inRunIds.has(version.id)),
+      ...eligible.filter((version) => planned.has(version.id)),
       ...tests,
     ])
       .filter((profile) => !carried.has(profile))

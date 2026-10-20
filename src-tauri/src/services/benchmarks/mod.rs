@@ -98,7 +98,7 @@ pub(super) fn judge_execution_count(draft: &BenchmarkDraft) -> usize {
 /// a protected_repository configuration and a bounded text case only on a
 /// native_text one, so one run of a model carries one configuration per
 /// profile and pairs each case with its own. Other profiles pair as before.
-fn fits(case: &BenchmarkDraft, configuration: &Configuration) -> bool {
+pub(super) fn fits(case: &BenchmarkDraft, configuration: &Configuration) -> bool {
     match configuration.execution_profile.as_str() {
         "native_text" => !repository::is_repository_case(case),
         "protected_repository" => repository::is_repository_case(case),
@@ -158,9 +158,11 @@ fn profile_gaps(versions: &[BenchmarkVersion], configurations: &[Configuration])
 fn join_configurations(request: &RunRequest, joining: &[Configuration]) -> Result<RunRequest> {
     let mut joined = request.clone();
     for configuration in joining {
+        // The same model, effort and fast mode; the account may differ, as
+        // a row names the account of its newest attempt and accounts of one
+        // provider are quota pools of the same model.
         let same_model = request.configurations.iter().any(|c| {
             c.provider_id == configuration.provider_id
-                && c.account_id == configuration.account_id
                 && c.model_id == configuration.model_id
                 && c.effort == configuration.effort
                 && c.fast_mode.unwrap_or(false) == configuration.fast_mode.unwrap_or(false)
@@ -888,6 +890,69 @@ impl BenchmarkService {
         self.changed().await;
         self.store.run(id).await
     }
+    /// What keeps `configuration` from joining a run of `cases`, as the
+    /// preview checks a Start: fast mode, readiness, its pin against today's
+    /// inventory row and the backend's support for each case it runs.
+    async fn joining_issues(
+        &self,
+        configuration: &Configuration,
+        cases: &[BenchmarkVersion],
+    ) -> Vec<String> {
+        let mut issues = Vec::new();
+        if configuration.fast_mode == Some(true) {
+            issues
+                .push("Benchmarks never run fast mode; choose the configuration without it".into());
+        }
+        if let Err(error) = self.backend.readiness(configuration).await {
+            issues.push(error.message);
+        }
+        if let Some(pinned) = configuration.inventory_revision.as_ref() {
+            match self
+                .backend
+                .inventory(
+                    &configuration.provider_id,
+                    configuration.account_id.as_deref(),
+                    false,
+                )
+                .await
+            {
+                Ok(models) => {
+                    let model = models.iter().find(|m| {
+                        m.configuration.model_id == configuration.model_id
+                            && m.configuration.execution_profile == configuration.execution_profile
+                    });
+                    if let Some(model) = model.filter(|model| !model.available) {
+                        issues.push(
+                            model
+                                .reason
+                                .clone()
+                                .unwrap_or_else(|| "Configuration is unavailable".into()),
+                        );
+                    }
+                    if model.and_then(|m| m.configuration.inventory_revision.as_ref())
+                        != Some(pinned)
+                    {
+                        issues.push(
+                            "Runtime changed since this configuration was selected; refresh it"
+                                .into(),
+                        );
+                    }
+                }
+                Err(error) => issues.push(format!(
+                    "Runtime inventory is unavailable: {}",
+                    error.message
+                )),
+            }
+        }
+        for case in cases.iter().filter(|v| fits(&v.manifest, configuration)) {
+            if let Some(reason) = self.backend.unsupported(configuration, &case.manifest) {
+                issues.push(reason);
+            }
+        }
+        issues.sort();
+        issues.dedup();
+        issues
+    }
     /// `joining` adds the configuration of another execution profile of the
     /// same model, for added cases no configuration of the run can run: a
     /// repository case joining a run of text cases, or the reverse.
@@ -946,6 +1011,15 @@ impl BenchmarkService {
             .next()
         {
             return Err(BenchmarkError::new("validation", gap));
+        }
+        // A joining configuration passes what a Start checks in its preview,
+        // so it cannot fail its first case: the dialog may hold an
+        // inventory read before a helper or CLI update.
+        for configuration in joining {
+            let issues = self.joining_issues(configuration, &cases).await;
+            if !issues.is_empty() {
+                return Err(BenchmarkError::new("capability_missing", issues.join("; ")));
+            }
         }
         if request.configurations.len() != run.request.configurations.len() {
             self.store.set_run_request(id, &request).await?;

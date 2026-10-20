@@ -221,8 +221,9 @@ it("keeps a paused run's waiting tests queued and names each model of a matrix",
   });
   expect(await found("Charlie")).toBeInTheDocument();
   expect(screen.getByText("Run run-matr")).toBeInTheDocument();
-  // A matrix shows one grid per model, each under its name; the second
-  // model's Charlie waits in its queue, the first model's is a gap.
+  // A matrix shows one grid per model, each under its name and with its own
+  // cases only: the second model's Charlie waits in its queue, and the
+  // first model, which never planned Charlie, shows none.
   const grid = (model: string) =>
     within(
       screen
@@ -232,9 +233,7 @@ it("keeps a paused run's waiting tests queued and names each model of a matrix",
   expect(
     grid("model-2").getByRole("button", { name: /Charlie/ }).className,
   ).toMatch(/border-muted-foreground/);
-  expect(
-    grid("model-1").getByRole("button", { name: /Charlie/ }),
-  ).toBeDisabled();
+  expect(grid("model-1").queryByRole("button", { name: /Charlie/ })).toBeNull();
 });
 
 it("shows a test the provider's usage limit put back as waiting, not queued", async () => {
@@ -432,4 +431,44 @@ it("keeps Resume for a paused run on today's runtime", async () => {
   show({ ...run, id: "run-today", state: "paused", attempts: attempts() });
   expect(await screen.findByRole("button", { name: "Resume" })).toBeEnabled();
   expect(screen.queryByText(/made for an older sandbox/)).toBeNull();
+});
+
+it("shows a model's run on both execution profiles as one model with one grid", async () => {
+  const repository = {
+    ...configuration,
+    id: "config-1-repository",
+    executionProfile: "protected_repository",
+  };
+  show({
+    ...run,
+    id: "run-mixed",
+    state: "paused",
+    request: {
+      ...run.request,
+      configurations: [configuration, repository],
+    },
+    attempts: [
+      ...attempts().slice(0, 2),
+      at({
+        id: "a-5",
+        versionId: "version-c",
+        configuration: repository,
+        phase: "pending",
+        outcome: null,
+        startedAt: null,
+        finishedAt: null,
+        durationMs: null,
+      }),
+    ],
+  });
+  expect(await found("Charlie")).toBeInTheDocument();
+  // Titled by the model, not the run id, with no per-configuration headings.
+  expect(screen.queryByText("Run run-mixe")).toBeNull();
+  expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
+  for (const name of ["Alpha", "Bravo", "Charlie"])
+    expect(
+      screen.getAllByRole("button", {
+        name: new RegExp(`^Task \\d+: ${name}$`),
+      }),
+    ).toHaveLength(1);
 });

@@ -127,7 +127,13 @@ pub fn rows(data: &QueryData, include_held_out: bool, salt: &str) -> Result<Vec<
                 continue;
             }
             let mut matrix = Vec::new();
-            for config in &run.request.configurations {
+            // A run of both profiles plans each case on its own profile only.
+            for config in run
+                .request
+                .configurations
+                .iter()
+                .filter(|config| super::fits(&version.manifest, config))
+            {
                 let attempts: Vec<_> = data
                     .attempts
                     .iter()
@@ -279,7 +285,11 @@ pub fn ledger_rows_matching(
                 .collect();
             keys.insert(requested);
             for id in &run.request.version_ids {
-                if let Some(version) = versions.get(id.as_str()) {
+                // A run of both profiles plans each case on its own only.
+                if let Some(version) = versions
+                    .get(id.as_str())
+                    .filter(|version| super::fits(&version.manifest, configuration))
+                {
                     for key in &keys {
                         planned.insert((key.clone(), version.definition_id.as_str()));
                     }
@@ -570,6 +580,43 @@ mod tests {
         row["matrix"].as_array().map_or(0, Vec::len)
     }
 
+    /// A run of both profiles of a model plans each case on its own profile:
+    /// the text column owes no repository case and the repository column no
+    /// text case, so neither reads as missing.
+    #[test]
+    fn a_mixed_run_owes_each_case_on_its_own_profile_only() {
+        let mut data = dataset();
+        let mut repository = data.runs[0].request.configurations[0].clone();
+        repository.id = format!("{}:repository", repository.id);
+        repository.execution_profile = "protected_repository".into();
+        let repository_cases = ["v3", "v4", "v5"];
+        for version in data
+            .versions
+            .iter_mut()
+            .filter(|v| repository_cases.contains(&v.id.as_str()))
+        {
+            version.manifest.evaluator.kind = super::super::repository::EVALUATOR.into();
+        }
+        for attempt in data
+            .attempts
+            .iter_mut()
+            .chain(data.runs.iter_mut().flat_map(|run| run.attempts.iter_mut()))
+            .filter(|a| repository_cases.contains(&a.version_id.as_str()))
+        {
+            attempt.configuration = repository.clone();
+            attempt.observed = Some(repository.clone());
+        }
+        for run in &mut data.runs {
+            run.request.configurations.push(repository.clone());
+        }
+        let exported = ledger_rows(&data, false, "training").unwrap();
+        assert!(!exported.is_empty());
+        for row in &exported {
+            for cell in row["matrix"].as_array().unwrap() {
+                assert_ne!(cell["observationStatus"], "no_compatible_cell", "{row}");
+            }
+        }
+    }
     #[test]
     fn training_cells_require_the_declared_repetition_protocol() {
         let mut data = dataset();

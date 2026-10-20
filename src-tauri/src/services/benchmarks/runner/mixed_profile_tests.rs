@@ -219,3 +219,46 @@ async fn an_old_text_run_with_a_repository_case_finishes_on_its_profile() {
     assert_eq!(queued_on(&finished, &text, "native_text"), 3);
     dir.close().await;
 }
+
+/// A configuration joins a run only as a Start would admit it: with its pin
+/// equal to today's inventory row and fast mode off. The dialog may hold an
+/// inventory read from before a helper or CLI update; Finish then refuses
+/// before anything changes instead of failing the first case. The account
+/// may differ from the run's, as a row names the account of its newest
+/// attempt.
+#[tokio::test]
+async fn a_joining_configuration_passes_the_checks_of_a_start() {
+    let (dir, s, _) = setup().await;
+    let mut req = request(&s).await;
+    req.repetitions = 3;
+    req.max_executions = 3;
+    let native = req.configurations[0].clone();
+    let run = s.start_run(req).await.unwrap();
+    // Pinned to a runtime the inventory no longer lists.
+    let stale = Configuration {
+        inventory_revision: Some("before-the-helper-update".into()),
+        ..repository_configuration(&native)
+    };
+    let refused = s.extend_run(&run.id, &[], &[stale]).await.unwrap_err();
+    assert!(
+        refused.message.contains("Runtime changed"),
+        "{}",
+        refused.message
+    );
+    let fast = Configuration {
+        fast_mode: Some(true),
+        ..repository_configuration(&native)
+    };
+    assert!(s.extend_run(&run.id, &[], &[fast]).await.is_err());
+    let unchanged = s.store.run(&run.id).await.unwrap();
+    assert_eq!(unchanged.request.configurations.len(), 1);
+    assert_eq!(unchanged.attempts.len(), 3);
+    // Another account of the same model joins.
+    let other_account = Configuration {
+        account_id: Some("another-isolated-account".into()),
+        ..repository_configuration(&native)
+    };
+    let grown = s.extend_run(&run.id, &[], &[other_account]).await.unwrap();
+    assert_eq!(grown.request.configurations.len(), 2);
+    dir.close().await;
+}

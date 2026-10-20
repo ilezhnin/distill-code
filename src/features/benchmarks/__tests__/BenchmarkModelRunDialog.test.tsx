@@ -1069,11 +1069,50 @@ it("finishes an old text run that already holds a repository test on its reposit
   const finish = await screen.findByRole("button", { name: "Finish run" });
   await waitFor(() => expect(finish).toBeEnabled());
   await user.click(finish);
+  // The wrongly paired test reads as missing and goes to its own profile.
   expect(benchmarkApi.extendRun).toHaveBeenCalledWith(
     "run-2",
-    [],
+    ["version-2"],
     [expect.objectContaining({ executionProfile: "protected_repository" })],
   );
+  expect(
+    within(
+      screen.getByText("Ledger").closest("label") as HTMLElement,
+    ).getByRole("checkbox"),
+  ).toBeChecked();
+});
+
+it("keeps a run going when only a profile with nothing left went stale", async () => {
+  // Every repository test is complete; its pin moved; the text test is left.
+  bothProfiles("repository-newer");
+  const paused = stoppedRun("paused", [
+    { versionId: "version-1", outcome: null, score: null },
+    { versionId: "version-2", outcome: "pass", score: 1 },
+  ]);
+  const repositoryConfiguration = {
+    ...configuration,
+    id: "config-1-repository",
+    executionProfile: "protected_repository",
+    inventoryRevision: "repository-now",
+  };
+  paused.run.request.configurations = [
+    ...paused.run.request.configurations,
+    repositoryConfiguration,
+  ];
+  paused.run.attempts = paused.run.attempts.map((attempt) =>
+    attempt.versionId === "version-2"
+      ? { ...attempt, configuration: repositoryConfiguration }
+      : attempt,
+  );
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(paused.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(paused.summaries);
+  show({
+    runId: "run-2",
+    definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
+  });
+  const resume = await screen.findByRole("button", { name: "Resume" });
+  await waitFor(() => expect(resume).toBeEnabled());
+  expect(screen.queryByText(/older sandbox or CLI version/)).toBeNull();
 });
 
 it("stops a run whose repository configuration went stale", async () => {
