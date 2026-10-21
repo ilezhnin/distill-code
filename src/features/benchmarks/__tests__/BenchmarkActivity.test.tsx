@@ -8,7 +8,7 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import type { RunSummary } from "../types";
 import { BenchmarkActivity } from "../ui/BenchmarkActivity";
-import { configuration, runSummary } from "./fixtures";
+import { configuration, leaderboardRow, runSummary } from "./fixtures";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 
 const campaignState = vi.hoisted(() => ({ data: [] as WorkflowCampaign[] }));
@@ -39,6 +39,55 @@ function show(run: Partial<RunSummary>) {
 afterEach(() => {
   cleanup();
   campaignState.data = [];
+});
+
+it("removes a stalled-run banner when its last current case is measured", () => {
+  const onOpenRun = vi.fn();
+  const stopped = { ...runSummary, state: "needs_attention", openCells: [] };
+  const page = (completeVersionIds: string[]) => (
+    <BenchmarkActivity
+      runs={[stopped]}
+      onOpenRun={onOpenRun}
+      attentionFor={leaderboardRow({ completeVersionIds })}
+      poolVersionIds={["version-1"]}
+    />
+  );
+  const { rerender } = render(page([]));
+  fireEvent.click(screen.getByRole("button", { name: /Needs attention/ }));
+  expect(onOpenRun).toHaveBeenCalledExactlyOnceWith(stopped.id);
+  rerender(page(["version-1"]));
+  expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+});
+
+it("warns for current gaps but not retired cases or another model's gaps", () => {
+  const stopped = {
+    ...runSummary,
+    state: "needs_attention",
+    request: {
+      ...runSummary.request,
+      configurations: [
+        configuration,
+        { ...configuration, id: "other", modelId: "other" },
+      ],
+      versionIds: ["version-1", "retired"],
+    },
+    openCells: [
+      { configurationId: configuration.id, versionId: "retired" },
+      { configurationId: "other", versionId: "version-1" },
+    ],
+  };
+  const page = (poolVersionIds: string[]) => (
+    <BenchmarkActivity
+      runs={[stopped]}
+      onOpenRun={vi.fn()}
+      attentionFor={leaderboardRow({ completeVersionIds: [] })}
+      poolVersionIds={poolVersionIds}
+    />
+  );
+  const { rerender } = render(page(["version-1", "retired"]));
+  expect(screen.getByText("Needs attention")).toBeInTheDocument();
+  rerender(page(["version-1"]));
+  expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
 });
 
 it("opens the exact paused campaign from its progress row without opening a child run", () => {

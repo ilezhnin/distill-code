@@ -785,7 +785,8 @@ access does not turn unreported cost into a measured zero.
 A model's leaderboard warning concerns its unmeasured cells in the current
 rating pool, including terminal answers awaiting judges. A stopped run whose
 remaining cases have since been measured or retired stays in run history,
-without keeping a warning on the current model row.
+without keeping a warning on the current model row or its detail page. Both
+surfaces use the same current-pool and completed-cell selection.
 
 On an observer timeout, find the saved run ID or reconcile `benchmark_list_runs`
 by request key. Do not start a replacement. Pause through `benchmark_pause_run`

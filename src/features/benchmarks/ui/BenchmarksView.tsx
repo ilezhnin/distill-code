@@ -283,6 +283,7 @@ export function BenchmarksView({
               })
             }
             attentionFor={location.section === "leaderboard" ? openedRow : null}
+            poolVersionIds={leaderboard.data?.cohort?.versionIds}
           />
         ) : null}
         {location.section === "development" ? (

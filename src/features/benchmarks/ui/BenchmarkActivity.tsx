@@ -15,11 +15,11 @@ import {
   activeRuns,
   activeCampaigns,
   campaignIdForRun,
-  rowAttention,
   runProgress,
   workingConfigurations,
 } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
+import { modelActivity, modelKey } from "../lib/benchmarkModels";
 import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
 import type { LeaderboardRow, RunSummary } from "../types";
@@ -40,12 +40,14 @@ export function BenchmarkActivity({
   onOpenRun,
   onOpenCampaign,
   attentionFor = null,
+  poolVersionIds,
 }: {
   runs: RunSummary[];
   onOpenRun: (id: string) => void;
   onOpenCampaign?: (id: string) => void;
   /** The row whose stalled runs the line names; none on a list page. */
   attentionFor?: LeaderboardRow | null;
+  poolVersionIds?: readonly string[];
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -55,7 +57,17 @@ export function BenchmarkActivity({
       runs.some((run) => campaignIdForRun(run) === campaign.plan.id),
   );
   const active = activeRuns(runs);
-  const stalled = attentionFor ? rowAttention(attentionFor, runs) : [];
+  const stalled = attentionFor
+    ? modelActivity(
+        {
+          key: modelKey(attentionFor.configuration),
+          row: attentionFor,
+          configurations: [],
+        },
+        runs,
+        poolVersionIds,
+      ).attention
+    : [];
   if (active.length === 0 && stalled.length === 0 && campaigns.length === 0)
     return null;
   return (
