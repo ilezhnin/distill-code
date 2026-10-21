@@ -317,7 +317,6 @@
     "empty": "No attempts for this test yet."
   },
   "run": {
-    "repositoryTools": "Repository with tools",
     "title": "Run benchmarks",
     "description": "Choose models and tests, then check the plan before starting.",
     "tests": "Tests",
@@ -334,7 +333,9 @@
     "configurations": "Models",
     "noConfigurations": "Choose an available model and account to include in the plan.",
     "noTests": "Select at least one test, then check the plan.",
-    "noCompatibleTests": "Select tests that this configuration can run, or add a configuration for their execution profile.",
+    "unavailableTests": "{{model}} cannot run all selected tests with this account and settings. {{reason}}",
+    "runtimeUnavailable": "This account does not offer the runtime required by some selected tests.",
+    "settingsUnavailable": "Some selected tests cannot run with this effort, fast mode or billing.",
     "invalidRepetitions": "Choose a whole number of repetitions from 1 to 100.",
     "invalidLimit": "Maximum executions must be a positive whole number.",
     "overBudget": "The plan needs {{count}} executions; the limit is {{limit}}. Raise the limit or select fewer tests.",

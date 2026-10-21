@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconX } from "@tabler/icons-react";
@@ -25,7 +25,11 @@ import {
   isRefusal,
 } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
-import { executionProfileOf } from "../lib/benchmarkCatchUp";
+import {
+  EXECUTION_PROFILES,
+  executionProfileOf,
+  resolveCatchUpConfiguration,
+} from "../lib/benchmarkCatchUp";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
 import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
@@ -34,6 +38,7 @@ import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
 import type {
   BenchmarkDefinitionSummary,
   Configuration,
+  InventoryModel,
   RunPreview,
   RunRequest,
 } from "../types";
@@ -48,6 +53,38 @@ import { BenchmarkTestPicker } from "./BenchmarkTestPicker";
 
 /** The effort field's one value for a model without an effort control. */
 const NO_EFFORT = "no-effort-setting";
+
+type ModelSelection = {
+  configuration: Configuration;
+  inventory: InventoryModel[];
+};
+
+/** One model choice, with the runtime entries its tests may need. */
+function modelChoices(inventory: InventoryModel[]) {
+  const grouped = new Map<string, InventoryModel[]>();
+  for (const entry of inventory) {
+    const config = entry.configuration;
+    const key = JSON.stringify([
+      config.providerId,
+      config.accountId,
+      config.modelId,
+      config.modelName ?? null,
+      config.billingMode,
+    ]);
+    const group = grouped.get(key) ?? [];
+    group.push(entry);
+    grouped.set(key, group);
+  }
+  return [...grouped.values()].map((entries) => ({
+    ...(entries.find(
+      (entry) => entry.configuration.executionProfile === "native_text",
+    ) ?? entries[0]),
+    inventory: entries,
+    efforts: [...new Set(entries.flatMap((entry) => entry.efforts))],
+    supportsFastMode: entries.some((entry) => entry.supportsFastMode),
+    available: entries.some((entry) => entry.available),
+  }));
+}
 
 export function BenchmarkRunDialog({
   definitions,
@@ -81,9 +118,7 @@ export function BenchmarkRunDialog({
   const [effort, setEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
   const [selected, setVersions] = useState(selectedVersionIds);
-  const [savedConfigurations, setConfigurations] = useState<Configuration[]>(
-    [],
-  );
+  const [savedSelections, setSelections] = useState<ModelSelection[]>([]);
   const [repetitions, setRepetitions] = useState(REQUIRED_REPETITIONS);
   const published = currentVersions(definitions);
   // A publication invalidates an old selection instead of silently running
@@ -132,7 +167,8 @@ export function BenchmarkRunDialog({
     enabled: Boolean(providerId) && !capabilities.isPending,
     staleTime: 30_000,
   });
-  const model = inventory.data?.[Number(modelIndex)];
+  const models = modelChoices(inventory.data ?? []);
+  const model = models[Number(modelIndex)];
   // The CLI's "default" names no level, so it is never offered: a model that
   // lists levels runs at one of them, and only a model without an effort
   // control runs with the effort unset.
@@ -140,7 +176,7 @@ export function BenchmarkRunDialog({
   const effortChosen =
     modelEfforts.length === 0 ||
     (effort !== null && modelEfforts.includes(effort));
-  const selection: Configuration | null =
+  const selectedConfiguration: Configuration | null =
     model?.available && effortChosen
       ? {
           ...model.configuration,
@@ -148,69 +184,87 @@ export function BenchmarkRunDialog({
           fastMode: model.supportsFastMode ? fastMode : null,
         }
       : null;
-  if (selection) {
-    selection.id = [
-      selection.providerId,
-      selection.accountId ?? "",
-      selection.modelId,
-      selection.effort ?? "",
-      selection.fastMode ?? "",
-      selection.executionProfile,
-    ].join(":");
+  if (selectedConfiguration) {
+    selectedConfiguration.id = JSON.stringify([
+      selectedConfiguration.providerId,
+      selectedConfiguration.accountId,
+      selectedConfiguration.modelId,
+      selectedConfiguration.modelName ?? null,
+      selectedConfiguration.billingMode,
+      selectedConfiguration.effort,
+      selectedConfiguration.fastMode,
+    ]);
   }
+  const selection: ModelSelection | null =
+    selectedConfiguration && model
+      ? { configuration: selectedConfiguration, inventory: model.inventory }
+      : null;
   // The visible selection is already part of the plan. Saving it is only
   // necessary when the operator wants to choose another configuration too.
-  const configurations =
-    selection && !savedConfigurations.some((entry) => entry.id === selection.id)
-      ? [...savedConfigurations, selection]
-      : savedConfigurations;
-  const count = configurations.reduce(
-    (total, entry) =>
-      total +
-      plannedTurns(
-        chosenVersions.filter(
-          (version) =>
-            executionProfileOf(version.manifest) === entry.executionProfile,
-        ),
-      ) *
-        repetitions,
-    0,
+  const selections =
+    selection &&
+    !savedSelections.some(
+      (entry) => entry.configuration.id === selection.configuration.id,
+    )
+      ? [...savedSelections, selection]
+      : savedSelections;
+  // Every selected model owes every selected test. Resolve each needed
+  // runtime as the model's own Run dialog does; never drop unavailable cases.
+  const profiles = EXECUTION_PROFILES.filter((profile) =>
+    chosenVersions.some(
+      (version) => executionProfileOf(version.manifest) === profile,
+    ),
   );
+  const configurations: Configuration[] = [];
+  let routingIssue: string | null = null;
+  for (const entry of selections) {
+    for (const executionProfile of profiles) {
+      const resolved = resolveCatchUpConfiguration(
+        { ...entry.configuration, executionProfile },
+        entry.inventory,
+      );
+      if ("configuration" in resolved) {
+        configurations.push(resolved.configuration);
+      } else {
+        routingIssue ??= t("run.unavailableTests", {
+          model: configurationLabel(entry.configuration),
+          reason:
+            resolved.issue === "unavailable" && resolved.reason
+              ? resolved.reason
+              : t(
+                  resolved.issue === "changed"
+                    ? "run.settingsUnavailable"
+                    : "run.runtimeUnavailable",
+                ),
+        });
+      }
+    }
+  }
+  const count = selections.length * plannedTurns(chosenVersions) * repetitions;
   const maxExecutions = executionLimit ?? Math.max(1, count);
   const planIssue =
-    configurations.length === 0
+    selections.length === 0
       ? t("run.noConfigurations")
       : versions.length === 0
         ? t("run.noTests")
         : !Number.isInteger(repetitions) || repetitions < 1 || repetitions > 100
           ? t("run.invalidRepetitions")
-          : count === 0
-            ? t("run.noCompatibleTests")
+          : routingIssue
+            ? routingIssue
             : !Number.isInteger(maxExecutions) || maxExecutions < 1
               ? t("run.invalidLimit")
               : count > maxExecutions
                 ? t("run.overBudget", { count, limit: maxExecutions })
                 : null;
-  const request: RunRequest = useMemo(
-    () => ({
-      requestKey,
-      versionIds: versions,
-      configurations,
-      repetitions,
-      timeoutSeconds,
-      maxExecutions,
-      preview: previewOnly,
-    }),
-    [
-      requestKey,
-      versions,
-      configurations,
-      repetitions,
-      timeoutSeconds,
-      maxExecutions,
-      previewOnly,
-    ],
-  );
+  const request: RunRequest = {
+    requestKey,
+    versionIds: versions,
+    configurations,
+    repetitions,
+    timeoutSeconds,
+    maxExecutions,
+    preview: previewOnly,
+  };
   const signature = JSON.stringify(request);
   const validPreview = preview?.signature === signature ? preview.result : null;
   const supported = new Set(
@@ -231,8 +285,6 @@ export function BenchmarkRunDialog({
       ? providerDisplayName(id)
       : t("run.unsupportedProvider", { provider: providerDisplayName(id) }),
   }));
-  const providerReasons =
-    capabilities.data?.filter((entry) => entry.providerId === providerId) ?? [];
   const operate = async (action: () => Promise<void>) => {
     setError(null);
     setBusy(true);
@@ -246,7 +298,7 @@ export function BenchmarkRunDialog({
   };
   const addConfiguration = () => {
     if (!selection) return;
-    setConfigurations(configurations);
+    setSelections(selections);
     setModelIndex("none");
     setEffort(null);
     setFastMode(false);
@@ -345,7 +397,7 @@ export function BenchmarkRunDialog({
                       value={modelIndex}
                       onChange={(value) => {
                         setModelIndex(value);
-                        const chosen = inventory.data?.[Number(value)];
+                        const chosen = models[Number(value)];
                         setEffort(
                           chosen ? preselectedEffort(chosen.efforts) : null,
                         );
@@ -353,14 +405,10 @@ export function BenchmarkRunDialog({
                       }}
                       options={[
                         { value: "none", label: t("run.chooseModel") },
-                        ...(inventory.data?.map((entry, index) => ({
+                        ...models.map((entry, index) => ({
                           value: String(index),
-                          label:
-                            entry.configuration.executionProfile ===
-                            "protected_repository"
-                              ? `${entry.name} (${t("run.repositoryTools")})`
-                              : entry.name,
-                        })) ?? []),
+                          label: entry.name,
+                        })),
                       ]}
                     />
                   )}
@@ -398,17 +446,6 @@ export function BenchmarkRunDialog({
                 {benchmarkErrorMessage(inventory.error)}
               </BenchmarkAlert>
             ) : null}
-            {providerReasons.map((entry) => (
-              <p
-                key={entry.executionProfile}
-                className="text-xs text-muted-foreground"
-              >
-                {t(`profiles.${entry.executionProfile}`, {
-                  defaultValue: entry.executionProfile,
-                })}
-                : {entry.reason}
-              </p>
-            ))}
             {model && !model.available ? (
               <p className="text-xs text-muted-foreground">
                 {model.reason ?? t("states.unsupported")}
@@ -440,13 +477,13 @@ export function BenchmarkRunDialog({
                 ) : null}
               </div>
             ) : null}
-            {configurations.length === 0 && providerId ? (
+            {selections.length === 0 && providerId ? (
               <p className="text-xs text-muted-foreground">
                 {t("run.noConfigurations")}
               </p>
-            ) : configurations.length > 0 ? (
+            ) : selections.length > 0 ? (
               <ul className="divide-y divide-border">
-                {configurations.map((entry) => {
+                {selections.map(({ configuration: entry }) => {
                   return (
                     <li
                       key={entry.id}
@@ -454,9 +491,6 @@ export function BenchmarkRunDialog({
                     >
                       <span className="min-w-0 truncate">
                         {configurationLabel(entry)}
-                        {entry.executionProfile === "protected_repository"
-                          ? ` (${t("run.repositoryTools")})`
-                          : ""}
                       </span>
                       <Button
                         type="button"
@@ -464,10 +498,13 @@ export function BenchmarkRunDialog({
                         variant="ghost"
                         aria-label={t("actions.remove")}
                         onClick={() => {
-                          setConfigurations((previous) =>
-                            previous.filter((config) => config.id !== entry.id),
+                          setSelections((previous) =>
+                            previous.filter(
+                              (item) => item.configuration.id !== entry.id,
+                            ),
                           );
-                          if (selection?.id === entry.id) setModelIndex("none");
+                          if (selection?.configuration.id === entry.id)
+                            setModelIndex("none");
                         }}
                       >
                         <IconX />

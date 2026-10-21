@@ -9,7 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
-import type { Capability } from "../types";
+import type { Capability, InventoryModel } from "../types";
 import { BenchmarkRunDialog } from "../ui/BenchmarkRunDialog";
 import { configuration, definition, run } from "./fixtures";
 
@@ -390,6 +390,7 @@ it("selects the CLI sign-in whenever the capabilities naming it arrive", async (
 async function chooseTestModel(
   user: ReturnType<typeof userEvent.setup>,
   testDefinition = definition,
+  otherDefinitions: (typeof definition)[] = [],
 ) {
   render(
     <QueryClientProvider
@@ -398,8 +399,10 @@ async function chooseTestModel(
       }
     >
       <BenchmarkRunDialog
-        definitions={[testDefinition]}
-        selectedVersionIds={["version-1"]}
+        definitions={[testDefinition, ...otherDefinitions]}
+        selectedVersionIds={[testDefinition, ...otherDefinitions].flatMap(
+          (entry) => entry.versions.map((version) => version.id),
+        )}
         onClose={vi.fn()}
         onStarted={vi.fn()}
       />
@@ -488,9 +491,8 @@ it("keeps added configurations, deduplicates the current choice and can remove i
   expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
 });
 
-it("counts only matching execution profiles instead of charging every configuration for every test", async () => {
-  const user = userEvent.setup();
-  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+function pairedInventory(): InventoryModel[] {
+  return [
     {
       configuration,
       name: "Test model",
@@ -504,6 +506,7 @@ it("counts only matching execution profiles instead of charging every configurat
         ...configuration,
         id: "repository-config",
         executionProfile: "protected_repository",
+        inventoryRevision: "repository-runtime-2",
       },
       name: "Test model",
       efforts: ["high"],
@@ -511,15 +514,126 @@ it("counts only matching execution profiles instead of charging every configurat
       available: true,
       reason: null,
     },
+  ];
+}
+
+const repositoryDefinition = {
+  ...definition,
+  id: "repository-test",
+  versions: [
+    {
+      ...definition.versions[0],
+      id: "repository-version",
+      definitionId: "repository-test",
+      manifest: {
+        ...definition.draft,
+        name: "Repository check",
+        evaluator: { ...definition.draft.evaluator, kind: "repository" },
+      },
+    },
+  ],
+};
+
+it("offers each model once and sends both runtimes for a mixed test selection", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(pairedInventory());
+  await chooseTestModel(user, definition, [repositoryDefinition]);
+  expect(screen.getByText("6 executions")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(1);
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  expect(
+    screen.getAllByRole("option").map((entry) => entry.textContent),
+  ).toEqual(["Choose a model", "Test model"]);
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
+  );
+  const checked = vi.mocked(benchmarkApi.previewRun).mock.calls[0][0];
+  expect(checked.versionIds).toEqual(["version-1", "repository-version"]);
+  expect(checked.maxExecutions).toBe(6);
+  expect(checked.configurations).toEqual([
+    expect.objectContaining({
+      executionProfile: "native_text",
+      inventoryRevision: "inventory-1",
+      accountId: "account-1",
+      effort: "high",
+    }),
+    expect.objectContaining({
+      executionProfile: "protected_repository",
+      inventoryRevision: "repository-runtime-2",
+      accountId: "account-1",
+      effort: "high",
+    }),
   ]);
-  await chooseTestModel(user);
+  expect(new Set(checked.configurations.map((entry) => entry.id)).size).toBe(2);
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() =>
+    expect(benchmarkApi.startRun).toHaveBeenCalledWith(checked),
+  );
+});
+
+it("can run repository-only tests even when text execution is unavailable", async () => {
+  const user = userEvent.setup();
+  const entries = pairedInventory();
+  entries[0].available = false;
+  entries[0].reason = "Text runtime is not ready.";
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(entries);
+  await chooseTestModel(user, repositoryDefinition);
+  expect(screen.getByText("3 executions")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        versionIds: ["repository-version"],
+        configurations: [
+          expect.objectContaining({ executionProfile: "protected_repository" }),
+        ],
+      }),
+    ),
+  );
+});
+
+it("keeps each added effort as one model choice with both required runtimes", async () => {
+  const user = userEvent.setup();
+  const entries = pairedInventory();
+  for (const entry of entries) entry.efforts = ["low", "high"];
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(entries);
+  await chooseTestModel(user, definition, [repositoryDefinition]);
   await user.click(
     screen.getByRole("button", { name: "Add another configuration" }),
   );
   await user.click(screen.getByRole("combobox", { name: "Model" }));
-  await user.click(screen.getByRole("option", { name: /Test model \(/ }));
-  // The one text test runs only on the text configuration. The native
-  // preflight explains that the repository configuration has no cases.
+  await user.click(screen.getByRole("option", { name: "Test model" }));
+  expect(screen.getByText("6 executions")).toBeInTheDocument();
+  await user.click(screen.getByRole("combobox", { name: "Native effort" }));
+  await user.click(screen.getByRole("option", { name: "low" }));
+  expect(screen.getByText("12 executions")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() => expect(benchmarkApi.previewRun).toHaveBeenCalledTimes(1));
+  const checked = vi.mocked(benchmarkApi.previewRun).mock.calls[0][0];
+  expect(
+    checked.configurations.map((entry) => [
+      entry.effort,
+      entry.executionProfile,
+    ]),
+  ).toEqual([
+    ["high", "native_text"],
+    ["high", "protected_repository"],
+    ["low", "native_text"],
+    ["low", "protected_repository"],
+  ]);
+  expect(new Set(checked.configurations.map((entry) => entry.id)).size).toBe(4);
+});
+
+it("includes only the runtime needed by the selected tests", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(pairedInventory());
+  await chooseTestModel(user);
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
   expect(screen.getByText("3 executions")).toBeInTheDocument();
   expect(
     screen.getByRole("spinbutton", { name: "Maximum executions" }),
@@ -529,13 +643,72 @@ it("counts only matching execution profiles instead of charging every configurat
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
       expect.objectContaining({
         maxExecutions: 3,
-        configurations: expect.arrayContaining([
+        configurations: [
           expect.objectContaining({ executionProfile: "native_text" }),
-          expect.objectContaining({ executionProfile: "protected_repository" }),
-        ]),
+        ],
       }),
     ),
   );
+});
+
+it("resolves a saved model again when the selected tests change and removes the whole model", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(pairedInventory());
+  await chooseTestModel(user, definition, [repositoryDefinition]);
+  await user.click(screen.getByRole("checkbox", { name: "Repository check" }));
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
+  );
+  expect(
+    vi.mocked(benchmarkApi.previewRun).mock.calls[0][0].configurations,
+  ).toHaveLength(1);
+  await user.click(screen.getByRole("checkbox", { name: "Repository check" }));
+  expect(screen.getByText("6 executions")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() => expect(benchmarkApi.previewRun).toHaveBeenCalledTimes(2));
+  expect(
+    vi.mocked(benchmarkApi.previewRun).mock.calls[1][0].configurations,
+  ).toHaveLength(2);
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  expect(screen.getByText("0 executions")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+});
+
+it.each([
+  "missing",
+  "unavailable",
+  "changed",
+])("blocks a mixed plan when a needed runtime is %s instead of omitting its tests", async (issue) => {
+  const user = userEvent.setup();
+  const entries = pairedInventory();
+  if (issue === "missing") entries.pop();
+  if (issue === "unavailable") {
+    entries[1].available = false;
+    entries[1].reason = "Sign in to the repository runtime.";
+  }
+  if (issue === "changed") entries[1].efforts = ["low"];
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue(entries);
+  await chooseTestModel(user, definition, [repositoryDefinition]);
+  expect(screen.getByText("6 executions")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "cannot run all selected tests",
+  );
+  if (issue === "unavailable")
+    expect(screen.getByRole("status")).toHaveTextContent(
+      entries[1].reason ?? "",
+    );
+  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+  expect(benchmarkApi.previewRun).not.toHaveBeenCalled();
+  // A text-only selection is still valid on this same model.
+  await user.click(screen.getByRole("checkbox", { name: "Repository check" }));
+  expect(screen.getByText("3 executions")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Check plan" })).toBeEnabled();
 });
 
 it("offers only the levels a model lists and starts at its highest", async () => {

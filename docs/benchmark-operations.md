@@ -610,9 +610,13 @@ pool's recipe; their outputs are reused.
 ## 4. Freeze and run the measurement matrix
 
 In **Run benchmarks**, choosing an available model, account and effort includes
-that configuration in the plan immediately. **Add another configuration** keeps
-it while opening the model picker for another choice. The execution ceiling
-follows the selected tests and repetitions until edited; an explicit ceiling
+that model in the plan immediately. Each model appears once; every selected test
+uses the model's runtime for that task automatically, including repository tasks.
+The operator does not choose execution profiles or add a model twice to cover
+the full pool. A missing runtime or incompatible setting blocks the plan with a
+reason instead of silently leaving out tests. **Add another configuration** keeps
+the model and settings while opening the picker for another choice. The execution
+ceiling follows the selected tests and repetitions until edited; an explicit ceiling
 stays fixed, and an over-budget plan explains how to proceed beside the action
 buttons. Counts pair tests with their execution profile and include judge calls.
 Check the plan before starting; changing any run parameter invalidates that check.
@@ -623,8 +627,9 @@ repetitions and limits. Preserve these original configuration IDs for subsequent
 workflow campaigns; the fitting service normalizes evidence keys separately.
 
 For objective single-step tasks, the planned candidate count is
-`eligible versions x configurations x repetitions`. A candidate's own tests
-are planned too; a run admitted before that rule (no `authorPolicy`) leaves
+`eligible versions x selected models x repetitions`. Each model's internal runtime
+configurations cover their matching tests without multiplying the cases. A
+candidate's own tests are planned too; a run admitted before that rule (no `authorPolicy`) leaves
 them out. Workflow steps and rubric judges add calls; use
 `benchmark_preview_run` and its `executionCount` instead of relying on the simple
 formula. Qualification-control counts, candidate calls and judge calls are

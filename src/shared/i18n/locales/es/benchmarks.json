@@ -317,7 +317,6 @@
     "empty": "Todavía no hay intentos para esta prueba."
   },
   "run": {
-    "repositoryTools": "Repositorio con herramientas",
     "title": "Ejecutar benchmarks",
     "description": "Elige modelos y pruebas, y comprueba el plan antes de empezar.",
     "tests": "Pruebas",
@@ -334,7 +333,9 @@
     "configurations": "Modelos",
     "noConfigurations": "Elige un modelo y una cuenta disponibles para incluirlos en el plan.",
     "noTests": "Selecciona al menos una prueba y comprueba el plan.",
-    "noCompatibleTests": "Selecciona pruebas que esta configuración pueda ejecutar o añade una configuración para su perfil de ejecución.",
+    "unavailableTests": "{{model}} no puede ejecutar todas las pruebas seleccionadas con esta cuenta y estos ajustes. {{reason}}",
+    "runtimeUnavailable": "Esta cuenta no ofrece el entorno necesario para algunas pruebas seleccionadas.",
+    "settingsUnavailable": "Algunas pruebas seleccionadas no pueden ejecutarse con este esfuerzo, modo rápido o facturación.",
     "invalidRepetitions": "Elige un número entero de repeticiones entre 1 y 100.",
     "invalidLimit": "El máximo de ejecuciones debe ser un número entero positivo.",
     "overBudget": "El plan necesita {{count}} ejecuciones; el límite es {{limit}}. Aumenta el límite o selecciona menos pruebas.",
