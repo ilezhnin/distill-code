@@ -504,6 +504,23 @@ pub struct ObservedSelection {
     pub fast_mode: Option<bool>,
 }
 
+impl ObservedSelection {
+    pub(crate) fn matches(&self, request: &OwnedSessionRequest) -> bool {
+        self.model_id.as_deref() == Some(request.model_id.as_str())
+            && request
+                .reasoning_effort
+                .as_ref()
+                .is_none_or(|effort| self.reasoning_effort.as_ref() == Some(effort))
+            && fast_mode_acknowledged(request.fast_mode, self.fast_mode)
+    }
+}
+
+/// Models without a fast-mode control acknowledge none, which is off.
+/// Missing support never acknowledges a request to turn fast mode on.
+pub(crate) fn fast_mode_acknowledged(requested: Option<bool>, observed: Option<bool>) -> bool {
+    requested.is_none_or(|fast| fast == observed.unwrap_or(false))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnedSession {
@@ -658,6 +675,33 @@ mod tests {
             title: "Benchmark: case [1]".into(),
             profile: ExecutionProfile::NativeTextV1,
         }
+    }
+
+    #[test]
+    fn owned_selection_accepts_absent_fast_only_when_off() {
+        let mut requested = request("claude-acp");
+        let mut observed = ObservedSelection {
+            model_id: Some(requested.model_id.clone()),
+            reasoning_effort: requested.reasoning_effort.clone(),
+            fast_mode: None,
+        };
+        assert!(observed.matches(&requested));
+        requested.fast_mode = Some(true);
+        assert!(!observed.matches(&requested));
+        requested.fast_mode = Some(false);
+        observed.fast_mode = Some(true);
+        assert!(!observed.matches(&requested));
+        observed.fast_mode = Some(false);
+        assert!(observed.matches(&requested));
+        observed.reasoning_effort = Some("low".into());
+        assert!(!observed.matches(&requested));
+        observed.reasoning_effort = None;
+        assert!(!observed.matches(&requested));
+        observed.reasoning_effort = requested.reasoning_effort.clone();
+        observed.model_id = Some("another-model".into());
+        assert!(!observed.matches(&requested));
+        observed.model_id = None;
+        assert!(!observed.matches(&requested));
     }
 
     /// Existing owners' policy hashes, configurations' runtime pins and the

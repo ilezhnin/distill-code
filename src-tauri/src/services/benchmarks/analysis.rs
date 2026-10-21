@@ -437,7 +437,7 @@ pub(crate) fn matches_selection(requested: &Configuration, observed: &Configurat
 /// Claude sessions acknowledge none for every model but Opus, so frozen
 /// Sonnet judge seats pinned to off abstained every time).
 pub(crate) fn fast_mode_acknowledged(requested: Option<bool>, observed: Option<bool>) -> bool {
-    requested.is_none_or(|fast| fast == observed.unwrap_or(false))
+    crate::services::agent_host::execution::fast_mode_acknowledged(requested, observed)
 }
 
 /// What ran. A refused selection (another model, effort or fast mode) stays

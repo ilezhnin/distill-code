@@ -4440,6 +4440,8 @@ impl Inner {
         }
         if let Some(fast) = wanted.fast {
             match Self::fast_state(snapshot) {
+                // A model without this control already runs with fast mode off.
+                None if !fast => {}
                 // Writing a fast toggle a model does not have answers
                 // "Unknown config option: fast"; the intent survives for the
                 // next model that offers one.
@@ -4463,7 +4465,7 @@ impl Inner {
                             Self::take_options(snapshot, &answer);
                             Self::capture_reported(snapshot, &answer, Some(OptionRole::Fast));
                             let applied = Self::fast_state(snapshot).and_then(|(_, on, _)| on);
-                            if applied != Some(fast) {
+                            if !execution::fast_mode_acknowledged(Some(fast), applied) {
                                 substitutions.push(Self::substitution(
                                     "fast",
                                     Self::fast_word(fast),
@@ -4540,7 +4542,7 @@ impl Inner {
             }
         }
         if let Some(requested) = wanted.fast {
-            if applied.fast != Some(requested) {
+            if !execution::fast_mode_acknowledged(Some(requested), applied.fast) {
                 let reason = match applied.fast {
                     Some(_) => format!("not offered by {named}"),
                     None => format!("{named} has no fast mode"),
@@ -6446,14 +6448,11 @@ impl Inner {
             return Err(format!("capability_missing: {reason}"));
         }
         let matches = substitutions.is_empty()
-            && acknowledged.model.as_deref() == Some(request.model_id.as_str())
-            && request
-                .reasoning_effort
-                .as_ref()
-                .is_none_or(|effort| acknowledged.effort.as_ref() == Some(effort))
-            && request
-                .fast_mode
-                .is_none_or(|fast| acknowledged.fast == Some(fast));
+            && ObservedSelection {
+                model_id: acknowledged.model.clone(),
+                reasoning_effort: acknowledged.effort.clone(),
+                fast_mode: acknowledged.fast,
+            }.matches(&request);
         snapshot["_meta"]["executionOwner"] = json!({"kind":purpose,"id":request.owner_id});
         snapshot["_meta"]["executionPolicy"] = json!({
             "repositoryRevision": repository_revision, "textRevision": text_revision,
@@ -7111,14 +7110,12 @@ impl Inner {
         }
         if record.harness != owner.provider_id
             || record.account_id.as_deref() != Some(owner.account_id.as_str())
-            || record.model_id.as_deref() != Some(owner.model_id.as_str())
-            || owner
-                .reasoning_effort
-                .as_ref()
-                .is_some_and(|effort| record.reasoning_effort.as_ref() != Some(effort))
-            || owner
-                .fast_mode
-                .is_some_and(|fast| record.fast_mode != Some(fast))
+            || !(ObservedSelection {
+                model_id: record.model_id.clone(),
+                reasoning_effort: record.reasoning_effort.clone(),
+                fast_mode: record.fast_mode,
+            })
+            .matches(owner)
         {
             return Err(
                 "selection_changed: requested benchmark selection was not acknowledged".into(),
@@ -10331,6 +10328,38 @@ mod tests {
         assert_eq!(substitutions[0]["requested"], "on");
         assert_eq!(substitutions[0]["applied"], Value::Null);
         assert_eq!(substitutions[0]["reason"], "sonnet has no fast mode");
+    }
+
+    #[tokio::test]
+    async fn fast_off_does_not_substitute_a_model_without_the_control() {
+        let mut snapshot = claude_session();
+        let wanted = Selection {
+            model: Some("sonnet".into()),
+            effort: Some("high".into()),
+            fast: Some(false),
+        };
+        let asked = StdMutex::new(Vec::new());
+        let substitutions =
+            Inner::apply_selection("claude-acp", &mut snapshot, &wanted, true, |role, _| {
+                asked.lock().expect("asked").push(role);
+                async { Ok(claude_answer("sonnet", Some("high"), EVERY_EFFORT, None)) }
+            })
+            .await;
+        assert_eq!(*asked.lock().expect("asked"), vec![OptionRole::Model]);
+        assert!(substitutions.is_empty(), "{substitutions:?}");
+        let observed = Inner::selection_from(&snapshot["configOptions"]);
+        assert_eq!(observed.model, wanted.model);
+        assert_eq!(observed.effort, wanted.effort);
+        assert_eq!(observed.fast, None);
+        assert!(Inner::substitutions_for(&wanted, &observed).is_empty());
+        let fast = Selection {
+            fast: Some(true),
+            ..wanted
+        };
+        assert_eq!(
+            Inner::substitutions_for(&fast, &observed)[0]["role"],
+            "fast"
+        );
     }
 
     #[tokio::test]
