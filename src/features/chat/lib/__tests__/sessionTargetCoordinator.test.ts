@@ -148,6 +148,61 @@ describe("session store subscription", () => {
     useChatSessionStore.setState({ sessions: [] });
   });
 
+  it("publishes replayed model and effort snapshots only when their values change", () => {
+    seedSession("example-model", "example-provider", {
+      executionTargetSource: "acp",
+      reasoningEffort: effortMenu("high"),
+    });
+    const initial = useChatSessionStore.getState();
+    const listener = vi.fn();
+    const unsubscribe = useChatSessionStore.subscribe(listener);
+    const observe = (currentValue: string) =>
+      observeSessionTargetConfigSnapshots({
+        sessionId: "session-1",
+        snapshots: {
+          model: { modelId: "example-model", modelName: "example-model" },
+          reasoningEffort: effortMenu(currentValue),
+        },
+        context: { origin: "notification" },
+      });
+    try {
+      // Loading a session replays independently parsed copies of its config
+      // notifications. They must not repeatedly invalidate the Home draft.
+      for (let i = 0; i < 100; i++) observe("high");
+      expect(useChatSessionStore.getState()).toBe(initial);
+      expect(listener).not.toHaveBeenCalled();
+
+      observe("low");
+      expect(liveSession()?.reasoningEffort?.currentValue).toBe("low");
+      expect(listener).toHaveBeenCalledTimes(1);
+      observe("low");
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("still publishes a changed effort menu for the same model", () => {
+    seedSession("example-model", "example-provider", {
+      executionTargetSource: "acp",
+      reasoningEffort: effortMenu("high"),
+    });
+    observeSessionTargetConfigSnapshots({
+      sessionId: "session-1",
+      snapshots: {
+        model: { modelId: "example-model", modelName: "example-model" },
+        reasoningEffort: {
+          ...effortMenu("high"),
+          options: [{ id: "high", name: "High effort" }],
+        },
+      },
+      context: { origin: "notification" },
+    });
+    expect(liveSession()?.reasoningEffort?.options).toEqual([
+      { id: "high", name: "High effort" },
+    ]);
+  });
+
   it("leaves the session list alone on writes that do not replace it", () => {
     seedSession("gpt-5.5");
     const sessions = useChatSessionStore.getState().sessions;

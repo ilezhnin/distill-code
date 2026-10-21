@@ -435,7 +435,7 @@ function clearedObservedRunState(
   };
 }
 
-function sameReasoningEffortConfig(
+export function sameReasoningEffortConfig(
   left: ChatSessionReasoningEffortConfig | undefined,
   right: ChatSessionReasoningEffortConfig | undefined,
 ): boolean {

@@ -11,7 +11,10 @@ import {
   reconcileSessionRunSettings,
   runSettingsPlannerForSession,
 } from "./runSettingsReconciler";
-import { useChatSessionStore } from "../stores/chatSessionStore";
+import {
+  sameReasoningEffortConfig,
+  useChatSessionStore,
+} from "../stores/chatSessionStore";
 import {
   executionTargetFromHostSession,
   hostSelectionFromExecutionTarget,
@@ -948,30 +951,43 @@ function publishObservedTarget(
   reasoningEffort?: AcpReasoningEffortConfigSnapshot,
 ): void {
   const normalizedTarget = normalizeSessionExecutionTarget(target);
-  useChatSessionStore.setState((state) => ({
-    sessions: state.sessions.map((session) => {
-      if (session.id !== sessionId) return session;
-      const identityChanged = !sameSessionExecutionTarget(
-        session.executionTarget,
-        normalizedTarget,
-      );
-      return {
-        ...session,
-        executionTarget: normalizedTarget,
-        executionTargetSource: source,
-        ...(reasoningEffort
-          ? { reasoningEffort }
-          : identityChanged
-            ? { reasoningEffort: undefined }
-            : {}),
-        // The fast toggle describes the model that advertised it. On a real
-        // model change it goes with the effort menu; the fast snapshot that
-        // travels with this one is applied right after and puts back whatever
-        // the new model offers.
-        ...(identityChanged ? { fastMode: undefined } : {}),
-      };
-    }),
-  }));
+  useChatSessionStore.setState((state) => {
+    const existing = state.getSession(sessionId);
+    if (!existing) return state;
+    const identityChanged = !sameSessionExecutionTarget(
+      existing.executionTarget,
+      normalizedTarget,
+    );
+    const nextReasoning =
+      reasoningEffort ??
+      (identityChanged ? undefined : existing.reasoningEffort);
+    // Replaying a transcript can deliver many copies of the same config.
+    // Publishing each copy re-enters Home preparation while load is still
+    // replaying, eventually exhausting React's nested-update limit.
+    if (
+      !identityChanged &&
+      existing.executionTarget?.modelName === normalizedTarget.modelName &&
+      existing.executionTargetSource === source &&
+      sameReasoningEffortConfig(existing.reasoningEffort, nextReasoning)
+    ) {
+      return state;
+    }
+    return {
+      sessions: state.sessions.map((session) =>
+        session.id !== sessionId
+          ? session
+          : {
+              ...session,
+              executionTarget: normalizedTarget,
+              executionTargetSource: source,
+              reasoningEffort: nextReasoning,
+              // Fast belongs to the model that advertised it. The accompanying
+              // fast snapshot is applied after this observation.
+              ...(identityChanged ? { fastMode: undefined } : {}),
+            },
+      ),
+    };
+  });
 }
 
 export function observeSessionTargetModelSnapshot(input: {

@@ -27,6 +27,8 @@ import {
   type RuntimeConfig,
 } from "@/shared/runtime-config/schema";
 import { AppShell } from "./AppShell";
+import { persistHomeSessionId } from "./lib/homeSessionStorage";
+import { registerPreparedSession } from "@/shared/api/acpSessionRegistry";
 import type { NavigationPanesViewProps } from "@/app/views/NavigationPanesView";
 import type { AppShellContent as AppShellContentType } from "./ui/AppShellContent";
 
@@ -1333,6 +1335,49 @@ describe("AppShell global navigation", () => {
       });
     });
     expect(useChatStore.getState().queuedMessageBySession).toEqual({});
+  });
+
+  it("does not prepare a ready Home draft again when its model has no effort control", async () => {
+    const session: ChatSession = {
+      id: "home-without-effort",
+      title: "New chat",
+      createdAt: "2026-09-13T00:00:00Z",
+      updatedAt: "2026-09-13T00:00:00Z",
+      messageCount: 0,
+      workingDir: "~/.distill/artifacts",
+      executionTargetSource: "acp",
+      executionTarget: {
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
+        modelId: "example-model",
+        modelName: "Example model",
+      },
+    };
+    useChatSessionStore.setState({
+      sessions: [session],
+      hasHydratedSessions: true,
+    });
+    persistHomeSessionId(session.id);
+    const unregister = registerPreparedSession(
+      session.id,
+      "claude-acp",
+      "~/.distill/artifacts",
+      "example-model",
+    );
+    try {
+      renderAppShell();
+      await act(async () => {});
+      // A regular session refresh changes the object without changing the
+      // acknowledged model or giving it an optional effort menu.
+      await act(async () => {
+        useChatSessionStore.setState({ sessions: [{ ...session }] });
+      });
+      expect(mockAcpPrepareSession).not.toHaveBeenCalled();
+      expect(mockAcpCreateSession).not.toHaveBeenCalled();
+      expect(screen.getByTestId("active-view")).toHaveTextContent("home");
+    } finally {
+      unregister();
+    }
   });
 
   it("opens a chat sent from the global composer on the Home selection's model, effort and fast mode in session/new", async () => {

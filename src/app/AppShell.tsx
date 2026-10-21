@@ -1161,9 +1161,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           // Unrelated changes re-create this callback (the session list
           // refresh every minute, provider status polls), and each re-run
           // prepared the draft on the target it was already prepared on.
+          // A prepared model may legitimately have no effort control.
           const targetState = getSessionTargetState(homeSession.id);
           if (
-            liveHomeSession.reasoningEffort &&
             liveHomeSession.workingDir === workingDir &&
             isSessionPrepared(homeSession.id) &&
             targetState.status === "settled" &&
