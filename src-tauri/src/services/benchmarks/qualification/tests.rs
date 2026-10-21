@@ -601,6 +601,19 @@ async fn revoking_an_interrupted_qualification_settles_it() {
 async fn an_interrupted_calibration_keeps_its_paid_panels() {
     let dir = crate::test_support::TempRoot::new();
     let (service, backend, request) = fixture(&dir, false, false).await;
+    let idle_references = Arc::strong_count(&backend);
+    // Each background controls task owns a backend clone until it has
+    // finished its final database operations. A settled record alone does
+    // not prove that task exited, and a fixed sleep races a loaded runner.
+    let controls_stopped = || async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while Arc::strong_count(&backend) > idle_references {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("The calibration controls task did not exit");
+    };
     backend.refuse_from.store(2, Ordering::SeqCst);
     let first = service.qualify_version(request.clone()).await.unwrap();
     let waiting = first_record(&service.store, &request.version_id, |record| {
@@ -613,7 +626,7 @@ async fn an_interrupted_calibration_keeps_its_paid_panels() {
     let interrupted = service.store.qualification(&first.id).await.unwrap();
     assert_eq!(interrupted.status, INTERRUPTED);
     // The loop of the closed calibration stops without settling anything.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    controls_stopped().await;
     let refusals = backend.refusals.load(Ordering::SeqCst);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(backend.refusals.load(Ordering::SeqCst), refusals);
@@ -633,5 +646,6 @@ async fn an_interrupted_calibration_keeps_its_paid_panels() {
         );
     }
     assert_eq!(backend.calls.load(Ordering::SeqCst), 4);
+    controls_stopped().await;
     dir.close().await;
 }

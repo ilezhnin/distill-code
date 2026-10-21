@@ -9060,6 +9060,8 @@ pub struct FakeBackend {
     pub calls: std::sync::atomic::AtomicU64,
     /// Judge panels asked, and those that found their run stopped.
     pub judges: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    judged_attempts: std::sync::Mutex<Vec<String>>,
     pub stopped_judges: std::sync::atomic::AtomicU64,
     /// Tests hold a panel open to act on its run meanwhile.
     pub hold_judges: std::sync::atomic::AtomicBool,
@@ -9235,6 +9237,11 @@ impl ExecutionBackend for FakeBackend {
                 return Err(BenchmarkError::new("resource_busy", "measured CPU load is above the light-job admission line; no provider process started"));
             }
             self.judges.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            self.judged_attempts
+                .lock()
+                .unwrap()
+                .push(attempt.id.clone());
             if self.fail_judges.load(Ordering::SeqCst) {
                 return Err(BenchmarkError::new("infrastructure_failure", "host down"));
             }
@@ -11741,19 +11748,19 @@ mod tests {
     }
     #[tokio::test]
     async fn finish_continues_a_cancelled_run_and_returns_a_stopped_panel_to_its_judges() {
-        let (dir, s, _backend) = setup().await;
-        let mut req = request(&s).await;
-        req.repetitions = 1;
-        let run = s.start_run(req).await.unwrap();
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
         // Stopped while its rendering awaited the panel: the answer is sealed,
-        // its verdict missing.
-        let mut stopped = s.store.run(&run.id).await.unwrap().attempts.remove(0);
+        // its verdict missing. Build the real seal instead of fabricating an
+        // output with no evidence hash, which resume must not trust.
+        let mut stopped = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        let sealed_output = stopped.output.clone();
+        assert!(sealed_output.is_some());
+        assert!(stopped.evidence_hash.is_some());
         stopped.phase = "terminal".into();
         stopped.outcome = Some("pending_review".into());
         stopped.reason = Some(JUDGING_STOPPED.into());
-        stopped.output = Some("sealed answer".into());
-        stopped.started_at = Some(1);
-        stopped.finished_at = Some(2);
         s.store.save_attempt(&stopped).await.unwrap();
         s.store.set_run_state(&run.id, "cancelled").await.unwrap();
         let finished = s.extend_run(&run.id, &[], &[]).await.unwrap();
@@ -11764,6 +11771,8 @@ mod tests {
         assert_eq!(revived.phase, AWAITING_JUDGES);
         assert_eq!(revived.outcome.as_deref(), Some("pending_review"));
         assert_eq!(revived.reason, None);
+        assert_eq!(revived.output, sealed_output);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         dir.close().await;
     }
     #[tokio::test]
@@ -15840,9 +15849,14 @@ mod tests {
             excluded.reason.as_deref(),
             Some("authored by this candidate")
         );
-        // The paid generation stays on record; no judge was asked.
+        // The paid generation stays on record. Resume retries only the
+        // original unfinished panel, never the excluded authored attempt.
         assert!(excluded.output.is_some());
-        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *backend.judged_attempts.lock().unwrap(),
+            vec![run.attempts[0].id.clone(), run.attempts[0].id.clone()]
+        );
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         dir.close().await;
     }
