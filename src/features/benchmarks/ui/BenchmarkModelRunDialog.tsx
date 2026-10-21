@@ -59,6 +59,7 @@ import {
   runWindowOpen,
 } from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
+import { taskActivity } from "../lib/benchmarkTaskTiming";
 import type {
   Attempt,
   BenchmarkDefinitionSummary,
@@ -526,7 +527,7 @@ export function BenchmarkModelRunDialog({
     if (wasActive.current && !runActive) setOverrides(new Map());
     wasActive.current = runActive;
   }, [runActive]);
-  const statuses = useMemo(() => {
+  const attemptsByVersion = useMemo(() => {
     const byVersion = new Map<string, Attempt[]>();
     for (const attempt of mine) {
       byVersion.set(attempt.versionId, [
@@ -534,13 +535,32 @@ export function BenchmarkModelRunDialog({
         attempt,
       ]);
     }
-    return new Map(
-      [...byVersion].map(([versionId, attempts]) => [
-        versionId,
-        testStatus(attempts, scores, run.data?.state ?? null),
-      ]),
-    );
-  }, [mine, scores, run.data]);
+    return byVersion;
+  }, [mine]);
+  const statuses = useMemo(
+    () =>
+      new Map(
+        [...attemptsByVersion].map(([versionId, attempts]) => [
+          versionId,
+          testStatus(attempts, scores, run.data?.state ?? null),
+        ]),
+      ),
+    [attemptsByVersion, scores, run.data],
+  );
+  const activities = useMemo(
+    () =>
+      new Map(
+        [...attemptsByVersion].map(([versionId, attempts]) => [
+          versionId,
+          taskActivity(
+            attempts,
+            run.data?.state !== "paused" &&
+              !FINISHED_RUN.has(run.data?.state ?? ""),
+          ),
+        ]),
+      ),
+    [attemptsByVersion, run.data?.state],
+  );
   const inRun = statuses.size;
   // A running test's clock ticks every second; the window check reads it too.
   const now = clock;
@@ -994,7 +1014,11 @@ export function BenchmarkModelRunDialog({
                       </span>
                     ) : null}
                     {status ? (
-                      <TestStatusMark status={status} now={now} />
+                      <TestStatusMark
+                        status={status}
+                        now={now}
+                        activity={activities.get(version.id)}
+                      />
                     ) : standing.has(version.id) ? (
                       <span className="opacity-60">
                         <TestStatusMark

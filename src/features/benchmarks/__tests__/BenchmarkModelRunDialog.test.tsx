@@ -819,14 +819,14 @@ it("lists the tests in the order the run takes them and times the one running no
   );
   const row = (name: string) =>
     within(screen.getByText(name).closest("li") as HTMLElement);
-  expect(row("Charlie").getByText("7 s")).toBeInTheDocument();
+  expect(row("Charlie").getByText("≥ 7 s")).toBeInTheDocument();
   expect(
     await row("Charlie").findByRole("img", {
       name: "1 of 1 passed, 1 repetitions",
     }),
   ).toBeInTheDocument();
   expect(row("Echo").getByLabelText("Running")).toBeInTheDocument();
-  expect(row("Echo").getByText(/^2 min [5-7] s$/)).toBeInTheDocument();
+  expect(row("Echo").getByText(/^≥ 2:0[5-7]$/)).toBeInTheDocument();
   expect(screen.getByText("Echo").closest("li")).toHaveAttribute(
     "aria-current",
     "step",

@@ -19,6 +19,42 @@ const judging: StatusAttempt = {
 };
 const collecting: StatusAttempt = { ...judging, phase: "collecting" };
 
+it("shows recorded execution instead of hours since the old attempt started", () => {
+  const { container, rerender } = render(
+    <TestStatusMark
+      status={{ kind: "judging", startedAt: 0 }}
+      now={4 * HOUR}
+      activity={{
+        execution: [{ startedAt: 3 * HOUR, finishedAt: 3 * HOUR + 25_000 }],
+        waiting: [],
+        partial: true,
+      }}
+    />,
+  );
+  expect(container).toHaveTextContent("Judges");
+  expect(container).toHaveTextContent("≥ 25 s");
+  expect(container).not.toHaveTextContent("4 h");
+  rerender(
+    <TestStatusMark
+      status={{
+        kind: "waiting",
+        reason: "Waiting for local resources",
+        stopped: false,
+        until: null,
+      }}
+      now={4 * HOUR}
+      activity={{
+        execution: [{ startedAt: 3 * HOUR, finishedAt: 3 * HOUR + 25_000 }],
+        waiting: [{ startedAt: 4 * HOUR - 120_000, finishedAt: null }],
+        partial: false,
+      }}
+    />,
+  );
+  expect(container).toHaveTextContent("Waiting for resources");
+  expect(container).toHaveTextContent("2:00");
+  expect(container).not.toHaveTextContent("25 s");
+});
+
 describe("test status in a stopped run", () => {
   it.each([
     "Waiting for local resources to list judge models: measured CPU load is above the light-job admission line",

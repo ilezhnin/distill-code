@@ -9,7 +9,11 @@ import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
 import { benchmarkApi } from "../api/benchmarks";
 import { formatElapsed, stateLabel } from "../lib/benchmarkLabels";
-import { compactElapsed } from "../lib/benchmarkTaskTiming";
+import {
+  activityElapsed,
+  compactElapsed,
+  type TaskActivity,
+} from "../lib/benchmarkTaskTiming";
 import type { Attempt, AttemptSummary } from "../types";
 
 /** The attempt fields a status reads; a summary lacks the queue fields. */
@@ -294,6 +298,7 @@ export function TestStatusMark({
   compact = false,
   waitingMs,
   waitingPartial = false,
+  activity,
 }: {
   status: TestStatus | null;
   now: number;
@@ -301,10 +306,30 @@ export function TestStatusMark({
   /** Recorded queue time, separate from the card's execution clock. */
   waitingMs?: number | null;
   waitingPartial?: boolean;
+  /** Recorded work and queue intervals, as shown on the task card. */
+  activity?: TaskActivity;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
   if (!status) return null;
+  const elapsed = activity ? activityElapsed(activity, now) : null;
+  const executionTime = (fallback: number | null) =>
+    activity ? (
+      compact ? null : (
+        <span
+          className="text-xs text-muted-foreground tabular-nums"
+          title={t(
+            activity.partial ? "grid.partialTimeHint" : "grid.totalHint",
+          )}
+        >
+          {elapsed?.execution == null
+            ? "–"
+            : `${activity.partial ? "≥ " : ""}${compactElapsed(elapsed.execution)}`}
+        </span>
+      )
+    ) : (
+      time(fallback)
+    );
   const time = (milliseconds: number | null) =>
     milliseconds == null || compact ? null : (
       <span className="text-xs text-muted-foreground tabular-nums">
@@ -321,6 +346,10 @@ export function TestStatusMark({
         </span>
       );
     case "waiting": {
+      if (elapsed) {
+        waitingMs = elapsed.waiting;
+        waitingPartial = activity?.partial ?? false;
+      }
       // A time already behind is one the runner is about to act on.
       const until =
         !status.stopped && status.until != null && status.until > now
@@ -357,7 +386,7 @@ export function TestStatusMark({
     case "running":
       return (
         <span className="flex shrink-0 items-center gap-2">
-          {time(since(status.startedAt))}
+          {executionTime(since(status.startedAt))}
           <Spinner
             aria-label={t("modelRun.running")}
             className="size-4 text-chart-1"
@@ -368,7 +397,7 @@ export function TestStatusMark({
       return (
         <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           {t("modelRun.judging")}
-          {time(since(status.startedAt))}
+          {executionTime(since(status.startedAt))}
           <Spinner decorative className="size-4" />
         </span>
       );
@@ -385,7 +414,7 @@ export function TestStatusMark({
       // shows it.
       return (
         <span className="flex shrink-0 items-center gap-2">
-          {time(status.durationMs)}
+          {executionTime(status.durationMs)}
           <RepetitionDots states={scoredDots(status.passes, status.of)} />
         </span>
       );
@@ -397,7 +426,7 @@ export function TestStatusMark({
             compact && "truncate",
           )}
         >
-          {time(status.durationMs)}
+          {executionTime(status.durationMs)}
           {stateLabel(t, status.outcome)}
         </span>
       );
