@@ -1627,12 +1627,18 @@ pub(crate) fn panel_issue(panel: &[Configuration]) -> Option<String> {
 /// the model that answered is not the judge that was asked.
 fn judge_turn_failure(judge: &Configuration, status: &ExecutionDispatch) -> Option<String> {
     if let Some(error) = &status.error {
-        return Some(
-            error["message"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| error.to_string()),
-        );
+        let summary = error["message"].as_str().filter(|v| !v.is_empty());
+        let detail = error
+            .pointer("/data/message")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty());
+        return Some(match (summary, detail) {
+            (Some(summary), Some(detail)) if summary != detail => {
+                format!("{summary}: {detail}")
+            }
+            (Some(message), _) | (_, Some(message)) => message.to_owned(),
+            _ => error.to_string(),
+        });
     }
     let Some(selection) = status
         .result
@@ -11566,6 +11572,26 @@ mod tests {
         assert!(judge_turn_failure(&judge, &violated)
             .unwrap()
             .contains("no-tool policy"));
+        for (error, expected) in [
+            (
+                json!({"code": -32603, "message": "Internal error", "data": {
+                    "http_status": 403, "message": "API error (status 403 Forbidden): permission-denied"}}),
+                "Internal error: API error (status 403 Forbidden): permission-denied",
+            ),
+            (
+                json!({"message": "Host unavailable", "data": {"message": "Host unavailable"}}),
+                "Host unavailable",
+            ),
+            (
+                json!({"data": {"message": "Provider unavailable"}}),
+                "Provider unavailable",
+            ),
+        ] {
+            assert_eq!(
+                judge_turn_failure(&judge, &status(None, Some(error))).as_deref(),
+                Some(expected),
+            );
+        }
         assert!(judge_turn_failure(&judge, &status(acknowledged("opus[1m]"), None)).is_some());
         assert!(judge_turn_failure(&judge, &status(Some(json!({})), None)).is_some());
     }

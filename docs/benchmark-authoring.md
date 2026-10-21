@@ -372,6 +372,8 @@ only the original answer from its sealed evidence file. The file must match
 the stored hash, attempt and session. Missing or invalid evidence reports an
 error instead of silently skipping the unfinished panel. Recovery preserves
 the seal, session and previous evaluations and makes no new candidate call.
+Judge failures retain a provider's nested error message, so an RPC wrapper
+such as `Internal error` does not conceal a refusal or access error.
 
 A rubric whose criteria vary between asks (a likeness, say) may set
 `environment.judgeSamples` to 3: each seat of its ordinary panel then judges
