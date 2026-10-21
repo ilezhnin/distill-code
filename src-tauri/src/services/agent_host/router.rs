@@ -1965,10 +1965,12 @@ impl Inner {
         last_used: std::time::Instant,
         now: std::time::Instant,
     ) -> bool {
-        attached_chats == 0
-            && in_flight == 0
-            && other_holders == 0
+        Self::bridge_is_idle(attached_chats, in_flight, other_holders)
             && now.saturating_duration_since(last_used) >= BRIDGE_IDLE_TIMEOUT
+    }
+
+    fn bridge_is_idle(attached_chats: usize, in_flight: usize, other_holders: usize) -> bool {
+        attached_chats == 0 && in_flight == 0 && other_holders == 0
     }
 
     pub async fn installed_harnesses(&self) -> Vec<&'static HarnessSpec> {
@@ -7419,9 +7421,9 @@ impl Inner {
             .count()
     }
 
-    /// Shuts down the app's idle chat processes on `routes` once their
-    /// account's sign-in was renewed: a CLI keeps the refresh token it
-    /// started with, which the renewal replaced. One that a chat is attached
+    /// Shuts down the app's idle chat processes on `routes` before or after
+    /// their account's sign-in renews: a CLI keeps the refresh token it
+    /// started with. One that a chat is attached
     /// to, that a request waits on, or that a task holds, stays; its CLI
     /// reads the renewed grant the next time it refreshes.
     async fn retire_idle_chat_bridges(&self, routes: &[String]) {
@@ -7432,9 +7434,11 @@ impl Inner {
         let mut idle = Vec::new();
         self.bridges.lock().await.retain(|route, bridge| {
             let retire = routes.contains(route)
-                && chats.get(route).copied().unwrap_or(0) == 0
-                && bridge.in_flight() == 0
-                && Arc::strong_count(bridge) == 1;
+                && Self::bridge_is_idle(
+                    chats.get(route).copied().unwrap_or(0),
+                    bridge.in_flight(),
+                    Arc::strong_count(bridge) - 1,
+                );
             if retire {
                 idle.push(Arc::clone(bridge));
             }
@@ -7442,7 +7446,7 @@ impl Inner {
         });
         for bridge in idle {
             log::info!(
-                "[agent-host] {} bridge retired after its sign-in was renewed",
+                "[agent-host] {} idle bridge retired for its sign-in renewal",
                 bridge.harness
             );
             bridge.kill();
@@ -8345,6 +8349,10 @@ impl app_sign_in::RenewalIo for AppRenewal<'_> {
             if provider_accounts::is_cli_login_account(self.native.harness_id(), self.account) {
                 routes.push(self.native.harness_id().to_owned());
             }
+            // A model listing may leave an unowned idle bridge behind. It
+            // cannot hold up renewal until its idle timeout. Attached chats,
+            // in-flight requests and borrowed bridges are retained.
+            self.host.retire_idle_chat_bridges(&routes).await;
             let chats = self.host.live_chat_bridges(&routes).await;
             // The user's own Grok sign-in is shared by every Grok process;
             // which Codex home a codex process runs on is not visible, so
@@ -8404,6 +8412,14 @@ impl app_sign_in::RenewalIo for AppRenewal<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sign_in_renewal_retires_only_unowned_idle_bridges() {
+        assert!(Inner::bridge_is_idle(0, 0, 0));
+        assert!(!Inner::bridge_is_idle(1, 0, 0));
+        assert!(!Inner::bridge_is_idle(0, 1, 0));
+        assert!(!Inner::bridge_is_idle(0, 0, 1));
+    }
 
     #[test]
     fn inventory_keeps_only_the_trusted_pre_spawn_refusal_retryable() {

@@ -282,7 +282,7 @@ it("says when a waiting test is tried again, where the runner knows", async () =
   const until = Date.now() + 10 * 60_000;
   const time = new Date(until).toLocaleTimeString("en", { timeStyle: "short" });
   const busy =
-    "another Grok test still runs on the sign-in that is due for renewal; this test starts when it finishes";
+    "the Distill sign-in this test needs is renewed once the chats and CLIs running on that account stop; this test starts then";
   show({
     ...run,
     state: "running",
@@ -305,11 +305,11 @@ it("says when a waiting test is tried again, where the runner knows", async () =
     row("Alpha").getByText(`Usage limit, next try at ${time}`),
   ).toBeInTheDocument();
   expect(
-    row("Bravo").getByText(`Grok sign-in renews at ${time}`),
+    row("Bravo").getByText(`Account sign-in checked again at ${time}`),
   ).toBeInTheDocument();
   // A wait for another test names what it waits for instead of a time.
   expect(
-    row("Charlie").getByText("Waits for a running Grok test"),
+    row("Charlie").getByText("Waiting for account sign-in renewal"),
   ).toHaveAttribute("title", busy);
 });
 

@@ -241,7 +241,7 @@ export function testStatus(
 
 /** What a sign-in renewal that waits for other tests records as its reason. */
 const SIGN_IN_BUSY =
-  /still runs on the sign-in|renewed once a sandbox lane is free/i;
+  /still runs on the sign-in|renewed once a sandbox lane is free|sign-in.*renews once|sign-in.*renewed once|sign-in is being updated/i;
 
 /**
  * What a returned test waits for, from the reason the runner recorded; with
