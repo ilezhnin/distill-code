@@ -25,6 +25,7 @@ import {
   isRefusal,
 } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { executionProfileOf } from "../lib/benchmarkCatchUp";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEfforts, preselectedEffort } from "../lib/benchmarkEffort";
 import { plannedTurns, REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
@@ -80,7 +81,9 @@ export function BenchmarkRunDialog({
   const [effort, setEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
   const [selected, setVersions] = useState(selectedVersionIds);
-  const [configurations, setConfigurations] = useState<Configuration[]>([]);
+  const [savedConfigurations, setConfigurations] = useState<Configuration[]>(
+    [],
+  );
   const [repetitions, setRepetitions] = useState(REQUIRED_REPETITIONS);
   const published = currentVersions(definitions);
   // A publication invalidates an old selection instead of silently running
@@ -89,10 +92,10 @@ export function BenchmarkRunDialog({
     selected.includes(version.id),
   );
   const versions = chosenVersions.map((version) => version.id);
-  const owedTurns = plannedTurns(chosenVersions);
   // The run's limit only stops a turn that never ends (Settings).
   const timeoutSeconds = runTimeLimitSeconds(chosenVersions);
-  const [maxExecutions, setMaxExecutions] = useState(20);
+  // Follow the selected plan until the operator sets an explicit ceiling.
+  const [executionLimit, setMaxExecutions] = useState<number | null>(null);
   const [requestKey] = useState(() => crypto.randomUUID());
   const [preview, setPreview] = useState<{
     signature: string;
@@ -137,6 +140,57 @@ export function BenchmarkRunDialog({
   const effortChosen =
     modelEfforts.length === 0 ||
     (effort !== null && modelEfforts.includes(effort));
+  const selection: Configuration | null =
+    model?.available && effortChosen
+      ? {
+          ...model.configuration,
+          effort: modelEfforts.length ? effort : null,
+          fastMode: model.supportsFastMode ? fastMode : null,
+        }
+      : null;
+  if (selection) {
+    selection.id = [
+      selection.providerId,
+      selection.accountId ?? "",
+      selection.modelId,
+      selection.effort ?? "",
+      selection.fastMode ?? "",
+      selection.executionProfile,
+    ].join(":");
+  }
+  // The visible selection is already part of the plan. Saving it is only
+  // necessary when the operator wants to choose another configuration too.
+  const configurations =
+    selection && !savedConfigurations.some((entry) => entry.id === selection.id)
+      ? [...savedConfigurations, selection]
+      : savedConfigurations;
+  const count = configurations.reduce(
+    (total, entry) =>
+      total +
+      plannedTurns(
+        chosenVersions.filter(
+          (version) =>
+            executionProfileOf(version.manifest) === entry.executionProfile,
+        ),
+      ) *
+        repetitions,
+    0,
+  );
+  const maxExecutions = executionLimit ?? Math.max(1, count);
+  const planIssue =
+    configurations.length === 0
+      ? t("run.noConfigurations")
+      : versions.length === 0
+        ? t("run.noTests")
+        : !Number.isInteger(repetitions) || repetitions < 1 || repetitions > 100
+          ? t("run.invalidRepetitions")
+          : count === 0
+            ? t("run.noCompatibleTests")
+            : !Number.isInteger(maxExecutions) || maxExecutions < 1
+              ? t("run.invalidLimit")
+              : count > maxExecutions
+                ? t("run.overBudget", { count, limit: maxExecutions })
+                : null;
   const request: RunRequest = useMemo(
     () => ({
       requestKey,
@@ -159,7 +213,6 @@ export function BenchmarkRunDialog({
   );
   const signature = JSON.stringify(request);
   const validPreview = preview?.signature === signature ? preview.result : null;
-  const count = configurations.length * owedTurns * repetitions;
   const supported = new Set(
     capabilities.data
       ?.filter((entry) => entry.supported)
@@ -192,27 +245,11 @@ export function BenchmarkRunDialog({
     }
   };
   const addConfiguration = () => {
-    if (!model || !effortChosen) return;
-    const config: Configuration = {
-      ...model.configuration,
-      effort: modelEfforts.length ? effort : null,
-      fastMode: model.supportsFastMode ? fastMode : null,
-    };
-    config.id = [
-      config.providerId,
-      config.accountId ?? "",
-      config.modelId,
-      config.effort ?? "",
-      config.fastMode ?? "",
-      config.executionProfile,
-    ].join(":");
-    setConfigurations((previous) =>
-      previewOnly
-        ? [config]
-        : previous.some((entry) => entry.id === config.id)
-          ? previous
-          : [...previous, config],
-    );
+    if (!selection) return;
+    setConfigurations(configurations);
+    setModelIndex("none");
+    setEffort(null);
+    setFastMode(false);
   };
   const budgetField = (
     key: "repetitions" | "maxExecutions",
@@ -390,15 +427,17 @@ export function BenchmarkRunDialog({
                     {t("fields.fastMode")}
                   </Label>
                 ) : null}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={!model.available || !effortChosen}
-                  onClick={addConfiguration}
-                >
-                  {t("run.addConfiguration")}
-                </Button>
+                {!previewOnly ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!model.available || !effortChosen}
+                    onClick={addConfiguration}
+                  >
+                    {t("run.addConfiguration")}
+                  </Button>
+                ) : null}
               </div>
             ) : null}
             {configurations.length === 0 && providerId ? (
@@ -424,11 +463,12 @@ export function BenchmarkRunDialog({
                         size="icon-xs"
                         variant="ghost"
                         aria-label={t("actions.remove")}
-                        onClick={() =>
+                        onClick={() => {
                           setConfigurations((previous) =>
                             previous.filter((config) => config.id !== entry.id),
-                          )
-                        }
+                          );
+                          if (selection?.id === entry.id) setModelIndex("none");
+                        }}
                       >
                         <IconX />
                       </Button>
@@ -490,6 +530,14 @@ export function BenchmarkRunDialog({
           </Card>
         </DialogBody>
         <DialogFooter>
+          {planIssue ? (
+            <p
+              role="status"
+              className="text-xs text-muted-foreground sm:mr-auto"
+            >
+              {planIssue}
+            </p>
+          ) : null}
           <Button
             type="button"
             variant="ghost"
@@ -503,7 +551,7 @@ export function BenchmarkRunDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={busy || count === 0 || count > maxExecutions}
+            disabled={busy || count === 0 || planIssue !== null}
             onClick={() =>
               void operate(async () => {
                 setPreview({
@@ -518,7 +566,7 @@ export function BenchmarkRunDialog({
           <Button
             type="button"
             variant="primary"
-            disabled={busy || !validPreview?.valid}
+            disabled={busy || planIssue !== null || !validPreview?.valid}
             onClick={() =>
               void operate(async () => {
                 const run = await benchmarkApi.startRun(request);

@@ -609,6 +609,14 @@ pool's recipe; their outputs are reused.
 
 ## 4. Freeze and run the measurement matrix
 
+In **Run benchmarks**, choosing an available model, account and effort includes
+that configuration in the plan immediately. **Add another configuration** keeps
+it while opening the model picker for another choice. The execution ceiling
+follows the selected tests and repetitions until edited; an explicit ceiling
+stays fixed, and an over-budget plan explains how to proceed beside the action
+buttons. Counts pair tests with their execution profile and include judge calls.
+Check the plan before starting; changing any run parameter invalidates that check.
+
 Select immutable versions and complete live `Configuration` records. Freeze
 model, account, effort, fast mode, billing, execution profile, runtime revision,
 repetitions and limits. Preserve these original configuration IDs for subsequent

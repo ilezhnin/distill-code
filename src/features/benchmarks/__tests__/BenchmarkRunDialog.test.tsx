@@ -110,7 +110,9 @@ it("leaves a refusal to the plan check", async () => {
   await user.click(screen.getByRole("option", { name: "Test account" }));
   await user.click(screen.getByRole("combobox", { name: "Model" }));
   await user.click(screen.getByRole("option", { name: "Test model" }));
-  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
   expect(screen.queryByText("Train tasks only")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Check plan" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(refusal);
@@ -152,7 +154,9 @@ it("offers only the latest publication and discards stale preselected versions",
   await user.click(screen.getByRole("option", { name: "Test account" }));
   await user.click(screen.getByRole("combobox", { name: "Model" }));
   await user.click(screen.getByRole("option", { name: "Test model" }));
-  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
   await user.click(screen.getByRole("button", { name: "Check plan" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
@@ -202,7 +206,9 @@ it("counts every workflow step against the explicit execution budget", async () 
   await user.click(screen.getByRole("option", { name: "Test account" }));
   await user.click(screen.getByRole("combobox", { name: "Model" }));
   await user.click(screen.getByRole("option", { name: "Test model" }));
-  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
   // Two workflow steps, three repetitions each.
   expect(screen.getByText("6 executions")).toBeInTheDocument();
   fireEvent.change(
@@ -238,7 +244,9 @@ it("requires a fresh validated plan and sends the pinned account with a stable r
   await user.click(screen.getByRole("option", { name: "Test model" }));
   await user.click(screen.getByRole("combobox", { name: "Native effort" }));
   await user.click(screen.getByRole("option", { name: "high" }));
-  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
   await user.click(screen.getByRole("button", { name: "Check plan" }));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
@@ -379,7 +387,10 @@ it("selects the CLI sign-in whenever the capabilities naming it arrive", async (
 });
 
 /** Picks Claude Code, the test account and the test model in a fresh dialog. */
-async function chooseTestModel(user: ReturnType<typeof userEvent.setup>) {
+async function chooseTestModel(
+  user: ReturnType<typeof userEvent.setup>,
+  testDefinition = definition,
+) {
   render(
     <QueryClientProvider
       client={
@@ -387,7 +398,7 @@ async function chooseTestModel(user: ReturnType<typeof userEvent.setup>) {
       }
     >
       <BenchmarkRunDialog
-        definitions={[definition]}
+        definitions={[testDefinition]}
         selectedVersionIds={["version-1"]}
         onClose={vi.fn()}
         onStarted={vi.fn()}
@@ -401,6 +412,131 @@ async function chooseTestModel(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("combobox", { name: "Model" }));
   await user.click(screen.getByRole("option", { name: "Test model" }));
 }
+
+it("checks and starts a newly selected model without a separate add step or an arbitrary 20-call ceiling", async () => {
+  const user = userEvent.setup();
+  const workflow = {
+    schemaVersion: 1,
+    driverRevision: "1",
+    steps: Array.from({ length: 9 }, (_, index) => ({
+      id: `step-${index}`,
+      prompt: "Return the next integer.",
+      includePreviousOutput: true,
+    })),
+  };
+  await chooseTestModel(user, {
+    ...definition,
+    versions: [
+      {
+        ...definition.versions[0],
+        manifest: { ...definition.draft, workflow },
+      },
+    ],
+  });
+  expect(screen.getByText("27 executions")).toBeInTheDocument();
+  expect(
+    screen.getByRole("spinbutton", { name: "Maximum executions" }),
+  ).toHaveValue(27);
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
+  );
+  const checked = vi.mocked(benchmarkApi.previewRun).mock.calls[0][0];
+  expect(checked.configurations).toHaveLength(1);
+  expect(checked.maxExecutions).toBe(27);
+  await user.click(screen.getByRole("checkbox", { name: "Fast mode" }));
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
+  );
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() =>
+    expect(benchmarkApi.startRun).toHaveBeenCalledWith(
+      vi.mocked(benchmarkApi.previewRun).mock.calls.at(-1)?.[0],
+    ),
+  );
+});
+
+it("keeps added configurations, deduplicates the current choice and can remove it", async () => {
+  const user = userEvent.setup();
+  await chooseTestModel(user);
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
+  expect(screen.getByText("3 executions")).toBeInTheDocument();
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  await user.click(screen.getByRole("option", { name: "Test model" }));
+  expect(screen.getByText("3 executions")).toBeInTheDocument();
+  await user.click(screen.getByRole("checkbox", { name: "Fast mode" }));
+  expect(screen.getByText("6 executions")).toBeInTheDocument();
+  fireEvent.change(
+    screen.getByRole("spinbutton", { name: "Maximum executions" }),
+    { target: { value: "5" } },
+  );
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "The plan needs 6 executions; the limit is 5.",
+  );
+  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+  await user.click(screen.getAllByRole("button", { name: "Remove" })[1]);
+  expect(screen.getByText("3 executions")).toBeInTheDocument();
+  expect(
+    screen.getByRole("spinbutton", { name: "Maximum executions" }),
+  ).toHaveValue(5);
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  expect(screen.getByText("0 executions")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+});
+
+it("counts only matching execution profiles instead of charging every configuration for every test", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration,
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: false,
+      available: true,
+      reason: null,
+    },
+    {
+      configuration: {
+        ...configuration,
+        id: "repository-config",
+        executionProfile: "protected_repository",
+      },
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: false,
+      available: true,
+      reason: null,
+    },
+  ]);
+  await chooseTestModel(user);
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  await user.click(screen.getByRole("option", { name: /Test model \(/ }));
+  // The one text test runs only on the text configuration. The native
+  // preflight explains that the repository configuration has no cases.
+  expect(screen.getByText("3 executions")).toBeInTheDocument();
+  expect(
+    screen.getByRole("spinbutton", { name: "Maximum executions" }),
+  ).toHaveValue(3);
+  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await waitFor(() =>
+    expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxExecutions: 3,
+        configurations: expect.arrayContaining([
+          expect.objectContaining({ executionProfile: "native_text" }),
+          expect.objectContaining({ executionProfile: "protected_repository" }),
+        ]),
+      }),
+    ),
+  );
+});
 
 it("offers only the levels a model lists and starts at its highest", async () => {
   const user = userEvent.setup();
@@ -429,7 +565,9 @@ it("offers only the levels a model lists and starts at its highest", async () =>
     screen.queryByRole("option", { name: "No effort setting" }),
   ).toBeNull();
   await user.keyboard("{Escape}");
-  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
   await user.click(screen.getByRole("button", { name: "Check plan" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
@@ -480,7 +618,9 @@ it("runs a model without an effort control unset, with no other choice", async (
     screen.getAllByRole("option").map((option) => option.textContent),
   ).toEqual(["No effort setting"]);
   await user.keyboard("{Escape}");
-  await user.click(screen.getByRole("button", { name: "Add configuration" }));
+  await user.click(
+    screen.getByRole("button", { name: "Add another configuration" }),
+  );
   await user.click(screen.getByRole("button", { name: "Check plan" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
