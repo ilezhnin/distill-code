@@ -803,6 +803,17 @@ attention rather than starting an automatic retry loop. An individual judge
 vote does not make the test complete: every repetition needs its full panel.
 Sheet errors identify the failed validation without including private quotes.
 
+A provider's HTTP 403 request rejection is retained as a judge failure, never
+as a zero for the candidate. On Resume or Evaluate again, an ordinary panel
+excludes the rejecting model and effort for that answer and scoring protocol,
+including its other accounts. The service selects a fresh panel from the
+currently eligible, calibrated pool and records the rejected evaluations and
+the replacement panel's own protocol hash. It reuses the sealed answer, but
+does not transfer votes between panels or reduce the two-judge minimum. Older
+generic errors are recognized only from their matching terminal host dispatch.
+Frozen panels and calibration controls never substitute a judge. A missing
+replacement is reported explicitly; no paid retry loop is started.
+
 ## 5. Fit and inspect the local selector
 
 Call `benchmark_fit_selector` with a work class, explicit training version IDs,

@@ -23,6 +23,7 @@ mod account_pace;
 mod admission_window;
 pub mod collection_context;
 mod judge_corrections;
+mod judge_recovery;
 pub(crate) mod native_receipt;
 mod preparation_watchdog;
 
@@ -2733,19 +2734,30 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
 /// A saved vote can only finish a panel using the same scoring instructions.
 /// A changed protocol starts a separate batch on the retained answer; it must
 /// never attach new instructions to the old protocol hash or reuse old votes.
+#[cfg(test)]
 fn compatible_open_batch(
     evaluations: &[Evaluation],
     prompt: &str,
     renderer: &str,
 ) -> Option<OpenBatch> {
+    recoverable_open_batch(evaluations, prompt, renderer, &[])
+}
+
+fn recoverable_open_batch(
+    evaluations: &[Evaluation],
+    prompt: &str,
+    renderer: &str,
+    rejected: &[judge_recovery::Rejection],
+) -> Option<OpenBatch> {
     open_batch_matching(evaluations, |marker| {
-        marker.details.as_ref().is_some_and(|details| {
-            details.pointer("/protocol/prompt").and_then(Value::as_str) == Some(prompt)
-                && details
-                    .pointer("/protocol/renderer")
-                    .and_then(Value::as_str)
-                    == Some(renderer)
-        })
+        judge_recovery::accepts_marker(marker, rejected)
+            && marker.details.as_ref().is_some_and(|details| {
+                details.pointer("/protocol/prompt").and_then(Value::as_str) == Some(prompt)
+                    && details
+                        .pointer("/protocol/renderer")
+                        .and_then(Value::as_str)
+                        == Some(renderer)
+            })
     })
 }
 
@@ -3193,6 +3205,7 @@ impl NativeBackend {
         store: &Store,
         attempt: &Attempt,
         draft: &BenchmarkDraft,
+        rejected: &[judge_recovery::Rejection],
     ) -> Result<Vec<Configuration>> {
         let contributing = super::workflow::judge_candidates(store, attempt).await?;
         let candidates: Vec<_> = contributing.iter().collect();
@@ -3234,6 +3247,7 @@ impl NativeBackend {
             draft,
             offered
                 .into_iter()
+                .filter(|(_, judge)| !judge_recovery::excluded(judge, rejected))
                 .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
                 .collect(),
         );
@@ -3598,6 +3612,7 @@ impl NativeBackend {
         let mut usage = TokenUsage::default();
         let mut failure = dispatch.err();
         let mut turn_failure = None;
+        let mut provider_error = None;
         while failure.is_none() {
             match stop.turn_cancelled(store).await {
                 Ok(true) => {
@@ -3644,6 +3659,7 @@ impl NativeBackend {
                 {
                     // A flagged or substituted turn abstains; its spend still counts.
                     turn_failure = judge_turn_failure(judge, &status);
+                    provider_error = status.error.clone();
                     if let Some(error) = status.error.as_ref() {
                         // A limit that names no reset holds the account until
                         // the one its usage read shows.
@@ -3756,6 +3772,7 @@ impl NativeBackend {
             details: Some(
                 json!({"judgeBatchId": batch, "sessionId": session.session_id, "usageComplete": usage_complete,
                 "requestKey":key, "inFlight":!usage_complete,
+                "providerError": provider_error,
                 "durationMs": started.elapsed().as_millis() as u64,
                 "criteria": parsed.as_ref().map(|sheet| &sheet.shares),
                 "criticalCheckPolicy": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|_| judge_checks::POLICY)),
@@ -3874,11 +3891,14 @@ impl NativeBackend {
             return Ok(attempt);
         }
         let prompt = judge_prompt(&version.manifest, &criteria);
+        let rejected = self
+            .rejected_judges(&attempt, &version.manifest, &prompt, &renderer, &evidence)
+            .await?;
         // A batch its run's stop cut short is finished by the judges it has
         // not asked yet, so the plan's reservation still covers it.
         let open = match stop
             .continues_batches()
-            .then(|| compatible_open_batch(&attempt.evaluations, &prompt, &renderer))
+            .then(|| recoverable_open_batch(&attempt.evaluations, &prompt, &renderer, &rejected))
             .flatten()
         {
             Some(open)
@@ -3928,7 +3948,10 @@ impl NativeBackend {
                 // A calibration seats its one judge; a panel needs two.
                 let panel = match &evidence {
                     JudgeEvidence::Calibration { judge, .. } => vec![judge.as_ref().clone()],
-                    _ => self.judge_panel(store, &attempt, &version.manifest).await?,
+                    _ => {
+                        self.judge_panel(store, &attempt, &version.manifest, &rejected)
+                            .await?
+                    }
                 };
                 // An ordinary panel that seats a candidate's lab or own model
                 // is marked, so boards can show or leave out its scores.
@@ -3948,7 +3971,11 @@ impl NativeBackend {
                 if let Some(issue) = panel_issue(&panel)
                     .filter(|_| !matches!(evidence, JudgeEvidence::Calibration { .. }))
                 {
-                    attempt.reason = Some(issue);
+                    attempt.reason = Some(if rejected.is_empty() {
+                        issue
+                    } else {
+                        format!("{issue}. A judge rejected this request; recovery needs another calibrated judge from the pool")
+                    });
                     return Ok(attempt);
                 }
                 if !self.judges_idle(&panel).await? {
@@ -4033,6 +4060,12 @@ impl NativeBackend {
                         let mut details = json!({"judgeBatchId": batch,
                             "expectedJudges": expected, "protocolHash": protocol_hash,
                             "protocol": protocol});
+                        if !rejected.is_empty() {
+                            details["judgeRecovery"] = json!({
+                                "recipe": "reselect-rejected-request-v1",
+                                "rejectedJudges": rejected,
+                            });
+                        }
                         if same_vendor_panel {
                             details["sameVendor"] = json!(true);
                         }
