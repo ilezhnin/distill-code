@@ -22,6 +22,7 @@ use tokio::sync::watch;
 mod account_pace;
 mod admission_window;
 pub mod collection_context;
+mod judge_corrections;
 pub(crate) mod native_receipt;
 mod preparation_watchdog;
 
@@ -2696,7 +2697,7 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
     let panel: Vec<Configuration> =
         serde_json::from_value(details.pointer("/protocol/panel")?.clone()).ok()?;
     let expected = usize::try_from(details["expectedJudges"].as_u64()?).ok()?;
-    let answers = &evaluations[start + 1..];
+    let answers = judge_corrections::effective_answers(&evaluations[start + 1..]);
     // Each seat answers `samplesPerJudge` times (see `judge_samples`).
     let samples = details
         .pointer("/protocol/samplesPerJudge")
@@ -2705,7 +2706,7 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
     if panel.is_empty()
         || panel.len() * samples != expected
         || answers.len() >= expected
-        || !answers.iter().all(valid_vote)
+        || !answers.iter().all(|answer| valid_vote(answer))
     {
         return None;
     }
@@ -7101,6 +7102,12 @@ impl BenchmarkService {
                 error.message
             );
         }
+        if let Err(error) = self.repair_saved_judge_assessments().await {
+            log::warn!(
+                "[benchmarks] judge assessment repair failed: {}",
+                error.message
+            );
+        }
         loop {
             if let Err(error) = self.tick().await {
                 log::warn!("[benchmarks] runner paused: {}", error.message);
@@ -8557,9 +8564,22 @@ impl BenchmarkService {
                 return Ok(completed);
             }
             let Some(preparing) = admission_window::begin(&scope, &job) else {
+                if !completed
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
+                {
+                    completed.reason = Some(format!("{EVALUATION_WAIT}: preparation capacity"));
+                    self.store.save_attempt(&completed).await?;
+                    self.changed().await;
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             };
+            completed.reason = None;
+            completed.wait_until = None;
+            self.store.save_attempt(&completed).await?;
+            self.changed().await;
             if !self.backend.paces_preparation() {
                 admission_window::admitted(&scope, &job);
             }
@@ -8648,6 +8668,15 @@ impl BenchmarkService {
                 if !self.backend.paces_preparation() {
                     admission_window::admitted(&scope, &job);
                 }
+                attempt.reason = None;
+                attempt.wait_until = None;
+                mark_phase(&mut attempt, "judgeStarted");
+                if let Err(error) = self.store.save_attempt(&attempt).await {
+                    admission_window::finished(&scope, &job);
+                    attempt.reason = Some(error.message);
+                    return attempt;
+                }
+                self.changed().await;
                 let result = self
                     .backend
                     .judge(&self.store, attempt.clone(), version, stop)
@@ -8677,6 +8706,7 @@ impl BenchmarkService {
                         }
                     }
                 }
+                mark_phase(&mut attempt, "judgeFinished");
             }
             Some(Ok(false)) => {
                 attempt.reason =
@@ -10418,6 +10448,24 @@ mod tests {
         // The parser anchors evidence; semantic validity requires calibration.
         reply["checks"]["barrier"]["verdict"] = json!("unknown");
         reply["checks"]["barrier"]["evidence"] = json!([]);
+        assert_eq!(parse(&reply).score, Some(0.0));
+        // The order of the conditions cannot change the verdict.
+        let mut reversed = draft.clone();
+        reversed.environment["criticalChecks"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        assert_eq!(
+            judge_score_sheet(&reversed, &reply.to_string(), Some(response), &criteria)
+                .unwrap()
+                .score,
+            Some(0.0)
+        );
+        // A fail cannot rescue another check's fabricated evidence.
+        reply["checks"]["barrier"]["evidence"] = json!(["Not in the candidate response"]);
+        assert!(judge_score_sheet(&draft, &reply.to_string(), Some(response), &criteria).is_none());
+        reply["checks"]["barrier"]["evidence"] = json!([]);
+        reply["checks"]["retention"]["verdict"] = json!("pass");
         let undecided = parse(&reply);
         assert_eq!(undecided.score, None);
         assert!(undecided.reason.contains("abstained"));
@@ -10433,6 +10481,107 @@ mod tests {
                 .score,
             Some(0.9)
         );
+    }
+
+    #[test]
+    fn mixed_critical_sheet_corrections_preserve_history_usage_and_batch_identity() {
+        let draft = critical_text();
+        let mut attempt = super::super::pending_attempt("run", "version", &judge_row("sonnet"), 0);
+        attempt.phase = "terminal".into();
+        attempt.outcome = Some("pending_review".into());
+        attempt.finished_at = Some(1);
+        attempt.output =
+            Some("Remove only the acknowledged revision. Wait for every participant.".into());
+        attempt.evidence_hash = Some("sealed".into());
+        let mut checks = critical_reply()["checks"].clone();
+        checks["retention"]["verdict"] = json!("fail");
+        checks["barrier"]["verdict"] = json!("unknown");
+        checks["barrier"]["evidence"] = json!([]);
+        let mut marker = settled_batch()[0].clone();
+        marker.created_at = 1;
+        marker.details = Some(json!({"judgeBatchId":"batch", "expectedJudges":2,
+            "protocol":{"criticalCheckPolicy":judge_checks::POLICY,
+            "panel":[judge_row("sonnet"), judge_row("haiku")]}}));
+        marker.artifacts.push(Artifact {
+            kind: "text".into(),
+            path: "answer.txt".into(),
+            hash: "sealed".into(),
+            label: "Answer".into(),
+        });
+        let mut original = settled_batch()[1].clone();
+        original.evaluator_revision = draft.evaluator.revision.clone();
+        original.created_at = 2;
+        original.provenance = "judge_failure".into();
+        original.verdict = "abstained".into();
+        original.score = None;
+        original.reason = "Critical checks unresolved; judge abstained. Recorded trace".into();
+        original.usage = Some(TokenUsage {
+            input: Some(100),
+            output: Some(50),
+            cost: Some(0.01),
+            ..Default::default()
+        });
+        original.details = Some(
+            json!({"judgeBatchId":"batch","sessionId":"session","requestKey":"key",
+            "usageComplete":true,"inFlight":false,"durationMs":1234,"criteria":{"quality":0.9},
+            "criticalCheckPolicy":judge_checks::POLICY,"criticalCheckStatus":"unknown","criticalChecks":checks}),
+        );
+        let original_json = serde_json::to_value(&original).unwrap();
+        attempt.evaluations = vec![marker.clone(), original];
+        assert_eq!(judge_corrections::repair(&mut attempt, &draft, 10), 1);
+        assert_eq!(
+            serde_json::to_value(&attempt.evaluations[1]).unwrap(),
+            original_json
+        );
+        let correction = &attempt.evaluations[2];
+        assert_eq!(correction.score, Some(0.0));
+        assert!(correction.usage.is_none());
+        assert!(correction
+            .details
+            .as_ref()
+            .unwrap()
+            .get("durationMs")
+            .is_none());
+        let open = open_batch(&attempt.evaluations).unwrap();
+        assert_eq!(open.asked, vec![judge_row("sonnet")]);
+        assert_eq!(judge_corrections::repair(&mut attempt, &draft, 20), 0);
+        let mut second = attempt.evaluations[2].clone();
+        second.id = "other-seat".into();
+        second.judge = Some(judge_row("haiku"));
+        second.created_at = 3;
+        second.score = Some(0.9);
+        second.details =
+            Some(json!({"criticalCheckPolicy":judge_checks::POLICY,"criticalCheckStatus":"pass"}));
+        attempt.evaluations.push(second);
+        assert_eq!(super::super::analysis::score_as_of(&attempt, Some(9)), None);
+        assert_eq!(
+            super::super::analysis::score_as_of(&attempt, Some(10)),
+            Some(0.0)
+        );
+        // A later, incomplete batch cannot absorb or hide the corrected vote.
+        attempt.evaluations.push(marker);
+        assert_eq!(super::super::analysis::score(&attempt), Some(0.0));
+
+        for invalid in ["quote", "revision", "unfinished", "unsealed"] {
+            let mut bad = attempt.clone();
+            bad.evaluations = vec![bad.evaluations[0].clone(), bad.evaluations[1].clone()];
+            match invalid {
+                "quote" => {
+                    bad.evaluations[1].details.as_mut().unwrap()["criticalChecks"]["retention"]
+                        ["evidence"] = json!(["Fabricated quote"])
+                }
+                "revision" => bad.evaluations[1].evaluator_revision = "another".into(),
+                "unfinished" => {
+                    bad.evaluations[1].details.as_mut().unwrap()["usageComplete"] = json!(false)
+                }
+                _ => bad.evidence_hash = None,
+            }
+            assert_eq!(
+                judge_corrections::repair(&mut bad, &draft, 20),
+                0,
+                "{invalid}"
+            );
+        }
     }
 
     /// A sheet of a few thousand characters is read whole, and a condition
@@ -12728,6 +12877,7 @@ mod tests {
             sandbox_admission: None,
             account_load: None,
             phase_times: None,
+            activity: None,
             credit_use: None,
         };
         let version = |id: &str| BenchmarkVersion {
@@ -15105,6 +15255,120 @@ mod tests {
             assert!(judged.reason.is_none());
             dir.close().await;
         }
+    }
+
+    #[tokio::test]
+    async fn resume_retries_an_incomplete_panel_without_regenerating_the_sealed_answer() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let id = &run.attempts[0].id;
+        let mut attempt = s.store.attempt(id).await.unwrap();
+        let output = attempt.output.clone();
+        let seal = attempt.evidence_hash.clone();
+        attempt.phase = "terminal".into();
+        attempt.outcome = Some("pending_review".into());
+        attempt.reason = Some(PANEL_INCOMPLETE.into());
+        attempt.evaluations.clear();
+        s.store.save_attempt(&attempt).await.unwrap();
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        let queued = s.store.attempt(id).await.unwrap();
+        assert_eq!(queued.phase, AWAITING_JUDGES);
+        assert_eq!(queued.output, output);
+        s.tick().await.unwrap();
+        let judged = s.store.attempt(id).await.unwrap();
+        assert_eq!(judged.output, output);
+        assert_eq!(judged.evidence_hash, seal);
+        assert_eq!(judged.phase, "terminal");
+        assert!(judged.reason.is_none());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 2);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn saved_judge_repairs_only_append_to_open_runs_and_make_no_provider_calls() {
+        let (dir, s, backend) = setup().await;
+        let draft = critical_text();
+        let version = publish(&s, draft.clone()).await;
+        let mut req = creative_request(&s).await;
+        req.version_ids = vec![version.id];
+        let run = s.start_run(req).await.unwrap();
+        let mut attempt = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        attempt.phase = "terminal".into();
+        attempt.outcome = Some("pending_review".into());
+        attempt.output =
+            Some("Remove only the acknowledged revision. Wait for every participant.".into());
+        attempt.evidence_hash = Some("sealed".into());
+        let mut original = settled_batch()[1].clone();
+        original.evaluator_revision = draft.evaluator.revision.clone();
+        original.provenance = "judge_failure".into();
+        original.verdict = "abstained".into();
+        original.score = None;
+        original.reason = "Critical checks unresolved; judge abstained. Trace".into();
+        let mut checks = critical_reply()["checks"].clone();
+        checks["retention"]["verdict"] = json!("fail");
+        checks["barrier"]["verdict"] = json!("unknown");
+        checks["barrier"]["evidence"] = json!([]);
+        original.details = Some(
+            json!({"judgeBatchId":"batch","sessionId":"session","requestKey":"key",
+            "usageComplete":true,"criteria":{"quality":0.9},"criticalCheckPolicy":judge_checks::POLICY,
+            "criticalCheckStatus":"unknown","criticalChecks":checks}),
+        );
+        attempt.evaluations = vec![original];
+        s.store.save_attempt(&attempt).await.unwrap();
+        for state in ["completed", "cancelled"] {
+            s.store.set_run_state(&run.id, state).await.unwrap();
+            s.repair_saved_judge_assessments().await.unwrap();
+            assert_eq!(
+                s.store
+                    .attempt(&attempt.id)
+                    .await
+                    .unwrap()
+                    .evaluations
+                    .len(),
+                1,
+                "{state}"
+            );
+        }
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        // A new fixture state, rather than a product transition out of cancel.
+        sqlx::query("UPDATE run_plans SET state='needs_attention',baked_at=1 WHERE id=?")
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        s.repair_saved_judge_assessments().await.unwrap();
+        assert_eq!(
+            s.store
+                .attempt(&attempt.id)
+                .await
+                .unwrap()
+                .evaluations
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE run_plans SET baked_at=NULL WHERE id=?")
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        s.repair_saved_judge_assessments().await.unwrap();
+        s.repair_saved_judge_assessments().await.unwrap();
+        let repaired = s.store.attempt(&attempt.id).await.unwrap();
+        assert_eq!(repaired.evaluations.len(), 2);
+        assert_eq!(repaired.output, attempt.output);
+        assert_eq!(repaired.evidence_hash, attempt.evidence_hash);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 0);
+        dir.close().await;
     }
     #[tokio::test]
     async fn a_restart_while_cancelling_settles_the_rendering() {

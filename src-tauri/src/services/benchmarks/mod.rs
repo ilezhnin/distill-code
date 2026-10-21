@@ -1,3 +1,4 @@
+mod activity;
 pub mod analysis;
 pub mod artifact_context;
 pub mod campaigns;
@@ -231,6 +232,15 @@ fn pending_attempt(
         sandbox_admission: None,
         account_load: None,
         phase_times: None,
+        activity: Some(AttemptActivity {
+            recorded_from: now(),
+            complete: true,
+            spans: vec![ActivitySpan {
+                kind: ActivityKind::Waiting,
+                started_at: now(),
+                finished_at: None,
+            }],
+        }),
         credit_use: None,
     }
 }
@@ -1129,15 +1139,20 @@ impl BenchmarkService {
         }
         let planned = run.request.repetitions.max(1);
         let mut unfinished = false;
-        // A rendering whose panel a stop cut short keeps its sealed answer:
+        // A rendering whose panel could not settle keeps its sealed answer:
         // it goes back to its judges instead of being measured again.
         for attempt in &run.attempts {
             if attempt.phase == "terminal"
-                && attempt.reason.as_deref() == Some(runner::JUDGING_STOPPED)
                 && attempt.outcome.as_deref() == Some("pending_review")
                 && analysis::score(attempt).is_none()
+                && attempt.evidence_hash.is_some()
             {
-                let mut waiting = attempt.clone();
+                // Run summaries omit the answer; recover the full sealed
+                // attempt before saving so resume never erases its output.
+                let mut waiting = self.store.attempt(&attempt.id).await?;
+                if waiting.output.is_none() {
+                    continue;
+                }
                 waiting.phase = runner::AWAITING_JUDGES.into();
                 waiting.reason = None;
                 self.store.save_attempt(&waiting).await?;

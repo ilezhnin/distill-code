@@ -215,7 +215,8 @@ export function BenchmarkRunDrawer({
   const total = cells.filter((cell) => cell.status != null).length;
   const settled = cells.filter(
     (cell) =>
-      cell.status?.kind === "scored" || cell.status?.kind === "unscored",
+      (cell.status?.kind === "scored" || cell.status?.kind === "unscored") &&
+      !cell.dots.some((dot) => dot === "running" || dot === "queued"),
   ).length;
   const runningKey = grids.find((grid) =>
     grid.cells.some(
@@ -327,6 +328,12 @@ export function BenchmarkRunDrawer({
                     >
                       <TaskGrid
                         cells={grid.cells}
+                        timing="elapsed"
+                        clockAt={
+                          run.state === "paused"
+                            ? (run.pausedSince ?? run.updatedAt)
+                            : undefined
+                        }
                         onOpen={(cell) => onEvidence(cell.attemptIds[0])}
                       />
                     </div>

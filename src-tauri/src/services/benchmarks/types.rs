@@ -731,6 +731,32 @@ pub struct Attempt {
     /// `createdAt`. Absent on attempts recorded before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_times: Option<std::collections::BTreeMap<String, i64>>,
+    /// Recorded working and queue intervals. Older evidence has no history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<AttemptActivity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptActivity {
+    pub recorded_from: i64,
+    /// False when recording began after this attempt was already planned.
+    #[serde(default)]
+    pub complete: bool,
+    pub spans: Vec<ActivitySpan>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    Execution,
+    Waiting,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivitySpan {
+    pub kind: ActivityKind,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
 }
 /// How busy an attempt's account was when the attempt was admitted (see
 /// `Attempt::account_load`).

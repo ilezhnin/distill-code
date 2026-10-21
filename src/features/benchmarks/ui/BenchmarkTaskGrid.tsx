@@ -10,8 +10,10 @@ import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { formatUsd } from "../lib/benchmarkLabels";
 import type {
   AttemptSummary,
+  AttemptActivity,
   BenchmarkVersionSummary,
   LeaderboardCohort,
+  Evaluation,
 } from "../types";
 import {
   type DotState,
@@ -22,9 +24,17 @@ import {
   TestStatusMark,
   testStatus,
   type TestStatus,
+  useNow,
   WORKING,
 } from "./BenchmarkTestStatus";
 import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
+import {
+  activityElapsed,
+  compactElapsed,
+  taskActivity,
+  type TaskActivity,
+} from "../lib/benchmarkTaskTiming";
+export { compactElapsed } from "../lib/benchmarkTaskTiming";
 
 export interface TaskReference {
   id: string;
@@ -65,6 +75,9 @@ export interface TaskCell {
   /** Null for a case nobody measured yet: a gap. */
   status: TestStatus | null;
   durationMs: number | null;
+  activity: TaskActivity;
+  /** Whether the task can still advance. */
+  clock: boolean;
   cost: number | null;
   /** The case's attempts, repetition order; the first opens the evidence. */
   attemptIds: string[];
@@ -109,19 +122,9 @@ export type CellAttempt = Pick<
   startedAt?: number | null;
   reason?: string | null;
   waitUntil?: number | null;
+  activity?: AttemptActivity | null;
+  evaluations?: Evaluation[];
 };
-
-/** A block's clock: seconds under a minute, else m:ss, else h:mm:ss. */
-export function compactElapsed(milliseconds: number): string {
-  const total = Math.max(0, Math.round(milliseconds / 1000));
-  const seconds = total % 60;
-  const minutes = Math.floor(total / 60) % 60;
-  const hours = Math.floor(total / 3600);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`;
-  if (minutes > 0) return `${minutes}:${pad(seconds)}`;
-  return `${seconds} s`;
-}
 
 function median(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -140,8 +143,9 @@ export type RunStateOf =
 
 /**
  * One cell per case in `order`, from the attempts that measured it. A case
- * without an attempt is a gap. Time is the median repetition, spend their
- * mean, unknown when any repetition's spend is.
+ * without an attempt is a gap. Measured time is the median repetition,
+ * spend their mean, unknown when any repetition's spend is. Active work
+ * and queue intervals remain separate from that model speed measurement.
  */
 export function taskCells(
   order: { id: string; name: string; number?: number }[],
@@ -193,6 +197,9 @@ export function taskCells(
     while (dots.length < minimumRepetitions) dots.push("queued");
     const status =
       list.length === 0 ? null : testStatus(list, scores, stateOf(list[0]));
+    const unfinished = list.some(
+      (attempt) => attempt.phase !== "terminal" && !finished(attempt),
+    );
     return {
       versionId: version.id,
       number: version.number ?? index + 1,
@@ -202,6 +209,8 @@ export function taskCells(
       durationMs: median(
         list.flatMap((a) => (a.durationMs == null ? [] : [a.durationMs])),
       ),
+      activity: taskActivity(list, unfinished),
+      clock: unfinished,
       cost:
         costs.length > 0 && costs.every((cost) => cost != null)
           ? costs.reduce((sum, cost) => sum + (cost as number), 0) /
@@ -232,6 +241,7 @@ export function withOpenCells(
       return {
         ...cell,
         status: { kind: "running", startedAt: null },
+        clock: true,
         dots: cell.dots.map((_, index) => (index === 0 ? "running" : "queued")),
         verdict: "running",
       };
@@ -311,17 +321,33 @@ function tone(verdict: TaskCell["verdict"]): string {
 export function TaskGrid({
   cells,
   onOpen,
+  clockAt,
+  timing = "generation",
 }: {
   cells: TaskCell[];
   onOpen: (cell: TaskCell) => void;
+  /** A paused run holds its clocks at the recorded pause, across reopening. */
+  clockAt?: number;
+  /** Run details show active time; model statistics keep generation speed. */
+  timing?: "generation" | "elapsed";
 }) {
   const { t } = useTranslation("benchmarks");
-  // A waiting block names its next try against the time it is drawn at.
-  const now = Date.now();
+  const now = useNow(
+    clockAt == null &&
+      cells.some((cell) => cell.clock || cell.status?.kind === "waiting"),
+  );
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-2">
       {cells.map((cell) => {
         const active = cell.verdict === "running";
+        const times = activityElapsed(cell.activity, clockAt ?? now);
+        const actual = cell.clock || timing === "elapsed";
+        const elapsed = actual ? times.execution : cell.durationMs;
+        const timeHint = actual
+          ? `${t(cell.activity.partial ? "grid.partialTimeHint" : "grid.totalHint")}\n${t("grid.measuredHint")}: ${
+              cell.durationMs == null ? "–" : compactElapsed(cell.durationMs)
+            }\n${t("grid.waited")}: ${times.waiting == null ? "–" : `${cell.activity.partial ? "≥ " : ""}${compactElapsed(times.waiting)}`}`
+          : t("grid.measuredHint");
         return (
           <li key={cell.versionId}>
             <Tooltip delayDuration={TOOLTIP_DELAY.held}>
@@ -336,7 +362,7 @@ export function TaskGrid({
                   })}
                   onClick={() => onOpen(cell)}
                   className={cn(
-                    "flex w-full flex-col gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                    "flex h-full w-full flex-col gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors",
                     "enabled:hover:bg-muted disabled:cursor-default",
                     tone(cell.verdict),
                   )}
@@ -347,23 +373,32 @@ export function TaskGrid({
                     </span>
                     <RepetitionDots states={cell.dots} />
                   </span>
-                  {cell.status?.kind === "waiting" ? (
-                    // A wait says what it is and how long, in the clock's place.
-                    <TestStatusMark status={cell.status} now={now} compact />
-                  ) : (
-                    <span className="flex items-center justify-between gap-2 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
-                      <span className="inline-flex items-center gap-1">
-                        <IconClock className="size-3.5" aria-hidden />
-                        {cell.durationMs == null
-                          ? "–"
-                          : compactElapsed(cell.durationMs)}
-                      </span>
-                      <span className="inline-flex items-center gap-1">
-                        <IconCoin className="size-3.5" aria-hidden />
-                        {cell.cost == null ? "–" : formatUsd(t, cell.cost)}
-                      </span>
+                  {cell.status?.kind === "waiting" ||
+                  cell.status?.kind === "judging" ||
+                  cell.status?.kind === "paused" ? (
+                    <TestStatusMark
+                      status={cell.status}
+                      now={clockAt ?? now}
+                      waitingMs={times.waiting}
+                      waitingPartial={cell.activity.partial}
+                      compact
+                    />
+                  ) : null}
+                  <span className="mt-auto flex items-center justify-between gap-2 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+                    <span
+                      className="inline-flex items-center gap-1"
+                      title={timeHint}
+                    >
+                      <IconClock className="size-3.5" aria-hidden />
+                      {elapsed == null
+                        ? "–"
+                        : `${actual && cell.activity.partial ? "≥ " : ""}${compactElapsed(elapsed)}`}
                     </span>
-                  )}
+                    <span className="inline-flex items-center gap-1">
+                      <IconCoin className="size-3.5" aria-hidden />
+                      {cell.cost == null ? "–" : formatUsd(t, cell.cost)}
+                    </span>
+                  </span>
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom">{cell.name}</TooltipContent>

@@ -9,6 +9,7 @@ import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
 import { benchmarkApi } from "../api/benchmarks";
 import { formatElapsed, stateLabel } from "../lib/benchmarkLabels";
+import { compactElapsed } from "../lib/benchmarkTaskTiming";
 import type { Attempt, AttemptSummary } from "../types";
 
 /** The attempt fields a status reads; a summary lacks the queue fields. */
@@ -291,10 +292,15 @@ export function TestStatusMark({
   status,
   now,
   compact = false,
+  waitingMs,
+  waitingPartial = false,
 }: {
   status: TestStatus | null;
   now: number;
   compact?: boolean;
+  /** Recorded queue time, separate from the card's execution clock. */
+  waitingMs?: number | null;
+  waitingPartial?: boolean;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -321,17 +327,30 @@ export function TestStatusMark({
           ? status.until
           : null;
       return (
-        <span
-          title={status.reason}
-          className="flex shrink-0 items-center gap-1.5 text-xs text-chart-1"
-        >
-          {t(waitingLabel(status.reason, status.stopped, until != null), {
-            time:
-              until == null
-                ? undefined
-                : formatDate(until, { timeStyle: "short" }),
-          })}
-          <IconHourglass aria-hidden className="size-4" />
+        <span className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-chart-1">
+          <span title={status.reason}>
+            {t(waitingLabel(status.reason, status.stopped, until != null), {
+              time:
+                until == null
+                  ? undefined
+                  : formatDate(until, { timeStyle: "short" }),
+            })}
+          </span>
+          <span
+            className="inline-flex items-center gap-1 whitespace-nowrap tabular-nums"
+            title={
+              waitingMs === null
+                ? t("grid.waitUnknownHint")
+                : t("grid.waitTimeHint")
+            }
+          >
+            <IconHourglass aria-hidden className="size-4" />
+            {waitingMs === undefined
+              ? null
+              : waitingMs === null
+                ? "–"
+                : `${waitingPartial ? "≥ " : ""}${compactElapsed(waitingMs)}`}
+          </span>
         </span>
       );
     }

@@ -478,6 +478,12 @@
     "rescoreJudges": "Evaluate again (up to 3 model calls)"
   },
   "grid": {
+    "measuredHint": "Median model execution time per repetition",
+    "totalHint": "Active task time across all repetitions, checks and judges. Queue time and pauses are excluded; parallel work counts once.",
+    "partialTimeHint": "Recorded active time, excluding waiting. Earlier check intervals were not recorded, so this is a lower bound.",
+    "waitTimeHint": "Recorded waiting time across all repetitions, excluding pauses and time when another repetition was working",
+    "waitUnknownHint": "This earlier waiting interval was not recorded",
+    "waited": "Waiting",
     "repetitions": "{{passes}} of {{scored}} passed, {{of}} repetitions",
     "taskNamed": "Task {{number}}: {{name}}",
     "title": "Tests · {{cases}} cases",

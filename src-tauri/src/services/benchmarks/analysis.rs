@@ -2582,6 +2582,7 @@ pub(super) mod tests {
                     sandbox_admission: None,
                     account_load: None,
                     phase_times: None,
+                    activity: None,
                     credit_use: None,
                 })
                 .collect::<Vec<_>>()

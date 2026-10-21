@@ -164,7 +164,7 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(block("Alpha").className).toMatch(/border-success/);
   expect(block("Bravo").className).toMatch(/border-info/);
   expect(block("Charlie").className).toMatch(/border-muted-foreground/);
-  expect(row("Alpha").getByText("11 s")).toBeInTheDocument();
+  expect(row("Alpha").getByText("≥ 12 s")).toBeInTheDocument();
   // A minute and more reads as m:ss, so a block never wraps its clock.
   expect(compactElapsed(86_000)).toBe("1:26");
   expect(compactElapsed(3_725_000)).toBe("1:02:05");
@@ -340,7 +340,7 @@ it("shows a run the usage limit stopped as stopped, for the operator", async () 
   expect(screen.getByText("Needs attention")).toBeInTheDocument();
 });
 
-it("keeps the pool task number and uses measured time and priced cost in a filtered run", async () => {
+it("keeps the pool task number and uses elapsed time and priced cost in a filtered run", async () => {
   const rows = await benchmarkApi.listAttempts({});
   vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(
     rows.map((row) => ({ ...row, cost: 0.04 })),
@@ -362,7 +362,7 @@ it("keeps the pool task number and uses measured time and priced cost in a filte
     [{ id: "version-a", name: "Alpha", number: 23 }],
   );
   expect(await found("Alpha")).toHaveAttribute("aria-label", "Task 23: Alpha");
-  expect(row("Alpha").getByText("11 s")).toBeInTheDocument();
+  expect(row("Alpha").getByText("≥ 12 s")).toBeInTheDocument();
   expect(await row("Alpha").findByText("$0.04")).toBeInTheDocument();
 });
 
@@ -412,6 +412,26 @@ it("counts a case once, by what its attempts add up to", async () => {
   expect(screen.queryByText("Finished")).not.toBeInTheDocument();
 });
 
+it("keeps a partially scored case unsettled while another repetition awaits review", async () => {
+  show({
+    ...run,
+    state: "needs_attention",
+    attempts: [
+      at({ id: "a-1", versionId: "version-a", repetition: 0, outcome: "pass" }),
+      at({
+        id: "review",
+        versionId: "version-a",
+        repetition: 1,
+        phase: "terminal",
+        outcome: "pending_review",
+      }),
+    ],
+  });
+  await found("Alpha");
+  expect(screen.getByText("0 / 1 tests settled")).toBeInTheDocument();
+  expect(screen.getByText("In progress").nextSibling?.textContent).toBe("1");
+});
+
 it("offers a paused run made for an older runtime only Cancel, and says why", async () => {
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue(
     listing("sandbox-now"),
@@ -433,6 +453,34 @@ it("keeps Resume for a paused run on today's runtime", async () => {
   show({ ...run, id: "run-today", state: "paused", attempts: attempts() });
   expect(await screen.findByRole("button", { name: "Resume" })).toBeEnabled();
   expect(screen.queryByText(/made for an older sandbox/)).toBeNull();
+});
+
+it("uses the persisted pause timestamp for an unfinished task's clock", async () => {
+  const startedAt = Date.now() - 2 * 3_600_000;
+  show({
+    ...run,
+    state: "paused",
+    pausedSince: startedAt + 3_600_000,
+    attempts: [
+      at({
+        id: "a-1",
+        versionId: "version-a",
+        phase: "awaiting_judges",
+        outcome: null,
+        startedAt,
+        finishedAt: startedAt + 32_000,
+        durationMs: 32_000,
+        activity: {
+          recordedFrom: startedAt,
+          spans: [{ kind: "execution", startedAt, finishedAt: null }],
+        },
+      }),
+    ],
+  });
+  await found("Alpha");
+  expect(row("Alpha").getByText("1:00:00")).toBeInTheDocument();
+  expect(row("Alpha").getByText("Paused")).toBeInTheDocument();
+  expect(row("Alpha").queryByText("32 s")).not.toBeInTheDocument();
 });
 
 it("shows a model's run on both execution profiles as one model with one grid", async () => {

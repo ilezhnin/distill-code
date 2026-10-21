@@ -427,11 +427,24 @@ export interface Attempt {
   evaluations: Evaluation[];
   eventCursor: number;
   workflowSteps: WorkflowStepEvidence[];
+  /** Durable active and queue intervals, absent on older attempts. */
+  activity?: AttemptActivity | null;
+  phaseTimes?: Record<string, number> | null;
   /**
    * The model the provider's usage named as the one that answered: what an
    * alias such as Claude's `sonnet` resolved to. Absent where it named none.
    */
   resolvedModel?: string | null;
+}
+export interface ActivitySpan {
+  kind: "execution" | "waiting";
+  startedAt: number;
+  finishedAt: number | null;
+}
+export interface AttemptActivity {
+  recordedFrom: number;
+  complete?: boolean;
+  spans: ActivitySpan[];
 }
 export interface WorkflowStepEvidence {
   rootTaskId: string;

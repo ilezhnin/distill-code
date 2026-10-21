@@ -478,6 +478,12 @@
     "rescoreJudges": "Evaluar de nuevo (hasta 3 llamadas)"
   },
   "grid": {
+    "measuredHint": "Mediana del tiempo de ejecución del modelo por repetición",
+    "totalHint": "Tiempo activo de todas las repeticiones, comprobaciones y jueces. Excluye colas y pausas; el trabajo en paralelo cuenta una sola vez.",
+    "partialTimeHint": "Tiempo activo registrado, sin esperas. No se registraron las comprobaciones anteriores, por lo que es un mínimo.",
+    "waitTimeHint": "Espera registrada de todas las repeticiones, sin pausas ni tiempo en que otra repetición trabajaba",
+    "waitUnknownHint": "Este intervalo de espera anterior no se registró",
+    "waited": "Espera",
     "repetitions": "{{passes}} de {{scored}} superadas, {{of}} repeticiones",
     "taskNamed": "Tarea {{number}}: {{name}}",
     "title": "Pruebas · {{cases}} casos",

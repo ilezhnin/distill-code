@@ -283,10 +283,11 @@ pub(super) fn parse(
         {
             return None;
         }
-        // Any unknown keeps the sheet undecided, even if another check failed.
+        // A confirmed violation determines zero even when another condition
+        // is unknown. Still validate every check before accepting that zero.
         match check.verdict {
-            Verdict::Unknown => status = "unknown",
-            Verdict::Fail if status != "unknown" => status = "fail",
+            Verdict::Fail => status = "fail",
+            Verdict::Unknown if status != "fail" => status = "unknown",
             _ => {}
         }
     }

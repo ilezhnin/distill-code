@@ -1067,10 +1067,24 @@ impl Store {
         Ok(())
     }
     pub async fn save_attempt(&self, attempt: &Attempt) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        // Timing belongs to the stored attempt, not a possibly stale flight copy.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let previous: Option<String> = sqlx::query_scalar(
+            "SELECT json_extract(data_json,'$.activity') FROM attempts WHERE id=? UNION ALL SELECT json_extract(data_json,'$.activity') FROM workflow_steps WHERE attempt_id=? LIMIT 1"
+        ).bind(&attempt.id).bind(&attempt.id).fetch_optional(&mut *tx).await?.flatten();
+        let mut attempt = attempt.clone();
+        attempt.activity = previous
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?;
+        let state: String = sqlx::query_scalar("SELECT state FROM run_plans WHERE id=?")
+            .bind(&attempt.run_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let kind = super::activity::kind(&attempt, &state);
+        super::activity::record(&mut attempt.activity, kind, now());
         let changed = sqlx::query("UPDATE attempts SET phase=?,data_json=? WHERE id=?")
             .bind(&attempt.phase)
-            .bind(serde_json::to_string(attempt)?)
+            .bind(serde_json::to_string(&attempt)?)
             .bind(&attempt.id)
             .execute(&mut *tx)
             .await?
@@ -1079,7 +1093,7 @@ impl Store {
             let changed =
                 sqlx::query("UPDATE workflow_steps SET phase=?,data_json=? WHERE attempt_id=?")
                     .bind(&attempt.phase)
-                    .bind(serde_json::to_string(attempt)?)
+                    .bind(serde_json::to_string(&attempt)?)
                     .bind(&attempt.id)
                     .execute(&mut *tx)
                     .await?
@@ -1123,7 +1137,7 @@ impl Store {
     /// Moves a run to `state` as of `at`: how a run baked after its window
     /// closed is completed at the time its last cell settled.
     pub async fn set_run_state_at(&self, id: &str, state: &str, at: i64) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         // A turn that fails while the owner stops the run never takes the
         // stop back: needs_attention leaves a cancelling or cancelled run be.
         // A pause's time is kept apart, so the run's window leaves it out.
@@ -1133,11 +1147,75 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        let effective: String = sqlx::query_scalar("SELECT state FROM run_plans WHERE id=?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let rows = sqlx::query("SELECT id,phase,json_extract(data_json,'$.activity') FROM attempts WHERE run_id=? AND phase<>'terminal'")
+            .bind(id).fetch_all(&mut *tx).await?;
+        for row in rows {
+            let mut activity: Option<AttemptActivity> = row
+                .get::<Option<String>, _>(2)
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?;
+            if effective == "running"
+                && activity.as_ref().is_some_and(|history| {
+                    history
+                        .spans
+                        .last()
+                        .is_some_and(|span| span.finished_at.is_none())
+                })
+            {
+                continue;
+            }
+            let kind = match effective.as_str() {
+                "running" if matches!(row.get::<&str, _>(1), "pending" | "awaiting_judges") => {
+                    Some(ActivityKind::Waiting)
+                }
+                "running" | "pausing" | "cancelling" => continue,
+                _ => None,
+            };
+            super::activity::record(&mut activity, kind, at);
+            sqlx::query(
+                "UPDATE attempts SET data_json=json_set(data_json,'$.activity',json(?)) WHERE id=?",
+            )
+            .bind(serde_json::to_string(&activity)?)
+            .bind(row.get::<&str, _>(0))
+            .execute(&mut *tx)
+            .await?;
+        }
         event(&mut tx, id, "run_changed").await?;
         tx.commit().await?;
         Ok(())
     }
     pub async fn recover(&self) -> Result<()> {
+        // Do not turn application downtime into work or queue time.
+        let last_beat = self.last_beat().await?;
+        let rows = sqlx::query("SELECT id,json_extract(data_json,'$.activity') FROM attempts WHERE phase<>'terminal' AND json_type(data_json,'$.activity')='object'")
+            .fetch_all(&self.pool).await?;
+        for row in rows {
+            let mut activity: Option<AttemptActivity> =
+                serde_json::from_str(row.get::<&str, _>(1))?;
+            let stopped_at = last_beat.unwrap_or_else(|| {
+                if let Some(history) = &mut activity {
+                    history.complete = false;
+                    history
+                        .spans
+                        .last()
+                        .map_or(history.recorded_from, |span| span.started_at)
+                } else {
+                    now()
+                }
+            });
+            super::activity::record(&mut activity, None, stopped_at);
+            sqlx::query(
+                "UPDATE attempts SET data_json=json_set(data_json,'$.activity',json(?)) WHERE id=?",
+            )
+            .bind(serde_json::to_string(&activity)?)
+            .bind(row.get::<&str, _>(0))
+            .execute(&self.pool)
+            .await?;
+        }
         self.park_workflow_campaigns().await?;
         self.recover_qualifications().await?;
         // Never retry an attempt that may have crossed the host acceptance boundary.
@@ -1471,6 +1549,68 @@ pub async fn event(
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[tokio::test]
+    async fn activity_survives_stale_flight_saves_retries_and_pause_resume() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
+        let definition = store
+            .save_draft(None, None, super::super::seeds::definitions().remove(0))
+            .await
+            .unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let config = json!({"id":"c","providerId":"provider","accountId":"account","modelId":"native","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let request = json!({"requestKey":"clock","versionIds":[version.id],"configurations":[config],"repetitions":1,"timeoutSeconds":30,"maxExecutions":3});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('clock','clock','running',1,0,0,?)")
+            .bind(request.to_string()).execute(&store.pool).await.unwrap();
+        let mut attempt = super::super::pending_attempt(
+            "clock",
+            &version.id,
+            &serde_json::from_value(config).unwrap(),
+            0,
+        );
+        store.insert_attempt(&attempt).await.unwrap();
+        let original_wait = attempt.activity.as_ref().unwrap().spans[0].started_at;
+        attempt.phase = "running".into();
+        attempt.started_at = Some(now());
+        store.save_attempt(&attempt).await.unwrap();
+        // The flight does not reload timing on every phase transition.
+        attempt.activity = None;
+        attempt.phase = "awaiting_judges".into();
+        attempt.output = Some("Retained example answer".into());
+        attempt.reason = Some("Waiting for local resources: preparation capacity".into());
+        store.save_attempt(&attempt).await.unwrap();
+        store.save_attempt(&attempt).await.unwrap();
+        let saved = store.attempt(&attempt.id).await.unwrap();
+        let spans = &saved.activity.as_ref().unwrap().spans;
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].started_at, original_wait);
+        assert_eq!(spans[1].kind, ActivityKind::Execution);
+        assert_eq!(spans[2].kind, ActivityKind::Waiting);
+        assert!(spans[2].finished_at.is_none());
+        let paused_at = now();
+        store
+            .set_run_state_at("clock", "paused", paused_at)
+            .await
+            .unwrap();
+        let paused = store.attempt(&attempt.id).await.unwrap();
+        assert_eq!(
+            paused.activity.unwrap().spans.last().unwrap().finished_at,
+            Some(paused_at)
+        );
+        let resumed_at = paused_at + 7_200_000;
+        store
+            .set_run_state_at("clock", "running", resumed_at)
+            .await
+            .unwrap();
+        let resumed = store.attempt(&attempt.id).await.unwrap();
+        let spans = &resumed.activity.as_ref().unwrap().spans;
+        assert_eq!(spans.len(), 4);
+        assert_eq!(spans.last().unwrap().started_at, resumed_at);
+        assert_eq!(resumed.output.as_deref(), Some("Retained example answer"));
+        dir.close().await;
+    }
 
     /// Complete each fixture's protocol without changing which rendering is
     /// newest. Copies precede the original row in the gallery's ordering.
