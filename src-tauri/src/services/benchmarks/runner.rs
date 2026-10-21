@@ -8934,7 +8934,7 @@ impl BenchmarkService {
         Some(
             self.planned_executions(&run.request)
                 .await
-                .map(|count| count <= run.request.max_executions as usize && count <= 1000)
+                .map(|count| count <= run.request.max_executions as usize)
                 .map_err(|error| error.message),
         )
     }
@@ -15331,6 +15331,38 @@ mod tests {
             Some("Judge calls are not covered by this saved run's execution budget")
         );
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn a_large_plan_keeps_its_explicit_execution_and_judge_budget() {
+        let (dir, s, backend) = setup().await;
+        let mut req = creative_request(&s).await;
+        for index in 0..2 {
+            let mut draft = creative();
+            draft.name = format!("Invented large-plan brief {index}");
+            req.version_ids.push(publish(&s, draft).await.id);
+        }
+        // Three judged cases, 100 repetitions: 300 candidate turns and
+        // 900 reserved judge calls. The operator's limit governs all of them.
+        req.repetitions = 100;
+        req.max_executions = 1199;
+        let refused = s.preview_run(&req).await.unwrap();
+        assert_eq!(refused.execution_count, 1200);
+        assert!(!refused.valid);
+        assert!(s.start_run(req.clone()).await.is_err());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        req.max_executions = 1200;
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(preview.valid, "{:?}", preview.issues);
+        assert_eq!(preview.execution_count, 1200);
+        let mut run = s.start_run(req).await.unwrap();
+        assert_eq!(run.attempts.len(), 300);
+        let version = s.store.version(&run.request.version_ids[0]).await.unwrap();
+        assert_eq!(s.judge_budget(&run, &version).await, Some(Ok(true)));
+        // Saved plans must still cover the judge reservation. There is no
+        // second, hidden ceiling that withholds it from a larger valid plan.
+        run.request.max_executions = 1199;
+        assert_eq!(s.judge_budget(&run, &version).await, Some(Ok(false)));
         dir.close().await;
     }
     /// Starts a creative run and stops it with `action` while its panel runs.

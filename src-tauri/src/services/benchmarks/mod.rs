@@ -605,10 +605,9 @@ impl BenchmarkService {
             || request.configurations.is_empty()
             || request.repetitions == 0
             || request.repetitions > 100
-            || count > 1000
             || count > request.max_executions as usize
         {
-            issues.push("Select cases and configurations within the explicit execution budget (maximum 1000)".into());
+            issues.push("Select cases and configurations within the explicit execution budget, with 1 to 100 repetitions".into());
         }
         if request.timeout_seconds == 0 || request.timeout_seconds > MAX_TIME_LIMIT_SECONDS {
             issues.push(format!(

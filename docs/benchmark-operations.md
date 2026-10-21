@@ -619,6 +619,8 @@ the model and settings while opening the picker for another choice. The executio
 ceiling follows the selected tests and repetitions until edited; an explicit ceiling
 stays fixed, and an over-budget plan explains how to proceed beside the action
 buttons. Counts pair tests with their execution profile and include judge calls.
+The explicit execution ceiling applies to both admission and judging; there is
+no additional 1000-execution cap that prevents a full pool from fitting one run.
 Check the plan before starting; changing any run parameter invalidates that check.
 
 Select immutable versions and complete live `Configuration` records. Freeze
