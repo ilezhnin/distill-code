@@ -77,6 +77,12 @@ pub(super) trait RenewalIo: Send {
     /// After a renewal: retire the app's idle chat processes of the account,
     /// which may still hold the refresh token the renewal replaced.
     fn renewed(&mut self) -> BoxFuture<'_, ()>;
+    /// The same idle-process cleanup before a forced renewal: an unowned
+    /// inventory process must not count as an active refresh-token holder.
+    /// The host's cleanup keeps attached chats, requests and borrowed bridges.
+    fn retire_idle_holders(&mut self) -> BoxFuture<'_, ()> {
+        self.renewed()
+    }
     fn now(&self) -> i64;
 }
 
@@ -135,6 +141,7 @@ pub(super) async fn ensure(
     // Checked before the drain: a renewal that cannot run yet must not make
     // the account drain for it.
     if !natural && !lasts {
+        io.retire_idle_holders().await;
         let others = io.other_holders().await;
         if others > 0 {
             renewals.settle(key);
@@ -153,9 +160,12 @@ pub(super) async fn ensure(
     }
     // A grant that still lasts renews only for a drain other waiters asked
     // for; that renewal waits for the same holders, and the drain ends.
-    if !natural && lasts && io.other_holders().await > 0 {
-        renewals.settle(key);
-        return Ok(Some(expiry));
+    if !natural && lasts {
+        io.retire_idle_holders().await;
+        if io.other_holders().await > 0 {
+            renewals.settle(key);
+            return Ok(Some(expiry));
+        }
     }
     log::info!(
         "[agent-host] renewing the Distill {} sign-in of {key}{}",
@@ -236,6 +246,7 @@ mod tests {
         renewed_grant: Option<i64>,
         leases: usize,
         holders: usize,
+        idle_holders: usize,
         renewals: Vec<bool>,
         outcome: Result<(), String>,
         retired: usize,
@@ -249,6 +260,7 @@ mod tests {
                 renewed_grant,
                 leases: 0,
                 holders: 0,
+                idle_holders: 0,
                 renewals: Vec::new(),
                 outcome: Ok(()),
                 retired: 0,
@@ -265,7 +277,7 @@ mod tests {
             Box::pin(async move { self.leases })
         }
         fn other_holders(&mut self) -> BoxFuture<'_, usize> {
-            Box::pin(async move { self.holders })
+            Box::pin(async move { self.holders + self.idle_holders })
         }
         fn renew(&mut self, natural: bool) -> BoxFuture<'_, Result<(), String>> {
             self.renewals.push(natural);
@@ -278,6 +290,7 @@ mod tests {
         }
         fn renewed(&mut self) -> BoxFuture<'_, ()> {
             self.retired += 1;
+            self.idle_holders = 0;
             Box::pin(async {})
         }
         fn now(&self) -> i64 {
@@ -336,7 +349,7 @@ mod tests {
         .unwrap();
         assert_eq!(expiry, Some(NOW + 8 * HOUR));
         assert_eq!(early.renewals, [false]);
-        assert_eq!(early.retired, 1);
+        assert_eq!(early.retired, 2);
         for left in [credential_lease::CLAUDE_RENEWAL_WINDOW_MS, 0, -HOUR] {
             let mut late = Scripted::new(Some(NOW + left), Some(NOW + 8 * HOUR));
             ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut late)
@@ -417,7 +430,8 @@ mod tests {
         assert!(error.starts_with("capability_missing:"), "{error}");
         assert!(error.contains("invented refusal") && error.contains("kept"));
         assert_eq!(refused.grant, Ok(Some(NOW + HOUR)));
-        assert_eq!(refused.retired, 0);
+        // Only the pre-renewal idle cleanup ran; no grant was replaced.
+        assert_eq!(refused.retired, 1);
         let again = ensure(
             &renewals,
             KEY,
@@ -534,6 +548,34 @@ mod tests {
             Err(format!("sign_in_wait: {APP_SIGN_IN_CHANGING}"))
         );
         assert!(io.renewals.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_forced_renewal_releases_idle_probes_but_waits_for_active_holders() {
+        for active in [0, 1] {
+            let renewals = SignInRenewals::default();
+            let mut io = Scripted::new(Some(NOW + HOUR), Some(NOW + 8 * HOUR));
+            io.idle_holders = 1;
+            io.holders = active;
+            let result = ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW + 2 * HOUR,
+                true,
+                &mut io,
+            )
+            .await;
+            assert_eq!(io.idle_holders, 0);
+            assert_eq!(io.holders, active);
+            if active == 0 {
+                assert_eq!(result, Ok(Some(NOW + 8 * HOUR)));
+                assert_eq!(io.renewals, [false]);
+            } else {
+                assert_eq!(result, Err(format!("sign_in_wait: {APP_SIGN_IN_HELD}")));
+                assert!(io.renewals.is_empty());
+            }
+        }
     }
 
     /// The keep-alive's horizon renews a grant before its CLI's own window,
