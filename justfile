@@ -1,14 +1,16 @@
 # Cargo features for the full dev/CI posture of the app crate.
 app_features := "distillctl,app-test-driver"
 
+# This wall-clock comparison must not compete with the rest of the test suite.
+turn_seat_perf_test := "services::benchmarks::runner::turn_seat_tests::handing_the_seat_on_takes_the_checks_off_a_lanes_path"
+
 # Every hook- and CI-facing check reaches its tool through this launcher
 # instead of by bare name. A GUI git client (Sourcetree, an IDE) starts hooks
 # with a trimmed PATH, so a pnpm installed through fnm — which lives in a
 # per-shell directory keyed by pid — is invisible and every pre-push check died
 # on "pnpm is not recognized" before it had run. The launcher knows where to
-# look, and when a tool genuinely is not installed it warns and skips rather
-# than failing the push: CI runs the same checks on the pushed commits either
-# way, and a hook that blocks on a missing tool only teaches --no-verify.
+# look. Missing tools fail locally as well as on CI: a skipped check is not a
+# successful validation.
 dev_tool := if os_family() == "windows" { "./scripts/hooks/dev-tool.cmd" } else { "./scripts/hooks/dev-tool.sh" }
 
 # Ordinary recipe lines run in native Windows PowerShell; shebang recipes keep
@@ -193,24 +195,32 @@ tauri-check:
 # (distillctl, app-test-driver) is actually executed instead of compiled away.
 [windows]
 tauri-test:
-    just _tauri-cargo-windows test --lib --features {{ app_features }}
+    just _tauri-cargo-windows test --lib --features {{ app_features }} -- --skip {{ turn_seat_perf_test }}
+    just _tauri-cargo-windows test --lib --features {{ app_features }} {{ turn_seat_perf_test }} -- --exact --test-threads=1
     just _tauri-cargo-windows test -p tauri-plugin-distillctl --features server
     just _tauri-cargo-windows test -p tauri-plugin-app-test-driver
     just _tauri-cargo-windows test -p distillctl
     just _tauri-cargo-windows test -p distill-monitor
 
 # Check npm and Rust dependencies against published advisories, the same way CI
-# does. Kept out of `just ci` because both halves need network access and
-# `cargo audit` is a separate tool install (`cargo install cargo-audit`); the
-# CI jobs are the enforcing gate.
+# does. Both halves need network access; cargo-audit must be installed.
 [windows]
 audit:
     {{ dev_tool }} pnpm audit --prod --audit-level=high
     just _tauri-cargo-windows audit
 
-# Run the local CI gate.
+# Run every CI lane before committing or pushing. The Windows-native lane
+# already includes Rust formatting and all clippy configurations.
 [windows]
-ci: check tauri-fmt-check tauri-check tauri-test clippy test agent-driver-test build
+ci: ci-dependencies audit check test agent-driver-test build transcript-test ci-windows tauri-test test-windows-dev
+
+# Match CI's dependency installation and reject package/lockfile drift.
+ci-dependencies:
+    {{ dev_tool }} pnpm install --frozen-lockfile
+
+# Use the same complete browser suite as GitHub Actions.
+transcript-test:
+    {{ dev_tool }} pnpm test:transcript-virtualization:ci
 
 # Native x64 MSVC CI gate for the managed Node runtime + ACP bridge.
 # Runs the managed_node / managed_acp_tools module tests (including the

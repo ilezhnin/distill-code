@@ -114,6 +114,34 @@ built ahead of time: the app installs the Claude Code and Codex bridges itself
 at startup, from the versions pinned in `acp-tools.lock.json`, onto a managed
 Node runtime pinned by `node-runtime.lock.json`.
 
+## Before committing
+
+Run `just ci` on the final changes. The commit, merge-commit, and pre-push hooks
+enforce the full gate: frozen-lockfile installation, dependency audits,
+frontend checks and unit tests, the
+production build, transcript Playwright tests, native Rust checks and tests,
+and Windows script tests. Missing tools or failed checks block the operation.
+
+The additional validation prerequisites are:
+
+```powershell
+cargo install cargo-audit --version 0.22.2 --locked
+pnpm exec playwright install chromium
+lefthook install
+```
+
+Audits and the native managed-Node test require network access. The gate can
+take several minutes and reuses normal build caches. A successful local run
+does not guarantee identical timing on GitHub's macOS runners or account for
+security advisories published later.
+
+Format before staging (`just fmt`). The commit hook checks that tracked files
+match the staged tree and that no non-ignored untracked files can influence the
+tests. It checks the tree again after validation. It never stashes, rewrites,
+or stages files. Use a separate worktree if unrelated changes are present.
+Remove obsolete skip entries from `lefthook-local.yml` or `lefthook.local.yml`;
+agents must not bypass validation with local overrides or `--no-verify`.
+
 ## Where Build State Lives
 
 The Rust/Tauri build cache is by far the largest thing this lane creates: a

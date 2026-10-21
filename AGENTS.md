@@ -82,7 +82,23 @@ when `just` is unavailable, troubleshooting, and installer details.
 | Run the local validation gate | `just ci` |
 | Build the Windows installer | `just bundle` |
 
-Match validation to the change:
+Before every commit, the complete `just ci` gate must pass for the final tree.
+It includes dependency audits, frontend checks and tests, the build, transcript
+Playwright tests, native Windows Rust checks and tests, and Windows script tests.
+Install hooks with `lefthook install`; the pre-commit hook runs this gate and
+rejects unstaged/untracked source or changes made during validation. Use an
+isolated worktree when unrelated work prevents checking the intended tree.
+Fix formatting explicitly before staging; hooks do not rewrite or stage files.
+
+Do not use `--no-verify`, `LEFTHOOK=0`, skip overrides, or substitute focused
+tests for the gate. Missing tools, network access, or a failing audit are failed
+validation, not permission to commit. Report the blocker if it cannot be fixed.
+After a merge or final edit, rerun the gate. Before pushing, inspect existing
+failed CI runs and resolve failures relevant to the outgoing tree; report the
+new CI result after pushing. Local Windows checks cannot guarantee macOS runner
+timing or protect against advisories published after the local audit.
+
+During development, use focused checks for quick feedback:
 
 - Documentation: read back the edit, check paths and links, and run
   `git diff --check`.

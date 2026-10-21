@@ -12,9 +12,7 @@ rem PowerShell, and PowerShell's parameter binder eats a bare "--" out of a
 rem script call, which would silently change what the wrapped command runs.
 rem A batch file is a native command, so its arguments arrive verbatim.
 rem
-rem A tool that is genuinely not installed must not block a push: CI runs the
-rem same checks. The launcher warns loudly and skips instead, never quietly,
-rem and never on CI or under DISTILL_REQUIRE_DEV_TOOLS=1.
+rem Missing tools fail locally as well as on CI. A skipped check is not a pass.
 setlocal enabledelayedexpansion
 
 if "%~1"=="" (
@@ -44,6 +42,7 @@ if not defined RESOLVED if defined FNM_DIR call :try_dir "%FNM_DIR%\aliases\defa
 if not defined RESOLVED if defined LOCALAPPDATA call :try_dir "%LOCALAPPDATA%\fnm\aliases\default"
 if not defined RESOLVED if defined APPDATA call :try_dir "%APPDATA%\npm"
 if not defined RESOLVED if defined USERPROFILE call :try_dir "%USERPROFILE%\.cargo\bin"
+if not defined RESOLVED if defined LOCALAPPDATA call :try_dir "%LOCALAPPDATA%\Microsoft\WinGet\Links"
 
 rem 4. corepack can materialise the pnpm this repo pins. Last, because it may
 rem    reach the network, which a pre-push hook should not do casually.
@@ -58,20 +57,10 @@ if not defined RESOLVED if /i "%TOOL%"=="pnpm" (
 if not defined RESOLVED (
   echo. 1>&2
   echo   ** %TOOL% was not found on PATH, under fnm, or in an npm prefix. 1>&2
-  if defined CI (
-    echo   ** Refusing to skip it here: this is CI. 1>&2
-    echo. 1>&2
-    exit /b 127
-  )
-  if "%DISTILL_REQUIRE_DEV_TOOLS%"=="1" (
-    echo   ** Refusing to skip it here: DISTILL_REQUIRE_DEV_TOOLS=1. 1>&2
-    echo. 1>&2
-    exit /b 127
-  )
-  echo   ** Skipping the check that needs it. CI still runs it on this push. 1>&2
+  echo   ** Refusing to skip a required check. 1>&2
   echo   ** Install %TOOL%, or run "just setup-windows", to get it back locally. 1>&2
   echo. 1>&2
-  exit /b 0
+  exit /b 127
 )
 
 rem A tool resolved outside PATH usually has its runtime beside it - an fnm

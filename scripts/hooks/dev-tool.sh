@@ -8,12 +8,8 @@
 # Every hook- and CI-facing just recipe goes through this launcher, so the
 # search for a tool is written down once instead of per recipe.
 #
-# A tool that is genuinely not installed must not block a push. CI runs the
-# same checks on the pushed commits, so refusing the push buys nothing and
-# only teaches the operator to reach for --no-verify. The launcher warns
-# loudly and skips instead. It never skips quietly, and it never skips where a
-# missing tool means a broken image rather than a workstation quirk: on CI, or
-# when DISTILL_REQUIRE_DEV_TOOLS=1 is set, a missing tool is still a hard error.
+# Missing tools are errors on every machine. Deferring a skipped check to CI
+# lets unverified commits through and hides workstation setup problems.
 
 set -u
 
@@ -90,6 +86,7 @@ fi
 # 3. Rust installs its own bin dir that a GUI client's PATH rarely carries.
 if [ -z "$resolved" ]; then
   try_candidate "${CARGO_HOME:-$HOME/.cargo}/bin/$tool"
+  try_candidate "${LOCALAPPDATA:-/nonexistent}/Microsoft/WinGet/Links/$tool.exe"
 fi
 
 # 4. corepack can materialise the pnpm this repo pins. It is last because it
@@ -104,16 +101,11 @@ fi
 if [ -z "$resolved" ]; then
   echo "" >&2
   echo "  ** $tool was not found on PATH, under fnm, or in an npm prefix." >&2
-  if [ -n "${CI:-}" ] || [ "${DISTILL_REQUIRE_DEV_TOOLS:-0}" = "1" ]; then
-    echo "  ** Refusing to skip it here: this is CI, or DISTILL_REQUIRE_DEV_TOOLS=1." >&2
-    echo "" >&2
-    exit 127
-  fi
-  echo "  ** Skipping the check that needs it. CI still runs it on this push." >&2
+  echo "  ** Refusing to skip a required check." >&2
   echo "  ** Install $tool, or open the repo toolchain (source ./bin/activate-hermit)," >&2
   echo "  ** to get this check back locally." >&2
   echo "" >&2
-  exit 0
+  exit 127
 fi
 
 # A tool resolved outside PATH usually has its runtime beside it — an fnm pnpm

@@ -88,21 +88,25 @@ describe("dev-tool.sh", { skip: process.platform === "win32" }, () => {
     assert.ok(result.stdout.includes(`path1=${shell}`));
   });
 
-  it("warns and lets the push through when the tool is genuinely missing", () => {
-    const result = runLauncher(["pnpm", "lint"]);
+  it("blocks a missing tool on a developer machine too", () => {
+    const result = runLauncher(["distill-missing-test-tool", "lint"]);
 
-    assert.equal(result.status, 0);
-    assert.ok(result.stderr.includes("pnpm was not found"));
-    assert.ok(result.stderr.includes("Skipping the check"));
+    assert.equal(result.status, 127);
+    assert.ok(
+      result.stderr.includes("distill-missing-test-tool was not found"),
+    );
+    assert.ok(result.stderr.includes("Refusing to skip"));
     assert.equal(result.stdout, "");
   });
 
   it("still fails hard on a missing tool where the environment is built, not chosen", () => {
     for (const env of [{ CI: "true" }, { DISTILL_REQUIRE_DEV_TOOLS: "1" }]) {
-      const result = runLauncher(["cargo", "fmt"], env);
+      const result = runLauncher(["distill-missing-test-tool", "fmt"], env);
 
       assert.equal(result.status, 127);
-      assert.ok(result.stderr.includes("cargo was not found"));
+      assert.ok(
+        result.stderr.includes("distill-missing-test-tool was not found"),
+      );
       assert.ok(result.stderr.includes("Refusing to skip"));
     }
   });
@@ -116,5 +120,43 @@ describe("dev-tool.sh", { skip: process.platform === "win32" }, () => {
     });
 
     assert.equal(result.status, 3);
+  });
+});
+
+describe("dev-tool.cmd", { skip: process.platform !== "win32" }, () => {
+  it("forwards arguments and propagates the tool failure", async () => {
+    const bin = join(await tempDir(), "bin with spaces");
+    await mkdir(bin);
+    await writeFile(
+      join(bin, "distill-test-tool.cmd"),
+      "@echo off\r\necho args=%*\r\nexit /b 23\r\n",
+    );
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => name.toLowerCase() !== "path",
+      ),
+    );
+    env.PATH = `${bin};${process.env.PATH}`;
+    const result = spawnSync(
+      process.env.ComSpec ?? "cmd.exe",
+      [
+        "/d",
+        "/c",
+        "scripts\\hooks\\dev-tool.cmd distill-test-tool lint -- --strict",
+      ],
+      { cwd: repo, encoding: "utf8", env },
+    );
+    assert.equal(result.status, 23, result.stderr);
+    assert.match(result.stdout, /args=lint -- --strict/);
+  });
+
+  it("blocks a missing tool without requiring a CI environment", () => {
+    const result = spawnSync(
+      process.env.ComSpec ?? "cmd.exe",
+      ["/d", "/c", "scripts\\hooks\\dev-tool.cmd distill-missing-test-tool"],
+      { cwd: repo, encoding: "utf8", env: { ...process.env, CI: "" } },
+    );
+    assert.equal(result.status, 127, result.stderr);
+    assert.match(result.stderr, /Refusing to skip/);
   });
 });
