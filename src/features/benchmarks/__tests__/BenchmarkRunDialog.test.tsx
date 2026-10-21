@@ -79,7 +79,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("leaves a refusal to the plan check", async () => {
+it("shows the plan check's refusal and starts nothing", async () => {
   const user = userEvent.setup();
   const refusal =
     "model-1 on Test: the account's plan no longer offers this model";
@@ -114,9 +114,16 @@ it("leaves a refusal to the plan check", async () => {
     screen.getByRole("button", { name: "Add another configuration" }),
   );
   expect(screen.queryByText("Train tasks only")).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(refusal);
-  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  // The settings can be corrected and started again.
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled();
+  // A change withdraws the refusal until the next check.
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Repetitions" }), {
+    target: { value: "2" },
+  });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 it("offers only the latest publication and discards stale preselected versions", async () => {
@@ -157,7 +164,7 @@ it("offers only the latest publication and discards stale preselected versions",
   await user.click(
     screen.getByRole("button", { name: "Add another configuration" }),
   );
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
       expect.objectContaining({ versionIds: ["version-new"] }),
@@ -215,10 +222,10 @@ it("counts every workflow step against the explicit execution budget", async () 
     screen.getByRole("spinbutton", { name: "Maximum executions" }),
     { target: { value: "5" } },
   );
-  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
 });
 
-it("requires a fresh validated plan and sends the pinned account with a stable request key", async () => {
+it("checks the plan and starts it in one step, sending the pinned account with a stable request key", async () => {
   const user = userEvent.setup();
   const onStarted = vi.fn();
   render(
@@ -247,12 +254,21 @@ it("requires a fresh validated plan and sends the pinned account with a stable r
   await user.click(
     screen.getByRole("button", { name: "Add another configuration" }),
   );
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
-  );
-  expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled();
+  expect(
+    screen.queryByRole("button", { name: "Check plan" }),
+  ).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Repetitions" }), {
+    target: { value: "2" },
+  });
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith("run-1"));
+  // The same request is checked, then started.
+  expect(benchmarkApi.previewRun).toHaveBeenCalledTimes(1);
+  const checked = vi.mocked(benchmarkApi.previewRun).mock.calls[0][0];
+  expect(checked).toEqual(
     expect.objectContaining({
+      repetitions: 2,
       configurations: [
         expect.objectContaining({
           accountId: "account-1",
@@ -263,20 +279,7 @@ it("requires a fresh validated plan and sends the pinned account with a stable r
       ],
     }),
   );
-  fireEvent.change(screen.getByRole("spinbutton", { name: "Repetitions" }), {
-    target: { value: "2" },
-  });
-  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
-  );
-  await user.click(screen.getByRole("button", { name: "Start batch" }));
-  await waitFor(() => expect(onStarted).toHaveBeenCalledWith("run-1"));
-  const checked = vi.mocked(benchmarkApi.previewRun).mock.calls.at(-1)?.[0];
   expect(benchmarkApi.startRun).toHaveBeenCalledWith(checked);
-  expect(checked?.repetitions).toBe(2);
-  expect(screen.getByText("Expected spend: Not reported")).toBeInTheDocument();
 });
 
 it("offers the CLI sign-in of a provider without managed accounts and preselects it", async () => {
@@ -440,22 +443,22 @@ it("checks and starts a newly selected model without a separate add step or an a
   expect(
     screen.getByRole("spinbutton", { name: "Maximum executions" }),
   ).toHaveValue(27);
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
-  );
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
   const checked = vi.mocked(benchmarkApi.previewRun).mock.calls[0][0];
   expect(checked.configurations).toHaveLength(1);
   expect(checked.maxExecutions).toBe(27);
+  expect(benchmarkApi.startRun).toHaveBeenCalledWith(checked);
+  // A changed setting is checked again on the next start.
   await user.click(screen.getByRole("checkbox", { name: "Fast mode" }));
-  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
-  );
   await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(2));
+  expect(
+    vi.mocked(benchmarkApi.previewRun).mock.calls.at(-1)?.[0].configurations[0]
+      .fastMode,
+  ).toBe(true);
   await waitFor(() =>
-    expect(benchmarkApi.startRun).toHaveBeenCalledWith(
+    expect(benchmarkApi.startRun).toHaveBeenLastCalledWith(
       vi.mocked(benchmarkApi.previewRun).mock.calls.at(-1)?.[0],
     ),
   );
@@ -480,7 +483,7 @@ it("keeps added configurations, deduplicates the current choice and can remove i
   expect(screen.getByRole("status")).toHaveTextContent(
     "The plan needs 6 executions; the limit is 5.",
   );
-  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
   await user.click(screen.getAllByRole("button", { name: "Remove" })[1]);
   expect(screen.getByText("3 executions")).toBeInTheDocument();
   expect(
@@ -488,7 +491,7 @@ it("keeps added configurations, deduplicates the current choice and can remove i
   ).toHaveValue(5);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   expect(screen.getByText("0 executions")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
 });
 
 function pairedInventory(): InventoryModel[] {
@@ -545,10 +548,8 @@ it("offers each model once and sends both runtimes for a mixed test selection", 
     screen.getAllByRole("option").map((entry) => entry.textContent),
   ).toEqual(["Choose a model", "Test model"]);
   await user.keyboard("{Escape}");
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
-  );
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
   const checked = vi.mocked(benchmarkApi.previewRun).mock.calls[0][0];
   expect(checked.versionIds).toEqual(["version-1", "repository-version"]);
   expect(checked.maxExecutions).toBe(6);
@@ -581,7 +582,7 @@ it("can run repository-only tests even when text execution is unavailable", asyn
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue(entries);
   await chooseTestModel(user, repositoryDefinition);
   expect(screen.getByText("3 executions")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -610,7 +611,7 @@ it("keeps each added effort as one model choice with both required runtimes", as
   await user.click(screen.getByRole("option", { name: "low" }));
   expect(screen.getByText("12 executions")).toBeInTheDocument();
   expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   await waitFor(() => expect(benchmarkApi.previewRun).toHaveBeenCalledTimes(1));
   const checked = vi.mocked(benchmarkApi.previewRun).mock.calls[0][0];
   expect(
@@ -638,7 +639,7 @@ it("includes only the runtime needed by the selected tests", async () => {
   expect(
     screen.getByRole("spinbutton", { name: "Maximum executions" }),
   ).toHaveValue(3);
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -659,17 +660,14 @@ it("resolves a saved model again when the selected tests change and removes the 
   await user.click(
     screen.getByRole("button", { name: "Add another configuration" }),
   );
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled(),
-  );
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() => expect(benchmarkApi.previewRun).toHaveBeenCalledTimes(1));
   expect(
     vi.mocked(benchmarkApi.previewRun).mock.calls[0][0].configurations,
   ).toHaveLength(1);
   await user.click(screen.getByRole("checkbox", { name: "Repository check" }));
   expect(screen.getByText("6 executions")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   await waitFor(() => expect(benchmarkApi.previewRun).toHaveBeenCalledTimes(2));
   expect(
     vi.mocked(benchmarkApi.previewRun).mock.calls[1][0].configurations,
@@ -702,13 +700,12 @@ it.each([
     expect(screen.getByRole("status")).toHaveTextContent(
       entries[1].reason ?? "",
     );
-  expect(screen.getByRole("button", { name: "Check plan" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
   expect(benchmarkApi.previewRun).not.toHaveBeenCalled();
   // A text-only selection is still valid on this same model.
   await user.click(screen.getByRole("checkbox", { name: "Repository check" }));
   expect(screen.getByText("3 executions")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Check plan" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeEnabled();
 });
 
 it("offers only the levels a model lists and starts at its highest", async () => {
@@ -741,7 +738,7 @@ it("offers only the levels a model lists and starts at its highest", async () =>
   await user.click(
     screen.getByRole("button", { name: "Add another configuration" }),
   );
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -794,7 +791,7 @@ it("runs a model without an effort control unset, with no other choice", async (
   await user.click(
     screen.getByRole("button", { name: "Add another configuration" }),
   );
-  await user.click(screen.getByRole("button", { name: "Check plan" }));
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
   await waitFor(() =>
     expect(benchmarkApi.previewRun).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -18,7 +18,9 @@ fn invalid(message: impl Into<String>) -> BenchmarkError {
 }
 
 /// A frozen panel cannot silently lose a seat, substitute an account or admit
-/// an author/candidate. Absence retains the ordinary discovery behavior.
+/// an author of the case. A candidate's own model keeps its seat, its score
+/// diluted by the others and the evaluation marked `ownModel`, as on an
+/// ordinary panel. Absence retains the ordinary discovery behavior.
 pub(super) fn frozen(
     draft: &BenchmarkDraft,
     candidates: &[&Configuration],
@@ -101,9 +103,10 @@ pub(super) fn frozen(
             return Err(invalid("Judge seats need distinct models, supported input, explicit settings, account, billing and runtime pins"));
         }
     }
-    if runner::select_judges(candidates, draft, panel.judges.clone()).len() != panel.judges.len() {
+    // A candidate's own model keeps its seat, marked: see `frozen_seats`.
+    if runner::frozen_seats(candidates, draft, panel.judges.clone()).len() != panel.judges.len() {
         return Err(invalid(
-            "A frozen judge is an author, candidate or unresolved model",
+            "A frozen judge is an author of the case, or a candidate model is unresolved",
         ));
     }
     Ok(Some(panel.judges))
@@ -301,12 +304,25 @@ mod tests {
     }
 
     #[test]
-    fn frozen_seats_refuse_authors_candidates_alias_duplicates_and_missing_pins() {
+    fn frozen_seats_keep_a_candidates_own_model_and_refuse_authors_unresolved_candidates_duplicates_and_missing_pins(
+    ) {
         let base = draft();
         assert_eq!(frozen(&base, &[]).unwrap().unwrap().len(), 2);
-        assert!(frozen(&base, &[&judge("sonnet")]).is_err());
+        // A candidate's own model keeps its frozen seat, through its alias
+        // too: the panel never changes, the evaluation is marked instead.
+        assert_eq!(
+            frozen(&base, &[&judge("sonnet")]).unwrap().unwrap().len(),
+            2
+        );
         let concrete = runner::concrete_model("claude-acp", "haiku").unwrap();
-        assert!(frozen(&base, &[&judge(&concrete)]).is_err());
+        assert_eq!(
+            frozen(&base, &[&judge(&concrete)]).unwrap().unwrap().len(),
+            2
+        );
+        // A candidate alias with an unknown target admits no judge.
+        let mut moving = judge("current");
+        moving.provider_id = "other-provider".into();
+        assert!(frozen(&base, &[&moving]).is_err());
         let mut authored = base.clone();
         authored.environment["authoredBy"] = json!([judge("sonnet")]);
         assert!(frozen(&authored, &[]).is_err());

@@ -386,8 +386,11 @@ Rubric tasks can freeze their judge seats in `environment.judgePanel`, with
 `recipe: "frozen-native-panel-v1"` and a `judges` array of two or three complete
 configurations. Each seat pins its account, model, effort, fast mode, billing
 mode, native text profile and inventory revision. The rubric needs 1-32 distinct
-criteria with finite positive weights. Authors and candidates cannot
-occupy a seat. A null effort is allowed only when the model offers no effort
+criteria with finite positive weights. An exact author of the case cannot
+occupy a seat. A candidate's own model keeps its seat, since the panel never
+changes: the other seats dilute its score and the evaluation is marked
+`ownModel` (and `sameVendor` or `authorModel`), as on an ordinary panel, so
+boards can show or leave those scores out. A null effort is allowed only when the model offers no effort
 selection; it never means a moving default. Fast mode is always pinned off:
 no benchmark candidate, judge or campaign lane may ask for it, and a session
 that acknowledges no fast mode (a model without one, such as Sonnet) counts
@@ -430,8 +433,9 @@ cannot inherit that calibration.
 
 Bounded rubric workflows require a frozen panel. Intermediate steps execute
 without the final rubric or judge calls; the panel scores only the root's final
-answer. Judge exclusions cover every contributing requested and acknowledged
-worker, and research policies exclude every available worker before reservation.
+answer. The panel's own-model marks cover every contributing requested and
+acknowledged worker, and research policies check every available worker before
+reservation.
 The execution budget reserves all steps plus the exact number of final judges.
 Each judge has a separately frozen 180-second turn limit. The root execution
 clock ends before judging, so executor utility remains based on generation time

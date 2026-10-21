@@ -39,7 +39,6 @@ import type {
   BenchmarkDefinitionSummary,
   Configuration,
   InventoryModel,
-  RunPreview,
   RunRequest,
 } from "../types";
 import {
@@ -132,9 +131,11 @@ export function BenchmarkRunDialog({
   // Follow the selected plan until the operator sets an explicit ceiling.
   const [executionLimit, setMaxExecutions] = useState<number | null>(null);
   const [requestKey] = useState(() => crypto.randomUUID());
-  const [preview, setPreview] = useState<{
+  // What the plan check refused, for the settings it checked; a change
+  // clears it, and Start checks the plan again.
+  const [refusal, setRefusal] = useState<{
     signature: string;
-    result: RunPreview;
+    issues: string[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -266,7 +267,7 @@ export function BenchmarkRunDialog({
     preview: previewOnly,
   };
   const signature = JSON.stringify(request);
-  const validPreview = preview?.signature === signature ? preview.result : null;
+  const refused = refusal?.signature === signature ? refusal.issues : null;
   const supported = new Set(
     capabilities.data
       ?.filter((entry) => entry.supported)
@@ -521,30 +522,10 @@ export function BenchmarkRunDialog({
               {budgetField("repetitions", repetitions, setRepetitions)}
               {budgetField("maxExecutions", maxExecutions, setMaxExecutions)}
             </div>
-            <p className="text-sm">
-              <span>{t("run.executionCount", { count })}</span>
-              {validPreview ? (
-                <>
-                  {" · "}
-                  <span className="text-muted-foreground">
-                    {t("run.estimatedCost", {
-                      value:
-                        validPreview?.estimatedCost == null
-                          ? t("unknown")
-                          : validPreview.estimatedCost.toFixed(4),
-                    })}
-                  </span>
-                </>
-              ) : null}
-            </p>
-            {validPreview?.costReason ? (
-              <p className="text-xs text-muted-foreground">
-                {validPreview.costReason}
-              </p>
-            ) : null}
-            {validPreview && !validPreview.valid ? (
+            <p className="text-sm">{t("run.executionCount", { count })}</p>
+            {refused ? (
               <BenchmarkAlert tone="warning">
-                {validPreview.issues.join("\n")}
+                {refused.join("\n")}
               </BenchmarkAlert>
             ) : null}
           </Card>
@@ -587,25 +568,17 @@ export function BenchmarkRunDialog({
           </Button>
           <Button
             type="button"
-            variant="outline"
+            variant="primary"
             disabled={busy || count === 0 || planIssue !== null}
             onClick={() =>
               void operate(async () => {
-                setPreview({
-                  signature,
-                  result: await benchmarkApi.previewRun(request),
-                });
-              })
-            }
-          >
-            {t("run.checkPlan")}
-          </Button>
-          <Button
-            type="button"
-            variant="primary"
-            disabled={busy || planIssue !== null || !validPreview?.valid}
-            onClick={() =>
-              void operate(async () => {
+                // The plan is checked first, as on the model's page: a
+                // refusal names its reasons and starts nothing.
+                const check = await benchmarkApi.previewRun(request);
+                if (!check.valid) {
+                  setRefusal({ signature, issues: check.issues });
+                  return;
+                }
                 const run = await benchmarkApi.startRun(request);
                 await client.invalidateQueries({ queryKey: benchmarkKeys });
                 onStarted(run.id);
