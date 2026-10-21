@@ -2689,13 +2689,19 @@ struct OpenBatch {
     rendering_hash: String,
 }
 
-fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
+fn open_batch_matching(
+    evaluations: &[Evaluation],
+    accepts: impl Fn(&Evaluation) -> bool,
+) -> Option<OpenBatch> {
     let mut best = None;
     for (start, marker) in evaluations
         .iter()
         .enumerate()
         .filter(|(_, e)| e.provenance == "render")
     {
+        if !accepts(marker) {
+            continue;
+        }
         let end = evaluations[start + 1..]
             .iter()
             .position(|e| e.provenance == "render")
@@ -2711,6 +2717,30 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
         }
     }
     best
+}
+
+#[cfg(test)]
+fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
+    open_batch_matching(evaluations, |_| true)
+}
+
+/// A saved vote can only finish a panel using the same scoring instructions.
+/// A changed protocol starts a separate batch on the retained answer; it must
+/// never attach new instructions to the old protocol hash or reuse old votes.
+fn compatible_open_batch(
+    evaluations: &[Evaluation],
+    prompt: &str,
+    renderer: &str,
+) -> Option<OpenBatch> {
+    open_batch_matching(evaluations, |marker| {
+        marker.details.as_ref().is_some_and(|details| {
+            details.pointer("/protocol/prompt").and_then(Value::as_str) == Some(prompt)
+                && details
+                    .pointer("/protocol/renderer")
+                    .and_then(Value::as_str)
+                    == Some(renderer)
+        })
+    })
 }
 
 fn incomplete_batch(marker: &Evaluation, evaluations: &[Evaluation]) -> Option<OpenBatch> {
@@ -3842,7 +3872,7 @@ impl NativeBackend {
         // not asked yet, so the plan's reservation still covers it.
         let open = match stop
             .continues_batches()
-            .then(|| open_batch(&attempt.evaluations))
+            .then(|| compatible_open_batch(&attempt.evaluations, &prompt, &renderer))
             .flatten()
         {
             Some(open)
@@ -15982,6 +16012,59 @@ mod tests {
         );
         attempt.evaluations[1].details.as_mut().unwrap()["inFlight"] = json!(true);
         assert_ne!(open_batch(&attempt.evaluations).unwrap().id, "older");
+    }
+
+    #[test]
+    fn resume_never_mixes_votes_from_different_scoring_protocols() {
+        let panel = vec![judge_row("sonnet"), judge_row("haiku")];
+        let marker = |id: &str, prompt: &str| -> Evaluation {
+            serde_json::from_value(json!({"id":id,"evaluatorRevision":"1","verdict":"rendered",
+                "reason":"","createdAt":1,"provenance":"render",
+                "artifacts":[{"kind":"text","path":"invented.txt","hash":"sealed","label":"Response"}],
+                "details":{"judgeBatchId":id,"expectedJudges":2,
+                    "protocol":{"panel":panel,"prompt":prompt,"renderer":"text"}}})).unwrap()
+        };
+        let vote: Evaluation = serde_json::from_value(json!({"id":"vote","evaluatorRevision":"1",
+            "verdict":"judged","score":0.8,"reason":"","createdAt":2,"provenance":"judge",
+            "judge":panel[0],"details":{"judgeBatchId":"old","usageComplete":true}}))
+        .unwrap();
+        let mut evaluations = vec![marker("old", "old rules"), vote];
+        let before = serde_json::to_value(&evaluations).unwrap();
+        assert!(compatible_open_batch(&evaluations, "current rules", "text").is_none());
+        assert_eq!(serde_json::to_value(&evaluations).unwrap(), before);
+        evaluations.push(marker("current", "current rules"));
+        // The old batch has more votes but those votes used different rules.
+        let open = compatible_open_batch(&evaluations, "current rules", "text").unwrap();
+        assert_eq!(open.id, "current");
+        assert!(open.asked.is_empty());
+        assert_eq!(seat_samples(&open.panel, 1, &open.asked).len(), 2);
+        assert!(compatible_open_batch(&evaluations, "current rules", "other renderer").is_none());
+        let old = compatible_open_batch(&evaluations, "old rules", "text").unwrap();
+        assert_eq!(old.asked, vec![panel[0].clone()]);
+    }
+
+    #[test]
+    fn ordinary_omission_guidance_changes_protocol_without_reinterpreting_unknowns() {
+        let draft = critical_text();
+        let criteria = rubric_criteria(&draft);
+        let prompt = judge_prompt(&draft, &criteria);
+        assert!(prompt.contains("those examples are not exhaustive"));
+        let mut frozen = draft.clone();
+        frozen.environment["judgePanel"] = json!({});
+        let frozen_prompt = judge_prompt(&frozen, &criteria);
+        assert!(!frozen_prompt.contains("Assessment clarification"));
+        let mut reply = critical_reply();
+        reply["checks"]["barrier"]["verdict"] = json!("unknown");
+        reply["checks"]["barrier"]["evidence"] = json!([]);
+        let sheet = judge_score_sheet(
+            &draft,
+            &reply.to_string(),
+            Some("Remove only the acknowledged revision. Wait for every participant."),
+            &criteria,
+        )
+        .unwrap();
+        assert_eq!(sheet.score, None);
+        assert_eq!(sheet.critical.unwrap().status, "unknown");
     }
 
     #[tokio::test]

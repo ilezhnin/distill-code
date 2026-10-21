@@ -357,6 +357,16 @@ each name their condition id. An object closed early and continued, prose or
 a fence around the sheet, conflicting members, and more than four quotes stay
 invalid; a frozen panel reads only the declared sheet.
 
+Ordinary critical panels distinguish a missing required part of the answer
+from unavailable evidence. A judge evaluates the entire requirement; listed
+failure examples are not exhaustive. It quotes the relevant incomplete passage
+and explains a mandatory omission as a failure, while genuine uncertainty
+about the supplied sources remains an abstention. Stored unknown verdicts are
+never converted to zero automatically. Resuming with changed judge instructions
+starts a separate panel on the retained answer; valid votes are reused only
+when both the scoring prompt and renderer match. Frozen calibrated panels keep
+their original instructions.
+
 A rubric whose criteria vary between asks (a likeness, say) may set
 `environment.judgeSamples` to 3: each seat of its ordinary panel then judges
 the rendering three times, and the seat counts once, as the median of its
