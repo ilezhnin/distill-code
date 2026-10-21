@@ -510,9 +510,7 @@ pub(crate) fn read(
                 return Err("Account belongs to a different provider".into());
             }
             if provider_accounts::account_change_in_progress(&account.id) {
-                return Err(
-                    "Account authorization is being changed; try again when it completes".into(),
-                );
+                return Err(provider_accounts::AUTHORIZATION_CHANGING.into());
             }
             if provider == NativeProvider::Zai {
                 let mut key = provider_accounts::api_key(app, &account)?;

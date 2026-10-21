@@ -418,7 +418,9 @@
     "restarted": "La aplicación se reinició con una prueba en curso. Reanuda: la ejecución sigue con las demás pruebas y la perdida empieza de nuevo.",
     "quota": "Se agotó el límite de uso. Reanuda cuando se restablezca, o cancela.",
     "credits": "Se agotó el uso del plan y las pruebas no pueden gastar más créditos. Sube el límite de créditos en Ajustes > Benchmarks, reanuda cuando se restablezca el uso del plan, o cancela.",
-    "signIn": "Caducó el inicio de sesión del proveedor. Inicia sesión y reanuda.",
+    "signIn": "El proveedor no pudo autorizar esta ejecución. Comprueba el inicio de sesión de la cuenta y reanuda.",
+    "signInWait": "Se está actualizando el inicio de sesión de la cuenta. Espera a que termine y reanuda.",
+    "signInDuration": "El tiempo límite elegido supera la duración del inicio de sesión del proveedor. Elige un límite menor.",
     "failed": "Una prueba se detuvo por un error: {{reason}}. Reanuda para intentarla de nuevo, o cancela.",
     "unknown": "Una prueba no terminó. Reanuda para intentarla de nuevo, o cancela.",
     "window": "Termínala antes de {{until}}; después la ejecución queda registrada tal como está."

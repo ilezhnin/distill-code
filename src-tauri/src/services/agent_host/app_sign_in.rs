@@ -31,6 +31,15 @@ pub(crate) const APP_SIGN_IN_DRAIN: &str = "the Distill sign-in of this account 
 /// from being renewed.
 pub(crate) const APP_SIGN_IN_HELD: &str = "the Distill sign-in this test needs is renewed once the chats and CLIs running on that account stop; this test starts then";
 
+const APP_SIGN_IN_CHANGING: &str =
+    "the account's sign-in is being updated; this test waits for the update to finish";
+
+fn changing(error: &str) -> Option<String> {
+    use crate::services::provider_accounts::{ACCOUNT_CHANGE_BUSY, AUTHORIZATION_CHANGING};
+    matches!(error, ACCOUNT_CHANGE_BUSY | AUTHORIZATION_CHANGING)
+        .then(|| format!("sign_in_wait: {APP_SIGN_IN_CHANGING}"))
+}
+
 /// How long after a failed renewal of the same grant the next one may run:
 /// a refused refresh token is not retried by every admission.
 const RETRY_AFTER_FAILURE_MS: i64 = 15 * 60_000;
@@ -85,9 +94,9 @@ pub(super) async fn ensure(
     drain: bool,
     io: &mut impl RenewalIo,
 ) -> Result<Option<i64>, String> {
-    let expiry = io
-        .expiry()
-        .map_err(|error| format!("capability_missing: {error}"))?;
+    let expiry = io.expiry().map_err(|error| {
+        changing(&error).unwrap_or_else(|| format!("capability_missing: {error}"))
+    })?;
     let Some(expiry) = expiry else {
         renewals.settle(key);
         return Ok(None);
@@ -157,7 +166,14 @@ pub(super) async fn ensure(
     renewals.settle(key);
     let after = match result.and_then(|()| io.expiry()) {
         Ok(after) => after,
-        Err(error) => return Err(failed(renewals, key, provider, expiry, io.now(), &error)),
+        Err(error) => {
+            // Contention is not a refused refresh token and must not poison
+            // this grant's renewal cache for fifteen minutes.
+            if let Some(wait) = changing(&error) {
+                return Err(wait);
+            }
+            return Err(failed(renewals, key, provider, expiry, io.now(), &error));
+        }
     };
     if after.is_some_and(|after| after <= expiry) {
         return Err(failed(
@@ -473,6 +489,51 @@ mod tests {
             Err("capability_missing: not signed in".into())
         );
         assert!(missing.renewals.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_account_change_waits_without_caching_a_failed_grant() {
+        use crate::services::provider_accounts::{ACCOUNT_CHANGE_BUSY, AUTHORIZATION_CHANGING};
+        for message in [ACCOUNT_CHANGE_BUSY, AUTHORIZATION_CHANGING] {
+            let renewals = SignInRenewals::default();
+            let mut io = Scripted::new(Some(NOW + HOUR), Some(NOW + 8 * HOUR));
+            io.outcome = Err(message.into());
+            let result = ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW + 2 * HOUR,
+                true,
+                &mut io,
+            )
+            .await;
+            assert_eq!(result, Err(format!("sign_in_wait: {APP_SIGN_IN_CHANGING}")));
+            assert!(renewals
+                .recent_failure(KEY, NOW + HOUR, NOW, RETRY_AFTER_FAILURE_MS)
+                .is_none());
+            io.outcome = Ok(());
+            assert_eq!(
+                ensure(
+                    &renewals,
+                    KEY,
+                    NativeProvider::Claude,
+                    NOW + 2 * HOUR,
+                    true,
+                    &mut io
+                )
+                .await,
+                Ok(Some(NOW + 8 * HOUR))
+            );
+            assert_eq!(io.renewals.len(), 2);
+        }
+        let renewals = SignInRenewals::default();
+        let mut io = Scripted::new(None, None);
+        io.grant = Err(AUTHORIZATION_CHANGING.into());
+        assert_eq!(
+            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut io).await,
+            Err(format!("sign_in_wait: {APP_SIGN_IN_CHANGING}"))
+        );
+        assert!(io.renewals.is_empty());
     }
 
     /// The keep-alive's horizon renews a grant before its CLI's own window,

@@ -332,6 +332,18 @@ function attentionCause(
   if (/benchmark credits/i.test(attention.reason))
     return t("attention.credits");
   if (/usage limit|quota/i.test(attention.reason)) return t("attention.quota");
+  if (
+    /authorization is being changed|account is already being changed|sign-in is being updated|sign-in.*renews once|sign-in.*renewed (?:once|before)/i.test(
+      attention.reason,
+    )
+  )
+    return t("attention.signInWait");
+  if (
+    /longer than .*sign-in lasts|sign-in does not last as long/i.test(
+      attention.reason,
+    )
+  )
+    return t("attention.signInDuration");
   if (/sign-in/i.test(attention.reason)) return t("attention.signIn");
   // A raw bridge error reads better by its kind than by its JSON.
   const reason = attention.reason.startsWith("{")

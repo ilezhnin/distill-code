@@ -767,7 +767,7 @@ fn settle_renewal(
 /// command line), in the account's own home. The grant before it is kept
 /// until the CLI left one that lasts longer; otherwise it is put back.
 pub(crate) async fn renew_grant(app: &AppHandle, account: &ProviderAccount) -> Result<(), String> {
-    let _changing = provider_accounts::begin_account_change(&account.id)?;
+    let changing = provider_accounts::begin_account_change(&account.id)?;
     let root = distill_root::app_root(app)?;
     let home = provider_accounts::account_home(app, account)?;
     let path = home.join(".credentials.json");
@@ -798,7 +798,7 @@ pub(crate) async fn renew_grant(app: &AppHandle, account: &ProviderAccount) -> R
         crate::services::credential_lease::wipe(unsafe { token.as_bytes_mut() });
         return Err("Cannot keep the Claude grant before its renewal".into());
     }
-    let ran = run_renewal(app, account, &home, &token, &scopes).await;
+    let ran = run_renewal(app, account, &home, &token, &scopes, &changing).await;
     // SAFETY: zeroes stay valid UTF-8.
     crate::services::credential_lease::wipe(unsafe { token.as_bytes_mut() });
     let succeeded = matches!(ran, Ok(true));
@@ -818,17 +818,19 @@ async fn run_renewal(
     home: &std::path::Path,
     token: &str,
     scopes: &str,
+    changing: &provider_accounts::AccountChangeGuard,
 ) -> Result<bool, String> {
-    let mut env: HashMap<String, String> = provider_accounts::scoped_env(
-        app,
-        account,
-        managed_acp_tools::provider_env(app)
-            .await
-            .into_iter()
-            .collect(),
-    )?
-    .into_iter()
-    .collect();
+    let mut env: HashMap<String, String> = changing
+        .scoped_env(
+            &distill_root::app_root(app)?,
+            account,
+            managed_acp_tools::provider_env(app)
+                .await
+                .into_iter()
+                .collect(),
+        )?
+        .into_iter()
+        .collect();
     env.insert("CLAUDE_CODE_OAUTH_REFRESH_TOKEN".into(), token.into());
     env.insert("CLAUDE_CODE_OAUTH_SCOPES".into(), scopes.into());
     let binary = managed_acp_tools::native_cli_path(app, "claude-acp")

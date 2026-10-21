@@ -162,6 +162,8 @@ describe("attentionLabel", () => {
       "attention.quota": "quota",
       "attention.credits": "credits",
       "attention.signIn": "sign in",
+      "attention.signInWait": "wait for account update",
+      "attention.signInDuration": "shorter time limit",
       "attention.failed": `failed: ${options?.reason}`,
       "attention.unknown": "unknown",
       "states.infrastructure_failure": "Infrastructure failure",
@@ -199,6 +201,26 @@ describe("attentionLabel", () => {
         attention: { outcome: null, reason: "Grok sign-in expired" },
       }),
     ).toBe("sign in");
+    for (const reason of [
+      "The Distill claude sign-in was not renewed (Account authorization is being changed; try again when it completes); the grant is kept. If it stays refused, sign in again in Settings > AI providers",
+      "the account's sign-in is being updated; this test waits for the update to finish",
+      "the Distill sign-in of this account renews once the tests running on it finish; this test starts then",
+    ]) {
+      expect(
+        attentionLabel(t, {
+          attention: { outcome: "capability_missing", reason },
+        }),
+      ).toBe("wait for account update");
+    }
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: "capability_missing",
+          reason:
+            "This test may run longer than a claude sign-in lasts; choose a shorter time limit",
+        },
+      }),
+    ).toBe("shorter time limit");
     // A bridge's raw JSON reads by its kind, a sentence by itself.
     expect(
       attentionLabel(t, {

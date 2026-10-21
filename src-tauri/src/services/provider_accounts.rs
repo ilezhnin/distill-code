@@ -18,13 +18,33 @@ static ACCOUNT_CHANGES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 /// separately drains an idle bridge and refuses changes during an active turn.
 pub struct AccountChangeGuard(String);
 
+pub(crate) const ACCOUNT_CHANGE_BUSY: &str = "This account is already being changed";
+pub(crate) const AUTHORIZATION_CHANGING: &str =
+    "Account authorization is being changed; try again when it completes";
+
+impl AccountChangeGuard {
+    /// Only the owner of this account's change may prepare its CLI while
+    /// ordinary readers remain blocked until the change has settled.
+    pub(crate) fn scoped_env(
+        &self,
+        root: &Path,
+        account: &ProviderAccount,
+        base: Vec<(String, String)>,
+    ) -> Result<Vec<(String, String)>, String> {
+        if self.0 != account.id {
+            return Err("Account change belongs to a different account".into());
+        }
+        scoped_env_at(root, account, base)
+    }
+}
+
 pub fn begin_account_change(account_id: &str) -> Result<AccountChangeGuard, String> {
     let mut changes = ACCOUNT_CHANGES
         .get_or_init(Mutex::default)
         .lock()
         .map_err(|_| "Account change registry is unavailable")?;
     if !changes.insert(account_id.into()) {
-        return Err("This account is already being changed".into());
+        return Err(ACCOUNT_CHANGE_BUSY.into());
     }
     Ok(AccountChangeGuard(account_id.into()))
 }
@@ -446,7 +466,7 @@ pub fn resolve_account(
     }
     let account = resolve_from(&snapshot(app)?, provider_id, explicit_id)?;
     if account_change_in_progress(&account.id) {
-        return Err("Account authorization is being changed; try again when it completes".into());
+        return Err(AUTHORIZATION_CHANGING.into());
     }
     Ok(account)
 }
@@ -556,7 +576,7 @@ pub fn scoped_env(
     base: Vec<(String, String)>,
 ) -> Result<Vec<(String, String)>, String> {
     if account_change_in_progress(&account.id) {
-        return Err("Account authorization is being changed; try again when it completes".into());
+        return Err(AUTHORIZATION_CHANGING.into());
     }
     scoped_env_at(&distill_root::app_root(app)?, account, base)
 }
@@ -566,7 +586,7 @@ pub fn scoped_env(
 /// sandbox. Callers pass it on standard input and never log it.
 pub fn api_key(app: &AppHandle, account: &ProviderAccount) -> Result<String, String> {
     if account_change_in_progress(&account.id) {
-        return Err("Account authorization is being changed; try again when it completes".into());
+        return Err(AUTHORIZATION_CHANGING.into());
     }
     if account.auth_method != AuthMethod::ApiKey {
         return Err("This account has no saved API key".into());
@@ -1041,6 +1061,53 @@ fn unprotect_secret(bytes: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_account_change_prepares_its_own_cli_without_unlocking_other_readers() {
+        let root = tempfile::tempdir().unwrap();
+        let one = add_account_at(
+            root.path(),
+            "claude-acp".into(),
+            "First".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        let two = add_account_at(
+            root.path(),
+            "claude-acp".into(),
+            "Second".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        let changing = begin_account_change(&one.id).unwrap();
+        assert!(account_change_in_progress(&one.id));
+        assert!(begin_account_change(&one.id).is_err());
+        let env: HashMap<_, _> = changing
+            .scoped_env(
+                root.path(),
+                &one,
+                vec![
+                    ("ANTHROPIC_API_KEY".into(), "unrelated-test-key".into()),
+                    ("CLAUDE_CONFIG_DIR".into(), "another-home".into()),
+                ],
+            )
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            Path::new(&env["CLAUDE_CONFIG_DIR"]),
+            account_dir(root.path(), &one).unwrap().join("home")
+        );
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(changing.scoped_env(root.path(), &two, vec![]).is_err());
+        // Preparing the owner's environment did not release the account gate.
+        assert!(account_change_in_progress(&one.id));
+        drop(changing);
+        assert!(!account_change_in_progress(&one.id));
+        assert!(begin_account_change(&one.id).is_ok());
+    }
 
     /// Benchmark configurations record a Coding Plan key as the subscription
     /// it is, and every other API key as metered use.

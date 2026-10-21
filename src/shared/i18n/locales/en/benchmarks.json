@@ -418,7 +418,9 @@
     "restarted": "The app restarted while a test was in flight. Resume: the run goes on with its other tests, and the lost one starts over.",
     "quota": "The usage limit ran out. Resume when it resets, or cancel.",
     "credits": "Plan usage ran out and tests may not spend more credits. Raise the credit limit in Settings > Benchmarks, resume when plan usage resets, or cancel.",
-    "signIn": "The provider's sign-in expired. Sign in, then resume.",
+    "signIn": "The provider could not authorize this run. Check the account's sign-in, then resume.",
+    "signInWait": "The account's sign-in is being updated. Wait for the update, then resume.",
+    "signInDuration": "The selected time limit exceeds the provider sign-in's lifetime. Choose a shorter limit.",
     "failed": "A test stopped on an error: {{reason}}. Resume to try it again, or cancel.",
     "unknown": "A test did not finish. Resume to try it again, or cancel.",
     "window": "Finish before {{until}}; after that the run is recorded as it stands."
