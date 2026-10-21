@@ -781,6 +781,15 @@ refresh. With retries disabled, resume only the same run's untouched pending
 attempts; a failed, cancelled or ambiguous dispatched attempt is not a fresh slot.
 Do not extend a frozen research matrix after seeing its results.
 
+For a sealed answer awaiting judges, explicit resume keeps the valid votes of
+one saved panel and asks only its missing or rejected seats. If several batches
+exist, it continues the one with most valid votes, newest on a tie; votes never
+cross batches. Rejected sheets and their usage stay recorded, and a repeated
+judge call has its own request key. A malformed sheet stops that pass for
+attention rather than starting an automatic retry loop. An individual judge
+vote does not make the test complete: every repetition needs its full panel.
+Sheet errors identify the failed validation without including private quotes.
+
 ## 5. Fit and inspect the local selector
 
 Call `benchmark_fit_selector` with a work class, explicit training version IDs,

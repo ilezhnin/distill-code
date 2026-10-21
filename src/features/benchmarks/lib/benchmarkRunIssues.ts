@@ -23,7 +23,10 @@ export function judgingFailureLabel(
     return t(
       historical ? "runIssues.judgeChangedRecorded" : "runIssues.judgeChanged",
     );
-  if (/no valid score sheet/i.test(reason)) return t("runIssues.invalidSheet");
+  if (/no valid score sheet/i.test(reason)) {
+    const detail = reason.split("score sheet: ")[1];
+    return `${t("runIssues.invalidSheet")}${detail ? ` ${detail}` : ""}`;
+  }
   if (/judge panel is incomplete/i.test(reason))
     return t("runIssues.incompletePanel");
   return reason;
@@ -43,9 +46,21 @@ export function runJudgingIssues(
       scores.get(attempt.id) != null
     )
       continue;
-    const failure = attempt.evaluations.find(
-      (evaluation) => evaluation.provenance === "judge_failure",
-    )?.reason;
+    const failure = attempt.evaluations
+      .filter(
+        (evaluation) =>
+          evaluation.provenance === "judge_failure" &&
+          !attempt.evaluations.some(
+            (vote) =>
+              vote.provenance === "judge" &&
+              vote.score != null &&
+              evaluation.judge != null &&
+              vote.createdAt >= evaluation.createdAt &&
+              vote.judge?.id === evaluation.judge?.id &&
+              vote.details?.judgeBatchId === evaluation.details?.judgeBatchId,
+          ),
+      )
+      .sort((a, b) => b.createdAt - a.createdAt)[0]?.reason;
     const reason = failure?.startsWith("Critical checks unresolved")
       ? "Critical checks unresolved"
       : (failure ?? attempt.reason);

@@ -230,8 +230,19 @@ pub(super) fn parse(
     response: &str,
     criterion_ids: &[&str],
 ) -> Option<Assessment> {
-    let requirements = requirements(draft)?;
-    let parsed: Reply = serde_json::from_str(reply).ok()?;
+    assess(draft, reply, response, criterion_ids).ok()
+}
+
+/// Explain a rejected sheet without exposing the candidate's text or quotes.
+pub(super) fn assess(
+    draft: &BenchmarkDraft,
+    reply: &str,
+    response: &str,
+    criterion_ids: &[&str],
+) -> Result<Assessment, String> {
+    let requirements = requirements(draft).ok_or("Critical check requirements are invalid")?;
+    let parsed: Reply = serde_json::from_str(reply)
+        .map_err(|_| "The score sheet does not match the required JSON structure")?;
     if parsed.notes.len() > 4000
         || parsed.scores.len() != criterion_ids.len()
         || criterion_ids.iter().any(|id| {
@@ -242,7 +253,7 @@ pub(super) fn parse(
         })
         || parsed.checks.len() != requirements.len()
     {
-        return None;
+        return Err("The score sheet has invalid criteria, scores, notes or check count".into());
     }
     // A sheet that passes anything anchors itself in the response somewhere:
     // passes without a single quote in the sheet are no verdict. (A fail
@@ -256,12 +267,15 @@ pub(super) fn parse(
             .values()
             .any(|check| matches!(check.verdict, Verdict::Pass))
     {
-        return None;
+        return Err("The passing sheet contains no quotes from the response".into());
     }
     let mut status = "pass";
     let mut quote_less = QuoteLess::default();
     for requirement in requirements {
-        let check = parsed.checks.get(&requirement.id)?;
+        let check = parsed
+            .checks
+            .get(&requirement.id)
+            .ok_or_else(|| format!("Missing critical check: {}", requirement.id))?;
         // A fail quotes the violation. A pass may quote nothing: a condition
         // the response meets by leaving something out ("does not mention
         // consensus") has no text to quote, and judges answer such a pass
@@ -273,15 +287,25 @@ pub(super) fn parse(
                 quote_less.positive += 1;
             }
         }
-        if check.reason.trim().is_empty()
-            || check.reason.len() > 2000
-            || check.evidence.len() > 4
-            || (matches!(check.verdict, Verdict::Fail) && check.evidence.is_empty())
-            || check.evidence.iter().any(|quote| {
-                quote.trim().is_empty() || quote.len() > 2000 || !quoted(response, quote)
-            })
+        let invalid = if check.reason.trim().is_empty() || check.reason.len() > 2000 {
+            Some("the explanation is empty or too long")
+        } else if check.evidence.len() > 4 {
+            Some("more than four evidence quotes")
+        } else if matches!(check.verdict, Verdict::Fail) && check.evidence.is_empty() {
+            Some("a failed check has no evidence quote")
+        } else if check
+            .evidence
+            .iter()
+            .any(|quote| quote.trim().is_empty() || quote.len() > 2000)
         {
-            return None;
+            Some("an evidence quote is empty or too long")
+        } else if check.evidence.iter().any(|quote| !quoted(response, quote)) {
+            Some("an evidence quote does not occur in the response")
+        } else {
+            None
+        };
+        if let Some(reason) = invalid {
+            return Err(format!("Critical check {}: {reason}", requirement.id));
         }
         // A confirmed violation determines zero even when another condition
         // is unknown. Still validate every check before accepting that zero.
@@ -291,9 +315,9 @@ pub(super) fn parse(
             _ => {}
         }
     }
-    Some(Assessment {
+    Ok(Assessment {
         status,
-        checks: serde_json::to_value(parsed.checks).ok()?,
+        checks: serde_json::to_value(parsed.checks).map_err(|_| "Cannot record critical checks")?,
         quote_less,
     })
 }

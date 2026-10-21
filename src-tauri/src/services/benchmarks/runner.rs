@@ -2677,9 +2677,8 @@ fn panel_reason(
     })
 }
 
-/// The newest judge batch a stop cut short: its run finishes it with the
-/// judges it has not asked yet. Only a batch whose every answer so far is a
-/// valid vote qualifies, since one abstention means it can never settle.
+/// An incomplete batch keeps its valid votes on explicit resume. Prefer the
+/// batch with most valid seats, newest on a tie, without mixing batches.
 #[derive(Debug)]
 struct OpenBatch {
     id: String,
@@ -2691,13 +2690,36 @@ struct OpenBatch {
 }
 
 fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
-    let start = evaluations.iter().rposition(|e| e.provenance == "render")?;
-    let marker = &evaluations[start];
+    let mut best = None;
+    for (start, marker) in evaluations
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.provenance == "render")
+    {
+        let end = evaluations[start + 1..]
+            .iter()
+            .position(|e| e.provenance == "render")
+            .map_or(evaluations.len(), |next| start + 1 + next);
+        let Some(open) = incomplete_batch(marker, &evaluations[start + 1..end]) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|previous: &OpenBatch| open.asked.len() >= previous.asked.len())
+        {
+            best = Some(open);
+        }
+    }
+    best
+}
+
+fn incomplete_batch(marker: &Evaluation, evaluations: &[Evaluation]) -> Option<OpenBatch> {
     let details = marker.details.as_ref()?;
     let panel: Vec<Configuration> =
         serde_json::from_value(details.pointer("/protocol/panel")?.clone()).ok()?;
     let expected = usize::try_from(details["expectedJudges"].as_u64()?).ok()?;
-    let answers = judge_corrections::effective_answers(&evaluations[start + 1..]);
+    let batch = details["judgeBatchId"].as_str()?;
+    let answers = judge_corrections::effective_answers(evaluations);
     // Each seat answers `samplesPerJudge` times (see `judge_samples`).
     let samples = details
         .pointer("/protocol/samplesPerJudge")
@@ -2705,19 +2727,92 @@ fn open_batch(evaluations: &[Evaluation]) -> Option<OpenBatch> {
         .unwrap_or(1) as usize;
     if panel.is_empty()
         || panel.len() * samples != expected
-        || answers.len() >= expected
-        || !answers.iter().all(|answer| valid_vote(answer))
+        || answers.iter().any(|answer| {
+            answer
+                .details
+                .as_ref()
+                .is_some_and(|d| d["inFlight"] == true)
+        })
     {
         return None;
     }
+    let mut asked = Vec::new();
+    for answer in answers.into_iter().filter(|answer| valid_vote(answer)) {
+        let judge = answer.judge.as_ref()?;
+        if !panel.contains(judge)
+            || answer.evaluator_revision != marker.evaluator_revision
+            || answer
+                .details
+                .as_ref()
+                .is_none_or(|d| d["judgeBatchId"] != batch || d["usageComplete"] != true)
+            || asked.iter().filter(|seen| *seen == judge).count() >= samples
+        {
+            return None;
+        }
+        asked.push(judge.clone());
+    }
+    if asked.len() >= expected {
+        return None;
+    }
     Some(OpenBatch {
-        id: details["judgeBatchId"].as_str()?.to_owned(),
-        asked: answers.iter().filter_map(|e| e.judge.clone()).collect(),
+        id: batch.to_owned(),
+        asked,
         panel,
         expected,
         rendering: marker.artifacts.first()?.path.clone(),
         rendering_hash: marker.artifacts.first()?.hash.clone(),
     })
+}
+
+/// A resumed older batch records new evidence before the following marker,
+/// preserving both its attribution and every original evaluation.
+fn insert_judge_evaluation(attempt: &mut Attempt, batch: &str, evaluation: Evaluation) -> usize {
+    let position = attempt
+        .evaluations
+        .iter()
+        .position(|e| {
+            e.provenance == "render"
+                && e.details
+                    .as_ref()
+                    .is_some_and(|d| d["judgeBatchId"] == batch)
+        })
+        .and_then(|start| {
+            attempt.evaluations[start + 1..]
+                .iter()
+                .position(|e| e.provenance == "render")
+                .map(|next| start + 1 + next)
+        })
+        .unwrap_or(attempt.evaluations.len());
+    attempt.evaluations.insert(position, evaluation);
+    position
+}
+
+/// A rejected paid turn gets a new idempotency key on explicit resume.
+/// An unpaid admission refusal leaves the key unchanged.
+fn judge_call_index(attempt: &Attempt, batch: &str, index: usize, judge: &Configuration) -> usize {
+    let expected = attempt
+        .evaluations
+        .iter()
+        .find(|e| {
+            e.provenance == "render"
+                && e.details
+                    .as_ref()
+                    .is_some_and(|d| d["judgeBatchId"] == batch)
+        })
+        .and_then(|e| e.details.as_ref()?.get("expectedJudges")?.as_u64())
+        .unwrap_or(1) as usize;
+    let rejected = attempt
+        .evaluations
+        .iter()
+        .filter(|e| {
+            e.provenance == "judge_failure"
+                && e.judge.as_ref() == Some(judge)
+                && e.details
+                    .as_ref()
+                    .is_some_and(|d| d["judgeBatchId"] == batch)
+        })
+        .count();
+    index + rejected * expected
 }
 
 /// The asks a batch owes: each seat of `panel` `samples` times, at index
@@ -2890,7 +2985,9 @@ impl PanelJudges for NativePanel<'_, '_> {
                 .find(|e| e.id == evaluation.id)
             {
                 Some(slot) => *slot = evaluation,
-                None => self.attempt.evaluations.push(evaluation),
+                None => {
+                    insert_judge_evaluation(self.attempt, self.batch, evaluation);
+                }
             }
             self.evidence.save(self.store, self.attempt).await?;
             Ok(vote)
@@ -3358,6 +3455,7 @@ impl NativeBackend {
             })
             .await?;
         let credentials = CredentialWindow::new(grant, status);
+        let index = judge_call_index(attempt, batch, index, judge);
         let judge_owner = format!("{}:judge:{batch}:{index}", attempt.id);
         let job = text_execution::attempt_id(&judge_owner);
         // The sandbox's cgroup leaf names no judge; this line maps it.
@@ -3423,9 +3521,9 @@ impl NativeBackend {
             "requestKey": key, "usageComplete": false, "inFlight": true}),
         );
         let placeholder_id = placeholder.id.clone();
-        attempt.evaluations.push(placeholder);
+        let placeholder_position = insert_judge_evaluation(attempt, batch, placeholder);
         if let Err(error) = evidence.save(store, attempt).await {
-            attempt.evaluations.pop();
+            attempt.evaluations.remove(placeholder_position);
             return Err(error);
         }
         if stop.qualification_id.is_some() && stop.turn_cancelled(store).await? {
@@ -3593,7 +3691,12 @@ impl NativeBackend {
         let reason = match &parsed {
             Some(sheet) if !sheet.reason.is_empty() => sheet.reason.clone(),
             Some(_) => "Scored by the judge panel".into(),
-            None => failure.unwrap_or_else(|| "Judge returned no valid score sheet".into()),
+            None => failure.unwrap_or_else(|| {
+                format!(
+                    "Judge returned no valid score sheet: {}",
+                    invalid_sheet_reason(&version.manifest, &reply, response, criteria)
+                )
+            }),
         };
         Ok(Evaluation {
             id: placeholder_id,
@@ -6952,6 +7055,34 @@ struct JudgeScoreSheet {
     score: Option<f64>,
     reason: String,
     critical: Option<judge_checks::Assessment>,
+}
+
+fn invalid_sheet_reason(
+    draft: &BenchmarkDraft,
+    reply: &str,
+    response: Option<&str>,
+    criteria: &[RubricCriterion],
+) -> String {
+    let canonical = ordinary_critical(draft)
+        .then(|| judge_checks::canonical_sheet(reply))
+        .flatten();
+    let reply = canonical.as_deref().unwrap_or(reply);
+    if judge_checks::enabled(draft) {
+        if let Some(response) = response {
+            if let Err(reason) = judge_checks::assess(
+                draft,
+                reply,
+                response,
+                &criteria
+                    .iter()
+                    .map(|criterion| criterion.id.as_str())
+                    .collect::<Vec<_>>(),
+            ) {
+                return reason;
+            }
+        }
+    }
+    "The reply does not contain the required JSON criteria and finite scores".into()
 }
 
 fn judge_score_sheet(
@@ -10429,6 +10560,25 @@ mod tests {
             "retention":{"verdict":"pass","evidence":["Remove only the acknowledged revision."],"reason":"A newer pending revision remains queued."},
             "barrier":{"verdict":"pass","evidence":["Wait for every participant."],"reason":"A rejected participant does not release the other participants."}
         }})
+    }
+
+    #[test]
+    fn rejected_judge_sheets_explain_the_failed_validation_without_quoting_private_text() {
+        let draft = critical_text();
+        let criteria = rubric_criteria(&draft);
+        let response = "Remove only the acknowledged revision. Wait for every participant.";
+        let reason = |reply: &str| invalid_sheet_reason(&draft, reply, Some(response), &criteria);
+        assert!(reason("not json").contains("JSON structure"));
+        let mut reply = critical_reply();
+        reply["checks"]["barrier"]["evidence"] = json!(["Invented secret quote"]);
+        let rejected = reason(&reply.to_string());
+        assert!(rejected.contains("barrier"));
+        assert!(rejected.contains("does not occur"));
+        assert!(!rejected.contains("Invented secret quote"));
+        reply["checks"]["barrier"]["evidence"] =
+            json!([response, response, response, response, response]);
+        assert!(reason(&reply.to_string()).contains("more than four"));
+        assert!(judge_score_sheet(&draft, &reply.to_string(), Some(response), &criteria).is_none());
     }
 
     #[test]
@@ -15736,7 +15886,7 @@ mod tests {
         assert!(!reason(PanelEnd::Incomplete));
     }
     #[test]
-    fn only_a_stopped_batch_of_valid_votes_is_continued() {
+    fn resuming_an_incomplete_batch_keeps_its_valid_votes_and_failed_evidence() {
         let panel: Vec<Configuration> = ["opus[1m]", "haiku", "claude-opus-4-8"]
             .into_iter()
             .map(judge_row)
@@ -15751,7 +15901,7 @@ mod tests {
                 created_at: 1,
                 provenance: provenance.into(),
                 artifacts: Vec::new(),
-                details: None,
+                details: Some(json!({"judgeBatchId":"batch", "usageComplete":true})),
                 judge: judge.cloned(),
                 usage: None,
             };
@@ -15773,14 +15923,65 @@ mod tests {
         assert_eq!((open.id.as_str(), open.expected), ("batch", 3));
         assert_eq!(open.asked, vec![panel[0].clone()]);
         assert_eq!(open.rendering, "rendering.png");
-        // An abstention can never settle the batch; a full batch is done.
+        // Explicit resume retries the failed seat, retaining the valid vote.
         evaluations.push(evaluation("judge_failure", Some(&panel[1]), None));
-        assert!(open_batch(&evaluations).is_none());
+        assert_eq!(
+            open_batch(&evaluations).unwrap().asked,
+            vec![panel[0].clone()]
+        );
         evaluations.pop();
         evaluations.push(evaluation("judge", Some(&panel[1]), Some(0.6)));
         evaluations.push(evaluation("judge", Some(&panel[2]), Some(0.5)));
         assert!(open_batch(&evaluations).is_none());
         assert!(open_batch(&evaluations[..1]).is_none());
+    }
+
+    #[test]
+    fn resumed_judging_uses_the_best_batch_and_a_new_key_without_repaying_valid_seats() {
+        let panel: Vec<_> = ["opus[1m]", "haiku", "claude-opus-4-8"]
+            .into_iter()
+            .map(judge_row)
+            .collect();
+        let marker = |id: &str| {
+            json!({"id":id,"evaluatorRevision":"1","verdict":"rendered",
+            "score":null,"reason":"","createdAt":1,"provenance":"render",
+            "artifacts":[{"kind":"text","path":"invented.txt","hash":"invented","label":"Response"}],
+            "details":{"judgeBatchId":id,"expectedJudges":3,"protocol":{"panel":panel}}})
+        };
+        let answer = |id: &str, batch: &str, seat: usize, valid: bool| {
+            json!({"id":id,"evaluatorRevision":"1",
+            "verdict":if valid {"judged"} else {"abstained"},"score":if valid {Some(0.8)} else {None},
+            "reason":"","createdAt":2,"provenance":if valid {"judge"} else {"judge_failure"},
+            "artifacts":[],"judge":panel[seat],"details":{"judgeBatchId":batch,"usageComplete":true}})
+        };
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":panel[0],"repetition":0,"phase":"terminal","outcome":"pending_review",
+            "usage":TokenUsage::default(),"eventCursor":0,"evaluations":[marker("older"),
+                answer("good-0","older",0,true),answer("good-1","older",1,true),answer("bad-2","older",2,false),
+                marker("newer"),answer("bad-0","newer",0,false)]})).unwrap();
+        let before = attempt.evaluations.clone();
+        let open = open_batch(&attempt.evaluations).unwrap();
+        assert_eq!(open.id, "older");
+        assert_eq!(
+            seat_samples(&open.panel, 1, &open.asked),
+            vec![(2, panel[2].clone())]
+        );
+        assert_eq!(judge_call_index(&attempt, "older", 2, &panel[2]), 5);
+        insert_judge_evaluation(
+            &mut attempt,
+            "older",
+            serde_json::from_value(answer("retry", "older", 2, true)).unwrap(),
+        );
+        assert_eq!(attempt.evaluations[4].id, "retry");
+        assert_eq!(attempt.evaluations[5].id, "newer");
+        assert_eq!(super::super::analysis::score(&attempt), Some(0.8));
+        attempt.evaluations.retain(|e| e.id != "retry");
+        assert_eq!(
+            serde_json::to_value(&attempt.evaluations).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+        attempt.evaluations[1].details.as_mut().unwrap()["inFlight"] = json!(true);
+        assert_ne!(open_batch(&attempt.evaluations).unwrap().id, "older");
     }
 
     #[tokio::test]

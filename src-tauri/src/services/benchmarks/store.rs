@@ -25,6 +25,35 @@ struct Parsed {
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
+
+/// A terminal repetition awaiting a panel is settled only once that entire
+/// panel scores. Its first valid vote is not a completed measurement. The
+/// listing projects evaluations only for these repetitions, never outputs.
+fn settled_cells(raw: &str) -> Result<u64> {
+    type Cell = (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<Vec<Evaluation>>,
+    );
+    let rows: Vec<Cell> = serde_json::from_str(raw)?;
+    let mut cells = HashMap::new();
+    for (configuration, version, phase, outcome, evaluations) in rows {
+        let settled = phase == "terminal"
+            && (outcome.as_deref() != Some("pending_review")
+                || super::analysis::score_of(
+                    outcome.as_deref(),
+                    None,
+                    evaluations.as_deref().unwrap_or_default(),
+                    None,
+                )
+                .is_some());
+        *cells.entry((configuration, version)).or_insert(true) &= settled;
+    }
+    Ok(cells.values().filter(|settled| **settled).count() as u64)
+}
+
 /// A SQL expression reading a [`ManifestSummary`] out of the manifest JSON in
 /// `column`, path by path. Nothing outside these paths leaves SQLite, however
 /// large the prompt, fixtures, checks or environment are. Defaults follow
@@ -511,8 +540,8 @@ impl Store {
                     EXISTS(SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
                         WHERE e.type='object' AND json_extract(e.value,'$.provenance')='human'
                             AND json_extract(e.value,'$.score') IS NOT NULL) AS has_human_score,
-                    EXISTS(SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
-                        WHERE e.type='object' AND json_extract(e.value,'$.score') IS NOT NULL) AS has_score
+                    CASE WHEN a.phase='terminal' AND json_extract(a.data_json,'$.outcome')='pending_review'
+                        THEN json_extract(a.data_json,'$.evaluations') END AS pending_evaluations
                 FROM attempts a JOIN recent_runs r ON r.id=a.run_id
              ) SELECT r.id,r.state,r.revision,r.created_at,r.updated_at,r.request_json,
                 (SELECT COUNT(*) FROM recent_attempts a WHERE a.run_id=r.id
@@ -562,11 +591,10 @@ impl Store {
                 (SELECT COUNT(*) FROM (SELECT 1 FROM recent_attempts a WHERE a.run_id=r.id
                     AND COALESCE(a.outcome,'')<>'superseded'
                     GROUP BY a.configuration_id,a.version_id)),
-                (SELECT COUNT(*) FROM (SELECT 1 FROM recent_attempts a WHERE a.run_id=r.id
+                (SELECT json_group_array(json_array(a.configuration_id,a.version_id,a.phase,a.outcome,
+                    json(a.pending_evaluations))) FROM recent_attempts a WHERE a.run_id=r.id
                     AND COALESCE(a.outcome,'')<>'superseded'
-                    GROUP BY a.configuration_id,a.version_id
-                    HAVING SUM(a.phase<>'terminal' OR (a.outcome='pending_review'
-                        AND a.has_score=0))=0))
+                )
              FROM recent_runs r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
         .fetch_all(&self.pool)
@@ -586,7 +614,7 @@ impl Store {
                     attempt_count: r.get::<i64, _>(6) as u64,
                     settled_count: r.get::<i64, _>(7) as u64,
                     cell_count: r.get::<i64, _>(15) as u64,
-                    settled_cell_count: r.get::<i64, _>(16) as u64,
+                    settled_cell_count: settled_cells(r.get(16))?,
                     observed_selections: observed_selections(r.get(8)),
                     open_cells: open_cells(r.get(9)),
                     attention: run_attention(r.get(10)),
@@ -2537,6 +2565,32 @@ mod tests {
         assert_eq!(cost("priced"), Some(3.0));
         assert_eq!(cost("unpriced"), Some(0.25));
         directory.close().await;
+    }
+
+    #[test]
+    fn history_progress_requires_the_whole_panel_and_every_repetition() {
+        let evaluation = |provenance: &str, score: Option<f64>| {
+            serde_json::json!({
+            "id":provenance,"evaluatorRevision":"1","verdict":"judged","score":score,
+            "reason":"","createdAt":1,"provenance":provenance,"artifacts":[],
+            "details":{"expectedJudges":2}})
+        };
+        let partial =
+            serde_json::json!([evaluation("render", None), evaluation("judge", Some(0.8))]);
+        let complete = serde_json::json!([
+            evaluation("render", None),
+            evaluation("judge", Some(0.8)),
+            evaluation("judge", Some(0.6))
+        ]);
+        let rows = serde_json::json!([
+            ["model", "partial", "terminal", "pending_review", partial],
+            ["model", "partial", "terminal", "pass", null],
+            ["model", "complete", "terminal", "pending_review", complete],
+            ["model", "objective", "terminal", "pass", null],
+            ["model", "unfinished", "terminal", "pass", null],
+            ["model", "unfinished", "pending", null, null]
+        ]);
+        assert_eq!(settled_cells(&rows.to_string()).unwrap(), 2);
     }
 
     #[tokio::test]
