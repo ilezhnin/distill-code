@@ -1168,8 +1168,10 @@ impl Store {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         // A turn that fails while the owner stops the run never takes the
         // stop back: needs_attention leaves a cancelling or cancelled run be.
+        // Nor does a tick that read the run before the stop and then found
+        // nothing of it flying: completed leaves it be, and the stop ends it.
         // A pause's time is kept apart, so the run's window leaves it out.
-        sqlx::query("UPDATE run_plans SET state=?1,revision=revision+1,updated_at=?2,paused_ms=paused_ms+CASE WHEN paused_since IS NOT NULL AND ?1<>'paused' THEN MAX(0,?2-paused_since) ELSE 0 END,paused_since=CASE WHEN ?1='paused' THEN COALESCE(paused_since,?2) ELSE NULL END WHERE id=?3 AND NOT (?1='needs_attention' AND state IN ('cancelling','cancelled'))")
+        sqlx::query("UPDATE run_plans SET state=?1,revision=revision+1,updated_at=?2,paused_ms=paused_ms+CASE WHEN paused_since IS NOT NULL AND ?1<>'paused' THEN MAX(0,?2-paused_since) ELSE 0 END,paused_since=CASE WHEN ?1='paused' THEN COALESCE(paused_since,?2) ELSE NULL END WHERE id=?3 AND NOT (?1 IN ('needs_attention','completed') AND state IN ('cancelling','cancelled'))")
             .bind(state)
             .bind(at)
             .bind(id)
@@ -2985,10 +2987,40 @@ mod tests {
             json!({"configurationId":"sonnet","versionId":second.id,"running":true})
         );
         // A run finished or being cancelled starts nothing, so its attempts are never read here.
-        for state in ["cancelling", "cancelled", "completed"] {
+        for state in ["completed", "cancelling", "cancelled"] {
             store.set_run_state("run", state).await.unwrap();
             assert!(store.runs().await.unwrap()[0].open_cells.is_empty());
         }
+        directory.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_stop_outlives_a_completion_read_before_it() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','key','running',1,0,0,'{}')")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let state = || async {
+            sqlx::query_scalar::<_, String>("SELECT state FROM run_plans WHERE id='run'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap()
+        };
+        // The dispatcher read this run as running, then found nothing of it
+        // flying once the owner had stopped it: completed never takes the
+        // stop back.
+        for stop in ["cancelling", "cancelled"] {
+            store.set_run_state("run", stop).await.unwrap();
+            store.set_run_state("run", "completed").await.unwrap();
+            assert_eq!(state().await, stop);
+        }
+        // Going on again, the run completes as before.
+        store.set_run_state("run", "running").await.unwrap();
+        store.set_run_state("run", "completed").await.unwrap();
+        assert_eq!(state().await, "completed");
         directory.close().await;
     }
 
