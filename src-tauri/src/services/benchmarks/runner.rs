@@ -15471,6 +15471,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_recovers_a_missing_answer_from_its_verified_seal() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let id = &run.attempts[0].id;
+        let mut attempt = s.store.attempt(id).await.unwrap();
+        let output = attempt.output.take();
+        assert!(output.is_some());
+        let seal = attempt.evidence_hash.clone();
+        let session = attempt.session_id.clone();
+        attempt.phase = "terminal".into();
+        attempt.outcome = Some("pending_review".into());
+        attempt.reason = None;
+        attempt.evaluations.retain(|e| e.provenance != "judge");
+        let previous = serde_json::to_value(&attempt.evaluations).unwrap();
+        s.store.save_attempt(&attempt).await.unwrap();
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        let queued = s.store.attempt(id).await.unwrap();
+        assert_eq!(queued.phase, AWAITING_JUDGES);
+        assert_eq!(queued.output, output);
+        assert_eq!(queued.evidence_hash, seal);
+        assert_eq!(queued.session_id, session);
+        assert_eq!(serde_json::to_value(&queued.evaluations).unwrap(), previous);
+        s.tick().await.unwrap();
+        let judged = s.store.attempt(id).await.unwrap();
+        assert_eq!(judged.output, output);
+        assert_eq!(judged.evidence_hash, seal);
+        assert_eq!(judged.phase, "terminal");
+        assert!(judged.reason.is_none());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 2);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_missing_tampered_or_unrelated_sealed_answers() {
+        for fault in ["missing", "hash", "attempt", "session", "output"] {
+            let (dir, s, backend) = setup().await;
+            let run = s.start_run(creative_request(&s).await).await.unwrap();
+            s.tick().await.unwrap();
+            let mut attempt = s.store.attempt(&run.attempts[0].id).await.unwrap();
+            let evidence_dir = s
+                .store
+                .root
+                .join("runs")
+                .join(&run.id)
+                .join(&attempt.id)
+                .join("evidence");
+            let path =
+                evidence_dir.join(format!("{}.json", attempt.evidence_hash.as_ref().unwrap()));
+            if fault == "missing" {
+                tokio::fs::remove_file(path).await.unwrap();
+            } else if fault == "hash" {
+                tokio::fs::write(path, b"{}").await.unwrap();
+            } else {
+                let mut evidence: Value =
+                    serde_json::from_slice(&tokio::fs::read(path).await.unwrap()).unwrap();
+                match fault {
+                    "attempt" => evidence["attemptId"] = json!("another-attempt"),
+                    "session" => evidence["sessionId"] = json!("another-session"),
+                    "output" => evidence["output"] = Value::Null,
+                    _ => unreachable!(),
+                }
+                let bytes = serde_json::to_vec(&evidence).unwrap();
+                let digest = fixtures::hash(&bytes);
+                tokio::fs::write(evidence_dir.join(format!("{digest}.json")), bytes)
+                    .await
+                    .unwrap();
+                attempt.evidence_hash = Some(digest);
+            }
+            attempt.output = None;
+            attempt.phase = "terminal".into();
+            attempt.outcome = Some("pending_review".into());
+            attempt.reason = None;
+            attempt.evaluations.retain(|e| e.provenance != "judge");
+            s.store.save_attempt(&attempt).await.unwrap();
+            s.store
+                .set_run_state(&run.id, "needs_attention")
+                .await
+                .unwrap();
+            let error = s.control(&run.id, "resume").await.unwrap_err();
+            assert_eq!(error.code, "evidence_missing", "{fault}");
+            let unchanged = s.store.attempt(&attempt.id).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(&unchanged).unwrap(),
+                serde_json::to_value(&attempt).unwrap(),
+                "{fault}"
+            );
+            assert_eq!(s.store.run(&run.id).await.unwrap().state, "needs_attention");
+            assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+            dir.close().await;
+        }
+    }
+
+    #[tokio::test]
     async fn saved_judge_repairs_only_append_to_open_runs_and_make_no_provider_calls() {
         let (dir, s, backend) = setup().await;
         let draft = critical_text();

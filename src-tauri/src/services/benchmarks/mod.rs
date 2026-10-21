@@ -1150,9 +1150,7 @@ impl BenchmarkService {
                 // Run summaries omit the answer; recover the full sealed
                 // attempt before saving so resume never erases its output.
                 let mut waiting = self.store.attempt(&attempt.id).await?;
-                if waiting.output.is_none() {
-                    continue;
-                }
+                fixtures::restore_sealed_output(&self.store.root, &mut waiting).await?;
                 waiting.phase = runner::AWAITING_JUDGES.into();
                 waiting.reason = None;
                 self.store.save_attempt(&waiting).await?;

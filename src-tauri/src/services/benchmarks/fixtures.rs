@@ -151,6 +151,61 @@ pub async fn seal(root: &Path, attempt: &Attempt, events: &serde_json::Value) ->
     write_synced(&path.join(format!("{digest}.json")), &bytes).await?;
     Ok(digest)
 }
+/// Recover an answer erased by an older summary save from its original receipt.
+/// Never replace an answer or manufacture a new seal during recovery.
+pub(super) async fn restore_sealed_output(root: &Path, attempt: &mut Attempt) -> Result<()> {
+    if attempt.output.is_some() {
+        return Ok(());
+    }
+    let missing = |detail: &str| {
+        BenchmarkError::new(
+            "evidence_missing",
+            format!(
+                "Cannot recover the sealed answer for {}: {detail}",
+                attempt.id
+            ),
+        )
+    };
+    let digest = attempt
+        .evidence_hash
+        .as_deref()
+        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| missing("invalid evidence hash"))?;
+    if [&attempt.run_id, &attempt.id]
+        .iter()
+        .any(|id| !safe_relative(id) || id.contains('/'))
+    {
+        return Err(missing("invalid evidence location"));
+    }
+    let path = root
+        .join("runs")
+        .join(&attempt.run_id)
+        .join(&attempt.id)
+        .join("evidence")
+        .join(format!("{digest}.json"));
+    crate::services::distill_root::reject_document_links(root, &path).map_err(|e| missing(&e))?;
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| missing(&e.to_string()))?;
+    if hash(&bytes) != digest {
+        return Err(missing("evidence failed hash verification"));
+    }
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| missing(&e.to_string()))?;
+    if evidence.get("attemptId").and_then(|v| v.as_str()) != Some(attempt.id.as_str())
+        || evidence.get("sessionId") != Some(&serde_json::json!(attempt.session_id))
+    {
+        return Err(missing(
+            "evidence belongs to a different attempt or session",
+        ));
+    }
+    let output = evidence
+        .get("output")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| missing("evidence contains no answer"))?;
+    attempt.output = Some(output.to_owned());
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

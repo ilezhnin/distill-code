@@ -367,6 +367,12 @@ starts a separate panel on the retained answer; valid votes are reused only
 when both the scoring prompt and renderer match. Frozen calibrated panels keep
 their original instructions.
 
+If an older run lost its stored answer while saving a summary, resume recovers
+only the original answer from its sealed evidence file. The file must match
+the stored hash, attempt and session. Missing or invalid evidence reports an
+error instead of silently skipping the unfinished panel. Recovery preserves
+the seal, session and previous evaluations and makes no new candidate call.
+
 A rubric whose criteria vary between asks (a likeness, say) may set
 `environment.judgeSamples` to 3: each seat of its ordinary panel then judges
 the rendering three times, and the seat counts once, as the median of its
