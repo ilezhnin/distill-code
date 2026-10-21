@@ -284,25 +284,25 @@ export function BenchmarkRunDrawer({
                         {t("runs.preview")}
                       </span>
                     ) : null}
-                    {run.state === "needs_attention" ? (
-                      <span className="text-xs text-muted-foreground">
-                        {attentionLabel(
-                          t,
-                          summary ?? { attention: null },
-                          formatDate(runWindowCloses(run), {
-                            dateStyle: "short",
-                            timeStyle: "short",
-                          }),
-                        )}
-                      </span>
-                    ) : null}
                   </div>
                   {!run.request.workflowPolicy ? (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                       {t("runs.progress", { completed: settled, total })}
                     </span>
                   ) : null}
                 </div>
+                {run.state === "needs_attention" ? (
+                  <p className="text-xs text-muted-foreground">
+                    {attentionLabel(
+                      t,
+                      summary ?? { attention: null },
+                      formatDate(runWindowCloses(run), {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      }),
+                    )}
+                  </p>
+                ) : null}
                 {!run.request.workflowPolicy ? (
                   <Progress
                     value={total === 0 ? 0 : (settled / total) * 100}
