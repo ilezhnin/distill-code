@@ -231,8 +231,13 @@ export function BenchmarkConfigurationPage({
   ]);
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(
-    () => modelActivity({ key, row, configurations: [] }, runs),
-    [key, row, runs],
+    () =>
+      modelActivity(
+        { key, row, configurations: [] },
+        runs,
+        report.cohort?.versionIds,
+      ),
+    [key, row, runs, report.cohort?.versionIds],
   );
   // The run the dialog starts from: the one measuring the model now, else
   // its newest run not baked yet.

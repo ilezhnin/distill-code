@@ -782,6 +782,11 @@ Report successful, unsuccessful, infrastructure-error, cancelled and unmeasured
 attempts separately. Preserve unknown usage and cost as unknown; subscription
 access does not turn unreported cost into a measured zero.
 
+A model's leaderboard warning concerns its unmeasured cells in the current
+rating pool, including terminal answers awaiting judges. A stopped run whose
+remaining cases have since been measured or retired stays in run history,
+without keeping a warning on the current model row.
+
 On an observer timeout, find the saved run ID or reconcile `benchmark_list_runs`
 by request key. Do not start a replacement. Pause through `benchmark_pause_run`
 and wait for active attempts to finish before an authorized app update or account

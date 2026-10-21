@@ -240,7 +240,11 @@ export function LeaderboardView({
     </TableCell>
   );
   const modelCell = (entry: RankedRow) => {
-    const activity = modelActivity(modelOf(entry.row), runs);
+    const activity = modelActivity(
+      modelOf(entry.row),
+      runs,
+      cohort?.versionIds,
+    );
     const attention = activity.attention;
     return (
       <TableCell className={cn("min-w-72", pinned("left-10"))}>

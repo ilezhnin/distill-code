@@ -159,4 +159,67 @@ describe("leaderboard model identities", () => {
       running: 1,
     });
   });
+
+  it("warns only for the model's open cells in the current pool", () => {
+    const [model] = leaderboardModels([leaderboardRow()]);
+    const other = { ...configuration, id: "other", modelId: "other-model" };
+    const stopped = {
+      ...runSummary,
+      state: "needs_attention",
+      request: {
+        ...runSummary.request,
+        configurations: [configuration, other],
+        versionIds: ["retired", "current"],
+      },
+      openCells: [
+        {
+          configurationId: configuration.id,
+          versionId: "retired",
+          running: false,
+        },
+        { configurationId: other.id, versionId: "current", running: false },
+      ],
+    };
+    expect(modelActivity(model, [stopped], ["current"]).attention).toEqual([]);
+    expect(modelActivity(model, [stopped], ["retired"]).attention).toEqual([
+      stopped,
+    ]);
+    const currentFailure = {
+      ...stopped,
+      openCells: [
+        {
+          configurationId: configuration.id,
+          versionId: "current",
+          running: false,
+        },
+      ],
+    };
+    expect(
+      modelActivity(model, [currentFailure], ["current"]).attention,
+    ).toEqual([currentFailure]);
+    expect(stopped.state).toBe("needs_attention");
+    expect(stopped.openCells).toHaveLength(2);
+  });
+
+  it("keeps terminal pending reviews and legacy warnings until measured", () => {
+    const [model] = leaderboardModels([leaderboardRow()]);
+    const legacy = {
+      ...runSummary,
+      state: "needs_attention",
+      request: { ...runSummary.request, versionIds: ["retired"] },
+      openCells: undefined,
+    };
+    expect(modelActivity(model, [legacy]).attention).toEqual([legacy]);
+    expect(modelActivity(model, [legacy], ["current"]).attention).toEqual([]);
+    expect(
+      modelActivity(model, [{ ...legacy, openCells: [] }]).attention,
+    ).toHaveLength(1);
+    const [measured] = leaderboardModels([
+      leaderboardRow({ completeVersionIds: ["retired"] }),
+    ]);
+    expect(modelActivity(measured, [legacy]).attention).toEqual([]);
+    expect(
+      modelActivity(measured, [{ ...legacy, openCells: [] }]).attention,
+    ).toEqual([]);
+  });
 });

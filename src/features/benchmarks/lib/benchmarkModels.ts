@@ -72,7 +72,11 @@ export function reportModels(
 }
 
 /** Activity from any configuration belongs to the model's single row. */
-export function modelActivity(model: LeaderboardModel, runs: RunSummary[]) {
+export function modelActivity(
+  model: LeaderboardModel,
+  runs: RunSummary[],
+  poolVersionIds?: readonly string[],
+) {
   let open = 0;
   let running = 0;
   let newest: RunSummary | null = null;
@@ -94,11 +98,27 @@ export function modelActivity(model: LeaderboardModel, runs: RunSummary[]) {
     running,
     runId: newest?.id ?? null,
     attention: stalledRuns(runs)
-      .filter((run) =>
-        run.request.configurations.some(
-          (entry) => modelKey(entry) === model.key,
-        ),
-      )
+      .filter((run) => {
+        const ids = new Set(
+          run.request.configurations
+            .filter((entry) => modelKey(entry) === model.key)
+            .map((entry) => entry.id),
+        );
+        if (ids.size === 0) return false;
+        // A stopped run keeps its historical failure, but a retired case
+        // cannot hold the model's current pool warning open forever.
+        const current = (versionId: string) =>
+          (poolVersionIds == null || poolVersionIds.includes(versionId)) &&
+          !model.row.completeVersionIds?.includes(versionId);
+        // Pending-review attempts are terminal, so a stopped panel can have
+        // no open cells. Its requested cases still warn until measured.
+        return !run.openCells?.length
+          ? run.request.versionIds.some(current)
+          : run.openCells.some(
+              (cell) =>
+                ids.has(cell.configurationId) && current(cell.versionId),
+            );
+      })
       .sort((a, b) => b.createdAt - a.createdAt),
   };
 }
