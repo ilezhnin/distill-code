@@ -788,6 +788,12 @@ remaining cases have since been measured or retired stays in run history,
 without keeping a warning on the current model row or its detail page. Both
 surfaces use the same current-pool and completed-cell selection.
 
+The fully-tested date records when the model last covered its measurement
+suite. Publishing a pool release whose cases already have complete cells
+establishes coverage at the release time, without new model calls. A case
+completed later moves the date to that completion. Historical queries ignore
+releases made after their cutoff; attempt timestamps and scores are unchanged.
+
 On an observer timeout, find the saved run ID or reconcile `benchmark_list_runs`
 by request key. Do not start a replacement. Pause through `benchmark_pause_run`
 and wait for active attempts to finish before an authorized app update or account

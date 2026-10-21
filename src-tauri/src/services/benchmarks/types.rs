@@ -927,8 +927,9 @@ pub struct LeaderboardRow {
     pub complete_version_ids: Vec<String>,
     /// The last time every suite case of that time had a complete cell: now,
     /// the moment the last missing case completed; for a row short of the
-    /// suite today, when it last covered the suite before it grew. None when
-    /// it never did.
+    /// suite today, when it last covered the suite before it grew. If every
+    /// cell was measured before its pool release, the release completes the
+    /// coverage. None when it never did.
     #[serde(default)]
     pub fully_tested_at: Option<i64>,
 }

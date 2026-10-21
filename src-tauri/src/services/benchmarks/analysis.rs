@@ -994,6 +994,7 @@ fn entered_pool(
     versions: &BTreeMap<&str, &BenchmarkVersion>,
     releases: &[PoolRelease],
     version: &BenchmarkVersion,
+    as_of: Option<i64>,
 ) -> i64 {
     let mut at = version.published_at;
     let mut seen = BTreeSet::from([version.id.as_str()]);
@@ -1007,6 +1008,7 @@ fn entered_pool(
     }
     releases
         .iter()
+        .filter(|release| as_of.is_none_or(|at| release.created_at <= at))
         .filter(|release| {
             release
                 .version_ids
@@ -1022,13 +1024,16 @@ fn entered_pool(
 /// suite case in the pool by then held a complete cell finished by then. Each
 /// case is (entered the pool, when each of its complete cells completed, in
 /// any of the row's runs). A row that covers the suite today gets the moment
-/// its newest complete cell completed; one short of it, the last moment it
-/// was whole before the suite grew. A re-run in progress keeps the date its
-/// earlier cells earned.
+/// its newest complete cell completed, or the pool entry if the cells were
+/// measured before release; one short of it, the last moment it was whole
+/// before the suite grew. A re-run in progress keeps the date its earlier
+/// cells earned.
 fn fully_tested_at(cases: &[(i64, Vec<i64>)]) -> Option<i64> {
     let mut times: Vec<i64> = cases
         .iter()
-        .flat_map(|(_, done)| done.iter().copied())
+        // Coverage can become complete when an already measured case enters
+        // the pool, even if no attempt finishes at or after that release.
+        .flat_map(|(entered, done)| std::iter::once(*entered).chain(done.iter().copied()))
         .collect();
     times.sort_unstable();
     times.dedup();
@@ -1727,7 +1732,7 @@ fn measurement_report(
                 .iter()
                 .map(|v| {
                     (
-                        entered_pool(&published, &data.releases, v),
+                        entered_pool(&published, &data.releases, v, query.as_of),
                         completions.get(v.id.as_str()).cloned().unwrap_or_default(),
                     )
                 })
@@ -2737,6 +2742,65 @@ pub(super) mod tests {
         assert_eq!(row.fully_tested_at, Some(2));
     }
     #[test]
+    fn a_pool_release_dates_already_completed_cells_without_new_attempts() {
+        let mut data = dataset();
+        let before = standing(&data);
+        data.releases.push(PoolRelease {
+            id: "first-release".into(),
+            name: "v1".into(),
+            created_at: 10,
+            version_ids: data.versions.iter().map(|v| v.id.clone()).collect(),
+        });
+        let report = leaderboard(&data, &ResultQuery::default());
+        for row in report
+            .rows
+            .iter()
+            .chain(report.models.iter().map(|m| &m.row))
+        {
+            assert_eq!((row.suite_complete, row.suite_planned), (6, 6));
+            assert_eq!(row.status, "comparable");
+            assert_eq!(row.fully_tested_at, Some(10));
+            assert_eq!(row.points, before.points);
+            assert_eq!(row.attempt_ids, before.attempt_ids);
+            assert_eq!(row.measured_at, before.measured_at);
+        }
+        // A future release cannot erase or move an earlier observation's date.
+        let past = leaderboard(
+            &data,
+            &ResultQuery {
+                as_of: Some(3),
+                ..Default::default()
+            },
+        );
+        assert_eq!(past.rows[0].fully_tested_at, Some(2));
+    }
+    #[test]
+    fn a_pool_release_waits_for_its_last_unmeasured_case() {
+        let mut data = dataset();
+        data.attempts.retain(|a| a.id != "before-v5");
+        data.attempts
+            .iter_mut()
+            .find(|a| a.id == "after-v5")
+            .unwrap()
+            .finished_at = Some(12);
+        data.releases.push(PoolRelease {
+            id: "first-release".into(),
+            name: "v1".into(),
+            created_at: 10,
+            version_ids: data.versions.iter().map(|v| v.id.clone()).collect(),
+        });
+        let pending = leaderboard(
+            &data,
+            &ResultQuery {
+                as_of: Some(11),
+                ..Default::default()
+            },
+        );
+        assert_eq!(pending.rows[0].suite_complete, 5);
+        assert_eq!(pending.rows[0].fully_tested_at, None);
+        assert_eq!(standing(&data).fully_tested_at, Some(12));
+    }
+    #[test]
     fn a_configuration_row_fills_from_earlier_runs_cell_by_cell() {
         let mut data = dataset();
         // The newer run skipped v5: the earlier run's cell stands for it.
@@ -2848,6 +2912,10 @@ pub(super) mod tests {
     fn the_full_date_is_the_last_moment_every_published_case_was_complete() {
         // (entered the pool, completions of its complete cells)
         assert_eq!(fully_tested_at(&[(1, vec![4]), (1, vec![7])]), Some(7));
+        // All measurements precede the release that admits their cases.
+        assert_eq!(fully_tested_at(&[(10, vec![4]), (10, vec![7])]), Some(10));
+        // A premeasured new case completes the expanded pool upon entry.
+        assert_eq!(fully_tested_at(&[(1, vec![4]), (10, vec![7])]), Some(10));
         // A case entered at 9 and never completed: full at 7, before it.
         assert_eq!(
             fully_tested_at(&[(1, vec![4]), (1, vec![7]), (9, vec![])]),
